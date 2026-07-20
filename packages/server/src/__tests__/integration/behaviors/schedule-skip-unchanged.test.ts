@@ -48,10 +48,10 @@ describe("scheduled Behavior unchanged gate", () => {
 			{} as Env,
 			ctx,
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		await sql`
 			UPDATE watchers
@@ -142,10 +142,10 @@ describe("scheduled Behavior unchanged gate", () => {
 			{} as Env,
 			ctx,
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		const makeDue = () => sql`
 			UPDATE watchers

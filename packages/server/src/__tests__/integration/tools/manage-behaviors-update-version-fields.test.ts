@@ -119,8 +119,8 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { watcher_id?: string };
-		watcherId = created.watcher_id!;
+		)) as { behavior_id?: string };
+		watcherId = created.behavior_id!;
 	});
 
 	async function fetchWatcherName(): Promise<string> {
@@ -161,7 +161,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", watcher_id: watcherId, name: "Renamed" },
+				{ action: "update", behavior_id: watcherId, name: "Renamed" },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -174,7 +174,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", watcher_id: watcherId, description: "New desc" },
+				{ action: "update", behavior_id: watcherId, description: "New desc" },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -185,7 +185,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", watcher_id: watcherId, prompt: "New prompt" },
+				{ action: "update", behavior_id: watcherId, prompt: "New prompt" },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -198,7 +198,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					watcher_id: watcherId,
+					behavior_id: watcherId,
 					sources: [{ name: "content", query: "SELECT 1" }],
 				},
 				TEST_ENV,
@@ -216,7 +216,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					watcher_id: watcherId,
+					behavior_id: watcherId,
 					name: "Should Not Apply",
 					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
@@ -233,7 +233,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "update",
-				watcher_id: watcherId,
+				behavior_id: watcherId,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
 			TEST_ENV,
@@ -248,7 +248,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "create_version",
-				watcher_id: watcherId,
+				behavior_id: watcherId,
 				name: "Renamed Via Version",
 				set_as_current: true,
 			},
@@ -263,7 +263,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "update",
-				watcher_id: previewUpdate.watcherId,
+				behavior_id: previewUpdate.watcherId,
 				triggers: previewUpdate.triggers,
 				tags: ["system:chat-link", "edited"],
 			},
@@ -285,7 +285,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				"manage_behaviors",
 				{
 					action: "update",
-					watcher_id: previewUpdate.watcherId,
+					behavior_id: previewUpdate.watcherId,
 					triggers: changedTriggers,
 				},
 				TEST_ENV,
@@ -299,7 +299,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			"manage_behaviors",
 			{
 				action: "create_version",
-				watcher_id: previewVersion.watcherId,
+				behavior_id: previewVersion.watcherId,
 				prompt: "Updated preview response instructions.",
 			},
 			TEST_ENV,

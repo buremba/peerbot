@@ -92,7 +92,7 @@ describe("Behavior channel-subscription migration", () => {
 			{} as Env,
 			ctx,
 		);
-		if (silent.action !== "create" || !("watcher_id" in silent)) {
+		if (silent.action !== "create" || !("behavior_id" in silent)) {
 			throw new Error("Silent Behavior creation did not complete");
 		}
 		const scheduled = await manageBehaviors(
@@ -113,10 +113,10 @@ describe("Behavior channel-subscription migration", () => {
 			{} as Env,
 			ctx,
 		);
-		if (scheduled.action !== "create" || !("watcher_id" in scheduled)) {
+		if (scheduled.action !== "create" || !("behavior_id" in scheduled)) {
 			throw new Error("Scheduled Behavior creation did not complete");
 		}
-		const scheduledBehaviorId = Number(scheduled.watcher_id);
+		const scheduledBehaviorId = Number(scheduled.behavior_id);
 		await sql`
 			UPDATE watchers SET triggers = '[]'::jsonb
 			WHERE id = ${scheduledBehaviorId}

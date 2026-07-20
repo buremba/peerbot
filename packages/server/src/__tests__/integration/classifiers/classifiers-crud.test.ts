@@ -47,8 +47,8 @@ describe('classifier CRUD', () => {
       name: 'Classifier Watcher',
       prompt: 'gather signals.',
       agent_id: agent.agentId,
-    })) as { watcher_id: string };
-    watcherId = w.watcher_id;
+    })) as { behavior_id: string };
+    watcherId = w.behavior_id;
   });
 
   it('creates → reads back → deletes a classifier', async () => {

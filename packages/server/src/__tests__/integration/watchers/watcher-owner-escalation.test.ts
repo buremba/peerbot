@@ -100,8 +100,8 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "human-assigns-b",
 			prompt: "Track things.",
 			agent_id: agentB,
-		})) as { watcher_id: string };
-		expect(created.watcher_id).toBeDefined();
+		})) as { behavior_id: string };
+		expect(created.behavior_id).toBeDefined();
 	});
 
 	it("blocks agent A from CLONING agent B's watcher via create_from_version (inherited owner)", async () => {
@@ -119,9 +119,9 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "b-owned-source",
 			prompt: "Track things.",
 			agent_id: agentB,
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 		const [ver] = await getTestDb()<{ id: number }>`
-      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.watcher_id)} ORDER BY id ASC LIMIT 1
+      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.behavior_id)} ORDER BY id ASC LIMIT 1
     `;
 		// Agent A clones it WITHOUT supplying agent_id — the clone would inherit B's
 		// owner. The guard resolves the effective (inherited) owner and blocks it.
@@ -147,7 +147,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "b-owned-edit",
 			prompt: "Track things.",
 			agent_id: agentB,
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 		// Agent A updates it WITHOUT agent_id — ownership stays B. Blocked because the
 		// preserved effective owner (B) isn't A.
 		await expect(
@@ -155,7 +155,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 				"manage_behaviors",
 				{
 					action: "update",
-					watcher_id: bWatcher.watcher_id,
+					behavior_id: bWatcher.behavior_id,
 					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
 				TEST_ENV,
@@ -180,9 +180,9 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "b-owned-source-2",
 			prompt: "Track things.",
 			agent_id: agentB,
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 		const [ver] = await getTestDb()<{ id: number }>`
-      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.watcher_id)} ORDER BY id ASC LIMIT 1
+      SELECT id FROM watcher_versions WHERE watcher_id = ${Number(bWatcher.behavior_id)} ORDER BY id ASC LIMIT 1
     `;
 		// A supplies agent_id=A to try to satisfy the guard — but handleCreateFromVersion
 		// IGNORES it and clones B's owner, so the guard must resolve the SOURCE owner.
@@ -212,7 +212,7 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "a-owned-grouproot",
 			prompt: "Track things.",
 			agent_id: agentA,
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 		// Add a B-owned sibling into wA's group. Create it via the normal CRUD path
 		// (so all its rows/triggers are consistent), then move it into wA's group with
 		// a direct UPDATE — a raw watcher INSERT trips unrelated sequence collisions.
@@ -221,20 +221,20 @@ describe("manage_behaviors owner-escalation guard", () => {
 			name: "b-sibling",
 			prompt: "Track things.",
 			agent_id: agentB,
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 		const [grp] = await getTestDb()<{ watcher_group_id: number }>`
-      SELECT watcher_group_id FROM watchers WHERE id = ${Number(wA.watcher_id)} LIMIT 1
+      SELECT watcher_group_id FROM watchers WHERE id = ${Number(wA.behavior_id)} LIMIT 1
     `;
 		await getTestDb()`
       UPDATE watchers SET watcher_group_id = ${Number(grp.watcher_group_id)}
-      WHERE id = ${Number(bSibling.watcher_id)}
+      WHERE id = ${Number(bSibling.behavior_id)}
     `;
 		await expect(
 			executeTool(
 				"manage_behaviors",
 				{
 					action: "set_reaction_script",
-					watcher_id: wA.watcher_id,
+					behavior_id: wA.behavior_id,
 					reaction_script: "export default async () => {};",
 				},
 				TEST_ENV,

@@ -138,10 +138,10 @@ describe("manage_behaviors — builder gate e2e", () => {
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { action: string; watcher_id?: string; status?: string };
+		)) as { action: string; behavior_id?: string; status?: string };
 		// Immediate apply returns the watcher status ('active'), not pending_approval.
 		expect(res.status).not.toBe("pending_approval");
-		expect(res.watcher_id).toBeDefined();
+		expect(res.behavior_id).toBeDefined();
 		expect(await watcherExists(orgId, "human-watcher")).toBe(true);
 
 		const sql = getTestDb();
@@ -321,9 +321,9 @@ describe("manage_behaviors — builder gate e2e", () => {
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { watcher_id?: string; status?: string };
-		expect(created.watcher_id).toBeDefined();
-		const watcherId = created.watcher_id!;
+		)) as { behavior_id?: string; status?: string };
+		expect(created.behavior_id).toBeDefined();
+		const watcherId = created.behavior_id!;
 
 		// Agent proposes an update with a bad timezone — queues for approval.
 		// handleUpdate returns `{ error }` (does not throw); the apply boundary
@@ -332,7 +332,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_behaviors",
 			{
 				action: "update",
-				watcher_id: watcherId,
+				behavior_id: watcherId,
 				triggers: [
 					{
 						kind: "schedule",
@@ -386,12 +386,12 @@ describe("manage_behaviors — builder gate e2e", () => {
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { watcher_id?: string };
-		const watcherId = created.watcher_id!;
+		)) as { behavior_id?: string };
+		const watcherId = created.behavior_id!;
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "update", watcher_id: watcherId },
+				{ action: "update", behavior_id: watcherId },
 				TEST_ENV,
 				agentCtx
 			)
@@ -410,12 +410,12 @@ describe("manage_behaviors — builder gate e2e", () => {
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { watcher_id?: string };
-		const watcherId = created.watcher_id!;
+		)) as { behavior_id?: string };
+		const watcherId = created.behavior_id!;
 		await expect(
 			executeTool(
 				"manage_behaviors",
-				{ action: "set_reaction_script", watcher_id: watcherId },
+				{ action: "set_reaction_script", behavior_id: watcherId },
 				TEST_ENV,
 				agentCtx
 			)
@@ -435,8 +435,8 @@ describe("manage_behaviors — builder gate e2e", () => {
 			},
 			TEST_ENV,
 			ownerCtx
-		)) as { watcher_id?: string };
-		const watcherId = created.watcher_id!;
+		)) as { behavior_id?: string };
+		const watcherId = created.behavior_id!;
 		expect(watcherId).toBeDefined();
 
 		// Agent A queues an update. The proposal captures A as the acting agent.
@@ -444,7 +444,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			"manage_behaviors",
 			{
 				action: "update",
-				watcher_id: watcherId,
+				behavior_id: watcherId,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
 			TEST_ENV,

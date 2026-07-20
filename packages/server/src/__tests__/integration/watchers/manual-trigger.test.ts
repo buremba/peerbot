@@ -109,8 +109,8 @@ async function setupDevicePinnedWatcher(opts: { workerId: string }): Promise<{
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
-  const watcherId = Number(watcher.watcher_id);
+  })) as { behavior_id: string };
+  const watcherId = Number(watcher.behavior_id);
 
   // Pin the watcher to the device. `WatcherCreateInput` doesn't expose
   // device_worker_id / agent_kind, so set them directly — matches how
@@ -476,7 +476,7 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
     const v2 = (await manageBehaviors(
       {
         action: 'create_version',
-        watcher_id: String(ctx.watcherId),
+        behavior_id: String(ctx.watcherId),
         prompt: 'EDITED-AFTER-QUEUE prompt v2.',
         change_notes: 'edit after queue',
       } as never,

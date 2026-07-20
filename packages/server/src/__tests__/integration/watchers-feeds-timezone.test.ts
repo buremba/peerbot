@@ -67,8 +67,8 @@ describe('watchers/feeds timezone-aware schedules', () => {
       prompt: 'Summarize {{entities}}.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
       agent_id: 'tz-watcher-agent',
-    })) as { watcher_id: string };
-    const watcherId = Number(created.watcher_id);
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
 
     const sql = getTestDb();
     const [row] = await sql`
@@ -97,15 +97,15 @@ describe('watchers/feeds timezone-aware schedules', () => {
       prompt: 'Summarize {{entities}}.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       agent_id: 'tz-watcher-agent',
-    })) as { watcher_id: string };
-    const watcherId = Number(created.watcher_id);
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
 
     const sql = getTestDb();
     const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
     expect(utcHour(before.next_run_at)).toBe(serverTimeNineAmUtcHour());
 
     await workspace.owner.behaviors.update({
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
     });
     const [after] = await sql`

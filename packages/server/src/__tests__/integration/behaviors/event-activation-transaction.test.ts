@@ -67,10 +67,10 @@ describe("Behavior activation transactionality", () => {
 			{} as Env,
 			ctx
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const baseSignal = {
 			connector_key: "github",
 			connection_id: connection.id,

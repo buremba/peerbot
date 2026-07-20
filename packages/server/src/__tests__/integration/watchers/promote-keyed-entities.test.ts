@@ -118,8 +118,8 @@ async function setupKeyedWatcher() {
     keying_config: KEYING_CONFIG,
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
-  const watcherId = Number(watcher.watcher_id);
+  })) as { behavior_id: string };
+  const watcherId = Number(watcher.behavior_id);
 
   await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
 
@@ -186,7 +186,7 @@ async function completeWithToken(
   extractedData: Record<string, unknown> = KEYED_EXTRACTED_DATA
 ): Promise<number> {
   const completion = (await ctx.api.behaviors.completeWindow({
-    watcher_id: String(ctx.watcherId),
+    behavior_id: String(ctx.watcherId),
     window_token: windowToken,
     extracted_data: extractedData,
     run_metadata: { watcher_run_id: runId },
@@ -406,7 +406,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(ctx.watcherId),
+      behavior_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -446,7 +446,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 2 (replay) proposes a different severity for the SAME key.
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(ctx.watcherId),
+      behavior_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -481,7 +481,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Idempotency: replaying the SAME window again must NOT stack a second
     // pending approval card (complete_window is replay-safe under retries/replicas).
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(ctx.watcherId),
+      behavior_id: String(ctx.watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -530,7 +530,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 1 seeds the entity; human then owns `severity` at 'high'.
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -553,7 +553,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 2: watcher proposes 'critical' against the 'high' snapshot → pending approval.
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -609,7 +609,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const runId = await queueRunningRun(ctx);
     const token = await readWindowToken(ctx);
     const windowId = await ctx.api.behaviors.completeWindow({
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -635,7 +635,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     const res = (await workspace.owner.behaviors.manage({
       action: 'list_promoted',
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
     })) as {
       action: string;
       entities: Array<{
@@ -681,7 +681,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Run 1 seeds `severity: 'low'` (watcher-owned, no field_controls yet).
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {
@@ -719,7 +719,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // affirmed the field, the watcher must be BLOCKED and queue an approval —
     // proving the affirm actually locked the value.
     await ctx.api.behaviors.completeWindow({
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       window_token: token,
       run_metadata: { watcher_run_id: runId },
       extracted_data: {

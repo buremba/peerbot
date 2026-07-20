@@ -56,12 +56,12 @@ async function seedReactionWatcher(workspace: TestWorkspace, suffix: string, scr
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
-  })) as { watcher_id: string };
-  const watcherId = Number(watcher.watcher_id);
+  })) as { behavior_id: string };
+  const watcherId = Number(watcher.behavior_id);
   await manageBehaviors(
     {
       action: 'set_reaction_script',
-      watcher_id: String(watcherId),
+      behavior_id: String(watcherId),
       reaction_script: script,
     } as never,
     {} as Env,

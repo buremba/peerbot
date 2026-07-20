@@ -102,8 +102,8 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 					query: "SELECT id, origin_id, payload_text FROM events",
 				},
 			],
-		})) as { watcher_id?: string };
-		expect(created.watcher_id).toBeDefined();
+		})) as { behavior_id?: string };
+		expect(created.behavior_id).toBeDefined();
 	});
 
 	it("resolves source refs and only signs event-backed content ids", async () => {
@@ -141,10 +141,10 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 				{ name: "content", query: "@feed:default" },
 				{ name: "customers", query: "@entity:customer" },
 			],
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 
 		const result = (await owner.knowledge.read({
-			watcher_id: created.watcher_id,
+			watcher_id: created.behavior_id,
 			since: "today",
 			until: "today",
 		})) as {
@@ -174,10 +174,10 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track {{content}}.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "@feed:default" }],
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 
 		const orgResult = (await owner.knowledge.read({
-			watcher_id: orgScoped.watcher_id,
+			watcher_id: orgScoped.behavior_id,
 			since: "today",
 			until: "today",
 		})) as {
@@ -201,11 +201,11 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track stuff.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 
 		await expect(
 			owner.behaviors.createVersion({
-				watcher_id: created.watcher_id,
+				behavior_id: created.behavior_id,
 				prompt: "Track stuff v2.",
 				change_notes: "omit id",
 				sources: [
@@ -253,8 +253,8 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track stuff.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "@feed:slack:C123" }],
-		})) as { watcher_id: string };
-		expect(created.watcher_id).toBeTruthy();
+		})) as { behavior_id: string };
+		expect(created.behavior_id).toBeTruthy();
 	});
 
 	it("rejects create when an @entity ref is not a type in the org", async () => {
@@ -298,11 +298,11 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track stuff.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 
 		const sql = getTestDb();
 		const [row] = await sql<{ current_version_id: number }[]>`
-      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
     `;
 		const versionId = Number(row?.current_version_id);
 		expect(versionId).toBeGreaterThan(0);
@@ -330,18 +330,18 @@ describe("manage_behaviors source-id + cross-org guards", () => {
 			prompt: "Track stuff.",
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
-		})) as { watcher_id: string };
+		})) as { behavior_id: string };
 
 		const sql = getTestDb();
 		const [row] = await sql<{ current_version_id: number }[]>`
-      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
     `;
 		const versionId = Number(row?.current_version_id);
 
 		const result = (await owner.behaviors.createFromVersion({
 			version_id: versionId,
 			entity_ids: [inOrgEntityId],
-		})) as { created: Array<{ watcher_id: string }> };
+		})) as { created: Array<{ behavior_id: string }> };
 		expect(result.created.length).toBe(1);
 	});
 

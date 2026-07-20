@@ -76,20 +76,20 @@ describe('watcher CRUD', () => {
       prompt: 'Track product launches.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       agent_id: agentId,
-    })) as { watcher_id: string };
-    const watcherId = created.watcher_id;
+    })) as { behavior_id: string };
+    const watcherId = created.behavior_id;
     expect(watcherId).toBeDefined();
 
-    const got = (await owner.behaviors.get({ watcher_id: watcherId })) as {
+    const got = (await owner.behaviors.get({ behavior_id: watcherId })) as {
       behavior?: { watcher_name: string };
     };
     expect(got.behavior?.watcher_name).toBe('Lifecycle Watcher');
 
     await owner.behaviors.update({
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
     });
-    const after = (await owner.behaviors.get({ watcher_id: watcherId })) as {
+    const after = (await owner.behaviors.get({ behavior_id: watcherId })) as {
       behavior?: { triggers: Array<{ kind: string; cron?: string }> };
     };
     expect(after.behavior).not.toHaveProperty('schedule');
@@ -100,15 +100,15 @@ describe('watcher CRUD', () => {
     const listed = (await owner.behaviors.list({ entity_id: entityId })) as {
       behaviors?: Array<Record<string, unknown>>;
     };
-    const listedBehavior = listed.behaviors?.find((behavior) => behavior.watcher_id === watcherId);
+    const listedBehavior = listed.behaviors?.find((behavior) => behavior.behavior_id === watcherId);
     expect(listedBehavior).not.toHaveProperty('schedule');
     expect(listedBehavior?.triggers).toEqual(after.behavior?.triggers);
 
-    await owner.behaviors.delete({ watcher_ids: [watcherId] });
+    await owner.behaviors.delete({ behavior_ids: [watcherId] });
     const list = (await owner.behaviors.list({ entity_id: entityId })) as {
-      behaviors?: Array<{ watcher_id: string }>;
+      behaviors?: Array<{ behavior_id: string }>;
     };
-    expect(list.behaviors?.some((w) => w.watcher_id === watcherId)).toBe(false);
+    expect(list.behaviors?.some((w) => w.behavior_id === watcherId)).toBe(false);
   });
 
   it('creates a watcher and its reaction contract atomically', async () => {
@@ -120,7 +120,7 @@ describe('watcher CRUD', () => {
       prompt: 'Return merge proposals.',
       agent_id: agentId,
       reaction_script: reaction,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     const [row] = await sql<
       {
@@ -130,7 +130,7 @@ describe('watcher CRUD', () => {
       }[]
     >`
       SELECT reaction_script, reaction_script_compiled, reaction_input_schema
-      FROM watchers WHERE id = ${created.watcher_id}
+      FROM watchers WHERE id = ${created.behavior_id}
     `;
     expect(row?.reaction_script).toBe(reaction);
     expect(row?.reaction_script_compiled).toContain('merge_proposals');
@@ -196,8 +196,8 @@ describe('watcher CRUD', () => {
       agent_id: agentId,
       sources: template.detail.sources,
       reaction_script: reactionScript,
-    })) as { watcher_id: string };
-    const watcherId = Number(created.watcher_id);
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
 
     const [installed] = await sql<{ reaction_script_compiled: string | null }[]>`
       SELECT reaction_script_compiled FROM watchers WHERE id = ${watcherId}
@@ -282,7 +282,7 @@ describe('watcher CRUD', () => {
     expect(duplicateRows.every((row) => row.merged_into === null)).toBe(true);
     expect(duplicateRows.every((row) => row.deleted_at === null)).toBe(true);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('does not create a watcher when its reaction fails compilation', async () => {
@@ -327,8 +327,8 @@ describe('watcher CRUD', () => {
       expect(e.message).not.toMatch(/23505|duplicate key value/);
       expect(e.httpStatus).toBe(409);
     }
-    const winner = (fulfilled[0] as PromiseFulfilledResult<{ watcher_id: string }>).value;
-    await owner.behaviors.delete({ watcher_ids: [winner.watcher_id] });
+    const winner = (fulfilled[0] as PromiseFulfilledResult<{ behavior_id: string }>).value;
+    await owner.behaviors.delete({ behavior_ids: [winner.behavior_id] });
   });
 
   it('concurrent creates of DISTINCT slugs all succeed with unique ids (no PK collision)', async () => {
@@ -347,10 +347,10 @@ describe('watcher CRUD', () => {
         })
       )
     );
-    const ids = results.map((r) => (r as { watcher_id: string }).watcher_id);
+    const ids = results.map((r) => (r as { behavior_id: string }).behavior_id);
     expect(ids.length).toBe(N);
     expect(new Set(ids).size).toBe(N); // all unique — no PK collision
-    await owner.behaviors.delete({ watcher_ids: ids });
+    await owner.behaviors.delete({ behavior_ids: ids });
   });
 
   it('concurrent group-locked writes on DISTINCT groups do not exhaust the pool (holder starvation)', async () => {
@@ -374,10 +374,10 @@ describe('watcher CRUD', () => {
         prompt: 'Track things.',
         agent_id: agentId,
         sources: [{ name: 'content', query: 'SELECT id FROM events' }],
-      })) as { watcher_id: string };
-      baseIds.push(base.watcher_id);
+      })) as { behavior_id: string };
+      baseIds.push(base.behavior_id);
       const [row] = await sql<{ current_version_id: number }[]>`
-        SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+        SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
       `;
       versionIds.push(Number(row?.current_version_id));
     }
@@ -402,11 +402,11 @@ describe('watcher CRUD', () => {
       )
     );
     const createdIds = results.flatMap((r) =>
-      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+      (r as { created: Array<{ behavior_id: string }> }).created.map((c) => c.behavior_id)
     );
     expect(createdIds.length).toBe(N);
     expect(new Set(createdIds).size).toBe(N); // all unique — the cross-group id race
-    await owner.behaviors.delete({ watcher_ids: [...baseIds, ...createdIds] });
+    await owner.behaviors.delete({ behavior_ids: [...baseIds, ...createdIds] });
   });
 
   it('concurrent create_from_version fan-outs allocate unique ids (no PK collision)', async () => {
@@ -423,9 +423,9 @@ describe('watcher CRUD', () => {
       prompt: 'Track things.',
       agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
-      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
     `;
     const versionId = Number(row?.current_version_id);
 
@@ -449,12 +449,12 @@ describe('watcher CRUD', () => {
       )
     );
     const createdIds = results.flatMap((r) =>
-      (r as { created: Array<{ watcher_id: string }> }).created.map((c) => c.watcher_id)
+      (r as { created: Array<{ behavior_id: string }> }).created.map((c) => c.behavior_id)
     );
     expect(createdIds.length).toBe(N);
     expect(new Set(createdIds).size).toBe(N); // all unique — no PK collision
     await owner.behaviors.delete({
-      watcher_ids: [base.watcher_id, ...createdIds],
+      behavior_ids: [base.behavior_id, ...createdIds],
     });
   });
 
@@ -473,9 +473,9 @@ describe('watcher CRUD', () => {
       prompt: 'Track things.',
       agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
-      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
     `;
     const versionId = Number(row?.current_version_id);
 
@@ -503,11 +503,11 @@ describe('watcher CRUD', () => {
     }
     const winnerIds = (
       fulfilled[0] as PromiseFulfilledResult<{
-        created: Array<{ watcher_id: string }>;
+        created: Array<{ behavior_id: string }>;
       }>
-    ).value.created.map((c) => c.watcher_id);
+    ).value.created.map((c) => c.behavior_id);
     await owner.behaviors.delete({
-      watcher_ids: [base.watcher_id, ...winnerIds],
+      behavior_ids: [base.behavior_id, ...winnerIds],
     });
   });
 
@@ -525,9 +525,9 @@ describe('watcher CRUD', () => {
       prompt: 'Track things.',
       agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
-      SELECT current_version_id FROM watchers WHERE id = ${base.watcher_id}
+      SELECT current_version_id FROM watchers WHERE id = ${base.behavior_id}
     `;
     const versionId = Number(row?.current_version_id);
 
@@ -545,7 +545,7 @@ describe('watcher CRUD', () => {
     const seed = (await owner.behaviors.createFromVersion({
       version_id: versionId,
       entity_ids: [collidingTarget.entity.id],
-    })) as { created: Array<{ watcher_id: string }> };
+    })) as { created: Array<{ behavior_id: string }> };
     expect(seed.created.length).toBe(1);
 
     // Now fan out to [fresh, colliding]. The colliding insert hits the seeded
@@ -565,7 +565,7 @@ describe('watcher CRUD', () => {
     expect(leaked.length).toBe(0);
 
     await owner.behaviors.delete({
-      watcher_ids: [base.watcher_id, ...seed.created.map((c) => c.watcher_id)],
+      behavior_ids: [base.behavior_id, ...seed.created.map((c) => c.behavior_id)],
     });
   });
 
@@ -576,10 +576,10 @@ describe('watcher CRUD', () => {
       prompt: 'Summarize recent workspace activity.',
       triggers: [{ kind: 'schedule', cron: '0 12 * * *' }],
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { entity_id?: number | null };
     };
@@ -606,16 +606,16 @@ describe('watcher CRUD', () => {
       prompt,
       agent_id: agentId,
       // NOTE: no `sources` — the backend must derive them from the prompt token.
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
     expect(got.behavior?.sources).toEqual([{ name: 'recent_events', query }]);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('re-derives sources on a version bump — an edited SQL chip replaces (not strands) the old query', async () => {
@@ -637,17 +637,17 @@ describe('watcher CRUD', () => {
       name: 'SQL Edit Rederive Watcher',
       prompt: `Watch @[sql:recent:Recent](${enc(oldQuery)}).`,
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     // Edit the SQL chip: same label/name, new query — a new prompt version.
     await owner.behaviors.createVersion({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
       prompt: `Watch @[sql:recent:Recent](${enc(newQuery)}).`,
       change_notes: 'edit sql',
     });
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
@@ -655,7 +655,7 @@ describe('watcher CRUD', () => {
     // stranded under `recent`, and there is no `recent_2`.
     expect(got.behavior?.sources).toEqual([{ name: 'recent', query: newQuery }]);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('clears sources when an edited prompt removes every @-mention chip', async () => {
@@ -674,23 +674,23 @@ describe('watcher CRUD', () => {
       name: 'Clear Sources On Edit Watcher',
       prompt: `Watch @[sql:recent:Recent](${enc('SELECT id FROM events')}).`,
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     // New prompt with the chip removed → sources must become empty.
     await owner.behaviors.createVersion({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
       prompt: 'Just watch everything, no specific source.',
       change_notes: 'remove chip',
     });
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { sources?: Array<{ name: string; query: string }> | null };
     };
     expect(got.behavior?.sources ?? []).toEqual([]);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('round-trips execution_config through create → list → update', async () => {
@@ -707,22 +707,22 @@ describe('watcher CRUD', () => {
         permission_mode: 'acceptEdits',
         effort: 'high',
       },
-    })) as { watcher_id: string };
-    const watcherId = created.watcher_id;
+    })) as { behavior_id: string };
+    const watcherId = created.behavior_id;
 
     const findRow = (
       res: {
         behaviors?: Array<{
-          watcher_id: string;
+          behavior_id: string;
           execution_config?: Record<string, unknown> | null;
         }>;
       },
       id: string
-    ) => res.behaviors?.find((w) => String(w.watcher_id) === String(id));
+    ) => res.behaviors?.find((w) => String(w.behavior_id) === String(id));
 
     const list = (await owner.behaviors.list({ entity_id: entityId })) as {
       behaviors?: Array<{
-        watcher_id: string;
+        behavior_id: string;
         execution_config?: Record<string, unknown>;
       }>;
     };
@@ -736,12 +736,12 @@ describe('watcher CRUD', () => {
 
     // Update replaces the whole jsonb; a partial object is stored verbatim.
     await owner.behaviors.update({
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       execution_config: { timeout_seconds: 300 },
     });
     const after = (await owner.behaviors.list({ entity_id: entityId })) as {
       behaviors?: Array<{
-        watcher_id: string;
+        behavior_id: string;
         execution_config?: Record<string, unknown>;
       }>;
     };
@@ -751,18 +751,18 @@ describe('watcher CRUD', () => {
 
     // Passing null clears the saved config back to NULL/defaults.
     await owner.behaviors.update({
-      watcher_id: watcherId,
+      behavior_id: watcherId,
       execution_config: null,
     });
     const cleared = (await owner.behaviors.list({ entity_id: entityId })) as {
       behaviors?: Array<{
-        watcher_id: string;
+        behavior_id: string;
         execution_config?: Record<string, unknown> | null;
       }>;
     };
     expect(findRow(cleared, watcherId)?.execution_config ?? null).toBeNull();
 
-    await owner.behaviors.delete({ watcher_ids: [watcherId] });
+    await owner.behaviors.delete({ behavior_ids: [watcherId] });
   });
 
   it('leaves execution_config null when unset', async () => {
@@ -772,19 +772,19 @@ describe('watcher CRUD', () => {
       name: 'No Exec Config',
       prompt: 'Track things.',
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     const list = (await owner.behaviors.list({ entity_id: entityId })) as {
       behaviors?: Array<{
-        watcher_id: string;
+        behavior_id: string;
         execution_config?: Record<string, unknown> | null;
       }>;
     };
-    const row = list.behaviors?.find((w) => String(w.watcher_id) === String(created.watcher_id));
+    const row = list.behaviors?.find((w) => String(w.behavior_id) === String(created.behavior_id));
     expect(row).toBeDefined();
     expect(row?.execution_config ?? null).toBeNull();
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('rejects an invalid execution_config (type/range/unknown-key)', async () => {
@@ -836,17 +836,17 @@ describe('watcher CRUD', () => {
       name: 'Org Scoped',
       prompt: 'Track org-wide signals.',
       agent_id: agentId,
-    })) as { watcher_id: string };
-    expect(created.watcher_id).toBeDefined();
+    })) as { behavior_id: string };
+    expect(created.behavior_id).toBeDefined();
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { entity_ids?: number[] };
     };
     expect(got.behavior?.entity_ids ?? []).toEqual([]);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('rejects an org-scoped watcher when there is no organization context', async () => {
@@ -867,29 +867,29 @@ describe('watcher CRUD', () => {
       name: 'Cross Org Protected',
       prompt: 'Track org-wide signals.',
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
-    await expect(intruder.behaviors.get({ watcher_id: created.watcher_id })).rejects.toThrow(
+    await expect(intruder.behaviors.get({ behavior_id: created.behavior_id })).rejects.toThrow(
       /access|organization/i
     );
     await expect(
       intruder.behaviors.update({
-        watcher_id: created.watcher_id,
+        behavior_id: created.behavior_id,
         triggers: [{ kind: 'schedule', cron: '0 11 * * *' }],
       })
     ).rejects.toThrow(/access|organization/i);
-    await expect(intruder.behaviors.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
+    await expect(intruder.behaviors.delete({ behavior_ids: [created.behavior_id] })).rejects.toThrow(
       /access|organization/i
     );
 
     const got = (await owner.behaviors.get({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
     })) as {
       behavior?: { triggers: unknown[] };
     };
     expect(got.behavior?.triggers).toEqual([]);
 
-    await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
   it('blocks a member from deleting watchers (admin-only)', async () => {
@@ -899,10 +899,10 @@ describe('watcher CRUD', () => {
       name: 'Protected',
       prompt: 'guarded.',
       agent_id: agentId,
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
 
     const member = owner.withAuth({ memberRole: 'member' });
-    await expect(member.behaviors.delete({ watcher_ids: [created.watcher_id] })).rejects.toThrow(
+    await expect(member.behaviors.delete({ behavior_ids: [created.behavior_id] })).rejects.toThrow(
       /admin|owner|access/i
     );
   });
@@ -944,16 +944,16 @@ describe('watcher CRUD', () => {
         prompt: 'x',
         agent_id: agentId,
         device_worker_id: deviceId,
-      })) as { watcher_id: string };
-      expect(created.watcher_id).toBeDefined();
+      })) as { behavior_id: string };
+      expect(created.behavior_id).toBeDefined();
 
       const got = (await owner.behaviors.get({
-        watcher_id: created.watcher_id,
+        behavior_id: created.behavior_id,
       })) as {
         behavior?: { device_worker_id?: string | null };
       };
       expect(got.behavior?.device_worker_id).toBe(deviceId);
-      await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+      await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
     });
 
     it('rejects pinning to a device in another org (create)', async () => {
@@ -998,7 +998,7 @@ describe('watcher CRUD', () => {
         name: 'Device Pin Update',
         prompt: 'x',
         agent_id: agentId,
-      })) as { watcher_id: string };
+      })) as { behavior_id: string };
 
       const foreignDeviceId = await seedDevice({
         userId: otherUserId,
@@ -1008,12 +1008,12 @@ describe('watcher CRUD', () => {
       await expect(
         owner.behaviors.manage({
           action: 'update',
-          watcher_id: created.watcher_id,
+          behavior_id: created.behavior_id,
           device_worker_id: foreignDeviceId,
         })
       ).rejects.toThrow(/device you own|not found or not accessible/i);
 
-      await owner.behaviors.delete({ watcher_ids: [created.watcher_id] });
+      await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
     });
   });
 });

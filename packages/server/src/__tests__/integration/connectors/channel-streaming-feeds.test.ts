@@ -218,7 +218,7 @@ describe("channel streaming feeds", () => {
       prompt: "Respond to channel messages.",
       agent_id: agentId,
       triggers: [],
-    })) as { watcher_id: string };
+    })) as { behavior_id: string };
     const messageTrigger = {
       kind: "event" as const,
       connector_key: "slack",
@@ -232,7 +232,7 @@ describe("channel streaming feeds", () => {
     };
 
     await workspace.owner.behaviors.createVersion({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
       triggers: [messageTrigger],
     });
 
@@ -246,7 +246,7 @@ describe("channel streaming feeds", () => {
     expect(active[0]?.deleted_at).toBeNull();
 
     await workspace.owner.behaviors.createVersion({
-      watcher_id: created.watcher_id,
+      behavior_id: created.behavior_id,
       triggers: [],
     });
 

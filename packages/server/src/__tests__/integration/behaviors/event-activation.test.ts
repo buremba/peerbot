@@ -59,10 +59,10 @@ describe("Behavior connector-event activation", () => {
 			{} as Env,
 			ctx
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 
 		const signal = {
 			connector_key: "github",
@@ -112,7 +112,7 @@ describe("Behavior connector-event activation", () => {
 		`;
 		expect(stored?.triggers).toEqual([trigger]);
 		const detail = await getBehavior(
-			{ watcher_id: String(behaviorId) },
+			{ behavior_id: String(behaviorId) },
 			{} as Env,
 			ctx
 		);
@@ -165,10 +165,10 @@ describe("Behavior connector-event activation", () => {
 			{} as Env,
 			ctx
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const baseSignal = {
 			connector_key: "github",
 			connection_id: connection.id,
@@ -248,10 +248,10 @@ describe("Behavior connector-event activation", () => {
 			{} as Env,
 			ctx
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const signal = {
 			connector_key: "github",
 			connection_id: connection.id,
@@ -340,10 +340,10 @@ describe("Behavior connector-event activation", () => {
 			{} as Env,
 			ctx
 		);
-		if (created.action !== "create" || !("watcher_id" in created)) {
+		if (created.action !== "create" || !("behavior_id" in created)) {
 			throw new Error("Behavior creation did not complete");
 		}
-		const behaviorId = Number(created.watcher_id);
+		const behaviorId = Number(created.behavior_id);
 		const sql = getTestDb();
 		await sql`
 			UPDATE watchers
@@ -419,10 +419,10 @@ describe("Behavior connector-event activation", () => {
 				{} as Env,
 				ctx,
 			);
-			if (result.action !== "create" || !("watcher_id" in result)) {
+			if (result.action !== "create" || !("behavior_id" in result)) {
 				throw new Error("Behavior creation did not complete");
 			}
-			return Number(result.watcher_id);
+			return Number(result.behavior_id);
 		};
 		await create("skip-unchanged-deliveries", true);
 		const alwaysRunId = await create("run-unchanged-deliveries", false);

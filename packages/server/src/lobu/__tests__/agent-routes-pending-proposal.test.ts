@@ -181,7 +181,7 @@ describe("GET /:agentId/config/pending/:runId", () => {
 			proposal: {
 				args: {
 					action: "update",
-					watcher_id: "w1",
+					behavior_id: "w1",
 					agent_id: AGENT,
 					prompt: "x",
 				},
@@ -238,11 +238,11 @@ describe("GET /:agentId/config/pending/:runId", () => {
 const WATCHER_ID = 501;
 
 // The endpoint reads the watcher's owner + target from the held proposal/event
-// metadata (`current.agent_id`, `args.watcher_id`), NOT from the `watchers`
+// metadata (`current.agent_id`, `args.behavior_id`), NOT from the `watchers`
 // table — so no watcher row needs seeding; the proposal fixtures carry it all.
 
 /** A real ManageBehaviorsProposal: `{ args: {...}, actingAgentId, actingWatcherId }`
- *  with watcher_id / agent_id nested INSIDE args. */
+ *  with behavior_id / agent_id nested INSIDE args. */
 function watcherProposal(
 	args: Record<string, unknown>
 ): Record<string, unknown> {
@@ -256,7 +256,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				name: "New Watcher Name",
 				prompt: "Watch for X",
 			}),
@@ -286,13 +286,13 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 	test("returns a normalized proposedAfter (displayed == applied)", async () => {
 		// The endpoint computes proposedAfter with the SAME normalizer handleUpdate
 		// uses, so the review shows the canonical trigger values that are stored,
-		// and version-owned/routing keys (name/watcher_id/action) are excluded.
+		// and version-owned/routing keys (name/behavior_id/action) are excluded.
 		const app = await importAgentRoutes();
 		const runId = await insertPendingProposal({
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				triggers: [
 					{
 						kind: "schedule",
@@ -325,7 +325,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 		});
 		// version-owned/routing keys never appear in the applied patch
 		expect(body.proposedAfter && "name" in body.proposedAfter).toBe(false);
-		expect(body.proposedAfter && "watcher_id" in body.proposedAfter).toBe(
+		expect(body.proposedAfter && "behavior_id" in body.proposedAfter).toBe(
 			false
 		);
 	});
@@ -339,7 +339,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				agent_id: AGENT,
 				name: "N",
 			}),
@@ -357,7 +357,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "create",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				agent_id: AGENT,
 			}),
 		});
@@ -385,7 +385,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: 999,
+				behavior_id: 999,
 				name: "X",
 			}),
 			current: { id: 999, agent_id: AGENT },
@@ -402,7 +402,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				name: "X",
 			}),
 			current: { id: WATCHER_ID, agent_id: "other-agent" },
@@ -428,7 +428,7 @@ describe("GET /:agentId/behaviors/:watcherId/pending/:runId", () => {
 			tool: "manage_behaviors",
 			proposal: watcherProposal({
 				action: "update",
-				watcher_id: WATCHER_ID,
+				behavior_id: WATCHER_ID,
 				name: "X",
 			}),
 			current: { id: WATCHER_ID, agent_id: AGENT },

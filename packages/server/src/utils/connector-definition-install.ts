@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
+import { COMPILE_CONFIG_HASH, flattenConnectorSourceFromFile } from '@lobu/connector-worker/compile';
 import type { getDb } from '../db/client';
 import { computeCodeHash } from './compiler-core';
 import {
@@ -238,7 +238,14 @@ export async function resolveConnectorInstallSource(params: {
     }
 
     sourcePath = filePath;
-    sourceCode = await readFile(filePath, 'utf-8');
+    // Persist a self-contained snapshot, NOT the raw file text: a file-backed
+    // connector may import sibling modules, and the stored source must
+    // recompile under the strict single-file source-text compiler when the
+    // compile configuration later drifts (#2042). An explicitly pre-compiled
+    // file is stored verbatim — it is already an artifact, not source.
+    sourceCode = params.compiled
+      ? await readFile(filePath, 'utf-8')
+      : await flattenConnectorSourceFromFile(filePath);
   } else if (params.sourceUrl) {
     const url = await assertAllowedConnectorSourceUrl(params.sourceUrl);
     sourcePath = url.pathname.replace(/^\//, '') || null;
@@ -249,7 +256,10 @@ export async function resolveConnectorInstallSource(params: {
     throw new Error('Provide source_url or source_code to install a connector.');
   }
 
-  const alreadyCompiled = params.compiled || isPreCompiledJs(sourceCode);
+  // The pre-compiled sniff only applies to text uploads: a file-backed install
+  // stores a flattened source snapshot whose esbuild output shape would
+  // false-positive the sniff, and its compile path is explicit anyway.
+  const alreadyCompiled = params.compiled || (!params.sourceUri && isPreCompiledJs(sourceCode));
 
   let compiledCode: string;
   let compiledCodeHash: string;

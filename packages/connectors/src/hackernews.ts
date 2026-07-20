@@ -11,10 +11,11 @@ import {
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
+  sleep,
   type SyncContext,
   type SyncResult,
+  validatePublicUrl,
 } from '@lobu/connector-sdk';
-import { sleep, validatePublicUrl } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types
@@ -64,7 +65,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     key: 'hackernews',
     name: 'Hacker News',
     description: 'Searches Hacker News stories and comments via Algolia API.',
-    version: '1.0.0',
+    version: '1.0.1',
     faviconDomain: 'news.ycombinator.com',
     authSchema: {
       methods: [{ type: 'none' }],

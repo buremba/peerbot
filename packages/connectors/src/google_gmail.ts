@@ -17,10 +17,10 @@ import {
   type QueryContext,
   type QueryResult,
   type SearchContext,
+  sleep,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { sleep } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Gmail API types
@@ -95,7 +95,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     key: 'google.gmail',
     name: 'Gmail',
     description: 'Syncs email threads from Gmail and supports sending emails.',
-    version: '1.0.0',
+    version: '1.0.1',
     faviconDomain: 'mail.google.com',
     authSchema: {
       methods: [

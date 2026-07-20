@@ -145,7 +145,7 @@ export function connectorSdkMock() {
     }),
     // Faithful copy of connector-sdk checkpoint/timestamp-watermark.ts — must
     // honor the checkpoint arg; a passthrough stub leaks via Bun's global mock
-    // registry and breaks scraper-utils.test when connector tests run first.
+    // registry and breaks the SDK's timestamp-watermark.test when connector tests run first.
     filterByCheckpoint: <T extends { occurred_at: Date }>(
       events: T[],
       checkpoint: Record<string, unknown> | null

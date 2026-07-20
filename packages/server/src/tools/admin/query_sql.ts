@@ -401,8 +401,13 @@ export async function querySqlImpl(
     if ('error' in bounds) return errorResult(bounds.error, startTime);
     const { limit, offset } = bounds;
     const scope = authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId });
+    let feedId: number;
     try {
-      const feedId = await resolveVirtualFeedId(args.feed, scope);
+      feedId = await resolveVirtualFeedId(args.feed, scope);
+    } catch (err) {
+      throw new ToolUserError(getErrorMessage(err), 404);
+    }
+    try {
       const r = await readVirtualFeed({
         scope,
         feedId,
@@ -421,7 +426,14 @@ export async function querySqlImpl(
         execution_time_ms: Date.now() - startTime,
       };
     } catch (err) {
-      return errorResult(getErrorMessage(err), startTime);
+      // A broken feed must surface as a hard tool error (MCP isError), never a
+      // success-shaped empty table an agent could read as "no data" (#2042).
+      throw new ToolUserError(
+        `virtual feed read failed (feed=${args.feed}): ${getErrorMessage(err)}. ` +
+          'The feed itself is broken or its connector cannot run — this is not an empty result. ' +
+          'Check the connector with client.connections.test, or client.feeds.get for feed config.',
+        502
+      );
     }
   }
 
@@ -459,7 +471,13 @@ export async function querySqlImpl(
         execution_time_ms: Date.now() - startTime,
       };
     } catch (err) {
-      return errorResult(getErrorMessage(err), startTime);
+      // Same contract as the feed branch: a pushdown failure is a hard tool
+      // error, never a success-shaped empty table (#2042).
+      throw new ToolUserError(
+        `connection pushdown failed (connection=${args.connection}): ${getErrorMessage(err)}. ` +
+          'The query did not run against the source — this is not an empty result.',
+        502
+      );
     }
   }
 

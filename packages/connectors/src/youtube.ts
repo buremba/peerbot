@@ -26,10 +26,10 @@ import {
   createHttpClient,
   type EventEnvelope,
   paginateByCursor,
+  sleep,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { sleep } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // YouTube API types
@@ -239,7 +239,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
     name: 'YouTube',
     description:
       'Syncs liked videos, playlists, and optional keyword search; on-demand actions for public and library search.',
-    version: '1.2.0',
+    version: '1.2.1',
     faviconDomain: 'youtube.com',
     authSchema: {
       methods: [

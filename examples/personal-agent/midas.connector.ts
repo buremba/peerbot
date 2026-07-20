@@ -260,7 +260,8 @@ export function parseMidasDashboardText(text: string): MidasDashboardSnapshot {
   ): number => {
     if (currentIdx >= lines.length || tickers.length === 0) return 0;
 
-    // Optional count line — prefer matching ticker length; still advance if present.
+    // Optional holdings-count line: advance past it when the current line is a
+    // bare positive integer, otherwise treat the current line as the section total.
     const countRaw = lines[currentIdx];
     const count = Number.parseInt(countRaw.replace(/[^\d]/g, ""), 10);
     if (Number.isFinite(count) && count > 0) {

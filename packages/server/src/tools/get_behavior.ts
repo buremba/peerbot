@@ -744,7 +744,7 @@ async function getBehaviorImpl(
       : undefined;
     return {
       window_id: ensureNumber(w.window_id),
-      behavior_id: w.watcher_id,
+      behavior_id: String(w.watcher_id),
       watcher_name: w.watcher_name,
       granularity: w.granularity,
       // window_start/end and created_at come back from postgres.js as Date
@@ -833,7 +833,7 @@ async function getBehaviorImpl(
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
     watcherMetadata = {
-      behavior_id: watcherRow.watcher_id,
+      behavior_id: String(watcherRow.watcher_id),
       watcher_name: watcherRow.name || (version?.name as string) || 'Behavior',
       slug: watcherRow.slug || '',
       status: watcherRow.status as 'active' | 'archived',

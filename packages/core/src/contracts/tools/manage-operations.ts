@@ -165,6 +165,14 @@ export const ListActivityAction = Type.Object({
   aggregate: Type.Optional(Type.Boolean({ default: true })),
   /** Restrict run kinds: watcher | sync | action | notification (default all). */
   kinds: Type.Optional(Type.Array(Type.String())),
+  /**
+   * Scope the feed to a single agent: only that agent's Behavior runs are
+   * returned and notifications are excluded (they are org/user-scoped, not
+   * per-agent). Omit for the org-wide feed (Home).
+   */
+  agent_id: Type.Optional(
+    Type.String({ description: "Scope activity to a single agent's runs" })
+  ),
 });
 
 export const ApproveAction = Type.Object({

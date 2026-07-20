@@ -278,10 +278,17 @@ export async function listOrgActivity(opts: {
 	includeRuns?: boolean;
 	aggregate?: boolean;
 	kinds?: string[];
+	/**
+	 * Scope to one agent: filter runs to that agent's Behaviors and drop
+	 * notifications (org/user-scoped, not attributable to an agent).
+	 */
+	agentId?: string;
 }): Promise<{ items: ActivityCard[]; total: number; limit: number }> {
 	const limit = Math.min(Math.max(opts.limit ?? 24, 1), 50);
+	// Notifications are not agent-attributable, so an agent-scoped feed omits
+	// them entirely and shows only that agent's runs.
 	const includeNotifications =
-		opts.includeNotifications !== false && !!opts.userId;
+		opts.includeNotifications !== false && !!opts.userId && !opts.agentId;
 	const includeRuns = opts.includeRuns !== false;
 	const aggregate = opts.aggregate !== false;
 	const kindFilter = opts.kinds?.length ? new Set(opts.kinds) : null;
@@ -333,6 +340,13 @@ export async function listOrgActivity(opts: {
 			: [...USER_FACING_RUN_TYPES];
 		if (runKinds.length > 0) {
 			const sql = getDb();
+			// When agent-scoped, restrict to that agent's Behavior runs. The join to
+			// `watchers` already exposes `w.agent_id`; a non-null agentId turns the
+			// LEFT JOIN into an effective inner filter (runs with no watcher, i.e.
+			// bare syncs/actions, are dropped — they aren't agent-owned).
+			const agentFilter = opts.agentId
+				? sql`AND w.agent_id = ${opts.agentId}`
+				: sql``;
 			const rows = (await sql`
         SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id,
                r.connector_key, r.action_key AS operation_key,
@@ -347,6 +361,7 @@ export async function listOrgActivity(opts: {
         LEFT JOIN watchers w ON w.id = r.watcher_id
         WHERE r.organization_id = ${opts.organizationId}
           AND r.run_type = ANY(${pgTextArray(runKinds)}::text[])
+          ${agentFilter}
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT 60
       `) as unknown as Array<{

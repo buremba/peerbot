@@ -120,13 +120,30 @@ column in the admin UI.
 ### Connection (a bundled connector — preferred)
 
 ```ts
-const ghAuth = defineAuthProfile({ slug: "gh", connector: "github", authKind: "oauth_account", name: "GitHub" });
+// A GitHub connection needs BOTH an account profile (the interactive login) AND
+// an oauth_app profile (your OAuth app's client creds) — `lobu run` aborts apply
+// with "Select or create an OAuth app profile before creating the connection."
+// if the app profile is missing.
+const ghAccountAuth = defineAuthProfile({ slug: "gh-account", connector: "github", authKind: "oauth_account", name: "GitHub" });
+
+const ghAppAuth = defineAuthProfile({
+  slug: "gh-app",
+  connector: "github",
+  authKind: "oauth_app",
+  name: "GitHub OAuth App",
+  credentials: {
+    GITHUB_CLIENT_ID: secret("GITHUB_CLIENT_ID"),
+    GITHUB_CLIENT_SECRET: secret("GITHUB_CLIENT_SECRET"),
+  },
+});
 
 const gh = defineConnection({
   slug: "github-main",
   connector: "github",
   name: "GitHub",
-  authProfile: ghAuth, // declare the profile as a const, then list it in defineConfig({ authProfiles })
+  authProfile: ghAccountAuth, // interactive login profile
+  appAuthProfile: ghAppAuth, // your OAuth app's creds — required to create the connection
+  // declare each profile as a const, then list them all in defineConfig({ authProfiles })
   // Connector sync settings (what to fetch) go on the FEED's `config`, not the
   // connection's — the server stores them on feeds and rejects feed-scoped keys
   // on the connection. The connection's own `config` is only for the rare
@@ -149,7 +166,7 @@ you're unsure of a connector's config shape, ask the user or read its definition
 without executing it.
 
 If the source has no bundled connector, write `connectors/<name>.connector.ts`
-(model it on `examples/lobu-crm/funnel-form.connector.ts` in the repo) and
+(model it on `examples/lobu-crm/npm-downloads.connector.ts` in the repo) and
 reference it with `connectorFromFile("./connectors/<name>.connector.ts")`.
 
 ### Auth profiles & secrets
@@ -196,7 +213,7 @@ export default defineConfig({
   agents: [agent],
   entities: [ticket],
   connections: [gh],
-  authProfiles: [ghAuth],
+  authProfiles: [ghAccountAuth, ghAppAuth],
   behaviors: [digest],
 });
 ```

@@ -103,7 +103,7 @@ export async function listOrgInstalled(
 		result.behaviors = {
 			kind: "behaviors",
 			items: behaviors.map((watcher: Record<string, unknown>) => ({
-				id: String(watcher.watcher_id ?? watcher.id ?? ""),
+				id: String(watcher.behavior_id ?? ""),
 				name: String(watcher.name ?? watcher.watcher_name ?? "Behavior"),
 				detail: {
 					slug: watcher.slug,

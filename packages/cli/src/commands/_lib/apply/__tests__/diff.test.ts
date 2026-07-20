@@ -1336,7 +1336,7 @@ describe("apply diff — prune", () => {
       ...emptyRemote(),
       entityTypes: [{ slug: "lead", properties: {} }, { slug: "stale-entity" }],
       relationshipTypes: [{ slug: "stale-rel" }],
-      watchers: [{ slug: "stale-watcher", watcher_id: "42" }],
+      watchers: [{ slug: "stale-watcher", behavior_id: "42" }],
       // stale-conn is dropped from config but exempt (drift); the connector "x"
       // it still uses must therefore be spared from prune.
       connections: [

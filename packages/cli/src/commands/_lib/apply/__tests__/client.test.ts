@@ -162,7 +162,7 @@ describe("ApplyClient — prune", () => {
     });
   });
 
-  test("deleteBehavior POSTs manage_behaviors delete with watcher_ids array", async () => {
+  test("deleteBehavior POSTs manage_behaviors delete with behavior_ids array", async () => {
     const { calls, client } = recordingClient();
     await client.deleteBehavior("42");
     expect(calls[0]?.url).toBe(
@@ -170,7 +170,7 @@ describe("ApplyClient — prune", () => {
     );
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       action: "delete",
-      watcher_ids: ["42"],
+      behavior_ids: ["42"],
     });
   });
 

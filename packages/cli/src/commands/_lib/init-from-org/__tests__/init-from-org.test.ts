@@ -106,7 +106,7 @@ function fullOrgRoutes(): Record<string, () => unknown> {
         { agentId: "sales", name: "Sales", description: "Revenue agent" },
       ],
     }),
-    "behaviors?watcher_id": () => ({
+    "behaviors?behavior_id": () => ({
       behavior: {
         reaction_script:
           "export default async (ctx, client) => {\n  await client.knowledge.save({ content: 'ok', semantic_type: 'digest' });\n};\n",
@@ -117,7 +117,7 @@ function fullOrgRoutes(): Record<string, () => unknown> {
       behaviors: [
         {
           slug: "account-health",
-          watcher_id: "1",
+          behavior_id: "1",
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",

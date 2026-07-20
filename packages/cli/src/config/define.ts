@@ -1,16 +1,18 @@
 /**
  * Declarative authoring API. Each `define*` returns a branded plain object that
  * doubles as a typed handle (e.g. an {@link EntityType} can be passed to
- * {@link defineRelationshipType}, an {@link Agent} to {@link defineWatcher}).
+ * {@link defineRelationshipType}, an {@link Agent} to {@link defineBehavior}).
  *
  * These are pure data producers with no side effects — `lobu apply` imports the
  * entrypoint, reads the {@link Project} default export, and maps it to the
  * server's desired state. Executable handlers (connector `sync`/`execute`,
- * watcher reactions) live in their own modules; these objects only declare
+ * Behavior reactions) live in their own modules; these objects only declare
  * config and references.
  */
 
 import type {
+  BehaviorEventTrigger,
+  BehaviorScheduleTrigger,
   ConnectorClass,
   ConnectorRuntime,
   Dimension,
@@ -298,11 +300,11 @@ export function connectorFromFile<
 }
 
 // ---------------------------------------------------------------------------
-// Watchers
+// Behaviors
 // ---------------------------------------------------------------------------
 
 /**
- * The shape a watcher reaction module's default export must satisfy:
+ * The shape a Behavior reaction module's default export must satisfy:
  * `export default async (ctx, client, params?) => …`. Used to type-check the
  * `<Handler>` generic on {@link reactionFromFile} against the referenced module.
  */
@@ -314,8 +316,8 @@ export type ReactionHandler = (
 
 /**
  * A local reaction source file to compile + run in a sandboxed isolate when the
- * watcher fires. Built with {@link reactionFromFile} and set on
- * {@link Watcher.reaction}. Like {@link ConnectorSource}, this carries only the
+ * Behavior fires. Built with {@link reactionFromFile} and set on
+ * {@link Behavior.reaction}. Like {@link ConnectorSource}, this carries only the
  * path as plain data — the handler module is NOT imported at config-eval time;
  * `lobu apply` reads the raw source and the server compiles it.
  */
@@ -345,28 +347,46 @@ export function reactionFromFile<
   return { kind: "reactionSource", path };
 }
 
-export interface WatcherNotification {
+export interface BehaviorNotification {
   channel?: "canvas" | "notification" | "both";
   priority?: "low" | "normal" | "high";
 }
 
-export interface Watcher {
-  readonly kind: "watcher";
+/**
+ * Declarative event trigger. The persisted API contract uses an integer
+ * `connection_id`; config may instead name a stable project connection handle
+ * or slug, which `lobu apply` resolves after creating/updating connections.
+ */
+export type BehaviorEventTriggerConfig = Omit<
+  BehaviorEventTrigger,
+  "connection_id"
+> & {
+  connection_id?: number;
+  connection?: Connection | string;
+};
+
+export type BehaviorTriggerConfig =
+  | BehaviorEventTriggerConfig
+  | BehaviorScheduleTrigger;
+
+export interface Behavior {
+  readonly kind: "behavior";
   /** Stable slug — diff key. */
   slug: string;
-  /** Owning agent (handle or id). Every watcher belongs to exactly one agent. */
+  /** Owning agent (handle or id). Every Behavior belongs to exactly one agent. */
   agent: Agent | string;
   name?: string;
   description?: string;
-  schedule?: string;
+  /** Connector events and/or cadence that activate this Behavior. */
+  triggers?: BehaviorTriggerConfig[];
   prompt: string;
   /**
    * Stable key generation for promoted entities. When `entityType` is set, the
-   * watcher is entity-typed: its output schema derives from that entity type's
-   * metadata schema (schema lives on the type, never on the watcher), and
+   * Behavior is entity-typed: its output schema derives from that entity type's
+   * metadata schema (schema lives on the type, never on the Behavior), and
    * extracted rows are keyed + merged into entities of that type across windows.
-   * Omit for an untyped watcher that runs the worker's free-form `{ summary }`
-   * fallback. There is no inline watcher schema — schema is owned by the entity
+   * Omit for an untyped Behavior that runs the worker's free-form `{ summary }`
+   * fallback. There is no inline Behavior schema — schema is owned by the entity
    * type, full stop.
    */
   keyingConfig?: {
@@ -378,16 +398,16 @@ export interface Watcher {
   };
   /** Named SQL data sources (`name` -> query). */
   sources?: Record<string, string>;
-  notification?: WatcherNotification;
+  notification?: BehaviorNotification;
   minCooldownSeconds?: number;
   tags?: string[];
-  /** LLM guidance for the watcher's downstream reaction agent. */
+  /** LLM guidance for the Behavior's downstream reaction agent. */
   reactionsGuidance?: string;
   /** Agent-kind override for firings (e.g. "background", "notifier"). */
   agentKind?: string;
   /**
    * A sibling `.ts` reaction script (`./reactions/foo.reaction.ts`) compiled +
-   * run in a sandboxed isolate when the watcher fires, built with
+   * run in a sandboxed isolate when the Behavior fires, built with
    * {@link reactionFromFile}. The script must `export default async (ctx,
    * client, params?) => …` ({@link ReactionHandler}). Kept in its own file (not
    * inline) so your IDE type-checks it; the path must stay under the config
@@ -396,8 +416,8 @@ export interface Watcher {
   reaction?: ReactionSource;
 }
 
-export function defineWatcher(config: Omit<Watcher, "kind">): Watcher {
-  return { ...config, kind: "watcher" };
+export function defineBehavior(config: Omit<Behavior, "kind">): Behavior {
+  return { ...config, kind: "behavior" };
 }
 
 // ---------------------------------------------------------------------------
@@ -511,8 +531,6 @@ export interface Platform {
    * `rest` (HTTP API) platform needs no config either.
    */
   config?: Record<string, string | SecretRef>;
-  /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
-  channels?: string[];
   /**
    * Hosted-bot only (a `slack`/`telegram` entry with no `config`): which
    * surfaces a `/lobu link` code may bind — a DM with the bot, or a channel.
@@ -634,7 +652,7 @@ export interface Project {
   org?: string;
   /**
    * When true, `lobu apply` deletes definitions (entity/relationship types,
-   * watchers, connector definitions) that are absent from this config —
+   * Behaviors, connector definitions) that are absent from this config —
    * INCLUDING ones created via the dashboard/API. Data, connections, auth
    * profiles, and agents are never pruned. Default false.
    */
@@ -650,7 +668,7 @@ export interface Project {
   relationships?: RelationshipType[];
   connections?: Connection[];
   authProfiles?: AuthProfile[];
-  watchers?: Watcher[];
+  behaviors?: Behavior[];
   /**
    * Org-owned inference providers (`[[providers]]`). Reconciled by `lobu apply`
    * against the org's `/inference-providers` API. NOT pruned: a provider absent

@@ -589,6 +589,104 @@ async function markGithubFeedDue(params: {
 }
 
 /**
+ * OAuth/PAT GitHub connection path: mark the single connection's matching feed
+ * due. Same poll-canonical contract as {@link markGithubFeedDue}, but keyed by
+ * connection id rather than app installation_ref.
+ */
+async function markGithubFeedDueForConnection(params: {
+	sql: DbClient;
+	connectorKey: string;
+	connectionId: number;
+	organizationId: string;
+	repo: { owner: string; name: string };
+	feedKey: string;
+}): Promise<boolean> {
+	const { sql, connectorKey, connectionId, organizationId, repo, feedKey } =
+		params;
+	const rows = await sql`
+		UPDATE feeds f
+		SET next_run_at = now(), updated_at = now()
+		FROM connections c
+		WHERE f.connection_id = c.id
+		  AND c.id = ${connectionId}
+		  AND c.organization_id = ${organizationId}
+		  AND c.connector_key = ${connectorKey}
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
+		  AND f.feed_key = ${feedKey}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		RETURNING f.id
+	`;
+	return rows.length > 0;
+}
+
+/**
+ * Poll-canonical handling for a GitHub connector connection webhook
+ * (`POST /api/v1/webhooks/:connectionId` after the OAuth/PAT bridge).
+ * TRIGGER events mark the feed due so the next CheckDueFeeds tick runs the
+ * poll and attaches behavior_signals; STORE events land structured rows under
+ * the real github connector_key. Never raw-stores under webhook:<id>.
+ */
+export async function deliverGithubConnectorConnectionWebhook(params: {
+	sql: DbClient;
+	connectionId: number;
+	organizationId: string;
+	connectorKey: string;
+	rawBody: Uint8Array;
+	headers: Headers;
+	storeWebhookEvents?: boolean;
+}): Promise<{ triggered: boolean }> {
+	const {
+		sql,
+		connectionId,
+		organizationId,
+		connectorKey,
+		rawBody,
+		headers,
+	} = params;
+	const storeWebhookEvents = params.storeWebhookEvents ?? true;
+	const event = headers.get("x-github-event");
+	if (!event) return { triggered: false };
+	const route = (await loadGithubWebhookRoutes(organizationId, connectorKey)).get(
+		event,
+	);
+	if (!route) return { triggered: false };
+	const payload = parseJson(rawBody);
+	const repo = extractGithubRepo(payload);
+	if (!repo) return { triggered: false };
+
+	if (route.mode === "store" && storeWebhookEvents) {
+		// Reuse the install-shaped store path by resolving the feed on this
+		// connection only (installation_ref match is bypassed via a synthetic
+		// install id that won't match — call connection-scoped store).
+		const stored = await storeGithubWebhookEventForConnection({
+			sql,
+			connectorKey,
+			connectionId,
+			organizationId,
+			repo,
+			event,
+			feedKey: route.feedKey,
+			payload,
+		});
+		return { triggered: stored };
+	}
+
+	const triggered = await markGithubFeedDueForConnection({
+		sql,
+		connectorKey,
+		connectionId,
+		organizationId,
+		repo,
+		feedKey: route.feedKey,
+	});
+	return { triggered };
+}
+
+/**
  * The active github feed matching (install, repo, feedKey) and its connection.
  * The store path is gated on this exactly like the trigger path
  * ({@link markGithubFeedDue}) — a repo with no such feed configured is a no-op,
@@ -659,7 +757,112 @@ async function storeGithubWebhookEvent(params: {
 	feedKey: string;
 	payload: unknown;
 }): Promise<boolean> {
-	const { sql, connectorKey, install, repo, event, feedKey, payload } = params;
+	const target = await resolveGithubFeedTarget({
+		sql: params.sql,
+		connectorKey: params.connectorKey,
+		install: params.install,
+		repo: params.repo,
+		feedKey: params.feedKey,
+	});
+	if (!target) return false;
+	return landGithubStarEvent({
+		...params,
+		organizationId: params.install.organizationId,
+		target,
+	});
+}
+
+/** Connection-scoped store for OAuth/PAT GitHub star webhooks. */
+async function storeGithubWebhookEventForConnection(params: {
+	sql: DbClient;
+	connectorKey: string;
+	connectionId: number;
+	organizationId: string;
+	repo: { owner: string; name: string };
+	event: string;
+	feedKey: string;
+	payload: unknown;
+}): Promise<boolean> {
+	const target = await resolveGithubFeedTargetForConnection(params);
+	if (!target) return false;
+	return landGithubStarEvent({
+		sql: params.sql,
+		connectorKey: params.connectorKey,
+		organizationId: params.organizationId,
+		repo: params.repo,
+		event: params.event,
+		feedKey: params.feedKey,
+		payload: params.payload,
+		target,
+	});
+}
+
+async function resolveGithubFeedTargetForConnection(params: {
+	sql: DbClient;
+	connectorKey: string;
+	connectionId: number;
+	organizationId: string;
+	repo: { owner: string; name: string };
+	feedKey: string;
+}): Promise<{
+	connectionId: number;
+	feedId: number;
+	owner: string;
+	name: string;
+} | null> {
+	const { sql, connectorKey, connectionId, organizationId, repo, feedKey } =
+		params;
+	const [row] = await sql`
+		SELECT f.id AS feed_id, f.connection_id,
+		       f.config->>'repo_owner' AS repo_owner, f.config->>'repo_name' AS repo_name
+		FROM feeds f
+		JOIN connections c ON c.id = f.connection_id
+		WHERE c.id = ${connectionId}
+		  AND c.organization_id = ${organizationId}
+		  AND c.connector_key = ${connectorKey}
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
+		  AND f.feed_key = ${feedKey}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		LIMIT 1
+	`;
+	return row
+		? {
+				connectionId: Number(row.connection_id),
+				feedId: Number(row.feed_id),
+				owner: String(row.repo_owner),
+				name: String(row.repo_name),
+			}
+		: null;
+}
+
+async function landGithubStarEvent(params: {
+	sql: DbClient;
+	connectorKey: string;
+	organizationId: string;
+	repo: { owner: string; name: string };
+	event: string;
+	feedKey: string;
+	payload: unknown;
+	target: {
+		connectionId: number;
+		feedId: number;
+		owner: string;
+		name: string;
+	};
+}): Promise<boolean> {
+	const {
+		sql,
+		connectorKey,
+		organizationId,
+		event,
+		feedKey,
+		payload,
+		target,
+	} = params;
 	const root =
 		payload && typeof payload === "object"
 			? (payload as Record<string, unknown>)
@@ -673,17 +876,6 @@ async function storeGithubWebhookEvent(params: {
 
 	const actor = extractGithubActor(payload);
 	if (!actor) return false;
-	// Gate on the configured feed (same as the trigger path) so an unconfigured
-	// repo never lands a stray event; use the feed's own connection + id, and its
-	// canonical owner/name casing so origin_id matches the poll's exactly.
-	const target = await resolveGithubFeedTarget({
-		sql,
-		connectorKey,
-		install,
-		repo,
-		feedKey,
-	});
-	if (!target) return false;
 	const { owner, name } = target;
 
 	// origin_id mirrors the connector poll path (githubUserIdentityKey + sanitizer).
@@ -701,7 +893,7 @@ async function storeGithubWebhookEvent(params: {
 	// Best-effort by design: a failure leaves the event unattributed (the poll
 	// backstop re-resolves on its next run), but we log it so it isn't invisible.
 	const resolution = await resolveGithubWebhookActor({
-		organizationId: install.organizationId,
+		organizationId,
 		connectionId: target.connectionId,
 		githubEvent: event,
 		payload,
@@ -716,7 +908,7 @@ async function storeGithubWebhookEvent(params: {
 
 	await insertEvent(
 		{
-			organizationId: install.organizationId,
+			organizationId,
 			connectorKey,
 			connectionId: target.connectionId,
 			feedKey,

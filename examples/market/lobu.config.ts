@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
@@ -452,11 +452,11 @@ const worksAt = defineRelationshipType({
   ],
 });
 
-const founderActivityTracker = defineWatcher({
+const founderActivityTracker = defineBehavior({
   agent: vcTracking,
   slug: "founder-activity-tracker",
   name: "Founder Activity Tracker",
-  schedule: "0 10 * * *",
+  triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
   notification: { priority: "normal" },
   tags: ["vc", "founders", "daily"],
   minCooldownSeconds: 600,
@@ -473,11 +473,11 @@ const founderActivityTracker = defineWatcher({
     "When a founder signals hiring activity, fundraising, or pivots, flag for the investment team.\nTrack founders going quiet as a potential concern.\nAlert on any public statements about competitors or market conditions.\n",
 });
 
-const opportunityMatcher = defineWatcher({
+const opportunityMatcher = defineBehavior({
   agent: vcTracking,
   slug: "opportunity-matcher",
   name: "Opportunity Matcher",
-  schedule: "0 */12 * * *",
+  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
   notification: { priority: "normal" },
   tags: ["vc", "matching"],
   minCooldownSeconds: 600,
@@ -526,5 +526,5 @@ export default defineConfig({
     usesTechnology,
     worksAt,
   ],
-  watchers: [founderActivityTracker, opportunityMatcher],
+  behaviors: [founderActivityTracker, opportunityMatcher],
 });

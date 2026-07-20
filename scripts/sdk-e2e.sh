@@ -13,7 +13,7 @@
 #      prune:true fixture this also guards the system-type ($member) exemption —
 #      an un-exempted prune halts every apply.
 #   2. every declared definition is created (agent, entity/relationship types,
-#      watcher).
+#      Behavior).
 #   3. `lobu chat` drives a real turn through the worker → the mock's reply.
 #   4. a stable re-apply is idempotent (0 deletes).
 #
@@ -32,6 +32,12 @@ RUN_LOG="$RUN_DIR/run.log"
 MOCK_LOG="$RUN_DIR/mock.log"
 CHAT_OUT="$RUN_DIR/chat.out"
 
+# Isolate CLI contexts, credentials, and embedded-runtime discovery from the
+# developer's real HOME. Without this, `lobu run` changes the active local
+# context and a running Owletto menubar follows the E2E gateway, contaminating
+# its fresh database with real device registrations and default Behaviors.
+export HOME="$RUN_DIR/home"
+
 # Node 22-24 is required (the worker uses isolated-vm). Prefer a Homebrew node@22
 # locally; CI provides node via actions/setup-node.
 if [ -x /opt/homebrew/opt/node@22/bin/node ] && ! node --version 2>/dev/null | grep -qE '^v(22|23|24)\.'; then
@@ -49,7 +55,7 @@ trap cleanup EXIT
 fail() { echo "❌ SDK e2e FAILED: $*" >&2; [ -f "$RUN_LOG" ] && { echo "--- last 40 lines of run.log ---" >&2; tail -40 "$RUN_LOG" >&2; }; exit 1; }
 
 echo "▶ node $(node --version), gateway :$GW_PORT, mock :$MOCK_PORT"
-rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR" "$HOME"
 cleanup  # free ports from any prior run
 
 # 0) Make embedded Postgres self-contained on Linux. The @embedded-postgres PG18
@@ -88,7 +94,7 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { connectorFromFile, defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, reactionFromFile, secret } from "@lobu/cli/config";
+import { connectorFromFile, defineAgent, defineBehavior, defineConfig, defineConnection, defineEntityType, defineRelationshipType, reactionFromFile, secret } from "@lobu/cli/config";
 import type PulseConnector from "./connectors/pulse.connector.ts";
 import type digestReaction from "./reactions/digest.reaction.ts";
 
@@ -132,7 +138,7 @@ const pulseConn = defineConnection({
 // window. The gate drives read_knowledge → complete_window deterministically
 // (the agentic LLM turn never produces the complete_window tool-call against a
 // fixed-reply mock) and asserts the reaction's side effect.
-const digest = defineWatcher({
+const digest = defineBehavior({
   slug: "digest", agent, name: "Digest", prompt: "summarize",
   // No inline extraction schema — the reaction OWNS the contract via its exported
   // `input`, which set_reaction_script extracts and surfaces to the worker.
@@ -145,7 +151,7 @@ const digest = defineWatcher({
 
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], watchers: [digest] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], behaviors: [digest] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one
@@ -196,7 +202,7 @@ export default class PulseConnector extends ConnectorRuntime<Checkpoint> {
 }
 TS
 
-# Watcher reaction: writes a deterministic, assertable knowledge event when the
+# Behavior reaction: writes a deterministic, assertable knowledge event when the
 # window completes. Kept in its own file so the SDK type-checks it.
 mkdir -p "$PROJ/reactions"
 cat > "$PROJ/reactions/digest.reaction.ts" <<'TS'
@@ -221,7 +227,7 @@ export default async (ctx: ReactionContext, client: ReactionClient): Promise<voi
     content: data.s,
     semantic_type: "summary",
     metadata: {
-      watcher_slug: ctx.watcher.slug,
+      behavior_slug: ctx.behavior.slug,
       window_id: ctx.window.id,
       content_analyzed: ctx.window.content_analyzed,
     },
@@ -280,7 +286,7 @@ grep -qiE "Apply halted" "$RUN_LOG" && fail "apply halted on a failure"
 echo "✓ lobu run auto-applied the project (Apply complete)"
 
 # 2b) Every declared definition created.
-for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ watcher digest"; do
+for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ behavior digest"; do
   grep -qF "$marker" "$RUN_LOG" || fail "expected created definition not in plan: '$marker'"
 done
 # System $member must be ignorable drift, never a delete row (the prune-halt bug).
@@ -584,11 +590,11 @@ echo "✓ connector sync ran the compiled connector and emitted events (items=$R
 #    deterministically drive read_knowledge → complete_window so the reaction
 #    fires regardless of the fixed-reply mock (the agentic turn would never
 #    produce a complete_window tool-call). The reaction saves SDKE2E_REACTION_OK.
-WATCHERS="$RUN_DIR/watchers.json"
-api list_watchers '{}' > "$WATCHERS" 2>/dev/null || fail "could not list watchers"
-WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.watchers||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$WATCHERS")"
-[ -n "$WATCHER_ID" ] || { cat "$WATCHERS" >&2; fail "no 'digest' watcher found after apply"; }
-echo "✓ apply created the digest watcher (id=$WATCHER_ID)"
+BEHAVIORS="$RUN_DIR/behaviors.json"
+api manage_behaviors '{"action":"list"}' > "$BEHAVIORS" 2>/dev/null || fail "could not list Behaviors"
+WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="digest")||arr[0];const id=w?(w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
+[ -n "$WATCHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'digest' Behavior found after apply"; }
+echo "✓ apply created the digest Behavior (id=$WATCHER_ID)"
 
 # Declarative rendering config: the `company` type's event_kinds + view template
 # must have applied. event_kinds rides manage_entity_schema; the view template is
@@ -615,7 +621,7 @@ echo "✓ apply set entity-type view template (company default v$VT_V1)"
 # token (the regression this guards — a missing `lobu-internal` client fails
 # every watcher run), and that a watcher worker session actually started.
 TW="$RUN_DIR/trigger-watcher.json"
-api manage_watchers "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
+api manage_behaviors "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
   || { cat "$TW" >&2; fail "watcher trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "watcher trigger did not dispatch a run (no run_id)"; }
@@ -641,7 +647,7 @@ WINDOW_TOKEN="$(jget window_token < "$RK")"
 [ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 
 CW="$RUN_DIR/complete-window.json"
-api manage_watchers "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",watcher_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
+api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",watcher_id:w,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$WATCHER_ID")" > "$CW" 2>/dev/null \
   || { cat "$CW" >&2; fail "complete_window failed"; }
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 

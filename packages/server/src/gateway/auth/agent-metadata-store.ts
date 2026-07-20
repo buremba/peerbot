@@ -60,8 +60,9 @@ export class AgentMetadataStore {
   }
 
   /**
-   * Delete agent metadata. The underlying delete cascades to dependent rows
-   * (channel bindings, grants, etc.) via FK constraints.
+   * Delete agent metadata. DB triggers on `agents` clean up dependent rows:
+   * write-gate policy rows (20260710140000) and the agent's active Behaviors
+   * (20260719121000, archived — chat routing must stop resolving the agent).
    */
   async deleteAgent(agentId: string): Promise<void> {
     await this.configStore.deleteMetadata(agentId);

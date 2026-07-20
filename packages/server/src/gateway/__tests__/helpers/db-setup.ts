@@ -105,8 +105,8 @@ export async function resetTestDatabase(): Promise<void> {
 
 /**
  * Convenience for tests that need an org_id present in `organizations` and
- * a row in `agents` so the FK-constrained tables (agent_users,
- * agent_channel_bindings, grants, etc.) accept inserts.
+ * a row in `agents` so the FK-constrained tables (agent_users, watchers,
+ * grants, etc.) accept inserts.
  *
  * Returns the org_id used; defaults to "test-org".
  */

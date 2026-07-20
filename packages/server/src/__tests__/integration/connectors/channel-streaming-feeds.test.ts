@@ -7,8 +7,8 @@
  *      NULL), is idempotent, and soft-deletes cleanly.
  *   2. the sync scheduler (check-due-feeds) never queues a streaming feed, even
  *      with next_run_at in the past — kind is the discriminator.
- *   3. ChannelBindingService.createBinding materializes the channel's feed under
- *      the bound connection; deleteBinding soft-deletes it.
+ *   3. A chat-link Behavior materializes the channel's feed under its
+ *      connection; archiving it soft-deletes the feed.
  *   4. manage_feeds read_feed dispatches on kind: a streaming feed returns its
  *      channel transcript, a collected feed returns metadata + recent runs.
  *   5. facet derivation: a chat-only connection whose channels are streaming
@@ -23,7 +23,7 @@ import {
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../../authz/access-graph";
 import { getDb } from "../../../db/client";
-import { ChannelBindingService } from "../../../gateway/channels/binding-service";
+import { BehaviorSubscriptionService } from "../../../gateway/channels/behavior-subscription-service";
 import {
   ensureStreamingChannelFeed,
   softDeleteStreamingChannelFeed,
@@ -39,7 +39,7 @@ import { TestWorkspace } from "../../setup/test-mcp-client";
 let chatConnectionSeq = 0;
 
 /** Stamp the Stage-2a chat marker + provider tenant on a connection so it reads
- *  as a live bot adapter and createBinding can resolve it as the serving conn. */
+ *  as a live bot adapter and createChatBehavior can resolve it as the serving conn. */
 async function makeChatConnection(opts: {
   orgId: string;
   teamId: string | null;
@@ -92,7 +92,7 @@ describe("channel streaming feeds", () => {
     // Clear only the feed/binding/transcript state between cases; keep the org +
     // role fixtures (TestWorkspace) so the typed clients stay valid.
     await sql`DELETE FROM channel_messages WHERE organization_id = ${orgId}`;
-    await sql`DELETE FROM agent_channel_bindings WHERE organization_id = ${orgId}`;
+    await sql`DELETE FROM watchers WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM feeds WHERE organization_id = ${orgId}`;
     await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
     // ACL/graph state the membership-gate test materializes.
@@ -176,14 +176,14 @@ describe("channel streaming feeds", () => {
     expect(result.runsCreated).toBe(0);
   });
 
-  it("createBinding materializes the channel feed; deleteBinding soft-deletes it", async () => {
+  it("createChatBehavior materializes the channel feed; archiveChatBehavior soft-deletes it", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    const svc = new ChannelBindingService();
+    const svc = new BehaviorSubscriptionService();
     const { agentId } = await createTestAgent({ organizationId: orgId });
 
-    await svc.createBinding(agentId, "slack", "slack:C300", "TACME", {
+    await svc.createChatBehavior(agentId, "slack", "slack:C300", "TACME", {
       organizationId: orgId,
-      connectionId: String(conn.id),
+      connectionId: Number(conn.id),
     });
 
     const sql = getDb();
@@ -196,10 +196,10 @@ describe("channel streaming feeds", () => {
     expect(bound[0]?.feed_key).toBe("slack:C300");
     expect(Number(bound[0]?.connection_id)).toBe(conn.id);
 
-    const deleted = await svc.deleteBinding(
+    const deleted = await svc.archiveChatBehavior(
       agentId,
       "slack:C300",
-      String(conn.id),
+      Number(conn.id),
       orgId
     );
     expect(deleted).toBe(true);
@@ -208,6 +208,54 @@ describe("channel streaming feeds", () => {
       WHERE organization_id = ${orgId} AND deleted_at IS NULL
     `;
     expect(Number(after[0]?.n)).toBe(0);
+  });
+
+  it("create_version reconciles streaming feeds when message triggers change", async () => {
+    const conn = await makeChatConnection({ orgId, teamId: "TACME" });
+    const { agentId } = await createTestAgent({ organizationId: orgId });
+    const created = (await workspace.owner.behaviors.create({
+      slug: "versioned-channel-feed",
+      prompt: "Respond to channel messages.",
+      agent_id: agentId,
+      triggers: [],
+    })) as { watcher_id: string };
+    const messageTrigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: conn.id,
+      event_types: ["message.created"],
+      match: { channel_id: "C350" },
+      execution: "turn" as const,
+      active_run: "steer" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+
+    await workspace.owner.behaviors.createVersion({
+      watcher_id: created.watcher_id,
+      triggers: [messageTrigger],
+    });
+
+    const sql = getDb();
+    const active = await sql`
+      SELECT feed_key, deleted_at FROM feeds
+      WHERE organization_id = ${orgId} AND connection_id = ${conn.id}
+    `;
+    expect(active).toHaveLength(1);
+    expect(active[0]?.feed_key).toBe("slack:C350");
+    expect(active[0]?.deleted_at).toBeNull();
+
+    await workspace.owner.behaviors.createVersion({
+      watcher_id: created.watcher_id,
+      triggers: [],
+    });
+
+    const [removed] = await sql`
+      SELECT deleted_at FROM feeds
+      WHERE organization_id = ${orgId} AND connection_id = ${conn.id}
+        AND feed_key = 'slack:C350'
+    `;
+    expect(removed.deleted_at).not.toBeNull();
   });
 
   it("read_feed returns a streaming feed's transcript (kind dispatch)", async () => {
@@ -309,18 +357,18 @@ describe("channel streaming feeds", () => {
     expect(res.feed?.id).toBe(feedRow[0].id);
   });
 
-  it("deleteAllBindings soft-deletes each unbound channel's streaming feed", async () => {
+  it("archiveAllChatBehaviors soft-deletes each unbound channel's streaming feed", async () => {
     const conn = await makeChatConnection({ orgId, teamId: "TACME" });
-    const svc = new ChannelBindingService();
+    const svc = new BehaviorSubscriptionService();
     const { agentId } = await createTestAgent({ organizationId: orgId });
 
-    await svc.createBinding(agentId, "slack", "slack:C700", "TACME", {
+    await svc.createChatBehavior(agentId, "slack", "slack:C700", "TACME", {
       organizationId: orgId,
-      connectionId: String(conn.id),
+			connectionId: Number(conn.id),
     });
-    await svc.createBinding(agentId, "slack", "slack:C701", "TACME", {
+    await svc.createChatBehavior(agentId, "slack", "slack:C701", "TACME", {
       organizationId: orgId,
-      connectionId: String(conn.id),
+			connectionId: Number(conn.id),
     });
 
     const sql = getDb();
@@ -330,7 +378,7 @@ describe("channel streaming feeds", () => {
     `;
     expect(Number(before[0]?.n)).toBe(2);
 
-    const removed = await svc.deleteAllBindings(agentId, orgId);
+    const removed = await svc.archiveAllChatBehaviors(agentId, orgId);
     expect(removed).toBe(2);
 
     // Both streaming feeds are retired — no live orphan feed left behind.

@@ -56,7 +56,7 @@ async function buildReplica() {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-		getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
+		getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 

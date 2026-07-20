@@ -1,12 +1,11 @@
 import type { Env } from "../../index";
+import type { ListCatalogArgs } from "@lobu/core/contracts/tools/manage-catalog";
 import { manageCatalog } from "../../tools/admin/manage_catalog";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
 export interface CatalogNamespace {
-	listCatalog(input?: {
-		kinds?: Array<"connectors" | "skills" | "watchers">;
-	}): Promise<unknown>;
+	listCatalog(input?: Omit<ListCatalogArgs, "action">): Promise<unknown>;
 	listInstalled(input?: {
 		kinds?: string[];
 		agent_id?: string;
@@ -15,7 +14,7 @@ export interface CatalogNamespace {
 
 export function buildCatalogNamespace(
 	ctx: ToolContext,
-	env: Env,
+	env: Env
 ): CatalogNamespace {
 	const { action } = createActionCaller(manageCatalog, env, ctx, "catalog");
 

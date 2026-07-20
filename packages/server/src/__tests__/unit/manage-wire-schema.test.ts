@@ -99,8 +99,8 @@ describe("manage_* wire schema: action discoverability", () => {
 				for (const name of action.enum) {
 					// Generated lines look like `- name: prose. Required: ...`.
 					// A bare `- name` (no colon) means the variant lacks a
-					// per-action description. Anchor the match so `list` can't
-					// hit the `- list_channel_bindings:` line and false-pass.
+					// per-action description. Anchor the match so a short action
+					// name cannot match a longer action with the same prefix.
 					const line = description
 						.split("\n")
 						.find((l) => l === `- ${name}` || l.startsWith(`- ${name}:`) || l.startsWith(`- ${name} `));
@@ -258,15 +258,4 @@ describe("manage_connections: per-action required fields surface on the wire", (
 		expect(line?.includes("connector_key")).toBe(true);
 	});
 
-	it("bind_channel names agent_id, connection_id, channel_id as required", () => {
-		const line = description
-			.split("\n")
-			.find((l) => l.startsWith("- bind_channel:"));
-		expect(line).toBeDefined();
-		for (const f of ["agent_id", "connection_id", "channel_id"]) {
-			expect(line?.includes(f), `bind_channel required line missing ${f}`).toBe(
-				true,
-			);
-		}
-	});
 });

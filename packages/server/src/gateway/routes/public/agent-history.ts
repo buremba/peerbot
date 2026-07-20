@@ -45,7 +45,7 @@ import { verifySettingsSession } from "./settings-auth.js";
  */
 export async function readLatestSnapshotJsonl(
 	agentId: string,
-	organizationId: string | undefined,
+	organizationId: string | undefined
 ): Promise<string | null> {
 	if (!organizationId) return null;
 	const sql = getDb();
@@ -97,7 +97,7 @@ type HistoryInteraction =
  */
 async function readLatestAgentErrorInteraction(
 	organizationId: string,
-	conversationId: string,
+	conversationId: string
 ): Promise<AgentErrorHistoryInteraction | null> {
 	try {
 		const rows = await getDb()<{
@@ -190,16 +190,16 @@ const TOKENLESS_FILE_REF =
 export function resignFileRefs(
 	content: unknown,
 	artifactStore: ArtifactStore,
-	publicGatewayUrl: string,
+	publicGatewayUrl: string
 ): unknown {
 	if (typeof content === "string") {
 		return content.replace(TOKENLESS_FILE_REF, (_match, artifactId: string) =>
-			artifactStore.buildDownloadUrl(publicGatewayUrl, artifactId),
+			artifactStore.buildDownloadUrl(publicGatewayUrl, artifactId)
 		);
 	}
 	if (Array.isArray(content)) {
 		return content.map((entry) =>
-			resignFileRefs(entry, artifactStore, publicGatewayUrl),
+			resignFileRefs(entry, artifactStore, publicGatewayUrl)
 		);
 	}
 	if (content && typeof content === "object") {
@@ -240,7 +240,7 @@ async function findSessionFile(agentId: string): Promise<string | null> {
 	try {
 		const search = async (
 			dir: string,
-			depth: number,
+			depth: number
 		): Promise<string | null> => {
 			if (depth > 3) return null;
 			const entries = await readdir(dir, { withFileTypes: true });
@@ -269,11 +269,11 @@ async function readSessionMessages(
 	agentId: string,
 	cursorParam: string,
 	limit: number,
-	organizationId: string | undefined,
+	organizationId: string | undefined
 ) {
 	let content: string | null = await readLatestSnapshotJsonl(
 		agentId,
-		organizationId,
+		organizationId
 	);
 	if (content === null) {
 		const sessionPath = await findSessionFile(agentId);
@@ -315,11 +315,11 @@ async function readSessionMessages(
 
 async function readSessionStats(
 	agentId: string,
-	organizationId: string | undefined,
+	organizationId: string | undefined
 ) {
 	let content: string | null = await readLatestSnapshotJsonl(
 		agentId,
-		organizationId,
+		organizationId
 	);
 	if (content === null) {
 		const sessionPath = await findSessionFile(agentId);
@@ -409,7 +409,7 @@ export function createAgentHistoryRoutes(deps: {
 	}
 
 	async function resolveActiveAgent(
-		agentId: string,
+		agentId: string
 	): Promise<{ connected: boolean; resolvedAgentId: string }> {
 		if (
 			connectionManager &&
@@ -423,7 +423,7 @@ export function createAgentHistoryRoutes(deps: {
 	async function proxyOrFallback<T>(
 		agentId: string,
 		workerPath: string,
-		fallback: (agentId: string) => Promise<T>,
+		fallback: (agentId: string) => Promise<T>
 	): Promise<{ data: T; proxied: boolean } | null> {
 		const { resolvedAgentId } = await resolveActiveAgent(agentId);
 		const httpUrl = connectionManager?.getHttpUrl(resolvedAgentId);
@@ -500,10 +500,10 @@ export function createAgentHistoryRoutes(deps: {
 							content: resignFileRefs(
 								message.content,
 								artifactStore,
-								publicGatewayUrl,
+								publicGatewayUrl
 							),
 						}
-					: message,
+					: message
 			);
 		}
 
@@ -556,14 +556,14 @@ export function createAgentHistoryRoutes(deps: {
 			interactions = rows.map((r) => {
 				const resourceKind =
 					r.resource_kind ??
-					(r.tool === "manage_watchers"
+					(r.tool === "manage_behaviors"
 						? "watcher"
 						: r.tool === "manage_agents"
 							? "agent"
 							: r.tool === "entity_field_change" || r.tool === "entity_change"
 								? "entity"
 								: null);
-				// manage_watchers stores proposal as `{ args }`; SPA expects flat fields.
+				// manage_behaviors stores proposal as `{ args }`; SPA expects flat fields.
 				const rawProposal = r.proposal ?? null;
 				const proposal =
 					resourceKind === "watcher" &&
@@ -588,7 +588,7 @@ export function createAgentHistoryRoutes(deps: {
 			});
 			const errorInteraction = await readLatestAgentErrorInteraction(
 				scope.organizationId,
-				conversationId,
+				conversationId
 			);
 			if (errorInteraction) interactions.push(errorInteraction);
 		}
@@ -603,7 +603,7 @@ export function createAgentHistoryRoutes(deps: {
 		if (!scope.organizationId) return c.json({ messages: [] });
 
 		const conversationId = decodeURIComponent(
-			c.req.param("conversationId") || "",
+			c.req.param("conversationId") || ""
 		);
 		// Platform conversation ids are `{platform}:{...}` — alnum/._:- only.
 		if (!conversationId || !/^[a-zA-Z0-9._:-]+$/.test(conversationId)) {
@@ -641,10 +641,10 @@ export function createAgentHistoryRoutes(deps: {
 							content: resignFileRefs(
 								message.content,
 								artifactStore,
-								publicGatewayUrl,
+								publicGatewayUrl
 							),
 						}
-					: message,
+					: message
 			);
 		}
 		return c.json(data);
@@ -654,7 +654,7 @@ export function createAgentHistoryRoutes(deps: {
 	// read-only run history rendered as one conversation. Watcher conversation
 	// ids are org-less but the snapshot row carries the org; the service bridges
 	// that, so we just hand it the requester's resolved org.
-	app.get("/watchers/:watcherId/thread", async (c) => {
+	app.get("/behaviors/:watcherId/thread", async (c) => {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 		if (!scope.organizationId) return c.json({ runs: [] });
@@ -680,10 +680,10 @@ export function createAgentHistoryRoutes(deps: {
 								content: resignFileRefs(
 									message.content,
 									artifactStore,
-									publicGatewayUrl,
+									publicGatewayUrl
 								),
 							}
-						: message,
+						: message
 				);
 			}
 		}
@@ -695,7 +695,7 @@ export function createAgentHistoryRoutes(deps: {
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 
 		const { connected, resolvedAgentId } = await resolveActiveAgent(
-			scope.agentId,
+			scope.agentId
 		);
 
 		let hasSessionFile =
@@ -725,7 +725,7 @@ export function createAgentHistoryRoutes(deps: {
 			scope.agentId,
 			`/session/messages?cursor=${cursor}&limit=${limit}`,
 			(resolved) =>
-				readSessionMessages(resolved, cursor, limit, scope.organizationId),
+				readSessionMessages(resolved, cursor, limit, scope.organizationId)
 		);
 
 		if (!result) {
@@ -737,7 +737,7 @@ export function createAgentHistoryRoutes(deps: {
 					nextCursor: null,
 					hasMore: false,
 				},
-				503,
+				503
 			);
 		}
 
@@ -751,7 +751,7 @@ export function createAgentHistoryRoutes(deps: {
 		const result = await proxyOrFallback(
 			scope.agentId,
 			"/session/stats",
-			(resolved) => readSessionStats(resolved, scope.organizationId),
+			(resolved) => readSessionStats(resolved, scope.organizationId)
 		);
 
 		if (!result) {

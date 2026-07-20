@@ -4,7 +4,7 @@
  * Extracted from manage_operations so dispatch-chrome-action can await device
  * completion without importing the full manage_operations module (breaks a
  * circular init cycle: manage_operations → dispatch-chrome-action →
- * manage_operations that left MANAGE_WATCHERS_ACTION_KEY / manageWatchers in
+ * manage_operations that left MANAGE_BEHAVIORS_ACTION_KEY / manageBehaviors in
  * TDZ and red-failed CI unit on main).
  */
 

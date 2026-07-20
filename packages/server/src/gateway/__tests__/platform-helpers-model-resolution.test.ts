@@ -152,7 +152,7 @@ describe("resolveAgentId", () => {
 
   test("existing binding wins over connection agent", async () => {
     const bindingService = {
-			getBindingForConnection: async (
+			resolveForConnection: async (
 				connectionId: string,
         channelId: string,
 				organizationId: string,
@@ -171,18 +171,18 @@ describe("resolveAgentId", () => {
       agentId: "connection-agent",
 			connectionId: "conn-1",
 			organizationId: "org-1",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
       agentId: "bound-agent",
-      source: "binding",
+      source: "subscription",
     });
   });
 
   test("per-binding model override propagates from the binding (Listen behavior)", async () => {
     const bindingService = {
-      getBindingForConnection: async (
+      resolveForConnection: async (
         _connectionId: string,
         channelId: string,
       ) => ({
@@ -200,12 +200,12 @@ describe("resolveAgentId", () => {
       agentId: "connection-agent",
       connectionId: "conn-1",
       organizationId: "org-1",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
       agentId: "bound-agent",
-      source: "binding",
+      source: "subscription",
       organizationId: "org-1",
       model: "openai/gpt-5",
     });
@@ -213,7 +213,7 @@ describe("resolveAgentId", () => {
 
   test("no binding + agentId routes to connection agent", async () => {
     const bindingService = {
-			getBindingForConnection: async () => null,
+			resolveForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
@@ -221,7 +221,7 @@ describe("resolveAgentId", () => {
       channelId: "C1",
       teamId: "T1",
       agentId: "connection-agent",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -232,14 +232,14 @@ describe("resolveAgentId", () => {
 
   test("no binding + no connection agent returns null", async () => {
     const bindingService = {
-			getBindingForConnection: async () => null,
+			resolveForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
       platform: "slack",
       channelId: "C1",
       teamId: "T1",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toBeNull();
@@ -247,14 +247,14 @@ describe("resolveAgentId", () => {
 
   test("connection agent works on platforms without teamId (Telegram)", async () => {
     const bindingService = {
-			getBindingForConnection: async () => null,
+			resolveForConnection: async () => null,
     };
 
     const resolved = await resolveAgentId({
       platform: "telegram",
       channelId: "12345",
       agentId: "my-tg-agent",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     expect(resolved).toEqual({
@@ -266,8 +266,8 @@ describe("resolveAgentId", () => {
   test("resolver does NOT write bindings — pure side-effect-free", async () => {
     let createCount = 0;
     const bindingService = {
-			getBindingForConnection: async () => null,
-      createBinding: async () => {
+			resolveForConnection: async () => null,
+      createChatBehavior: async () => {
         createCount += 1;
       },
     };
@@ -277,7 +277,7 @@ describe("resolveAgentId", () => {
       channelId: "C1",
       teamId: "T1",
       agentId: "connection-agent",
-      channelBindingService: bindingService as any,
+      behaviorSubscriptionService: bindingService as any,
     });
 
     // Bridge owns the auto-bind side effect, not the resolver.

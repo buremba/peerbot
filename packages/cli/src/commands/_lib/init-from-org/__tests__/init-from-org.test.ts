@@ -4,7 +4,7 @@
  * The canonical gate: bootstrap a project from stubbed cloud state, then load
  * the generated `lobu.config.ts` back through `loadDesiredStateFromConfig` and
  * assert the resulting DesiredState matches the stubbed cloud input
- * (entities/relationships/watchers/connections/authProfiles/agents), modulo
+ * (entities/relationships/behaviors/connections/authProfiles/agents), modulo
  * write-only secret values (placeholders) and `installedAt` timestamps.
  *
  * Network is stubbed through an injected fetch impl returning the canned
@@ -106,15 +106,15 @@ function fullOrgRoutes(): Record<string, () => unknown> {
         { agentId: "sales", name: "Sales", description: "Revenue agent" },
       ],
     }),
-    "watchers?watcher_id": () => ({
-      watcher: {
+    "behaviors?watcher_id": () => ({
+      behavior: {
         reaction_script:
           "export default async (ctx, client) => {\n  await client.knowledge.save({ content: 'ok', semantic_type: 'digest' });\n};\n",
         description: null,
       },
     }),
-    "watchers?include_details": () => ({
-      watchers: [
+    "behaviors?include_details": () => ({
+      behaviors: [
         {
           slug: "account-health",
           watcher_id: "1",
@@ -122,6 +122,24 @@ function fullOrgRoutes(): Record<string, () => unknown> {
           agent_id: "sales",
           prompt: "Poll CRM data.",
           schedule: "0 */12 * * *",
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "github",
+              connection_id: 7,
+              event_types: ["pull_request.created"],
+              execution: "turn",
+              active_run: "queue",
+              output: "silent",
+            },
+            {
+              kind: "schedule",
+              cron: "0 */12 * * *",
+              execution: "window",
+              active_run: "coalesce",
+              skip_if_unchanged: true,
+            },
+          ],
           sources: [{ name: "content", query: "SELECT * FROM events" }],
           tags: ["sales", "health"],
           notification_channel: "both",
@@ -307,7 +325,20 @@ describe("lobu init --from-org", () => {
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
     expect(w?.prompt).toBe("Poll CRM data.");
-    expect(w?.schedule).toBe("0 */12 * * *");
+    expect(w?.triggers?.[0]).toMatchObject({
+      kind: "event",
+      connector_key: "github",
+      connectionSlug: "github-lobu",
+      event_types: ["pull_request.created"],
+    });
+    expect(w?.triggers?.[0]).not.toHaveProperty("connection_id");
+    expect(w?.triggers?.[1]).toMatchObject({
+      kind: "schedule",
+      cron: "0 */12 * * *",
+      execution: "window",
+      active_run: "coalesce",
+      skip_if_unchanged: true,
+    });
     // No keyingConfig means this round-trips as an untyped watcher that uses
     // the worker's free-form `{ summary }` fallback.
     expect(w?.keyingConfig).toBeUndefined();
@@ -385,7 +416,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -418,7 +449,7 @@ describe("lobu init --from-org", () => {
           updatedAt: 0,
         }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -451,7 +482,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -543,7 +574,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/bot/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -599,7 +630,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/bot/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -636,7 +667,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -705,7 +736,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: () => ({
           entity_types: [],
           relationship_types: [],
@@ -802,7 +833,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         // The REAL server `list` action omits rules (only `list_rules` returns
         // them). Branch on the action so this mirrors production: list → no
         // rules; list_rules → the rule rows in the server's snake_case shape.
@@ -860,7 +891,7 @@ describe("lobu init --from-org", () => {
         }),
         "/agents/lone/config": () => ({ updatedAt: 0 }),
         "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
+        "behaviors?include_details": () => ({ behaviors: [] }),
         manage_entity_schema: (body) => {
           if (body.action === "list_rules") {
             // The owned cross-org rel type binds an owned type to a NON-owned

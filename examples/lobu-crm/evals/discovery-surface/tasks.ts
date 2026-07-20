@@ -262,9 +262,9 @@ export const TASKS: EvalTask[] = [
     },
   },
 
-  // 6 — create a watcher over a feed.
+  // 6 — create a Behavior over a feed.
   {
-    id: "create-watcher",
+    id: "create-behavior",
     tier: "admin",
     title: "Watch a feed and notify on a condition",
     seed: async (org) => {
@@ -285,8 +285,8 @@ export const TASKS: EvalTask[] = [
           SELECT count(*)::int AS n FROM watchers
           WHERE organization_id = ${org.org.id} AND status = 'active'`
       );
-      if (n === 0) return { pass: false, detail: "no watcher created" };
-      return { pass: true, detail: `${n} active watcher(s)` };
+      if (n === 0) return { pass: false, detail: "no Behavior created" };
+      return { pass: true, detail: `${n} active Behavior(s)` };
     },
   },
 

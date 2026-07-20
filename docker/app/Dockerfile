@@ -140,15 +140,13 @@ FROM node:22-slim AS runtime
 
 WORKDIR /app
 
-# curl for health checks, dbmate for migrations, bun for tsx-equivalent, Chromium deps for connectors
+# curl for health checks, bun for tsx-equivalent, Chromium deps for connectors
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates unzip \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
       libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
       libgbm1 libpango-1.0-0 libcairo2 libasound2 libwayland-client0 \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/amacneil/dbmate/releases/download/v2.22.0/dbmate-linux-amd64 -o /usr/local/bin/dbmate \
-    && chmod +x /usr/local/bin/dbmate \
     && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
     && chmod +x /usr/local/bin/bun
 
@@ -175,8 +173,9 @@ COPY --from=builder /app/packages/connector-worker ./packages/connector-worker
 COPY --from=builder /app/packages/server ./packages/server
 COPY --from=builder /app/packages/owletto ./packages/owletto
 
-# Database migrations
+# Database migrations (+ statement-at-a-time runner for transaction:false)
 COPY db/migrations ./db/migrations
+COPY scripts/migrate-up.mjs ./scripts/migrate-up.mjs
 
 # Install Playwright/patchright Chromium for browser-based connectors.
 # PLAYWRIGHT_BROWSERS_PATH pins both the install target and the runtime lookup to

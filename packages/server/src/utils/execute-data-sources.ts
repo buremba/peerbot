@@ -843,6 +843,8 @@ export async function executeDataSources(
       params: unknown[],
       sourceName: string
     ) => string | { sql: string; params: unknown[] };
+    /** Fail the whole read when any source fails instead of treating it as empty. */
+    throwOnError?: boolean;
   }
 ): Promise<Record<string, unknown[]>> {
   const results: Record<string, unknown[]> = {};
@@ -910,6 +912,9 @@ export async function executeDataSources(
 
         results[name] = Array.isArray(rows) ? rows.slice(0, MAX_ROWS) : [];
       } catch (err) {
+		if (options?.throwOnError) {
+			throw new Error(`Data source '${name}' failed: ${getErrorMessage(err)}`);
+		}
         logger.warn(
           { error: getErrorMessage(err), dataSource: name },
           'Data source execution failed'

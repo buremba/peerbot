@@ -9,7 +9,11 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import postgres from 'postgres';
 import { PROD_PG_VALUE_OPTIONS } from '../../db/client';
-import { listMigrationFiles, loadMigrationUpSection } from '../../db/migration-loader';
+import {
+  executeMigrationSection,
+  listMigrationFiles,
+  loadMigrationUp,
+} from '../../db/migration-loader';
 import { clearInMemoryMcpSessionsForTests } from '../../mcp-session-state';
 import { clearMultiTenantCachesForTests } from '../../workspace/multi-tenant-caches';
 import { clearMcpSessions } from './mcp-session-cache';
@@ -170,21 +174,22 @@ export async function setupTestDatabase(): Promise<void> {
 
     await ensureSeedUserIfPossible(db);
 
-    let normalizedUpSection = loadMigrationUpSection(migrationsDir, file);
-
+    const loaded = loadMigrationUp(migrationsDir, file);
     // When the connection user doesn't own schema `public` (PG15+ fresh
     // `createdb` where the postgres superuser still owns it), the baseline's
     // cosmetic `COMMENT ON SCHEMA public` / `COMMENT ON EXTENSION ...` lines
     // throw `must be owner of schema/extension`. These comments carry no
     // functional weight for tests, so drop them rather than require the test
     // role to be the schema owner.
-    if (!ownsPublicSchema) {
-      normalizedUpSection = stripOwnerOnlyComments(normalizedUpSection);
-    }
+    const up = ownsPublicSchema
+      ? loaded
+      : { ...loaded, sql: stripOwnerOnlyComments(loaded.sql) };
 
-    if (normalizedUpSection) {
+    if (up.sql) {
       try {
-        await db.unsafe(normalizedUpSection);
+        // transaction:false sections (CONCURRENTLY + heal DO) must run
+        // statement-at-a-time — see migration-loader.executeMigrationSection.
+        await executeMigrationSection((statement) => db.unsafe(statement), up);
       } catch (err) {
         console.error(`Migration failed for ${file}:`, err);
         throw err;
@@ -417,8 +422,8 @@ const TRUNCATE_DEADLOCK_RETRIES = 8;
  *     time, in the order they appear in the list (≈ pg_class order).
  *   - A concurrent `INSERT` into a child table grabs `RowExclusiveLock` on the
  *     child, then needs a `RowShareLock` on each FK-referenced PARENT to
- *     validate the foreign key (`agent_connections → organization/agents`,
- *     and since #1604 `agent_channel_bindings → connections`).
+ *     validate foreign keys (for example
+ *     `agent_connections → organization/agents`).
  *   - If TRUNCATE has already locked the parent and the INSERT already holds the
  *     child, each waits on a lock the other holds → `40P01 deadlock detected`.
  *     Postgres aborts one victim; when the victim is OUR `db.begin(…)` TRUNCATE

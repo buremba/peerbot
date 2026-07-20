@@ -6,7 +6,10 @@
 
 import type { Env } from "../index";
 import { isAdminOrOwnerRole, isSystemContext } from "../tools/access-control";
-import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from "../utils/table-schema";
+import {
+	ADMIN_ONLY_QUERYABLE_TABLES,
+	SAFE_COLUMN_DEFS,
+} from "../utils/table-schema";
 import type { ToolContext } from "../tools/registry";
 import { raceAbort } from "../utils/race-abort";
 import {
@@ -22,6 +25,7 @@ export { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 import {
 	buildAgentsNamespace,
 	buildAuthProfilesNamespace,
+	buildBehaviorsNamespace,
 	buildCatalogNamespace,
 	buildClassifiersNamespace,
 	buildConnectionsNamespace,
@@ -36,7 +40,6 @@ import {
 	buildOrganizationsNamespace,
 	buildSchedulesNamespace,
 	buildViewTemplatesNamespace,
-	buildWatchersNamespace,
 } from "./namespaces";
 import type { AgentsNamespace } from "./namespaces/agents";
 import type { AuthProfilesNamespace } from "./namespaces/auth-profiles";
@@ -54,7 +57,7 @@ import type { OperationsNamespace } from "./namespaces/operations";
 import type { OrganizationsNamespace } from "./namespaces/organizations";
 import type { ViewTemplatesNamespace } from "./namespaces/view-templates";
 import type { SchedulesNamespace } from "./namespaces/schedules";
-import type { WatchersNamespace } from "./namespaces/watchers";
+import type { BehaviorsNamespace } from "./namespaces/behaviors";
 
 export interface ClientSDK {
 	agents: AgentsNamespace;
@@ -66,7 +69,7 @@ export interface ClientSDK {
 	feeds: FeedsNamespace;
 	authProfiles: AuthProfilesNamespace;
 	operations: OperationsNamespace;
-	watchers: WatchersNamespace;
+	behaviors: BehaviorsNamespace;
 	classifiers: ClassifiersNamespace;
 	viewTemplates: ViewTemplatesNamespace;
 	knowledge: KnowledgeNamespace;
@@ -116,7 +119,7 @@ interface ResolvedOrgMembership {
 
 export async function resolveOrgMembership(
 	slugOrId: string,
-	ctx: ToolContext,
+	ctx: ToolContext
 ): Promise<ResolvedOrgMembership> {
 	let orgId: string;
 	let slug: string;
@@ -141,7 +144,7 @@ export async function resolveOrgMembership(
 
 	if (visibility === "private" && role === null) {
 		throw new AccessDeniedError(
-			`You are not a member of organization '${slug}'.`,
+			`You are not a member of organization '${slug}'.`
 		);
 	}
 
@@ -164,7 +167,7 @@ interface BuildClientSDKOptions {
 export function buildClientSDK(
 	ctx: ToolContext,
 	env: Env,
-	opts?: BuildClientSDKOptions,
+	opts?: BuildClientSDKOptions
 ): ClientSDK {
 	const mode: SDKMode = opts?.mode ?? "full";
 	const allowCrossOrg = opts?.allowCrossOrg ?? ctx.allowCrossOrg ?? false;
@@ -183,7 +186,7 @@ export function buildClientSDK(
 		feeds: buildFeedsNamespace(ctx, env),
 		authProfiles: buildAuthProfilesNamespace(ctx, env),
 		operations: buildOperationsNamespace(ctx, env),
-		watchers: buildWatchersNamespace(ctx, env),
+		behaviors: buildBehaviorsNamespace(ctx, env),
 		classifiers: buildClassifiersNamespace(ctx, env),
 		viewTemplates: buildViewTemplatesNamespace(ctx, env),
 		knowledge: buildKnowledgeNamespace(ctx, env),
@@ -213,14 +216,14 @@ export function buildClientSDK(
 		async org(slugOrId) {
 			if (!allowCrossOrg) {
 				throw new CrossOrgAccessDenied(
-					"Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace.",
+					"Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace."
 				);
 			}
 			const member = await resolveOrgMembership(slugOrId, ctx);
 			return buildClientSDK(
 				{ ...ctx, organizationId: member.orgId, memberRole: member.role },
 				env,
-				{ mode, allowCrossOrg, abortSignal: ctx.abortSignal },
+				{ mode, allowCrossOrg, abortSignal: ctx.abortSignal }
 			);
 		},
 
@@ -235,9 +238,10 @@ export function buildClientSDK(
 			const scoped = validateAndScopeQuery(querySql, ctx.organizationId, {
 				userId: ctx.userId,
 				safeColumns: isSystemContext(ctx) ? undefined : SAFE_COLUMN_DEFS,
-				restrictedTables: isSystemContext(ctx) || isAdmin
-					? undefined
-					: ADMIN_ONLY_QUERYABLE_TABLES,
+				restrictedTables:
+					isSystemContext(ctx) || isAdmin
+						? undefined
+						: ADMIN_ONLY_QUERYABLE_TABLES,
 			});
 			const rows = await raceAbort(
 				getDb().begin(async (tx) => {
@@ -245,7 +249,7 @@ export function buildClientSDK(
 					await tx.unsafe("SET LOCAL statement_timeout = '5000'");
 					return tx.unsafe(scoped.sql, scoped.params as unknown[]);
 				}),
-				ctx.abortSignal,
+				ctx.abortSignal
 			);
 			return rows.map((r: Record<string, unknown>) => ({ ...r }));
 		},

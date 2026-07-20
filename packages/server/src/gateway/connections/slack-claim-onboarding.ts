@@ -5,7 +5,7 @@
  *
  *   1. Auto-link the org's Builder agent to the installer's bot DM, so the
  *      installer can DM the bot and immediately talk to an agent — no manual
- *      channel binding required for the DM surface.
+ *      channel Event Behavior required for the DM surface.
  *   2. Fire the one-time installer welcome DM (via the coordinator's atomic
  *      `welcome_dm_sent` marker), now that the workspace is claimed AND has its
  *      first agent (the Builder) wired to a channel (the DM).
@@ -16,18 +16,18 @@
  * a failure to open the DM, resolve the token, or bind must NEVER roll back the
  * claim — the workspace is already bound and remains claimable/usable.
  *
- * Idempotency: `createBinding` upserts on (org, connection, channel), so a
+ * Idempotency: `createChatBehavior` upserts on (org, connection, channel), so a
  * repeated claim re-binds the same DM harmlessly; the welcome marker guarantees
  * at-most-once delivery across replicas. This lives in its own module (not the
- * coordinator) because it imports `binding-service` + `preview/slack`, and
+ * coordinator) because it imports `behavior-subscription-service` + `preview/slack`, and
  * `preview/slack` imports the coordinator — importing it there would be circular.
  */
 import { createLogger } from "@lobu/core";
 import { BUILDER_AGENT_ID, ensureBuilderAgent } from "../../auth/builder-provisioning.js";
 import { getDb } from "../../db/client.js";
 import { canonicalSlackChannelId } from "../../preview/slack.js";
-import { ChannelBindingService } from "../channels/binding-service.js";
-import { resolveBindingTeam } from "../channels/binding-scope-resolver.js";
+import { BehaviorSubscriptionService } from "../channels/behavior-subscription-service.js";
+import { resolveSubscriptionTeam } from "../channels/subscription-scope-resolver.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import {
   resolveSecretValue,
@@ -47,7 +47,7 @@ const logger = createLogger("slack-claim-onboarding");
 async function resolveClaimedConnection(
   organizationId: string,
   teamId: string,
-): Promise<{ connectionId: string; slug: string; botTokenRef: string | null } | null> {
+): Promise<{ connectionId: number; slug: string; botTokenRef: string | null } | null> {
   const rows = (await getDb()`
     SELECT id, slug, config
     FROM connections
@@ -66,7 +66,7 @@ async function resolveClaimedConnection(
   const row = rows[0];
   if (!row) return null;
   return {
-    connectionId: String(row.id),
+		connectionId: Number(row.id),
     slug: row.slug,
     botTokenRef: row.config?.botToken ?? null,
   };
@@ -181,17 +181,17 @@ async function linkBuilderToInstallerDm(args: {
   // workspace or null (heal-from-inbound). Not the raw `teamId`.
   const [conn] = (await getDb()`
     SELECT external_tenant_id FROM connections
-    WHERE id = ${Number(connection.connectionId)}
+		WHERE id = ${connection.connectionId}
       AND organization_id = ${organizationId}
       AND deleted_at IS NULL
     LIMIT 1
   `) as Array<{ external_tenant_id: string | null }>;
   const bindingTeamId =
-    (await resolveBindingTeam({
+    (await resolveSubscriptionTeam({
       connection: {
         connectorKey: "slack",
         externalTenantId: conn?.external_tenant_id ?? teamId ?? null,
-        connectionId: Number(connection.connectionId),
+		connectionId: connection.connectionId,
         organizationId,
       },
       channelId,
@@ -201,12 +201,12 @@ async function linkBuilderToInstallerDm(args: {
       // conversations.info instead.
       workspaceHint: teamId,
     })) ?? undefined;
-  await new ChannelBindingService().createBinding(
+  await new BehaviorSubscriptionService().createChatBehavior(
     builderId,
     "slack",
     channelId,
     bindingTeamId,
-    { organizationId, connectionId: connection.connectionId },
+		{ organizationId, connectionId: connection.connectionId },
   );
   logger.info(
     { teamId, organizationId, builderId },

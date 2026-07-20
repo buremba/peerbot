@@ -27,30 +27,30 @@ describe("ApplyClient", () => {
     });
   });
 
-  test("listWatchers GETs /watchers and unwraps the list", async () => {
+  test("listBehaviors GETs /behaviors and unwraps the list", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
       (async (url, init) => {
         calls.push({ url: String(url), init });
         return new Response(
-          JSON.stringify({ watchers: [{ slug: "digest", name: "Digest" }] }),
+          JSON.stringify({ behaviors: [{ slug: "digest", name: "Digest" }] }),
           { status: 200 }
         );
       }) as typeof fetch
     );
 
-    const watchers = await client.listWatchers();
+    const behaviors = await client.listBehaviors();
     // `include_details=true` so the apply diff can see prompt /
     // reactions_guidance / etc. for drift detection.
     expect(calls[0]?.url).toBe(
-      "https://example.test/api/acme/watchers?include_details=true"
+      "https://example.test/api/acme/behaviors?include_details=true"
     );
     expect(calls[0]?.init?.method).toBe("GET");
-    expect(watchers).toEqual([{ slug: "digest", name: "Digest" }]);
+    expect(behaviors).toEqual([{ slug: "digest", name: "Digest" }]);
   });
 
-  test("createWatcher POSTs manage_watchers with action=create and no entity_id", async () => {
+  test("createBehavior POSTs manage_behaviors with action=create and no entity_id", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
@@ -62,15 +62,17 @@ describe("ApplyClient", () => {
       }) as typeof fetch
     );
 
-    await client.createWatcher({
+    await client.createBehavior({
       slug: "digest",
       agentId: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      schedule: "0 9 * * 1",
+      triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
     });
 
-    expect(calls[0]?.url).toBe("https://example.test/api/acme/manage_watchers");
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/manage_behaviors"
+    );
     expect(calls[0]?.init?.method).toBe("POST");
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body).toEqual({
@@ -79,7 +81,7 @@ describe("ApplyClient", () => {
       agent_id: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      schedule: "0 9 * * 1",
+      triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
     });
     expect("entity_id" in body).toBe(false);
     expect("extraction_schema" in body).toBe(false);
@@ -160,10 +162,12 @@ describe("ApplyClient — prune", () => {
     });
   });
 
-  test("deleteWatcher POSTs manage_watchers delete with watcher_ids array", async () => {
+  test("deleteBehavior POSTs manage_behaviors delete with watcher_ids array", async () => {
     const { calls, client } = recordingClient();
-    await client.deleteWatcher("42");
-    expect(calls[0]?.url).toBe("https://example.test/api/acme/manage_watchers");
+    await client.deleteBehavior("42");
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/manage_behaviors"
+    );
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       action: "delete",
       watcher_ids: ["42"],

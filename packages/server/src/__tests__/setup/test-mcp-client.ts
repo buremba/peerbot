@@ -14,7 +14,7 @@
  *                    same namespace builders the sandbox exposes. Fast,
  *                    deterministic, and the right tool for CRUD permutations,
  *                    cross-org isolation, and error-path edges. Surface is
- *                    the typed SDK: `client.entities`, `client.watchers`,
+ *                    the typed SDK: `client.entities`, `client.behaviors`,
  *                    `client.classifiers`, etc. — `withAuth()` produces a new
  *                    client with overridden role/scopes for denial-path tests.
  *
@@ -27,6 +27,7 @@ import type { Env } from '../../index';
 import type { ToolContext, TokenType } from '../../tools/registry';
 import {
   buildAuthProfilesNamespace,
+  buildBehaviorsNamespace,
   buildClassifiersNamespace,
   buildConnectionsNamespace,
   buildEntitiesNamespace,
@@ -36,7 +37,6 @@ import {
   buildOperationsNamespace,
   buildOrganizationsNamespace,
   buildViewTemplatesNamespace,
-  buildWatchersNamespace,
 } from '../../sandbox/namespaces';
 import { initWorkspaceProvider } from '../../workspace';
 import {
@@ -148,18 +148,12 @@ export class TestMcpClient {
    * Use `querySdk()` instead for read-only scripts — it gates writes at the
    * tool boundary so a bug in test setup can't accidentally mutate state.
    */
-  async runSdk<T = unknown>(
-    script: string,
-    options?: { timeout_ms?: number }
-  ): Promise<T> {
+  async runSdk<T = unknown>(script: string, options?: { timeout_ms?: number }): Promise<T> {
     return mcpToolsCall<T>('run_sdk', { script, ...(options ?? {}) }, this.opts);
   }
 
   /** Read-only counterpart of `runSdk()` — see #432. */
-  async querySdk<T = unknown>(
-    script: string,
-    options?: { timeout_ms?: number }
-  ): Promise<T> {
+  async querySdk<T = unknown>(script: string, options?: { timeout_ms?: number }): Promise<T> {
     return mcpToolsCall<T>('query_sdk', { script, ...(options ?? {}) }, this.opts);
   }
 
@@ -191,7 +185,7 @@ export class TestApiClient {
   readonly operations: ReturnType<typeof buildOperationsNamespace>;
   readonly organizations: ReturnType<typeof buildOrganizationsNamespace>;
   readonly view_templates: ReturnType<typeof buildViewTemplatesNamespace>;
-  readonly watchers: ReturnType<typeof buildWatchersNamespace>;
+  readonly behaviors: ReturnType<typeof buildBehaviorsNamespace>;
 
   private constructor(
     private readonly env: Env,
@@ -207,7 +201,7 @@ export class TestApiClient {
     this.operations = buildOperationsNamespace(ctx, env);
     this.organizations = buildOrganizationsNamespace(ctx);
     this.view_templates = buildViewTemplatesNamespace(ctx, env);
-    this.watchers = buildWatchersNamespace(ctx, env);
+    this.behaviors = buildBehaviorsNamespace(ctx, env);
   }
 
   /**
@@ -220,8 +214,7 @@ export class TestApiClient {
    */
   static async for(auth: TestClientAuth, env: Partial<Env> = {}): Promise<TestApiClient> {
     await ensureWorkspaceReady();
-    const tokenType: TokenType =
-      auth.tokenType ?? (auth.userId !== null ? 'oauth' : 'anonymous');
+    const tokenType: TokenType = auth.tokenType ?? (auth.userId !== null ? 'oauth' : 'anonymous');
     const scopedToOrg = auth.scopedToOrg ?? true;
     const ctx: ToolContext = {
       organizationId: auth.organizationId,
@@ -253,14 +246,9 @@ export class TestApiClient {
     const scopedToOrg = overrides.scopedToOrg ?? this.ctx.scopedToOrg ?? true;
     const ctx: ToolContext = {
       organizationId:
-        overrides.organizationId !== undefined
-          ? overrides.organizationId
-          : this.ctx.organizationId,
+        overrides.organizationId !== undefined ? overrides.organizationId : this.ctx.organizationId,
       userId: overrides.userId !== undefined ? overrides.userId : this.ctx.userId,
-      memberRole:
-        overrides.memberRole !== undefined
-          ? overrides.memberRole
-          : this.ctx.memberRole,
+      memberRole: overrides.memberRole !== undefined ? overrides.memberRole : this.ctx.memberRole,
       agentId: overrides.agentId ?? this.ctx.agentId ?? null,
       isAuthenticated:
         overrides.userId !== undefined ? overrides.userId !== null : this.ctx.isAuthenticated,
@@ -345,7 +333,11 @@ export class TestWorkspace {
   }
 
   asAnonymous(): TestApiClient {
-    return this.owner.withAuth({ userId: null, memberRole: null, tokenType: 'anonymous' });
+    return this.owner.withAuth({
+      userId: null,
+      memberRole: null,
+      tokenType: 'anonymous',
+    });
   }
 
   withAuth(overrides: Partial<TestClientAuth>): TestApiClient {

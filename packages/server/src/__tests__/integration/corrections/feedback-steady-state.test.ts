@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   handleGetFeedback,
   handleSubmitFeedback,
-} from '../../../tools/admin/manage_watchers/feedback';
+} from '../../../tools/admin/manage_behaviors/feedback';
 import type { ToolContext } from '../../../tools/registry';
 import { getRecentFeedbackSummary } from '../../../utils/watcher-feedback';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';

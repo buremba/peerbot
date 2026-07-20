@@ -226,7 +226,7 @@ export async function readWatcherRunThreads(args: {
 	const actions = approvalRows.map((row) => {
 		const resourceKind =
 			row.resource_kind ??
-			(row.tool === "manage_watchers"
+			(row.tool === "manage_behaviors"
 				? "watcher"
 				: row.tool === "manage_agents"
 					? "agent"

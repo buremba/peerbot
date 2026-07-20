@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 import type ShopifyOrdersConnector from "./shopify-orders.connector.ts";
@@ -149,11 +149,11 @@ const ownedBy = defineRelationshipType({
   description: "Keep project ownership queryable across updates and artifacts.",
 });
 
-const phoenixRolloutTracker = defineWatcher({
+const phoenixRolloutTracker = defineBehavior({
   agent: delivery,
   slug: "phoenix-rollout-tracker",
   name: "Phoenix rollout tracker",
-  schedule: "0 9 * * 1",
+  triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
   notification: { priority: "high", channel: "both" },
   tags: ["delivery", "weekly", "rollout"],
   minCooldownSeconds: 3600,
@@ -174,5 +174,5 @@ export default defineConfig({
   agents: [delivery],
   entities: [blocker, document, milestone, stakeholder],
   relationships: [blockedBy, documentedIn, ownedBy],
-  watchers: [phoenixRolloutTracker],
+  behaviors: [phoenixRolloutTracker],
 });

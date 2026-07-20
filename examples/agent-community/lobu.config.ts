@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
@@ -142,11 +142,11 @@ const writesAbout = defineRelationshipType({
     "Capture blog posts, newsletters, and public writing so matching includes current thinking, not just static bios.",
 });
 
-const opportunityMatcher = defineWatcher({
+const opportunityMatcher = defineBehavior({
   agent: agentCommunity,
   slug: "opportunity-matcher",
   name: "Opportunity matcher",
-  schedule: "0 */12 * * *",
+  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
   notification: { priority: "normal" },
   tags: ["community", "matching"],
   minCooldownSeconds: 300,
@@ -170,5 +170,5 @@ export default defineConfig({
   agents: [agentCommunity],
   entities: [match, post, topic],
   relationships: [interestedIn, introducedTo, matchesWith, writesAbout],
-  watchers: [opportunityMatcher],
+  behaviors: [opportunityMatcher],
 });

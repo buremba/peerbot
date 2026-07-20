@@ -16,8 +16,10 @@ import { autoLinkBuilderAndWelcome } from "../../../gateway/connections/slack-cl
 import type { SlackWebApi } from "../../../gateway/connections/slack-web";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
+	addUserToOrganization,
   createTestAgent,
   createTestOrganization,
+	createTestUser,
   insertChatConnectionRow,
 } from "../../setup/test-fixtures";
 
@@ -61,12 +63,15 @@ function makeSecretStore() {
 
 async function seedClaimedWorkspace(orgId: string): Promise<void> {
   const sql = getTestDb();
+	const owner = await createTestUser({ email: "claim-owner@example.com" });
+	await addUserToOrganization(owner.id, orgId, "owner");
   // The org's Builder agent + the system-agent pointer, mirroring
   // ensureBuilderAgent's end state so autoLink binds to it.
   await createTestAgent({
     organizationId: orgId,
     agentId: BUILDER_AGENT_ID,
     name: "Builder",
+		ownerUserId: owner.id,
   });
   await sql`
     UPDATE "organization" SET system_agent_id = ${BUILDER_AGENT_ID}
@@ -104,8 +109,22 @@ async function bindingsForBuilder(orgId: string): Promise<
 > {
   return (await getTestDb()`
     SELECT agent_id, channel_id, platform
-    FROM agent_channel_bindings
-    WHERE organization_id = ${orgId} AND agent_id = ${BUILDER_AGENT_ID}
+    FROM (
+      SELECT
+        w.agent_id,
+        trigger->>'connector_key' AS platform,
+        COALESCE(
+          NULLIF(trigger->'match'->>'channel_key', ''),
+          (trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+        ) AS channel_id
+      FROM watchers w
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
+      WHERE w.status = 'active'
+        AND w.organization_id = ${orgId}
+        AND w.agent_id = ${BUILDER_AGENT_ID}
+        AND trigger->>'kind' = 'event'
+        AND trigger->'event_types' ? 'message.created'
+    ) subscriptions
   `) as Array<{ agent_id: string; channel_id: string; platform: string }>;
 }
 

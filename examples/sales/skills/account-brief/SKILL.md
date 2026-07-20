@@ -1,6 +1,6 @@
 ---
 name: account-brief
-description: Build a pre-renewal brief for a tracked account from its recent public news and announcements. Use before a renewal call or QBR, after the account-health watcher flags a risk. Reading public news is allowed; do not log in, submit forms, or touch any CRM write endpoint.
+description: Build a pre-renewal brief for a tracked account from its recent public news and announcements. Use before a renewal call or QBR, after the account-health Behavior flags a risk. Reading public news is allowed; do not log in, submit forms, or touch any CRM write endpoint.
 nixPackages:
   - jq
 ---
@@ -8,7 +8,7 @@ nixPackages:
 # Account brief
 
 Use this skill when the user asks for a pre-renewal brief on a tracked account,
-or when the `account-health-monitor` watcher flags a risk signal.
+or when the `account-health-monitor` Behavior flags a risk signal.
 
 ## Steps
 

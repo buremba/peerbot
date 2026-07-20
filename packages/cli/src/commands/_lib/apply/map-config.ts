@@ -68,7 +68,7 @@ import type {
   Project,
   ProviderConfig,
   RelationshipType,
-  Watcher,
+  Behavior,
 } from "../../../config/index.js";
 import { isSecretRef, UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
@@ -427,7 +427,6 @@ function mapAgent(
           resolveCredentialValue(v, required, env),
         ])
       ),
-      ...(p.channels?.length ? { channels: p.channels } : {}),
     }));
   // Distinct platforms must not collapse to the same stable id (e.g. names that
   // slugify equal), or apply would clobber one with the other.
@@ -439,23 +438,6 @@ function mapAgent(
       );
     }
     seenStableIds.add(p.stableId);
-    // Channel bindings are Slack-only and must be "<teamId>/<channelId>".
-    // Validate up front (the TOML loader did) so a bad binding fails the plan
-    // instead of erroring at syncPlatformChannels after platforms are mutated.
-    if (p.channels?.length) {
-      if (p.type !== "slack") {
-        throw new ValidationError(
-          `agent "${agent.id}" platform "${p.type}" declares channels, but channel bindings are only supported on slack`
-        );
-      }
-      for (const channel of p.channels) {
-        if (!/^[^/\s]+\/[^/\s]+$/.test(channel)) {
-          throw new ValidationError(
-            `agent "${agent.id}" slack platform has an invalid channel "${channel}" — expected "<teamId>/<channelId>"`
-          );
-        }
-      }
-    }
   }
 
   const metadata: DesiredAgentMetadata = {
@@ -599,18 +581,66 @@ function normalizeKeyingConfig(
   return out;
 }
 
-function mapWatcher(watcher: Watcher): DesiredWatcher {
-  if (watcher.schedule) {
-    const err = cronError(watcher.schedule);
-    if (err) {
-      throw new ValidationError(
-        `watcher "${watcher.slug}" has an invalid schedule "${watcher.schedule}": ${err}`
-      );
-    }
-  }
+function mapBehavior(behavior: Behavior): DesiredWatcher {
+  const watcher = behavior;
   const sources = watcher.sources
     ? Object.entries(watcher.sources).map(([name, query]) => ({ name, query }))
     : undefined;
+  let hasSchedule = false;
+  const triggers = watcher.triggers?.map((trigger) => {
+    if (trigger.kind === "schedule") {
+      if (hasSchedule) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" has more than one schedule trigger`
+        );
+      }
+      const err = cronError(trigger.cron);
+      if (err) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" has an invalid schedule trigger "${trigger.cron}": ${err}`
+        );
+      }
+      hasSchedule = true;
+      return {
+        kind: "schedule" as const,
+        cron: trigger.cron.trim(),
+        timezone: trigger.timezone ?? null,
+        execution: "window" as const,
+        active_run: "coalesce" as const,
+        skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+      };
+    }
+    const { connection, ...eventTrigger } = trigger;
+    const normalizedEventTrigger = {
+      ...eventTrigger,
+      event_types: Array.from(new Set(eventTrigger.event_types)),
+      match:
+        eventTrigger.match && Object.keys(eventTrigger.match).length > 0
+          ? eventTrigger.match
+          : undefined,
+      execution: eventTrigger.execution ?? "turn",
+      active_run: eventTrigger.active_run ?? "queue",
+      output: eventTrigger.output ?? "silent",
+      skip_if_unchanged: eventTrigger.skip_if_unchanged ?? true,
+    } as const;
+    if (connection !== undefined && trigger.connection_id !== undefined) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" trigger must use either connection or connection_id, not both`
+      );
+    }
+    if (connection === undefined) return normalizedEventTrigger;
+    if (
+      typeof connection !== "string" &&
+      connectorKey(connection.connector) !== trigger.connector_key
+    ) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${connection.slug}" uses ${connectorKey(connection.connector)}`
+      );
+    }
+    const connectionSlug =
+      typeof connection === "string" ? connection : connection.slug;
+    return { ...normalizedEventTrigger, connectionSlug };
+  });
   return {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
@@ -620,7 +650,7 @@ function mapWatcher(watcher: Watcher): DesiredWatcher {
       : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
-    ...(watcher.schedule ? { schedule: watcher.schedule } : {}),
+    triggers: triggers ?? [],
     ...(sources ? { sources } : {}),
     ...(watcher.notification?.channel
       ? { notificationChannel: watcher.notification.channel }
@@ -762,7 +792,8 @@ export function mapProjectToDesiredState(
   const relationshipTypes = (project.relationships ?? []).map(
     mapRelationshipType
   );
-  const watchers = (project.watchers ?? []).map(mapWatcher);
+  const watchers =
+    only === "agents" ? [] : (project.behaviors ?? []).map(mapBehavior);
   const authProfiles = only
     ? []
     : (project.authProfiles ?? []).map((profile) =>
@@ -786,7 +817,7 @@ export function mapProjectToDesiredState(
   assertUniqueBy(agents, (a) => a.metadata.agentId, "agent id");
   assertUniqueBy(entityTypes, (e) => e.slug, "entity type key");
   assertUniqueBy(relationshipTypes, (r) => r.slug, "relationship type key");
-  assertUniqueBy(watchers, (w) => w.slug, "watcher slug");
+  assertUniqueBy(watchers, (w) => w.slug, "Behavior slug");
   assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
   assertUniqueBy(connections, (c) => c.slug, "connection slug");
   assertUniqueBy(providers, (p) => p.slug, "provider slug");
@@ -795,8 +826,25 @@ export function mapProjectToDesiredState(
   for (const watcher of watchers) {
     if (!agentIds.has(watcher.agent)) {
       throw new ValidationError(
-        `watcher "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
+        `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
       );
+    }
+    for (const trigger of watcher.triggers ?? []) {
+      if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
+      const connection = (project.connections ?? []).find(
+        (candidate) => candidate.slug === trigger.connectionSlug
+      );
+      if (!connection) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" references connection "${trigger.connectionSlug}", but it is not declared in lobu.config.ts`
+        );
+      }
+      const declaredConnector = connectorKey(connection.connector);
+      if (declaredConnector !== trigger.connector_key) {
+        throw new ValidationError(
+          `Behavior "${watcher.slug}" trigger is ${trigger.connector_key}, but connection "${trigger.connectionSlug}" uses ${declaredConnector}`
+        );
+      }
     }
   }
 

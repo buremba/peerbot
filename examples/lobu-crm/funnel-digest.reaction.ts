@@ -1,16 +1,16 @@
 /**
- * Reaction for the `funnel-digest` watcher.
+ * Reaction for the `funnel-digest` Behavior.
  *
  * Runs after the weekly Monday-9am window completes. `ctx.extracted_data` is
- * whatever the watcher's `extraction_schema` produced — funnel snapshot, top
+ * whatever the Behavior's extraction schema produced — funnel snapshot, top
  * action, stale leads, etc. We:
  *   1. persist the digest as a `summary` event (tagged `metadata.kind:
- *      "funnel_digest"`) linked to every lead the watcher knows about, so the
+ *      "funnel_digest"`) linked to every lead the Behavior knows about, so the
  *      next digest can compare stage_counts week-over-week without re-running
  *      classification; and
  *   2. push it to the team via `client.notifications.send` — which fans out to
  *      the org's active bot connections (the #leads Slack connection) and the
- *      in-app inbox. `watcher_source` attributes it to this window.
+ *      in-app inbox. `watcher_source` is the persisted provenance field.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -57,8 +57,8 @@ export default async (
     .join("\n");
 
   await client.knowledge.save({
-    // Attaching to the whole watcher's entity set keeps the digest scoped to
-    // CRM data and discoverable from any lead the watcher already touches.
+    // Attaching to the whole Behavior's entity set keeps the digest scoped to
+    // CRM data and discoverable from any lead the Behavior already touches.
     entity_ids: ctx.entities.map((e) => e.id),
     content,
     // `semantic_type` must be a registered event kind; "summary" fits a digest.
@@ -67,7 +67,7 @@ export default async (
     metadata: {
       kind: "funnel_digest",
       window_id: ctx.window.id,
-      watcher_slug: ctx.watcher.slug,
+      behavior_slug: ctx.behavior.slug,
       stage_counts: data.stage_counts ?? {},
       top_action: data.top_action ?? null,
     },

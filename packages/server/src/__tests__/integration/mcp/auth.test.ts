@@ -40,7 +40,10 @@ describe('MCP Authentication', () => {
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
     org = await createTestOrganization({ name: 'Test Org' });
-    publicOrg = await createTestOrganization({ name: 'Public Org', visibility: 'public' });
+    publicOrg = await createTestOrganization({
+      name: 'Public Org',
+      visibility: 'public',
+    });
     org2 = await createTestOrganization({ name: 'Second Org' });
     user = await createTestUser({});
     await addUserToOrganization(user.id, org.id);
@@ -514,7 +517,9 @@ describe('MCP Authentication', () => {
     });
 
     it('revokes an MCP client only within the current organization', async () => {
-      const scopedClient = await createTestOAuthClient({ client_name: 'Scoped Revoke Client' });
+      const scopedClient = await createTestOAuthClient({
+        client_name: 'Scoped Revoke Client',
+      });
       const { token: orgToken } = await createTestAccessToken(
         user.id,
         org.id,
@@ -674,7 +679,6 @@ describe('MCP Authentication', () => {
       const body = await response.json();
       expect(body.error?.message).toContain("Agent 'missing-agent' was not found");
     });
-
   });
 
   describe('Session Cookie Authentication', () => {
@@ -780,7 +784,9 @@ describe('MCP Authentication', () => {
       // We assert the auth gate passes (not 403 with the cross-org message),
       // not full MCP-handshake success — that needs initialize + notify and
       // is covered elsewhere.
-      const org2 = await createTestOrganization({ name: 'OAuth Cross-Org Target' });
+      const org2 = await createTestOrganization({
+        name: 'OAuth Cross-Org Target',
+      });
       await addUserToOrganization(user.id, org2.id);
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
 
@@ -872,7 +878,9 @@ describe('MCP Authentication', () => {
     });
 
     it('lets a normal MEMBER discover connectors (list_installed is read-tier) but NOT do admin actions', async () => {
-      const roleOrg = await createTestOrganization({ name: 'Scoped Member Org' });
+      const roleOrg = await createTestOrganization({
+        name: 'Scoped Member Org',
+      });
       const member = await createTestUser({});
       await addUserToOrganization(member.id, roleOrg.id, 'member');
       const { token } = await createTestPAT(member.id, roleOrg.id, {
@@ -915,7 +923,6 @@ describe('MCP Authentication', () => {
   // before they ever reach the org-context guard. That contract is covered
   // by "challenges unauthenticated requests…" in the Unauthenticated block.
   describe('JSON-RPC Error Handling', () => {
-
     it('should handle malformed JSON-RPC requests', async () => {
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
 
@@ -950,14 +957,7 @@ describe('MCP Authentication', () => {
       // via REST and tools/call by name but are not advertised here.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames.sort()).toEqual(
-        [
-          'query_sdk',
-          'query_sql',
-          'run_sdk',
-          'save_memory',
-          'search_memory',
-          'search_sdk',
-        ].sort(),
+        ['query_sdk', 'query_sql', 'run_sdk', 'save_memory', 'search_memory', 'search_sdk'].sort()
       );
       expect(toolNames).not.toContain('list_organizations');
       expect(toolNames).not.toContain('list_metrics');
@@ -970,15 +970,15 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('join_organization');
     });
 
-    it('still dispatches internal admin tools by name via tools/call (#434)', async () => {
+    it('lists Behaviors through the consolidated internal admin tool', async () => {
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
 
-      const result = await mcpToolsCall<{ watchers?: unknown[] }>(
-        'list_watchers',
-        { status: 'active' },
-        { token, orgSlug: org.slug },
+      const result = await mcpToolsCall<{ behaviors?: unknown[] }>(
+        'manage_behaviors',
+        { action: 'list', status: 'active' },
+        { token, orgSlug: org.slug }
       );
-      expect(Array.isArray(result.watchers)).toBe(true);
+      expect(Array.isArray(result.behaviors)).toBe(true);
     });
 
     it('should include tool descriptions', async () => {
@@ -1086,7 +1086,9 @@ describe('MCP Authentication', () => {
       // workspace. Device pairing must now require an explicit pick.
       const sql = getTestDb();
       const pUser = await createTestUser({});
-      const personalOrg = await createTestOrganization({ name: 'Personal Org (device)' });
+      const personalOrg = await createTestOrganization({
+        name: 'Personal Org (device)',
+      });
       await addUserToOrganization(pUser.id, personalOrg.id);
       // organization.metadata is text storing JSON (see findExistingPersonalOrg).
       await sql`
@@ -1094,7 +1096,9 @@ describe('MCP Authentication', () => {
         SET metadata = ${JSON.stringify({ personal_org_for_user_id: pUser.id })}
         WHERE id = ${personalOrg.id}
       `;
-      const otherOrg = await createTestOrganization({ name: 'Other Org (device)' });
+      const otherOrg = await createTestOrganization({
+        name: 'Other Org (device)',
+      });
       await addUserToOrganization(pUser.id, otherOrg.id);
 
       const pSession = await createTestSession(pUser.id);
@@ -1118,21 +1122,29 @@ describe('MCP Authentication', () => {
       // The override path stays intact — an explicit pick binds the device to it.
       const sql = getTestDb();
       const pUser = await createTestUser({});
-      const personalOrg = await createTestOrganization({ name: 'Personal Org (device override)' });
+      const personalOrg = await createTestOrganization({
+        name: 'Personal Org (device override)',
+      });
       await addUserToOrganization(pUser.id, personalOrg.id);
       await sql`
         UPDATE "organization"
         SET metadata = ${JSON.stringify({ personal_org_for_user_id: pUser.id })}
         WHERE id = ${personalOrg.id}
       `;
-      const otherOrg = await createTestOrganization({ name: 'Other Org (device override)' });
+      const otherOrg = await createTestOrganization({
+        name: 'Other Org (device override)',
+      });
       await addUserToOrganization(pUser.id, otherOrg.id);
 
       const pSession = await createTestSession(pUser.id);
       const dc = await createTestDeviceCode(deviceClient.client_id);
 
       const response = await post('/oauth/device/approve', {
-        body: { user_code: dc.userCode, approved: true, organization_id: otherOrg.id },
+        body: {
+          user_code: dc.userCode,
+          approved: true,
+          organization_id: otherOrg.id,
+        },
         cookie: pSession.cookieHeader,
         headers: { Origin: 'http://localhost' },
       });
@@ -1147,7 +1159,11 @@ describe('MCP Authentication', () => {
 
       // User approves the device on the OAuth page, picking `org`.
       const approveRes = await post('/oauth/device/approve', {
-        body: { user_code: dc.userCode, approved: true, organization_id: org.id },
+        body: {
+          user_code: dc.userCode,
+          approved: true,
+          organization_id: org.id,
+        },
         cookie: sessionCookie,
         headers: { Origin: 'http://localhost' },
       });
@@ -1163,7 +1179,9 @@ describe('MCP Authentication', () => {
         },
       });
       expect(tokenRes.status).toBe(200);
-      const { access_token: accessToken } = (await tokenRes.json()) as { access_token: string };
+      const { access_token: accessToken } = (await tokenRes.json()) as {
+        access_token: string;
+      };
       expect(accessToken).toBeTruthy();
 
       // First poll registers the device worker; its home is the approved org.

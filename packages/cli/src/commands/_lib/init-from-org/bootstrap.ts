@@ -29,7 +29,7 @@ import type {
   RemoteFeed,
   RemotePlatform,
   RemoteRelationshipType,
-  RemoteWatcher,
+  RemoteBehavior,
 } from "../apply/client.js";
 import { resolveApplyClient } from "../apply/client.js";
 
@@ -50,6 +50,14 @@ interface InitFromOrgOptions {
 interface Handle {
   name: string;
   decl: string;
+}
+
+interface TsExpression {
+  readonly __tsExpression: string;
+}
+
+function tsExpression(source: string): TsExpression {
+  return { __tsExpression: source };
 }
 
 /** Quote a string as a TS string literal (double quotes, JSON-escaped). */
@@ -90,6 +98,12 @@ function emitValue(value: unknown, indent: number): string {
     return `[\n${items.join(",\n")},\n${pad}]`;
   }
   if (typeof value === "object") {
+    if (
+      "__tsExpression" in value &&
+      typeof (value as TsExpression).__tsExpression === "string"
+    ) {
+      return (value as TsExpression).__tsExpression;
+    }
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) return "{}";
     const lines = entries.map(
@@ -233,7 +247,7 @@ const IMPORTABLE = [
   "defineConfig",
   "defineEntityType",
   "defineRelationshipType",
-  "defineWatcher",
+  "defineBehavior",
   "defineConnection",
   "defineAuthProfile",
   "reactionFromFile",
@@ -528,14 +542,15 @@ function emitRelationshipType(
   };
 }
 
-function emitWatcher(
-  w: RemoteWatcher,
+function emitBehavior(
+  w: RemoteBehavior,
   reactionScript: string | null,
   agentHandles: Map<string, string>,
+  connectionHandlesById: ReadonlyMap<number, string>,
   imports: ImportTracker,
   minter: IdentMinter
 ): { handle: Handle; reactionFile?: { relPath: string; body: string } } {
-  imports.use("defineWatcher");
+  imports.use("defineBehavior");
   const agentRef = w.agent_id ? agentHandles.get(w.agent_id) : undefined;
   const fields: string[] = [
     `agent: ${agentRef ?? str(w.agent_id ?? "")}`,
@@ -543,7 +558,19 @@ function emitWatcher(
   ];
   if (w.name) fields.push(`name: ${str(w.name)}`);
   if (w.description) fields.push(`description: ${str(w.description)}`);
-  if (w.schedule) fields.push(`schedule: ${str(w.schedule)}`);
+  if (w.triggers?.length) {
+    const triggers = w.triggers.map((trigger) => {
+      if (trigger.kind !== "event" || trigger.connection_id == null) {
+        return trigger;
+      }
+      const connectionHandle = connectionHandlesById.get(trigger.connection_id);
+      if (!connectionHandle) return trigger;
+      const rest = { ...trigger };
+      delete rest.connection_id;
+      return { ...rest, connection: tsExpression(connectionHandle) };
+    });
+    fields.push(`triggers: ${emitValue(triggers, 1)}`);
+  }
   fields.push(`prompt: ${str(w.prompt ?? "")}`);
   // A watcher's output schema is owned by its entity type (keying_config.entityType)
   // or falls back to the worker's free-form `{ summary }` — never inline. Emit
@@ -596,10 +623,10 @@ function emitWatcher(
     };
   }
 
-  const name = minter.mint(w.slug, "Watcher");
+  const name = minter.mint(w.slug, "Behavior");
   const handle: Handle = {
     name,
-    decl: `const ${name} = defineWatcher(${objectLiteral(fields, 0)});`,
+    decl: `const ${name} = defineBehavior(${objectLiteral(fields, 0)});`,
   };
   return reactionFile ? { handle, reactionFile } : { handle };
 }
@@ -787,7 +814,7 @@ interface FetchedState {
   }>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: Array<{ watcher: RemoteWatcher; reactionScript: string | null }>;
+  watchers: Array<{ watcher: RemoteBehavior; reactionScript: string | null }>;
   authProfiles: RemoteAuthProfile[];
   connections: Array<{ connection: RemoteConnection; feeds: RemoteFeed[] }>;
   /** connector_key → auth_schema (for emitting real credential field keys). */
@@ -810,7 +837,7 @@ async function fetchOrgState(
     client.listAgents(),
     client.listEntityTypes(),
     client.listRelationshipTypes(),
-    client.listWatchers(),
+    client.listBehaviors(),
     client.listAuthProfiles(),
     client.listConnections(),
     // Connector defs carry each connector's auth_schema, so init-from-org can
@@ -853,7 +880,7 @@ async function fetchOrgState(
       .map(async (watcher) => {
         let reactionScript: string | null = null;
         if (watcher.watcher_id) {
-          const detail = await client.getWatcherDetail(watcher.watcher_id);
+          const detail = await client.getBehaviorDetail(watcher.watcher_id);
           reactionScript = detail?.reaction_script ?? null;
           if (detail?.description && !watcher.description) {
             watcher.description = detail.description;
@@ -1019,14 +1046,21 @@ function generateProject(
     connHandles.push(h.name);
   }
 
-  // Watchers last.
+  // Behaviors last.
   const watcherDecls: string[] = [];
   const watcherHandles: string[] = [];
+  const connectionHandlesById = new Map<number, string>();
+  for (let index = 0; index < state.connections.length; index++) {
+    const connection = state.connections[index]?.connection;
+    const handle = connHandles[index];
+    if (connection && handle) connectionHandlesById.set(connection.id, handle);
+  }
   for (const { watcher, reactionScript } of state.watchers) {
-    const { handle, reactionFile } = emitWatcher(
+    const { handle, reactionFile } = emitBehavior(
       watcher,
       reactionScript,
       agentHandles,
+      connectionHandlesById,
       imports,
       minter
     );
@@ -1054,7 +1088,7 @@ function generateProject(
     );
   }
   if (watcherHandles.length > 0) {
-    configFields.push(`watchers: [${watcherHandles.join(", ")}]`);
+    configFields.push(`behaviors: [${watcherHandles.join(", ")}]`);
   }
 
   const blocks: string[] = [];

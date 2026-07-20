@@ -5,15 +5,15 @@
  * validation rules and the privilege gate without the integration harness.
  *
  * Shape/type/range validation moved to the tool boundary (lobu#1137):
- * WatcherExecutionConfigSchema is embedded in ManageWatchersSchema, and
+ * BehaviorExecutionConfigSchema is embedded in ManageBehaviorsSchema, and
  * `withValidatedArgs` enforces it before the handler runs. The schema tests
  * below therefore go through `validateToolArgs` with the full tool schema —
- * the same path a real manage_watchers call takes — while the role-policy
+ * the same path a real manage_behaviors call takes — while the role-policy
  * gate stays on `assertValidExecutionConfig`.
  */
 
 import { describe, expect, it } from 'bun:test';
-import { ManageWatchersSchema } from '../../tools/admin/manage_watchers';
+import { ManageBehaviorsSchema } from '../../tools/admin/manage_behaviors';
 import {
   assertValidExecutionConfig,
   type ExecutionConfigCaller,
@@ -22,7 +22,7 @@ import { validateToolArgs } from '../../tools/validate-args';
 import { ToolUserError } from '../../utils/errors';
 
 function validateUpdateWith(executionConfig: unknown): unknown {
-  return validateToolArgs('manage_watchers', ManageWatchersSchema, {
+  return validateToolArgs('manage_behaviors', ManageBehaviorsSchema, {
     action: 'update',
     watcher_id: '1',
     execution_config: executionConfig,
@@ -57,7 +57,7 @@ describe('assertValidExecutionConfig — passthrough', () => {
   });
 });
 
-describe('execution_config boundary validation (via ManageWatchersSchema)', () => {
+describe('execution_config boundary validation (via ManageBehaviorsSchema)', () => {
   it('rejects a non-object', () => {
     expect(() => validateUpdateWith('nope')).toThrow(ToolUserError);
     expect(() => validateUpdateWith([1, 2])).toThrow(ToolUserError);

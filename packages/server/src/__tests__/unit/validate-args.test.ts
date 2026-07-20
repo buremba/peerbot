@@ -325,6 +325,34 @@ describe("registry completeness", () => {
       .filter((name) => brandedName(getTool(name)?.handler) !== name);
     expect(unwrapped).toEqual([]);
   });
+
+  it("manage_behaviors accepts the consolidated list filters", () => {
+    const schema = getTool("manage_behaviors")?.inputSchema;
+    if (!schema) throw new Error("manage_behaviors is not registered");
+    expect(
+      validateToolArgs("manage_behaviors", schema, {
+        action: "list",
+        agent_id: "agent-1",
+        status: "active",
+        include_details: true,
+        order_by: "last_fired_at",
+        order_dir: "asc",
+        limit: 25,
+      })
+    ).toMatchObject({
+      action: "list",
+      status: "active",
+      include_details: true,
+      order_by: "last_fired_at",
+      order_dir: "asc",
+    });
+    expect(() =>
+      validateToolArgs("manage_behaviors", schema, {
+        action: "list",
+        status: "unknown",
+      })
+    ).toThrow(ToolUserError);
+  });
 });
 
 describe("validateToolResult (structuredContent emission)", () => {
@@ -367,7 +395,7 @@ describe("registry outputSchema normalization (MCP spec: must be an object schem
     // The 8 admin tools declare Type.Union result schemas → bare `{ anyOf }`.
     // A spec-strict host rejects an outputSchema without top-level type:object.
     const byName = new Map(getAllTools().map((t) => [t.name, t]));
-    const watchers = byName.get("manage_watchers") as { outputSchema?: any } | undefined;
+    const watchers = byName.get("manage_behaviors") as { outputSchema?: any } | undefined;
     expect(watchers?.outputSchema?.type).toBe("object");
     expect(Array.isArray(watchers?.outputSchema?.anyOf)).toBe(true);
   });

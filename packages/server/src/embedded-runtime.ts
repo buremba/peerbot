@@ -18,8 +18,9 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import {
+	executeMigrationSection,
 	listMigrationFiles,
-	loadMigrationUpSection,
+	loadMigrationUp,
 } from "./db/migration-loader";
 import { buildLocalBootstrapHooks } from "./local-bootstrap";
 import logger from "./utils/logger";
@@ -263,19 +264,20 @@ export function resolveMigrationsDir(): string | null {
 }
 
 /**
- * Apply `db/migrations/*.sql` (the same set dbmate runs in prod) against
+ * Apply `db/migrations/*.sql` (the same set the production runner applies) against
  * `databaseUrl`. Idempotent: the squashed baseline is gated by the
  * `schema_migrations` ledger (with a duplicate-object fallback) and forward
  * deltas use `IF NOT EXISTS`, so replaying against an already-migrated DB is a
  * no-op. Used by the embedded runtime AND by the external-DATABASE_URL `lobu
  * run` path (`server.ts`), which owns the local DB lifecycle. Prod never calls
- * this — dbmate's migration Job applies migrations separately.
+ * this — the production migration Job applies migrations separately.
  */
 export async function runMigrations(databaseUrl: string): Promise<void> {
-	// Same migrations dbmate uses for prod, applied unconditionally. The dir is
+	// Same migrations the production runner uses, applied unconditionally. The dir is
 	// a single squashed baseline + forward deltas; both replay idempotently
 	// (baseline gated by the schema_migrations ledger, deltas use IF NOT EXISTS).
 	const sql = postgres(databaseUrl, { max: 1 });
+	let migrationLockHeld = false;
 
 	try {
 		const migrationsDir = resolveMigrationsDir();
@@ -286,6 +288,8 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
         version character varying(128) NOT NULL PRIMARY KEY
       )
     `);
+		await sql.unsafe(`SELECT pg_advisory_lock(hashtext('lobu_migrate_up'))`);
+		migrationLockHeld = true;
 
 		const appliedRows = (await sql.unsafe(
 			`SELECT version FROM public.schema_migrations`,
@@ -302,12 +306,34 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 		for (const file of listMigrationFiles(migrationsDir)) {
 			const version = file.split("_")[0] ?? "";
 			if (applied.has(version)) continue;
-			const migrationSql = loadMigrationUpSection(migrationsDir, file);
-			if (!migrationSql) continue;
+			const up = loadMigrationUp(migrationsDir, file);
+			if (!up.sql) continue;
 
 			await sql.unsafe("SET search_path TO public");
 			try {
-				await sql.unsafe(migrationSql);
+				if (up.transaction) {
+					await sql.begin(async (tx) => {
+						await executeMigrationSection(
+							(statement) => tx.unsafe(statement),
+							up,
+						);
+						await tx`
+              INSERT INTO public.schema_migrations (version) VALUES (${version})
+              ON CONFLICT DO NOTHING
+            `;
+					});
+				} else {
+					// CONCURRENTLY sections cannot include the ledger write in one
+					// transaction, so execute their top-level statements separately.
+					await executeMigrationSection(
+						(statement) => sql.unsafe(statement),
+						up,
+					);
+					await sql`
+              INSERT INTO public.schema_migrations (version) VALUES (${version})
+              ON CONFLICT DO NOTHING
+            `;
+				}
 			} catch (err) {
 				const code = (err as { code?: string } | null)?.code;
 				const isDuplicateObject =
@@ -319,14 +345,19 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 					{ migration: file, version, pgErrorCode: code },
 					"Migration already applied (idempotent skip)",
 				);
+				await sql`
+          INSERT INTO public.schema_migrations (version) VALUES (${version})
+          ON CONFLICT DO NOTHING
+        `;
 			}
-			await sql`
-        INSERT INTO public.schema_migrations (version) VALUES (${version})
-        ON CONFLICT DO NOTHING
-      `;
 		}
 		logger.info("Migrations complete");
 	} finally {
+		if (migrationLockHeld) {
+			await sql
+				.unsafe(`SELECT pg_advisory_unlock(hashtext('lobu_migrate_up'))`)
+				.catch(() => undefined);
+		}
 		await sql.end();
 	}
 }

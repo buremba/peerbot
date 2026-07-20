@@ -4,6 +4,7 @@
 
 export { buildAgentsNamespace } from "./agents";
 export { buildAuthProfilesNamespace } from "./auth-profiles";
+export { buildBehaviorsNamespace } from "./behaviors";
 export { buildCatalogNamespace } from "./catalog";
 export { buildClassifiersNamespace } from "./classifiers";
 export { buildConnectionsNamespace } from "./connections";
@@ -18,4 +19,3 @@ export { buildOperationsNamespace } from "./operations";
 export { buildOrganizationsNamespace } from "./organizations";
 export { buildSchedulesNamespace } from "./schedules";
 export { buildViewTemplatesNamespace } from "./view-templates";
-export { buildWatchersNamespace } from "./watchers";

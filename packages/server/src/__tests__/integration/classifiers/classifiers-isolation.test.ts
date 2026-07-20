@@ -40,7 +40,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     organizationId: workspace.org.id,
     ownerUserId: workspace.users.owner.id,
   });
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: entity.entity.id,
     slug: `${slug}-watcher`,
     name: `${slug} Watcher`,
@@ -54,8 +54,16 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     attribute_key: slug,
     watcher_id: watcher.watcher_id,
     attribute_values: {
-      positive: { description: 'positive signal', examples: ['great'], embedding: stubEmbedding },
-      negative: { description: 'negative signal', examples: ['bad'], embedding: stubEmbedding },
+      positive: {
+        description: 'positive signal',
+        examples: ['great'],
+        embedding: stubEmbedding,
+      },
+      negative: {
+        description: 'negative signal',
+        examples: ['bad'],
+        embedding: stubEmbedding,
+      },
     },
   })) as { data?: { classifier_id: number } };
 
@@ -122,6 +130,8 @@ describe('classifier org isolation', () => {
       .catch((reason: unknown) => reason);
 
     expect(error).toBeInstanceOf(ClientSdkActionError);
-    expect((error as ClientSdkActionError).result.data).toMatchObject({ failed: 1 });
+    expect((error as ClientSdkActionError).result.data).toMatchObject({
+      failed: 1,
+    });
   });
 });

@@ -8,17 +8,20 @@
  */
 
 import type { DbClient } from '../db/client';
+import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
+import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
+import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
-export type WatcherDispatchSource = 'scheduled' | 'manual';
+type WatcherDispatchSource = 'scheduled' | 'manual' | 'event';
 
 export interface WatcherRunPayload {
   watcher_id: number;
@@ -49,6 +52,89 @@ export interface WatcherRunPayload {
    * default agent".
    */
   agent_kind?: string | null;
+  /** Present for connector-event activations; raw webhook bodies never enter a run. */
+  trigger_signal?: ConnectorTriggerSignal;
+  /** Coalesced deliveries waiting in this run, including trigger_signal. */
+  trigger_signals?: ConnectorTriggerSignal[];
+  delivery_ids?: string[];
+  trigger_execution?: 'turn' | 'window';
+  trigger_output?: 'silent' | 'reply_to_source';
+  trigger_key?: string;
+  source_fingerprint?: string;
+}
+
+function behaviorEventTriggerKey(trigger: BehaviorEventTrigger): string {
+  return stableJson({
+    kind: 'event',
+    connector_key: trigger.connector_key,
+    connection_id: trigger.connection_id ?? null,
+    event_types: [...trigger.event_types].sort(),
+    match: trigger.match ?? null,
+    execution: trigger.execution ?? 'turn',
+    active_run: trigger.active_run ?? 'queue',
+    output: trigger.output ?? 'silent',
+    skip_if_unchanged: trigger.skip_if_unchanged ?? true,
+  });
+}
+
+const WATCHER_EXECUTION_UNIQUE_INDEX = 'idx_runs_executing_watcher_per_watcher';
+
+/**
+ * Claim one pending Behavior run while holding the durable per-Behavior row
+ * lock. Both the server dispatcher and device poller use this transition so
+ * replicas cannot promote different queued runs from the same Behavior at the
+ * same time.
+ */
+export async function claimPendingWatcherRun(
+  tx: DbClient,
+  params: {
+    runId: number;
+    watcherId: number;
+    claimedBy: string;
+    status: 'claimed' | 'running';
+  }
+): Promise<boolean> {
+  const watcher = await tx`
+    SELECT id
+    FROM watchers
+    WHERE id = ${params.watcherId}
+    FOR UPDATE SKIP LOCKED
+  `;
+  if (watcher.length === 0) return false;
+
+  try {
+    const claimed = await tx.savepoint(
+      async (sp) => sp`
+        UPDATE runs r
+        SET status = ${params.status},
+            claimed_at = current_timestamp,
+            last_heartbeat_at = CASE
+              WHEN ${params.status}::text = 'running' THEN current_timestamp
+              ELSE r.last_heartbeat_at
+            END,
+            claimed_by = ${params.claimedBy}
+        WHERE r.id = ${params.runId}
+          AND r.watcher_id = ${params.watcherId}
+          AND r.run_type = 'watcher'
+          AND r.status = 'pending'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM runs active
+            WHERE active.watcher_id = r.watcher_id
+              AND active.run_type = 'watcher'
+              AND active.status IN ('claimed', 'running')
+          )
+        RETURNING r.id
+      `
+    );
+    return claimed.length > 0;
+  } catch (error) {
+    // During a rolling deployment an older replica may still claim without
+    // taking the watcher row lock. The unique index remains authoritative;
+    // contain that expected contention inside the savepoint and skip the run.
+    if (isUniqueViolation(error, WATCHER_EXECUTION_UNIQUE_INDEX)) return false;
+    throw error;
+  }
 }
 
 // ============================================
@@ -339,6 +425,7 @@ async function createWatcherRunWithClient(
     dispatchSource: WatcherDispatchSource;
     deviceWorkerId?: string | null;
     agentKind?: string | null;
+    sourceFingerprint?: string;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveWatcherRun(sql, params.watcherId);
@@ -382,7 +469,15 @@ async function createWatcherRunWithClient(
     version_id: snapshotVersionId,
     device_worker_id: normalizedDeviceWorkerId,
     agent_kind: normalizedAgentKind,
+    source_fingerprint: params.sourceFingerprint,
   };
+  const idempotencyKey = [
+    'behavior',
+    params.watcherId,
+    params.dispatchSource,
+    params.windowStart,
+    params.windowEnd,
+  ].join(':');
 
   const inserted = await sql`
     INSERT INTO runs (
@@ -392,6 +487,7 @@ async function createWatcherRunWithClient(
       approval_status,
       status,
       approved_input,
+      idempotency_key,
       created_at
     ) VALUES (
       ${params.organizationId},
@@ -400,6 +496,7 @@ async function createWatcherRunWithClient(
       'auto',
       'pending',
       ${sql.json(payload)},
+      ${idempotencyKey},
       current_timestamp
     )
     RETURNING id, status
@@ -425,6 +522,7 @@ export async function createWatcherRun(
     dispatchSource: WatcherDispatchSource;
     deviceWorkerId?: string | null;
     agentKind?: string | null;
+    sourceFingerprint?: string;
   },
   db?: DbClient
 ): Promise<{ runId: number; status: string; created: boolean }> {
@@ -437,8 +535,24 @@ export async function createWatcherRun(
 
     return await sql.begin(async (tx) => createWatcherRunWithClient(tx, params));
   } catch (error) {
-    if (isUniqueViolation(error, 'idx_runs_active_watcher_per_watcher')) {
-      const existing = await findActiveWatcherRun(sql, params.watcherId);
+    if (isUniqueViolation(error, 'runs_idempotency_key_uniq')) {
+      const idempotencyKey = [
+        'behavior',
+        params.watcherId,
+        params.dispatchSource,
+        params.windowStart,
+        params.windowEnd,
+      ].join(':');
+      const rows = await sql`
+        SELECT id, status
+        FROM runs
+        WHERE idempotency_key = ${idempotencyKey}
+          AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+        LIMIT 1
+      `;
+      const existing = rows.length > 0
+        ? { id: Number(rows[0]?.id), status: String(rows[0]?.status) }
+        : null;
       if (existing) {
         logger.info(
           `[queue] Reusing concurrent watcher run ${existing.id} for watcher ${params.watcherId}`
@@ -447,7 +561,222 @@ export async function createWatcherRun(
       }
     }
 
+    // Partial unique index idx_runs_pending_non_event_watcher_per_watcher:
+    // one pending non-event watcher run per watcher. Manual vs scheduled
+    // (different idempotency keys) still collides here under TOCTOU races.
+    if (isUniqueViolation(error, 'idx_runs_pending_non_event_watcher_per_watcher')) {
+      const rows = await sql`
+        SELECT id, status
+        FROM runs
+        WHERE watcher_id = ${params.watcherId}
+          AND run_type = 'watcher'
+          AND watcher_id IS NOT NULL
+          AND status = 'pending'
+          AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
+        LIMIT 1
+      `;
+      const existing = rows.length > 0
+        ? { id: Number(rows[0]?.id), status: String(rows[0]?.status) }
+        : null;
+      if (existing) {
+        logger.info(
+          `[queue] Reusing concurrent pending non-event watcher run ${existing.id} for watcher ${params.watcherId}`
+        );
+        return { runId: existing.id, status: existing.status, created: false };
+      }
+    }
+
     logger.error({ error, watcherId: params.watcherId }, '[queue] Failed to create watcher run');
+    throw error;
+  }
+}
+
+export interface BehaviorEventRunResult {
+  runId: number;
+  status: string;
+  created: boolean;
+  disposition: 'queued' | 'coalesced' | 'duplicate';
+}
+
+/**
+ * Durably materialize a normalized connector signal as a Behavior run. A
+ * per-Behavior transaction lock makes queue/coalesce decisions replica-safe;
+ * delivery_ids in historical runs provide dedupe without a webhook ledger.
+ */
+export async function createBehaviorEventRun(
+  params: {
+    organizationId: string;
+    watcherId: number;
+    agentId: string;
+    trigger: BehaviorEventTrigger;
+    signal: ConnectorTriggerSignal;
+    deviceWorkerId?: string | null;
+    agentKind?: string | null;
+  },
+  db?: DbClient
+): Promise<BehaviorEventRunResult> {
+  const sql = db ?? getDb();
+  const execute = async (tx: DbClient): Promise<BehaviorEventRunResult> => {
+    await tx`
+      SELECT pg_advisory_xact_lock(
+        hashtext('behavior_event_run'),
+        ${params.watcherId}
+      )
+    `;
+
+    const duplicate = await tx`
+      SELECT id, status
+      FROM runs
+      WHERE watcher_id = ${params.watcherId}
+        AND run_type = 'watcher'
+        AND COALESCE(approved_input->'delivery_ids', '[]'::jsonb)
+            @> ${tx.json([params.signal.delivery_id])}::jsonb
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    if (duplicate.length > 0) {
+      return {
+        runId: Number(duplicate[0]?.id),
+        status: String(duplicate[0]?.status),
+        created: false,
+        disposition: 'duplicate',
+      };
+    }
+
+    const policy = params.trigger.active_run ?? 'queue';
+    const triggerKey = behaviorEventTriggerKey(params.trigger);
+    const occurredAt = params.signal.occurred_at
+      ? new Date(params.signal.occurred_at)
+      : new Date();
+    const safeOccurredAt = Number.isNaN(occurredAt.getTime())
+      ? new Date()
+      : occurredAt;
+    const signalWindowStart = safeOccurredAt.toISOString();
+    const signalWindowEnd = new Date(safeOccurredAt.getTime() + 1).toISOString();
+    if (policy === 'coalesce') {
+      const pending = await tx`
+        SELECT id, status, approved_input
+        FROM runs
+        WHERE watcher_id = ${params.watcherId}
+          AND run_type = 'watcher'
+          AND status = 'pending'
+          AND approved_input->>'dispatch_source' = 'event'
+          AND approved_input->>'trigger_key' = ${triggerKey}
+        ORDER BY created_at ASC
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (pending.length > 0) {
+        const input = (pending[0]?.approved_input ?? {}) as WatcherRunPayload;
+        const signals = input.trigger_signals ??
+          (input.trigger_signal ? [input.trigger_signal] : []);
+        const deliveryIds = input.delivery_ids ??
+          signals.map((signal) => signal.delivery_id);
+        const currentWindowStart = Date.parse(input.window_start);
+        const currentWindowEnd = Date.parse(input.window_end);
+        const nextInput: WatcherRunPayload = {
+          ...input,
+          window_start: Number.isFinite(currentWindowStart) &&
+              currentWindowStart <= safeOccurredAt.getTime()
+            ? input.window_start
+            : signalWindowStart,
+          window_end: Number.isFinite(currentWindowEnd) &&
+              currentWindowEnd >= safeOccurredAt.getTime() + 1
+            ? input.window_end
+            : signalWindowEnd,
+          trigger_signals: [...signals, params.signal],
+          delivery_ids: [...deliveryIds, params.signal.delivery_id],
+        };
+        const merged = await tx`
+          UPDATE runs
+          SET approved_input = ${tx.json(nextInput)}
+          WHERE id = ${pending[0]?.id}
+            AND status = 'pending'
+        `;
+        // A zero rowcount means the run left 'pending' between the snapshot
+        // and the merge (only possible for writers outside our advisory
+        // lock, e.g. old pods during a rolling deploy). Fall through and
+        // queue a fresh run rather than dropping the signal.
+        if (merged.count > 0) {
+          return {
+            runId: Number(pending[0]?.id),
+            status: String(pending[0]?.status),
+            created: false,
+            disposition: 'coalesced',
+          };
+        }
+      }
+    }
+
+    const versionRows = await tx`
+      SELECT current_version_id
+      FROM watchers
+      WHERE id = ${params.watcherId}
+      LIMIT 1
+    `;
+    const versionId = versionRows[0]?.current_version_id == null
+      ? null
+      : Number(versionRows[0]?.current_version_id);
+    const payload: WatcherRunPayload = {
+      watcher_id: params.watcherId,
+      agent_id: params.agentId,
+      window_start: signalWindowStart,
+      window_end: signalWindowEnd,
+      dispatch_source: 'event',
+      version_id: versionId,
+      device_worker_id: params.deviceWorkerId ?? null,
+      agent_kind: params.agentKind ?? null,
+      trigger_signal: params.signal,
+      trigger_signals: [params.signal],
+      delivery_ids: [params.signal.delivery_id],
+      trigger_execution: params.trigger.execution ?? 'turn',
+      trigger_output: params.trigger.output ?? 'silent',
+      trigger_key: triggerKey,
+    };
+    const inserted = await tx`
+      INSERT INTO runs (
+        organization_id, run_type, watcher_id, approval_status, status,
+        approved_input, idempotency_key, created_at
+      ) VALUES (
+        ${params.organizationId}, 'watcher', ${params.watcherId}, 'auto',
+        'pending', ${tx.json(payload)},
+        ${`behavior:${params.watcherId}:${params.signal.delivery_id}`},
+        current_timestamp
+      )
+      RETURNING id, status
+    `;
+    return {
+      runId: Number(inserted[0]?.id),
+      status: String(inserted[0]?.status),
+      created: true,
+      disposition: 'queued',
+    };
+  };
+
+  if (db) return execute(sql);
+  try {
+    return await sql.begin(execute);
+  } catch (error) {
+    // Concurrent insert of the same delivery from a writer that did not
+    // serialize on our advisory lock (rolling-deploy old pods). The existing
+    // run is authoritative; report it instead of failing the delivery.
+    if (isUniqueViolation(error, 'runs_idempotency_key_uniq')) {
+      const rows = await sql`
+        SELECT id, status
+        FROM runs
+        WHERE idempotency_key = ${`behavior:${params.watcherId}:${params.signal.delivery_id}`}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      if (rows.length > 0) {
+        return {
+          runId: Number(rows[0]?.id),
+          status: String(rows[0]?.status),
+          created: false,
+          disposition: 'duplicate',
+        };
+      }
+    }
     throw error;
   }
 }

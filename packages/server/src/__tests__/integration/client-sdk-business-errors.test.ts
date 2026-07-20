@@ -46,7 +46,7 @@ describe("ClientSDK business failure boundary", () => {
 				error: expect.stringMatching(/connector.*not found/i),
 			},
 		});
-		expect(result.error?.message).not.toContain("{\"");
+		expect(result.error?.message).not.toContain('{"');
 	});
 
 	it("redacts secrets and bounds structured error details", () => {
@@ -55,15 +55,15 @@ describe("ClientSDK business failure boundary", () => {
 				error: "Provider rejected the request",
 				token: "must-not-cross-the-sandbox",
 				nested: { authorization: "Bearer secret", retryable: true },
-			}),
+			})
 		).toEqual({
 			error: "Provider rejected the request",
 			token: "[redacted]",
 			nested: { authorization: "[redacted]", retryable: true },
 		});
-		expect(
-			safeErrorDetails({ payload: "x".repeat(20_000) }),
-		).toMatchObject({ truncated: true });
+		expect(safeErrorDetails({ payload: "x".repeat(20_000) })).toMatchObject({
+			truncated: true,
+		});
 	});
 
 	it("does not throw on BigInt or circular structured error details", () => {
@@ -80,7 +80,7 @@ describe("ClientSDK business failure boundary", () => {
 			self: "[circular]",
 		});
 		expect(
-			Buffer.byteLength(JSON.stringify(details), "utf8"),
+			Buffer.byteLength(JSON.stringify(details), "utf8")
 		).toBeLessThanOrEqual(16_384);
 	});
 
@@ -103,18 +103,18 @@ describe("ClientSDK business failure boundary", () => {
 		await expect(promise).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "create",
-			message: "Watcher not found: 999999",
+			message: "Behavior not found: 999999",
 			httpStatus: 400,
 		});
 	});
 
 	it("throws when watchers.delete returns an all-failed aggregate", async () => {
 		await expect(
-			workspace.owner.watchers.delete({ watcher_ids: ["999999"] }),
+			workspace.owner.behaviors.delete({ watcher_ids: ["999999"] })
 		).rejects.toMatchObject({
 			name: "ClientSdkActionError",
 			action: "delete",
-			message: "Watcher not found or already archived",
+			message: "Behavior not found or already archived",
 			httpStatus: 400,
 		});
 	});

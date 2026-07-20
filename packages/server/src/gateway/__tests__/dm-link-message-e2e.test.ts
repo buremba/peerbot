@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { CommandRegistry } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
@@ -36,10 +37,24 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
     const code = `crm-${suffix}`;
     const agentId = `agent-msg-e2e-${Date.now()}`;
     const organizationId = `org-msg-e2e-${Date.now()}`;
+    const createdBy = `user-msg-e2e-${Date.now()}`;
+    const memberId = `member-msg-e2e-${Date.now()}`;
     const channelId = `D${Date.now().toString(36)}`;
     const canonical = `slack:${channelId}`;
 
     await seedAgentRow(agentId, { organizationId });
+		await sql`
+			INSERT INTO "user" (
+				id, email, name, username, "emailVerified", "createdAt", "updatedAt"
+			) VALUES (
+				${createdBy}, ${`${createdBy}@example.test`}, 'Message E2E',
+				${createdBy}, true, now(), now()
+			)
+		`;
+		await sql`
+			INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+			VALUES (${memberId}, ${organizationId}, ${createdBy}, 'owner', now())
+		`;
 		const [connectionRow] = await sql`
       INSERT INTO connections (
         organization_id, connector_key, slug, display_name, status,
@@ -57,7 +72,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
         ${sql.json({
           organizationId,
           agentId,
-          createdBy: null,
+          createdBy,
           allowedSurfaces: ["dm", "channel"],
           createdAt: Date.now(),
         })},
@@ -71,8 +86,8 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
       const dispatcher = new CommandDispatcher({
         registry,
-				channelBindingService: {
-					getBindingForConnection: mock(async () => null),
+				behaviorSubscriptionService: {
+					resolveForConnection: mock(async () => null),
 				} as never,
       });
 
@@ -94,8 +109,8 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       const services = {
         getArtifactStore: () => null,
         getPublicGatewayUrl: () => "https://gateway.example.com",
-				getChannelBindingService: () => ({
-					getBindingForConnection: mock(async () => null),
+				getBehaviorSubscriptionService: () => ({
+					resolveForConnection: mock(async () => null),
 				}),
         getAgentMetadataStore: () => undefined,
         getUserAgentsStore: () => undefined,
@@ -152,19 +167,32 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
         SELECT 1 FROM oauth_states WHERE id = ${codeHash(code)}
       `;
       expect(remaining.length).toBe(0);
-      const binding = (await sql`
-        SELECT agent_id, organization_id FROM agent_channel_bindings
-        WHERE platform = 'slack' AND channel_id = ${canonical} AND team_id = 'T_E2E'
-      `) as Array<{ agent_id: string; organization_id: string }>;
+      const binding = await listTestBehaviorSubscriptions({
+        platform: "slack",
+        channelId: canonical,
+        teamId: "T_E2E",
+      });
       expect(binding.length).toBe(1);
       expect(binding[0]?.agent_id).toBe(agentId);
       expect(binding[0]?.organization_id).toBe(organizationId);
     } finally {
-      await sql`DELETE FROM agent_channel_bindings WHERE channel_id = ${canonical}`;
+			await sql`
+				DELETE FROM watchers
+				WHERE EXISTS (
+					SELECT 1
+					FROM jsonb_array_elements(COALESCE(triggers, '[]'::jsonb)) trigger
+					WHERE COALESCE(
+						NULLIF(trigger->'match'->>'channel_key', ''),
+						(trigger->>'connector_key') || ':' || (trigger->'match'->>'channel_id')
+					) = ${canonical}
+				)
+			`;
 			await sql`DELETE FROM connections WHERE id = ${connectionRow.id}`;
       await sql`DELETE FROM oauth_states WHERE id = ${codeHash(code)}`;
       await sql`DELETE FROM agents WHERE id = ${agentId} AND organization_id = ${organizationId}`;
+			await sql`DELETE FROM member WHERE id = ${memberId}`;
       await sql`DELETE FROM organization WHERE id = ${organizationId}`;
+			await sql`DELETE FROM "user" WHERE id = ${createdBy}`;
     }
   });
 });

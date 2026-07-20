@@ -18,7 +18,7 @@ type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
  * no notion of watchers/complete_window, so a worker-side self-nudge would
  * break that isolation. This constant is the GLOBAL default; a watcher can
  * override it via execution_config.finalize_nudges (see
- * resolveFinalizeNudgeBudget). A declarative defineWatcher surface for it is
+ * resolveFinalizeNudgeBudget). A declarative defineBehavior surface for it is
  * the remaining follow-up (the CLI doesn't expose execution_config yet).
  */
 const MAX_FINALIZE_NUDGES: number = (() => {
@@ -34,7 +34,7 @@ const MAX_FINALIZE_NUDGES: number = (() => {
  * Clamped defensively in case a raw DB value sits outside the schema's range.
  */
 function resolveFinalizeNudgeBudget(
-	executionConfig: Record<string, unknown> | null | undefined,
+	executionConfig: Record<string, unknown> | null | undefined
 ): number {
 	const override = executionConfig?.finalize_nudges;
 	if (typeof override === "number" && Number.isFinite(override)) {
@@ -45,7 +45,7 @@ function resolveFinalizeNudgeBudget(
 
 export async function findWindowIdForRun(
 	sql: DbClient,
-	runId: number,
+	runId: number
 ): Promise<number | null> {
 	// Canvas-on-events: a run produced a window iff a canvas chain member carries
 	// this run_id (stamped atomically inside complete_window's tx). A fresh
@@ -69,7 +69,7 @@ export async function findWindowIdForRun(
 export async function markWatcherRunCompleted(
 	sql: DbClient,
 	runId: number,
-	windowId: number | null,
+	windowId: number | null
 ): Promise<void> {
 	await sql`
     UPDATE runs
@@ -85,7 +85,7 @@ export async function markWatcherRunCompleted(
 async function markWatcherRunFailed(
 	sql: DbClient,
 	runId: number,
-	message: string,
+	message: string
 ): Promise<void> {
 	await sql`
     UPDATE runs
@@ -108,7 +108,7 @@ async function markWatcherRunFailed(
 async function requeueWatcherRunForFinalizeNudge(
 	sql: DbClient,
 	runId: number,
-	nextNudgeCount: number,
+	nextNudgeCount: number
 ): Promise<void> {
 	await sql`
     UPDATE runs
@@ -130,7 +130,7 @@ async function requeueWatcherRunForFinalizeNudge(
 export async function resolveWatcherRunsByMessageIds(
 	messageIds: Iterable<string>,
 	result: WatcherTerminalResult,
-	db?: DbClient,
+	db?: DbClient
 ): Promise<{ resolved: number }> {
 	const ids = Array.from(new Set(Array.from(messageIds).filter(Boolean)));
 	if (ids.length === 0) return { resolved: 0 };
@@ -161,6 +161,12 @@ export async function resolveWatcherRunsByMessageIds(
 			continue;
 		}
 
+		if (typedRow.approved_input?.trigger_execution === "turn") {
+			await markWatcherRunCompleted(sql, runId, null);
+			resolved++;
+			continue;
+		}
+
 		const windowId = await findWindowIdForRun(sql, runId);
 		if (windowId === null) {
 			// The agent replied but never called complete_window — a soft, usually
@@ -169,13 +175,13 @@ export async function resolveWatcherRunsByMessageIds(
 			// (execution_config.finalize_nudges) with a global fallback.
 			const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
 			const nudgeCount = Number(
-				typedRow.approved_input?.finalize_nudge_count ?? 0,
+				typedRow.approved_input?.finalize_nudge_count ?? 0
 			);
 			if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
 				await requeueWatcherRunForFinalizeNudge(sql, runId, nudgeCount + 1);
 				logger.info(
 					{ run_id: runId, attempt: nudgeCount + 1, max: budget },
-					"[watchers] Agent finished without complete_window — re-dispatching for finalize nudge",
+					"[watchers] Agent finished without complete_window — re-dispatching for finalize nudge"
 				);
 				resolved++;
 				continue;
@@ -184,10 +190,10 @@ export async function resolveWatcherRunsByMessageIds(
 			await markWatcherRunFailed(
 				sql,
 				runId,
-				"Agent reply finished without calling run_sdk (client.watchers.completeWindow)" +
+				"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
 					(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
 					". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
-					"run_sdk tools are approved for it.",
+					"run_sdk tools are approved for it."
 			);
 			resolved++;
 			continue;

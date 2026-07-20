@@ -1,5 +1,5 @@
 /**
- * Escalation guard on manage_watchers (codex review 9, P1).
+ * Escalation guard on manage_behaviors (codex review 9, P1).
  *
  * A watcher's `agent_id` IS its policy principal — every write the watcher performs
  * folds that agent's envelope. So a NON-HUMAN caller must not be able to set/change
@@ -46,10 +46,10 @@ function agentCtx(orgId: string, userId: string, agentId: string): AuthContext {
 async function createWatcherAs(
 	ctx: AuthContext,
 	agentIdForWatcher: string,
-	slug: string,
+	slug: string
 ) {
 	return executeTool(
-		"manage_watchers",
+		"manage_behaviors",
 		{
 			action: "create",
 			slug,
@@ -58,11 +58,11 @@ async function createWatcherAs(
 			agent_id: agentIdForWatcher,
 		},
 		TEST_ENV,
-		ctx,
+		ctx
 	);
 }
 
-describe("manage_watchers owner-escalation guard", () => {
+describe("manage_behaviors owner-escalation guard", () => {
 	let workspace: TestWorkspace;
 	let agentA: string;
 	let agentB: string;
@@ -87,13 +87,15 @@ describe("manage_watchers owner-escalation guard", () => {
 			createWatcherAs(
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
 				agentB,
-				"escalation-attempt",
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				"escalation-attempt"
+			)
+		).rejects.toThrow(
+			/cannot install a Behavior owned by another agent/i
+		);
 	});
 
 	it("a HUMAN may assign a watcher to any agent (ungoverned)", async () => {
-		const created = (await workspace.owner.watchers.create({
+		const created = (await workspace.owner.behaviors.create({
 			slug: "human-assigns-b",
 			name: "human-assigns-b",
 			prompt: "Track things.",
@@ -112,7 +114,7 @@ describe("manage_watchers owner-escalation guard", () => {
 			type: "company",
 			name: "Clone Target",
 		})) as { entity: { id: number } };
-		const bWatcher = (await workspace.owner.watchers.create({
+		const bWatcher = (await workspace.owner.behaviors.create({
 			slug: "b-owned-source",
 			name: "b-owned-source",
 			prompt: "Track things.",
@@ -125,20 +127,22 @@ describe("manage_watchers owner-escalation guard", () => {
 		// owner. The guard resolves the effective (inherited) owner and blocks it.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "create_from_version",
 					version_id: String(ver.id),
 					entity_ids: [target.entity.id],
 				},
 				TEST_ENV,
-				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install a Behavior owned by another agent/i
+		);
 	});
 
 	it("blocks agent A from EDITING agent B's watcher (preserved owner, no agent_id)", async () => {
-		const bWatcher = (await workspace.owner.watchers.create({
+		const bWatcher = (await workspace.owner.behaviors.create({
 			slug: "b-owned-edit",
 			name: "b-owned-edit",
 			prompt: "Track things.",
@@ -148,16 +152,18 @@ describe("manage_watchers owner-escalation guard", () => {
 		// preserved effective owner (B) isn't A.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "update",
 					watcher_id: bWatcher.watcher_id,
-					schedule: "0 9 * * *",
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
 				TEST_ENV,
-				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install a Behavior owned by another agent/i
+		);
 	});
 
 	it("create_from_version STILL blocked when A passes agent_id=A (handler ignores it, clone inherits B) (codex-12)", async () => {
@@ -169,7 +175,7 @@ describe("manage_watchers owner-escalation guard", () => {
 			type: "company",
 			name: "Clone Target 2",
 		})) as { entity: { id: number } };
-		const bWatcher = (await workspace.owner.watchers.create({
+		const bWatcher = (await workspace.owner.behaviors.create({
 			slug: "b-owned-source-2",
 			name: "b-owned-source-2",
 			prompt: "Track things.",
@@ -182,7 +188,7 @@ describe("manage_watchers owner-escalation guard", () => {
 		// IGNORES it and clones B's owner, so the guard must resolve the SOURCE owner.
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "create_from_version",
 					version_id: String(ver.id),
@@ -190,16 +196,18 @@ describe("manage_watchers owner-escalation guard", () => {
 					agent_id: agentA,
 				},
 				TEST_ENV,
-				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install a Behavior owned by another agent/i
+		);
 	});
 
 	it("set_reaction_script on A's own watcher is blocked when its GROUP also contains a B-owned assignment (codex-12)", async () => {
 		// A owns watcher wA; a human adds a SECOND assignment owned by B into wA's group
 		// (same watcher_group_id). set_reaction_script writes group-wide → it would
 		// rewrite B's reaction code too. A editing "its own" watcher must be blocked.
-		const wA = (await workspace.owner.watchers.create({
+		const wA = (await workspace.owner.behaviors.create({
 			slug: "a-owned-grouproot",
 			name: "a-owned-grouproot",
 			prompt: "Track things.",
@@ -208,7 +216,7 @@ describe("manage_watchers owner-escalation guard", () => {
 		// Add a B-owned sibling into wA's group. Create it via the normal CRUD path
 		// (so all its rows/triggers are consistent), then move it into wA's group with
 		// a direct UPDATE — a raw watcher INSERT trips unrelated sequence collisions.
-		const bSibling = (await workspace.owner.watchers.create({
+		const bSibling = (await workspace.owner.behaviors.create({
 			slug: "b-sibling",
 			name: "b-sibling",
 			prompt: "Track things.",
@@ -223,15 +231,17 @@ describe("manage_watchers owner-escalation guard", () => {
     `;
 		await expect(
 			executeTool(
-				"manage_watchers",
+				"manage_behaviors",
 				{
 					action: "set_reaction_script",
 					watcher_id: wA.watcher_id,
 					reaction_script: "export default async () => {};",
 				},
 				TEST_ENV,
-				agentCtx(workspace.org.id, workspace.users.owner.id, agentA),
-			),
-		).rejects.toThrow(/cannot install watcher behavior owned by another agent/i);
+				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
+			)
+		).rejects.toThrow(
+			/cannot install a Behavior owned by another agent/i
+		);
 	});
 });

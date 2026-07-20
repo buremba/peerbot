@@ -710,7 +710,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
+			getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";
@@ -972,7 +972,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			getPublicGatewayUrl: () => "",
 			getSecretStore: () => secretStore,
 			getConnectionStore: () => connectionStore,
-			getChannelBindingService: () => ({ getBindingForConnection: async () => null }),
+			getBehaviorSubscriptionService: () => ({ resolveForConnection: async () => null }),
 			getCommandRegistry: () => undefined,
 		};
 		manager.publicGatewayUrl = "";
@@ -1031,18 +1031,51 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		return id;
 	}
 
-	test("a signed GitHub delivery to a connector connection lands via the bridge", async () => {
+	test("a signed GitHub delivery to a connector connection marks the feed due (poll-canonical)", async () => {
+		// Clean-cut: OAuth/PAT GitHub webhooks do NOT raw-store under webhook:<id>.
+		// They mark the matching feed due so CheckDueFeeds + poll attach
+		// behavior_signals — same contract as app-webhooks trigger mode.
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const { manager, secretStore } = await buildManager();
 		const { createConnectionWebhookRoutes } = await import(
 			"../routes/public/connections.js"
 		);
+		const { getDb } = await import("../../db/client.js");
 		const id = await seedRegisteredConnectorConnection(secretStore);
-		const app = createConnectionWebhookRoutes(manager);
 
+		// Route map + feed the delivery should wake.
+		await getDb()`
+			INSERT INTO connector_definitions (
+				organization_id, key, name, status, feeds_schema
+			) VALUES (
+				${ORG}, 'github', 'GitHub', 'active',
+				${getDb().json({
+					issues: {
+						webhook: { events: ["issues"], mode: "trigger" },
+					},
+					pull_requests: {
+						webhook: { events: ["pull_request"], mode: "trigger" },
+					},
+				})}
+			)
+		`;
+		const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+		await getDb()`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, status, kind,
+				config, next_run_at, created_at, updated_at
+			) VALUES (
+				${ORG}, ${id}, 'issues', 'active', 'collected',
+				${getDb().json({ repo_owner: "lobu-ai", repo_name: "lobu" })},
+				${future}::timestamptz, current_timestamp, current_timestamp
+			)
+		`;
+
+		const app = createConnectionWebhookRoutes(manager);
 		const raw = JSON.stringify({
 			action: "opened",
 			issue: { number: 7, title: "Bridge works" },
+			repository: { full_name: "lobu-ai/lobu", name: "lobu", owner: { login: "lobu-ai" } },
 		});
 		const res = await app.fetch(
 			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
@@ -1057,18 +1090,21 @@ describe("connector-connection webhook bridge (connections table)", () => {
 			}),
 		);
 		expect(res.status).toBe(202);
+		const body = (await res.json()) as { ok: boolean; triggered?: boolean };
+		expect(body.ok).toBe(true);
+		expect(body.triggered).toBe(true);
 
+		// No raw webhook:<id> event — poll will produce the canonical github row.
 		const rows = await eventRows(id);
-		expect(rows.length).toBe(1);
-		// connector_key = webhook:<connId> so the existing dedupe index applies.
-		expect(rows[0].connector_key).toBe(`webhook:${id}`);
-		expect(rows[0].origin_id).toBe("gh-bridge-1");
-		expect(rows[0].semantic_type).toBe("issue");
-		expect(rows[0].organization_id).toBe(ORG);
-		expect(rows[0].payload_data).toEqual({
-			action: "opened",
-			issue: { number: 7, title: "Bridge works" },
-		});
+		expect(rows.length).toBe(0);
+
+		const [feed] = await getDb()`
+			SELECT next_run_at FROM feeds
+			WHERE connection_id = ${id} AND feed_key = 'issues'
+		`;
+		expect(new Date(String(feed.next_run_at)).getTime()).toBeLessThanOrEqual(
+			Date.now() + 1000,
+		);
 	});
 
 	test("a forged signature to a connector connection is rejected with 401", async () => {
@@ -1095,18 +1131,51 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		expect((await eventRows(id)).length).toBe(0);
 	});
 
-	test("a redelivery (same delivery id) dedupes to one event", async () => {
+	test("a redelivery is idempotent (marks feed due, never raw-stores)", async () => {
+		// GitHub connector webhooks are poll-canonical: redeliveries re-stamp
+		// next_run_at and never accumulate webhook:<id> event rows.
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const { manager, secretStore } = await buildManager();
 		const { createConnectionWebhookRoutes } = await import(
 			"../routes/public/connections.js"
 		);
+		const { getDb } = await import("../../db/client.js");
 		const id = await seedRegisteredConnectorConnection(secretStore);
+		await getDb()`
+			INSERT INTO connector_definitions (
+				organization_id, key, name, status, feeds_schema
+			) VALUES (
+				${ORG}, 'github', 'GitHub', 'active',
+				${getDb().json({
+					issues: { webhook: { events: ["issues"], mode: "trigger" } },
+				})}
+			)
+		`;
+		await getDb()`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, status, kind,
+				config, next_run_at, created_at, updated_at
+			) VALUES (
+				${ORG}, ${id}, 'issues', 'active', 'collected',
+				${getDb().json({ repo_owner: "acme", repo_name: "api" })},
+				current_timestamp + interval '1 hour',
+				current_timestamp, current_timestamp
+			)
+		`;
 		const app = createConnectionWebhookRoutes(manager);
 
-		const raw = JSON.stringify({ action: "edited", issue: { number: 9 } });
+		const raw = JSON.stringify({
+			action: "edited",
+			issue: { number: 9 },
+			repository: {
+				full_name: "acme/api",
+				name: "api",
+				owner: { login: "acme" },
+			},
+		});
 		const headers = {
 			"content-type": "application/json",
+			"x-github-event": "issues",
 			"x-github-delivery": "gh-dupe-1",
 			"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
 		};
@@ -1126,7 +1195,7 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		);
 		expect(first.status).toBe(202);
 		expect(second.status).toBe(202);
-		expect((await eventRows(id)).length).toBe(1);
+		expect((await eventRows(id)).length).toBe(0);
 	});
 
 	test("a connector connection with no registered webhook 404s (no blind accept)", async () => {

@@ -47,18 +47,20 @@ describe("catalog/load", () => {
 		clearCatalogCacheForTests();
 	});
 
-	it("serves bundled watcher templates when LOBU_CATALOG_URIS is unset", async () => {
+	it("serves bundled Behavior templates when LOBU_CATALOG_URIS is unset", async () => {
 		const prev = process.env.LOBU_CATALOG_URIS;
 		delete process.env.LOBU_CATALOG_URIS;
 		clearCatalogCacheForTests();
 
-		const entries = await listCatalogEntries(["watchers"]);
-		expect(entries.watchers.length).toBeGreaterThan(0);
-		const first = entries.watchers[0];
+		const entries = await listCatalogEntries(["behaviors"]);
+		expect(entries.behaviors.length).toBeGreaterThan(0);
+		const first = entries.behaviors[0];
 		expect(first?.id).toBeTruthy();
 		expect(first?.name).toBeTruthy();
-		// detail mirrors the watcher create-form fields (used for prefill)
+		// detail mirrors manage_behaviors create fields (used for prefill)
 		expect(first?.detail.prompt).toBeTruthy();
+		expect(first?.detail.triggers).toBeTruthy();
+		expect(first?.detail.schedule).toBeUndefined();
 
 		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;
 		else process.env.LOBU_CATALOG_URIS = prev;
@@ -79,7 +81,7 @@ describe("catalog/load", () => {
 					{ id: "acme", name: "Acme Duplicate", detail: {} },
 					{ id: "beta", name: "Beta", detail: {} },
 				],
-			}),
+			})
 		);
 		process.env.LOBU_CATALOG_URIS = manifestPath;
 		clearCatalogCacheForTests();
@@ -91,7 +93,7 @@ describe("catalog/load", () => {
 			"beta",
 		]);
 		expect(entries.connectors.find((entry) => entry.id === "acme")?.name).toBe(
-			"Acme One",
+			"Acme One"
 		);
 
 		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;

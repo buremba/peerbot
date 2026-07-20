@@ -14,7 +14,7 @@ import type {
   RemoteInferenceProvider,
   RemotePlatform,
   RemoteRelationshipType,
-  RemoteWatcher,
+  RemoteBehavior,
 } from "./client.js";
 import type {
   DesiredAgent,
@@ -81,7 +81,7 @@ export interface RelationshipTypeDiffRow
 }
 
 export interface WatcherDiffRow
-  extends ResourceRow<DesiredWatcher, RemoteWatcher> {
+  extends ResourceRow<DesiredWatcher, RemoteBehavior> {
   kind: "watcher";
   /**
    * Field names that require a `create_version` + `upgrade` (vs a plain
@@ -549,18 +549,18 @@ function diffRelationshipType(
 
 /**
  * Watcher drift fields split into two routing categories:
- *   - **scalar** lives on the `watchers` row → `manage_watchers update`.
+ *   - **scalar** lives on the `watchers` row → `manage_behaviors update`.
  *   - **version-bound** lives on the `watcher_versions` row → must go through
  *     `create_version` + `upgrade` (server-side bumps `current_version_id`).
  * The diff returns both lists; apply-cmd routes accordingly.
  *
- * Reaction scripts aren't returned by `list_watchers` (write-only on the row),
+ * Reaction scripts aren't returned by Behavior lists (write-only on the row),
  * so we can't compare them — apply always re-pushes when declared (idempotent).
  * Remote watchers without a desired model are reported as drift, never deleted.
  */
 function diffWatcher(
   desired: DesiredWatcher,
-  remote: RemoteWatcher | undefined
+  remote: RemoteBehavior | undefined
 ): WatcherDiffRow {
   const reactionScriptDeclared = desired.reactionScript !== undefined;
   if (!remote) {
@@ -574,8 +574,8 @@ function diffWatcher(
   }
 
   const scalar: string[] = [];
-  if ((desired.schedule ?? null) !== (remote.schedule ?? null)) {
-    scalar.push("schedule");
+  if (!deepEqual(desired.triggers ?? [], remote.triggers ?? [])) {
+    scalar.push("triggers");
   }
   if (desired.agent !== (remote.agent_id ?? "")) {
     scalar.push("agent_id");
@@ -938,7 +938,7 @@ export interface RemoteSnapshot {
   platformsByAgent: Map<string, RemotePlatform[]>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
-  watchers: RemoteWatcher[];
+  watchers: RemoteBehavior[];
   connectorDefinitions: RemoteConnectorDefinition[];
   authProfiles: RemoteAuthProfile[];
   connections: RemoteConnection[];

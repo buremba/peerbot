@@ -132,7 +132,7 @@ async function main(): Promise<void> {
 			// itself before the schema-version gate runs — otherwise a fresh/empty
 			// external Postgres throws `relation "schema_migrations" does not exist`.
 			// The CLI sets LOBU_RUN_OWNS_DB=1 when it spawns this bundle. Prod never
-			// sets it: there a separate dbmate migration Job applies migrations, and
+			// sets it: there a separate production migration Job applies migrations, and
 			// the app only asserts the DB is up to date (below). runMigrations is
 			// idempotent, so replaying against an already-migrated DB is a no-op.
 			if (process.env.LOBU_RUN_OWNS_DB === "1") {

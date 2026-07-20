@@ -71,13 +71,13 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 
 	it("catalog.listCatalog dispatches cleanly", async () => {
 		await expect(
-			sdk.catalog.listCatalog({ kinds: ["connectors"] }),
+			sdk.catalog.listCatalog({ kinds: ["connectors"] })
 		).resolves.toBeDefined();
 	});
 
 	it("catalog.listInstalled dispatches cleanly", async () => {
 		await expect(
-			sdk.catalog.listInstalled({ kinds: ["connectors"] }),
+			sdk.catalog.listInstalled({ kinds: ["connectors"] })
 		).resolves.toBeDefined();
 	});
 
@@ -123,8 +123,8 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 		expect(out).toMatchObject({ schedules: expect.any(Array) });
 	});
 
-	it("watchers.list dispatches cleanly", async () => {
-		await expect(sdk.watchers.list()).resolves.toBeDefined();
+	it("behaviors.list dispatches cleanly", async () => {
+		await expect(sdk.behaviors.list()).resolves.toBeDefined();
 	});
 
 	it("classifiers.list dispatches cleanly", async () => {
@@ -148,7 +148,7 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
 
 	it("knowledge.search dispatches cleanly", async () => {
 		await expect(
-			sdk.knowledge.search({ query: "nothing-here-likely" }),
+			sdk.knowledge.search({ query: "nothing-here-likely" })
 		).resolves.toBeDefined();
 	});
 

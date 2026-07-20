@@ -3,7 +3,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 
@@ -1113,11 +1113,11 @@ const transfer_pair = defineRelationshipType({
     "Two transactions are the two legs of an internal transfer between accounts the same subject controls (e.g. Jane's current → Jane's savings). Salary or distributions crossing subject boundaries (Ltd current → Jane personal) are NOT internal transfers and must not be linked here. Symmetric. When this link exists, neither side counts as taxable income or as an allowable expense.",
 });
 
-const gmail_txWatcher = defineWatcher({
+const gmailTxBehavior = defineBehavior({
   agent: personal_finance,
   slug: "gmail-tx",
   name: "Gmail financial-event extractor",
-  schedule: "*/30 * * * *",
+  triggers: [{ kind: "schedule", cron: "*/30 * * * *" }],
   notification: { priority: "low" },
   minCooldownSeconds: 300,
   tags: ["personal-finance", "gmail", "ingestion"],
@@ -1131,11 +1131,11 @@ const gmail_txWatcher = defineWatcher({
     'You are a private financial accountant scanning the user\'s forwarded Gmail messages for events that matter to a UK Self Assessment return.\n\n## Recent emails\n{{#if sources.gmail_messages}}\n{{sources.gmail_messages}}\n{{else}}\nNo new messages this window.\n{{/if}}\n\n## Active tax year\n{{#if entities}}\n{{#each entities}}\n- {{name}} ({{entity_type}}, ID: {{id}})\n{{/each}}\n{{else}}\nNo tax year context provided.\n{{/if}}\n\n---\n\nIdentify and extract financial events. Each email may yield zero, one, or many events. Be conservative: skip noise (marketing, password resets, etc.).\n\nCategories to extract:\n- **transactions** — deposits, debits, transfers, salary credits, dividend payments hitting an account\n- **cgt_events** — broker contract notes for sells/disposals, gifts, transfers out of a GIA\n- **dividends** — UK or foreign dividend notifications (gross + currency)\n- **documents** — P60/P45/P11D/SA302/contract notes/mortgage statements arriving as attachments or linked PDFs\n\nFor each item, include the source `gmail_message_id` so we can link provenance. Prefer GBP unless the message clearly states a different currency.\n\nSkip transactions inside ISAs and SIPPs unless they are dividends or contributions (which are still reportable). Mark `tax_relevance="none"` for ISA-internal transactions; mark `tax_relevance="cgt"` for non-wrapper disposals.\n',
 });
 
-const net_worth_watcher = defineWatcher({
+const netWorthBehavior = defineBehavior({
   agent: personal_finance,
   slug: "net-worth",
   name: "Net Worth Aggregator",
-  schedule: "*/15 * * * *",
+  triggers: [{ kind: "schedule", cron: "*/15 * * * *" }],
   notification: { priority: "low" },
   minCooldownSeconds: 60,
   tags: ["net-worth", "assets", "revolut", "midas"],
@@ -1200,5 +1200,5 @@ export default defineConfig({
     spouse_of,
     transfer_pair,
   ],
-  watchers: [gmail_txWatcher, net_worth_watcher],
+  behaviors: [gmailTxBehavior, netWorthBehavior],
 });

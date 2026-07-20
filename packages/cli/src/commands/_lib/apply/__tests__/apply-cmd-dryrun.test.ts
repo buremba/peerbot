@@ -74,7 +74,12 @@ ${extra ? `${extra}\n` : ""}  agents: [defineAgent({ id: ${JSON.stringify(agentI
 }
 
 function makeAuthFetch(
-  orgs: Array<{ id: string; slug: string; name?: string }>
+  orgs: Array<{ id: string; slug: string; name?: string }>,
+  connections: Array<{
+    id: number;
+    slug: string;
+    connector_key: string;
+  }> = []
 ) {
   /**
    * A minimal fetch stub that handles the OAuth userinfo endpoint (for org
@@ -115,14 +120,17 @@ function makeAuthFetch(
       }
     }
     if (method === "POST") {
+      if (urlStr.includes("/manage_connections")) {
+        return new Response(JSON.stringify({ connections }), { status: 200 });
+      }
       if (urlStr.includes("/manage_entity_schema")) {
         return new Response(
           JSON.stringify({ entity_types: [], relationship_types: [] }),
           { status: 200 }
         );
       }
-      if (urlStr.includes("/watchers")) {
-        return new Response(JSON.stringify({ watchers: [] }), { status: 200 });
+      if (urlStr.includes("/behaviors")) {
+        return new Response(JSON.stringify({ behaviors: [] }), { status: 200 });
       }
     }
 
@@ -167,7 +175,7 @@ describe("applyCommand --dry-run", () => {
       fetchImpl: fetchStub,
     });
 
-    // The snapshot phase uses POST for manage_entity_schema (list), manage_watchers,
+    // The snapshot phase uses POST for manage_entity_schema (list), manage_behaviors,
     // manage_connections (list) — these are read-only POSTs. The key invariant is:
     // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no platform
     // upsert (PUT .../platforms/by-stable-id/...), no settings patch, no watcher
@@ -181,7 +189,7 @@ describe("applyCommand --dry-run", () => {
       if (c.method === "POST") {
         // List-action POSTs are OK (snapshot)
         if (c.url.includes("manage_entity_schema")) return false;
-        if (c.url.includes("manage_watchers")) return false;
+        if (c.url.includes("manage_behaviors")) return false;
         if (c.url.includes("manage_connections")) return false;
         if (c.url.includes("manage_feeds")) return false;
         if (c.url.includes("manage_auth_profiles")) return false;
@@ -192,6 +200,57 @@ describe("applyCommand --dry-run", () => {
     });
 
     expect(writingCalls).toEqual([]);
+  });
+
+  test("--only memory fetches connection IDs for Behaviors without reconciling connectors", async () => {
+    const dir =
+      mkProject(`import { defineAgent, defineBehavior, defineConfig, defineConnection } from "@lobu/cli/config";
+const agent = defineAgent({ id: "triage", dir: "./agents/triage" });
+const github = defineConnection({ slug: "github-main", connector: "github" });
+export default defineConfig({
+  agents: [agent],
+  connections: [github],
+  behaviors: [defineBehavior({
+    agent,
+    slug: "review-pr",
+    prompt: "Review it",
+    triggers: [{
+      kind: "event",
+      connector_key: "github",
+      connection: github,
+      event_types: ["pull_request.created"],
+      execution: "turn",
+      active_run: "queue",
+      output: "silent",
+    }],
+  })],
+});
+`);
+    mkdirSync(join(dir, "agents", "triage"), { recursive: true });
+    const { fetchStub, mutateCalls } = makeAuthFetch(
+      [{ id: "org_1", slug: "acme", name: "Acme" }],
+      [{ id: 91, slug: "github-main", connector_key: "github" }]
+    );
+
+    await applyCommand({
+      cwd: dir,
+      dryRun: true,
+      yes: true,
+      only: "memory",
+      url: "https://app.lobu.ai",
+      org: "acme",
+      fetchImpl: fetchStub,
+    });
+
+    expect(
+      mutateCalls.filter((call) => call.url.includes("/manage_connections"))
+    ).toHaveLength(1);
+    expect(
+      mutateCalls.some((call) => call.url.includes("/manage_catalog"))
+    ).toBe(false);
+    expect(
+      mutateCalls.some((call) => call.url.includes("/manage_auth_profiles"))
+    ).toBe(false);
   });
 });
 

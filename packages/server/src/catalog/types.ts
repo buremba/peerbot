@@ -2,9 +2,9 @@
  * Unified catalog model:
  *
  * - **Global catalog** (`list_catalog` / GET /catalog): manifest files only
- *   (`LOBU_CATALOG_URIS`). Kinds: `connectors`, `skills`, `watchers`. No DB.
- *   Watcher entries are reusable templates browsed via the "From catalog"
- *   create flow; their `detail` mirrors the watcher create form fields.
+ *   (`LOBU_CATALOG_URIS`). Kinds: `connectors`, `skills`, `behaviors`. No DB.
+ *   Behavior entries are reusable templates browsed via the "From catalog"
+ *   create flow; their `detail` mirrors the Behavior create form fields.
  *
  * - **Installed overlay** (`list_installed` / GET /installed): org or agent
  *   state layered on top of catalog browse. Pass `include=catalog` (HTTP) or
@@ -13,7 +13,7 @@
  *   | Kind        | Installed source                                      | Catalog DB? |
  *   |-------------|-------------------------------------------------------|-------------|
  *   | connectors  | `connector_definitions` (+ versions) per org          | yes         |
- *   | watchers    | watcher inventory rows                                | yes (rows)  |
+ *   | behaviors   | Behavior inventory rows                               | yes (rows)  |
  *   | skills      | agent `skillsConfig` in settings                      | no          |
  *   | providers   | agent `models` slug prefixes + module registry metadata | no        |
  *   | guardrails  | agent `guardrails` enable list + gateway registry     | no          |
@@ -23,17 +23,13 @@
  */
 export const CATALOG_MANIFEST_VERSION = 1;
 
-export const CATALOG_KINDS = ["connectors", "skills", "watchers"] as const;
+export const CATALOG_KINDS = ['connectors', 'skills', 'behaviors'] as const;
 export type CatalogKind = (typeof CATALOG_KINDS)[number];
 
-export const ORG_INSTALLED_KINDS = ["connectors", "watchers"] as const;
+export const ORG_INSTALLED_KINDS = ['connectors', 'behaviors'] as const;
 export type OrgInstalledKind = (typeof ORG_INSTALLED_KINDS)[number];
 
-export const AGENT_INSTALLED_KINDS = [
-	"skills",
-	"providers",
-	"guardrails",
-] as const;
+export const AGENT_INSTALLED_KINDS = ['skills', 'providers', 'guardrails'] as const;
 export type AgentInstalledKind = (typeof AGENT_INSTALLED_KINDS)[number];
 
 export interface CatalogEntry {
@@ -51,9 +47,7 @@ export interface CatalogManifest {
 }
 
 export interface CatalogListResponse {
-	catalogs: Partial<
-		Record<CatalogKind, { kind: CatalogKind; entries: CatalogEntry[] }>
-	>;
+	catalogs: Partial<Record<CatalogKind, { kind: CatalogKind; entries: CatalogEntry[] }>>;
 }
 
 export interface InstalledItem {
@@ -64,9 +58,6 @@ export interface InstalledItem {
 
 export interface InstalledListResponse {
 	installed: Partial<
-		Record<
-			OrgInstalledKind | AgentInstalledKind,
-			{ kind: string; items: InstalledItem[] }
-		>
+		Record<OrgInstalledKind | AgentInstalledKind, { kind: string; items: InstalledItem[] }>
 	>;
 }

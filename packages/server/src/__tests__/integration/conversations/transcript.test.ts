@@ -104,6 +104,18 @@ describe('channel transcript', () => {
     ).toHaveLength(1);
   });
 
+  it('captures the same preview message independently for every bound organization', async () => {
+    await persistChannelMessage(msg({ organizationId: 'org-A' }));
+    await persistChannelMessage(msg({ organizationId: 'org-B' }));
+
+    const orgA = await readChannelTranscript('org-A', 'conn-1', 'C0LUNCH', 50);
+    const orgB = await readChannelTranscript('org-B', 'conn-1', 'C0LUNCH', 50);
+    expect(orgA).toHaveLength(1);
+    expect(orgB).toHaveLength(1);
+    expect(orgA[0]?.text).toBe('I want a burrito');
+    expect(orgB[0]?.text).toBe('I want a burrito');
+  });
+
   it('captures the bot\'s own posts (is_bot) so the transcript shows both sides', async () => {
     await persistChannelMessage(msg({ platformMessageId: 'u1', text: 'hi' }));
     await persistChannelMessage(

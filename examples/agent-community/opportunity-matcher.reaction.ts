@@ -1,5 +1,5 @@
 /**
- * Reaction for the `opportunity-matcher` watcher.
+ * Reaction for the `opportunity-matcher` Behavior.
  *
  * Runs every 12h after the LLM scans member activity and produces a list of
  * suggested matches. Persists each match as a `community_match` event so

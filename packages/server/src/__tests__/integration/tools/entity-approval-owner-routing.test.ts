@@ -17,6 +17,7 @@ import { proposeEntityFieldChange } from "../../../tools/admin/entity-field-appr
 import type { ToolContext } from "../../../tools/registry";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import {
 	addUserToOrganization,
 	createTestAgent,
@@ -151,17 +152,14 @@ describe("owner-routed approvals — DM delivery tier selection", () => {
 			platform: "slack",
 			metadata: { teamId: TEAM_ID },
 		});
-		const [conn] = await sql<{ id: string }[]>`
-      SELECT id FROM connections
-      WHERE organization_id = ${orgId} AND slug = ${`agentconn-${connectionId}`}
-    `;
-		await sql`
-      INSERT INTO agent_channel_bindings (
-        agent_id, platform, channel_id, team_id, organization_id, connection_id, created_at
-      ) VALUES (
-        ${agent.agentId}, 'slack', 'slack:C-BOUND', ${TEAM_ID}, ${orgId}, ${conn.id}, NOW()
-      )
-    `;
+		await createTestBehaviorSubscription({
+			organizationId: orgId,
+			agentId: agent.agentId,
+			connectionSlug: `agentconn-${connectionId}`,
+			platform: "slack",
+			channelId: "slack:C-BOUND",
+			teamId: TEAM_ID,
+		});
 	});
 
 	it("picks the owner's Slack identity in the connected workspace", async () => {

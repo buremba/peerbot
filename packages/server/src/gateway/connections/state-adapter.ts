@@ -13,7 +13,7 @@
  *
  * Schema lives in `db/migrations/00000000000000_baseline.sql` (the post-2026-05-19
  * squashed baseline that absorbed the original 20260519020000_chat_state_tables
- * migration). All boot paths — prod dbmate-up, embedded start-local — apply the
+ * migration). All boot paths — production runner, embedded start-local — apply the
  * baseline; no separate mirror to maintain. Table names and column types match
  * `@chat-adapter/state-pg`'s so an existing state-pg deployment can swap in
  * this adapter without a schema migration.

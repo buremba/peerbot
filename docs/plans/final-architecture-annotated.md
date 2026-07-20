@@ -43,16 +43,12 @@
 > depends on. Three of them appear in **no** section at all; the fourth is scheduled behind four
 > phases of sandbox work the demo never touches. Build these first.
 >
-> **WI-0.1 — Watcher-definition approval queue (critical).**
-> "Slackbot sets up guardrail watchers" fails closed today: `gateWatcherWrite` throws on
-> `require_approval` because no watcher-definition approval queue exists.
-> Files: `packages/server/src/tools/admin/manage_watchers.ts:324-386` (fail-closed comment at
-> 326-328, throw at 379-385); `packages/server/src/authz/write-action-manifest.ts:63-74`
-> (`agent_config` create default `approval`). Fix: copy the `queueWriteForApproval` pattern that
-> `manage_agents` already uses (`packages/server/src/tools/admin/manage_agents.ts:585-633`) so a
-> proposed watcher becomes a pending internal run + approval event instead of a 403.
-> **Update (2026-07-15): SHIPPED** — `queueWatcherWriteForApproval` landed in #1903; this item is
-> done, do not re-implement.
+> **WI-0.1 — Watcher-definition approval queue (critical): SHIPPED.**
+> `gateWatcherWrite` now sends `require_approval` decisions to
+> `queueWatcherWriteForApproval`, which persists a pending internal run and approval event.
+> The implementation lives in `packages/server/src/tools/admin/manage_behaviors.ts`; the
+> `agent_config` approval default remains in `packages/server/src/authz/write-action-manifest.ts`.
+> This landed in #1903; do not re-implement it.
 >
 > **WI-0.2 — Slack identity → member mapping on the message-enqueue path (critical/security).**
 > For Slack, the enqueued `userId` is the raw platform author id (`U…`), so the member join never

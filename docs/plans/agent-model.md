@@ -1,6 +1,8 @@
 # Agent Model — Behaviors, Surfaces, Workflows
 
-> **Status (2026-07-15):** **Partial** — the Behaviors route, list, and constructors are live; the Surfaces/workflow/proactivity pieces remain unbuilt.
+> **Status (2026-07-17):** **Reactive Behaviors implemented** — event, schedule,
+> and manual activation now share one model and editor. Surfaces, workflow WAIT,
+> and the broader proactivity policy remain future work.
 
 Design of record for consolidating the agent config surface. Supersedes the
 separate "Reach", "Watchers", and "Schedules" tabs. Written after review by
@@ -34,15 +36,17 @@ Persona is a separate surface, so "behavior" unambiguously means *actions*, not
 
 ## 2. Behaviors
 
-One list. Each row is a sentence + a **kind badge**:
+One list. Each row is a sentence + an activation badge:
 
-- **Listen** — a chat channel. Real‑time. (was Reach)
-- **Watch** — a data feed; new items match a rule, evaluated incrementally. (was Watchers)
-- **Schedule** — a clock / cron. (was Schedules)
+- **Event** — a normalized event from a connection, such as
+  `pull_request.created` or `message.created`.
+- **Schedule** — a clock / cron, optionally skipping unchanged source state.
+- **Manual** — explicitly started from Lobu, API, CLI, or MCP.
 
-The three kinds keep distinct constructors and empty‑states — a subscription, an
-incremental query, and a clock invocation are genuinely different underneath;
-the shared sentence is a *summary*, not a claim they're identical.
+An event can execute as one turn per event or as a window. Chat listening is not
+a separate code path in the product model: it is an Event Behavior with a chat
+connection, a channel filter, and optionally `reply_to_source`. Connector event
+catalogs own the available event types, filter schema, and capability defaults.
 
 ### Output = attributes, not a verb‑noun
 There is no "Say/Keep/Do" noun. A behavior's output is expressed as attributes:
@@ -62,33 +66,39 @@ decides reply‑vs‑silence and must be per‑context.
 
 ---
 
-## 3. Backend mapping (reuse‑heavy)
+## 3. Backend mapping
 
-The consolidation is **~80% frontend** over existing APIs; two runtimes and three
-tables stay.
-
-- **Behaviors** = a read/dispatch view over `agent_channel_bindings` (Listen) +
-  `watchers` (Watch) + `scheduled_jobs` (Schedule). No new source table.
-- **Two runtimes (the event detectors — never the agent's job):**
-  - realtime chat handler → invokes the agent on a message (Listen).
-  - cron due‑scanner → invokes the agent when a Watch/Schedule is due.
-- **Watch is cron‑paced + incremental — near‑real‑time by design.** It ticks on
-  its schedule (not on data arrival); each run only sees new data since the last
-  window (`window_start..window_end`). Near‑real‑time is a *feature*: multiple
-  new items in a window are **batched into one reaction** (5 P0s → one triage
-  post), which is cheaper and less noisy than 5 real‑time firings. Real‑time is
-  reserved for chat (Listen).
-  - **Skip‑if‑empty (opt):** each tick runs the source/filter query bounded to
-    the window; if **no new matching events**, it **skips** — no run, no agent
-    call. Only non‑empty windows spawn the reaction. Falls out of the kind:
-    *Watch* skips‑if‑empty; *Schedule* always runs (a digest fires on a quiet
-    day too). Also keeps **Runs** to real firings, not empty ticks. Backend: a
-    pre‑dispatch `EXISTS` gate in the materialize path + advance the window on a
-    skipped tick. (`@refs` already compile to the query this gate reuses.)
-  - "On arrival" (event‑driven dispatch, sub‑cadence) is **deferred** — we don't
-    need real‑time for data.
-- **Runs / Activity** = `events(semantic_type='notification')` ⋈
-  `notification_targets(event_id, user_id)`. Append stream; exhaust.
+- **Behaviors are canonical `watchers` rows.** The `triggers` JSON array holds
+  event and schedule activations; an empty array is manual-only. Prompt,
+  sources, version history, execution settings, and activity remain on the
+  existing watcher/version/run spine. No parallel Behavior table was added.
+- **`manage_behaviors` is the canonical declarative writer** for API, MCP, CLI,
+  and UI. The CLI `Project.behaviors` shape maps to the same trigger contract,
+  and generated clients expose the same integer `connection_id` API.
+- **Connector event catalogs are declarative.** A connector publishes event
+  keys, filters, defaults, and capabilities. During ingestion it may publish a
+  bounded normalized signal. The server persists the canonical connector event
+  and materializes matching Behavior runs in the same Postgres transaction.
+  Delivery IDs in existing `runs.approved_input` provide durable dedupe; there
+  is no webhook-ledger table.
+- **Chat uses the same matching model.** Slack/other Chat SDK adapters remain
+  transport implementations, but routing comes from Event Behavior triggers.
+  `reply_to_source` turns use the normal chat reply transport; silent/window
+  matches use durable Behavior runs. Queue, coalesce, and opt-in steer behavior
+  are explicit. Queue-policy chat events stay one turn per delivery.
+- **Schedule is the batch engine.** The existing due scanner creates a window
+  run. With `skip_if_unchanged`, it executes the normalized sources and hashes
+  their durable state before dispatch. Empty or identical state advances the
+  schedule without creating an agent run or LLM call. Without the flag, the
+  schedule always runs.
+- **Chat links are Behaviors only.** A one-shot migration backfills legacy
+  `agent_channel_bindings` into tagged Event Behaviors, then drops that table.
+  Runtime routing and ACL readers use active message triggers from
+  `watchers.triggers` (via the `behavior_message_subscriptions` view). No
+  dual-write bridge remains.
+- **Runs / Activity** use the existing `runs`, watcher windows, and chat
+  transcript paths. Event turns finish with their normal response and do not
+  advance a cron schedule.
 - **Surfaces** = a *keyed* event, updated by **upsert‑via‑supersede**
   (`supersedes_event_id`; `current_event_records` masks superseded rows).
   Incremental‑in (window cursor) → upsert‑out (rewrite the board). Distinct from
@@ -96,9 +106,10 @@ tables stay.
 - **Chat replies** = `channel_messages` (the conversation transcript), separate
   from the events spine.
 
-New backend for the base model: proactive‑chat + first‑class silent outcome on
-the chat handler; approval wiring (mostly exists); webhook→feed (so external
-push sources become queryable events).
+Connector actions may return a bounded `subscribable` resource candidate. Tool
+result events preserve that candidate, and the chat UI renders **Add behavior**,
+deep-linking to the same editor with connector/resource/event prefill. This is a
+constructor hint, not an agent-created hidden subscription.
 
 ---
 
@@ -135,7 +146,7 @@ Four conditions, **one mechanism** (suspend → resume on signal):
   `scheduled_jobs` leasing (multi‑replica safe). **Works today** —
   `manage_schedules(wake_agent)` is a real admin tool, grantable to a worker via
   the per‑run token (`BUILDER_ADMIN_TOOLS` / `resolveBuilderAdminTools`).
-- **Event waits** → a detector (Watch cron tick / ingest) resumes the **suspended
+- **Event waits** → a detector (schedule tick / connector ingest) resumes the **suspended
   run**, not a fresh behavior. This is the one genuinely‑new mechanism (§5).
 
 ### v1 scope (simplification)
@@ -205,56 +216,54 @@ checkbox can't provide:
 - **Branching / parallel** workflow builder (Option B) — only when branching,
   loops, parallel waits, or subflows appear.
 - **Autonomous goal pursuit**.
-- **Real‑time (event‑driven) Watch dispatch** — Watch stays cron‑paced (~1 min);
-  real‑time is chat‑only.
 - Least‑privilege scoping of the self‑wake capability (hardening follow‑up).
 
 ---
 
 ## 8b. Surface change summary — API / MCP / backend
 
-**The consolidation itself needs no new MCP tool, no API change, no new engine.**
-The Behaviors / Surfaces / Runs / Persona tabs are a frontend re‑presentation over
-what exists:
-- list = the existing `channel-bindings`, `manage_watchers` (list), and
-  `manage_schedules` (list) APIs, merged client‑side;
-- create/edit = dispatch to the existing `bind_channel` / `manage_watchers` /
-  `manage_schedules` writers;
-- Surfaces/Runs = reads over `events` + `notification_targets`;
-- Watch editor = the existing watcher builder (incl. `@refs` from #1655);
-- self‑wake for workflows = a **capability grant flip** (`manage_schedules` is
-  already grantable via the per‑run token), not a new tool.
+The consolidation changes the existing Behavior contract rather than adding a
+new engine or admin tool:
 
-So Phase 1 ships with **zero backend / API / MCP change**.
+- `manage_watchers` is removed; `manage_behaviors` owns the full prior watcher
+  action set plus canonical trigger writes.
+- `bind_channel`/binding CRUD is removed. Link/claim flows create or update a
+  tagged chat Event Behavior through the same service.
+- Connector definitions expose `behavior_events`; connector stream items may
+  carry normalized `behavior_signals`.
+- Public API, generated client, MCP registry, CLI config/apply/init, and UI all
+  use the same trigger schema.
+- An ordinary SQL view projects message subscriptions from active Behavior
+  triggers for routing and ACL reads; it stores no state and adds no table.
+- Self-wake for future workflows remains a capability grant over
+  `manage_schedules`, not a new trigger engine.
 
-The **new capabilities** each need a small, targeted backend change — none is a
-new MCP tool or a new engine:
+The capabilities remain parts of the existing runtime rather than new MCP
+tools:
 
 | capability | backend change | new MCP tool? |
 |---|---|---|
-| proactive + silent chat | wake agent on non‑mention; first‑class "no reply" (chat handler) | no |
-| skip‑if‑empty | pre‑dispatch `EXISTS` gate in the watcher materialize path | no |
-| webhook → feed | materialize a webhook connection as a feed | no |
+| connector events | normalized signal → matching durable Behavior run | no |
+| proactive + silent chat | `message.created` Event Behavior + output policy | no |
+| skip‑if‑unchanged | pre-dispatch normalized-source fingerprint | no |
+| action subscription | bounded `subscribable` result → editor prefill | no |
 | maintained Surfaces | upsert‑via‑supersede write path | no |
 | proactivity | one structured field (persona default + per‑behavior override) | no |
 | workflow event‑wait | the WAIT resume‑subscription (§5) + event→run correlation | no |
 | workflow safety | idempotency on terminal actions + approval binding (§6) | no |
 
-No new admin/MCP tool is introduced; writes reuse `manage_watchers` /
-`bind_channel` / `manage_schedules`.
+No new admin/MCP tool is introduced; Behavior writes use `manage_behaviors`.
 
 ## 9. Build phases
 
-1. **Frontend consolidation** — the Behaviors + Surfaces + Runs + Persona tabs
-   over existing APIs (bindings / watchers / schedules / events). No backend.
-2. **Proactive + silent chat** — wake the agent on non‑mention messages in
-   opted‑in channels; make "no reply" a first‑class, logged outcome; inject the
-   proactivity policy into the turn.
-3. **Surfaces** — the upsert‑via‑supersede path for a maintained board.
-4. **Webhook → feed** — external push sources become queryable events.
-5. **Workflows** — enable self‑wake + watcher‑resume; implement the WAIT
+1. **Reactive Behavior consolidation (implemented)** — one trigger schema,
+   connector catalogs/signals, schedule unchanged gate, chat subscription
+   migration, canonical API/CLI/MCP/UI, and action-result constructor hints.
+2. **Surfaces** — the upsert‑via‑supersede path for a maintained board.
+3. **Workflows** — enable self‑wake + Behavior-resume; implement the WAIT
    resume‑subscription (§5) and the safety guarantees (§6).
-6. **(deferred)** disable toggles, branching builder, autonomous goals.
+4. **(deferred)** broader proactivity policy, disable toggles, branching
+   builder, autonomous goals.
 
 ---
 
@@ -276,8 +285,8 @@ No new admin/MCP tool is introduced; writes reuse `manage_watchers` /
 ## 10. Model selection — layered fallback (delta, 2026‑07‑04)
 
 Status: **locked; new backend + one migration.** This section is a *delta* to the
-consolidation above — the consolidation itself was zero‑migration; model
-selection is separate work with its own schema change.
+Behavior-trigger consolidation above; model selection is separate work with its
+own schema change.
 
 ### The problem
 Today "what model runs?" is answered by **four interdependent per‑agent fields** —
@@ -297,7 +306,7 @@ Model choice becomes a **fallback chain**, mapped where infra already lives:
   one provider row as the org **default**. Its `capabilities.text.model` is the
   org default model. This is the tail.
 - **Agent** — an optional `defaultModel` (a `provider/model` ref, or `auto`).
-- **Behavior** (Listen/Watch/Schedule) — an optional per‑behavior model.
+- **Behavior** (Event/Schedule/Manual) — an optional per‑behavior model.
 
 Resolution: **`behavior.model → agent.defaultModel → org default`.** Nothing is
 required at the agent or behavior level; each layer is an optional override of the
@@ -340,10 +349,9 @@ catalog methods are removed.
   live default per org), not a new `org_settings.defaultModel` string. It reuses
   the per‑modality `model` field the row already has and adds no new table. An
   explicit org‑settings model ref was considered and deferred as heavier.
-- **Behavior override storage** rides existing surfaces where possible: Watch
-  reuses the dormant `watchers.model_config`; Schedule rides
-  `scheduled_jobs.action_args`; Listen needs a new `agent_channel_bindings.model`
-  column (it has no config blob today).
+- **Behavior override storage** is `watchers.execution_config.model` for every
+  activation kind. Chat, connector event, schedule, and manual dispatch share
+  the same model-resolution layer.
 
 ### Fail‑closed tail
 Today an unresolved model **hard‑throws** ("No model selected… Providers

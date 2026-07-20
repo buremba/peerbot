@@ -94,6 +94,47 @@ describe("buildToolUseEventPayload", () => {
     expect(payload.result_summary).toBeUndefined();
   });
 
+  test("surfaces a bounded subscribable from connector action output", () => {
+    const subscribable = {
+      connector_key: "github",
+      resource_type: "pull_request",
+      resource_ref: "github:pull_request:lobu-ai/lobu#208",
+      label: "GitHub PR lobu-ai/lobu#208",
+      suggested_event_keys: ["pull_request.updated"],
+    };
+    const payload = buildToolUseEventPayload({
+      toolCallId: "create-pr",
+      toolName: "github_create_pull_request",
+      args: {},
+      result: { success: true, output: { subscribable } },
+      isError: false,
+    });
+    expect(payload.result_summary?.subscribable).toEqual(subscribable);
+  });
+
+  test("surfaces subscribables from MCP text results", () => {
+    const subscribable = {
+      connector_key: "github",
+      resource_type: "pull_request",
+      resource_ref: "github:pull_request:lobu-ai/lobu#209",
+      label: "GitHub PR lobu-ai/lobu#209",
+    };
+    const payload = buildToolUseEventPayload({
+      toolCallId: "create-pr-mcp",
+      toolName: "github_create_pull_request",
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ output: { subscribable } }),
+          },
+        ],
+      },
+      isError: false,
+    });
+    expect(payload.result_summary?.subscribable).toEqual(subscribable);
+  });
+
   test("propagates error message when isError", () => {
     const payload = buildToolUseEventPayload({
       toolCallId: "x",

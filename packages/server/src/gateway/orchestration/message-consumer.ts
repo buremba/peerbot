@@ -75,7 +75,7 @@ export const BUILDER_ADMIN_TOOLS = [
   "manage_agents",
   "manage_connections",
   "manage_feeds",
-  "manage_watchers",
+  "manage_behaviors",
   "manage_schedules",
   "manage_entity",
 ] as const;

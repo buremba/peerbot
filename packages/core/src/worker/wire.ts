@@ -79,7 +79,7 @@ export interface MessagePayload {
   agentId: string;
   /**
    * Owning organization of the agent. Plumbed through so child queries
-   * (grants, user-agents, channel-bindings, secrets) can scope by org —
+   * (grants, user-agents, Behavior subscriptions, secrets) can scope by org —
    * agent IDs are per-org-unique, so `agent_id = ?` alone is ambiguous.
    */
   organizationId: string;

@@ -13,7 +13,7 @@ import type { ProviderCatalogService } from "./auth/provider-catalog.js";
 import type { AgentSettingsStore } from "./auth/settings/agent-settings-store.js";
 import type { ModelPreferenceStore } from "./auth/settings/model-preference-store.js";
 import type { UserAgentsStore } from "./auth/user-agents-store.js";
-import type { ChannelBindingService } from "./channels/binding-service.js";
+import type { BehaviorSubscriptionService } from "./channels/behavior-subscription-service.js";
 import type { ArtifactStore } from "./files/artifact-store.js";
 import type { WorkerGateway } from "./gateway/index.js";
 import type {
@@ -58,7 +58,7 @@ export interface CoreServices {
   getInteractionService(): InteractionService;
   getSseManager(): SseManager;
   getAgentSettingsStore(): AgentSettingsStore;
-  getChannelBindingService(): ChannelBindingService;
+  getBehaviorSubscriptionService(): BehaviorSubscriptionService;
   getTranscriptionService(): TranscriptionService | undefined;
   getUserAgentsStore(): UserAgentsStore;
   getAgentMetadataStore(): AgentMetadataStore;

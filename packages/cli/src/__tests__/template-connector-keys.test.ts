@@ -10,7 +10,8 @@ import { join, resolve } from "node:path";
  *
  * The catalog source of truth is the first `key:` literal in each connector
  * definition under packages/connectors/src (filenames use underscores, keys
- * use dots) — the same extraction the landing's gen-connectors script uses.
+ * use dots). Helper modules can also contain `key:` fields, so only files that
+ * declare a ConnectorDefinition are catalog entries.
  */
 
 const TEMPLATE_PATH = resolve(import.meta.dir, "../templates/AGENTS.md.tmpl");
@@ -21,6 +22,7 @@ function catalogKeys(): Set<string> {
   for (const file of readdirSync(CONNECTORS_SRC_DIR)) {
     if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
     const source = readFileSync(join(CONNECTORS_SRC_DIR, file), "utf-8");
+    if (!source.includes("ConnectorDefinition")) continue;
     const match = source.match(/key:\s*["']([^"']+)["']/);
     if (match) keys.add(match[1]);
   }

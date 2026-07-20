@@ -9,6 +9,10 @@ import type {
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import type {
+  BehaviorEventTrigger,
+  BehaviorScheduleTrigger,
+} from "@lobu/core/contracts/tools/manage-behaviors";
 import { createAjv } from "@lobu/core/ajv";
 import type Ajv from "ajv";
 import type {
@@ -28,7 +32,7 @@ import {
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type WatcherSource,
+  type BehaviorSource,
 } from "./shared.js";
 
 // ── Desired state types ────────────────────────────────────────────────────
@@ -46,8 +50,6 @@ export interface DesiredPlatform {
   name?: string;
   /** Platform config — values may still contain `$VAR` references. */
   config: Record<string, string>;
-  /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
-  channels?: string[];
 }
 
 export interface DesiredEntityType {
@@ -102,14 +104,14 @@ export interface DesiredWatcher {
   agent: string;
   name?: string;
   description?: string;
-  schedule?: string;
+  triggers?: DesiredBehaviorTrigger[];
   prompt: string;
   /** Optional SQL data sources; server applies a default when omitted. */
-  sources?: WatcherSource[];
+  sources?: BehaviorSource[];
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
    * watcher-firing time. Authored as a sibling `.ts` file referenced by
-   * `defineWatcher({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
+   * `defineBehavior({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
    * the CLI reads it and pushes raw source via `set_reaction_script`.
    */
   reactionScript?: { sourcePath: string; sourceCode: string };
@@ -134,6 +136,14 @@ export interface DesiredWatcher {
   /** Classifier definitions for extraction (server-side feature). */
   classifiers?: unknown[];
 }
+
+/** Apply-internal trigger form; `connectionSlug` is resolved before mutation. */
+export type DesiredBehaviorEventTrigger = BehaviorEventTrigger & {
+  connectionSlug?: string;
+};
+export type DesiredBehaviorTrigger =
+  | DesiredBehaviorEventTrigger
+  | BehaviorScheduleTrigger;
 
 export interface DesiredFeed {
   /** Feed key from the connector definition (`FeedDefinition.key`). */
@@ -277,7 +287,7 @@ export interface DesiredState {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
-  /** Watchers declared via `defineWatcher`. */
+  /** Behaviors declared via `defineBehavior`. */
   watchers: DesiredWatcher[];
   /**
    * Connectors: local `*.connector.ts` definitions (declared via
@@ -846,7 +856,7 @@ function resolveConnectorSources(
 const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
 
 /**
- * Resolve + read a watcher reaction script (`reactionFromFile(path)`): relative
+ * Resolve + read a Behavior reaction script (`reactionFromFile(path)`): relative
  * POSIX path under the config directory, ends in `.ts`, no `..` / absolute /
  * backslash segments, ≤256KB. Ships RAW source — the server compiles it on
  * receipt via `set_reaction_script`.
@@ -859,22 +869,22 @@ function resolveReactionScript(
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
+      `Behavior "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
+      `Behavior "${watcherSlug}" \`reaction\` must be a relative POSIX path (./foo.reaction.ts) — absolute paths and backslashes are not allowed`
     );
   }
   if (trimmed.split("/").some((seg) => seg === "..")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
+      `Behavior "${watcherSlug}" \`reaction\` must not contain \`..\` segments — keep the script under the config directory`
     );
   }
   if (!trimmed.endsWith(".ts")) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
+      `Behavior "${watcherSlug}" \`reaction\` must end in \`.ts\` (got ${JSON.stringify(trimmed)})`
     );
   }
   const baseDir = resolve(cwd);
@@ -890,7 +900,7 @@ function resolveReactionScript(
     isAbsolute(relPath)
   ) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
+      `Behavior "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
     );
   }
   let sourceCode: string;
@@ -898,12 +908,12 @@ function resolveReactionScript(
     sourceCode = readFileSync(abs, "utf-8");
   } catch {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
+      `Behavior "${watcherSlug}" \`reaction\` ${trimmed} does not exist (resolved to ${abs})`
     );
   }
   if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
+      `Behavior "${watcherSlug}" \`reaction\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
     );
   }
   return { sourcePath: abs, sourceCode };
@@ -998,11 +1008,11 @@ export async function loadDesiredStateFromConfig(
     })
   );
 
-  // Watcher reaction scripts: a sibling `.ts` file referenced by path. The
+  // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles
-  // it) and attach it. state.watchers[i] aligns with typedProject.watchers[i]
+  // it) and attach it. state.watchers[i] aligns with typedProject.behaviors[i]
   // (the mapper maps them in order).
-  (typedProject.watchers ?? []).forEach((watcher, i) => {
+  (typedProject.behaviors ?? []).forEach((watcher, i) => {
     // Gate on absence, not truthiness — a present-but-empty
     // `reactionFromFile("")` must reach the validator (which rejects it),
     // matching parseWatcher.
@@ -1017,7 +1027,7 @@ export async function loadDesiredStateFromConfig(
     const reactionPath = (watcher.reaction as { path?: unknown }).path;
     if (typeof reactionPath !== "string") {
       throw new Error(
-        `Watcher "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
+        `Behavior "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
       );
     }
     dw.reactionScript = resolveReactionScript(

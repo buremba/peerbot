@@ -2,7 +2,7 @@
  * Shared helpers for the worker API.
  *
  * `authorizeRunForWorker` — re-used by heartbeat, stream, complete,
- * complete-watcher, complete-action, and complete-auth to verify the caller
+ * complete-behavior, complete-action, and complete-auth to verify the caller
  * owns the run it's acting on.
  *
  * `normalizeAdvertisedCapabilities` — sanitises the raw capabilities map the
@@ -48,7 +48,7 @@ export async function authorizeRunForWorker(
   opts?: {
     /**
      * Accept runs already in a terminal state. Used by the device watcher
-     * EXIT REPORT (`/runs/:id/complete-watcher`): the CLI agent completes
+     * EXIT REPORT (`/runs/:id/complete-behavior`): the CLI agent completes
      * the run itself via MCP `complete_window` before the subprocess exits,
      * so by the time the dispatcher reports the exit the run is normally
      * `completed` — that's the happy path, not a conflict. Ownership

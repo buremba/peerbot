@@ -1,5 +1,5 @@
 /**
- * manage_watchers correctness guards:
+ * manage_behaviors correctness guards:
  *
  *  BUG A — a source query that omits `id` is rejected at create/create_version
  *  time. Watcher-mode aggregation keys rows by `id` and the signed window_token
@@ -26,7 +26,7 @@ import {
 } from "../../setup/test-fixtures";
 import { TestApiClient } from "../../setup/test-mcp-client";
 
-describe("manage_watchers source-id + cross-org guards", () => {
+describe("manage_behaviors source-id + cross-org guards", () => {
 	let owner: TestApiClient;
 	let ownerOrgId: string;
 	let agentId: string;
@@ -73,7 +73,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
 
 	it("rejects create when a source query omits the id column", async () => {
 		await expect(
-			owner.watchers.create({
+			owner.behaviors.create({
 				entity_id: inOrgEntityId,
 				slug: "no-id-source",
 				name: "No Id Source",
@@ -85,12 +85,12 @@ describe("manage_watchers source-id + cross-org guards", () => {
 						query: "SELECT origin_id, payload_text FROM events",
 					},
 				],
-			}),
+			})
 		).rejects.toThrow(/id/i);
 	});
 
 	it("accepts create when the source query projects id", async () => {
-		const created = (await owner.watchers.create({
+		const created = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "with-id-source",
 			name: "With Id Source",
@@ -131,7 +131,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			organization_id: ownerOrgId,
 		});
 
-		const created = (await owner.watchers.create({
+		const created = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "source-ref-context",
 			name: "Source Ref Context",
@@ -156,15 +156,19 @@ describe("manage_watchers source-id + cross-org guards", () => {
 
 		expect(result.total).toBe(1);
 		expect(result.content.map((row) => Number(row.id))).toEqual([event.id]);
-		expect(result.sources.content.map((row) => Number(row.id))).toContain(event.id);
-		expect(result.sources.customers.map((row) => Number(row.id))).toContain(customer.id);
+		expect(result.sources.content.map((row) => Number(row.id))).toContain(
+			event.id
+		);
+		expect(result.sources.customers.map((row) => Number(row.id))).toContain(
+			customer.id
+		);
 
 		const token = await verifyWindowToken(result.window_token, {
 			JWT_SECRET: "test-jwt-secret-for-testing-only",
 		} as Env);
 		expect(token.content_ids).toEqual([event.id]);
 
-		const orgScoped = (await owner.watchers.create({
+		const orgScoped = (await owner.behaviors.create({
 			slug: "source-ref-org-count",
 			name: "Source Ref Org Count",
 			prompt: "Track {{content}}.",
@@ -190,7 +194,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
 	});
 
 	it("rejects create_version when a source query omits id", async () => {
-		const created = (await owner.watchers.create({
+		const created = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "version-id-guard",
 			name: "Version Id Guard",
@@ -200,14 +204,14 @@ describe("manage_watchers source-id + cross-org guards", () => {
 		})) as { watcher_id: string };
 
 		await expect(
-			owner.watchers.createVersion({
+			owner.behaviors.createVersion({
 				watcher_id: created.watcher_id,
 				prompt: "Track stuff v2.",
 				change_notes: "omit id",
 				sources: [
 					{ name: "content", query: "SELECT payload_text FROM events" },
 				],
-			} as never),
+			} as never)
 		).rejects.toThrow(/id/i);
 	});
 
@@ -215,16 +219,14 @@ describe("manage_watchers source-id + cross-org guards", () => {
 
 	it("rejects create when an @feed ref matches no feed", async () => {
 		await expect(
-			owner.watchers.create({
+			owner.behaviors.create({
 				entity_id: inOrgEntityId,
 				slug: "typo-feed",
 				name: "Typo Feed",
 				prompt: "Track stuff.",
 				agent_id: agentId,
-				sources: [
-					{ name: "content", query: "@feed:nonexistent-typo" },
-				],
-			}),
+				sources: [{ name: "content", query: "@feed:nonexistent-typo" }],
+			})
 		).rejects.toThrow(/nonexistent-typo/i);
 	});
 
@@ -244,7 +246,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			VALUES (${ownerOrgId}, ${connection.id}, 'slack:C123', 'general', 'active', 'streaming', false, ${sql.json({ store: "channel_messages" })}::jsonb)
 		`;
 
-		const created = (await owner.watchers.create({
+		const created = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "streaming-feed-src",
 			name: "Streaming Feed Src",
@@ -257,22 +259,20 @@ describe("manage_watchers source-id + cross-org guards", () => {
 
 	it("rejects create when an @entity ref is not a type in the org", async () => {
 		await expect(
-			owner.watchers.create({
+			owner.behaviors.create({
 				entity_id: inOrgEntityId,
 				slug: "typo-entity",
 				name: "Typo Entity",
 				prompt: "Track stuff.",
 				agent_id: agentId,
-				sources: [
-					{ name: "ctx", query: "@entity:nope-not-a-type" },
-				],
-			}),
+				sources: [{ name: "ctx", query: "@entity:nope-not-a-type" }],
+			})
 		).rejects.toThrow(/entity type/i);
 	});
 
 	it("rejects create when an @metric ref points at an undeclared measure", async () => {
 		await expect(
-			owner.watchers.create({
+			owner.behaviors.create({
 				entity_id: inOrgEntityId,
 				slug: "typo-metric",
 				name: "Typo Metric",
@@ -284,14 +284,14 @@ describe("manage_watchers source-id + cross-org guards", () => {
 						query: "@metric:company.totally-fake-measure",
 					},
 				],
-			}),
+			})
 		).rejects.toThrow(/measure/i);
 	});
 
 	// ---- BUG B ----
 
 	it("create_from_version rejects a cross-org entity_id", async () => {
-		const base = (await owner.watchers.create({
+		const base = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "cfv-base",
 			name: "CFV Base",
@@ -308,10 +308,10 @@ describe("manage_watchers source-id + cross-org guards", () => {
 		expect(versionId).toBeGreaterThan(0);
 
 		await expect(
-			owner.watchers.createFromVersion({
+			owner.behaviors.createFromVersion({
 				version_id: versionId,
 				entity_ids: [foreignEntityId],
-			}),
+			})
 		).rejects.toThrow(new RegExp(String(foreignEntityId)));
 
 		// No watcher leaked pointing at the foreign entity.
@@ -323,7 +323,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
 	});
 
 	it("create_from_version accepts an in-org entity_id", async () => {
-		const base = (await owner.watchers.create({
+		const base = (await owner.behaviors.create({
 			entity_id: inOrgEntityId,
 			slug: "cfv-base-ok",
 			name: "CFV Base OK",
@@ -338,7 +338,7 @@ describe("manage_watchers source-id + cross-org guards", () => {
     `;
 		const versionId = Number(row?.current_version_id);
 
-		const result = (await owner.watchers.createFromVersion({
+		const result = (await owner.behaviors.createFromVersion({
 			version_id: versionId,
 			entity_ids: [inOrgEntityId],
 		})) as { created: Array<{ watcher_id: string }> };

@@ -24,7 +24,7 @@ interface CacheEntry {
  * table, a small in-memory TTL cache, and a lazy GC sweep of expired rows.
  * Schema lives in `db/migrations/00000000000000_baseline.sql` (the post-2026-05-19
  * squashed baseline that absorbed the original 20260519020001_revoked_tokens
- * migration). All boot paths — prod dbmate-up, embedded start-local — apply
+ * migration). All boot paths — production runner, embedded start-local — apply
  * the baseline; no separate mirror to maintain.
  */
 export class RevokedTokenStore {

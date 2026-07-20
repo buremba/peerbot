@@ -18,11 +18,18 @@ import {
   type EventAttributionRule,
   type EventEnvelope,
   paginateByOffset,
+  SubscriptionCandidateSchema,
   type SyncContext,
   type SyncResult,
   type WebhookRegistration,
   type WebhookRegistrationContext,
 } from '@lobu/connector-sdk';
+import {
+  GITHUB_BEHAVIOR_EVENTS,
+  githubBehaviorSignalDrafts,
+  githubPullRequestSubscribable,
+  githubSyncShouldEmitBehaviorSignals,
+} from './github-behavior-events.js';
 import {
   GITHUB_IDENTITY,
   githubKeyForOriginId,
@@ -319,6 +326,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
     version: '1.2.0',
+    behaviorEvents: GITHUB_BEHAVIOR_EVENTS,
     faviconDomain: 'github.com',
     webhook: {
       signatureHeader: 'x-hub-signature-256',
@@ -784,6 +792,25 @@ export default class GitHubConnector extends ConnectorRuntime {
             repo_name: { type: 'string' },
           },
         },
+        outputSchema: {
+          type: 'object',
+          required: [
+            'pull_request_id',
+            'pull_number',
+            'url',
+            'state',
+            'draft',
+            'subscribable',
+          ],
+          properties: {
+            pull_request_id: { type: 'integer' },
+            pull_number: { type: 'integer' },
+            url: { type: 'string' },
+            state: { type: 'string' },
+            draft: { type: 'boolean' },
+            subscribable: SubscriptionCandidateSchema,
+          },
+        },
       },
       merge_pull_request: {
         key: 'merge_pull_request',
@@ -814,11 +841,18 @@ export default class GitHubConnector extends ConnectorRuntime {
     const repo = this.resolveRepo(config, {});
     const token = this.resolveToken(ctx.credentials?.accessToken, config);
     const contentType = (ctx.feedKey ?? 'issues') as GitHubContentType;
+    // Cold start / checkpoint reset: resolveSince falls back to lookback_days
+    // (default 365). Every PR in that window is first-seen and would flood
+    // pull_request.created Behavior activations. Only attach behavior_signals
+    // once a prior last_sync_at exists (steady-state delta).
+    const attachBehaviorSignals = githubSyncShouldEmitBehaviorSignals(
+      ctx.checkpoint as GitHubCheckpoint | null,
+    );
     const sinceIso = this.resolveSince(ctx.checkpoint, config.lookback_days ?? 365);
 
     if (contentType === 'stargazers') {
       const result = await this.syncStargazers(repo, ctx.checkpoint, token);
-      this.stampRepoAttribution(result.events, repo);
+      this.stampRepoAttribution(result.events, repo, { attachBehaviorSignals });
       return {
         events: result.events,
         checkpoint: {
@@ -839,7 +873,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       labelsFilter: config.labels_filter ?? [],
       token,
     });
-    this.stampRepoAttribution(events, repo);
+    this.stampRepoAttribution(events, repo, { attachBehaviorSignals });
 
     return {
       events,
@@ -1045,15 +1079,23 @@ export default class GitHubConnector extends ConnectorRuntime {
    * GITHUB_REPO_ENTITY_LINK) and restrict recall to repos the requester belongs
    * to. Normalized to match the repo graph ACL keys.
    */
-  private stampRepoAttribution(events: EventEnvelope[], repo: RepoRef): void {
+  private stampRepoAttribution(
+    events: EventEnvelope[],
+    repo: RepoRef,
+    options?: { attachBehaviorSignals?: boolean },
+  ): void {
     const fullName =
       normalizeGithubRepoFullName(`${repo.owner}/${repo.repo}`) ??
       `${repo.owner}/${repo.repo}`.toLowerCase();
+    const attachBehaviorSignals = options?.attachBehaviorSignals !== false;
     for (const event of events) {
       event.metadata = {
         ...(event.metadata ?? {}),
         github_repo_full_name: fullName,
       };
+      if (!attachBehaviorSignals) continue;
+      const behaviorSignals = githubBehaviorSignalDrafts(event);
+      if (behaviorSignals.length > 0) event.behavior_signals = behaviorSignals;
     }
   }
 
@@ -1281,6 +1323,8 @@ export default class GitHubConnector extends ConnectorRuntime {
           metadata: {
             updated_at: comment.updated_at,
             reactions: comment.reactions ?? {},
+            repository: `${repo.owner}/${repo.repo}`,
+            pull_number: prNumber ? Number(prNumber) : undefined,
             ...this.buildAuthorMetadata(comment.user),
           },
         };
@@ -1921,6 +1965,10 @@ export default class GitHubConnector extends ConnectorRuntime {
         url: pr.html_url,
         state: pr.state,
         draft: pr.draft ?? false,
+        subscribable: githubPullRequestSubscribable(
+          `${repo.owner}/${repo.repo}`,
+          pr.number
+        ),
       },
     };
   }

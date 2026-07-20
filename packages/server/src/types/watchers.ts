@@ -9,11 +9,21 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import {
-  WatcherSourceSchema,
-  type WatcherSource,
-} from '@lobu/core/contracts/tools/manage-watchers';
+  BehaviorTriggerSchema,
+  type BehaviorTrigger,
+  BehaviorSourceSchema,
+  type BehaviorSource,
+} from '@lobu/core/contracts/tools/manage-behaviors';
 
-export { WatcherSourceSchema, type WatcherSource };
+type WatcherSource = BehaviorSource;
+const WatcherSourceSchema = BehaviorSourceSchema;
+
+export {
+  BehaviorTriggerSchema,
+  type BehaviorTrigger,
+  BehaviorSourceSchema as WatcherSourceSchema,
+  type WatcherSource,
+};
 
 // ============================================
 // Watcher Version
@@ -25,7 +35,7 @@ export { WatcherSourceSchema, type WatcherSource };
 
 /**
  * One reaction-log entry for a window (from watcher_reactions). Surfaced on
- * get_watcher windows so the UI can show what the reaction script did.
+ * get_behavior windows so the UI can show what the reaction script did.
  */
 export const WatcherWindowReactionSchema = Type.Object({
   id: Type.Integer(),
@@ -38,7 +48,7 @@ export const WatcherWindowReactionSchema = Type.Object({
 export type WatcherWindowReaction = Static<typeof WatcherWindowReactionSchema>;
 
 /**
- * Watcher window data as returned by get_watcher
+ * Behavior window data as returned by get_behavior
  */
 export const WatcherWindowSchema = Type.Object({
   window_id: Type.Integer(),
@@ -101,7 +111,7 @@ export const WatcherVersionInfoSchema = Type.Object({
 export type WatcherVersionInfo = Static<typeof WatcherVersionInfoSchema>;
 
 // ============================================
-// Watcher Metadata (returned by get_watcher)
+// Behavior metadata (returned by get_behavior)
 // ============================================
 
 const WatcherRunSchema = Type.Object({
@@ -125,7 +135,7 @@ export const WatcherMetadataSchema = Type.Object({
   watcher_name: Type.String(),
   slug: Type.String(),
   status: Type.Union([Type.Literal('active'), Type.Literal('archived')]),
-  schedule: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  triggers: Type.Optional(Type.Array(BehaviorTriggerSchema)),
   next_run_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   /**

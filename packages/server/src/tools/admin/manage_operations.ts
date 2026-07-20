@@ -78,7 +78,7 @@ import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { action, defineActionTool } from "./action-tool";
 // Lives in its own module so dispatch-chrome-action does not import this file
-// (breaks a circular init cycle that left MANAGE_WATCHERS_ACTION_KEY in TDZ).
+// (breaks a circular init cycle that left MANAGE_BEHAVIORS_ACTION_KEY in TDZ).
 import { waitForDeviceActionRun } from "./device-action-wait";
 export { waitForDeviceActionRun };
 import { listOrgActivity } from "./manage_operations/activity-feed";
@@ -98,10 +98,10 @@ import {
 	type ManageAgentsProposal,
 } from "./manage_agents";
 import {
-	applyManageWatchersProposal,
-	MANAGE_WATCHERS_ACTION_KEY,
-	type ManageWatchersProposal,
-} from "./manage_watchers";
+	applyManageBehaviorsProposal,
+	MANAGE_BEHAVIORS_ACTION_KEY,
+	type ManageBehaviorsProposal,
+} from "./manage_behaviors";
 
 type InlineExecutionResult =
 	| {
@@ -1433,7 +1433,7 @@ async function resolveReviewer(
 
 /**
  * Builder-gate approval handler: the per-family knobs the ONE generic
- * claim/approve/reject path varies over. manage_agents and manage_watchers both
+ * claim/approve/reject path varies over. manage_agents and manage_behaviors both
  * queue a pending `run_type='internal'` run keyed by `action_key`, hold the
  * proposal in `action_input`, and apply it via `apply(proposal, ctx, env,
  * ownerUserId)` on approval — so the whole lifecycle is shared and only these
@@ -1442,7 +1442,7 @@ async function resolveReviewer(
 interface BuilderApprovalHandler {
 	/** `runs.action_key` this family's pending rows carry. */
 	actionKey: string;
-	/** Noun for the result message, e.g. "Agent" / "Watcher". */
+	/** Noun for the result message, e.g. "Agent" / "Behavior". */
 	nounLabel: string;
 	/** The proposal shape stored in `action_input` is valid for this family. */
 	isValidProposal(proposal: unknown): boolean;
@@ -1457,21 +1457,21 @@ interface BuilderApprovalHandler {
 	describe(proposal: unknown): string;
 	/**
 	 * Optional soft-failure detector for handlers that return `{ error }` /
-	 * partial-failure summaries instead of throwing (manage_watchers). A non-null
+	 * partial-failure summaries instead of throwing (manage_behaviors). A non-null
 	 * string marks the apply failed even though it didn't throw.
 	 */
 	detectSoftFailure?(output: unknown): string | null;
 }
 
 /**
- * Soft failures from manage_watchers write handlers that return errors instead
+ * Soft failures from manage_behaviors write handlers that return errors instead
  * of throwing. create throws (ToolUserError); update returns `{ error: string }`
  * for invalid cron/timezone; delete returns a summary with per-id results and
  * never throws on individual archive failures. Partial delete success (some
  * succeeded, some failed) is treated as completed — the summary is preserved in
  * action_output so the reviewer can see which ids failed.
  */
-function detectManageWatchersApplyFailure(output: unknown): string | null {
+function detectManageBehaviorsApplyFailure(output: unknown): string | null {
 	if (!output || typeof output !== "object") return null;
 	const result = output as Record<string, unknown>;
 	if (result.error) {
@@ -1490,15 +1490,15 @@ function detectManageWatchersApplyFailure(output: unknown): string | null {
 	) {
 		const total =
 			typeof summary.total === "number" ? summary.total : summary.failed;
-		return `Watcher delete failed: 0 of ${total} succeeded`;
+		return `Behavior delete failed: 0 of ${total} succeeded`;
 	}
 	return null;
 }
 
 // Lazy: BUILDER_APPROVAL_HANDLERS used to be a top-level const that read
-// MANAGE_WATCHERS_ACTION_KEY during module init. Under the circular graph
-// manage_operations → dispatch-chrome / manage_watchers → … → manage_operations,
-// that access hit TDZ and red-failed CI unit (`Cannot access 'MANAGE_WATCHERS_ACTION_KEY'
+// MANAGE_BEHAVIORS_ACTION_KEY during module init. Under the circular graph
+// manage_operations → dispatch-chrome / manage_behaviors → … → manage_operations,
+// that access hit TDZ and red-failed CI unit (`Cannot access 'MANAGE_BEHAVIORS_ACTION_KEY'
 // before initialization`). Defer until first call after all modules settle.
 let builderApprovalHandlers: BuilderApprovalHandler[] | null = null;
 function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
@@ -1516,19 +1516,19 @@ function getBuilderApprovalHandlers(): BuilderApprovalHandler[] {
 			},
 		},
 		{
-			actionKey: MANAGE_WATCHERS_ACTION_KEY,
-			nounLabel: "Watcher",
+			actionKey: MANAGE_BEHAVIORS_ACTION_KEY,
+			nounLabel: "Behavior",
 			isValidProposal: (p) =>
-				(p as ManageWatchersProposal | null)?.args != null,
+				(p as ManageBehaviorsProposal | null)?.args != null,
 			apply: (p, ctx, env, owner) =>
-				applyManageWatchersProposal(
-					p as ManageWatchersProposal,
+				applyManageBehaviorsProposal(
+					p as ManageBehaviorsProposal,
 					ctx,
 					env,
 					owner,
 				),
-			describe: (p) => (p as ManageWatchersProposal).args.action,
-			detectSoftFailure: detectManageWatchersApplyFailure,
+			describe: (p) => (p as ManageBehaviorsProposal).args.action,
+			detectSoftFailure: detectManageBehaviorsApplyFailure,
 		},
 	];
 	return builderApprovalHandlers;
@@ -2004,7 +2004,7 @@ async function tryApproveEntityChangeRun(
 			run_id: args.run_id,
 			event_id: eventId,
 			message: allStale
-				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the watcher proposed it.`
+				? `Field change skipped: ${staleFields.join(", ")} was changed by a human after the Behavior proposed it.`
 				: operation === "update"
 					? `Field change approved and applied: ${description}.`
 					: `Entity ${operation} approved and applied: ${description}.`,
@@ -2081,7 +2081,7 @@ async function tryApproveEntityChangeRun(
 							ctx.organizationId,
 							"rejected",
 							"entity_merge — rejected",
-							"This unchanged duplicate candidate was already rejected in another watcher run.",
+							"This unchanged duplicate candidate was already rejected in another Behavior run.",
 							{
 								reject_reason:
 									"The same resolution candidate was already rejected",
@@ -2091,7 +2091,7 @@ async function tryApproveEntityChangeRun(
 						);
 						return {
 							error:
-								"This duplicate candidate was already rejected. Refresh the watcher run.",
+								"This duplicate candidate was already rejected. Refresh the Behavior run.",
 						};
 					}
 				}
@@ -2204,7 +2204,7 @@ async function handleApprove(
 
 	const sql = getDb();
 
-	// Builder-gate runs (manage_agents / manage_watchers create/update/delete)
+	// Builder-gate runs (manage_agents / manage_behaviors create/update/delete)
 	// reuse this same durable approval path but have run_type='internal' + no
 	// connection. One generic path applies them via their registered handler
 	// rather than the connector-operation executor.
@@ -2682,7 +2682,7 @@ async function handleRejectBatch(
 		run_ids: runIds,
 		message:
 			rejected > 0
-				? `Rejected ${rejected} proposals. The watcher's next run will see this feedback and revise.`
+				? `Rejected ${rejected} proposals. The Behavior's next run will see this feedback and revise.`
 				: "No pending proposals for this run.",
 	};
 }

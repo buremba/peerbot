@@ -80,9 +80,9 @@ model_price_overrides(organization_id, provider, model,
 
 **Definition surfaces (two, admin-gated):**
 1. **owletto web UI — primary.** A "Cost" settings page: a *Budgets* editor (add a cap: scope · window · soft/hard $) and a *Price overrides* editor (model → rates). For non-technical workforce admins. Gated to owner/admin (§8).
-2. **CLI — `lobu.config.ts` → `lobu apply`.** Code-first orgs declare budgets/overrides in config; `apply` reconciles them into the two tables via the existing desired-state path (same as agents/watchers/connections). **No MCP tool** (decided).
+2. **CLI — `lobu.config.ts` → `lobu apply`.** Code-first orgs declare budgets/overrides in config; `apply` reconciles them into the two tables via the existing desired-state path (same as agents/Behaviors/connections). **No MCP tool** (decided).
 
-**Watcher overlap:** the existing `watchers.execution_config.max_budget_usd` is a *per-run* ceiling (claude-CLI flag), kept as-is. The new *sliding-window* watcher cap lives in `cost_budgets` (`scope='watcher'`); the watcher panel surfaces/links the budget editor — one budgets model, no two-places-to-set-a-cap.
+**Behavior overlap:** the existing `watchers.execution_config.max_budget_usd` is a *per-run* ceiling (claude-CLI flag), kept as-is. The new *sliding-window* Behavior cap lives in `cost_budgets` (`scope='watcher'`); the Behavior panel surfaces/links the budget editor — one budgets model, no two-places-to-set-a-cap.
 
 ## 5. Capture
 
@@ -142,7 +142,7 @@ Distills to: **a per-dimension running spend counter over a sliding window, gate
 - **Soft cap = pure alert lane (slice 2):** a single-claimant Postgres threshold sweep (`connection-health`-style) emits a `budget-trip` event (guardrail-trip-style) + notify at 85%/95%; never blocks. A periodic sweep is sufficient (Langfuse confirms inline isn't needed); debounce per dimension+window to avoid flapping.
 - **Hard cap = refuse to spawn (slice 3):** over cap → don't dispatch; terminalize with a "budget exceeded" terminal error routed through the existing `thread_response` terminal-delivery path; chat gets a user-facing over-budget reply. Write the `budget-trip` event.
 - **Fail-open / fail-closed:** fail OPEN on any infra error in the SUM/lock/reserve/parse step (log + spawn anyway). Fail CLOSED only on an explicit cleanly-computed breach. Bounded concurrent overshoot is accepted (Cloudflare/Vercel parity).
-- **First concrete cap dimension:** finally enforce `watchers.execution_config.max_budget_usd` (stored-only today, `watcher-execution-config.ts:25-30,77-90`; `sandbox/namespaces/watchers.ts:35`) as a sliding-window watcher cap.
+- **First concrete cap dimension:** keep `watchers.execution_config.max_budget_usd` as the existing per-run device-CLI ceiling (`BehaviorExecutionConfigSchema`; `WatcherDispatcher.buildArguments`) and add the first sliding-window Behavior cap in `cost_budgets` (`scope='watcher'`).
 
 ## 10. Multi-replica & idempotency
 

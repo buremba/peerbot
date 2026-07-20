@@ -98,11 +98,11 @@ import {
 	publicRestEventsStream,
 	publicRestGetConnector,
 	publicRestGetOrganization,
-	publicRestGetWatchers,
+	publicRestGetBehaviors,
 	publicRestListClassifiers,
 	publicRestListConnectors,
 	publicRestSearchKnowledge,
-	restGetWatchers,
+	restGetBehaviors,
 	restHealth,
 	restListTools,
 	restSearchKnowledge,
@@ -751,7 +751,7 @@ import {
 	completeActionRun,
 	completeAuthRun,
 	completeEmbeddings,
-	completeWatcherRun,
+	completeBehaviorRun,
 	completeWorkerJob,
 	createMyDeviceAuthProfile,
 	createMyDeviceFeed,
@@ -771,7 +771,7 @@ import {
 	pollWorkerJob,
 	postAuthSignal,
 	streamContent,
-	triggerWatcherForDevice,
+	triggerBehaviorForDevice,
 	updateDeviceWorkerOrg,
 } from "./worker-api";
 
@@ -853,24 +853,24 @@ app.use("/api/workers/*", async (c, next) => {
 				"/api/workers/me/auth-profiles",
 			);
 			const isFeedSubpath = requestPath.startsWith("/api/workers/me/feeds");
-			// /api/workers/me/runs/<runId>/complete-watcher — device-side watcher
+			// /api/workers/me/runs/<runId>/complete-behavior — device-side Behavior
 			// completion endpoint added in #798. The handler does its own
 			// `authorizeRunForWorker` claim-ownership check, so an org-scope
 			// gate here would just block legitimate posts from the bound device.
-			const isWatcherCompleteSubpath =
-				/^\/api\/workers\/me\/runs\/\d+\/complete-watcher$/.test(requestPath);
-			// /api/workers/me/watchers/<watcher_id>/trigger — device-side manual
+			const isBehaviorCompleteSubpath =
+				/^\/api\/workers\/me\/runs\/\d+\/complete-behavior$/.test(requestPath);
+			// /api/workers/me/behaviors/<behavior_id>/trigger — device-side manual
 			// re-run endpoint. The handler does its own bound-workerId →
 			// device_worker_id match, so the org-scope gate here would block
 			// legitimate triggers from the pinned device.
-			const isWatcherTriggerSubpath =
-				/^\/api\/workers\/me\/watchers\/\d+\/trigger$/.test(requestPath);
+			const isBehaviorTriggerSubpath =
+				/^\/api\/workers\/me\/behaviors\/\d+\/trigger$/.test(requestPath);
 			if (
 				!allowedPathsForUserWorker.has(requestPath) &&
 				!isAuthProfileSubpath &&
 				!isFeedSubpath &&
-				!isWatcherCompleteSubpath &&
-				!isWatcherTriggerSubpath
+				!isBehaviorCompleteSubpath &&
+				!isBehaviorTriggerSubpath
 			) {
 				return c.json(
 					{ error: "Endpoint not available to user-scoped workers" },
@@ -943,10 +943,10 @@ import { dispatchChromeAction } from "./worker-api/dispatch-chrome-action";
 
 app.post("/api/workers/dispatch-chrome-action", dispatchChromeAction);
 app.post("/api/workers/complete-embeddings", completeEmbeddings);
-app.post("/api/workers/me/runs/:runId/complete-watcher", completeWatcherRun);
+app.post("/api/workers/me/runs/:runId/complete-behavior", completeBehaviorRun);
 app.post(
-	"/api/workers/me/watchers/:watcher_id/trigger",
-	triggerWatcherForDevice,
+	"/api/workers/me/behaviors/:behavior_id/trigger",
+	triggerBehaviorForDevice,
 );
 app.post("/api/workers/fetch-events", fetchEventsForEmbedding);
 app.post("/api/workers/emit-auth-artifact", emitAuthArtifact);
@@ -1104,9 +1104,9 @@ app.patch(
 	mcpAuth,
 	restUpdateContentClassification,
 );
-app.get("/api/:orgSlug/watchers", mcpAuth, restGetWatchers);
-app.get("/api/:orgSlug/public/watchers", publicRestGetWatchers);
-app.get("/api/:orgSlug/watchers/windows/:windowId", mcpAuth, async (c) => {
+app.get("/api/:orgSlug/behaviors", mcpAuth, restGetBehaviors);
+app.get("/api/:orgSlug/public/behaviors", publicRestGetBehaviors);
+app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
 	const sql = getDb();
 	const windowId = c.req.param("windowId");
 	const organizationId = c.var.organizationId;

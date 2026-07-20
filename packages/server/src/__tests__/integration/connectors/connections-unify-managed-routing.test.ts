@@ -2,7 +2,7 @@
  * Managed Slack OAuth install routing in the unified `connections` model.
  *
  *   1. A managed install (`slackinst-` slug, agent_id NULL) resolves its bound
- *      channels via the `agent_channel_bindings.connection_id` link — the legacy
+ *      channels via the Behavior trigger's connection id — the legacy
  *      (org, agent, platform) tuple join never matched a NULL agent_id, so
  *      managed installs were invisible to ACL-sync / list / delivery.
  *   2. One-active-per-WORKSPACE for managed installs: a Slack team binds to
@@ -19,7 +19,9 @@ import { initWorkspaceProvider } from "../../../workspace";
 import {
 	createTestAgent,
 	createTestOrganization,
+	createTestUser,
 } from "../../setup/test-fixtures";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 
 describe("connections-unify managed-install routing", () => {
 	let orgId: string;
@@ -30,12 +32,13 @@ describe("connections-unify managed-install routing", () => {
 		await initWorkspaceProvider();
 		orgId = (await createTestOrganization()).id;
 		orgB = (await createTestOrganization()).id;
+		await createTestUser();
 		agentId = (await createTestAgent({ organizationId: orgId })).agentId;
 	}, 60_000);
 
 	afterAll(async () => {
 		const sql = getDb();
-		await sql`DELETE FROM agent_channel_bindings WHERE organization_id IN (${orgId}, ${orgB})`;
+		await sql`DELETE FROM watchers WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM connections WHERE organization_id IN (${orgId}, ${orgB})`;
 	});
 
@@ -57,11 +60,14 @@ describe("connections-unify managed-install routing", () => {
 		// A binding linked to it by connection_id. agent_id is the LINKING agent
 		// (non-null) — the legacy tuple join (b.agent_id = ac.agent_id) would fail
 		// because the managed connection's agent_id is NULL; only the link resolves.
-		await sql`
-			INSERT INTO agent_channel_bindings
-				(organization_id, agent_id, platform, channel_id, team_id, connection_id)
-			VALUES (${orgId}, ${agentId}, 'slack', 'slack:C-MANAGED', 'TMANAGED', ${conn.id})
-		`;
+		await createTestBehaviorSubscription({
+			organizationId: orgId,
+			agentId,
+			connectionId: Number(conn.id),
+			platform: "slack",
+			channelId: "slack:C-MANAGED",
+			teamId: "TMANAGED",
+		});
 
 		const rows = await resolveBoundChannelRows(sql, {
 			organizationId: orgId,

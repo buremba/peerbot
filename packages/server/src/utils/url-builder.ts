@@ -74,31 +74,30 @@ export async function buildAgentSettingsUrl(
 }
 
 /**
- * Build a watcher's edit URL —
- * `<webOrigin>/<orgSlug>/agents/<agentId>/behaviors/watcher/<watcherId>` — the
- * review target for a pending `manage_watchers` update. Mirrors
- * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the watcher edit form
- * with the proposed change for Approve/Reject (WI-0.3, watcher parity).
+ * Build a Behavior's edit URL —
+ * `<webOrigin>/<orgSlug>/agents/<agentId>/behaviors/<behaviorId>` — the
+ * review target for a pending `manage_behaviors` update. Mirrors
+ * {@link buildAgentSettingsUrl}: `?run_id=<id>` prefills the Behavior edit form
+ * with the proposed change for Approve/Reject.
  *
- * A watcher is owned by an agent (`watchers.agent_id`), so the route is nested
+ * A Behavior is owned by an agent (`watchers.agent_id`), so the route is nested
  * under that agent — the caller passes the owning agent id (from the current
- * watcher row). Returns null when any required piece is missing; the producer
+ * Behavior row). Returns null when any required piece is missing; the producer
  * falls back to the run permalink.
  */
-export async function buildWatcherSettingsUrl(
+export async function buildBehaviorSettingsUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
   agentId: string | undefined,
-  watcherId: string | number | undefined,
+  behaviorId: string | number | undefined,
   opts?: { runId?: number }
 ): Promise<string | null> {
-  if (!publicGatewayUrl || !organizationId || !agentId || watcherId == null) {
+  if (!publicGatewayUrl || !organizationId || !agentId || behaviorId == null) {
     return null;
   }
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
-  const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const base = `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/behaviors/watcher/${encodeURIComponent(String(watcherId))}`;
+  const base = buildBehaviorUrl(slug, agentId, behaviorId, publicGatewayUrl);
   return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
 }
 
@@ -128,10 +127,7 @@ export async function buildProviderConnectUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(
-    `/${encodeURIComponent(slug)}/inference-providers/new`,
-    `${webOrigin}/`
-  );
+  const url = new URL(`/${encodeURIComponent(slug)}/inference-providers/new`, `${webOrigin}/`);
   if (prefill?.provider) url.searchParams.set('provider', prefill.provider);
   if (prefill?.model) url.searchParams.set('model', prefill.model);
   if (prefill?.reason) url.searchParams.set('reason', prefill.reason);
@@ -153,10 +149,7 @@ export async function buildProviderManagementUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(
-    `/${encodeURIComponent(slug)}/infrastructure/models`,
-    `${webOrigin}/`
-  );
+  const url = new URL(`/${encodeURIComponent(slug)}/infrastructure/models`, `${webOrigin}/`);
   if (target?.provider) url.searchParams.set('provider', target.provider);
   if (target?.model) url.searchParams.set('model', target.model);
   return url.toString();
@@ -248,11 +241,16 @@ export function buildEntityUrl(info: EntityInfo, baseUrl?: string): string {
   return withBaseUrl(normalizeBaseUrl(baseUrl), `/${info.ownerSlug}/${segments.join('/')}`);
 }
 
-/**
- * Build URL to view entity watchers
- */
-export function buildWatchersUrl(info: EntityInfo, baseUrl?: string): string {
-  return `${buildEntityUrl(info, baseUrl)}/watchers`;
+/** Build the canonical agent-owned Behavior detail URL. */
+export function buildBehaviorUrl(
+  ownerSlug: string,
+  agentId: string,
+  behaviorId: string | number,
+  baseUrl?: string
+): string {
+  const webOrigin = normalizeBaseUrl(baseUrl)?.replace(/\/lobu$/, '');
+  const path = `/${encodeURIComponent(ownerSlug)}/agents/${encodeURIComponent(agentId)}/behaviors/${encodeURIComponent(String(behaviorId))}`;
+  return withBaseUrl(webOrigin, path);
 }
 
 /**

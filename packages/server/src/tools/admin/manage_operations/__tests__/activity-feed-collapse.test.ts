@@ -3,6 +3,7 @@ import type { ActivityCard } from "../activity-feed";
 import {
 	collapseAdjacentActivityCards,
 	formatActivityAttentionBlock,
+	runHref,
 } from "../activity-feed";
 
 function card(
@@ -46,6 +47,22 @@ describe("collapseAdjacentActivityCards", () => {
 			card({ id: "r:2", status: "failed" }),
 		]);
 		expect(out).toHaveLength(2);
+	});
+});
+
+describe("runHref", () => {
+	it("links watcher runs to the canonical Behavior route", () => {
+		expect(
+			runHref("acme", {
+				id: 42,
+				run_type: "watcher",
+				watcher_id: 7,
+				connection_id: null,
+				connector_key: null,
+				approval_status: null,
+				agent_id: "agent-1",
+			}),
+		).toBe("/acme/agents/agent-1/behaviors/7");
 	});
 });
 

@@ -45,7 +45,7 @@ const NAMESPACE_TOOL: Record<string, string> = {
 	authProfiles: "manage_auth_profiles",
 	feeds: "manage_feeds",
 	operations: "manage_operations",
-	watchers: "manage_watchers",
+	watchers: "manage_behaviors",
 	classifiers: "manage_classifiers",
 	viewTemplates: "manage_view_templates",
 	catalog: "manage_catalog",

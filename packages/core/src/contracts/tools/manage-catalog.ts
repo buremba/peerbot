@@ -3,14 +3,14 @@ import { type Static, Type } from "@sinclair/typebox";
 export const ListCatalogAction = Type.Object({
   action: Type.Literal("list_catalog", {
     description:
-      "List available (manifest) catalog entries — connectors, skills, watcher templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.",
+      "List available (manifest) catalog entries — connectors, skills, Behavior templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.",
   }),
   kinds: Type.Optional(
     Type.Array(
       Type.Union([
         Type.Literal("connectors"),
         Type.Literal("skills"),
-        Type.Literal("watchers"),
+        Type.Literal("behaviors"),
       ]),
       {
         description: "Manifest catalog kinds. Defaults to all.",
@@ -22,12 +22,12 @@ export const ListCatalogAction = Type.Object({
 export const ListInstalledAction = Type.Object({
   action: Type.Literal("list_installed", {
     description:
-      "List installed kinds for the org (connectors, watchers) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.",
+      "List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.",
   }),
   kinds: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Installed kinds. Org: connectors, watchers. Agent: skills, providers, guardrails, channels.",
+        "Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails, channels.",
     })
   ),
   agent_id: Type.Optional(

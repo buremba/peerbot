@@ -29,12 +29,12 @@ const adminCtx: ToolContext = {
 describe("sdkSearch", () => {
 	it("returns drill-down for an exact path", async () => {
 		const result = await sdkSearch(
-			{ query: "watchers.list" },
+			{ query: "behaviors.list" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(result.match_count).toBe(1);
-		expect(result.results[0]).toContain("watchers.list");
+		expect(result.results[0]).toContain("behaviors.list");
 		expect(result.results[0]).toContain("access:");
 	});
 
@@ -42,7 +42,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "entities.get entities.create entities.link" },
 			stubEnv,
-			writeCtx,
+			writeCtx
 		);
 
 		expect(result.match_count).toBe(3);
@@ -58,7 +58,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "entities.get operations.execu" },
 			stubEnv,
-			writeCtx,
+			writeCtx
 		);
 
 		expect(result.match_count).toBe(2);
@@ -80,8 +80,14 @@ describe("sdkSearch", () => {
 			"operations.execute",
 			"client.operations.execute({ connection_id: 42, operation_key: 'create_issue'",
 		],
-		["entitySchema.listRules", "client.entitySchema.listRules({ slug: 'works-at' })"],
-		["entitySchema.deleteType", "client.entitySchema.deleteType({ slug: 'widget' })"],
+		[
+			"entitySchema.listRules",
+			"client.entitySchema.listRules({ slug: 'works-at' })",
+		],
+		[
+			"entitySchema.deleteType",
+			"client.entitySchema.deleteType({ slug: 'widget' })",
+		],
 		[
 			"entitySchema.deleteRelType",
 			"client.entitySchema.deleteRelType({ slug: 'works-at' })",
@@ -90,9 +96,9 @@ describe("sdkSearch", () => {
 		["feeds.delete", "client.feeds.delete({ feed_id: 42 })"],
 		["classifiers.delete", "client.classifiers.delete({ classifier_id: 42 })"],
 		["schedules.cancel", "client.schedules.cancel({ id: 'schedule-id' })"],
-		["watchers.get", "client.watchers.get({ watcher_id: '42' })"],
-		["watchers.trigger", "client.watchers.trigger({ watcher_id: '42' })"],
-		["watchers.delete", "client.watchers.delete({ watcher_ids: ['42'] })"],
+		["behaviors.get", "client.behaviors.get({ watcher_id: '42' })"],
+		["behaviors.trigger", "client.behaviors.trigger({ watcher_id: '42' })"],
+		["behaviors.delete", "client.behaviors.delete({ watcher_ids: ['42'] })"],
 	])("renders the current %s signature in exact drill-down", async (path, snippet) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 
@@ -105,7 +111,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "ctx.sleep", mode: "read" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("ctx.sleep");
@@ -114,22 +120,22 @@ describe("sdkSearch", () => {
 	});
 
 	it("returns namespace listing for a top-level namespace at write tier", async () => {
-		const result = await sdkSearch({ query: "watchers" }, stubEnv, writeCtx);
+		const result = await sdkSearch({ query: "behaviors" }, stubEnv, writeCtx);
 		expect(result.match_count).toBeGreaterThan(2);
 		const joined = result.results.join("\n");
-		expect(joined).toContain("watchers.list");
-		expect(joined).toContain("watchers.create");
+		expect(joined).toContain("behaviors.list");
+		expect(joined).toContain("behaviors.create");
 	});
 
 	it("read mode hides write methods from namespace listing", async () => {
 		const result = await sdkSearch(
-			{ query: "watchers", mode: "read" },
+			{ query: "behaviors", mode: "read" },
 			stubEnv,
-			writeCtx,
+			writeCtx
 		);
 		const joined = result.results.join("\n");
-		expect(joined).toContain("watchers.list");
-		expect(joined).not.toContain("watchers.create");
+		expect(joined).toContain("behaviors.list");
+		expect(joined).not.toContain("behaviors.create");
 		expect(result.notes).toContain("query_sdk-safe");
 	});
 
@@ -142,7 +148,11 @@ describe("sdkSearch", () => {
 	it("lists a camelCase namespace from a lowercased query without a false hidden note", async () => {
 		// The hidden-namespace hint must never fire when the namespace's methods
 		// ARE visible — 'entityschema' matches entitySchema.* case-insensitively.
-		const result = await sdkSearch({ query: "entityschema" }, stubEnv, writeCtx);
+		const result = await sdkSearch(
+			{ query: "entityschema" },
+			stubEnv,
+			writeCtx
+		);
 		expect(result.match_count).toBeGreaterThan(0);
 		const joined = result.results.join("\n");
 		expect(joined).toContain("entitySchema.listTypes");
@@ -156,7 +166,7 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "agents", mode: "read" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(result.notes ?? "").toContain("agents.*");
 		expect(result.notes ?? "").toContain("run_sdk");
@@ -169,10 +179,10 @@ describe("sdkSearch", () => {
 	});
 
 	it("substring-matches across paths and summaries", async () => {
-		// "extraction" appears in watchers.create's summary (entity-type derive).
-		// watchers.create is admin-tier (matches manage_watchers.create being
+		// "derive" appears in behaviors.create's summary (entity-type contract).
+		// behaviors.create is admin-tier (matches manage_behaviors.create being
 		// owner-admin), so only an admin-tier caller discovers it.
-		const result = await sdkSearch({ query: "extraction" }, stubEnv, adminCtx);
+		const result = await sdkSearch({ query: "derive" }, stubEnv, adminCtx);
 		expect(result.match_count).toBeGreaterThan(0);
 	});
 
@@ -180,14 +190,14 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "connector action" },
 			stubEnv,
-			writeCtx,
+			writeCtx
 		);
 
 		// Phrase match on the method summary must still surface operations.execute.
 		// When DATABASE_URL is available, live-connector hits may also match the
 		// free-text query and prepend — so don't require match_count === 1.
 		const methodHit = result.results.find((line) =>
-			line.startsWith("operations.execute —"),
+			line.startsWith("operations.execute —")
 		);
 		expect(methodHit).toBeDefined();
 		expect(methodHit).toContain("Execute a connector action");
@@ -197,18 +207,20 @@ describe("sdkSearch", () => {
 		const result = await sdkSearch(
 			{ query: "connections sync run", mode: "read" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 
 		expect(result.match_count).toBeGreaterThan(0);
-		expect(result.results.some((line) => line.startsWith("operations.listRuns —"))).toBe(true);
+		expect(
+			result.results.some((line) => line.startsWith("operations.listRuns —"))
+		).toBe(true);
 	});
 
 	it("returns empty + helpful note for unknown queries", async () => {
 		const result = await sdkSearch(
 			{ query: "definitelyNotAMethod" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(result.match_count).toBe(0);
 		expect(result.notes).toBeDefined();
@@ -216,9 +228,9 @@ describe("sdkSearch", () => {
 
 	it("respects the limit parameter", async () => {
 		const result = await sdkSearch(
-			{ query: "watchers", limit: 2 },
+			{ query: "behaviors", limit: 2 },
 			stubEnv,
-			writeCtx,
+			writeCtx
 		);
 		expect(result.results.length).toBeLessThanOrEqual(2);
 		expect(result.notes).toContain("more matches");
@@ -228,14 +240,14 @@ describe("sdkSearch", () => {
 		const paginated = await sdkSearch(
 			{ query: "entities.list" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(paginated.results[0]).toContain("limit?: number");
 
 		const unpaginated = await sdkSearch(
 			{ query: "metrics.list" },
 			stubEnv,
-			readCtx,
+			readCtx
 		);
 		expect(unpaginated.results[0]).toContain("not paginated");
 	});
@@ -247,8 +259,8 @@ describe("sdkSearch", () => {
 			"feeds.trigger",
 			"classifiers.delete",
 			"schedules.cancel",
-			"watchers.get",
-			"watchers.trigger",
+			"behaviors.get",
+			"behaviors.trigger",
 		]) {
 			const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 			expect(result.match_count, path).toBe(1);

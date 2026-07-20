@@ -129,10 +129,10 @@ export const SaveContentSchema = Type.Object({
   watcher_source: Type.Optional(
     Type.Object(
       {
-        watcher_id: Type.Number({ description: 'Watcher that triggered this save' }),
+        watcher_id: Type.Number({ description: 'Behavior that triggered this save' }),
         window_id: Type.Number({ description: 'Window that triggered this save' }),
       },
-      { description: 'Attribution source when save is triggered by a watcher reaction' }
+      { description: 'Attribution source when save is triggered by a Behavior reaction' }
     )
   ),
 });

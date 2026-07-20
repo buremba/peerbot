@@ -13,25 +13,6 @@ const PaginationFields = {
   ),
 };
 
-/** A channel binding as returned by list_channel_bindings. */
-export interface ChannelBindingDto {
-  connectionId?: string;
-  platform: string;
-  channelId: string;
-  teamId?: string;
-  /** Per-binding model override (a `provider/model` ref or "auto"), if set. */
-  model?: string;
-  createdAt: number;
-}
-
-const ChannelBindingDtoSchema = Type.Object({
-  platform: Type.String(),
-  channelId: Type.String(),
-  teamId: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
-  createdAt: Type.Integer(),
-});
-
 const ConnectionFacetsSchema = Type.Object({
   data: Type.Boolean(),
   chat: Type.Boolean(),
@@ -246,7 +227,7 @@ export const UpdateAction = Type.Object({
   agent_id: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description:
-        "Fallback agent for a chat connection (used only when no channel binding matches; agent_channel_bindings remain authoritative). Null clears the fallback.",
+        "Fallback agent for a chat connection when no Behavior subscription matches. Null clears the fallback.",
     })
   ),
   slug: Type.Optional(
@@ -296,7 +277,7 @@ export const ApplyChatConnectionAction = Type.Object({
   agent_id: Type.Optional(
     Type.String({
       description:
-        "Declarative fallback agent. Channel bindings remain authoritative when present.",
+        "Declarative fallback agent. Behavior subscriptions remain authoritative when present.",
     })
   ),
   config: Type.Record(Type.String(), Type.Any()),
@@ -477,92 +458,8 @@ export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
   }),
 });
 
-// ============================================
-// Channel-binding actions (folded from the retired /channels HTTP routes).
-// A chat channel is bound to an agent through its connection; these actions
-// live under manage_connections so channel management lives on the connections
-// surface, not a bespoke channel island.
-// ============================================
-
 const CHANNEL_ID_DESC =
-  "Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').";
-
-export const ListChannelBindingsAction = Type.Object({
-  action: Type.Literal("list_channel_bindings", {
-    description: "List chat channels bound to an agent.",
-  }),
-  agent_id: Type.String({
-    description: "Agent whose channel bindings to list.",
-  }),
-});
-
-export const BindChannelAction = Type.Object({
-  action: Type.Literal("bind_channel", {
-    description: "Bind a chat channel to an agent through a chat connection.",
-  }),
-  agent_id: Type.String({ description: "Agent to bind the channel to." }),
-  connection_id: Type.Number({
-    description: "Chat connection that receives this channel's messages.",
-  }),
-  channel_id: Type.String({ description: CHANNEL_ID_DESC }),
-  model: Type.Optional(
-    Type.String({
-      maxLength: 200,
-      description:
-        "Optional per-binding model override — an explicit `<provider>/<model>` ref. " +
-        "Must be one of the agent's allowed models (its `models` list) when that " +
-        "list is non-empty. Wins over the agent/org default for messages on this channel.",
-    })
-  ),
-});
-
-export const UnbindChannelAction = Type.Object({
-  action: Type.Literal("unbind_channel", {
-    description: "Remove a channel binding from an agent.",
-  }),
-  agent_id: Type.String({ description: "Agent to unbind the channel from." }),
-  connection_id: Type.Number({
-    description: "Chat connection owning the binding.",
-  }),
-  channel_id: Type.String({ description: CHANNEL_ID_DESC }),
-});
-
-export const ChannelBindingSpec = Type.Union([
-  Type.String({
-    description:
-      "Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.",
-  }),
-  Type.Object({
-    channel_id: Type.String({
-      description:
-        "Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.",
-    }),
-    about: Type.Optional(
-      Type.Array(Type.Union([Type.Number(), Type.String()]), {
-        description:
-          "Business entity ids or slugs this channel is about (config-sourced links).",
-      })
-    ),
-  }),
-]);
-
-export const SyncChannelBindingsAction = Type.Object({
-  action: Type.Literal("sync_channel_bindings", {
-    description:
-      "Declaratively reconcile an agent's channel bindings to a desired set.",
-  }),
-  agent_id: Type.String({
-    description: "Agent whose declarative bindings to reconcile.",
-  }),
-  connection_id: Type.Union([Type.Number(), Type.String()], {
-    description:
-      "Chat connection numeric id, or the stable declarative id used by lobu apply.",
-  }),
-  channels: Type.Array(ChannelBindingSpec, {
-    description:
-      "Desired channel bindings, optionally with per-channel about links.",
-  }),
-});
+  "Platform channel id (may be platform-prefixed, e.g. 'slack:C…').";
 
 export const SetChannelAboutAction = Type.Object({
   action: Type.Literal("set_channel_about", {
@@ -575,16 +472,6 @@ export const SetChannelAboutAction = Type.Object({
   channel_id: Type.String({ description: CHANNEL_ID_DESC }),
   about_entity_ids: Type.Array(Type.Number(), {
     description: "Business entity ids this channel is about.",
-  }),
-});
-
-export const ConnectChannelDmAction = Type.Object({
-  action: Type.Literal("connect_channel_dm", {
-    description: "Open + bind the caller's Slack DM to an agent.",
-  }),
-  agent_id: Type.String({ description: "Agent to wire the caller's DM to." }),
-  connection_id: Type.Number({
-    description: "Slack connection to open and bind the caller's DM through.",
   }),
 });
 
@@ -821,44 +708,11 @@ export const ManageConnectionsResultSchema = Type.Union([
     default_repair_agent_id: Type.Union([Type.String(), Type.Null()]),
   }),
   Type.Object({
-    action: Type.Literal("list_channel_bindings"),
-    agent_id: Type.String(),
-    bindings: Type.Array(ChannelBindingDtoSchema),
-  }),
-  Type.Object({
-    action: Type.Literal("bind_channel"),
-    success: Type.Literal(true),
-    agent_id: Type.String(),
-    connection_id: Type.Integer(),
-    platform: Type.String(),
-    channel_id: Type.String(),
-    team_id: Type.Optional(Type.String()),
-  }),
-  Type.Object({
-    action: Type.Literal("unbind_channel"),
-    success: Type.Literal(true),
-  }),
-  Type.Object({
-    action: Type.Literal("sync_channel_bindings"),
-    success: Type.Literal(true),
-    bound: Type.Array(Type.String()),
-    removed: Type.Array(Type.String()),
-    about_linked: Type.Optional(Type.Integer()),
-    about_removed: Type.Optional(Type.Integer()),
-  }),
-  Type.Object({
     action: Type.Literal("set_channel_about"),
     success: Type.Literal(true),
     connection_id: Type.Integer(),
     channel_id: Type.String(),
     about_entity_ids: Type.Array(Type.Integer()),
-  }),
-  Type.Object({
-    action: Type.Literal("connect_channel_dm"),
-    success: Type.Literal(true),
-    platform: Type.Literal("slack"),
-    channel_id: Type.String(),
-    team_id: Type.Union([Type.String(), Type.Null()]),
   }),
 ]);
 export type ManageConnectionsResult = Static<
@@ -898,9 +752,4 @@ export type ConnectionsArgs =
   | Static<typeof UpdateConnectorAuthAction>
   | Static<typeof UpdateConnectorDefaultConfigAction>
   | Static<typeof UpdateConnectorDefaultRepairAgentAction>
-  | Static<typeof ListChannelBindingsAction>
-  | Static<typeof BindChannelAction>
-  | Static<typeof UnbindChannelAction>
-  | Static<typeof SyncChannelBindingsAction>
-  | Static<typeof SetChannelAboutAction>
-  | Static<typeof ConnectChannelDmAction>;
+  | Static<typeof SetChannelAboutAction>;

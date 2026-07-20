@@ -157,7 +157,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
 
       // `target` is either a channel handle (top-level post) or a thread handle
       // from a prior send (reply in that thread). A thread handle re-authorizes
-      // its own channel binding, so try it first; fall back to channel.
+      // its own channel subscription, so try it first; fall back to channel.
       let target: AddressableTarget;
       let threadId: string | undefined;
       const asThread = await resolveAuthorizedThread(
@@ -250,7 +250,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
 
   // Shared skeleton for the message-mutation routes (react/edit/delete): parse
   // the body, re-authorize the (thread handle → channel, message id) — the
-  // thread handle carries the channel binding, so resolveAuthorizedThread
+  // thread handle carries the channel subscription, so resolveAuthorizedThread
   // re-checks membership every call (revocation-safe) — then hand the resolved
   // target + body to the route's own handler. `message` is the platform message
   // id WITHIN that authorized channel. Owns the try/catch + error mapping so
@@ -290,7 +290,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         // the adapter target is the 2-part `platform:channel` (channelKey),
         // which its decodeThreadId accepts — reactions/edits key on channel +
         // message id (`ts`), not a thread root. Either handle re-authorizes the
-        // channel binding on every call (revocation-safe).
+        // channel subscription on every call (revocation-safe).
         const asThread = await resolveAuthorizedThread(
           worker.agentId,
           worker.organizationId,

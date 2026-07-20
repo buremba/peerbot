@@ -18,6 +18,7 @@ import {
 } from "../../__tests__/setup/test-fixtures";
 import { initWorkspaceProvider } from "../../workspace";
 import { search } from "../search";
+import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
 
 async function bindChannelWithMessages(opts: {
   organizationId: string;
@@ -34,14 +35,13 @@ async function bindChannelWithMessages(opts: {
     organizationId: opts.organizationId,
 		status: "active",
   });
-  await sql`
-    INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, connection_id)
-    SELECT ${opts.organizationId}, ${opts.agentId}, 'slack', ${opts.channelId}, id
-    FROM connections
-    WHERE organization_id = ${opts.organizationId}
-      AND slug = ${`agentconn-${opts.connectionId}`}
-      AND deleted_at IS NULL
-  `;
+  await createTestBehaviorSubscription({
+    organizationId: opts.organizationId,
+    agentId: opts.agentId,
+    connectionSlug: `agentconn-${opts.connectionId}`,
+    platform: "slack",
+    channelId: opts.channelId,
+  });
   for (let i = 0; i < opts.messages.length; i++) {
     await sql`
       INSERT INTO channel_messages (

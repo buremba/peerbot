@@ -8,7 +8,7 @@ import {
 } from "../utils/connector-catalog";
 import type { CatalogEntry, CatalogManifest } from "./types";
 import { CATALOG_MANIFEST_VERSION } from "./types";
-import { WATCHER_CATALOG_TEMPLATES } from "./watcher-templates";
+import { BEHAVIOR_CATALOG_TEMPLATES } from "./behavior-templates";
 
 function repoSkillsDir(): string {
 	const here =
@@ -73,6 +73,7 @@ export async function generateConnectorsManifest(): Promise<CatalogManifest> {
 				webhook: metadata.webhook,
 				feeds_schema: metadata.feeds_schema,
 				actions_schema: metadata.actions_schema,
+				behavior_events: metadata.behavior_events,
 				options_schema: metadata.options_schema,
 				favicon_domain: metadata.favicon_domain,
 				required_capability: metadata.required_capability,
@@ -124,17 +125,17 @@ export async function generateSkillsManifest(): Promise<CatalogManifest> {
 	return { version: CATALOG_MANIFEST_VERSION, kind: "skills", entries };
 }
 
-export function generateWatchersManifest(): CatalogManifest {
-	const entries = [...WATCHER_CATALOG_TEMPLATES].sort((a, b) =>
-		a.name.localeCompare(b.name),
+export function generateBehaviorsManifest(): CatalogManifest {
+	const entries = [...BEHAVIOR_CATALOG_TEMPLATES].sort((a, b) =>
+		a.name.localeCompare(b.name)
 	);
-	return { version: CATALOG_MANIFEST_VERSION, kind: "watchers", entries };
+	return { version: CATALOG_MANIFEST_VERSION, kind: "behaviors", entries };
 }
 
 export async function generateInMemoryManifests(): Promise<CatalogManifest[]> {
 	return [
 		await generateConnectorsManifest(),
 		await generateSkillsManifest(),
-		generateWatchersManifest(),
+		generateBehaviorsManifest(),
 	];
 }

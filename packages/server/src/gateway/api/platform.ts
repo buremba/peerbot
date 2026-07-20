@@ -109,7 +109,7 @@ export class ApiPlatform implements PlatformAdapter {
         event.fields
           ? "manage_entity"
           : resourceKind === "watcher"
-            ? "manage_watchers"
+            ? "manage_behaviors"
             : "manage_agents";
       this.enqueueInteractionCard(queue, event, "tool-approval", {
         type: "tool-approval",

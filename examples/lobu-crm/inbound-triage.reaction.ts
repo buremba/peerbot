@@ -1,7 +1,7 @@
 /**
- * Reaction for the `inbound-triage` watcher.
+ * Reaction for the `inbound-triage` Behavior.
  *
- * Fires every 2h after the watcher LLM extracts new and enriched leads from
+ * Fires every 2h after the Behavior extracts new and enriched leads from
  * GitHub/X/HN signals. Persists an `observation` event (tagged `metadata.kind:
  * "lead_interaction"`) per run so the next digest can count them, and — when
  * the run is notable — pushes the recommended

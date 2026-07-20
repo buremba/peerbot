@@ -1,10 +1,10 @@
-# MCP multi-org + `execute`/`search`: addendum to the search-execute design doc
+# MCP multi-org + `execute`/`search` plan
 
 > **Status (2026-07-15):** **Partial** — `run_sdk`/`query_sdk` and the `client.org` surface are live; `switch_organization` was removed, and the planned frontend surfaces are absent.
 
-Extends `docs/mcp-search-execute-design-doc.md` (lobu proper, status "Planned, not yet implemented") with two scopes the original didn't fully land: (1) cross-org addressing inside `execute`, and (2) the full frontend + UX surface the new tools imply. Language decision: **TypeScript over a typed `ClientSDK` in `isolated-vm`** — reviewed by a second and third opinion (codex, pi), both concurred. Bash-as-primary was evaluated and rejected because reactions are the real workload and shell quoting degrades stored user code.
+This file records two follow-on scopes for the search/execute work: (1) cross-org addressing inside `execute`, and (2) the full frontend + UX surface the tools imply. Language decision: **TypeScript over a typed `ClientSDK` in `isolated-vm`** — reviewed by a second and third opinion (codex, pi), both concurred. Bash-as-primary was evaluated and rejected because reactions are the real workload and shell quoting degrades stored user code.
 
-Target repo for implementation: `packages/server` + `packages/owletto` in the `lobu` monorepo. The lobu repo is deprecated.
+Target packages for implementation: `packages/server` + `packages/owletto` in the `lobu` monorepo.
 
 ## Decisions locked in
 
@@ -33,28 +33,28 @@ export default async (ctx, client) => {
   const orgs = await client.organizations.list();           // user's memberships + public orgs they can read
   const buremba = orgs.find(o => o.slug === 'buremba');
   if (!buremba) throw new Error('buremba not found');
-  const watchers = await client.org(buremba.id).watchers.list({ template: 'reddit' });
-  return watchers.filter(w => w.status !== 'active' || w.pending > 0);
+  const behaviors = await client.org(buremba.id).behaviors.list({ template: 'reddit' });
+  return behaviors.filter(b => b.status !== 'active' || b.pending > 0);
 };
 ```
 
 Contract:
 
-- `client.org(slugOrId)` returns `ClientSDK`. Accepts slug or UUID. First call per `(userId, orgId)` tuple verifies membership against `member`; subsequent calls within the same isolate hit an in-process LRU cache keyed by `(userId, orgId)` with a 30s TTL.
+- `client.org(slugOrId)` returns `ClientSDK`. Accepts slug or UUID. Membership resolution uses the process-wide 60-second `memberRoleCache`; membership writes through Lobu invalidate the relevant entry.
 - Membership lookup populates `memberRole` (`owner | admin | member`) into the swapped `ToolContext`. Public-visibility orgs the user isn't a member of return a `memberRole: null` context, and the existing `isPublicReadable(toolName, args)` path in `src/auth/tool-access.ts` gates writes.
-- Non-member on a private org: `.org()` throws `AccessDenied` synchronously, before any SDK method dispatches.
+- Non-member on a private org: `.org()` rejects with `AccessDenied` before returning a target-org SDK or dispatching one of its methods.
 - `client.organizations.{list, current}` — new SDK namespace. `list` wraps `listOrganizations`; `current` returns the session's default org.
-- The `ctx` passed to `execute` scripts carries `organization_id` = the session's default org (pinned URL or last `switch_organization`). `client` with no `.org()` call uses that same default.
+- The `ctx` passed to scripts carries `organization_id` = the session's default org. `client` with no `.org()` call uses that same default.
 
 Authz invariants preserved:
 
 - Every SDK method still fires `checkToolAccess(toolName, args, ctx)`. The org swap changes `ctx`, never bypasses the check.
-- Membership is re-verified on each `.org()` call, not cached across calls for >30s. A script that calls `.org(X).entities.create()` after membership was revoked mid-script fails on the second call.
+- Each `.org()` call resolves membership through `getCachedMembershipRole`. Revocations written through Lobu invalidate that cache before a later call; direct out-of-band database writes can remain cached for the 60-second TTL.
 - Public-workspace scripts (`role: null` on session default) can read but never write, same as today's tool surface.
 
 ## `execute` access level: write, not admin
 
-The original design doc says `getRequiredAccessLevel('execute') = 'admin'`. Flip to `write`. Rationale:
+The initial proposal treated `execute` as admin-tier. Flip it to `write`. Rationale:
 
 - Per-method access checks already exist in the SDK dispatch. A member running `execute` can call any method they could call as a direct tool — composition does not create new authorization.
 - An `admin`-only gate on `execute` would force members onto the aggregation-tool path we're explicitly killing. Members either deserve scripted composition or they don't.
@@ -70,31 +70,31 @@ Drop the "org-switching tools only on /mcp" rule in `src/tools/execute.ts` (`ORG
 - On a scoped URL the default org is the pinned one, but nothing is actually at risk by letting the user list memberships or switch mid-session. The pin is ergonomic, not a hard wall.
 - Drop `join_organization` entirely. For already-authenticated users on a scoped URL, "join" is a misnomer — they're either already a member (no-op), or not (should fail with a "not a member" error, identical to `switch_organization`'s behavior). One tool, one semantic.
 
-Session-resume behavior (`src/mcp-handler.ts` line 356) still rejects cross-scope recovery (scoped ↔ unscoped mismatch). Unchanged — that's correct.
+Session-resume behavior in `recoverSessionAuthContext` still rejects cross-scope recovery (scoped ↔ unscoped mismatch). Unchanged — that's correct.
 
 ## Authoring affordances
 
 These make "LLMs write bash more fluently than typed SDKs" a non-concern:
 
 - **Tiny surface in authored scripts.** `export default async (ctx, client) => { ... }`. One `client` global. No imports. Top-level `await` supported via esbuild's `format: 'esm'` wrapper. Plain objects/arrays. No classes, no decorators, no framework ceremony.
-- **`search("ns.method")` returns signature + copy-pasteable example.** The design doc already specifies inline TypeBox-derived signatures. Extend each method's metadata with a minimal example literal:
+- **`search("ns.method")` returns signature + copy-pasteable example.** Keep a minimal example literal alongside each method's TypeBox-derived signature:
 
   ```ts
   // Example:
-  // const w = await client.watchers.list({ entity_id: 42, status: 'active' });
+  // const w = await client.behaviors.list({ entity_id: 42, status: 'active' });
   ```
 
   Stored in `src/sandbox/method-metadata.ts` next to the summary/throws annotations.
 - **Structured errors keyed for repair.** TypeBox `Value.Errors` surface as:
 
   ```ts
-  { name: 'ValidationError', method: 'watchers.create',
+  { name: 'ValidationError', method: 'behaviors.create',
     fields: [{ path: 'extraction_schema', expected: 'object', got: 'string',
                example: { type: 'object', properties: { ... } } }] }
   ```
 
   The `example` field on validation errors nudges the model to the right shape on retry.
-- **Dry-run first-class.** `client.watchers.testReaction` already exists in the design doc. Add `execute` dry-run mode too: `{ script, dry_run: true }` runs under the same write-interception wrapper that reactions use, returning the `would_have` list without committing. Cost is one wrapper branch, same SDK.
+- **Dry-run first-class.** Add `client.behaviors.testReaction` for reaction previews. Add `execute` dry-run mode too: `{ script, dry_run: true }` runs under the same write-interception wrapper that reactions use, returning the `would_have` list without committing. Cost is one wrapper branch, same SDK.
 
 ## Frontend plan
 
@@ -128,14 +128,14 @@ Files:
 - `src/app/[owner]/settings/organizations/page.tsx`
 - `src/components/settings/organizations/{members,invites,my-orgs,delete}-tab.tsx`
 
-### Upgrade: watcher reaction editor
+### Upgrade: Behavior reaction editor
 
 Today: plain `<Textarea>` in `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx:461–466`. No syntax highlighting, no dry-run, no compile feedback until save.
 
 - Replace textarea with Monaco (reusing whatever component the new execute console lands).
-- "Test reaction" button — calls `client.watchers.testReaction` against the most recent window, surfaces the `would_have` list + logs inline.
+- "Test reaction" button — calls `client.behaviors.testReaction` against the most recent window, surfaces the `would_have` list + logs inline.
 - Inline compile errors (line/col) from esbuild — fire on blur or debounced keystroke.
-- Collapsible "Context" card showing the `ctx.extracted_rows` shape for this watcher's extraction_schema.
+- Collapsible "Context" card showing the `ctx.extracted_rows` shape for this Behavior's extraction schema.
 
 Files touched:
 - `src/components/entity-tabs/watchers-tab/from-scratch-panel.tsx`
@@ -156,18 +156,18 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 
 ### Cross-org access
 
-- **Non-member on private org via `.org()`** — synchronous throw from the accessor, before SDK dispatch. Already covered by the per-call membership check.
-- **Public-visibility org, `memberRole: null`** — accessor returns a read-only SDK. Writes fail at `isPublicReadable` check. Existing handler behavior, no new code.
-- **Org hard-delete mid-script** — `member` row disappears, LRU cache invalidated by TTL (≤30s) or by the next dispatch if a write reaches the handler and the row is gone. Reads during the window succeed, consistent with Postgres-level visibility; no stale membership beyond 30s.
-- **No soft-delete on `organization` today** (confirmed: `db/schema.sql` has no `deleted_at`). If it's added later, the `organizations.list`/`.org()` path needs the filter too — tracked as a follow-up.
-- **Slug vs UUID both accepted** — accessor resolves by length heuristic (`startsWith` UUID regex) + DB lookup. Matches the ergonomic norm of the rest of the API.
+- **Non-member on private org via `.org()`** — the accessor rejects before it returns a target-org SDK. Covered by `resolveOrgMembership`.
+- **Public-visibility org, `memberRole: null`** — the accessor returns an SDK carrying that null role. Delegated handlers still apply their normal public-read/write access checks.
+- **Org hard-delete mid-script** — Lobu's membership writes invalidate `memberRoleCache`; an out-of-band database write can remain cached for its 60-second TTL. Reads during that window are the residual cache-consistency boundary.
+- **No soft-delete on `organization` today** (confirmed in the baseline migration: the table has no `deleted_at`). If it's added later, the `organizations.list`/`.org()` path needs the filter too — tracked as a follow-up.
+- **Slug vs ID both accepted** — the accessor checks `getCachedOrgBySlug` first, then falls back to `getOrgById`; it does not guess from string shape.
 
 ### Reactions
 
-- **Stored reaction calls `client.org(X)` after reaction owner lost membership of X** — fires per-call membership check. SDK throws `AccessDenied` inside the isolate; `watcher_reactions` row logs the failure. Reaction run completes with `success: false`, no partial writes to X (because the accessor throws before dispatch).
-- **Reaction fires on a watcher whose org was hard-deleted** — upstream `watcher` row is already gone by FK cascade; the reaction never schedules. BENIGN.
+- **Stored reaction calls `client.org(X)`** — reactions set `allowCrossOrg: false`, so the accessor rejects with `CrossOrgAccessDenied` before membership resolution or target-org dispatch.
+- **Reaction fires on a Behavior whose org was hard-deleted** — the upstream `watchers` storage row is already gone by FK cascade; the reaction never schedules. BENIGN.
 - **Dry-run must classify cross-org calls** — the dry-run wrapper wraps the entire `ClientSDK`, so `client.org(X).entities.create(...)` goes through the same interceptor. Classification is method-keyed in `method-metadata.ts`, unaffected by org swap.
-- **Public-workspace reactions** — reactions today run with `memberRole: null` and `isAuthenticated: true` (system context). A public-org reaction that tries to write fails at `isPublicReadable`. Unchanged.
+- **Reaction authorization** — reactions run as a system context with `actingWatcherId`/`actingWindowId`; autonomous write policy is therefore tied to the owning Behavior even though there is no human member role.
 
 ### Sandbox limits
 
@@ -180,7 +180,7 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 
 - **Concurrent unscoped sessions with independent switches** — `sessions` Map in `mcp-handler.ts` is sessionId-keyed. Isolated. BENIGN.
 - **Session resume after `switch_organization` on unscoped URL** — `persisted.organizationId` is replayed into the recovered session. BENIGN.
-- **Session resume with scoped↔unscoped URL mismatch** — already rejects (line 356). Correct.
+- **Session resume with scoped↔unscoped URL mismatch** — `recoverSessionAuthContext` already rejects it. Correct.
 
 ### Audit
 
@@ -212,7 +212,7 @@ From a BLOCKER/GUARD/BENIGN survey of the current codebase:
 New:
 - `src/sandbox/client-sdk.ts` — `buildClientSDK(toolCtx, env, opts?: { dryRun?: boolean })`. Top-level `org(slugOrId)` accessor returns a proxy SDK with swapped ToolContext after a membership check.
 - `src/sandbox/run-script.ts` — shared `isolated-vm` runner.
-- `src/sandbox/namespaces/{entities, entitySchema, connections, feeds, authProfiles, operations, watchers, classifiers, viewTemplates, knowledge, organizations}.ts` — per-namespace thin delegations.
+- `src/sandbox/namespaces/{entities, entitySchema, connections, feeds, authProfiles, operations, behaviors, classifiers, viewTemplates, knowledge, organizations}.ts` — per-namespace thin delegations.
 - `src/sandbox/method-metadata.ts` — summary, throws, cost, access, **example** per SDK path.
 - `src/sandbox/typebox-to-signature.ts` — formatter.
 - `src/tools/sdk_search.ts`, `src/tools/sdk_execute.ts`.
@@ -252,7 +252,7 @@ Five PRs, landable in order. Each is independently mergeable; later PRs stack on
 
 Scope:
 - `src/sandbox/{run-script, client-sdk, method-metadata, typebox-to-signature}.ts`
-- Per-namespace delegations (most thin wrappers; `organizations` and `watchers` have real logic).
+- Per-namespace delegations (most thin wrappers; `organizations` and `behaviors` have real logic).
 - `client.org()` accessor with membership check + LRU cache.
 - Add `isolated-vm` dep; verify the Node runtime can load its native addon on the target host.
 
@@ -284,7 +284,7 @@ Scope:
 - Admin SQL examples in docs.
 
 Validation:
-- Integration test: script creating 3 entities + 1 watcher → `SELECT * FROM event WHERE execute_invocation_id = $1` returns 4 rows.
+- Integration test: script creating 3 entities + 1 Behavior → `SELECT * FROM event WHERE execute_invocation_id = $1` returns 4 rows.
 
 ### PR-4: scoped-endpoint UX fix
 
@@ -306,15 +306,15 @@ Scope:
 - Sidebar pending-invite badge.
 
 Validation:
-- Manual QA: create a 3-line script, run, verify result. Run dry-run, verify `would_have` list. Switch orgs via selector, re-run. Open a watcher, hit "Test reaction", verify inline logs.
+- Manual QA: create a 3-line script, run, verify result. Run dry-run, verify `would_have` list. Switch orgs via selector, re-run. Open a Behavior, hit "Test reaction", verify inline logs.
 
 ## Risks and gotchas
 
 - **`isolated-vm` native build.** Node version pin, `python3` + `build-essential` when a prebuild is unavailable. Half-day risk on hosts without a matching prebuild; verify before deep work.
-- **Existing reaction scripts in DB.** Stored scripts target the legacy `ReactionSDK` shape (`actions.execute`, `content.save`, `notify`, `query(sql, params)`, `react(ctx, sdk)` export). The new `ClientSDK` is a different surface — namespace renames (`content.save` → `knowledge.save`, `actions.execute` → `operations.execute`), object-shaped args instead of positional, no `notify` primitive, and the entry point is `default async (ctx, client, params?)`. Old scripts will not transparently keep working — they must be rewritten and recompiled. Migration ran in PR #348 against `watchers.reaction_script` / `reaction_script_compiled`; backup table `_reactions_backup_2026_04_25` holds originals for rollback. Audit query: `SELECT COUNT(*) FROM watchers WHERE reaction_script ~ 'export\s+async\s+function\s+react\s*\(' OR reaction_script ~ 'sdk\.(notify|content|actions)';` returns 0 post-migration.
+- **Existing reaction scripts in DB.** Stored scripts that still target the legacy `ReactionSDK` shape (`actions.execute`, `content.save`, `notify`, `query(sql, params)`, `react(ctx, sdk)` export) will not transparently work with `ClientSDK`. Audit persisted `watchers.reaction_script` rows before changing the runtime contract; rewrite and recompile any legacy scripts found.
 - **Dry-run write classification misses a handler.** If a new method is added without metadata, dry-run might treat it as a read and mutate prod. Ship-blocking test: `method-metadata.ts` must cover every public SDK path; CI fails if not.
 - **Async SDK bridge leaks.** `isolated-vm` `Reference.apply` patterns have known footguns (un-disposed references, leaked promises). Budget unit-test time here up front.
-- **Token budgets of `search`.** A namespace listing in a crowded namespace (watchers has ~15 methods) can still run ~500 tokens. Document a `depth` param later if needed.
+- **Token budgets of `search`.** A namespace listing in a crowded namespace (`behaviors` has ~15 methods) can still run ~500 tokens. Document a `depth` param later if needed.
 - **Frontend bundle size from Monaco.** ~2MB gzipped. Lazy-load the editor behind a dynamic import; never ship it on non-console pages.
 
 ## Critical files

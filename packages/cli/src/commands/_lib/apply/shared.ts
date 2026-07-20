@@ -25,8 +25,8 @@ export interface RelationshipRule {
   target: string;
 }
 
-/** One watcher SQL data source. */
-export interface WatcherSource {
+/** One Behavior SQL data source. */
+export interface BehaviorSource {
   name: string;
   query: string;
 }

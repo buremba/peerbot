@@ -228,24 +228,16 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "round-trip",
 				note: "writes an in-app notification to org admins (no external delivery)",
 			},
-			// ── watchers ────────────────────────────────────────────────────────────
-			manage_watchers: {
-				// No read-only `list` action — listing is the separate list_watchers
-				// tool. `get_versions` reads the seeded watcher's version history and
-				// also proves the create path (run in beforeAll) landed.
-				args: () => ({ action: "get_versions", watcher_id: watcherId }),
+			// ── Behaviors ───────────────────────────────────────────────────────────
+			manage_behaviors: {
+				args: () => ({ action: "list", entity_id: entityId }),
 				coverage: "round-trip",
-				note: "reads version history for the seeded watcher (create run in beforeAll)",
+				note: "lists the seeded Behavior attached to the entity",
 			},
-			list_watchers: {
-				args: () => ({ entity_id: entityId }),
-				coverage: "round-trip",
-				note: "lists the seeded watcher attached to the entity",
-			},
-			get_watcher: {
+			get_behavior: {
 				args: () => ({ watcher_id: watcherId, entity_id: entityId }),
 				coverage: "round-trip",
-				note: "reads back the watcher seeded in beforeAll",
+				note: "reads back the Behavior seeded in beforeAll",
 			},
 			// ── path resolution ─────────────────────────────────────────────────────
 			resolve_path: {
@@ -303,7 +295,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				"manage_entity_schema",
 				{ schema_type: "entity_type", action: "create", slug, name },
 				TEST_ENV,
-				authCtx,
+				authCtx
 			);
 		}
 
@@ -312,7 +304,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			"manage_entity",
 			{ action: "create", entity_type: "brand", name: "Coverage Brand" },
 			TEST_ENV,
-			authCtx,
+			authCtx
 		)) as { entity?: { id: number } };
 		const createdEntityId = created.entity?.id;
 		expect(createdEntityId).toBeDefined();
@@ -328,17 +320,25 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				slug: "metric-co",
 				name: "Metric Co",
 				metrics_config: {
-					eventSets: { charges: { by: "alias", field: "metadata->>'description'" } },
-					measures: { n: { eventSet: "charges", agg: "count", description: "Charge count." } },
+					eventSets: {
+						charges: { by: "alias", field: "metadata->>'description'" },
+					},
+					measures: {
+						n: {
+							eventSet: "charges",
+							agg: "count",
+							description: "Charge count.",
+						},
+					},
 				},
 			},
 			TEST_ENV,
-			authCtx,
+			authCtx
 		);
 
-		// Seed one watcher so get_watcher / list_watchers are real round-trips.
+		// Seed one Behavior so get_behavior / manage_behaviors list are real round-trips.
 		const watcher = (await executeTool(
-			"manage_watchers",
+			"manage_behaviors",
 			{
 				action: "create",
 				entity_id: entityId,
@@ -348,7 +348,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				agent_id: agentId,
 			},
 			TEST_ENV,
-			authCtx,
+			authCtx
 		)) as { watcher_id: string };
 		expect(watcher.watcher_id).toBeDefined();
 		watcherId = watcher.watcher_id;
@@ -364,17 +364,17 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		expect(
 			uncovered,
 			`These registry tools have no coverage in all-tools-e2e.test.ts. Add valid minimal ` +
-				`args to TOOL_PLAN so the agent tool is exercised end-to-end: ${uncovered.join(", ")}`,
+				`args to TOOL_PLAN so the agent tool is exercised end-to-end: ${uncovered.join(", ")}`
 		).toEqual([]);
 
 		// And the reverse: the fixture must not reference a tool the registry no
 		// longer exposes (stale coverage hides a removed tool).
 		const stale = [...planned].filter(
-			(name) => !registryToolNames.includes(name),
+			(name) => !registryToolNames.includes(name)
 		);
 		expect(
 			stale,
-			`These tools are in TOOL_PLAN but no longer in the registry: ${stale.join(", ")}`,
+			`These tools are in TOOL_PLAN but no longer in the registry: ${stale.join(", ")}`
 		).toEqual([]);
 
 		// Sanity: we expect the full ~23-tool surface, not a truncated registry.
@@ -386,7 +386,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			"manage_entity",
 			{ action: "create", entity_type: "product", name: "Ephemeral Product" },
 			TEST_ENV,
-			authCtx,
+			authCtx
 		)) as { entity?: { id: number } };
 		const maybeId = created.entity?.id;
 		expect(maybeId).toBeDefined();
@@ -396,7 +396,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			"manage_entity",
 			{ action: "delete", entity_id: id },
 			TEST_ENV,
-			authCtx,
+			authCtx
 		);
 
 		// Authoritative check that the delete landed. A non-force `delete` is a
@@ -413,7 +413,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		expect(rows, "soft delete must leave the row present").toHaveLength(1);
 		expect(
 			rows[0].deleted_at,
-			"soft delete must stamp deleted_at",
+			"soft delete must stamp deleted_at"
 		).not.toBeNull();
 	});
 
@@ -425,7 +425,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 	for (const name of Object.keys(
 		// Build once at collection time for stable test names; args factories are
 		// re-read at run time so they see seeded ids.
-		plan(),
+		plan()
 	)) {
 		it(`tool: ${name}`, async () => {
 			const entry = plan()[name];

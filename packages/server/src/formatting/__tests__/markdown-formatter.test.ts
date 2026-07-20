@@ -157,8 +157,8 @@ describe('formatToolResult', () => {
     });
   });
 
-  describe('get_watcher tool', () => {
-    it('should format watcher windows', () => {
+  describe('get_behavior tool', () => {
+    it('should format Behavior windows', () => {
       const result = {
         windows: [
           {
@@ -173,20 +173,20 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('get_watcher', result);
-      expect(md).toContain('Watcher Windows');
+      const md = formatToolResult('get_behavior', result);
+      expect(md).toContain('Behavior Windows');
       expect(md).toContain('Sentiment');
       expect(md).toContain('weekly');
     });
 
-    it('should format no watchers available', () => {
+    it('should format no Behavior windows available', () => {
       const result = { windows: [] };
-      const md = formatToolResult('get_watcher', result);
-      expect(md).toContain('No Watchers Available');
+      const md = formatToolResult('get_behavior', result);
+      expect(md).toContain('No Behavior Windows Available');
     });
   });
 
-  describe('manage_watchers tool', () => {
+  describe('manage_behaviors tool', () => {
     it('should format create result', () => {
       const result = {
         action: 'create',
@@ -194,14 +194,15 @@ describe('formatToolResult', () => {
         template_version: 1,
         status: 'active',
       };
-      const md = formatToolResult('manage_watchers', result);
-      expect(md).toContain('Watcher Management');
+      const md = formatToolResult('manage_behaviors', result);
+      expect(md).toContain('Behavior Management');
       expect(md).toContain('42');
     });
 
     it('should format list result', () => {
       const result = {
-        watchers: [
+        action: 'list',
+        behaviors: [
           {
             watcher_id: 1,
             template_slug: 'sentiment',
@@ -212,8 +213,8 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('list_watchers', result);
-      expect(md).toContain('Watchers (1)');
+      const md = formatToolResult('manage_behaviors', result);
+      expect(md).toContain('Behaviors (1)');
     });
 
     it('should format template list result', () => {
@@ -229,7 +230,7 @@ describe('formatToolResult', () => {
           },
         ],
       };
-      const md = formatToolResult('manage_watchers', result);
+      const md = formatToolResult('manage_behaviors', result);
       expect(md).toContain('Templates (1)');
       expect(md).toContain('reddit-opportunity-finder');
     });
@@ -241,7 +242,7 @@ describe('formatToolResult', () => {
         slug: 'reddit-opportunity-finder',
         version: 1,
       };
-      const md = formatToolResult('manage_watchers', result);
+      const md = formatToolResult('manage_behaviors', result);
       expect(md).toContain('New Template Created');
       expect(md).toContain('reddit-opportunity-finder');
     });
@@ -269,7 +270,11 @@ describe('formatToolResult', () => {
     });
 
     it('should format empty content', () => {
-      const result = { content: [], total: 0, page: { offset: 0, limit: 50, has_more: false } };
+      const result = {
+        content: [],
+        total: 0,
+        page: { offset: 0, limit: 50, has_more: false },
+      };
       const md = formatToolResult('read_knowledge', result);
       expect(md).toContain('0 total');
     });
@@ -287,7 +292,9 @@ describe('formatToolResult', () => {
   describe('options', () => {
     it('should include raw JSON when requested', () => {
       const result = { rows: [], row_count: 0, execution_time_ms: 5 };
-      const md = formatToolResult('query_sql', result, { includeRawJson: true });
+      const md = formatToolResult('query_sql', result, {
+        includeRawJson: true,
+      });
       expect(md).toContain('Raw JSON');
     });
   });

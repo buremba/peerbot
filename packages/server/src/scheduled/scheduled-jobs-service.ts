@@ -72,7 +72,7 @@ export async function validateDeliveryAuthorization(params: {
   const sql = getDb();
   const { organizationId, agentId, delivery } = params;
   const connectionRows = (await sql`
-    SELECT connector_key, agent_id, status
+    SELECT id, connector_key, agent_id, status
     FROM connections
     WHERE organization_id = ${organizationId}
       AND slug = ${runtimeConnectionIdToSlug(delivery.connectionId)}
@@ -80,6 +80,7 @@ export async function validateDeliveryAuthorization(params: {
       AND deleted_at IS NULL
     LIMIT 1
   `) as unknown as Array<{
+    id: number;
     connector_key: string;
     agent_id: string | null;
     status: string;
@@ -98,25 +99,33 @@ export async function validateDeliveryAuthorization(params: {
       : { authorized: false, reason: 'agent-mismatch' };
   }
 
-  const bindingRows = delivery.teamId
-    ? await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id = ${delivery.teamId}
-        LIMIT 1
-      `
-    : await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id IS NULL
-        LIMIT 1
-      `;
+  // team_id on the view is COALESCE(trigger match, connection external_tenant_id,
+  // config teamId) — so a Slack connection with external_tenant_id never exposes
+  // team_id as NULL. trigger_team_id is the trigger's own team constraint only
+  // (nullable). Delivery auth must use trigger semantics: a delivery with no
+  // teamId is allowed when the trigger has no team constraint; a delivery with
+  // a teamId matches either the trigger team or the resolved COALESCE team_id
+  // (so team-scoped deliveries keep working via the connection fallback).
+  const deliveryTeamId = delivery.teamId ?? null;
+  const bindingRows = await sql`
+    SELECT agent_id
+    FROM behavior_message_subscriptions
+    WHERE organization_id = ${organizationId}
+      AND platform = ${delivery.platform}
+      AND connection_id = ${connection.id}
+      AND (
+        channel_id = ${delivery.channelId}
+        OR native_channel_id = ${delivery.channelId}
+      )
+      AND (
+        trigger_team_id IS NOT DISTINCT FROM ${deliveryTeamId}::text
+        OR (
+          ${deliveryTeamId}::text IS NOT NULL
+          AND team_id IS NOT DISTINCT FROM ${deliveryTeamId}::text
+        )
+      )
+    LIMIT 1
+  `;
   const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
   return binding?.agent_id === agentId
     ? { authorized: true }

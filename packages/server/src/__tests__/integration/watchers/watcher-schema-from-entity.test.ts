@@ -18,7 +18,10 @@ import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
-import { deriveWatcherExtractionSchema, wrapMetadataSchemaAtPath } from '../../../utils/watcher-extraction-schema';
+import {
+  deriveWatcherExtractionSchema,
+  wrapMetadataSchemaAtPath,
+} from '../../../utils/watcher-extraction-schema';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
@@ -43,7 +46,10 @@ const KEYING_CONFIG = {
 
 describe('wrapMetadataSchemaAtPath', () => {
   it('wraps a per-record schema as an array at a single-segment path', () => {
-    const wrapped = wrapMetadataSchemaAtPath(TOPIC_METADATA_SCHEMA, 'problems') as Record<string, any>;
+    const wrapped = wrapMetadataSchemaAtPath(TOPIC_METADATA_SCHEMA, 'problems') as Record<
+      string,
+      any
+    >;
     expect(wrapped.type).toBe('object');
     expect(wrapped.required).toEqual(['problems']);
     expect(wrapped.properties.problems.type).toBe('array');
@@ -51,10 +57,10 @@ describe('wrapMetadataSchemaAtPath', () => {
   });
 
   it('nests required objects for a dotted path', () => {
-    const wrapped = wrapMetadataSchemaAtPath(TOPIC_METADATA_SCHEMA, 'analysis.results.problems') as Record<
-      string,
-      any
-    >;
+    const wrapped = wrapMetadataSchemaAtPath(
+      TOPIC_METADATA_SCHEMA,
+      'analysis.results.problems'
+    ) as Record<string, any>;
     expect(wrapped.required).toEqual(['analysis']);
     expect(wrapped.properties.analysis.properties.results.properties.problems.type).toBe('array');
     expect(wrapped.properties.analysis.properties.results.properties.problems.items).toEqual(
@@ -66,7 +72,9 @@ describe('wrapMetadataSchemaAtPath', () => {
 async function setupEntityTypedWatcher() {
   const sql = getTestDb();
   const dbClient = sql as unknown as DbClient;
-  const workspace = await TestWorkspace.create({ name: 'Schema-From-Entity Org' });
+  const workspace = await TestWorkspace.create({
+    name: 'Schema-From-Entity Org',
+  });
   const ownerUserId = workspace.users.owner.id;
 
   const parentEntity = await createTestEntity({
@@ -103,13 +111,13 @@ async function setupEntityTypedWatcher() {
   });
 
   // NB: no inline watcher schema — the watcher relies on the entity type's schema.
-  const watcher = (await workspace.owner.watchers.create({
+  const watcher = (await workspace.owner.behaviors.create({
     entity_id: parentEntity.id,
     slug: 'schema-watcher',
     name: 'Schema Watcher',
     prompt: 'Extract problems for {{entities}}.',
     keying_config: KEYING_CONFIG,
-    schedule: '0 9 * * *',
+    triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { watcher_id: string };
   const watcherId = Number(watcher.watcher_id);
@@ -122,14 +130,26 @@ async function setupEntityTypedWatcher() {
     memberRole: 'owner',
   });
 
-  return { sql, dbClient, workspace, api, parentEntityId: parentEntity.id, agent, watcherId };
+  return {
+    sql,
+    dbClient,
+    workspace,
+    api,
+    parentEntityId: parentEntity.id,
+    agent,
+    watcherId,
+  };
 }
 
 type Ctx = Awaited<ReturnType<typeof setupEntityTypedWatcher>>;
 
 async function queueRunningRun(ctx: Ctx) {
   const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(ctx.dbClient, ctx.watcherId, granularity);
+  const { windowStart, windowEnd } = await computePendingWindow(
+    ctx.dbClient,
+    ctx.watcherId,
+    granularity
+  );
   const queued = await createWatcherRun({
     organizationId: ctx.workspace.org.id,
     watcherId: ctx.watcherId,
@@ -146,7 +166,9 @@ async function queueRunningRun(ctx: Ctx) {
 }
 
 async function readWindowToken(ctx: Ctx): Promise<string> {
-  const content = (await ctx.api.knowledge.read({ watcher_id: ctx.watcherId })) as { window_token: string };
+  const content = (await ctx.api.knowledge.read({
+    watcher_id: ctx.watcherId,
+  })) as { window_token: string };
   return content.window_token;
 }
 
@@ -179,7 +201,7 @@ describe('complete_window derives its schema from the entity type', () => {
 
     // 'name' is required by topic's metadata_schema but missing here.
     await expect(
-      ctx.api.watchers.completeWindow({
+      ctx.api.behaviors.completeWindow({
         watcher_id: String(ctx.watcherId),
         window_token: token,
         extracted_data: { problems: [{ category: 'Stability' }] },
@@ -199,10 +221,12 @@ describe('complete_window derives its schema from the entity type', () => {
     const runId = await queueRunningRun(ctx);
     const token = await readWindowToken(ctx);
 
-    const completion = (await ctx.api.watchers.completeWindow({
+    const completion = (await ctx.api.behaviors.completeWindow({
       watcher_id: String(ctx.watcherId),
       window_token: token,
-      extracted_data: { problems: [{ category: 'Stability', name: 'App Crashes' }] },
+      extracted_data: {
+        problems: [{ category: 'Stability', name: 'App Crashes' }],
+      },
       run_metadata: { watcher_run_id: runId },
     })) as { action: string };
     expect(completion.action).toBe('complete_window');

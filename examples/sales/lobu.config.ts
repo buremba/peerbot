@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
@@ -179,11 +179,11 @@ const runs = defineRelationshipType({
     "Link the internal team or customer function to the pilot they own.",
 });
 
-const accountHealthMonitor = defineWatcher({
+const accountHealthMonitor = defineBehavior({
   agent: sales,
   slug: "account-health-monitor",
   name: "Account health monitor",
-  schedule: "0 */12 * * *",
+  triggers: [{ kind: "schedule", cron: "0 */12 * * *" }],
   notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,
@@ -207,5 +207,5 @@ export default defineConfig({
   agents: [sales],
   entities: [organization, product, region, renewalRisk, team],
   relationships: [affects, expandedInto, runs],
-  watchers: [accountHealthMonitor],
+  behaviors: [accountHealthMonitor],
 });

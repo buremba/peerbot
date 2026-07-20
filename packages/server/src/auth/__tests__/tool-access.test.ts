@@ -10,11 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ToolNotRegisteredError } from '../../utils/errors';
 import { routeAction } from '../../tools/admin/action-router';
-import {
-  type AuthContext,
-  checkToolAccess,
-  extractAuthContext,
-} from '../../tools/execute';
+import { type AuthContext, checkToolAccess, extractAuthContext } from '../../tools/execute';
 import { getAllTools, getTool, type ToolContext } from '../../tools/registry';
 import {
   getRequiredAccessLevel,
@@ -90,9 +86,9 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'get_auth_profile' }, false)).toBe(
       true
     );
-    expect(
-      requiresOwnerAdmin('manage_auth_profiles', { action: 'test_auth_profile' }, false)
-    ).toBe(true);
+    expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'test_auth_profile' }, false)).toBe(
+      true
+    );
     expect(
       requiresOwnerAdmin('manage_auth_profiles', { action: 'delete_auth_profile' }, false)
     ).toBe(true);
@@ -124,27 +120,27 @@ describe('requiresOwnerAdmin', () => {
     expect(requiresOwnerAdmin('manage_feeds', { action: 'trigger_feed' }, false)).toBe(true);
   });
 
-  it('should require admin for manage_watchers mutating actions', () => {
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create_version' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'set_reaction_script' }, false)).toBe(
+  it('should require admin for manage_behaviors mutating actions', () => {
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_version' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'set_reaction_script' }, false)).toBe(
       true
     );
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'trigger' }, false)).toBe(true);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'create_from_version' }, false)).toBe(
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'trigger' }, false)).toBe(true);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'create_from_version' }, false)).toBe(
       true
     );
   });
 
-  it('should not require admin for manage_watchers read actions', () => {
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_versions' }, false)).toBe(false);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_version_details' }, false)).toBe(
+  it('should not require admin for manage_behaviors read actions', () => {
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_versions' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_version_details' }, false)).toBe(
       false
     );
     expect(
-      requiresOwnerAdmin('manage_watchers', { action: 'get_component_reference' }, false)
+      requiresOwnerAdmin('manage_behaviors', { action: 'get_component_reference' }, false)
     ).toBe(false);
-    expect(requiresOwnerAdmin('manage_watchers', { action: 'get_feedback' }, false)).toBe(false);
+    expect(requiresOwnerAdmin('manage_behaviors', { action: 'get_feedback' }, false)).toBe(false);
   });
 
   it('should require admin for view template mutations while leaving reads as read-tier', () => {
@@ -163,7 +159,9 @@ describe('requiresOwnerAdmin', () => {
     expect(getRequiredAccessLevel('manage_catalog', { action: 'list_installed' }, false)).toBe(
       'read'
     );
-    expect(getRequiredAccessLevel('manage_catalog', { action: 'list_catalog' }, false)).toBe('read');
+    expect(getRequiredAccessLevel('manage_catalog', { action: 'list_catalog' }, false)).toBe(
+      'read'
+    );
   });
 });
 
@@ -185,15 +183,19 @@ describe('member write access', () => {
   it('should keep destructive and bulk entity actions as admin-only', () => {
     expect(requiresMemberWrite('manage_entity', { action: 'delete' }, false)).toBe(false);
     expect(getRequiredAccessLevel('manage_entity', { action: 'delete' }, false)).toBe('admin');
-    expect(
-      getRequiredAccessLevel('manage_entity', { action: 'resolve_duplicates' }, false)
-    ).toBe('admin');
+    expect(getRequiredAccessLevel('manage_entity', { action: 'resolve_duplicates' }, false)).toBe(
+      'admin'
+    );
   });
 });
 
 describe('extractAuthContext scopes (F8 source side)', () => {
   type FakeVars = {
-    mcpAuthInfo?: { scopes?: string[]; userId?: string; clientId?: string } | null;
+    mcpAuthInfo?: {
+      scopes?: string[];
+      userId?: string;
+      clientId?: string;
+    } | null;
     session?: { userId?: string } | null;
     organizationId?: string | null;
     memberRole?: string | null;
@@ -232,7 +234,11 @@ describe('extractAuthContext scopes (F8 source side)', () => {
 
   it('emits the not-applicable sentinel for a session caller (no mcpAuthInfo)', () => {
     const ctx = extractAuthContext(
-      fakeCtx({ mcpAuthInfo: null, session: { userId: 'u1' }, mcpIsAuthenticated: true })
+      fakeCtx({
+        mcpAuthInfo: null,
+        session: { userId: 'u1' },
+        mcpIsAuthenticated: true,
+      })
     );
     expect(ctx.scopes).toEqual([...SCOPE_CHECK_NOT_APPLICABLE]);
   });
@@ -248,11 +254,7 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
   // the uniform surface model (no internal-tool axis) no allowlist is ever
   // DERIVED for external admin callers — role x scope already grant them every
   // tool. Only the builder worker token's per-run allowlist is carried.
-  function ctxFor(opts: {
-    scopes?: string[];
-    adminTools?: string[] | null;
-    url?: string;
-  }) {
+  function ctxFor(opts: { scopes?: string[]; adminTools?: string[] | null; url?: string }) {
     const fake = {
       req: {
         url: opts.url ?? 'http://localhost/mcp/acme',
@@ -280,7 +282,7 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
   it('does NOT derive an allowlist for an admin caller on the REST proxy', () => {
     const ctx = ctxFor({
       scopes: ['mcp:admin'],
-      url: 'http://localhost/api/v1/tools/manage_watchers',
+      url: 'http://localhost/api/v1/tools/manage_behaviors',
     });
     expect(ctx.adminTools).toBeNull();
   });
@@ -354,12 +356,8 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('read_knowledge', {})).toBe(true);
   });
 
-  it('should allow public read for get_watcher', () => {
-    expect(isPublicReadable('get_watcher', {})).toBe(true);
-  });
-
-  it('should allow public read for list_watchers', () => {
-    expect(isPublicReadable('list_watchers', {})).toBe(true);
+  it('should allow public read for get_behavior', () => {
+    expect(isPublicReadable('get_behavior', {})).toBe(true);
   });
 
   it('should allow public read for manage_entity list', () => {
@@ -368,9 +366,11 @@ describe('isPublicReadable', () => {
 
   it('should allow public read for manage_connections lists', () => {
     expect(isPublicReadable('manage_connections', { action: 'list' })).toBe(true);
-    expect(isPublicReadable('manage_connections', { action: 'list_connector_groups' })).toBe(
-      true
-    );
+    expect(
+      isPublicReadable('manage_connections', {
+        action: 'list_connector_groups',
+      })
+    ).toBe(true);
   });
 
   it('should deny public read for manage_entity create', () => {
@@ -385,16 +385,21 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('unknown_tool', {})).toBe(false);
   });
 
-  it('should allow public read for manage_watchers read actions', () => {
-    expect(isPublicReadable('manage_watchers', { action: 'get_versions' })).toBe(true);
-    expect(isPublicReadable('manage_watchers', { action: 'get_version_details' })).toBe(true);
-    expect(isPublicReadable('manage_watchers', { action: 'get_component_reference' })).toBe(true);
+  it('should allow public read for manage_behaviors read actions', () => {
+    expect(isPublicReadable('manage_behaviors', { action: 'list' })).toBe(true);
+    expect(isPublicReadable('manage_behaviors', { action: 'get_versions' })).toBe(true);
+    expect(isPublicReadable('manage_behaviors', { action: 'get_version_details' })).toBe(true);
+    expect(
+      isPublicReadable('manage_behaviors', {
+        action: 'get_component_reference',
+      })
+    ).toBe(true);
   });
 
-  it('should deny public read for manage_watchers mutations', () => {
-    expect(isPublicReadable('manage_watchers', { action: 'create' })).toBe(false);
-    expect(isPublicReadable('manage_watchers', { action: 'create_version' })).toBe(false);
-    expect(isPublicReadable('manage_watchers', { action: 'set_reaction_script' })).toBe(false);
+  it('should deny public read for manage_behaviors mutations', () => {
+    expect(isPublicReadable('manage_behaviors', { action: 'create' })).toBe(false);
+    expect(isPublicReadable('manage_behaviors', { action: 'create_version' })).toBe(false);
+    expect(isPublicReadable('manage_behaviors', { action: 'set_reaction_script' })).toBe(false);
   });
 
   it('should allow public read for manage_classifiers list', () => {
@@ -493,9 +498,9 @@ describe('checkToolAccess', () => {
   });
 
   it('requires write scope for member writes', () => {
-    expect(() =>
-      checkToolAccess('save_memory', {}, { ...baseAuth, memberRole: 'member' })
-    ).toThrow(/MCP session is read-only/i);
+    expect(() => checkToolAccess('save_memory', {}, { ...baseAuth, memberRole: 'member' })).toThrow(
+      /MCP session is read-only/i
+    );
   });
 
   it('allows members with write scope to save memory', () => {
@@ -526,11 +531,15 @@ describe('checkToolAccess', () => {
 
   it('allows admin tools on any surface subject to role x scope (uniform model)', () => {
     expect(() =>
-      checkToolAccess('manage_entity', { action: 'create' }, {
-        ...baseAuth,
-        memberRole: 'member',
-        scopes: ['mcp:write'],
-      })
+      checkToolAccess(
+        'manage_entity',
+        { action: 'create' },
+        {
+          ...baseAuth,
+          memberRole: 'member',
+          scopes: ['mcp:write'],
+        }
+      )
     ).not.toThrow();
   });
 
@@ -542,13 +551,11 @@ describe('checkToolAccess', () => {
       adminTools: ['manage_agents'],
     };
     // Admin-tier action on a listed tool — allowed.
-    expect(() =>
-      checkToolAccess('manage_agents', { action: 'update' }, builderAuth)
-    ).not.toThrow();
+    expect(() => checkToolAccess('manage_agents', { action: 'update' }, builderAuth)).not.toThrow();
     // Admin-tier action on an unlisted tool — blocked by the allowlist.
-    expect(() =>
-      checkToolAccess('manage_classifiers', { action: 'delete' }, builderAuth)
-    ).toThrow(/may not perform admin actions/);
+    expect(() => checkToolAccess('manage_classifiers', { action: 'delete' }, builderAuth)).toThrow(
+      /may not perform admin actions/
+    );
     // Read/write-tier actions on unlisted tools follow the uniform model.
     expect(() =>
       checkToolAccess('manage_classifiers', { action: 'list' }, builderAuth)
@@ -670,12 +677,9 @@ describe('first-party tool-name coverage', () => {
   // per-action tier x role x scope like everything else.
   const CLI_REST_BOOTSTRAP_TOOLS = ['manage_catalog', 'manage_auth_profiles'] as const;
 
-  it.each(CLI_REST_BOOTSTRAP_TOOLS)(
-    'CLI bootstrap tool %s is registered',
-    (name) => {
-      expect(getTool(name)).toBeDefined();
-    }
-  );
+  it.each(CLI_REST_BOOTSTRAP_TOOLS)('CLI bootstrap tool %s is registered', (name) => {
+    expect(getTool(name)).toBeDefined();
+  });
 
   it('CLI browser-auth no longer calls bootstrap tools over MCP RPC', () => {
     // After the REST migration, browser-auth.ts must use `restToolCall(...)`
@@ -703,7 +707,7 @@ query_sql: read ?=read
 run_sdk: write ?=write
 manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public merge=admin resolve_duplicates=admin unmerge=admin ?=read
 manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
-manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin list_channel_bindings=read+public bind_channel=admin unbind_channel=admin sync_channel_bindings=admin set_channel_about=admin connect_channel_dm=admin ?=read
+manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin set_channel_about=admin ?=read
 manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=admin get=admin create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_conversations: list=read get=read send=write ?=read
@@ -712,9 +716,8 @@ manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
-manage_watchers: create=admin update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
-list_watchers: read+public ?=read+public
-get_watcher: read+public ?=read+public
+manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
+get_behavior: read+public ?=read+public
 read_knowledge: read+public ?=read+public
 manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin ?=read
 manage_view_templates: set=admin get=read+public rollback=admin remove_tab=admin clear=admin ?=read
@@ -746,7 +749,10 @@ describe('pinned access matrix', () => {
   }
 
   it('matches the fixture for every registered tool and action', () => {
-    const lines = getAllTools({ publicOnly: false, maxAccessLevel: 'admin' }).map((tool) => {
+    const lines = getAllTools({
+      publicOnly: false,
+      maxAccessLevel: 'admin',
+    }).map((tool) => {
       const readOnly = tool.annotations?.readOnlyHint === true;
       const parts = [...(actionsOf(tool.inputSchema) ?? ['-']), '?'].map((action) => {
         const args = action === '-' ? {} : { action };

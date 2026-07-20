@@ -1,13 +1,5 @@
-import { WatcherExecutionConfigSchema } from '@lobu/core/contracts/tools/manage-watchers';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
-
-/**
- * Per-watcher device-worker CLI execution settings. The pure TypeBox schema
- * lives in @lobu/core with the manage_watchers contract; this server module
- * keeps the authorization/runtime helpers colocated with their callers.
- */
-export { WatcherExecutionConfigSchema };
 
 /**
  * execution_config keys that are SERVER-ONLY and must never reach a
@@ -51,7 +43,7 @@ export interface ExecutionConfigCaller {
 /**
  * Authorize an incoming `execution_config`. `undefined` = unchanged, `null` =
  * clear — both pass. Shape/type/range validation happens at the tool boundary
- * (WatcherExecutionConfigSchema is embedded in ManageWatchersSchema); this
+ * (BehaviorExecutionConfigSchema is embedded in ManageBehaviorsSchema); this
  * gate only enforces the role policy, which a schema cannot express.
  */
 export function assertValidExecutionConfig(value: unknown, caller: ExecutionConfigCaller): void {
@@ -59,8 +51,7 @@ export function assertValidExecutionConfig(value: unknown, caller: ExecutionConf
   const mode = (value as { permission_mode?: string }).permission_mode;
   // System/internal callers (apply, automation, default-provisioning) carry no
   // memberRole and already bypass action-access enforcement; don't block them.
-  const isSystem =
-    caller.isAuthenticated && caller.userId === null && caller.memberRole === null;
+  const isSystem = caller.isAuthenticated && caller.userId === null && caller.memberRole === null;
   const isOwnerOrAdmin = isAdminOrOwnerRole(caller.memberRole);
   if (mode && ELEVATED_PERMISSION_MODES.has(mode) && !isSystem && !isOwnerOrAdmin) {
     throw new ToolUserError(

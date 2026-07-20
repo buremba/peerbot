@@ -2,16 +2,9 @@
  * Item 2 (managed read-orphan) + Item 3 (surface author_entity_id) for chat recall.
  *
  * Item 2 — a MANAGED Slack install is a `connections` row with `slug=slackinst-…`
- * and `agent_id NULL`. `resolveBoundChannelRows` branch (A) resolves it ONLY via
- * the `agent_channel_bindings.connection_id` link — the legacy tuple fallback
- * joins `b.agent_id = ac.agent_id`, which can never match a NULL connection
- * agent_id. The one-shot connections-unify backfill links EXISTING bindings, but
- * a binding created at RUNTIME (post-deploy) gets `connection_id` only because
- * `ChannelBindingService.createBinding` now links it. These tests prove:
- *   - an UNLINKED managed binding (connection_id NULL) is an unrecallable orphan
- *     (the bug, documented as the red);
- *   - createBinding LINKS connection_id, so the managed install's transcript
- *     recalls + attributes correctly (the green / fix).
+ * and `agent_id NULL`. `resolveBoundChannelRows` resolves it through the
+ * connection-scoped Behavior trigger, so the managed install remains visible
+ * even though the connection itself has no fallback agent.
  *
  * Item 3 — `author_entity_id` is surfaced in recalled snippets, additively: the
  * ACL fence (per-user channel visibility) is unchanged — a graphed non-member
@@ -21,6 +14,7 @@
 import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
+import { listTestBehaviorSubscriptions } from "../../__tests__/setup/behavior-subscriptions";
 import {
   addUserToOrganization,
   createTestAgent,
@@ -34,7 +28,8 @@ import {
   slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../authz/access-graph";
-import { ChannelBindingService } from "../../gateway/channels/binding-service";
+import { BehaviorSubscriptionService } from "../../gateway/channels/behavior-subscription-service";
+import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions";
 import { clearEntityLinkRulesCache } from "../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../workspace";
 import { search } from "../search";
@@ -99,30 +94,7 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
     return { org, user, agent };
   }
 
-	it("RED: an UNLINKED managed binding (connection_id NULL) is an unrecallable orphan", async () => {
-    const { org, user, agent } = await setupManaged();
-    const sql = getTestDb();
-    // Bind WITHOUT the connection_id link (raw insert, the pre-fix shape).
-    await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
-      VALUES (${org.id}, ${agent.agentId}, 'slack', 'slack:CMANAGED', ${TEAM})
-    `;
-
-    const result = await search(
-			{ query: "quarterly revenue", include_content: true },
-      {} as Parameters<typeof search>[1],
-			{
-				organizationId: org.id,
-				userId: user.id,
-				agentId: agent.agentId,
-			} as SearchCtx,
-    );
-    // The managed connection's agent_id is NULL → the tuple fallback can't match
-    // and there is no connection_id link → branch (A) yields nothing.
-    expect(result.conversation_messages ?? []).toHaveLength(0);
-  });
-
-	it("GREEN: createBinding LINKS connection_id, so the managed install recalls + attributes", async () => {
+	it("a connection-scoped Behavior makes a managed install recallable", async () => {
     const { org, user, agent } = await setupManaged();
     const sql = getTestDb();
 		const [connection] = await sql`
@@ -132,24 +104,28 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // The REAL runtime bind path — links connection_id to the active managed
     // connection for (org, slack, TEAM).
-		await new ChannelBindingService().createBinding(
+		await new BehaviorSubscriptionService().createChatBehavior(
 			agent.agentId,
 			"slack",
 			"slack:CMANAGED",
 			TEAM,
 			{
       organizationId: org.id,
-				connectionId: String(connection.id),
+				connectionId: Number(connection.id),
+				configuredBy: user.id,
 			},
 		);
 
     // The fix's load-bearing assertion: the binding is now linked to the managed
     // connection (this is what makes branch (A) resolve a NULL-agent install).
+    const [subscription] = await listTestBehaviorSubscriptions({
+      organizationId: org.id,
+      channelId: "slack:CMANAGED",
+    });
     const [binding] = (await sql`
-      SELECT b.connection_id, c.slug
-      FROM agent_channel_bindings b
-      JOIN connections c ON c.id = b.connection_id
-      WHERE b.organization_id = ${org.id} AND b.channel_id = 'slack:CMANAGED'
+      SELECT id AS connection_id, slug
+      FROM connections
+      WHERE id = ${subscription?.connection_id ?? null}
     `) as Array<{ connection_id: number; slug: string }>;
     expect(binding).toBeDefined();
     expect(binding.slug).toBe(MANAGED_CONN);
@@ -218,12 +194,14 @@ describe("managed-install recall (Item 2) + author attribution surfacing (Item 3
 
     // Bind both channels; Alice is a member of #eng only.
 		for (const ch of ["C01ENG", "C01SEC"]) {
-      await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id)
-        SELECT ${org.id}, ${agent.agentId}, 'slack', ${`slack:${ch}`}, ${TEAM}, id
-        FROM connections
-        WHERE organization_id = ${org.id} AND slug = ${`agentconn-${CONN}`} AND deleted_at IS NULL
-      `;
+			await createTestBehaviorSubscription({
+				organizationId: org.id,
+				agentId: agent.agentId,
+				connectionSlug: `agentconn-${CONN}`,
+				platform: "slack",
+				channelId: `slack:${ch}`,
+				teamId: TEAM,
+			});
     }
     await sql`
       INSERT INTO channel_messages (

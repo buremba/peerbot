@@ -52,6 +52,7 @@ import {
   type PlatformAdapterConfig,
   type PlatformConnection,
 } from "./types.js";
+import { deliverGithubConnectorConnectionWebhook } from "../routes/public/app-webhooks.js";
 import {
 	handleWebhookIngest,
 	prepareWebhookIngestConfig,
@@ -1245,12 +1246,44 @@ export class ChatInstanceManager {
 			const bridged =
 				await this.resolveConnectorWebhookConnection(connectionId);
       if (bridged) {
-        return orgContext.run({ organizationId: bridged.organizationId! }, () =>
+        return orgContext.run({ organizationId: bridged.stored.organizationId! }, () =>
           handleWebhookIngest(
-            bridged,
+            bridged.stored,
             request,
             this.services.getSecretStore(),
 						peerAddress,
+            bridged.connectorKey === "github"
+              ? {
+                  // Poll-canonical: mark the feed due (or store stars) so
+                  // Behavior signals ride the real github poll path. Do not
+                  // raw-store under webhook:<id> — that never activates Behaviors.
+                  handleInsteadOfPersist: async ({
+                    rawBody,
+                    headers,
+                    organizationId,
+                    connectionId: connId,
+                  }) => {
+                    const { triggered } =
+                      await deliverGithubConnectorConnectionWebhook({
+                        sql: getDb(),
+                        connectionId: Number(connId),
+                        organizationId,
+                        connectorKey: "github",
+                        rawBody,
+                        headers,
+                        storeWebhookEvents:
+                          process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
+                      });
+                    return new Response(
+                      JSON.stringify({ ok: true, triggered }),
+                      {
+                        status: 202,
+                        headers: { "content-type": "application/json" },
+                      },
+                    );
+                  },
+                }
+              : undefined,
 					),
         );
       }
@@ -1287,19 +1320,23 @@ export class ChatInstanceManager {
    * misses, this resolves the connector row, validates it actually registered a
    * webhook
    * (scheme + secret stamped onto its config), and returns a synthetic
-   * `StoredConnection` shaped for `handleWebhookIngest`. The id is preserved so
-   * the landed event's `connector_key = webhook:<connId>` still hits the
-   * existing `events_webhook_ingest_dedupe` partial unique index (no migration).
+   * `StoredConnection` shaped for `handleWebhookIngest`. Non-GitHub deliveries
+   * preserve the id so raw events use `connector_key = webhook:<connId>` and the
+   * existing `events_webhook_ingest_dedupe` partial unique index. GitHub takes
+   * the poll-canonical override above instead.
    * Returns null when there is no such connection or it never registered a
    * webhook — the caller then 404s rather than accepting an unsigned delivery.
    */
   private async resolveConnectorWebhookConnection(
 		connectionId: string,
-  ): Promise<StoredConnection | null> {
+  ): Promise<{
+    stored: StoredConnection;
+    connectorKey: string;
+  } | null> {
     // Connector connection ids are bigints; a non-numeric id can't match.
     if (!/^\d+$/.test(connectionId)) return null;
     const rows = await getDb()`
-      SELECT id, organization_id, config, status
+      SELECT id, organization_id, connector_key, config, status
       FROM connections
       WHERE id = ${connectionId}
         AND deleted_at IS NULL
@@ -1309,6 +1346,7 @@ export class ChatInstanceManager {
       | {
           id: number;
           organization_id: string;
+          connector_key: string;
           config: Record<string, unknown> | null;
           status: string;
         }
@@ -1323,15 +1361,18 @@ export class ChatInstanceManager {
     if (!webhookConfig) return null;
 
     return {
-      id: String(row.id),
-      platform: "webhook",
-      organizationId: row.organization_id,
-      config: webhookConfig,
-      settings: {},
-      metadata: {},
-      status: "active",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      stored: {
+        id: String(row.id),
+        platform: "webhook",
+        organizationId: row.organization_id,
+        config: webhookConfig,
+        settings: {},
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      connectorKey: String(row.connector_key),
     };
   }
 
@@ -1514,7 +1555,7 @@ export class ChatInstanceManager {
 
       const commandDispatcher = new CommandDispatcher({
         registry: this.services.getCommandRegistry(),
-        channelBindingService: this.services.getChannelBindingService(),
+        behaviorSubscriptionService: this.services.getBehaviorSubscriptionService(),
       });
       const messageBridge = registerMessageHandlers(
         chat,

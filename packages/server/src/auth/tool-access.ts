@@ -41,7 +41,7 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// admin). The handler still enforces org/entity write access via
 	// requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
 	// stays admin-tier below.
-	manage_watchers: new Set(["complete_window"]),
+	manage_behaviors: new Set(["complete_window"]),
 	// `approve`/`reject` (and their `*_batch` forms) are write-tier so the
 	// recorded FIELD OWNER of an entity-change proposal (a plain member) can
 	// decide their own run. The handler enforces admin-or-run-owner per run — a
@@ -90,15 +90,7 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"update_connector_default_config",
 		"update_connector_default_repair_agent",
 		"apply_chat_connection",
-		// Channel management (folded from the retired /channels routes): mutating
-		// a binding / wiring a DM is administration. list_channel_bindings is
-		// read-tier (PUBLIC_READ_ACTIONS). Each handler
-		// also fences on agent-in-org.
-		"bind_channel",
-		"unbind_channel",
-		"sync_channel_bindings",
 		"set_channel_about",
-		"connect_channel_dm",
 	]),
 	manage_feeds: new Set([
 		"create_feed",
@@ -118,7 +110,7 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 	// `approve`/`reject` live in MEMBER_WRITE_ACTIONS (handler enforces
 	// admin-or-run-owner); only `execute` is unconditionally admin.
 	manage_operations: new Set(["execute"]),
-	manage_watchers: new Set([
+	manage_behaviors: new Set([
 		// `complete_window` is in MEMBER_WRITE_ACTIONS — it's the agent result
 		// path (server workers + device CLI over MCP), not administration.
 		"create",
@@ -155,16 +147,10 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	// Internal read-paths — kept for tests that exercise public-readability
 	// semantics; legitimate external access is via `query_sdk` / `run_sdk`.
 	read_knowledge: null,
-	get_watcher: null,
-	list_watchers: null,
+	get_behavior: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
-	manage_connections: new Set([
-		"list",
-		"list_connector_groups",
-		"get",
-		"list_channel_bindings",
-	]),
+	manage_connections: new Set(["list", "list_connector_groups", "get"]),
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
 	manage_feeds: new Set(["list_feeds", "read_feed", "read_feeds"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),
@@ -174,7 +160,8 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 		"get_run",
 		"list_activity",
 	]),
-	manage_watchers: new Set([
+	manage_behaviors: new Set([
+		"list",
 		"get_versions",
 		"get_version_details",
 		"get_component_reference",
@@ -193,7 +180,7 @@ function getAction(args: unknown): string | null {
 function actionMatches(
 	policy: Record<string, Set<string> | null>,
 	toolName: string,
-	args: unknown,
+	args: unknown
 ): boolean {
 	if (!(toolName in policy)) return false;
 	const allowedActions = policy[toolName];
@@ -205,7 +192,7 @@ function actionMatches(
 export function requiresMemberWrite(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): boolean {
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return false;
 	return actionMatches(MEMBER_WRITE_ACTIONS, toolName, args);
@@ -214,7 +201,7 @@ export function requiresMemberWrite(
 export function requiresOwnerAdmin(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): boolean {
 	// query_sql / metric_series are read-tier (members may query their org's
 	// operational data). The auth/identity tables (oauth_tokens, oauth_clients,
@@ -232,7 +219,7 @@ export function requiresOwnerAdmin(
 export function getRequiredAccessLevel(
 	toolName: string,
 	args: unknown,
-	readOnlyHint: boolean,
+	readOnlyHint: boolean
 ): ToolAccessLevel {
 	if (toolName === "list_organizations") return "read";
 	if (requiresOwnerAdmin(toolName, args, readOnlyHint)) return "admin";
@@ -258,7 +245,7 @@ export const SCOPE_CHECK_NOT_APPLICABLE: readonly string[] = ["*"];
 
 export function hasRequiredMcpScope(
 	requiredAccess: ToolAccessLevel,
-	scopes: readonly string[] | null | undefined,
+	scopes: readonly string[] | null | undefined
 ): boolean {
 	// Fail closed: a null/undefined scope set means the caller presented no
 	// MCP scope claim. It must NOT be treated as full access.
@@ -289,7 +276,7 @@ export function hasRequiredMcpScope(
  */
 export function resolveMaxAccessLevel(
 	memberRole: string | null | undefined,
-	scopes: readonly string[] | null | undefined,
+	scopes: readonly string[] | null | undefined
 ): ToolAccessLevel {
 	const roleLevel: ToolAccessLevel = !memberRole
 		? "read"
@@ -312,7 +299,7 @@ export function isPublicReadable(toolName: string, args: unknown): boolean {
 }
 
 export function getPublicReadableActions(
-	toolName: string,
+	toolName: string
 ): Set<string> | null | undefined {
 	return PUBLIC_READ_ACTIONS[toolName];
 }

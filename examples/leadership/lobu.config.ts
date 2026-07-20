@@ -4,7 +4,7 @@ import {
   defineConfig,
   defineEntityType,
   defineRelationshipType,
-  defineWatcher,
+  defineBehavior,
   secret,
 } from "@lobu/cli/config";
 import type LinearCyclesConnector from "./linear-cycles.connector.ts";
@@ -179,11 +179,11 @@ const blockedBy = defineRelationshipType({
     "Attach blocked decisions to the dependency that is holding them up.",
 });
 
-const boardActionTracker = defineWatcher({
+const boardActionTracker = defineBehavior({
   agent: leadership,
   slug: "board-action-tracker",
   name: "Board action tracker",
-  schedule: "0 8 * * *",
+  triggers: [{ kind: "schedule", cron: "0 8 * * *" }],
   notification: { priority: "high", channel: "both" },
   tags: ["leadership", "daily", "board"],
   agentKind: "notifier",
@@ -204,5 +204,5 @@ export default defineConfig({
   agents: [leadership],
   entities: [decision, document, region, risk, task],
   relationships: [approved, assigned, blockedBy],
-  watchers: [boardActionTracker],
+  behaviors: [boardActionTracker],
 });

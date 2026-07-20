@@ -17,7 +17,7 @@ interface FeedRow {
 /**
  * List every feed on a connection (all kinds), fenced to `(organization_id,
  * connection_id)` so it never scans globally. A streaming (chat) feed is
- * decorated with the agent bound to its channel via `agent_channel_bindings`
+ * decorated with the agent subscribed to its channel via a Behavior trigger
  * (channel_id = feed_key).
  *
  * `connectionId` is the RUNTIME connection id (e.g. a BYO uuid or a managed
@@ -42,11 +42,11 @@ export async function listConnectionFeeds(
 			f.last_sync_at                        AS last_sync_at,
 			f.items_collected                     AS items_collected,
 			(
-				SELECT b.agent_id
-				FROM agent_channel_bindings b
-				WHERE b.organization_id = f.organization_id
-					AND b.connection_id  = f.connection_id
-					AND b.channel_id     = f.feed_key
+				SELECT subscription.agent_id
+				FROM behavior_message_subscriptions subscription
+				WHERE subscription.organization_id = f.organization_id
+					AND subscription.connection_id = f.connection_id
+					AND subscription.channel_id = f.feed_key
 				LIMIT 1
 			)                                     AS target_agent_id
 		FROM feeds f

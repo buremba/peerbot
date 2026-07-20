@@ -24,13 +24,13 @@ export const GetContentSchema = Type.Object({
   watcher_id: Type.Optional(
     Type.Number({
       description:
-        "Watcher ID to fetch content for. When provided, uses watcher's sources and computes pending window. Returns window_token for complete_window action.",
+        "Persisted Behavior ID (`watcher_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.",
     })
   ),
   template_version_id: Type.Optional(
     Type.Number({
       description:
-        "Pin to a specific watcher_versions.id when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the watcher's current_version_id.",
+        "Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.",
     })
   ),
   connection_ids: Type.Optional(
@@ -61,13 +61,13 @@ export const GetContentSchema = Type.Object({
   ),
   window_id: Type.Optional(
     Type.Number({
-      description: 'Watcher window ID to filter by (shows only content analyzed in this window)',
+      description: 'Behavior window ID to filter by (shows only content analyzed in this window)',
     })
   ),
   analyzed_by_watcher_id: Type.Optional(
     Type.Number({
       description:
-        'Limit results to events this watcher has analyzed (any window). Distinct from watcher_id, which enters watcher read mode.',
+        'Limit results to events this Behavior has analyzed (any window). Distinct from watcher_id, which enters Behavior read mode.',
     })
   ),
   since: Type.Optional(
@@ -192,13 +192,13 @@ export const GetContentSchema = Type.Object({
   content_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        'Filter to specific content IDs. Useful for showing content linked to watcher analysis.',
+        'Filter to specific content IDs. Useful for showing content linked to Behavior analysis.',
     })
   ),
   exclude_watcher_id: Type.Optional(
     Type.Number({
       description:
-        'Exclude content already analyzed in any window for this watcher. Returns only unprocessed content for client-driven watcher generation.',
+        'Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.',
     })
   ),
   semantic_type: Type.Optional(

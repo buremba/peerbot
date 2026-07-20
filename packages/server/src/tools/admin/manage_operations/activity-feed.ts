@@ -99,7 +99,7 @@ function resolveNotifHref(
 	return `/${ownerSlug}/memory`;
 }
 
-function runHref(
+export function runHref(
 	ownerSlug: string,
 	row: {
 		id: number;
@@ -112,7 +112,7 @@ function runHref(
 	},
 ): string | null {
 	if (row.run_type === "watcher" && row.watcher_id != null && row.agent_id) {
-		return `/${ownerSlug}/agents/${row.agent_id}/watchers/${row.watcher_id}`;
+		return `/${ownerSlug}/agents/${row.agent_id}/behaviors/${row.watcher_id}`;
 	}
 	if (
 		(row.run_type === "sync" || row.run_type === "action") &&
@@ -153,7 +153,7 @@ function runTitle(row: {
 		return (
 			row.watcher_name ??
 			(row.watcher_id != null
-				? `Watcher #${row.watcher_id}`
+				? `Behavior #${row.watcher_id}`
 				: `Run #${row.id}`)
 		);
 	}

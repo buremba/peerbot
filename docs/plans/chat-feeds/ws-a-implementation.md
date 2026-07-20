@@ -2,6 +2,11 @@
 
 > **Status (2026-07-15):** **Shipped** — `channel_messages` ingestion + FeedReader recall registry and Slack sender attribution landed.
 
+> **Architecture update (2026-07-17):** channel routing now projects from
+> canonical Event Behavior triggers in `watchers.triggers`; the
+> `agent_channel_bindings` references below describe the historical schema this
+> shipped against, not a current table or write path.
+
 > Branch: `feat/ws-a-slack-ingestion`. Goal: inbound Slack messages become
 > (1) sender-attributed to a person/$member entity and (2) recallable for managed
 > installs. Store-only attribution; NO events emitted; NEVER embed.

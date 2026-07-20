@@ -48,7 +48,7 @@ Never change `stage` without the matching event.
 - **"show the pipeline"** — `lead` entities grouped by `stage`, each with last-touch date and next action, ranked within stage by closeness-to-pilot.
 - **"state of the <company> pilot?"** — the `pilot` entity + its `pilot:*` events, newest first.
 
-## Weekly digest (used by the funnel-digest watcher)
+## Weekly digest (used by the funnel-digest Behavior)
 
 A Slack message, in this shape — keep it short:
 1. **One line at the top: the single recommended action this week.**

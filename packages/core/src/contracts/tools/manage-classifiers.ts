@@ -9,7 +9,7 @@ export const ManageClassifiersSchema = Type.Object({
     [
       // Template CRUD
       Type.Literal("create", {
-        description: "Create a classifier (must belong to a watcher).",
+        description: "Create a classifier (must belong to a Behavior).",
       }),
       Type.Literal("list", { description: "List classifiers with filters." }),
       Type.Literal("generate_embeddings", {
@@ -36,7 +36,7 @@ export const ManageClassifiersSchema = Type.Object({
   watcher_id: Type.Optional(
     Type.String({
       description:
-        "[create] Watcher ID as returned by the watcher APIs (numeric string; required)",
+        "[create] Persisted Behavior ID (`watcher_id`) returned by manage_behaviors (numeric string; required)",
     })
   ),
   classifier_id: Type.Optional(

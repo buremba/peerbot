@@ -29,11 +29,11 @@ export interface ChannelAboutTarget {
 	/** Bare or platform-prefixed channel id as stored on the binding. */
 	channelId: string;
 	/** The concrete workspace/tenant this channel lives in — the SAME real team
-	 *  the binding is keyed on (for Slack Grid: the workspace `T…`, NEVER the
-	 *  enterprise `E…`). Resolved connector-side (`resolveBindingTeam`) and threaded
+	 *  the subscription is keyed on (for Slack Grid: the workspace `T…`, NEVER the
+	 *  enterprise `E…`). Resolved connector-side (`resolveSubscriptionTeam`) and threaded
 	 *  in so the about edge attaches to the SAME channel resource entity the ACL
-	 *  graph + binding own. `null`/undefined = unknown yet (skip, heal from inbound)
-	 *  for a team-scoped connector, mirroring the binding's null-team behavior. */
+	 *  graph + subscription own. `null`/undefined = unknown yet (skip, heal from inbound)
+	 *  for a team-scoped connector, mirroring the subscription's null-team behavior. */
 	teamId: string | null | undefined;
 	/** Resolved business-entity ids to link (channel --about--> each). */
 	aboutEntityIds: number[];
@@ -574,13 +574,13 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 /** Channel key stored on `about` edge metadata for a streaming feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
- * feed's binding (`agent_channel_bindings.team_id`) — the SAME real team the
+ * feed's Behavior subscription team — the SAME real team the
  * about-edge writer keyed on. For a Grid org-wide install the connection's
  * `external_tenant_id` is the enterprise `E…`, so it must NOT be used as the
- * team; the binding holds the real `T…`. The `external_tenant_id` fallback stands
- * only for a non-team-scoped connector (or a not-yet-healed NULL-team binding),
- * where it IS the workspace and the writer used it too. Binding channel_id equals
- * feed_key, so the correlation is exact. */
+ * team; the subscription holds the real `T…`. The `external_tenant_id` fallback
+ * supports connectors whose tenant identity is their workspace. A not-yet-healed
+ * Grid subscription has no matching about edge until its concrete team is known.
+ * The subscription channel id equals feed_key, so the correlation is exact. */
 export function streamingFeedChannelKeyExpr(
 	feedAlias = "f",
 	connectionAlias = "c",
@@ -588,11 +588,12 @@ export function streamingFeedChannelKeyExpr(
 	return `UPPER(
     COALESCE(
       (
-        SELECT b.team_id
-        FROM agent_channel_bindings b
-        WHERE b.connection_id = ${feedAlias}.connection_id
-          AND b.channel_id = ${feedAlias}.feed_key
-          AND b.team_id IS NOT NULL
+        SELECT subscription.trigger_team_id
+        FROM behavior_message_subscriptions subscription
+        WHERE subscription.organization_id = ${feedAlias}.organization_id
+          AND subscription.connection_id = ${feedAlias}.connection_id
+          AND subscription.channel_id = ${feedAlias}.feed_key
+          AND subscription.trigger_team_id IS NOT NULL
         LIMIT 1
       ),
       ${connectionAlias}.external_tenant_id,

@@ -7,7 +7,7 @@ import {
 	EMPTY_SUMMARY,
 	getOperationsSummaryBatch,
 } from "../operations/connector-operations";
-import { handleList } from "../tools/admin/manage_watchers/list";
+import { handleList } from "../tools/admin/manage_behaviors/list";
 import type { ToolContext } from "../tools/registry";
 import { connectorSourcePathToUri } from "../utils/connector-definition-install";
 import { listScopedConnectorDefinitions } from "./connector-definitions";
@@ -36,7 +36,7 @@ export async function listOrgInstalled(
 		ToolContext,
 		"organizationId" | "userId" | "memberRole" | "isAuthenticated"
 	>,
-	options: ListInstalledOptions = {},
+	options: ListInstalledOptions = {}
 ): Promise<InstalledListResponse["installed"]> {
 	const result: InstalledListResponse["installed"] = {};
 	const wanted = new Set(kinds);
@@ -45,7 +45,7 @@ export async function listOrgInstalled(
 		const rows = await listScopedConnectorDefinitions({ organizationId });
 		const summaries = await getOperationsSummaryBatch(
 			organizationId,
-			rows.map((row) => row.key),
+			rows.map((row) => row.key)
 		);
 		const installedItems = rows.map((row) => {
 			const operationsSummary = summaries.get(row.key) ?? {
@@ -62,6 +62,7 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
+					behavior_events: row.behavior_events ?? undefined,
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,
@@ -79,13 +80,13 @@ export async function listOrgInstalled(
 			items: options.includeCatalog
 				? mergeConnectorInstalledWithCatalog(
 						installedItems,
-						(await listCatalogEntries(["connectors"])).connectors,
+						(await listCatalogEntries(["connectors"])).connectors
 					)
 				: installedItems,
 		};
 	}
 
-	if (wanted.has("watchers")) {
+	if (wanted.has("behaviors")) {
 		const toolCtx: ToolContext = {
 			organizationId,
 			userId: ctx.userId ?? null,
@@ -98,12 +99,12 @@ export async function listOrgInstalled(
 			requestUrl: "",
 		};
 		const listed = await handleList({ status: "active" }, {} as Env, toolCtx);
-		const watchers = Array.isArray(listed.watchers) ? listed.watchers : [];
-		result.watchers = {
-			kind: "watchers",
-			items: watchers.map((watcher: Record<string, unknown>) => ({
+		const behaviors = Array.isArray(listed.behaviors) ? listed.behaviors : [];
+		result.behaviors = {
+			kind: "behaviors",
+			items: behaviors.map((watcher: Record<string, unknown>) => ({
 				id: String(watcher.watcher_id ?? watcher.id ?? ""),
-				name: String(watcher.name ?? watcher.watcher_name ?? "Watcher"),
+				name: String(watcher.name ?? watcher.watcher_name ?? "Behavior"),
 				detail: {
 					slug: watcher.slug,
 					status: watcher.status,
@@ -122,7 +123,7 @@ export async function listOrgInstalled(
 export async function listAgentInstalled(
 	agentId: string,
 	kinds: AgentInstalledKind[],
-	options: ListInstalledOptions = {},
+	options: ListInstalledOptions = {}
 ): Promise<InstalledListResponse["installed"]> {
 	const result: InstalledListResponse["installed"] = {};
 	const wanted = new Set(kinds);
@@ -147,7 +148,7 @@ export async function listAgentInstalled(
 			items: options.includeCatalog
 				? mergeSkillInstalledWithCatalog(
 						installedItems,
-						(await listCatalogEntries(["skills"])).skills,
+						(await listCatalogEntries(["skills"])).skills
 					)
 				: installedItems,
 		};
@@ -162,7 +163,7 @@ export async function listAgentInstalled(
 			if (slash > 0) installedSlugs.add(ref.slice(0, slash));
 		}
 		const modules = getModelProviderModules().filter(
-			(module) => module.catalogVisible !== false,
+			(module) => module.catalogVisible !== false
 		);
 		result.providers = {
 			kind: "providers",
@@ -221,7 +222,7 @@ export async function listAgentInstalled(
 }
 
 export async function listInstalledConnectorIds(
-	organizationId: string,
+	organizationId: string
 ): Promise<string[]> {
 	const rows = await listScopedConnectorDefinitions({ organizationId });
 	return rows.map((row) => row.key);
@@ -229,7 +230,7 @@ export async function listInstalledConnectorIds(
 
 export function parseKindsParam<T extends string>(
 	raw: string | undefined,
-	allowed: readonly T[],
+	allowed: readonly T[]
 ): T[] {
 	if (!raw?.trim()) return [...allowed];
 	const set = new Set(allowed);

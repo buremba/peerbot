@@ -51,7 +51,7 @@ const NAMESPACES = [
 	...new Set(
 		Object.keys(SDK_DISCOVERY_METADATA)
 			.filter((path) => path.includes("."))
-			.map((path) => path.split(".")[0]),
+			.map((path) => path.split(".")[0])
 	),
 ].sort();
 
@@ -59,13 +59,12 @@ const METADATA_BY_LOWER_PATH = new Map(
 	Object.entries(SDK_DISCOVERY_METADATA).map(([path, meta]) => [
 		path.toLowerCase(),
 		[path, meta] as const,
-	]),
+	])
 );
 
 export const SdkSearchSchema = Type.Object({
 	query: Type.String({
-		description:
-			`SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
+		description: `SDK method or runtime-helper discovery query. Use a namespace (e.g. 'behaviors'), one or more dotted paths separated by whitespace (e.g. 'behaviors.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: ${NAMESPACES.join(", ")}.`,
 		minLength: 1,
 	}),
 	mode: Type.Optional(
@@ -82,15 +81,15 @@ export const SdkSearchSchema = Type.Object({
 			{
 				description:
 					"Filter results to match query_sdk ('read') or run_sdk ('full', default).",
-			},
-		),
+			}
+		)
 	),
 	limit: Type.Optional(
 		Type.Number({
 			description: "Max matches to return. Default 20, max 100.",
 			minimum: 1,
 			maximum: 100,
-		}),
+		})
 	),
 });
 
@@ -106,8 +105,9 @@ export const SdkSearchResultSchema = Type.Object({
 	}),
 	notes: Type.Optional(
 		Type.String({
-			description: "Free-text hints (e.g. ambiguity, suggestions) when relevant.",
-		}),
+			description:
+				"Free-text hints (e.g. ambiguity, suggestions) when relevant.",
+		})
 	),
 });
 
@@ -115,7 +115,7 @@ export type SdkSearchResult = Static<typeof SdkSearchResultSchema>;
 
 async function agentConfigBlanketDenied(
 	ctx: ToolContext,
-	action: WriteAction,
+	action: WriteAction
 ): Promise<boolean> {
 	if (!ctx.organizationId || (!ctx.agentId && !ctx.actingWatcherId)) {
 		return false;
@@ -164,7 +164,7 @@ async function deniedAgentsSdkPaths(ctx: ToolContext): Promise<Set<string>> {
 
 async function catalogForCaller(
 	ctx: ToolContext,
-	mode: SdkDiscoveryMode,
+	mode: SdkDiscoveryMode
 ): Promise<Array<[string, MethodMetadata]>> {
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const policyDenied = await deniedAgentsSdkPaths(ctx);
@@ -179,7 +179,7 @@ function hiddenMethodNote(
 	path: string,
 	meta: MethodMetadata,
 	mode: SdkDiscoveryMode,
-	policyDenied: Set<string>,
+	policyDenied: Set<string>
 ): string {
 	if (policyDenied.has(path)) {
 		return `${path} is blocked by this agent's agent_config permissions.`;
@@ -202,7 +202,7 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	lines.push(path);
 	lines.push(`  ${meta.summary}`);
 	lines.push(
-		`  access: ${meta.access}${meta.cost ? ` (cost: ${meta.cost})` : ""}`,
+		`  access: ${meta.access}${meta.cost ? ` (cost: ${meta.cost})` : ""}`
 	);
 	if (meta.signature) {
 		lines.push(`  signature: ${meta.signature}`);
@@ -227,12 +227,16 @@ function normalizeQueryTerm(term: string): string {
 	return lower.startsWith("client.") ? lower.slice("client.".length) : lower;
 }
 
-export const sdkSearch = withValidatedArgs("search_sdk", SdkSearchSchema, sdkSearchImpl);
+export const sdkSearch = withValidatedArgs(
+	"search_sdk",
+	SdkSearchSchema,
+	sdkSearchImpl
+);
 
 async function sdkSearchImpl(
 	args: SdkSearchArgs,
 	env: Env,
-	ctx: ToolContext,
+	ctx: ToolContext
 ): Promise<SdkSearchResult> {
 	// Unified-catalog search (executor pattern): a query like "website" or "slack"
 	// names a CONNECTOR, not an SDK method, so pure method search returns nothing
@@ -246,8 +250,11 @@ async function sdkSearchImpl(
 	// lowercased — compare case-insensitively so `entitySchema.listTypes` is
 	// recognized as a method path.
 	const firstSegment = normalizeQueryTerm(q).split(".")[0];
-	const isSdkNamespace = NAMESPACES.some((ns) => ns.toLowerCase() === firstSegment);
-	const looksLikeMethodPath = /^client\b/i.test(q) || (q.includes(".") && isSdkNamespace);
+	const isSdkNamespace = NAMESPACES.some(
+		(ns) => ns.toLowerCase() === firstSegment
+	);
+	const looksLikeMethodPath =
+		/^client\b/i.test(q) || (q.includes(".") && isSdkNamespace);
 	const connectorHits = looksLikeMethodPath
 		? []
 		: await searchLiveConnectors(q, env, ctx);
@@ -274,7 +281,9 @@ async function sdkSearchImpl(
 					.filter(Boolean)
 					.join(" ");
 	const truncNote =
-		dropped > 0 ? ` ${dropped} more result(s) truncated; raise \`limit\` or refine the query.` : "";
+		dropped > 0
+			? ` ${dropped} more result(s) truncated; raise \`limit\` or refine the query.`
+			: "";
 	return {
 		query: methodResult.query,
 		match_count: results.length,
@@ -286,7 +295,7 @@ async function sdkSearchImpl(
 async function sdkMethodSearch(
 	args: SdkSearchArgs,
 	_env: Env,
-	ctx: ToolContext,
+	ctx: ToolContext
 ): Promise<SdkSearchResult> {
 	const limit = Math.min(args.limit ?? 20, 100);
 	const query = args.query.trim();
@@ -301,7 +310,9 @@ async function sdkMethodSearch(
 	const callerMax = resolveMaxAccessLevel(ctx.memberRole, ctx.scopes);
 	const isMultiMethodQuery =
 		terms.length > 1 &&
-		terms.every((term) => term.includes(".") || METADATA_BY_LOWER_PATH.has(term));
+		terms.every(
+			(term) => term.includes(".") || METADATA_BY_LOWER_PATH.has(term)
+		);
 
 	if (isMultiMethodQuery) {
 		const seen = new Set<string>();
@@ -349,7 +360,7 @@ async function sdkMethodSearch(
 				results: matches
 					.slice(0, limit)
 					.map(({ path, meta, exact }) =>
-						exact ? renderDrillDown(path, meta) : renderListLine(path, meta),
+						exact ? renderDrillDown(path, meta) : renderListLine(path, meta)
 					),
 				notes:
 					matches.length > limit
@@ -408,7 +419,7 @@ async function sdkMethodSearch(
 		const combined = [...topLevel, ...ns];
 		if (combined.length === 0) {
 			const hiddenNs = Object.entries(SDK_DISCOVERY_METADATA).filter(([p]) =>
-				p.toLowerCase().startsWith(prefix),
+				p.toLowerCase().startsWith(prefix)
 			);
 			if (hiddenNs.length > 0) {
 				const accesses = [...new Set(hiddenNs.map(([, m]) => m.access))]
@@ -421,9 +432,7 @@ async function sdkMethodSearch(
 			return {
 				query,
 				match_count: combined.length,
-				results: combined
-					.slice(0, limit)
-					.map(([p, m]) => renderListLine(p, m)),
+				results: combined.slice(0, limit).map(([p, m]) => renderListLine(p, m)),
 				notes:
 					combined.length > limit
 						? `${combined.length - limit} more matches; raise \`limit\` or refine the query.`
@@ -463,7 +472,7 @@ async function sdkMethodSearch(
 						total +
 						(pathText.includes(term) ? 2 : 0) +
 						(summaryText.includes(term) ? 1 : 0),
-					0,
+					0
 				);
 				return { path, meta, score };
 			})
@@ -500,9 +509,7 @@ async function sdkMethodSearch(
 	return {
 		query,
 		match_count: matches.length,
-		results: matches
-			.slice(0, limit)
-			.map(([p, m]) => renderListLine(p, m)),
+		results: matches.slice(0, limit).map(([p, m]) => renderListLine(p, m)),
 		notes: hiddenNamespaceNote
 			? [hiddenNamespaceNote, tailNote].filter(Boolean).join(" ")
 			: tailNote,

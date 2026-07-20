@@ -278,11 +278,11 @@ export type SaveMemoryData = {
      */
     supersedes_event_id?: number;
     /**
-     * Attribution source when save is triggered by a watcher reaction
+     * Attribution source when save is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this save
+       * Behavior that triggered this save
        */
       watcher_id: number;
       /**
@@ -332,7 +332,7 @@ export type SaveMemoryResponse = SaveMemoryResponses[keyof SaveMemoryResponses];
 export type SearchSdkData = {
   body: {
     /**
-     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'watchers'), one or more dotted paths separated by whitespace (e.g. 'watchers.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates, watchers.
+     * SDK method or runtime-helper discovery query. Use a namespace (e.g. 'behaviors'), one or more dotted paths separated by whitespace (e.g. 'behaviors.create ctx.sleep'), an optional client. prefix, or free text. Pass mode='read' for query_sdk-safe methods only; omit mode for your full run_sdk tier. Namespaces: agents, authProfiles, behaviors, catalog, classifiers, connections, conversations, ctx, entities, entitySchema, feeds, knowledge, metrics, notifications, operations, organizations, schedules, viewTemplates.
      */
     query: string;
     /**
@@ -772,17 +772,34 @@ export type ManageEntityData = {
       | "update_link"
       | "list_links"
       | "merge"
+      | "resolve_duplicates"
       | "unmerge";
     /**
      * [merge] The surviving entity that absorbs `entity_id` (the duplicate).
      */
     winner_entity_id?: number;
     /**
+     * [merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.
+     */
+    duplicate_entity_ids?: Array<number>;
+    /**
+     * [resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.
+     */
+    candidate_entity_ids?: Array<number>;
+    /**
+     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Behavior evidence is always recomputed from the entity type's resolution policy.
+     */
+    merge_evidence?: Array<{
+      kind: string;
+      identifier: string;
+      identity_ids?: Array<number>;
+    }>;
+    /**
      * Entity type as defined in your workspace
      */
     entity_type?: string;
     /**
-     * [get/update/delete/list_links] Entity ID to operate on
+     * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
      */
     entity_id?: number;
     /**
@@ -836,11 +853,11 @@ export type ManageEntityData = {
       [key: string]: unknown;
     };
     /**
-     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a watcher (and the UI) can see why the value was set.
+     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a Behavior (and the UI) can see why the value was set.
      */
     field_note?: string;
     /**
-     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a watcher can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
+     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so a Behavior can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
      */
     affirm_fields?: Array<string>;
     /**
@@ -904,11 +921,11 @@ export type ManageEntityData = {
      */
     include_deleted?: boolean;
     /**
-     * Attribution source when mutation is triggered by a watcher reaction
+     * Attribution source when mutation is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this mutation
+       * Behavior that triggered this mutation
        */
       watcher_id: number;
       /**
@@ -1213,8 +1230,65 @@ export type ManageEntityResponses = {
         message: string;
         winner_entity_id: number;
         loser_entity_id: number;
+        loser_entity_ids?: Array<number>;
         moved_identities: number;
         repointed_edges: number;
+        resolution?: {
+          decision: "auto_merge" | "human";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "merge";
+        approval_queued: true;
+        approval_url?: string;
+        approval_run_id: number;
+        approval_action: "merge";
+        approval_proposal: {
+          entity_id: number;
+          entity_ids?: Array<number>;
+          winner_entity_id: number;
+        };
+        approval_attribution: "agent" | "watcher";
+        next_steps: Array<string>;
+        resolution?: {
+          decision: "review";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "merge";
+        approval_suppressed: true;
+        message: string;
+        resolution: {
+          decision: "review";
+          reason: string;
+          evidence: Array<{
+            kind: string;
+            identifier: string;
+          }>;
+        };
+      }
+    | {
+        action: "resolve_duplicates";
+        candidates_scanned: number;
+        groups_found: number;
+        auto_merged: number;
+        approvals_queued: number;
+        approvals_suppressed: number;
+        oversized_groups: number;
+        /**
+         * Candidates connected only through another record; reconsidered after direct merges apply.
+         */
+        deferred_candidates: number;
       }
     | {
         action: "unmerge";
@@ -1410,9 +1484,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1459,9 +1530,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1506,9 +1574,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1553,9 +1618,6 @@ export type ManageEntitySchemaResponses = {
           metrics_config?: {
             [key: string]: unknown;
           } | null;
-          /**
-           * Platform system type when true (slug starts with `$`). Derived from slug.
-           */
           is_system: boolean;
           created_by?: string | null;
           organization_id?: string | null;
@@ -1906,7 +1968,7 @@ export type ManageConnectionsData = {
         connection_id: number;
         display_name?: string;
         /**
-         * Fallback agent for a chat connection (used only when no channel binding matches; agent_channel_bindings remain authoritative). Null clears the fallback.
+         * Fallback agent for a chat connection when no Behavior subscription matches. Null clears the fallback.
          */
         agent_id?: string | null;
         /**
@@ -1950,7 +2012,7 @@ export type ManageConnectionsData = {
         connector_key: string;
         display_name?: string;
         /**
-         * Declarative fallback agent. Channel bindings remain authoritative when present.
+         * Declarative fallback agent. Behavior subscriptions remain authoritative when present.
          */
         agent_id?: string;
         config: {
@@ -2098,86 +2160,6 @@ export type ManageConnectionsData = {
       }
     | {
         /**
-         * List chat channels bound to an agent.
-         */
-        action: "list_channel_bindings";
-        /**
-         * Agent whose channel bindings to list.
-         */
-        agent_id: string;
-      }
-    | {
-        /**
-         * Bind a chat channel to an agent through a chat connection.
-         */
-        action: "bind_channel";
-        /**
-         * Agent to bind the channel to.
-         */
-        agent_id: string;
-        /**
-         * Chat connection that receives this channel's messages.
-         */
-        connection_id: number;
-        /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
-         */
-        channel_id: string;
-        /**
-         * Optional per-binding model override — an explicit `<provider>/<model>` ref. Must be one of the agent's allowed models (its `models` list) when that list is non-empty. Wins over the agent/org default for messages on this channel.
-         */
-        model?: string;
-      }
-    | {
-        /**
-         * Remove a channel binding from an agent.
-         */
-        action: "unbind_channel";
-        /**
-         * Agent to unbind the channel from.
-         */
-        agent_id: string;
-        /**
-         * Chat connection owning the binding.
-         */
-        connection_id: number;
-        /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
-         */
-        channel_id: string;
-      }
-    | {
-        /**
-         * Declaratively reconcile an agent's channel bindings to a desired set.
-         */
-        action: "sync_channel_bindings";
-        /**
-         * Agent whose declarative bindings to reconcile.
-         */
-        agent_id: string;
-        /**
-         * Chat connection numeric id, or the stable declarative id used by lobu apply.
-         */
-        connection_id: number | string;
-        /**
-         * Desired channel bindings, optionally with per-channel about links.
-         */
-        channels: Array<
-          | string
-          | {
-              /**
-               * Desired channel id. Slack also accepts the declarative <teamId>/<channelId> form.
-               */
-              channel_id: string;
-              /**
-               * Business entity ids or slugs this channel is about (config-sourced links).
-               */
-              about?: Array<number | string>;
-            }
-        >;
-      }
-    | {
-        /**
          * Set manual business-entity links for a chat channel (UI / operator edits).
          */
         action: "set_channel_about";
@@ -2186,27 +2168,13 @@ export type ManageConnectionsData = {
          */
         connection_id: number;
         /**
-         * Platform channel id as the binding stores it (may be platform-prefixed, e.g. 'slack:C…').
+         * Platform channel id (may be platform-prefixed, e.g. 'slack:C…').
          */
         channel_id: string;
         /**
          * Business entity ids this channel is about.
          */
         about_entity_ids: Array<number>;
-      }
-    | {
-        /**
-         * Open + bind the caller's Slack DM to an agent.
-         */
-        action: "connect_channel_dm";
-        /**
-         * Agent to wire the caller's DM to.
-         */
-        agent_id: string;
-        /**
-         * Slack connection to open and bind the caller's DM through.
-         */
-        connection_id: number;
       };
   path: {
     /**
@@ -2478,50 +2446,11 @@ export type ManageConnectionsResponses = {
         default_repair_agent_id: string | null;
       }
     | {
-        action: "list_channel_bindings";
-        agent_id: string;
-        bindings: Array<{
-          platform: string;
-          channelId: string;
-          teamId?: string;
-          model?: string;
-          createdAt: number;
-        }>;
-      }
-    | {
-        action: "bind_channel";
-        success: true;
-        agent_id: string;
-        connection_id: number;
-        platform: string;
-        channel_id: string;
-        team_id?: string;
-      }
-    | {
-        action: "unbind_channel";
-        success: true;
-      }
-    | {
-        action: "sync_channel_bindings";
-        success: true;
-        bound: Array<string>;
-        removed: Array<string>;
-        about_linked?: number;
-        about_removed?: number;
-      }
-    | {
         action: "set_channel_about";
         success: true;
         connection_id: number;
         channel_id: string;
         about_entity_ids: Array<number>;
-      }
-    | {
-        action: "connect_channel_dm";
-        success: true;
-        platform: "slack";
-        channel_id: string;
-        team_id: string | null;
       };
 };
 
@@ -2532,21 +2461,21 @@ export type ManageCatalogData = {
   body:
     | {
         /**
-         * List available (manifest) catalog entries — connectors, skills, watcher templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
+         * List available (manifest) catalog entries — connectors, skills, Behavior templates. Each connector entry's `detail.source_uri` can be passed to `manage_connections` action `install_connector`.
          */
         action: "list_catalog";
         /**
          * Manifest catalog kinds. Defaults to all.
          */
-        kinds?: Array<"connectors" | "skills" | "watchers">;
+        kinds?: Array<"connectors" | "skills" | "behaviors">;
       }
     | {
         /**
-         * List installed kinds for the org (connectors, watchers) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
+         * List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
          */
         action: "list_installed";
         /**
-         * Installed kinds. Org: connectors, watchers. Agent: skills, providers, guardrails, channels.
+         * Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails, channels.
          */
         kinds?: Array<string>;
         /**
@@ -2885,7 +2814,7 @@ export type ManageFeedsData = {
           [key: string]: unknown;
         };
         /**
-         * Cron expression for automatic sync. Omit or null for manual-only.
+         * Cron expression for automatic sync. Omit or null for manual-only (trigger_feed); no platform default cadence.
          */
         schedule?: string | null;
         /**
@@ -3447,6 +3376,20 @@ export type ManageOperationsData = {
       }
     | {
         /**
+         * Org attention feed: notifications + recent user-facing runs (Behavior/sync/action/internal), with optional adjacent aggregation and deep-links for the UI and agent context.
+         */
+        action: "list_activity";
+        /**
+         * Max cards after aggregation (default 24, max 50)
+         */
+        limit?: number;
+        include_notifications?: boolean;
+        include_runs?: boolean;
+        aggregate?: boolean;
+        kinds?: Array<string>;
+      }
+    | {
+        /**
          * Approve a pending run (also handles agent + entity_field_change gates).
          */
         action: "approve";
@@ -3465,17 +3408,25 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Approve every pending proposal a watcher run produced, in one go. Groups by the run's window.
+         * Approve every pending proposal a Behavior run produced, in one go. Groups by the run's window.
          */
         action: "approve_batch";
         window_id: number;
+        /**
+         * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
+         */
+        run_ids?: Array<number>;
       }
     | {
         /**
-         * Reject every pending proposal a watcher run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
+         * Reject every pending proposal a Behavior run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
          */
         action: "reject_batch";
         window_id: number;
+        /**
+         * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
+         */
+        run_ids?: Array<number>;
         reason?: string;
       };
   path: {
@@ -3567,6 +3518,27 @@ export type ManageOperationsResponses = {
         };
       }
     | {
+        action: "list_activity";
+        items: Array<{
+          id: string;
+          kind: string;
+          title: string;
+          body: string | null;
+          at: string;
+          status: string | null;
+          count: number;
+          href: string | null;
+          unread?: boolean;
+          notification_id?: number;
+          run_id?: number;
+          member_run_ids?: Array<number>;
+          connection_id?: number;
+          watcher_id?: number;
+        }>;
+        total: number;
+        limit: number;
+      }
+    | {
         action: "approve";
         approved: true;
         run_id: number;
@@ -3635,11 +3607,11 @@ export type NotifyData = {
       [key: string]: unknown;
     };
     /**
-     * Attribution source when notification is triggered by a watcher reaction
+     * Attribution source when notification is triggered by a Behavior reaction
      */
     watcher_source?: {
       /**
-       * Watcher that triggered this notification
+       * Behavior that triggered this notification
        */
       watcher_id: number;
       /**
@@ -3810,13 +3782,14 @@ export type ManageSchedulesResponses = {
 export type ManageSchedulesResponse =
   ManageSchedulesResponses[keyof ManageSchedulesResponses];
 
-export type ManageWatchersData = {
+export type ManageBehaviorsData = {
   body: {
     /**
      * Action to perform
      */
     action:
       | "create"
+      | "list"
       | "update"
       | "create_version"
       | "complete_window"
@@ -3831,15 +3804,15 @@ export type ManageWatchersData = {
       | "list_promoted"
       | "create_from_version";
     /**
-     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Watcher ID (numeric string)
+     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
      */
     watcher_id?: string;
     /**
-     * [delete] Array of watcher IDs (numeric strings)
+     * [delete] Array of Behavior IDs (numeric strings)
      */
     watcher_ids?: Array<string>;
     /**
-     * [create] Unique watcher identifier
+     * [create] Unique Behavior identifier
      */
     slug?: string;
     /**
@@ -3847,23 +3820,23 @@ export type ManageWatchersData = {
      */
     name?: string;
     /**
-     * [create/create_version] Watcher description
+     * [create/create_version] Behavior description
      */
     description?: string;
     /**
-     * Entity ID. Optional for create — provide it to attach the watcher to an entity; omit it for an org-scoped/global watcher. Optional for list.
+     * Entity ID. Optional for create — provide it to attach the Behavior to an entity; omit it for an org-scoped/global Behavior. Optional for list.
      */
     entity_id?: number;
     /**
-     * [create_from_version] Array of entity IDs to create individual watchers for.
+     * [create_from_version] Array of entity IDs to create individual Behaviors for.
      */
     entity_ids?: Array<number>;
     /**
-     * [create_from_version] Source version ID to use as template for new watchers.
+     * [create_from_version] Source version ID to use as template for new Behaviors.
      */
     version_id?: number;
     /**
-     * [create_from_version] Name pattern for created watchers. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
+     * [create_from_version] Name pattern for created Behaviors. Use {{entity_name}} for substitution. Default: "{version_name}: {entity_name}".
      */
     name_pattern?: string;
     /**
@@ -3871,7 +3844,7 @@ export type ManageWatchersData = {
      */
     prompt?: string;
     /**
-     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing watcher, publish a new version with action: 'create_version'.
+     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'.
      */
     sources?: Array<{
       /**
@@ -3896,27 +3869,60 @@ export type ManageWatchersData = {
      */
     classifiers?: unknown;
     /**
-     * [create/update/create_version] Cron expression for watcher schedule (e.g. "0 * * * *" for hourly, "0 9 * * *" for daily at 9am). Null clears the schedule (an unscheduled/manual watcher).
+     * [create/update/create_version] Canonical Behavior activations. Use a schedule trigger for cadence and timezone.
      */
-    schedule?: string | null;
+    triggers?: Array<
+      | {
+          kind: "event";
+          connector_key: string;
+          connection_id?: number;
+          event_types: Array<string>;
+          /**
+           * Connector-normalized exact-match fields such as resource_ref or channel_id.
+           */
+          match?: {
+            [key: string]: unknown | string | number | boolean | null;
+          };
+          /**
+           * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
+           */
+          execution?: "turn" | "window";
+          /**
+           * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+           */
+          active_run?: "queue" | "coalesce" | "steer";
+          /**
+           * Keep the result in Lobu or send it back through the source connector when supported.
+           */
+          output?: "silent" | "reply_to_source";
+          /**
+           * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
+           */
+          skip_if_unchanged?: boolean;
+        }
+      | {
+          kind: "schedule";
+          cron: string;
+          timezone?: string | null;
+          execution?: "window";
+          active_run?: "queue" | "coalesce";
+          skip_if_unchanged?: boolean;
+        }
+    >;
     /**
-     * [create/update/create_version] IANA timezone the schedule is evaluated in (e.g. 'Asia/Taipei'), DST-aware. Null clears it (server time / UTC).
-     */
-    timezone?: string | null;
-    /**
-     * [create/update] Agent ID that owns/executes this watcher.
+     * [create/update] Agent ID that owns/executes this Behavior.
      */
     agent_id?: string;
     /**
-     * [create/update/create_version] Optional MCP client ID that should auto-run this watcher. Null clears it.
+     * [create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.
      */
     scheduler_client_id?: string | null;
     /**
-     * [create/update] Optional device worker UUID to pin this watcher to (when its inputs live on that device). Null clears the pin.
+     * [create/update] Optional device worker UUID to pin this Behavior to (when its inputs live on that device). Null clears the pin.
      */
     device_worker_id?: string | null;
     /**
-     * [create/update] Optional agent kind override for this watcher (e.g. "background", "notifier"). Null clears the override.
+     * [create/update] Optional agent kind override for this Behavior (e.g. "background", "notifier"). Null clears the override.
      */
     agent_kind?: string | null;
     /**
@@ -3928,7 +3934,7 @@ export type ManageWatchersData = {
      */
     notification_priority?: "low" | "normal" | "high";
     /**
-     * [create/update] Minimum seconds between two firings of this watcher (0 = no cooldown).
+     * [create/update] Minimum seconds between two firings of this Behavior (0 = no cooldown).
      */
     min_cooldown_seconds?: number;
     /**
@@ -3963,7 +3969,7 @@ export type ManageWatchersData = {
        */
       effort?: "low" | "medium" | "high";
       /**
-       * How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
+       * How many extra times to re-dispatch a server-side Behavior run that finished WITHOUT calling complete_window before failing it. 0 disables; omitted = global default.
        */
       finalize_nudges?: number;
     };
@@ -3992,7 +3998,7 @@ export type ManageWatchersData = {
      */
     reactions_guidance?: string;
     /**
-     * [complete_window] Required. LLM analysis results. Must match the watcher's extraction contract (derived from its entity type).
+     * [complete_window] Required. LLM analysis results. Must match the Behavior's extraction contract (derived from its entity type).
      */
     extracted_data?: {
       [key: string]: unknown;
@@ -4006,7 +4012,7 @@ export type ManageWatchersData = {
      */
     window_token?: string;
     /**
-     * [complete_window] Multiple page JWTs from read_knowledge for the same watcher window. Content IDs are unioned and linked atomically.
+     * [complete_window] Multiple page JWTs from read_knowledge for the same Behavior window. Content IDs are unioned and linked atomically.
      */
     window_tokens?: Array<string>;
     /**
@@ -4022,15 +4028,15 @@ export type ManageWatchersData = {
      */
     run_metadata?: unknown;
     /**
-     * [complete_window] Optional watcher run id for run completion/provenance. Workers should pass the Watcher run ID from the dispatch prompt.
+     * [complete_window] Optional Behavior run id for completion/provenance. Workers should pass the run ID from the dispatch prompt.
      */
     watcher_run_id?: number;
     /**
-     * [complete_window] Pin to a specific watcher_versions.id. Workers receive this from the run dispatch payload (snapshotted from current_version_id at run-creation) and pass it back here so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the watcher's current_version_id.
+     * [complete_window] Pin to a specific persisted Behavior version. Workers receive this from the run dispatch payload and pass it back so validation uses the same version that produced the extraction. Defaults to the run row's snapshot if available, else the Behavior's current version.
      */
     template_version_id?: number;
     /**
-     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the watcher and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
+     * [create/set_reaction_script] TypeScript source for an automated reaction. On create, it is compiled before the Behavior and its reaction fields are stored in one transaction. Pass an empty string to set_reaction_script to remove an existing script.
      */
     reaction_script?: string;
     /**
@@ -4070,10 +4076,10 @@ export type ManageWatchersData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/manage_watchers";
+  url: "/api/{orgSlug}/manage_behaviors";
 };
 
-export type ManageWatchersErrors = {
+export type ManageBehaviorsErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4088,14 +4094,20 @@ export type ManageWatchersErrors = {
   };
 };
 
-export type ManageWatchersError =
-  ManageWatchersErrors[keyof ManageWatchersErrors];
+export type ManageBehaviorsError =
+  ManageBehaviorsErrors[keyof ManageBehaviorsErrors];
 
-export type ManageWatchersResponses = {
+export type ManageBehaviorsResponses = {
   /**
    * Successful response
    */
   200:
+    | {
+        action: "list";
+        behaviors: Array<{
+          [key: string]: unknown;
+        }>;
+      }
     | {
         action: "create";
         watcher_id: string;
@@ -4235,93 +4247,13 @@ export type ManageWatchersResponses = {
       };
 };
 
-export type ManageWatchersResponse =
-  ManageWatchersResponses[keyof ManageWatchersResponses];
+export type ManageBehaviorsResponse =
+  ManageBehaviorsResponses[keyof ManageBehaviorsResponses];
 
-export type ListWatchersData = {
+export type GetBehaviorData = {
   body: {
     /**
-     * Optional watcher ID (numeric string) to narrow to one watcher
-     */
-    watcher_id?: string;
-    /**
-     * Optional entity ID to list watchers attached to a specific entity
-     */
-    entity_id?: number;
-    /**
-     * Optional agent ID to list watchers owned by a specific agent
-     */
-    agent_id?: string;
-    /**
-     * Optional status filter. Use "active" or "archived". Omit to include all.
-     */
-    status?: string;
-    /**
-     * Include prompt, schema, and sources in response (default: false)
-     */
-    include_details?: boolean;
-    /**
-     * Filter watchers sharing a watcher_group_id (for legacy group URL resolution)
-     */
-    watcher_group_id?: number;
-    /**
-     * Sort field. Omit for created_at DESC (default, backward compatible).
-     */
-    order_by?: "last_fired_at" | "created_at";
-    /**
-     * Sort direction (default: desc)
-     */
-    order_dir?: "asc" | "desc";
-    /**
-     * Maximum watchers to return (omit for all)
-     */
-    limit?: number;
-  };
-  path: {
-    /**
-     * Organization slug (workspace identifier)
-     */
-    orgSlug: string;
-  };
-  query?: never;
-  url: "/api/{orgSlug}/list_watchers";
-};
-
-export type ListWatchersErrors = {
-  /**
-   * Bad request - invalid parameters
-   */
-  400: {
-    error?: string;
-  };
-  /**
-   * Tool not found
-   */
-  404: {
-    error?: string;
-  };
-};
-
-export type ListWatchersError = ListWatchersErrors[keyof ListWatchersErrors];
-
-export type ListWatchersResponses = {
-  /**
-   * Successful response
-   */
-  200: {
-    watchers: Array<{
-      [key: string]: unknown;
-    }>;
-  };
-};
-
-export type ListWatchersResponse =
-  ListWatchersResponses[keyof ListWatchersResponses];
-
-export type GetWatcherData = {
-  body: {
-    /**
-     * Watcher ID to query
+     * Behavior ID to query
      */
     watcher_id: string;
     /**
@@ -4341,11 +4273,11 @@ export type GetWatcherData = {
      */
     granularity?: "daily" | "weekly" | "monthly" | "quarterly";
     /**
-     * Override template version *number* for viewing results. If not provided, uses the watcher's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
+     * Override template version *number* for viewing results. If not provided, uses the Behavior's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
      */
     template_version?: number;
     /**
-     * Pin to a specific watcher_versions.id. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
+     * Pin to a specific persisted Behavior version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.
      */
     template_version_id?: number;
     /**
@@ -4376,10 +4308,10 @@ export type GetWatcherData = {
     orgSlug: string;
   };
   query?: never;
-  url: "/api/{orgSlug}/get_watcher";
+  url: "/api/{orgSlug}/get_behavior";
 };
 
-export type GetWatcherErrors = {
+export type GetBehaviorErrors = {
   /**
    * Bad request - invalid parameters
    */
@@ -4394,9 +4326,9 @@ export type GetWatcherErrors = {
   };
 };
 
-export type GetWatcherError = GetWatcherErrors[keyof GetWatcherErrors];
+export type GetBehaviorError = GetBehaviorErrors[keyof GetBehaviorErrors];
 
-export type GetWatcherResponses = {
+export type GetBehaviorResponses = {
   /**
    * Successful response
    */
@@ -4443,12 +4375,49 @@ export type GetWatcherResponses = {
         created_at: string;
       }>;
     }>;
-    watcher?: {
+    behavior?: {
       watcher_id: string;
       watcher_name: string;
       slug: string;
       status: "active" | "archived";
-      schedule?: string | null;
+      triggers?: Array<
+        | {
+            kind: "event";
+            connector_key: string;
+            connection_id?: number;
+            event_types: Array<string>;
+            /**
+             * Connector-normalized exact-match fields such as resource_ref or channel_id.
+             */
+            match?: {
+              [key: string]: unknown | string | number | boolean | null;
+            };
+            /**
+             * "turn" renders the incoming event as the agent input (chat/listen); "window" runs the Behavior analysis flow.
+             */
+            execution?: "turn" | "window";
+            /**
+             * What to do when this Behavior is busy: queue every event, combine waiting events, or steer the current trusted chat turn.
+             */
+            active_run?: "queue" | "coalesce" | "steer";
+            /**
+             * Keep the result in Lobu or send it back through the source connector when supported.
+             */
+            output?: "silent" | "reply_to_source";
+            /**
+             * For window execution, do not enqueue an agent run when connector polling produced no durable source change.
+             */
+            skip_if_unchanged?: boolean;
+          }
+        | {
+            kind: "schedule";
+            cron: string;
+            timezone?: string | null;
+            execution?: "window";
+            active_run?: "queue" | "coalesce";
+            skip_if_unchanged?: boolean;
+          }
+      >;
       next_run_at?: string | null;
       agent_id?: string | null;
       device_worker_id?: string | null;
@@ -4540,7 +4509,8 @@ export type GetWatcherResponses = {
   };
 };
 
-export type GetWatcherResponse = GetWatcherResponses[keyof GetWatcherResponses];
+export type GetBehaviorResponse =
+  GetBehaviorResponses[keyof GetBehaviorResponses];
 
 export type ReadKnowledgeData = {
   body: {
@@ -4553,11 +4523,11 @@ export type ReadKnowledgeData = {
      */
     entity_id?: number;
     /**
-     * Watcher ID to fetch content for. When provided, uses watcher's sources and computes pending window. Returns window_token for complete_window action.
+     * Persisted Behavior ID (`watcher_id`) to fetch content for. When provided, uses the Behavior's sources and computes its pending window. Returns window_token for complete_window action.
      */
     watcher_id?: number;
     /**
-     * Pin to a specific watcher_versions.id when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the watcher's current_version_id.
+     * Pin to a specific persisted Behavior version when reading the prompt/schema. Workers receive this from runs.approved_input.version_id and pass it back so a group edit landing mid-run can't make extraction use a different schema. When omitted, defaults to the Behavior's current version.
      */
     template_version_id?: number;
     /**
@@ -4581,11 +4551,11 @@ export type ReadKnowledgeData = {
      */
     platforms?: Array<string>;
     /**
-     * Watcher window ID to filter by (shows only content analyzed in this window)
+     * Behavior window ID to filter by (shows only content analyzed in this window)
      */
     window_id?: number;
     /**
-     * Limit results to events this watcher has analyzed (any window). Distinct from watcher_id, which enters watcher read mode.
+     * Limit results to events this Behavior has analyzed (any window). Distinct from watcher_id, which enters Behavior read mode.
      */
     analyzed_by_watcher_id?: number;
     /**
@@ -4663,11 +4633,11 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. Useful for showing content linked to watcher analysis.
+     * Filter to specific content IDs. Useful for showing content linked to Behavior analysis.
      */
     content_ids?: Array<number>;
     /**
-     * Exclude content already analyzed in any window for this watcher. Returns only unprocessed content for client-driven watcher generation.
+     * Exclude content already analyzed in any window for this Behavior. Returns only unprocessed content for client-driven Behavior generation.
      */
     exclude_watcher_id?: number;
     /**
@@ -4789,7 +4759,7 @@ export type ManageClassifiersData = {
      */
     entity_id?: number;
     /**
-     * [create] Watcher ID as returned by the watcher APIs (numeric string; required)
+     * [create] Persisted Behavior ID (`watcher_id`) returned by manage_behaviors (numeric string; required)
      */
     watcher_id?: string;
     /**
@@ -5393,6 +5363,16 @@ export type ResolvePathResponses = {
           watchers_count: number;
           is_derived?: boolean;
           measure_columns?: Array<string>;
+          merged_records?: Array<{
+            id: number;
+            name: string;
+            slug: string;
+            metadata: {
+              [key: string]: unknown;
+            };
+            merged_at: string;
+            can_unmerge: boolean;
+          }>;
         })
       | null;
     children: Array<{
@@ -5452,22 +5432,6 @@ export type ResolvePathResponses = {
         created_at: string;
         updated_at: string;
       }>;
-      recent_watchers: Array<{
-        watcher_id: string;
-        name: string;
-        status: string;
-        schedule: string;
-        entity_id: number | null;
-        entity_type: string | null;
-        entity_name: string | null;
-        entity_slug: string | null;
-        parent_slug: string | null;
-        parent_entity_type: string | null;
-        organization_slug: string;
-        windows_count: number;
-        created_at: string;
-        updated_at: string;
-      }>;
       connector_definitions: Array<{
         key: string;
         name: string;
@@ -5475,6 +5439,9 @@ export type ResolvePathResponses = {
         icon: string | null;
         favicon_domain: string | null;
       }>;
+    } | null;
+    redirect: {
+      to: string;
     } | null;
   };
 };
@@ -5790,7 +5757,7 @@ export type PostApiV1AgentsByAgentIdMessagesData = {
     message?: string;
     messageId?: string;
     /**
-     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by behavior dispatch (e.g. watcher runs).
+     * Optional per-message model override (a `provider/model` ref or "auto"). Wins over the agent/org default. Used by Behavior dispatch.
      */
     model?: string;
     /**
@@ -5975,22 +5942,23 @@ export type GetApiV1AgentsByAgentIdHistoryConversationsByConversationIdMessagesR
     200: unknown;
   };
 
-export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadData = {
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadData = {
   body?: never;
   path: {
     agentId: string;
     watcherId: string;
   };
   query?: never;
-  url: "/api/v1/agents/{agentId}/history/watchers/{watcherId}/thread";
+  url: "/api/v1/agents/{agentId}/history/behaviors/{watcherId}/thread";
 };
 
-export type GetApiV1AgentsByAgentIdHistoryWatchersByWatcherIdThreadResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
+export type GetApiV1AgentsByAgentIdHistoryBehaviorsByWatcherIdThreadResponses =
+  {
+    /**
+     * OK
+     */
+    200: unknown;
+  };
 
 export type GetApiV1AgentsByAgentIdHistoryStatusData = {
   body?: never;

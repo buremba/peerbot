@@ -2,7 +2,7 @@
  * Run lifecycle endpoints.
  *
  * Handlers for the in-flight and completion phases of connector/watcher/auth
- * runs: heartbeat, stream, complete, complete-watcher, complete-action,
+ * runs: heartbeat, stream, complete, complete-behavior, complete-action,
  * complete-auth, complete-embeddings, fetch-events, emit-auth-artifact,
  * poll-auth-signal.
  */
@@ -18,6 +18,12 @@ import type {
 	StreamBatch,
 } from "@lobu/core/contracts/worker/protocol";
 import type { Context } from "hono";
+import {
+	activateBehaviorSignal,
+	type BehaviorActivationResult,
+	dispatchBehaviorRunsBestEffort,
+} from "../behaviors/activation";
+import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
 import {
 	maybeCloseRepairThread,
 	maybeOpenOrAppendRepairThread,
@@ -71,7 +77,7 @@ async function finalizeRun(
 		status: "completed" | "failed";
 		extraSet?: SqlFragment;
 		returning?: SqlFragment;
-	},
+	}
 ): Promise<Array<Record<string, unknown>>> {
 	const status = params.status;
 	const extra = params.extraSet ?? sql``;
@@ -98,7 +104,7 @@ async function reactivateProfileCascade(
 	authData: {
 		credentials: Record<string, unknown>;
 		metadata: Record<string, unknown>;
-	},
+	}
 ): Promise<void> {
 	await sql`
     UPDATE auth_profiles
@@ -178,7 +184,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		const denied = await authorizeRunForWorker(
 			c,
 			batch.run_id,
-			batch.worker_id,
+			batch.worker_id
 		);
 		if (denied) return denied;
 
@@ -248,7 +254,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						item.metadata as Record<string, unknown> | undefined,
 						run.connector_key,
 						run.feed_key,
-						run.organization_id,
+						run.organization_id
 					);
 					if (!kindResult.valid) {
 						logger.warn(
@@ -258,7 +264,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 								semantic_type: validationType,
 								errors: kindResult.errors,
 							},
-							"Connector event semantic type validation failed — rejecting event",
+							"Connector event semantic type validation failed — rejecting event"
 						);
 						rejectedItems.push({
 							id: item.id,
@@ -277,11 +283,12 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 							item_id: item.id,
 							connector: run.connector_key,
 						},
-						"[stream] Skipping event with empty payload_text and title",
+						"[stream] Skipping event with empty payload_text and title"
 					);
 					continue;
 				}
 
+				const activations: BehaviorActivationResult[] = [];
 				const inserted = await insertEvent(
 					{
 						entityIds: entityIds,
@@ -309,8 +316,32 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						runId: batch.run_id,
 						parentOriginId: item.origin_parent_id,
 					},
-					{ onConflictUpdate: true },
+					{
+						onConflictUpdate: true,
+						afterPersist: async (persisted, tx) => {
+							for (const [draftIndex, draft] of (
+								item.behavior_signals ?? []
+							).entries()) {
+								const signal = materializeConnectorBehaviorSignal({
+									draft,
+									change: persisted.change,
+									connectorKey: run.connector_key,
+									connectionId: run.connection_id,
+									deliveryId: `sync:${batch.run_id}:event:${persisted.id}:${draftIndex}`,
+								});
+								if (!signal) continue;
+								activations.push(
+									...(await activateBehaviorSignal({
+										organizationId: run.organization_id,
+										signal,
+										db: tx,
+									}))
+								);
+							}
+						},
+					}
 				);
+				await dispatchBehaviorRunsBestEffort(activations);
 				if (inserted) {
 					totalItems++;
 					if (entityIds.length > 0) {
@@ -379,7 +410,10 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			req.checkpoint = stripNulDeep(req.checkpoint) as Record<string, unknown>;
 		}
 		if (req.auth_update) {
-			req.auth_update = stripNulDeep(req.auth_update) as Record<string, unknown>;
+			req.auth_update = stripNulDeep(req.auth_update) as Record<
+				string,
+				unknown
+			>;
 		}
 
 		const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
@@ -428,7 +462,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 					worker_id: req.worker_id,
 					claimed_status: req.status,
 				},
-				"[completeWorkerJob] no-op: run already in terminal state (likely gateway timeout)",
+				"[completeWorkerJob] no-op: run already in terminal state (likely gateway timeout)"
 			);
 			return c.json({ success: false, reason: "already_finalized" });
 		}
@@ -440,7 +474,10 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		if (feedId) {
 			const feedRows = (await sql`
       SELECT schedule, timezone FROM feeds WHERE id = ${feedId}
-    `) as unknown as Array<{ schedule: string | null; timezone: string | null }>;
+    `) as unknown as Array<{
+				schedule: string | null;
+				timezone: string | null;
+			}>;
 
 			// Manual feeds (no schedule) stay unscheduled after completion.
 			const schedule = feedRows[0]?.schedule ?? null;
@@ -473,14 +510,14 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				void maybeCloseRepairThread(feedId, req.run_id).catch((err) => {
 					logger.warn(
 						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeCloseRepairThread threw",
+						"[completeWorkerJob] maybeCloseRepairThread threw"
 					);
 				});
 			} else {
 				void maybeOpenOrAppendRepairThread(feedId, req.run_id).catch((err) => {
 					logger.warn(
 						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeOpenOrAppendRepairThread threw",
+						"[completeWorkerJob] maybeOpenOrAppendRepairThread threw"
 					);
 				});
 			}
@@ -505,7 +542,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				connection?.auth_profile_id != null
 					? await getAuthProfileById(
 							connection.organization_id,
-							connection.auth_profile_id,
+							connection.auth_profile_id
 						)
 					: null;
 
@@ -517,7 +554,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				const nextStatus = (
 					await getBrowserSessionReadiness(
 						nextAuthData,
-						connection.connector_key,
+						connection.connector_key
 					)
 				).usable
 					? "active"
@@ -606,7 +643,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * POST /api/workers/me/runs/:runId/complete-watcher
+ * POST /api/workers/me/runs/:runId/complete-behavior
  *
  * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
  * (Claude Code, etc.) on the user's machine. The Owletto Mac app's
@@ -614,7 +651,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
  *
  * The CLI agent completes the run itself, over MCP, exactly like a
  * server-side watcher agent: `query_sdk` (`client.knowledge.read`) →
- * window_token → `run_sdk` (`client.watchers.completeWindow`). The
+ * window_token → `run_sdk` (`client.behaviors.completeWindow`). The
  * dispatcher wires the gateway MCP server into the spawned CLI
  * (--mcp-config) and the prompt carries the completion instructions. This
  * endpoint therefore only records process exit metadata:
@@ -630,7 +667,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
  */
-export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
+export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	const runIdParam = c.req.param("runId");
 	if (!runIdParam) {
 		return c.json({ error: "runId is required" }, 400);
@@ -682,10 +719,10 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 	const run = runRows[0];
 	if (!run) return c.json({ error: "Run not found" }, 404);
 	if (run.run_type !== "watcher") {
-		return c.json({ error: "Not a watcher run" }, 409);
+		return c.json({ error: "Not a Behavior run" }, 409);
 	}
 	if (run.watcher_id == null) {
-		return c.json({ error: "Watcher run missing watcher_id" }, 500);
+		return c.json({ error: "Behavior run missing watcher_id" }, 500);
 	}
 
 	const watcherId = Number(run.watcher_id);
@@ -723,14 +760,14 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 						body_worker_id: body.worker_id,
 						bound_worker_id: boundWorkerId,
 					},
-					"[completeWatcherRun] body.worker_id != token-bound worker_id — rejecting",
+					"[completeBehaviorRun] body.worker_id != token-bound worker_id — rejecting"
 				);
 				return c.json(
 					{
 						error: "worker_id_mismatch",
 						error_description: `this token is bound to worker_id '${boundWorkerId}'`,
 					},
-					403,
+					403
 				);
 			}
 			if (pinnedDeviceWorkerId && workerUserId) {
@@ -753,7 +790,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 							caller_device: callerDeviceWorkerId,
 							pinned_device: pinnedDeviceWorkerId,
 						},
-						"[completeWatcherRun] device_worker_id mismatch — rejecting",
+						"[completeBehaviorRun] device_worker_id mismatch — rejecting"
 					);
 					return c.json({ error: "Forbidden: device worker mismatch" }, 403);
 				}
@@ -769,7 +806,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 					worker_user_id: workerUserId,
 					body_worker_id: body.worker_id,
 				},
-				"[completeWatcherRun] no token-bound workerId — falling back to user_id+worker_id check",
+				"[completeBehaviorRun] no token-bound workerId — falling back to user_id+worker_id check"
 			);
 			const deviceRows = (await sql`
         SELECT id
@@ -790,7 +827,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 						caller_device: callerDeviceWorkerId,
 						pinned_device: pinnedDeviceWorkerId,
 					},
-					"[completeWatcherRun] device_worker_id mismatch (legacy path) — rejecting",
+					"[completeBehaviorRun] device_worker_id mismatch (legacy path) — rejecting"
 				);
 				return c.json({ error: "Forbidden: device worker mismatch" }, 403);
 			}
@@ -829,13 +866,15 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
       SET last_fired_at = NOW(), updated_at = NOW()
       WHERE id = ${watcherId}
     `;
-		await advanceWatcherSchedule(sql, watcherId);
+		if (approved.dispatch_source !== "event") {
+			await advanceWatcherSchedule(sql, watcherId);
+		}
 		return true;
 	};
 
 	const emitCompletionEvent = (
 		outcome: "completed" | "failed",
-		detail?: string,
+		detail?: string
 	) => {
 		// Fire-and-forget: a "change" event so the dashboard's metric_series picks
 		// up the device-CLI completion the same way it picks up server-side ones.
@@ -848,8 +887,8 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 			entityId: String(watcherId),
 			summary:
 				outcome === "failed"
-					? `Watcher run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
-					: `Watcher run ${runId} completed via device CLI`,
+					? `Behavior run ${runId} failed on device CLI: ${detail ?? "unknown error"}`
+					: `Behavior run ${runId} completed via device CLI`,
 			extra: {
 				run_id: runId,
 				source: "device_worker",
@@ -955,13 +994,13 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 	}
 
 	// Clean exit but the run is still `running`: the agent never called
-	// run_sdk (client.watchers.completeWindow). Fail closed — completeWindow is
+	// run_sdk (client.behaviors.completeWindow). Fail closed — completeWindow is
 	// the only signal that real work happened (the same rule the server-side
 	// dispatch guard enforces in automation.ts). The stdout tail lands in
 	// runs.output_tail for diagnosis.
 	const reason =
-		"Device CLI exited without calling run_sdk (client.watchers.completeWindow). " +
-		"The watcher prompt instructs the agent to complete via the lobu MCP server — check that " +
+		"Device CLI exited without calling run_sdk (client.behaviors.completeWindow). " +
+		"The Behavior prompt instructs the agent to complete via the lobu MCP server — check that " +
 		"the dispatcher passed --mcp-config with query_sdk/run_sdk allowed, the gateway is reachable " +
 		"from the device, and the device token has mcp:write scope.";
 	await failRun(reason);
@@ -1003,7 +1042,7 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
        FROM events e
        WHERE e.id IN (${placeholders})
          AND ${needsEmbeddingSql("e")}`,
-			safeIds,
+			safeIds
 		);
 
 		return c.json({
@@ -1086,7 +1125,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 						await tx.unsafe(
 							`INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
                VALUES ($1, $2, $3::vector, $4)`,
-							[eventId, item.chunk_index ?? 0, vectorStr, model],
+							[eventId, item.chunk_index ?? 0, vectorStr, model]
 						);
 					}
 				});
@@ -1095,7 +1134,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 				failed++;
 				logger.error(
 					{ event_id: eventId, model, error: err },
-					"[completeEmbeddings] Failed to write embeddings for event (stays stale, will re-queue)",
+					"[completeEmbeddings] Failed to write embeddings for event (stays stale, will re-queue)"
 				);
 			}
 		}
@@ -1125,7 +1164,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 
 		logger.info(
 			{ run_id: req.run_id, total: req.embeddings.length, updated, failed },
-			"Embedding backfill completed",
+			"Embedding backfill completed"
 		);
 
 		return c.json({ success: failed === 0, updated, failed });
@@ -1248,7 +1287,7 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 					worker_id: req.worker_id,
 					claimed_status: req.status,
 				},
-				"[completeAuthRun] no-op: run already in terminal state (likely gateway timeout)",
+				"[completeAuthRun] no-op: run already in terminal state (likely gateway timeout)"
 			);
 			return c.json({ success: false, reason: "already_finalized" });
 		}
@@ -1276,7 +1315,7 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 
 		logger.info(
 			{ run_id: req.run_id, status: req.status },
-			"Auth run completed",
+			"Auth run completed"
 		);
 		return c.json({ success: true });
 	} catch (err: unknown) {
@@ -1328,7 +1367,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 					worker_id: req.worker_id,
 					claimed_status: req.status,
 				},
-				"[completeActionRun] no-op: run already in terminal state (likely gateway timeout)",
+				"[completeActionRun] no-op: run already in terminal state (likely gateway timeout)"
 			);
 			return c.json({ success: false, reason: "already_finalized" });
 		}
@@ -1348,7 +1387,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 					: `Action failed: ${actionKey}${req.error_message ? ` — ${req.error_message}` : ""}`,
 				req.status === "success"
 					? { action_output: req.action_output }
-					: { error_message: req.error_message },
+					: { error_message: req.error_message }
 			);
 
 			emit(organizationId, { keys: ["contents-filtered", "notifications"] });
@@ -1356,7 +1395,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 
 		logger.info(
 			{ run_id: req.run_id, status: req.status },
-			"Action run completed",
+			"Action run completed"
 		);
 		return c.json({ success: true });
 	} catch (err: unknown) {

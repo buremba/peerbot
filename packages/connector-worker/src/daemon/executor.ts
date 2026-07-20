@@ -824,6 +824,7 @@ function toContentItem(event: EventEnvelope): ContentItem {
     origin_parent_id: event.origin_parent_id ?? undefined,
     origin_type: event.origin_type,
     semantic_type: event.semantic_type ?? event.origin_type,
+    behavior_signals: event.behavior_signals,
   };
 }
 

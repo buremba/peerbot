@@ -59,14 +59,13 @@ describe('watchers/feeds timezone-aware schedules', () => {
     });
   }, 60_000);
 
-  it('watcher create stores timezone and anchors next_run_at to the zone wall-clock', async () => {
-    const created = (await workspace.owner.watchers.create({
+  it('Behavior create stores trigger timezone and anchors next_run_at to the zone wall-clock', async () => {
+    const created = (await workspace.owner.behaviors.create({
       entity_id: entityId,
       slug: 'tz-watcher',
       name: 'TZ Watcher',
       prompt: 'Summarize {{entities}}.',
-      schedule: '0 9 * * *',
-      timezone: 'Asia/Taipei',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
       agent_id: 'tz-watcher-agent',
     })) as { watcher_id: string };
     const watcherId = Number(created.watcher_id);
@@ -90,13 +89,13 @@ describe('watchers/feeds timezone-aware schedules', () => {
     expect(new Date(advanced.next_run_at as string).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('watcher update: timezone-only change re-anchors the pending firing', async () => {
-    const created = (await workspace.owner.watchers.create({
+  it('Behavior update re-anchors the pending firing when trigger timezone changes', async () => {
+    const created = (await workspace.owner.behaviors.create({
       entity_id: entityId,
       slug: 'tz-watcher-update',
       name: 'TZ Watcher Update',
       prompt: 'Summarize {{entities}}.',
-      schedule: '0 9 * * *',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       agent_id: 'tz-watcher-agent',
     })) as { watcher_id: string };
     const watcherId = Number(created.watcher_id);
@@ -105,9 +104,9 @@ describe('watchers/feeds timezone-aware schedules', () => {
     const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
     expect(utcHour(before.next_run_at)).toBe(serverTimeNineAmUtcHour());
 
-    await workspace.owner.watchers.update({
+    await workspace.owner.behaviors.update({
       watcher_id: watcherId,
-      timezone: 'Asia/Taipei',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' }],
     });
     const [after] = await sql`
       SELECT timezone, next_run_at FROM watchers WHERE id = ${watcherId}
@@ -116,15 +115,20 @@ describe('watchers/feeds timezone-aware schedules', () => {
     expect(utcHour(after.next_run_at)).toBe(1);
   });
 
-  it('watcher create rejects an unknown timezone', async () => {
+  it('Behavior create rejects an unknown trigger timezone', async () => {
     await expect(
-      workspace.owner.watchers.create({
+      workspace.owner.behaviors.create({
         entity_id: entityId,
         slug: 'tz-watcher-bad',
         name: 'Bad TZ',
         prompt: 'Summarize {{entities}}.',
-        schedule: '0 9 * * *',
-        timezone: 'Mars/Olympus_Mons',
+        triggers: [
+          {
+            kind: 'schedule',
+            cron: '0 9 * * *',
+            timezone: 'Mars/Olympus_Mons',
+          },
+        ],
         agent_id: 'tz-watcher-agent',
       })
     ).rejects.toThrow(/Unknown IANA timezone/);

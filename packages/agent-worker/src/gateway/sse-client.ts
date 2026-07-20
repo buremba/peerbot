@@ -797,12 +797,25 @@ export class GatewayClient {
       return;
     }
 
-    // A `!`-bash message must never be batch-merged: the "Message N:" join would
-    // bury the command in a combined prompt (and it carries its own bangBash
-    // control flag the worker reads). If any message in this batch is a `!`-bash
-    // action, run each individually in arrival order.
+    const batchBehaviorId = messages[0]?.payload.platformMetadata?.behaviorId;
+    const canCoalesceBehaviorBatch = messages.every((message) => {
+      const metadata = message.payload.platformMetadata;
+      return batchBehaviorId === undefined
+        ? metadata?.behaviorId === undefined
+        : metadata?.behaviorId === batchBehaviorId &&
+            metadata.behaviorActiveRunPolicy === "coalesce";
+    });
+
+    // Some deliveries require one isolated turn: a `!`-bash command would be
+    // buried by the "Message N:" join, while Behavior metadata/instructions may
+    // only be shared by deliveries for the same coalescing Behavior. Preserve
+    // arrival order for mixed Behaviors, Behavior/human batches, and non-
+    // coalescing policies so the first delivery cannot overwrite the rest.
     if (
-      messages.some((message) => message.payload.platformMetadata?.bangBash)
+      !canCoalesceBehaviorBatch ||
+      messages.some(
+        (message) => message.payload.platformMetadata?.bangBash !== undefined
+      )
     ) {
       for (const message of messages) {
         await this.processSingleMessage(message, [message.payload.messageId]);
@@ -1138,6 +1151,12 @@ const AUTOMATION_SOURCES = new Set([
 ]);
 
 export function isSteerableHumanMessage(payload: MessagePayload): boolean {
+  if (
+    payload.platformMetadata?.behaviorId &&
+    payload.platformMetadata?.behaviorActiveRunPolicy !== "steer"
+  ) {
+    return false;
+  }
   // `/new` must run after the active turn: it flushes memory, deletes the
   // transcript, and purges durable snapshots. Steering it into the current Pi
   // session would treat the control command as ordinary text and preserve the

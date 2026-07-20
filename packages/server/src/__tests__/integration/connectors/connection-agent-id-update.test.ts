@@ -8,7 +8,7 @@
  * with a real ChatInstanceManager wired to the Postgres connection store via
  * the gateway test seam, proving:
  *   1. `update` with agent_id persists connections.agent_id (the runtime
- *      fallback; channel bindings remain authoritative) and audits the change
+ *      fallback; channel Behaviors remain authoritative) and audits the change
  *      with `agent_id` in changed_fields;
  *   2. `agent_id: null` clears the fallback;
  *   3. an agent_id outside the org rejects ("Agent not found") without
@@ -242,10 +242,10 @@ describe("manage_connections update — chat fallback agent_id", () => {
 	it("denies a member (non-admin) who owns the connection but is not an admin from setting agent_id", async () => {
 		// A chat connection OWNED BY THE MEMBER. `update` is member-writable and
 		// the member owns this row, so they pass the ownership gate — but
-		// reassigning the fallback agent is channel-binding-tier authority, so
+		// reassigning the fallback agent is routing-tier authority, so
 		// it must still be refused. Otherwise the member could point their
 		// connection's fallback at another member's agent (an escalation
-		// bind_channel forbids).
+		// an ordinary member must not be able to do it).
 		const memberRuntimeId = "agentfb-member-1";
 		await orgContext.run({ organizationId: orgId }, () =>
 			(

@@ -593,6 +593,7 @@ export async function createTestConnectorDefinition(options: {
   version?: string;
   feeds_schema?: Record<string, any>;
   auth_schema?: Record<string, any>;
+  behavior_events?: Array<Record<string, unknown>>;
   organization_id?: string | null;
 }): Promise<TestConnectorDefinition> {
   const sql = getTestDb();
@@ -600,7 +601,7 @@ export async function createTestConnectorDefinition(options: {
 
   await sql`
     INSERT INTO connector_definitions (
-      key, name, version, feeds_schema, auth_schema,
+      key, name, version, feeds_schema, auth_schema, behavior_events,
       organization_id,
       status, created_at, updated_at
     ) VALUES (
@@ -609,6 +610,7 @@ export async function createTestConnectorDefinition(options: {
       ${version},
       ${sql.json(options.feeds_schema ?? { default: {} })},
       ${sql.json(options.auth_schema ?? {})},
+      ${options.behavior_events ? sql.json(options.behavior_events) : null},
       ${options.organization_id ?? null},
       'active',
       NOW(), NOW()

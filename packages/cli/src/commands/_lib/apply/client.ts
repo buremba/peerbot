@@ -18,7 +18,7 @@ import {
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type WatcherSource,
+  type BehaviorSource,
 } from "./shared.js";
 
 // ── Wire types ─────────────────────────────────────────────────────────────
@@ -91,12 +91,12 @@ export interface RemoteInferenceProvider {
   createdAt: string;
 }
 
-export interface RemoteWatcher {
+export interface RemoteBehavior {
   slug: string;
   name?: string;
   watcher_id?: string;
   agent_id?: string | null;
-  schedule?: string | null;
+  triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;
   scheduler_client_id?: string | null;
@@ -105,14 +105,14 @@ export interface RemoteWatcher {
   notification_priority?: string | null;
   min_cooldown_seconds?: number | null;
   tags?: string[] | null;
-  sources?: WatcherSource[] | null;
+  sources?: BehaviorSource[] | null;
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
   classifiers?: unknown[] | null;
   keying_config?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
-  // NB: reaction_script is NOT in list_watchers — push always (idempotent).
+  // NB: reaction_script is not included in Behavior lists — push always (idempotent).
 }
 
 interface UpsertPlatformResult {
@@ -601,31 +601,6 @@ export class ApplyClient {
     };
   }
 
-  /**
-   * Reconcile a platform's declarative channel bindings.
-   *
-   * Uses the stable connection id; the server derives platform and tenant
-   * identity from the connection row.
-   */
-  async syncPlatformChannels(
-    agentId: string,
-    platformId: string,
-    channels: string[]
-  ): Promise<{ bound: string[]; removed: string[] }> {
-    const body = await this.connectionsTool<{
-      bound?: string[];
-      removed?: string[];
-      error?: string;
-    }>({
-      action: "sync_channel_bindings",
-      agent_id: agentId,
-      connection_id: platformId,
-      channels,
-    });
-    if (body.error) throw new Error(body.error);
-    return { bound: body.bound ?? [], removed: body.removed ?? [] };
-  }
-
   // ── Memory schema ─────────────────────────────────────────────────────────
 
   async listEntityTypes(): Promise<RemoteEntityType[]> {
@@ -900,58 +875,57 @@ export class ApplyClient {
     });
   }
 
-  // ── Watchers ──────────────────────────────────────────────────────────────
+  // ── Behaviors ─────────────────────────────────────────────────────────────
 
   /**
-   * Fetch a single watcher's full payload — `getWatcher` server-side, which
-   * returns reaction_script (not in the list response). Used by
-   * `lobu init --from-org` to round-trip reaction scripts back to sibling
-   * `.ts` files.
+   * Fetch a single Behavior's full payload, including the reaction script
+   * (not in the list response). Used by `lobu init --from-org` to round-trip
+   * reaction scripts back to sibling `.ts` files.
    */
-  async getWatcherDetail(watcherId: string): Promise<{
+  async getBehaviorDetail(watcherId: string): Promise<{
     reaction_script?: string | null;
     description?: string | null;
   } | null> {
     try {
       const { body } = await this.request<{
-        watcher?: {
+        behavior?: {
           reaction_script?: string | null;
           description?: string | null;
         };
       }>(
         "GET",
-        `/api/${this.orgSlug}/watchers?watcher_id=${encodeURIComponent(watcherId)}`
+        `/api/${this.orgSlug}/behaviors?watcher_id=${encodeURIComponent(watcherId)}`
       );
-      return body.watcher ?? null;
+      return body.behavior ?? null;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;
     }
   }
 
-  async listWatchers(): Promise<RemoteWatcher[]> {
+  async listBehaviors(): Promise<RemoteBehavior[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
     // classifiers, keying_config, reactions_guidance) too.
     // Apply diffs against these to detect drift on prompt / sources / etc.
-    const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
+    const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
       "GET",
-      `/api/${this.orgSlug}/watchers?include_details=true`
+      `/api/${this.orgSlug}/behaviors?include_details=true`
     );
-    return body.watchers ?? [];
+    return body.behaviors ?? [];
   }
 
   /**
-   * Create a watcher owned by `agentId`. Duplicate-slug surfaces as a
+   * Create a Behavior owned by `agentId`. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
-  async createWatcher(payload: {
+  async createBehavior(payload: {
     slug: string;
     agentId: string;
     name?: string;
     description?: string;
     prompt: string;
-    schedule?: string;
-    sources?: WatcherSource[];
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
+    sources?: BehaviorSource[];
     reactions_guidance?: string;
     device_worker_id?: string;
     scheduler_client_id?: string;
@@ -965,7 +939,7 @@ export class ApplyClient {
   }): Promise<{ watcher_id?: string }> {
     const { body } = await this.request<{ watcher_id?: string }>(
       "POST",
-      `/api/${this.orgSlug}/manage_watchers`,
+      `/api/${this.orgSlug}/manage_behaviors`,
       {
         action: "create",
         slug: payload.slug,
@@ -973,7 +947,9 @@ export class ApplyClient {
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
-        ...(payload.schedule ? { schedule: payload.schedule } : {}),
+        ...(payload.triggers !== undefined
+          ? { triggers: payload.triggers }
+          : {}),
         ...(payload.sources?.length ? { sources: payload.sources } : {}),
         ...(payload.reactions_guidance !== undefined
           ? { reactions_guidance: payload.reactions_guidance }
@@ -1011,15 +987,15 @@ export class ApplyClient {
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-   * keying_config / classifiers) require `createWatcherVersion`
+   * keying_config / classifiers) require `createBehaviorVersion`
    * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
    * agent_kind) per the server contract.
    */
-  async updateWatcher(payload: {
+  async updateBehavior(payload: {
     watcher_id: string;
-    schedule?: string | null;
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     agent_id?: string;
     device_worker_id?: string | null;
     scheduler_client_id?: string | null;
@@ -1029,10 +1005,10 @@ export class ApplyClient {
     tags?: string[];
     agent_kind?: string | null;
   }): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "update",
       watcher_id: payload.watcher_id,
-      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
       ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
       ...(payload.device_worker_id !== undefined
         ? { device_worker_id: payload.device_worker_id }
@@ -1061,10 +1037,10 @@ export class ApplyClient {
    * upgrade the watcher's `current_version_id` to that new version. Server
    * inherits unset fields from the previous version row.
    */
-  async createWatcherVersion(payload: {
+  async createBehaviorVersion(payload: {
     watcher_id: string;
     prompt?: string;
-    sources?: WatcherSource[];
+    sources?: BehaviorSource[];
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     reactions_guidance?: string;
@@ -1072,7 +1048,7 @@ export class ApplyClient {
   }): Promise<{ version?: number }> {
     const { body } = await this.request<{ version?: number }>(
       "POST",
-      `/api/${this.orgSlug}/manage_watchers`,
+      `/api/${this.orgSlug}/manage_behaviors`,
       {
         action: "create_version",
         watcher_id: payload.watcher_id,
@@ -1104,7 +1080,7 @@ export class ApplyClient {
     watcherId: string,
     reactionScript: string
   ): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "set_reaction_script",
       watcher_id: watcherId,
       reaction_script: reactionScript,
@@ -1116,8 +1092,8 @@ export class ApplyClient {
    * admin tool takes an array; we delete one slug's watcher at a time so a
    * failure is attributable.
    */
-  async deleteWatcher(watcherId: string): Promise<void> {
-    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+  async deleteBehavior(watcherId: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_behaviors`, {
       action: "delete",
       watcher_ids: [watcherId],
     });

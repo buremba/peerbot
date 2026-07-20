@@ -31,6 +31,11 @@ import {
 	resolveActingPrincipal,
 } from "../../../authz/entity-policy";
 import type { Env } from "../../../index";
+import {
+	createInferenceProvider,
+	setInferenceProviderDefault,
+} from "../../../lobu/stores/provider-secrets";
+import { orgContext } from "../../../lobu/stores/org-context";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -666,5 +671,189 @@ describe("manage_agents — builder gate e2e", () => {
 				memberCtx,
 			),
 		).rejects.toThrow();
+	});
+});
+
+/**
+ * #2047 — an agent must be runnable after create, and the tool must expose a
+ * model-config path. Covers the schema-driven field engine end to end:
+ *   - create WITHOUT default_model + no org default ⇒ result reports not_runnable.
+ *   - create WITH a valid default_model ⇒ agent pinned, source 'agent', runnable.
+ *   - create with an unknown-provider model ⇒ rejected, and NO agent row left.
+ *   - get ⇒ returns effective model + inheritance source.
+ *   - update setting ONLY default_model ⇒ valid (proves default_model counts as a
+ *     field, the whole point of the registry).
+ *   - update clearing default_model ('') ⇒ falls back to the org default.
+ */
+describe("manage_agents — model config (#2047)", () => {
+	let orgId: string;
+	let ownerCtx: AuthContext;
+
+	const baseCtx = (
+		orgIdValue: string,
+		userId: string,
+	): AuthContext => ({
+		organizationId: orgIdValue,
+		tokenOrganizationId: orgIdValue,
+		userId,
+		memberRole: "owner",
+		agentId: null,
+		requestedAgentId: null,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		requestUrl: `http://localhost/api/${orgIdValue}`,
+		baseUrl: "",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	});
+
+	type ModelInfo = {
+		effective_model: string | null;
+		source: "agent" | "org_default" | "none";
+		not_runnable: boolean;
+	};
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		await initWorkspaceProvider();
+		const org = await createTestOrganization({ name: "manage_agents model e2e" });
+		orgId = org.id;
+		const owner = await createTestUser({ email: "ma-model-owner@test.com" });
+		await addUserToOrganization(owner.id, org.id, "owner");
+		ownerCtx = baseCtx(org.id, owner.id);
+		// An org provider whose slug the model refs resolve against.
+		await orgContext.run({ organizationId: org.id }, async () => {
+			await createInferenceProvider({
+				organizationId: org.id,
+				slug: "myco",
+				kind: "openai",
+				apiKey: "sk-test",
+				capabilities: { text: { model: "myco-large" } },
+			});
+		});
+	});
+
+	it("create WITHOUT default_model and no org default ⇒ not_runnable", async () => {
+		const res = (await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "no-model-bot", name: "No Model" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { created: boolean; model: ModelInfo };
+		expect(res.created).toBe(true);
+		expect(res.model.source).toBe("none");
+		expect(res.model.not_runnable).toBe(true);
+		expect(res.model.effective_model).toBeNull();
+	});
+
+	it("create WITH a valid default_model ⇒ pinned, runnable, source 'agent'", async () => {
+		const res = (await executeTool(
+			"manage_agents",
+			{
+				action: "create",
+				agent_id: "pinned-bot",
+				name: "Pinned",
+				default_model: "myco/myco-large",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { created: boolean; model: ModelInfo };
+		expect(res.created).toBe(true);
+		expect(res.model.effective_model).toBe("myco/myco-large");
+		expect(res.model.source).toBe("agent");
+		expect(res.model.not_runnable).toBe(false);
+
+		// And it landed in the agents.models column (the single source of truth).
+		const sql = getTestDb();
+		const rows = await sql`
+			SELECT models FROM agents WHERE organization_id = ${orgId} AND id = 'pinned-bot'
+		`;
+		expect(rows[0]?.models).toEqual(["myco/myco-large"]);
+	});
+
+	it("create with an unknown-provider model ⇒ rejected, NO agent row left", async () => {
+		await expect(
+			executeTool(
+				"manage_agents",
+				{
+					action: "create",
+					agent_id: "bad-model-bot",
+					name: "Bad",
+					default_model: "ghostprovider/x",
+				},
+				TEST_ENV,
+				ownerCtx,
+			),
+		).rejects.toThrow();
+		const sql = getTestDb();
+		const rows = await sql`
+			SELECT 1 FROM agents WHERE organization_id = ${orgId} AND id = 'bad-model-bot'
+		`;
+		expect(rows.length).toBe(0);
+	});
+
+	it("get ⇒ returns effective model + inheritance source", async () => {
+		const got = (await executeTool(
+			"manage_agents",
+			{ action: "get", agent_id: "pinned-bot" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { agent: { id: string }; model: ModelInfo };
+		expect(got.agent.id).toBe("pinned-bot");
+		expect(got.model.effective_model).toBe("myco/myco-large");
+		expect(got.model.source).toBe("agent");
+	});
+
+	it("update setting ONLY default_model is a valid update", async () => {
+		await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "model-only-bot", name: "MO" },
+			TEST_ENV,
+			ownerCtx,
+		);
+		const upd = (await executeTool(
+			"manage_agents",
+			{
+				action: "update",
+				agent_id: "model-only-bot",
+				default_model: "myco/myco-large",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { updated_fields: string[]; model: ModelInfo };
+		expect(upd.updated_fields).toContain("default_model");
+		expect(upd.model.effective_model).toBe("myco/myco-large");
+		expect(upd.model.source).toBe("agent");
+	});
+
+	it("update clearing default_model ('') falls back to the org default", async () => {
+		// Make myco the org default so a cleared agent inherits it.
+		await orgContext.run({ organizationId: orgId }, async () => {
+			await setInferenceProviderDefault(orgId, "myco");
+		});
+		await executeTool(
+			"manage_agents",
+			{
+				action: "create",
+				agent_id: "clearable-bot",
+				name: "Clear",
+				default_model: "myco/myco-large",
+			},
+			TEST_ENV,
+			ownerCtx,
+		);
+		const upd = (await executeTool(
+			"manage_agents",
+			{ action: "update", agent_id: "clearable-bot", default_model: "" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { updated_fields: string[]; model: ModelInfo };
+		expect(upd.updated_fields).toContain("default_model");
+		// Cleared pin ⇒ inherits the org default (source flips to org_default).
+		expect(upd.model.source).toBe("org_default");
+		expect(upd.model.not_runnable).toBe(false);
+		expect(upd.model.effective_model).toBe("myco/myco-large");
 	});
 });

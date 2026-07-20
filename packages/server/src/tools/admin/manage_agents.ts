@@ -23,7 +23,12 @@
  */
 
 import {
+  collectLobuFields,
+  type LobuField,
+} from '@lobu/core/contracts/field-engine';
+import {
   ManageAgentsSchema,
+  type AgentModelInfo,
   type AgentRecord,
   type ManageAgentsArgs,
   type ManageAgentsProposal,
@@ -36,6 +41,12 @@ import {
 } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
+import {
+  persistDefaultModel,
+  readAgentModels,
+  resolveAgentModelInfo,
+  validateModelRefsAgainstOrg,
+} from '../../lobu/model-config';
 import { isValidAgentId } from '../../lobu/stores/postgres-stores';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
@@ -75,6 +86,102 @@ async function actingPrincipalFor(ctx: ToolContext): Promise<ActingPrincipal> {
     agentId: ctx.agentId,
     sessionWatcherId: ctx.actingWatcherId ?? null,
   });
+}
+
+/**
+ * Compute an agent's effective model + inheritance source (#2047). Reads the
+ * agent's `models` list through the shared settings store (org-scoped) and
+ * folds in the org default — the SAME layered fallback the run path uses, so a
+ * caller can tell a genuinely runnable agent from one that only works because
+ * the org has a default. Returns `not_runnable` when nothing resolves.
+ */
+async function agentModelInfo(
+  ctx: ToolContext,
+  agentId: string,
+): Promise<AgentModelInfo> {
+  const models = await readAgentModels(agentId, ctx.organizationId);
+  return resolveAgentModelInfo(models, ctx.organizationId);
+}
+
+/**
+ * Validate a `default_model` ref against the org's providers, reusing the SAME
+ * core the web config route uses (#2047). A blank/empty ref is a legal "clear
+ * back to org default" and passes. Throws a `ToolUserError` (400) with the
+ * provider-not-connected guidance so a bad model is rejected at request time —
+ * both for immediate applies and before an approval card is ever shown.
+ */
+async function assertDefaultModelValid(
+  organizationId: string,
+  modelRef: string,
+): Promise<void> {
+  if (!modelRef.trim()) return;
+  const error = await validateModelRefsAgainstOrg([modelRef], organizationId);
+  if (error) throw new ToolUserError(error.message, 400);
+}
+
+// ============================================
+// Schema-driven editable-field engine
+// ============================================
+//
+// The editable agent fields (name/description/identity_md/default_model) are
+// declared ONCE, on the `ManageAgentsSchema` contract via `x-lobu-field`
+// annotations. `collectLobuFields` reads them; the binding below says, per
+// storage kind, how to read the current value, validate a new one, and persist
+// it. create / update / buildProposal / pre-image all loop this single list —
+// adding a field is one annotated schema entry, not edits in seven places.
+
+/** The editable fields of this tool, in schema declaration order. */
+const AGENT_FIELDS: LobuField[] = collectLobuFields(ManageAgentsSchema);
+
+/** Column-backed fields (an `agents` table column). Their name IS the column. */
+const COLUMN_FIELDS = AGENT_FIELDS.filter((f) => f.meta.store === 'column');
+
+/** Read a field's requested value off the flat args object. */
+function argValue(args: ManageAgentsArgs, key: string): string | undefined {
+  return (args as Record<string, unknown>)[key] as string | undefined;
+}
+
+/**
+ * The live value of a field for the stale-guard pre-image / equality checks.
+ * Column fields read straight off the agent row; the model field reads the
+ * agent-pinned `models[0]` (an inherited org default is NOT a pinned value, so
+ * it reads as null — clearing then re-inheriting is not a "change" to guard).
+ */
+async function liveFieldValue(
+  ctx: ToolContext,
+  agentId: string,
+  field: LobuField,
+  agentRow: Record<string, unknown> | null,
+): Promise<string | null> {
+  if (field.meta.store === 'column') {
+    return (agentRow?.[field.key] as string | null) ?? null;
+  }
+  // store === 'model'
+  const info = await agentModelInfo(ctx, agentId);
+  return info.source === 'agent' ? (info.effective_model ?? null) : null;
+}
+
+/** Validate a single field's requested value (only the model field validates). */
+async function validateField(
+  ctx: ToolContext,
+  field: LobuField,
+  value: string,
+): Promise<void> {
+  if (field.meta.store === 'model') {
+    await assertDefaultModelValid(ctx.organizationId, value);
+  }
+}
+
+/** Persist a non-column field after the agents-row UPDATE (model → models[0]). */
+async function writeNonColumnField(
+  ctx: ToolContext,
+  agentId: string,
+  field: LobuField,
+  value: string,
+): Promise<void> {
+  if (field.meta.store === 'model') {
+    await persistDefaultModel(agentId, ctx.organizationId, value);
+  }
 }
 
 /**
@@ -197,7 +304,8 @@ async function handleGet(
     throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
   }
   await assertAgentConfigReadAllowed(ctx, args.agent_id.trim());
-  return { action: 'get', agent: rows[0] as unknown as AgentRecord };
+  const model = await agentModelInfo(ctx, args.agent_id);
+  return { action: 'get', agent: rows[0] as unknown as AgentRecord, model };
 }
 
 export async function applyCreate(
@@ -223,13 +331,21 @@ export async function applyCreate(
       'create requires an authenticated caller to own the new agent'
     );
   }
+  // Validate every requested field BEFORE inserting, so an invalid value can't
+  // leave a half-created agent (row inserted, a later field rejected). The loop
+  // is the same for whatever fields the schema declares.
+  for (const field of AGENT_FIELDS) {
+    const value = argValue(args, field.key);
+    if (value !== undefined) await validateField(ctx, field, value);
+  }
   const sql = createDbClientFromEnv(env);
   const ownerUserId = ctx.userId;
   // Mirror the provisioning pattern (ensureDefaultAgent / ensureBuilderAgent):
   // owner_platform='external' on the row AND an agent_users mapping, so the
   // per-user ownership check (SPA cookie / PAT session) can reach the new agent.
   // Without the agent_users row the agent is unreachable through chat,
-  // especially in non-default orgs.
+  // especially in non-default orgs. Column fields are seeded from args (with the
+  // insert defaults for those not supplied); non-column fields are set after.
   const rows = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, identity_md,
@@ -249,8 +365,19 @@ export async function applyCreate(
       VALUES (${ctx.organizationId}, ${args.agent_id}, 'external', ${ownerUserId}, NOW())
       ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
     `;
+    // Persist non-column fields (e.g. default_model → models[0]) through their
+    // stores, so a freshly created agent is runnable rather than silently
+    // model-less (#2047). Loop-driven: any future non-column field is picked up.
+    for (const field of AGENT_FIELDS) {
+      if (field.meta.store === 'column') continue;
+      const value = argValue(args, field.key);
+      if (value !== undefined) {
+        await writeNonColumnField(ctx, args.agent_id, field, value);
+      }
+    }
   }
-  return { action: 'create', agent_id: args.agent_id, created };
+  const model = await agentModelInfo(ctx, args.agent_id);
+  return { action: 'create', agent_id: args.agent_id, created, model };
 }
 
 export async function applyUpdate(
@@ -279,77 +406,109 @@ export async function applyUpdate(
   if (!args.agent_id) {
     throw new ToolUserError('agent_id is required for update action');
   }
+  const agentId = args.agent_id;
   const sql = createDbClientFromEnv(env);
-  const requested: string[] = [];
-  if (args.name !== undefined) requested.push('name');
-  if (args.description !== undefined) requested.push('description');
-  if (args.identity_md !== undefined) requested.push('identity_md');
+
+  // ── Requested set — every editable field the args actually carry (loop-driven
+  //    off the schema; no per-field enumeration). default_model lives in the
+  //    settings row, name/description/identity_md are columns — all counted here
+  //    so "set only the model" is a valid update (#2047).
+  const requested = AGENT_FIELDS.filter(
+    (f) => argValue(args, f.key) !== undefined
+  );
   if (requested.length === 0) {
-    throw new ToolUserError(
-      'update requires at least one of: name, description, identity_md'
-    );
+    const names = AGENT_FIELDS.map((f) => f.key).join(', ');
+    throw new ToolUserError(`update requires at least one of: ${names}`);
   }
-  // A queued apply with no pre-image for a requested field can't safely write it
-  // (it might clobber a human edit made after the proposal was queued). Fail that
-  // field closed: drop it from the requested set so its CASE arm never fires and
-  // it's reported as skipped. Legacy pre-`base` runs thus apply nothing rather
-  // than everything. Immediate applies (requireBase=false) are unaffected.
-  const unbackedFields = requireBase
-    ? requested.filter((field) => {
-        if (field === 'name') return base?.name === undefined;
-        if (field === 'description') return base?.description === undefined;
-        return base?.identity_md === undefined;
-      })
-    : [];
-  const writable = requested.filter((f) => !unbackedFields.includes(f));
-  const writeName = args.name !== undefined && writable.includes('name');
-  const writeDesc =
-    args.description !== undefined && writable.includes('description');
-  const writeIdentity =
-    args.identity_md !== undefined && writable.includes('identity_md');
-  // Each writable field is written iff (no pre-image given) OR (its live value
-  // still equals the pre-image). `${base ? … : true}` collapses to a constant per
-  // field so the guard is a no-op for immediate applies. IS NOT DISTINCT FROM
-  // matches NULLs. updated_at only bumps when at least one field actually changes.
-  const nameGuard = base ? base.name !== undefined : false;
-  const descGuard = base ? base.description !== undefined : false;
-  const identityGuard = base ? base.identity_md !== undefined : false;
-  const rows = await sql<{ id: string; name: string | null; description: string | null; identity_md: string | null }>`
+
+  // ── Validate each requested field up-front (only the model field validates),
+  //    so an immediate apply rejects a bad value before touching any storage.
+  for (const field of requested) {
+    await validateField(ctx, field, argValue(args, field.key) as string);
+  }
+
+  // ── Fail-closed on a queued apply lacking a pre-image: a field the proposal
+  //    didn't snapshot can't be written without risking clobbering a newer human
+  //    edit, so drop it (it's reported skipped). Immediate applies keep all.
+  const writable = requireBase
+    ? requested.filter((f) => base?.[f.key as keyof typeof base] !== undefined)
+    : requested;
+
+  // ── Column fields: one explicit UPDATE (the single honest place a column name
+  //    appears). Each column's write-flag and stale-guard flag come from the
+  //    loop, so adding a column field never means re-deriving these by hand.
+  const flags = Object.fromEntries(
+    COLUMN_FIELDS.map((f) => {
+      const write = writable.includes(f);
+      const guard = base ? base[f.key as keyof typeof base] !== undefined : false;
+      return [f.key, { write, guard }];
+    })
+  ) as Record<string, { write: boolean; guard: boolean }>;
+  const rows = await sql<{
+    id: string;
+    name: string | null;
+    description: string | null;
+    identity_md: string | null;
+  }>`
     UPDATE agents SET
       name = CASE
-        WHEN ${writeName}
-          AND (${!nameGuard} OR name IS NOT DISTINCT FROM ${base?.name ?? null})
+        WHEN ${flags.name.write}
+          AND (${!flags.name.guard} OR name IS NOT DISTINCT FROM ${base?.name ?? null})
         THEN ${args.name ?? null} ELSE name END,
       description = CASE
-        WHEN ${writeDesc}
-          AND (${!descGuard} OR description IS NOT DISTINCT FROM ${base?.description ?? null})
+        WHEN ${flags.description.write}
+          AND (${!flags.description.guard} OR description IS NOT DISTINCT FROM ${base?.description ?? null})
         THEN ${args.description ?? null} ELSE description END,
       identity_md = CASE
-        WHEN ${writeIdentity}
-          AND (${!identityGuard} OR identity_md IS NOT DISTINCT FROM ${base?.identity_md ?? null})
+        WHEN ${flags.identity_md.write}
+          AND (${!flags.identity_md.guard} OR identity_md IS NOT DISTINCT FROM ${base?.identity_md ?? null})
         THEN ${args.identity_md ?? ''} ELSE identity_md END,
       updated_at = NOW()
-    WHERE organization_id = ${ctx.organizationId} AND id = ${args.agent_id}
+    WHERE organization_id = ${ctx.organizationId} AND id = ${agentId}
     RETURNING id, name, description, identity_md
   `;
   if (rows.length === 0) {
-    throw new ToolUserError(`Agent "${args.agent_id}" not found`, 404);
+    throw new ToolUserError(`Agent "${agentId}" not found`, 404);
   }
-  // Report which requested fields actually landed. A field is skipped when its
-  // live value diverged from the pre-image (stale) OR it had no pre-image on a
-  // queued apply (unbacked — never written on blind faith).
   const after = rows[0];
-  const appliedFields = writable.filter((field) => {
-    if (field === 'name') return after.name === (args.name ?? null);
-    if (field === 'description') return after.description === (args.description ?? null);
-    return after.identity_md === (args.identity_md ?? '');
-  });
-  const skippedFields = requested.filter((f) => !appliedFields.includes(f));
+
+  // ── Applied/skipped, loop-driven. A column field landed iff its post-image
+  //    equals the requested value; a non-column field is persisted here (through
+  //    its store) honoring the same stale-guard, then marked applied.
+  const appliedFields: string[] = [];
+  for (const field of writable) {
+    const value = argValue(args, field.key) as string;
+    if (field.meta.store === 'column') {
+      const emptyDefault = field.meta.emptyClears ? null : '';
+      const want = value ?? emptyDefault;
+      if ((after[field.key as keyof typeof after] ?? null) === (want ?? null)) {
+        appliedFields.push(field.key);
+      }
+      continue;
+    }
+    // Non-column (model): re-check the pre-image against the live value, then
+    // persist. `writable` already dropped it if unbacked on a queued apply.
+    let stale = false;
+    if (base?.[field.key as keyof typeof base] !== undefined) {
+      const live = await liveFieldValue(ctx, agentId, field, null);
+      stale = live !== (base[field.key as keyof typeof base] ?? null);
+    }
+    if (!stale) {
+      await writeNonColumnField(ctx, agentId, field, value);
+      appliedFields.push(field.key);
+    }
+  }
+
+  const skippedFields = requested
+    .map((f) => f.key)
+    .filter((k) => !appliedFields.includes(k));
+  const model = await agentModelInfo(ctx, agentId);
   return {
     action: 'update',
-    agent_id: args.agent_id,
+    agent_id: agentId,
     updated_fields: appliedFields,
     ...(skippedFields.length > 0 ? { skipped_fields: skippedFields } : {}),
+    model,
   };
 }
 
@@ -458,20 +617,23 @@ function buildProposal(args: ManageAgentsArgs): ManageAgentsProposal {
     }
   }
   if (action === 'update') {
-    const hasField =
-      args.name !== undefined ||
-      args.description !== undefined ||
-      args.identity_md !== undefined;
+    const hasField = AGENT_FIELDS.some(
+      (f) => argValue(args, f.key) !== undefined
+    );
     if (!hasField) {
-      throw new ToolUserError(
-        'update requires at least one of: name, description, identity_md'
-      );
+      const names = AGENT_FIELDS.map((f) => f.key).join(', ');
+      throw new ToolUserError(`update requires at least one of: ${names}`);
     }
   }
+  // Copy every requested editable field onto the proposal, loop-driven off the
+  // schema — a new field flows through without editing this block.
   const proposal: ManageAgentsProposal = { action, agent_id: args.agent_id };
-  if (args.name !== undefined) proposal.name = args.name;
-  if (args.description !== undefined) proposal.description = args.description;
-  if (args.identity_md !== undefined) proposal.identity_md = args.identity_md;
+  for (const field of AGENT_FIELDS) {
+    const value = argValue(args, field.key);
+    if (value !== undefined) {
+      (proposal as unknown as Record<string, unknown>)[field.key] = value;
+    }
+  }
   return proposal;
 }
 
@@ -496,6 +658,16 @@ async function queueWriteForApproval(
     );
   }
 
+  // Validate every requested editable field before queuing, so a bad value is
+  // rejected at request time and an un-approvable card is never shown. Loop-
+  // driven off the schema; reuses each field's validator.
+  for (const field of AGENT_FIELDS) {
+    const value = (proposal as unknown as Record<string, unknown>)[field.key] as
+      | string
+      | undefined;
+    if (value !== undefined) await validateField(ctx, field, value);
+  }
+
   const sql = getDb();
   const current = await fetchCurrentAgent(ctx.organizationId, proposal.agent_id, env);
   if (proposal.action === 'create' && current) {
@@ -507,14 +679,21 @@ async function queueWriteForApproval(
 
   // Capture the pre-image of each field this update touches, so the eventual
   // approve applies only fields that haven't since been changed by someone else.
+  // Loop-driven: column fields read from the fetched row, the model field reads
+  // its live agent-pinned value — one shape, every field.
   if (proposal.action === 'update' && current) {
-    proposal.base = {};
-    if (proposal.name !== undefined)
-      proposal.base.name = (current.name as string | null) ?? null;
-    if (proposal.description !== undefined)
-      proposal.base.description = (current.description as string | null) ?? null;
-    if (proposal.identity_md !== undefined)
-      proposal.base.identity_md = (current.identity_md as string | null) ?? null;
+    const base: NonNullable<ManageAgentsProposal['base']> = {};
+    for (const field of AGENT_FIELDS) {
+      const value = (proposal as unknown as Record<string, unknown>)[field.key];
+      if (value === undefined) continue;
+      (base as Record<string, unknown>)[field.key] = await liveFieldValue(
+        ctx,
+        proposal.agent_id,
+        field,
+        current
+      );
+    }
+    proposal.base = base;
   }
 
   // Reject a delete of the org's system agent up-front (same guard as
@@ -625,13 +804,18 @@ export async function applyManageAgentsProposal(
   env: Env,
   ownerUserId: string | null
 ): Promise<ManageAgentsResult> {
+  // Rebuild the flat args from the proposal, loop-driven off the schema so an
+  // added field flows back through without editing this remap.
   const args: ManageAgentsArgs = {
     action: proposal.action,
     agent_id: proposal.agent_id,
-    name: proposal.name,
-    description: proposal.description,
-    identity_md: proposal.identity_md,
   };
+  for (const field of AGENT_FIELDS) {
+    const value = (proposal as unknown as Record<string, unknown>)[field.key];
+    if (value !== undefined) {
+      (args as Record<string, unknown>)[field.key] = value;
+    }
+  }
   // create attributes ownership to the ORIGINAL requester, not the approver.
   const applyCtx: ToolContext =
     proposal.action === 'create' ? { ...ctx, userId: ownerUserId } : ctx;

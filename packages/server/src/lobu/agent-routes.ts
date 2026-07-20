@@ -20,11 +20,10 @@ import {
 	getOAuthProviderConfigs,
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
-import { isUnresolvedModelRef } from "../gateway/auth/model-sentinel";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
-import { getModelProviderModules } from "../gateway/modules/module-system";
+import { validateModelRefsAgainstOrg } from "./model-config";
 import {
 	ProviderRegistryService,
 	resolveProviderRegistryPath,
@@ -121,67 +120,34 @@ export async function validateModelsUpdate(params: {
 	agentId: string;
 	c: any;
 }): Promise<Record<string, unknown> | null> {
-	if (
-		!Array.isArray(params.models) ||
-		params.models.some((m) => typeof m !== "string")
-	) {
-		return {
-			error: "invalid_models",
-			error_description: "models must be an array of strings",
-		};
-	}
-
-	const entries = (params.models as string[]).map((m) => m.trim());
-	const invalid = (ref: string, why: string): Record<string, unknown> => ({
-		error: "invalid_model_ref",
-		error_description: `Invalid models entry "${ref}": ${why}. Every entry must be an explicit "<provider>/<model>" ref.`,
-		model: ref,
-	});
-	for (const ref of entries) {
-		// A `<slug>/__unresolved__` restriction sentinel is a deliberate,
-		// non-routable placeholder (emitted by the migration/provisioning for a
-		// "provider intended, no concrete model" agent). It must round-trip
-		// through PATCH — e.g. editing soulMd on a migrated legacy agent PATCHes
-		// the full settings incl. `models`, which may contain a sentinel — so
-		// accept it as valid without the model-shape / org-provider checks below.
-		if (isUnresolvedModelRef(ref)) continue;
-		const slash = ref.indexOf("/");
-		if (!ref || slash <= 0 || slash === ref.length - 1) {
-			return invalid(ref, "expected a provider-qualified model ref");
-		}
-		if (ref.slice(slash + 1).trim() === "auto") {
-			return invalid(ref, '"auto" is not a model; pick a concrete model');
-		}
-	}
-
-	// Org-level slug resolution: registry modules ∪ the org's provider rows.
-	const orgSlugs = new Set<string>(
-		getModelProviderModules().map((m) => m.providerId)
+	// The shape/slug validation is shared with the MCP `manage_agents` path via
+	// the context-free core; this wrapper only maps the structured error onto the
+	// route's JSON envelope and enriches the not-connected case with request-
+	// derived proxy/settings URLs (which need the Hono context).
+	const error = await validateModelRefsAgainstOrg(
+		params.models,
+		params.organizationId
 	);
-	for (const row of await listInferenceProviders(params.organizationId)) {
-		orgSlugs.add(row.slug);
+	if (!error) return null;
+	if (error.kind === "invalid_models") {
+		return { error: "invalid_models", error_description: error.message };
 	}
-	for (const ref of entries) {
-		// Sentinels are accepted above; skip the org-provider existence check
-		// (their slug — e.g. `legacy` — is intentionally not a real provider).
-		if (isUnresolvedModelRef(ref)) continue;
-		const providerId = ref.slice(0, ref.indexOf("/"));
-		if (orgSlugs.has(providerId)) continue;
-		const urls = buildRequestBaseUrls(params.c, params.agentId, providerId);
+	if (error.kind === "invalid_model_ref") {
 		return {
-			error: "model_provider_not_connected",
-			error_description:
-				`The model "${ref}" uses provider "${providerId}", but that provider does not exist in this organization. ` +
-				`Add it under Providers (or fix the slug), then save again. ` +
-				`Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
-			model: ref,
-			provider: providerId,
-			settingsUrl: urls.settingsUrl,
-			expectedProxyUrl: urls.expectedProxyUrl,
+			error: "invalid_model_ref",
+			error_description: error.message,
+			model: error.model,
 		};
 	}
-
-	return null;
+	const urls = buildRequestBaseUrls(params.c, params.agentId, error.provider);
+	return {
+		error: "model_provider_not_connected",
+		error_description: `${error.message} Expected gateway proxy URL after setup: ${urls.expectedProxyUrl}`,
+		model: error.model,
+		provider: error.provider,
+		settingsUrl: urls.settingsUrl,
+		expectedProxyUrl: urls.expectedProxyUrl,
+	};
 }
 
 // ── Route-level middleware ───────────────────────────────────────────────────

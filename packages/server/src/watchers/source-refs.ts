@@ -19,7 +19,15 @@ async function validateCustomSqlSource(
 ): Promise<void> {
   await executeDataSources(
     { [source.name]: { query: source.query } },
-    { organizationId },
+    {
+      organizationId,
+      // Supply placeholder context so template variables a legitimate source
+      // uses — {{entityId}}, {{query.*}} — substitute cleanly rather than
+      // tripping the "Unknown context variables" guard at validate time. The
+      // dummy entity id never affects results: the query runs LIMIT 0.
+      entityIds: [0],
+      query: {},
+    },
     sql,
     {
       throwOnError: true,

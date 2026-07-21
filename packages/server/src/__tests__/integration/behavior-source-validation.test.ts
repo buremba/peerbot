@@ -73,4 +73,14 @@ describe("behavior custom-SQL source validation", () => {
 		expect(created.action).toBe("create");
 		expect("behavior_id" in created).toBe(true);
 	});
+
+	it("accepts a valid source that uses the {{entityId}} template variable", async () => {
+		// Save-time validation must substitute template variables like the reader
+		// does, not reject them as "Unknown context variables".
+		const created = await createWithSource(
+			"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
+		);
+		expect(created.action).toBe("create");
+		expect("behavior_id" in created).toBe(true);
+	});
 });

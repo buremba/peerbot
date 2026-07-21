@@ -9,6 +9,14 @@
 -- key, so every installer keeps its full retained history on its own rows.
 -- No status filter: a disabled connector's history must survive for
 -- rollback_connector_version after re-enable.
+--
+-- Only ORG-OWNED definitions are backfill targets (d.organization_id IS NOT
+-- NULL). A connector_definitions row with organization_id IS NULL is a
+-- bundled catalog definition, not an org install — copying a shared custom
+-- row to it re-emits a shared (organization_id IS NULL) row that collides
+-- with the source row on the connector_versions_shared_key_version arbiter,
+-- which this INSERT's org-only ON CONFLICT clause does not cover, aborting
+-- the migration. Bundled definitions own nothing; their shared rows stay put.
 INSERT INTO public.connector_versions (
   connector_key, version, organization_id, compiled_code, compiled_code_hash,
   compile_config_hash, source_code, source_path, created_at
@@ -20,6 +28,7 @@ SELECT DISTINCT ON (d.organization_id, cv.connector_key, cv.version)
 FROM public.connector_versions cv
 JOIN public.connector_definitions d ON d.key = cv.connector_key
 WHERE cv.organization_id IS NULL
+  AND d.organization_id IS NOT NULL
   AND (cv.source_code IS NOT NULL OR cv.compiled_code IS NOT NULL)
 ORDER BY d.organization_id, cv.connector_key, cv.version
 ON CONFLICT (organization_id, connector_key, version) WHERE organization_id IS NOT NULL

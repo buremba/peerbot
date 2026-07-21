@@ -211,7 +211,12 @@ export const ManageFeedsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("list_feeds"),
     feeds: Type.Array(Type.Record(Type.String(), Type.Unknown())),
-    /** Total feeds matching the filters across ALL pages, not just this page. */
+    /**
+     * Total feeds matching the filters across ALL pages, not just this page.
+     * Read from the page's window count, so an `offset` past the last page
+     * returns 0 (the page is empty) rather than the true count — paginate
+     * forward and stop on `has_more`, don't jump to an arbitrary offset.
+     */
     total: Type.Integer(),
     /** True when more feeds match past this page (offset + returned < total). */
     has_more: Type.Boolean(),

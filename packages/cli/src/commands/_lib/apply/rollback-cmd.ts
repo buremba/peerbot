@@ -42,6 +42,7 @@ import {
   executePlan,
   fetchRemoteSnapshot,
   type PendingAuthEntry,
+  resolveBehaviorConnectionRefs,
 } from "./apply-cmd.js";
 
 interface RollbackOptions {
@@ -70,7 +71,8 @@ function containsSentinel(value: unknown): boolean {
  */
 export function sanitizeSnapshotState(
   raw: Record<string, unknown>,
-  remotePlatformConfigs: Map<string, Record<string, unknown>>
+  remotePlatformConfigs: Map<string, Record<string, unknown>>,
+  remoteConnectionConfigs: Map<string, Record<string, unknown>> = new Map()
 ): { state: DesiredState; notes: string[] } {
   const notes: string[] = [];
   const state = structuredClone(raw) as unknown as DesiredState;
@@ -87,6 +89,31 @@ export function sanitizeSnapshotState(
     // the profile keeps its live secrets (non-secret fields still reconcile).
     (profile as { credentials?: unknown }).credentials = undefined;
   }
+
+  // Connection configs can carry denylisted keys (an api_key option, etc.):
+  // same rule as platforms — pin the sentinel-bearing config to the live
+  // remote value, or skip the connection when there is none to pin to.
+  state.connectors.connections = state.connectors.connections.filter(
+    (connection) => {
+      const c = connection as unknown as {
+        slug?: string;
+        config?: Record<string, unknown>;
+      };
+      if (!containsSentinel(c.config)) return true;
+      const remote = c.slug ? remoteConnectionConfigs.get(c.slug) : undefined;
+      if (remote) {
+        c.config = remote;
+        notes.push(
+          `connection ${c.slug}: secret-bearing config left at current values (rollback never rotates secrets)`
+        );
+        return true;
+      }
+      notes.push(
+        `connection ${c.slug ?? "?"}: secret-bearing config and no live connection to pin to — skipped (re-declare it via lobu apply)`
+      );
+      return false;
+    }
+  );
 
   for (const agent of state.agents) {
     // Provider keys are write-only pushes; a snapshot has no values to push.
@@ -200,9 +227,24 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
       }
     }
   }
+  const remoteConnectionConfigs = new Map<string, Record<string, unknown>>();
+  for (const connection of remote.connections) {
+    if (connection.config) {
+      remoteConnectionConfigs.set(connection.slug, connection.config);
+    }
+  }
   const sanitized = sanitizeSnapshotState(
     manifest.state,
-    remotePlatformConfigs
+    remotePlatformConfigs,
+    remoteConnectionConfigs
+  );
+  // Behaviors declare event triggers by connection SLUG; the API contract
+  // wants integer ids — resolve against the live connections, exactly as
+  // apply does.
+  resolveBehaviorConnectionRefs(
+    sanitized.state.watchers,
+    new Map(remote.connections.map((c) => [c.slug, c.id])),
+    false
   );
   const plan = computeDiff(sanitized.state, remote, {});
 

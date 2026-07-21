@@ -45,7 +45,14 @@ function stateWithSecrets(): DesiredState {
           credentials: { token: "ghp_real" },
         },
       ],
-      connections: [],
+      connections: [
+        {
+          slug: "pg-main",
+          connector: "postgres",
+          config: { api_key: "conn-secret", database: "prod" },
+        },
+        { slug: "hn-main", connector: "hackernews", config: { top: 10 } },
+      ],
     },
     providers: [
       { slug: "z-ai", kind: "z-ai", apiKey: "sk-live-1", capabilities: {} },
@@ -124,6 +131,39 @@ describe("sanitizeSnapshotState", () => {
     expect(droppedPlatforms.map((p) => p.platform)).toEqual(["slack"]);
     expect(dropped.notes.some((n) => n.includes("skipped"))).toBe(true);
     // The sentinel itself never survives sanitization anywhere.
+    expect(JSON.stringify(pinned.state)).not.toContain(REDACTED_SENTINEL);
+    expect(JSON.stringify(dropped.state)).not.toContain(REDACTED_SENTINEL);
+  });
+
+  test("pins a sentinel-bearing connection config to remote, drops it when none", () => {
+    const remoteConnections = new Map([
+      ["pg-main", { api_key: "***live", database: "prod" }],
+    ]);
+    const pinned = sanitizeSnapshotState(
+      snapshotState(),
+      new Map(),
+      remoteConnections
+    );
+    const connections = pinned.state.connectors.connections as Array<{
+      slug: string;
+      config?: Record<string, unknown>;
+    }>;
+    // pg-main (denylisted api_key redacted in the snapshot) pinned to live…
+    expect(connections.find((c) => c.slug === "pg-main")?.config).toEqual({
+      api_key: "***live",
+      database: "prod",
+    });
+    // …hn-main (no secrets) restored from the snapshot untouched.
+    expect(connections.find((c) => c.slug === "hn-main")?.config).toEqual({
+      top: 10,
+    });
+
+    // No live connection to pin to → dropped with a note.
+    const dropped = sanitizeSnapshotState(snapshotState(), new Map());
+    const droppedSlugs = (
+      dropped.state.connectors.connections as Array<{ slug: string }>
+    ).map((c) => c.slug);
+    expect(droppedSlugs).toEqual(["hn-main"]);
     expect(JSON.stringify(pinned.state)).not.toContain(REDACTED_SENTINEL);
     expect(JSON.stringify(dropped.state)).not.toContain(REDACTED_SENTINEL);
   });

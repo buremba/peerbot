@@ -16,7 +16,7 @@
  */
 
 import { Dialect, ast, parse as parseSql } from '@polyglot-sql/sdk';
-import type { DbClient } from '../db/client';
+import { type DbClient, pgTextArray } from '../db/client';
 import logger from './logger';
 import {
   compileConnectionFkVisibility,
@@ -845,6 +845,8 @@ export async function executeDataSources(
     ) => string | { sql: string; params: unknown[] };
     /** Fail the whole read when any source fails instead of treating it as empty. */
     throwOnError?: boolean;
+    /** At save time, require unknown table refs to resolve to local or public entity types. */
+    validateEntitySlugs?: boolean;
   }
 ): Promise<Record<string, unknown[]>> {
   const results: Record<string, unknown[]> = {};
@@ -868,6 +870,32 @@ export async function executeDataSources(
           throw new Error(
             `Source '${name}': table(s) require admin access: ${[...new Set(restricted)].join(', ')}`
           );
+        }
+
+        // Unknown refs compile as entity-type CTEs instead of erroring. At save
+        // time, resolve them through entity creation's local-or-public schema path.
+        if (options?.validateEntitySlugs) {
+          const slugRefs = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
+          if (slugRefs.length > 0) {
+            const existing = await sql<{ slug: string }>`
+              SELECT DISTINCT et.slug
+              FROM entity_types et
+              LEFT JOIN organization o ON o.id = et.organization_id
+              WHERE et.slug = ANY(${pgTextArray(slugRefs)}::text[])
+                AND et.deleted_at IS NULL
+                AND (
+                  et.organization_id = ${context.organizationId}
+                  OR o.visibility = 'public'
+                )
+            `;
+            const known = new Set(existing.map((r) => r.slug));
+            const missing = slugRefs.filter((s) => !known.has(s));
+            if (missing.length > 0) {
+              throw new Error(
+                `Source '${name}': unknown table or entity type: ${missing.join(', ')}`
+              );
+            }
+          }
         }
 
         // safeColumns masks each core-table CTE to its allowlisted columns, so

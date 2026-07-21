@@ -14,10 +14,11 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { manageBehaviors } from "../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../workspace";
-import { cleanupTestDatabase } from "../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestAgent,
 	createTestEntity,
+	createTestOrganization,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
 
@@ -84,6 +85,88 @@ describe("behavior custom-SQL source validation", () => {
 	it("accepts a valid source that matches zero rows", async () => {
 		const created = await createWithSource(
 			"SELECT id FROM events WHERE 1=0",
+		);
+		expect(created.action).toBe("create");
+		expect("behavior_id" in created).toBe(true);
+	});
+
+	it("rejects a source referencing a non-existent table (typo, not a real slug)", async () => {
+		// Unknown names compile as empty entity-type CTEs, so `evetns` would not
+		// otherwise produce a Postgres error.
+		await expect(
+			createWithSource("SELECT id FROM evetns"),
+		).rejects.toThrow(/unknown table or entity type|evetns/i);
+	});
+
+	it("accepts a source referencing a real entity_type slug as a table", async () => {
+		// `company` is a valid entity_type slug (created below), so referencing it
+		// as a table compiles to the entity-slug CTE and must be accepted.
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		await createTestEntity({
+			name: `slug-src-company-${Date.now()}`,
+			entity_type: "company",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `src-slug-${Date.now()}`,
+				name: "Slug source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				sources: [{ name: "src", query: "SELECT id FROM company" }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		expect(created.action).toBe("create");
+		expect("behavior_id" in created).toBe(true);
+	});
+
+	it("accepts a source referencing a public-catalog entity_type slug", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const catalogOrg = await createTestOrganization({ visibility: "public" });
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		await getTestDb()`
+			INSERT INTO entity_types (organization_id, slug, name)
+			VALUES (${catalogOrg.id}, 'catalog-company', 'Catalog Company')
+		`;
+
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `src-public-slug-${Date.now()}`,
+				name: "Public slug source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				sources: [{ name: "src", query: 'SELECT id FROM "catalog-company"' }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
 		);
 		expect(created.action).toBe("create");
 		expect("behavior_id" in created).toBe(true);

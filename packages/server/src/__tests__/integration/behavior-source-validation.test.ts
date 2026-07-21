@@ -89,6 +89,54 @@ describe("behavior custom-SQL source validation", () => {
 		expect("behavior_id" in created).toBe(true);
 	});
 
+	it("rejects a source referencing a non-existent table (typo, not a real slug)", async () => {
+		// A bad table name is NOT a Postgres error — the scoped-query layer rewrites
+		// any unknown name into an entity_type-slug CTE that matches 0 rows. Without
+		// the slug-existence check this would be accepted and run "healthy" forever
+		// with no content. `evetns` is neither a table nor an org entity-type slug.
+		await expect(
+			createWithSource("SELECT id FROM evetns"),
+		).rejects.toThrow(/unknown table or entity type|evetns/i);
+	});
+
+	it("accepts a source referencing a real entity_type slug as a table", async () => {
+		// `company` is a valid entity_type slug (created below), so referencing it
+		// as a table compiles to the entity-slug CTE and must be accepted.
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		await createTestEntity({
+			name: `slug-src-company-${Date.now()}`,
+			entity_type: "company",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `src-slug-${Date.now()}`,
+				name: "Slug source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				sources: [{ name: "src", query: "SELECT id FROM company" }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		expect(created.action).toBe("create");
+		expect("behavior_id" in created).toBe(true);
+	});
+
 	it("accepts a {{entityId}} source on an entity-bound behavior", async () => {
 		// The behavior has an entity_id, so {{entityId}} resolves at run time —
 		// validation must accept it (not trip the Unknown-context-variables guard).

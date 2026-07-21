@@ -15,10 +15,11 @@ import { executeDataSources } from '../utils/execute-data-sources';
  * will at run time: an entity-bound Behavior validates its `{{entityId}}` source
  * cleanly, while an ORG-SCOPED Behavior (no entity_ids) leaves `{{entityId}}`
  * unresolved and is rejected here — the same source would fail on every runtime
- * read, so catching it at save is the point. Note: an unknown TABLE is rewritten
- * by the scoped-query layer into a valid entity-type-slug CTE, so it is NOT
- * caught here — only bad columns / syntax / restricted tables / unresolved
- * template variables are.
+ * read, so catching it at save is the point. `validateEntitySlugs` additionally
+ * rejects a table ref that is neither a known table nor an existing entity_type
+ * slug: without it, the scoped-query layer rewrites any unknown name into an
+ * entity-type-slug CTE that matches 0 rows and never errors, so a TYPO'd table
+ * would be accepted and run "healthy" forever with no content.
  */
 async function validateCustomSqlSource(
   sql: DbClient,
@@ -39,6 +40,7 @@ async function validateCustomSqlSource(
     sql,
     {
       throwOnError: true,
+      validateEntitySlugs: true,
       wrapQuery: (scopedSql) => `SELECT * FROM (${scopedSql}) AS _validate LIMIT 0`,
     }
   );

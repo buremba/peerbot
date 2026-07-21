@@ -194,7 +194,19 @@ export async function handleList(
 				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
 				: undefined;
 
-		const { organization_id: _orgId, ...rest } = watcher;
+		// Rename internal lineage columns to the public `behavior_*` vocabulary so
+		// the response never leaks the legacy `watcher_*` names (the rest of this
+		// projection already emits behavior_id / behavior_run_*). These carry real
+		// lineage (the group a Behavior belongs to; the Behavior it was cloned
+		// from), so they are renamed rather than dropped.
+		const {
+			organization_id: _orgId,
+			watcher_group_id: behaviorGroupId,
+			source_watcher_id: sourceBehaviorId,
+			...rest
+		} = watcher;
+		(rest as Record<string, unknown>).behavior_group_id = behaviorGroupId ?? null;
+		(rest as Record<string, unknown>).source_behavior_id = sourceBehaviorId ?? null;
 
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;

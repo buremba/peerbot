@@ -49,6 +49,17 @@ function pgIntervalToMs(literal: string): number {
 /** The latest run status transitions that mean "in flight" (not terminal). */
 const IN_FLIGHT_RUN_STATUSES = new Set(['claimed', 'running']);
 
+/**
+ * Terminal latest-run statuses that mean the behavior's most recent execution
+ * did not succeed. A behavior whose latest run ended in one of these is
+ * degraded even when its scheduler cursor is fine — the automation ran and
+ * broke (e.g. "No model is configured", context-window overflow), which is
+ * exactly the state a caller needs surfaced. Previously health considered only
+ * the scheduler cursor, so a behavior could report `healthy` alongside a
+ * `failed` latest run (#2033 follow-up).
+ */
+const FAILED_RUN_STATUSES = new Set(['failed', 'timeout']);
+
 export interface BehaviorHealthInput {
   /** Behavior `status` (only `active` behaviors can be degraded). */
   status: string | null | undefined;
@@ -80,7 +91,9 @@ function toMs(value: string | Date | null | undefined): number | null {
 /**
  * Derive a behavior's scheduling health from already-selected fields.
  *
- * `degraded` when the behavior is `active` AND either:
+ * `degraded` when the behavior is `active` AND any of:
+ *   - its latest run ended in a terminal failure (`failed`/`timeout`) — the
+ *     automation ran and broke, regardless of the scheduler cursor; or
  *   - its `next_run_at` is in the past by more than the missed-firing margin
  *     (a missed firing), UNLESS a run is currently in flight (claimed/running)
  *     — an active dispatch is healthy, we don't false-degrade mid-tick; or
@@ -103,6 +116,17 @@ export function computeBehaviorHealth(
   }
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
+
+  // Failed latest run: the behavior's most recent execution ended in a
+  // terminal failure. This is independent of the scheduler cursor — a behavior
+  // can be on-schedule yet its automation broke every time it fired.
+  if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {
+    reasons.push(
+      lastError
+        ? `latest run ${input.latestRunStatus}: ${lastError}`
+        : `latest run ${input.latestRunStatus}`,
+    );
+  }
 
   // Missed firing: next_run_at is well in the past and nothing is dispatching.
   const nextRunMs = toMs(input.nextRunAt);

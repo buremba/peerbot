@@ -145,6 +145,51 @@ describe("behavior health surfacing (#2033)", () => {
     expect(row?.health).toBe("healthy");
   });
 
+  it("3.1 (integration): a failed latest run degrades an on-schedule behavior", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const sql = getTestDb();
+    // On schedule (future) so the ONLY unhealthy signal is the failed run —
+    // proving health reflects the run outcome, not just the scheduler cursor.
+    await sql`
+      UPDATE watchers
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${behaviorId}
+    `;
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, watcher_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
+         'No model is configured', current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as
+      | { health?: string; last_scheduling_error?: string | null }
+      | undefined;
+    expect(row?.health).toBe("degraded");
+    expect(row?.last_scheduling_error).toBe("No model is configured");
+  });
+
+  it("3.3: list emits behavior_* lineage keys, never the internal watcher_* names", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
+    expect(row).toHaveProperty("behavior_group_id");
+    expect(row).toHaveProperty("source_behavior_id");
+    expect(row).not.toHaveProperty("watcher_group_id");
+    expect(row).not.toHaveProperty("source_watcher_id");
+  });
+
   it("3.2: getSchedulerHealth surfaces an overdue behavior in issues[]", async () => {
     const { behaviorId } = await createScheduledBehavior();
     const sql = getTestDb();

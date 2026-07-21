@@ -1,12 +1,12 @@
 /**
- * Computed scheduling-health derivation for behaviors (item 3, #2033).
+ * Computed health derivation for behaviors (item 3, #2033).
  *
  * The behavior reaper (watchers/automation.ts) already times out stuck pending
  * runs and self-heals `next_run_at`, but nothing SURFACED that a behavior was
  * unhealthy: get_behavior / list returned `next_run_at` / run status raw and
  * the caller had to eyeball it. This helper turns those already-selected fields
  * into a single `health` verdict + a `last_scheduling_error` so the API and UI
- * can flag a behavior that has silently stopped firing.
+ * can flag a behavior that stopped firing or whose latest run failed.
  *
  * Pure + input-only: every field it reads is already selected by both
  * get_behavior.ts and manage_behaviors/list.ts, so no migration and no extra
@@ -49,15 +49,7 @@ function pgIntervalToMs(literal: string): number {
 /** The latest run status transitions that mean "in flight" (not terminal). */
 const IN_FLIGHT_RUN_STATUSES = new Set(['claimed', 'running']);
 
-/**
- * Terminal latest-run statuses that mean the behavior's most recent execution
- * did not succeed. A behavior whose latest run ended in one of these is
- * degraded even when its scheduler cursor is fine — the automation ran and
- * broke (e.g. "No model is configured", context-window overflow), which is
- * exactly the state a caller needs surfaced. Previously health considered only
- * the scheduler cursor, so a behavior could report `healthy` alongside a
- * `failed` latest run (#2033 follow-up).
- */
+/** Terminal execution failures that degrade an active behavior. */
 const FAILED_RUN_STATUSES = new Set(['failed', 'timeout']);
 
 export interface BehaviorHealthInput {
@@ -89,7 +81,7 @@ function toMs(value: string | Date | null | undefined): number | null {
 }
 
 /**
- * Derive a behavior's scheduling health from already-selected fields.
+ * Derive a behavior's health from already-selected fields.
  *
  * `degraded` when the behavior is `active` AND any of:
  *   - its latest run ended in a terminal failure (`failed`/`timeout`) — the
@@ -109,17 +101,13 @@ export function computeBehaviorHealth(
   const reasons: string[] = [];
   const lastError = input.latestRunError ?? null;
 
-  // Only active behaviors have a scheduling obligation; archived/paused ones
-  // are healthy-by-definition (they're intentionally not firing).
+  // Archived behaviors are intentionally idle and therefore healthy.
   if (input.status !== 'active') {
     return { health: 'healthy', reasons, last_scheduling_error: lastError };
   }
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
 
-  // Failed latest run: the behavior's most recent execution ended in a
-  // terminal failure. This is independent of the scheduler cursor — a behavior
-  // can be on-schedule yet its automation broke every time it fired.
   if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {
     reasons.push(
       lastError

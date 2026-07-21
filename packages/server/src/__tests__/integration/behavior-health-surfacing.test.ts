@@ -1,10 +1,9 @@
 /**
- * Behavior scheduling-health surfacing (item 3, #2033).
+ * Behavior health surfacing (item 3, #2033).
  *
  * 3.1: manage_behaviors `list` returns a computed `health` field —
- *   `degraded` for an ACTIVE behavior whose next_run_at is overdue past the
- *   missed-firing margin (a behavior that has silently stopped firing), and
- *   `healthy` for a behavior scheduled in the future.
+ *   `degraded` for an active behavior that missed a firing, has a stale pending
+ *   run, or whose latest run failed/timed out; `healthy` otherwise.
  *
  * 3.2: getSchedulerHealth (the /health/scheduler alarm path) surfaces overdue
  *   active behaviors and stuck-pending behavior runs in `issues[]` — previously
@@ -184,8 +183,8 @@ describe("behavior health surfacing (#2033)", () => {
       (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
     ) as Record<string, unknown> | undefined;
     expect(row).toBeDefined();
-    expect(row).toHaveProperty("behavior_group_id");
-    expect(row).toHaveProperty("source_behavior_id");
+    expect(row?.behavior_group_id).toBe(String(behaviorId));
+    expect(row?.source_behavior_id).toBeNull();
     expect(row).not.toHaveProperty("watcher_group_id");
     expect(row).not.toHaveProperty("source_watcher_id");
   });

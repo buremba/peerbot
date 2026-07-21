@@ -833,7 +833,7 @@ async function getBehaviorImpl(
     // Sources come from watcher row (or version if present)
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
-    // Computed scheduling health (item 3, #2033) — pure derivation over the
+    // Computed health (item 3, #2033) — pure derivation over the
     // already-selected schedule/run columns; no extra query.
     const behaviorHealth = computeBehaviorHealth({
       status: watcherRow.status,

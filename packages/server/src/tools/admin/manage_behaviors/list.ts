@@ -67,8 +67,8 @@ export async function handleList(
       i.notification_priority,
       i.min_cooldown_seconds,
       i.agent_kind,
-      i.watcher_group_id,
-      i.source_watcher_id,
+      i.watcher_group_id::text AS behavior_group_id,
+      i.source_watcher_id::text AS source_behavior_id,
       wr.id as behavior_run_id,
       wr.status as behavior_run_status,
       wr.error_message as behavior_run_error,
@@ -194,19 +194,7 @@ export async function handleList(
 				? buildBehaviorUrl(orgSlug, watcher.agent_id, watcherId, baseUrl)
 				: undefined;
 
-		// Rename internal lineage columns to the public `behavior_*` vocabulary so
-		// the response never leaks the legacy `watcher_*` names (the rest of this
-		// projection already emits behavior_id / behavior_run_*). These carry real
-		// lineage (the group a Behavior belongs to; the Behavior it was cloned
-		// from), so they are renamed rather than dropped.
-		const {
-			organization_id: _orgId,
-			watcher_group_id: behaviorGroupId,
-			source_watcher_id: sourceBehaviorId,
-			...rest
-		} = watcher;
-		(rest as Record<string, unknown>).behavior_group_id = behaviorGroupId ?? null;
-		(rest as Record<string, unknown>).source_behavior_id = sourceBehaviorId ?? null;
+		const { organization_id: _orgId, ...rest } = watcher;
 
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;
@@ -228,7 +216,7 @@ export async function handleList(
 			);
 		}
 
-		// Computed scheduling health (item 3, #2033) — derived from the
+		// Computed health (item 3, #2033) — derived from the
 		// already-selected schedule/run columns, no extra query.
 		const behaviorHealth = computeBehaviorHealth({
 			status: watcher.status,

@@ -624,7 +624,7 @@ export default async (_ctx, client) => {
 	},
 	"catalog.listInstalled": {
 		summary:
-			"List installed resources. `kinds` values are plural: org kinds 'connectors'/'behaviors', agent kinds 'skills'/'providers'/'guardrails' (agent kinds need `agent_id`). Pass `include_catalog: true` to merge global catalog entries with installed/installable flags. Each connector entry carries identity + capability flags; for one connector's full auth/feeds/actions/options schema, query it directly with `query_sql` → `SELECT auth_schema, feeds_schema, actions_schema, options_schema FROM connector_definitions WHERE key = '<connector>' AND status = 'active'` instead of pulling every connector's schemas through this list.",
+			"List installed resources. `kinds` values are plural: org kinds 'connectors'/'behaviors', agent kinds 'skills'/'providers'/'guardrails' (agent kinds need `agent_id`). Pass `include_catalog: true` to merge global catalog entries with installed/installable flags. Each connector entry carries identity + capability flags. For an INSTALLED connector's full auth/feeds/actions/options schema, query it directly with `query_sql` → `SELECT auth_schema, feeds_schema, actions_schema, options_schema FROM connector_definitions WHERE key = '<connector>' AND status = 'active'` instead of pulling every connector's schemas through this list; for an AVAILABLE (not-yet-installed) connector, its schema is on the `list_catalog` entry's `detail`.",
 		access: "read",
 		signature:
 			"catalog.listInstalled(input?: { kinds?: string[]; agent_id?: string; include_catalog?: boolean }): Promise<unknown>",

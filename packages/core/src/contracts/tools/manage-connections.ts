@@ -819,7 +819,7 @@ export const ManageConnectionsResultSchema = Type.Union([
         kind: Type.Union([Type.Literal("read"), Type.Literal("write")]),
         requires_approval: Type.Boolean(),
         required_scopes: Type.Array(Type.String()),
-      }),
+      })
     ),
     feed_keys: Type.Array(Type.String()),
   }),

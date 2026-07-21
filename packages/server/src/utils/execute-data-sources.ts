@@ -875,15 +875,7 @@ export async function executeDataSources(
         // Unknown refs compile as entity-type CTEs instead of erroring. At save
         // time, resolve them through entity creation's local-or-public schema path.
         if (options?.validateEntitySlugs) {
-          const slugRefs = [
-            ...new Set(
-              tableRefs.filter(
-                (t) =>
-                  !QUERYABLE_TABLE_NAMES.has(t) &&
-                  !ADMIN_ONLY_QUERYABLE_TABLES.has(t)
-              )
-            ),
-          ];
+          const slugRefs = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
           if (slugRefs.length > 0) {
             const existing = await sql<{ slug: string }>`
               SELECT DISTINCT et.slug

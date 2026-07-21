@@ -135,6 +135,53 @@ function run(cmd, args, opts = {}) {
   }
 }
 
+/**
+ * Marker error for a package npm won't let us create. On the very first
+ * publish of a scoped package, npm returns `E404 / PUT ... Not found` (it
+ * masks 403 as 404 for scoped names). This happens when the CI npm token is a
+ * granular access token whose package allow-list can't cover a name that does
+ * not exist yet — a chicken-and-egg the token cannot break on its own. We
+ * collect these and fail once at the end with the manual-bootstrap steps,
+ * rather than aborting mid-loop and hiding the other new packages.
+ */
+class FirstPublishBlockedError extends Error {
+  constructor(name, dir) {
+    super(name);
+    this.name = "FirstPublishBlockedError";
+    this.pkgName = name;
+    this.dir = dir;
+  }
+}
+
+/**
+ * Publish a package, capturing output so we can classify a first-publish 404.
+ * Non-404 failures still hard-fail (real errors must stop the release). The
+ * package's source dir is carried on the marker error so the bootstrap message
+ * prints the real path — package dir and npm name diverge (e.g. dir
+ * `agent-worker` publishes as `@lobu/worker`).
+ */
+function runPublish(name, dir, args, opts = {}) {
+  const result = spawnSync("npm", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...opts,
+  });
+  const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  process.stdout.write(combined);
+  if (result.status === 0) return;
+
+  const is404 =
+    /\bE404\b/.test(combined) ||
+    /\b404 Not Found - PUT\b/.test(combined) ||
+    /could not be found or you do not have permission/.test(combined);
+  if (is404) {
+    throw new FirstPublishBlockedError(name, dir);
+  }
+  throw new Error(
+    `Command failed: npm ${args.join(" ")} (exit ${result.status})`
+  );
+}
+
 function isVersionPublished(name, version) {
   const result = spawnSync("npm", ["view", `${name}@${version}`, "version"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -173,7 +220,7 @@ async function publishPackage({ dir, transform }, otp) {
     }
 
     console.log(`  → publishing ${pkg.name}@${pkg.version}`);
-    run("npm", publishArgs(otp), { cwd: absDir });
+    runPublish(pkg.name, dir, publishArgs(otp), { cwd: absDir });
   } finally {
     if (mutated) {
       await writeFile(pkgPath, originalText, "utf8");
@@ -222,8 +269,55 @@ async function main() {
   if (otp) {
     console.log("  (using --otp from command line or $NPM_OTP)");
   }
+  // Collect packages npm refuses to create on their first publish so the whole
+  // fleet still gets attempted; a single new package must not hide the others.
+  const blocked = [];
   for (const pkg of PACKAGES) {
-    await publishPackage(pkg, otp);
+    try {
+      await publishPackage(pkg, otp);
+    } catch (error) {
+      if (error instanceof FirstPublishBlockedError) {
+        blocked.push(error);
+        console.error(
+          `  ✗ ${error.pkgName}: never-published; needs a one-time bootstrap (see below)`
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (blocked.length > 0) {
+    console.error(
+      [
+        "",
+        `\nnpm refused the first publish of ${blocked.length} new package(s):`,
+        ...blocked.map((e) => `  - ${e.pkgName}`),
+        "",
+        "npm returns E404 on the first publish of a scoped package when the CI",
+        "NPM_TOKEN is a granular access token: its package allow-list cannot name",
+        "a package that does not exist yet. Break the chicken-and-egg with a",
+        "one-time manual bootstrap by an npm org owner, then CI takes over:",
+        "",
+        "  1. Locally, authenticated as an @lobu owner (classic automation token",
+        "     or an interactive login with 2FA — NOT the CI granular token):",
+        ...blocked.map(
+          (e) =>
+            `       (cd packages/${e.dir.replace(/^packages\//, "")} && npm publish --access public)`
+        ),
+        "  2. Add each newly-created package to the CI granular token's",
+        "     allow-list (npmjs.com → Access Tokens), OR register it as a",
+        "     Trusted Publisher (npmjs.com → package → Settings → Publishing",
+        "     access → GitHub Actions: .github/workflows/publish-packages.yml).",
+        "  3. Re-run this workflow; the package now exists and CI publishes it.",
+        "",
+        "Until then these packages are absent from npm, so any published package",
+        "that depends on them (e.g. @lobu/agent-worker → @lobu/plugin-api) will",
+        "fail `npm install` for external consumers.",
+      ].join("\n")
+    );
+    process.exitCode = 1;
+    return;
   }
 
   console.log("\nDone.");

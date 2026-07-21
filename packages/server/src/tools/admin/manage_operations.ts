@@ -13,6 +13,7 @@ import {
 	ApproveBatchAction,
 	ExecuteAction,
 	GetRunAction,
+	LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES,
 	ListActivityAction,
 	ListAvailableAction,
 	ListRunsAction,
@@ -64,6 +65,7 @@ import type {
 } from "../../operations/types";
 import { createConnectorOperationRun } from "../../runs/queue-service";
 import { resolveConnectorCodeForKey } from "../../utils/ensure-connector-installed";
+import { ToolUserError } from "../../utils/errors";
 import { resolveExecutionAuth } from "../../utils/execution-context";
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
@@ -1291,12 +1293,29 @@ async function handleListRuns(
   const hasCursor = args.before_id != null && args.before_created_at != null;
   const offset = hasCursor ? 0 : (args.offset ?? 0);
 
+  // Date-range bounds are validated up front so a bad value is a clean caller
+  // error instead of a mid-query Postgres cast failure.
+  for (const field of ["created_after", "created_before"] as const) {
+    const value = args[field];
+    if (value != null && Number.isNaN(Date.parse(value))) {
+      throw new ToolUserError(
+        `${field} must be an ISO 8601 timestamp (got '${value}')`,
+        400,
+      );
+    }
+  }
+
   // Shared WHERE fragment so the count and page queries can't drift apart.
   let where = sql`r.organization_id = ${ctx.organizationId}`;
   if (args.run_types && args.run_types.length > 0) {
     // fetch_types:false means JS arrays aren't auto-serialized — use the
     // PG array-literal helpers (see db/client.ts).
     where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
+  } else {
+    // Default operational view: hide the chat-message transport lane (complete
+    // replies + per-delta streaming fragments) that otherwise buries real run
+    // history (#2051). Naming run_types explicitly opts back in.
+    where = sql`${where} AND r.run_type <> ALL(${pgTextArray([...LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES])}::text[])`;
   }
   // connection scope: scalar connection_id (REST/SDK), an explicit id list, or
   // every connection pinned to a device.
@@ -1317,11 +1336,20 @@ async function handleListRuns(
         AND deleted_at IS NULL
     )`;
   }
+  if (args.connector_key) {
+    where = sql`${where} AND r.connector_key = ${args.connector_key}`;
+  }
   if (args.operation_key) {
     where = sql`${where} AND r.action_key = ${args.operation_key}`;
   }
   if (args.status) {
     where = sql`${where} AND r.status = ${args.status}`;
+  }
+  if (args.created_after) {
+    where = sql`${where} AND r.created_at >= ${args.created_after}::timestamptz`;
+  }
+  if (args.created_before) {
+    where = sql`${where} AND r.created_at < ${args.created_before}::timestamptz`;
   }
   if (args.approval_status) {
     where = sql`${where} AND r.approval_status = ${args.approval_status}`;

@@ -597,6 +597,16 @@ export interface ActionDefinition {
   requiresApproval: boolean;
 	/** Semantic effect used by operation discovery and policy. Defaults to write. */
 	kind?: 'read' | 'write';
+	/**
+	 * OAuth scopes this specific action needs beyond the connector's baseline
+	 * `authSchema.requiredScopes`. Typically these are the connector's
+	 * `optionalScopes` that only a subset of actions exercise (e.g. a calendar
+	 * write scope needed by create/update/delete but not by read syncs).
+	 * Operation readiness (`operations.listAvailable`) treats an action as not
+	 * executable on a connection whose granted scopes do not cover these, and
+	 * surfaces a `scope_upgrade_required` reason instead of reporting it ready.
+	 */
+	requiredScopes?: string[];
   /** MCP tool annotations for client-side confirmation UX */
   annotations?: {
 		readOnlyHint?: boolean;

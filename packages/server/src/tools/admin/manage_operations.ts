@@ -24,6 +24,10 @@ import {
 	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
+import {
+	hasAllScopes,
+	readGrantedScopesFromAuthData,
+} from "../../auth/oauth/scopes";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
@@ -136,6 +140,8 @@ type ExecutionTarget = {
 type InternalExecutionTarget = ExecutionTarget & {
 	config: Record<string, unknown> | null;
 	auth_profile_kind: string | null;
+	/** OAuth scopes actually granted on this connection's auth profile. */
+	granted_scopes: string[];
 };
 
 type OperationTargetRow = {
@@ -149,6 +155,7 @@ type OperationTargetRow = {
 	device_online: boolean;
 	device_bound: boolean;
 	auth_profile_kind: string | null;
+	auth_data: Record<string, unknown> | null;
 };
 
 /**
@@ -419,6 +426,7 @@ function executionTargetFromRow(
 		display_name: row.display_name ?? row.slug,
 		config: row.config,
 		auth_profile_kind: row.auth_profile_kind,
+		granted_scopes: readGrantedScopesFromAuthData(row.auth_data),
 	};
 	if (row.status !== "active") {
 		return {
@@ -469,6 +477,9 @@ function operationReadinessReason(
 	}
 	if (readiness === "device_offline") {
 		return "Every visible active device-bound connection is offline.";
+	}
+	if (readiness === "scope_upgrade_required") {
+		return "This operation needs OAuth scopes the connection has not granted. Reauthorize to grant them.";
 	}
 	if (readiness === "disabled") {
 		return "This operation is disabled on every visible connection.";
@@ -529,6 +540,7 @@ function buildOperationNextAction(args: {
 	remediationTarget: ExecutionTarget | undefined;
 	remediationConfig: Record<string, unknown> | null | undefined;
 	remediationAuthKind: string | null | undefined;
+	missingScopes: string[];
 	viewUrl: string | undefined;
 }): Record<string, unknown> {
 	const {
@@ -538,6 +550,7 @@ function buildOperationNextAction(args: {
 		remediationTarget,
 		remediationConfig,
 		remediationAuthKind,
+		missingScopes,
 		viewUrl,
 	} = args;
 	if (readyTarget) {
@@ -575,6 +588,16 @@ function buildOperationNextAction(args: {
 			action: "connect",
 			sdk_method: "connections.connect",
 			arguments: [{ connector_key: operation.connector_key }],
+		};
+	}
+	if (readiness === "scope_upgrade_required") {
+		return {
+			action: "reauthorize",
+			sdk_method: "connections.reauthenticate",
+			connection_id: remediationTarget?.connection_id,
+			requested_scopes: missingScopes,
+			arguments: [{ connection_id: remediationTarget?.connection_id }],
+			...(viewUrl ? { view_url: viewUrl } : {}),
 		};
 	}
 	if (readiness === "disabled") {
@@ -641,21 +664,45 @@ function buildAvailableOperation(args: {
 	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
+	// Scopes this specific action needs beyond the connector baseline (e.g. a
+	// calendar write scope for create/update/delete_event). An op declaring these
+	// is not executable on a connection whose OAuth grant does not cover them,
+	// even though the connection itself is active — readiness must say so instead
+	// of reporting it ready (a scope-blind "ready" makes the agent attempt a
+	// write that the provider rejects at execution time).
+	const requiredScopes =
+		(operation as OperationDescriptor).required_scopes ?? [];
 	const targets = internalTargets.map((target): ExecutionTarget => {
 		const {
 			config,
 			auth_profile_kind: _authProfileKind,
+			granted_scopes,
 			...publicTarget
 		} = target;
-		if (resolveActionMode(operation, config) !== "disabled") {
-			return publicTarget;
+		if (resolveActionMode(operation, config) === "disabled") {
+			return {
+				...publicTarget,
+				status: "disabled",
+				executable: false,
+				reason: "This operation is disabled on the connection.",
+			};
 		}
-		return {
-			...publicTarget,
-			status: "disabled",
-			executable: false,
-			reason: "This operation is disabled on the connection.",
-		};
+		if (
+			publicTarget.executable &&
+			requiredScopes.length > 0 &&
+			!hasAllScopes(granted_scopes, requiredScopes)
+		) {
+			const missing = requiredScopes.filter(
+				(scope) => !hasAllScopes(granted_scopes, [scope]),
+			);
+			return {
+				...publicTarget,
+				status: "scope_upgrade_required",
+				executable: false,
+				reason: `Missing OAuth scope(s): ${missing.join(", ")}. Reauthorize the connection to grant them.`,
+			};
+		}
+		return publicTarget;
 	});
 	// Capability gate (#2033 item 2): a local_action op whose compiled runtime
 	// does NOT override execute() is declared in the catalog but would throw
@@ -672,6 +719,15 @@ function buildAvailableOperation(args: {
 	const remediationInternalTarget = internalTargets.find(
 		(target) => target.connection_id === remediationTarget?.connection_id,
 	);
+	const missingScopes =
+		readiness === "scope_upgrade_required"
+			? requiredScopes.filter(
+					(scope) =>
+						!hasAllScopes(remediationInternalTarget?.granted_scopes ?? [], [
+							scope,
+						]),
+				)
+			: [];
 	return {
 		...(publicOperation as AvailableOperation),
 		...(includeInputSchema ? {} : { input_schema: undefined }),
@@ -687,6 +743,7 @@ function buildAvailableOperation(args: {
 			remediationTarget,
 			remediationConfig: remediationInternalTarget?.config,
 			remediationAuthKind: remediationInternalTarget?.auth_profile_kind,
+			missingScopes,
 			viewUrl,
 		}),
 	};
@@ -712,6 +769,7 @@ async function loadVisibleOperationTargets(
 		        c.config,
 		        c.device_worker_id,
 		        ap.profile_kind AS auth_profile_kind,
+		        ap.auth_data AS auth_data,
 		        COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
 		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound
 		 FROM connections c

@@ -116,8 +116,45 @@ INSERT INTO runs (
    '{"seed":"peek"}'::jsonb);
 
 -- ---------------------------------------------------------------------------
--- One approval-needed notification (deep-links to Memory for the peek pane).
+-- A real pending approval: the "Daily spend digest" behavior proposed
+-- posting to Slack. This creates (a) a pending action run, (b) an approval
+-- event carrying interaction data so EventCard renders the editable proposed
+-- message + Confirm/Reject buttons, and (c) a notification pointing at it.
+-- Clicking the notification opens the Memory events peek pane (not navigate).
 -- ---------------------------------------------------------------------------
+
+-- (a) Pending action run awaiting human approval.
+INSERT INTO runs (
+  organization_id, run_type, status, connector_key, connection_id,
+  created_at, run_at, approval_status, items_collected,
+  created_by_user_id, run_metadata
+) VALUES (
+  :'ORG', 'action', 'pending', 'slack', 1,
+  now() - interval '20 minutes', now() - interval '20 minutes',
+  'pending', 0, :'USER',
+  '{"seed":"peek","proposer":"behavior:daily-spend-digest"}'::jsonb
+)
+RETURNING id AS approval_run_id \gset
+
+-- (b) Approval event with interaction data → ActionApprovalCard renders the
+--     editable proposed message + Confirm/Reject buttons in the peek pane.
+INSERT INTO events (
+  organization_id, title, semantic_type, interaction_type, interaction_status,
+  interaction_input_schema, interaction_input, run_id, occurred_at, created_at,
+  created_by, metadata
+) VALUES (
+  :'ORG',
+  'Proposed: post spend digest to #finance',
+  'operation', 'approval', 'pending',
+  '{"type":"object","properties":{"channel":{"type":"string","title":"Slack channel"},"message":{"type":"string","title":"Message","format":"textarea"}},"required":["channel","message"]}'::jsonb,
+  jsonb_build_object('channel','#finance','message',E'## Daily Spend Digest — Jul 18\nTotal: €1,847.30 across 12 transactions\nFlagged: AWS Production €640, Booking.com €589'),
+  :approval_run_id,
+  now() - interval '20 minutes', now() - interval '20 minutes',
+  :'USER',
+  jsonb_build_object('seed','peek','run_id',:approval_run_id,'action_name','Post message','connection_name','#finance (Slack)')
+);
+
+-- (c) Notification pointing at the approval run (peek target).
 WITH ev AS (
   INSERT INTO events (
     organization_id, title, payload_text, payload_type, semantic_type,
@@ -127,29 +164,13 @@ WITH ev AS (
     :'ORG',
     'Approval needed: send digest to #finance',
     'Behavior "Daily spend digest" wants to post a summary to the #finance channel. Review the proposed message before it sends.',
-    'markdown', 'content', 'approval', 'pending',
-    '{"seed":"peek","notification_type":"action_approval_needed","resource_type":"run","resource_url":"/local-install/memory?view=events&run_ids=976"}'::jsonb,
+    'markdown', 'content', 'none', null,
+    jsonb_build_object('seed','peek','notification_type','action_approval_needed','resource_type','run','resource_url','/local-install/memory?view=events&run_ids=' || :approval_run_id),
     now(), now(), :'USER'
   ) RETURNING id
 )
 INSERT INTO notification_targets (event_id, user_id, delivered_at, read_at)
   SELECT id, :'USER', now(), NULL FROM ev;
-
--- Memory event for run 976 so the approval's 'Review form' link has content.
--- Uses E'' so \n becomes real newlines (markdown renders in EventCard).
-INSERT INTO events (
-  organization_id, title, payload_text, payload_type, semantic_type,
-  occurred_at, created_at, created_by, run_id, metadata
-) VALUES (
-  :'ORG',
-  'Proposed: post spend digest to #finance',
-  E'The Daily spend digest behavior proposes posting the following summary to the #finance Slack channel:\n\n## Daily Spend Digest — Jul 18\nTotal: €1,847.30 across 12 transactions\nFlagged: AWS Production €640, Booking.com €589\n\nAwaiting human approval before sending.',
-  'text', 'content',
-  now() - interval '25 hours', now() - interval '25 hours',
-  :'USER', 976,
-  '{"seed":"peek","interaction_type":"approval_pending"}'::jsonb
-)
-ON CONFLICT DO NOTHING;
 
 COMMIT;
 

@@ -478,8 +478,8 @@ export type ConnectorVersionChange = {
  * Replace an installed connector's source (org-local), reusing the install
  * persist path. Guards that make it safe where `install_connector` is not:
  * the connector must already be installed, the source's key must match, an
- * optional `expectedVersion` gives optimistic concurrency, and overwriting the
- * ACTIVE version's row with different code is rejected (a changed source must
+ * optional `expectedVersion` gives optimistic concurrency, and overwriting ANY
+ * retained version's row with different code is rejected (a changed source must
  * bump `definition.version` so the prior code stays retained for rollback).
  */
 export async function updateInstalledConnectorSource(params: {
@@ -511,26 +511,30 @@ export async function updateInstalledConnectorSource(params: {
 		);
 	}
 
-	if (resolved.metadata.version === def.version) {
-		const existing = (await sql`
+	// A retained version's stored code is immutable: overwriting ANY existing
+	// (key, version) row with different code destroys a rollback target. The
+	// guard must key on the version being WRITTEN (resolved.metadata.version) —
+	// not the active version — because updating to a retained *non-active*
+	// version silently clobbered its code otherwise (#2045 review finding).
+	const targetVersion = resolved.metadata.version;
+	const existing = (await sql`
       SELECT compiled_code_hash, source_code FROM connector_versions
-      WHERE connector_key = ${params.connectorKey} AND version = ${def.version}
+      WHERE connector_key = ${params.connectorKey} AND version = ${targetVersion}
       LIMIT 1
     `) as unknown as Array<{
-			compiled_code_hash: string | null;
-			source_code: string | null;
-		}>;
-		const row = existing[0];
-		const sameCode =
-			!row ||
-			row.source_code === resolved.sourceCode ||
-			row.compiled_code_hash === resolved.compiledCodeHash;
-		if (!sameCode) {
-			throw new Error(
-				`Version '${def.version}' of '${params.connectorKey}' is already installed with different code. ` +
-					`Bump the version in the connector definition so the active code stays retained for rollback_connector_version.`,
-			);
-		}
+		compiled_code_hash: string | null;
+		source_code: string | null;
+	}>;
+	const row = existing[0];
+	const sameCode =
+		!row ||
+		row.source_code === resolved.sourceCode ||
+		row.compiled_code_hash === resolved.compiledCodeHash;
+	if (!sameCode) {
+		throw new Error(
+			`Version '${targetVersion}' of '${params.connectorKey}' is already retained with different code. ` +
+				`Bump the version in the connector definition so the existing code stays retained for rollback_connector_version.`,
+		);
 	}
 
 	await upsertConnectorDefinitionRecords({

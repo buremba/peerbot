@@ -253,6 +253,55 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     expect(finalGet.versions.map((v) => v.version).sort()).toEqual(['1.0.0', '2.0.0']);
   }, 240_000);
 
+  it('refuses to overwrite a RETAINED non-active version with different code (#2045 review)', async () => {
+    const sql = getTestDb();
+    const RKEY = 'zz.retainedclobber';
+    const src = (version: string, marker: string) =>
+      probeSource(version, marker).replace(new RegExp(KEY, 'g'), RKEY);
+
+    // install v1, bump to v2 — v1 is now retained but NOT active.
+    await manageConnections(
+      { action: 'install_connector', source_code: src('1.0.0', 'R1') },
+      TEST_ENV,
+      ctx
+    );
+    await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: RKEY,
+        source_code: src('2.0.0', 'R2'),
+        expected_version: '1.0.0',
+      },
+      TEST_ENV,
+      ctx
+    );
+
+    // Updating to v1 (retained, non-active) with DIFFERENT code must be refused:
+    // the old guard only checked the ACTIVE version and let this clobber v1's
+    // stored rollback code.
+    const clobber = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: RKEY,
+        source_code: src('1.0.0', 'R1-tampered'),
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in clobber ? clobber.error : '').toContain(
+      "Version '1.0.0'"
+    );
+    expect('error' in clobber ? clobber.error : '').toContain('Bump the version');
+
+    // v1's retained source is intact — the rollback target was not corrupted.
+    const v1 = await sql`
+      SELECT source_code FROM connector_versions
+      WHERE connector_key = ${RKEY} AND version = '1.0.0' LIMIT 1
+    `;
+    expect((v1[0] as { source_code: string }).source_code).toContain("marker: 'R1'");
+    expect((v1[0] as { source_code: string }).source_code).not.toContain('R1-tampered');
+  }, 120_000);
+
   it('refuses to update a connector that is not installed', async () => {
     const result = await manageConnections(
       {

@@ -130,6 +130,16 @@ describe("list_feeds health filter and true total", () => {
 		expect(none.has_more).toBe(false);
 	});
 
+	it("reports the true total (not 0) for an offset past the last page", async () => {
+		// 5 feeds match; an offset beyond them yields an empty page. total must
+		// still be the whole-filter count via the overshoot fallback, not 0 read
+		// off the empty page's window function.
+		const overshoot = await list({ limit: 2, offset: 10 });
+		expect(overshoot.feeds).toHaveLength(0);
+		expect(overshoot.total).toBe(5);
+		expect(overshoot.has_more).toBe(false);
+	});
+
 	it("rejects update_feed status:'error' — a runtime state, not a settable one", async () => {
 		// 'error' is in the DB CHECK but nothing writes it; a failing feed stays
 		// active and is found via health:failing. Letting an agent set it would

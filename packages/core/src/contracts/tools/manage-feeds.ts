@@ -212,12 +212,11 @@ export const ManageFeedsResultSchema = Type.Union([
     action: Type.Literal("list_feeds"),
     feeds: Type.Array(Type.Record(Type.String(), Type.Unknown())),
     /**
-     * Count of all feeds matching the filters, computed with a window function
-     * (`COUNT(*) OVER()`) evaluated over the returned page. On any in-range page
-     * this is the true whole-set total (not the page length); on an offset past
-     * the last matching row the page is empty and it is 0. Callers paginate
-     * forward and stop on `has_more`; they do not jump to an arbitrary offset,
-     * so the 0-on-overshoot case is not reached by the intended access pattern.
+     * Count of all feeds matching the filters, independent of this page. On a
+     * non-empty page it is read from the page's `COUNT(*) OVER()` window; on an
+     * offset past the last matching row (empty page) it is recovered with a
+     * bare count over the same filters — so it is always the true whole-set
+     * total, even for an overshot offset.
      */
     total: Type.Integer(),
     /** True when more feeds match past this page (offset + returned < total). */

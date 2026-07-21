@@ -4,8 +4,35 @@
 -- partial replacement for the old global idx_connector_versions_key_version,
 -- which must retire (20260721120040) because an org-scoped row legitimately
 -- shares (connector_key, version) with the shared bundled row it shadows.
--- Single statement so dbmate does not wrap CONCURRENTLY in an implicit
--- transaction. INVALID-carcass heal runs first in 20260721120010.
+--
+-- The INVALID-carcass heal is inlined here (not a standalone companion
+-- migration) so it re-runs on every retry. A separate heal migration records
+-- as applied on its first success; if THIS CONCURRENTLY build then crashes it
+-- leaves an INVALID same-named carcass, and the retry — which skips the
+-- already-applied heal — never clears it, so CREATE ... IF NOT EXISTS silently
+-- no-ops over the carcass and records this migration as applied with a
+-- non-enforcing INVALID index (a silent cross-org uniqueness hole). Inlined,
+-- the heal drops the carcass on every attempt so the build always converges.
+-- The runners split transaction:false sections statement-at-a-time (prod:
+-- scripts/migrate-up.mjs; embedded/tests: db/migration-loader.ts), so the heal
+-- DO and the CONCURRENTLY build each run unwrapped — CONCURRENTLY is never
+-- trapped in an implicit multi-statement transaction.
+DO $heal$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'connector_versions_shared_key_version'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.connector_versions_shared_key_version';
+  END IF;
+END
+$heal$;
+
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS connector_versions_shared_key_version
   ON public.connector_versions (connector_key, version)
   WHERE organization_id IS NULL;

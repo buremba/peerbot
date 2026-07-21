@@ -150,7 +150,7 @@ const ENTRIES: AdminToolEntry[] = [
 	{
 		name: "manage_catalog",
 		description:
-			"Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. For a single connector's full auth/feeds/actions/options schema, query it directly: `query_sql` → `SELECT feeds_schema, actions_schema FROM connector_definitions WHERE key = '<connector>'` (targeted, instead of pulling every connector's schemas through this list). Read-only. SDK alternative: client.catalog.",
+			"Browse installable connectors, skills, and Behavior templates. Use `list_catalog` to see available (manifest) entries — each connector entry's `detail.source_uri` feeds into `manage_connections` action `install_connector`. Use `list_installed` with `include_catalog: true` to see installed + available with `installed`/`installable` flags. For a single installed connector's full auth/feeds/actions/options schema, query it directly: `query_sql` → `SELECT auth_schema, feeds_schema, actions_schema, options_schema FROM connector_definitions WHERE key = '<connector>'` (targeted, instead of pulling every connector's schemas through this list). Read-only. SDK alternative: client.catalog.",
 		schema: ManageCatalogSchema,
 		resultSchema: ManageCatalogResultSchema,
 		handler: manageCatalog,

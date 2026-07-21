@@ -14,10 +14,11 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { manageBehaviors } from "../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../workspace";
-import { cleanupTestDatabase } from "../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestAgent,
 	createTestEntity,
+	createTestOrganization,
 	seedOwnerContext,
 } from "../setup/test-fixtures";
 
@@ -90,10 +91,8 @@ describe("behavior custom-SQL source validation", () => {
 	});
 
 	it("rejects a source referencing a non-existent table (typo, not a real slug)", async () => {
-		// A bad table name is NOT a Postgres error — the scoped-query layer rewrites
-		// any unknown name into an entity_type-slug CTE that matches 0 rows. Without
-		// the slug-existence check this would be accepted and run "healthy" forever
-		// with no content. `evetns` is neither a table nor an org entity-type slug.
+		// Unknown names compile as empty entity-type CTEs, so `evetns` would not
+		// otherwise produce a Postgres error.
 		await expect(
 			createWithSource("SELECT id FROM evetns"),
 		).rejects.toThrow(/unknown table or entity type|evetns/i);
@@ -121,6 +120,42 @@ describe("behavior custom-SQL source validation", () => {
 				prompt: "Summarize.",
 				agent_id: agent.agentId,
 				sources: [{ name: "src", query: "SELECT id FROM company" }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		expect(created.action).toBe("create");
+		expect("behavior_id" in created).toBe(true);
+	});
+
+	it("accepts a source referencing a public-catalog entity_type slug", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const catalogOrg = await createTestOrganization({ visibility: "public" });
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		await getTestDb()`
+			INSERT INTO entity_types (organization_id, slug, name)
+			VALUES (${catalogOrg.id}, 'catalog-company', 'Catalog Company')
+		`;
+
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `src-public-slug-${Date.now()}`,
+				name: "Public slug source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				sources: [{ name: "src", query: 'SELECT id FROM "catalog-company"' }],
 				triggers: [
 					{
 						kind: "schedule",

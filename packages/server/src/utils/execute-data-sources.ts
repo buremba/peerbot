@@ -845,14 +845,7 @@ export async function executeDataSources(
     ) => string | { sql: string; params: unknown[] };
     /** Fail the whole read when any source fails instead of treating it as empty. */
     throwOnError?: boolean;
-    /**
-     * Reject a table ref that is neither a known queryable table nor an existing
-     * entity_type slug for the org. Runtime reads leave this off (the scoped-query
-     * layer treats any unknown name as an entity-type slug → 0 rows, which is the
-     * right permissive behavior for a slug that may be created later). Save-time
-     * validation turns it ON so a TYPO'd table is rejected instead of silently
-     * yielding an empty, forever-"healthy" Behavior. Requires `throwOnError`.
-     */
+    /** At save time, require unknown table refs to resolve to local or public entity types. */
     validateEntitySlugs?: boolean;
   }
 ): Promise<Record<string, unknown[]>> {
@@ -879,12 +872,8 @@ export async function executeDataSources(
           );
         }
 
-        // A ref that is neither a known table nor an admin table is compiled by
-        // buildScopedQuery into an entity_type-slug CTE (SELECT … FROM entities
-        // WHERE et.slug = <ref>). A TYPO'd table name therefore produces a valid
-        // query that matches 0 rows and never errors — masking the mistake. When
-        // validateEntitySlugs is set (save-time), require each such ref to be a
-        // real entity_type slug for the org and reject unknown ones up front.
+        // Unknown refs compile as entity-type CTEs instead of erroring. At save
+        // time, resolve them through entity creation's local-or-public schema path.
         if (options?.validateEntitySlugs) {
           const slugRefs = [
             ...new Set(
@@ -897,10 +886,15 @@ export async function executeDataSources(
           ];
           if (slugRefs.length > 0) {
             const existing = await sql<{ slug: string }>`
-              SELECT slug FROM entity_types
-              WHERE organization_id = ${context.organizationId}
-                AND slug = ANY(${pgTextArray(slugRefs)}::text[])
-                AND deleted_at IS NULL
+              SELECT DISTINCT et.slug
+              FROM entity_types et
+              LEFT JOIN organization o ON o.id = et.organization_id
+              WHERE et.slug = ANY(${pgTextArray(slugRefs)}::text[])
+                AND et.deleted_at IS NULL
+                AND (
+                  et.organization_id = ${context.organizationId}
+                  OR o.visibility = 'public'
+                )
             `;
             const known = new Set(existing.map((r) => r.slug));
             const missing = slugRefs.filter((s) => !known.has(s));

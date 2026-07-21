@@ -129,4 +129,20 @@ describe("list_feeds health filter and true total", () => {
 		expect(none.total).toBe(0);
 		expect(none.has_more).toBe(false);
 	});
+
+	it("rejects update_feed status:'error' — a runtime state, not a settable one", async () => {
+		// 'error' is in the DB CHECK but nothing writes it; a failing feed stays
+		// active and is found via health:failing. Letting an agent set it would
+		// create a zombie state the list status filter cannot select.
+		const [row] = (await getTestDb()`
+			SELECT id FROM feeds WHERE organization_id = ${orgId} AND feed_key = 'h1'
+		`) as unknown as Array<{ id: number }>;
+		await expect(
+			manageFeeds(
+				{ action: "update_feed", feed_id: Number(row.id), status: "error" },
+				{} as Env,
+				ctx,
+			),
+		).rejects.toThrow();
+	});
 });

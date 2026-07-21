@@ -689,7 +689,7 @@ export default async (_ctx, client) => {
 	},
 	"connections.test": {
 		summary:
-			"Test a connection's readiness: OAuth token validity/expiry, env/app-auth presence, browser-session cookies, or (device-bound connectors) whether the paired device is online. Only the browser-session CDP path makes an outbound network probe; the rest are metadata checks.",
+			"Inspect a connection's authentication or device availability: OAuth token validity/expiry, env/app-auth presence, browser-session cookies, or (for an auth-free connection pinned to a device) whether the paired device is online. Only the browser-session CDP path makes an outbound network probe; the rest are metadata checks.",
 		access: "external",
 		signature:
 			"connections.test(connection_id: number): Promise<unknown> // or connections.test({ connection_id })",

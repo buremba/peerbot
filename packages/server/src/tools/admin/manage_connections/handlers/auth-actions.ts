@@ -316,22 +316,22 @@ export async function handleTest(
     };
   }
 
-  // Device-bound connections (e.g. apple.computer_use, browser device workers)
-  // run on a paired device, not an auth profile — so a null profile is expected.
-  // Report the device's readiness (the actual execution blocker) instead of the
-  // misleading "No auth profile configured" warning. The 20-minute freshness
-  // window mirrors the readiness rule used across operations/feeds listings.
+  // Auth-free device connections such as apple.computer_use run on a paired
+  // device, not an auth profile — so a null profile is expected. Report whether
+  // the paired device is online instead of the misleading "No auth profile
+  // configured" warning. The 20-minute freshness window mirrors the readiness
+  // rule used across operations/feeds listings.
   //
   // This must precede the no-auth check: device connectors like apple.computer_use
-  // declare `authSchema.methods: [{ type: 'none' }]`, so testing no-auth first would
-  // mask an offline device behind a bogus "requires no auth profile" ok.
+  // declare `auth_schema.methods: [{ type: 'none' }]`, so testing no-auth first would
+  // mask an offline device behind a generic "requires no auth profile" ok.
   if (conn.device_worker_id) {
     const deviceName = conn.device_label || 'paired device';
     return conn.device_online
       ? {
           action: 'test',
           status: 'ok',
-          message: `Device '${deviceName}' is online and ready`,
+          message: `Device '${deviceName}' is online`,
           device_online: true,
         }
       : {

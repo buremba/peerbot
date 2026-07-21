@@ -1,11 +1,12 @@
 /**
- * connections.test must report device readiness for device-bound connections.
+ * connections.test must report device availability for auth-free, device-bound
+ * connections.
  *
- * A device-bound connection (e.g. apple.computer_use, a browser device worker)
- * has no auth profile — it runs on a paired device. The test handler used to
- * fall through to "No auth profile configured" for these, hiding the real
- * signal (is the device online?). It now reports device readiness: ok when the
- * device is online, a retryable warning when it is offline.
+ * An auth-free, device-bound connection such as apple.computer_use has no auth
+ * profile because it runs on a paired device. The test handler used to fall
+ * through to "No auth profile configured" for these, hiding the real signal
+ * (is the device online?). It now reports device availability: ok when the device
+ * is online, a retryable warning when it is offline.
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -22,7 +23,7 @@ import {
 
 const CONNECTOR_KEY = "apple.computer_use";
 
-describe("connections.test device readiness", () => {
+describe("connections.test device availability", () => {
 	let orgId: string;
 	let userId: string;
 	let ctx: ToolContext;
@@ -30,17 +31,22 @@ describe("connections.test device readiness", () => {
 	beforeAll(async () => {
 		await cleanupTestDatabase();
 		await initWorkspaceProvider();
-		const { org, user, ctx: ownerCtx } = await seedOwnerContext({
+		const {
+			org,
+			user,
+			ctx: ownerCtx,
+		} = await seedOwnerContext({
 			orgName: "Device Test Org",
 		});
 		orgId = org.id;
 		userId = user.id;
 		ctx = ownerCtx;
 
-		// The real apple.computer_use connector declares `auth: none`, so an active
-		// connector_definition with methods:[{type:'none'}] must exist for this test
-		// to reproduce production: without it, the no-auth branch never fires and the
-		// device branch is falsely reachable regardless of ordering.
+		// The real apple.computer_use connector declares the `none` auth method, so
+		// an active connector_definition with `auth_schema.methods: [{ type: "none" }]`
+		// must exist for this test to reproduce production: without it, the no-auth
+		// branch never fires and the device branch is falsely reachable regardless
+		// of ordering.
 		await createTestConnectorDefinition({
 			key: CONNECTOR_KEY,
 			name: "Apple Computer Use",
@@ -71,7 +77,7 @@ describe("connections.test device readiness", () => {
 			created_by: userId,
 			createDefaultFeed: false,
 		});
-		// Attach the device; device-bound connections carry no auth profile.
+		// Attach the device; this auth-free connection carries no auth profile.
 		await sql`UPDATE connections SET device_worker_id = ${dw.id} WHERE id = ${conn.id}`;
 		return conn.id;
 	}

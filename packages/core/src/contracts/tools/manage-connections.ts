@@ -751,7 +751,7 @@ export const ManageConnectionsResultSchema = Type.Union([
     message: Type.String(),
     has_token: Type.Optional(Type.Boolean()),
     has_refresh: Type.Optional(Type.Boolean()),
-    /** Present for device-bound connections: whether the paired device is online. */
+    /** Present when an auth-free connection is pinned to a device. */
     device_online: Type.Optional(Type.Boolean()),
     expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     // Structured error taxonomy (lobu#2051 Item 2), present on error/warning results.

@@ -1,6 +1,32 @@
 import type { DbClient } from '../db/client';
 import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
 import type { WatcherSource } from '../types/watchers';
+import { executeDataSources } from '../utils/execute-data-sources';
+
+/**
+ * Validate a custom-SQL Behavior source at save time. Runs the SAME scoped
+ * query the reader uses, wrapped in `SELECT ... LIMIT 0` so Postgres plans and
+ * type-checks it (undefined column → 42703, syntax error, admin-table access)
+ * without materializing any rows, and throws on failure. A structurally valid
+ * query that merely matches 0 rows passes. Note: an unknown TABLE is rewritten
+ * by the scoped-query layer into a valid entity-type-slug CTE, so it is NOT
+ * caught here — only bad columns / syntax / restricted tables are.
+ */
+async function validateCustomSqlSource(
+  sql: DbClient,
+  organizationId: string,
+  source: WatcherSource
+): Promise<void> {
+  await executeDataSources(
+    { [source.name]: { query: source.query } },
+    { organizationId },
+    sql,
+    {
+      throwOnError: true,
+      wrapQuery: (scopedSql) => `SELECT * FROM (${scopedSql}) AS _validate LIMIT 0`,
+    }
+  );
+}
 
 // 'channel' is a chat-transcript source (streaming feed → channel_messages). It
 // is prompt CONTEXT, not events: its rows must never be signed as event
@@ -425,7 +451,17 @@ export async function resolveWatcherSourcesForSave(
 ): Promise<void> {
   for (const source of sources) {
     const ref = parseWatcherSourceRef(source.query);
-    if (!ref) continue; // custom SQL — id projection is enforced by the caller's config validation
+    if (!ref) {
+      // Custom SQL. The scoped-query layer swallows a bad column (Postgres
+      // 42703) into an empty result at read time, so a typo'd source ran green
+      // forever with no operator signal. Validate it here by planning the same
+      // scoped query with LIMIT 0 (structure only, no rows materialized) and
+      // throwing on failure — a valid query that merely matches 0 rows still
+      // passes. (An unknown TABLE becomes a valid entity-type-slug CTE rather
+      // than an error, so this catches bad columns/syntax, not typo'd tables.)
+      await validateCustomSqlSource(sql, organizationId, source);
+      continue;
+    }
 
     if (ref.type === 'entity') {
       const exists = await sql<{ id: number }>`

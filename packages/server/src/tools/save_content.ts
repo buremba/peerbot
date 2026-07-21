@@ -16,6 +16,7 @@ import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
+import { needsEmbeddingSql } from '../utils/embeddings';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import {
@@ -151,9 +152,23 @@ interface SaveContentResult {
   created_at: string;
   supersedes_event_id?: number;
   view_url?: string;
-	/** Semantic search is asynchronous; exact reads by id are available immediately. */
-	indexing_status: 'pending';
-	exact_read: { method: 'client.knowledge.read'; content_ids: [number] };
+  /**
+   * When durable storage completed — the row is committed and readable by exact
+   * id from this instant. Distinct from semantic-index readiness below: durability
+   * is synchronous, indexing is not.
+   */
+  durable_at: string;
+  /**
+   * Semantic-index readiness for THIS content, probed at save time (not a fixed
+   * literal): 'completed' when a current-model embedding already exists (e.g. an
+   * embedding was supplied inline), 'pending' when the async embed backfill still
+   * has to produce one. While 'pending', semantic search may not yet return this
+   * content — an exact read by id always works.
+   */
+  indexing_status: 'pending' | 'completed';
+  /** Convenience mirror of `indexing_status === 'completed'`. */
+  searchable: boolean;
+  exact_read: { method: 'client.knowledge.read'; content_ids: [number] };
 }
 
 // ============================================
@@ -463,19 +478,35 @@ async function saveContentImpl(
     });
   }
 
+  // Probe real semantic-index readiness for this specific event rather than
+  // asserting a fixed 'pending'. `needsEmbeddingSql` is the same predicate the
+  // embed backfill and worker use, so callers can never disagree with the
+  // pipeline on what "indexed" means. Embeddings are usually produced by the
+  // async backfill (so this is 'pending'), but when one is supplied inline the
+  // row is already searchable — reporting a hardcoded 'pending' would be wrong.
+  const savedId = Number(row.id);
+  const [readiness] = await sql`
+    SELECT ${sql.unsafe(needsEmbeddingSql('e'))} AS needs_embedding
+    FROM events e WHERE e.id = ${savedId}
+  `;
+  const searchable = readiness ? !readiness.needs_embedding : false;
+
   const result: SaveContentResult = {
-    id: Number(row.id),
+    id: savedId,
     entity_ids: Array.isArray(row.entity_ids) ? row.entity_ids.map(Number) : finalEntityIds,
     title: row.title as string | null,
     semantic_type: semanticType,
     created_at: String(row.created_at),
-		indexing_status: 'pending',
+    // Row is committed by now; exact reads by id are available from this instant.
+    durable_at: String(row.created_at),
+    indexing_status: searchable ? 'completed' : 'pending',
+    searchable,
 		// `knowledge.read` takes `content_ids` (array) — a singular `content_id`
 		// is rejected as an unknown argument, so the self-documenting hint must
 		// use the exact shape the reader accepts.
 		exact_read: {
 			method: 'client.knowledge.read',
-			content_ids: [Number(row.id)],
+			content_ids: [savedId],
 		},
   };
   if (args.supersedes_event_id) {

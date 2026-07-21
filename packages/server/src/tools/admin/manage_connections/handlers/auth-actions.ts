@@ -296,5 +296,27 @@ export async function handleTest(
     };
   }
 
+  // Auth-free connectors (e.g. RSS/Atom) declare `authSchema.methods: [{ type: 'none' }]`
+  // and legitimately have no auth profile. Reporting "No auth profile configured" for
+  // them is a false warning on a perfectly valid connection (#2051). If the connector
+  // supports the `none` auth method, an absent profile is expected — report ok.
+  if (connectorSupportsNoAuth(conn.auth_schema)) {
+    return {
+      action: 'test',
+      status: 'ok',
+      message: 'Connector requires no auth profile',
+    };
+  }
+
   return { action: 'test', status: 'warning', message: 'No auth profile configured' };
+}
+
+/**
+ * True when the connector's auth schema offers the `none` method — i.e. it can
+ * run without an auth profile. `authSchema` is stored as JSON on
+ * `connector_definitions.auth_schema`; it may be null/undefined for legacy rows.
+ */
+function connectorSupportsNoAuth(authSchema: unknown): boolean {
+  const methods = (authSchema as { methods?: Array<{ type?: string }> } | null)?.methods;
+  return Array.isArray(methods) && methods.some((m) => m?.type === 'none');
 }

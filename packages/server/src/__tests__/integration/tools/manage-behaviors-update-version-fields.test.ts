@@ -199,7 +199,7 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 				{
 					action: "update",
 					behavior_id: watcherId,
-					sources: [{ name: "content", query: "SELECT 1" }],
+					sources: [{ name: "content", query: "SELECT id FROM events" }],
 				},
 				TEST_ENV,
 				ownerCtx
@@ -313,5 +313,135 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 			  AND version = 2
 		`;
 		expect(stored.prompt).toBe("Updated preview response instructions.");
+	});
+});
+
+/**
+ * #2048 — create_version source semantics: explicit-set REPLACES (even []),
+ * omitting INHERITS, prompt-edit derives from the prompt's @-chips. The bug was
+ * that `sources: []` (or a different list) passed WITHOUT a prompt edit was
+ * conflated with "omitted" and silently re-inherited the stored sources.
+ *
+ * red→green: before the fix, "explicitly clears" and "explicitly replaces" both
+ * inherited the original sources; after, the passed list is authoritative.
+ */
+describe("manage_behaviors create_version — source replacement semantics (#2048)", () => {
+	let orgId: string;
+	let ownerCtx: AuthContext;
+	let behaviorId: string;
+
+	const baseCtx = (orgIdValue: string, userId: string): AuthContext => ({
+		organizationId: orgIdValue,
+		tokenOrganizationId: orgIdValue,
+		userId,
+		memberRole: "owner",
+		agentId: null,
+		requestedAgentId: null,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		requestUrl: `http://localhost/api/${orgIdValue}`,
+		baseUrl: "",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	});
+
+	// Sources live on the per-assignment watchers.sources column.
+	async function fetchSources(): Promise<Array<{ name: string; query: string }>> {
+		const sql = getTestDb();
+		const rows = await sql`SELECT sources FROM watchers WHERE id = ${behaviorId}`;
+		const raw = (rows[0] as { sources: unknown }).sources;
+		return (raw ?? []) as Array<{ name: string; query: string }>;
+	}
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		await initWorkspaceProvider();
+		const org = await createTestOrganization({ name: "cv sources #2048" });
+		orgId = org.id;
+		const owner = await createTestUser({ email: "cv-owner@test.com" });
+		await addUserToOrganization(owner.id, org.id, "owner");
+		ownerCtx = baseCtx(org.id, owner.id);
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			agentId: "cv-agent",
+			ownerUserId: owner.id,
+		});
+		// Create a behavior with two explicit sources and a prompt WITHOUT @-chips,
+		// so the derive-from-prompt path is not what supplies sources here.
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "cv-target",
+				name: "CV Target",
+				prompt: "Analyze the data.",
+				agent_id: agent.agentId,
+				sources: [
+					{ name: "alpha", query: "SELECT id FROM events" },
+					{ name: "beta", query: "SELECT id FROM events WHERE 1=1" },
+				],
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { behavior_id?: string };
+		behaviorId = created.behavior_id!;
+	});
+
+	it("baseline: the created behavior has the two explicit sources", async () => {
+		const names = (await fetchSources()).map((s) => s.name).sort();
+		expect(names).toEqual(["alpha", "beta"]);
+	});
+
+	it("omitting sources on a metadata-only bump INHERITS the stored sources", async () => {
+		const res = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				change_notes: "metadata only",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { source_count?: number; removed_sources?: string[] };
+		expect(res.source_count).toBe(2);
+		expect(res.removed_sources).toBeUndefined();
+		const names = (await fetchSources()).map((s) => s.name).sort();
+		expect(names).toEqual(["alpha", "beta"]);
+	});
+
+	it("passing a NEW source list REPLACES (drops the ones not listed)", async () => {
+		const res = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				sources: [{ name: "alpha", query: "SELECT id FROM events" }],
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { source_count?: number; removed_sources?: string[] };
+		expect(res.source_count).toBe(1);
+		expect(res.removed_sources).toEqual(["beta"]);
+		const names = (await fetchSources()).map((s) => s.name);
+		expect(names).toEqual(["alpha"]);
+	});
+
+	it("passing [] CLEARS all sources (the #2048 fix — no silent inherit)", async () => {
+		const res = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				sources: [],
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { source_count?: number; removed_sources?: string[] };
+		expect(res.source_count).toBe(0);
+		// Only "alpha" remained from the prior version; it is now removed.
+		expect(res.removed_sources).toEqual(["alpha"]);
+		expect(await fetchSources()).toEqual([]);
 	});
 });

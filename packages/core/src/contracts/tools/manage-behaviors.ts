@@ -335,7 +335,7 @@ export const ManageBehaviorsSchema = Type.Object(
     sources: Type.Optional(
       Type.Array(SourceSchema, {
         description:
-          "[create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'.",
+          "[create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this is a FULL REPLACEMENT: the array you pass (even []) becomes the version's complete source set. Passing [] clears all sources; OMITTING sources inherits the prior version's (unless the prompt was edited, in which case sources derive from the prompt's @-mention chips). The response returns source_count and removed_sources so you can see what a replacement dropped.",
       })
     ),
     keying_config: Type.Optional(

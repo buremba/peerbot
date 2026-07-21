@@ -86,9 +86,20 @@ export const ExecuteAction = Type.Object({
   ),
 });
 
+/**
+ * Run types excluded from `list_runs` when the caller does not name run types
+ * explicitly. Every chat reply AND every non-terminal streaming delta is
+ * persisted as a `runs` row with run_type='chat_message' (the thread_response
+ * queue lane), so an unfiltered list buries real operational history under
+ * tens of thousands of streaming fragments (#2051). Pass
+ * `run_types: ['chat_message']` to get the low-level trace view.
+ */
+export const LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES = ["chat_message"] as const;
+
 export const ListRunsAction = Type.Object({
   action: Type.Literal("list_runs", {
-    description: "Paginated run list with keyset cursor support.",
+    description:
+      "Paginated operational run list with keyset cursor support. Chat-message transport runs (complete replies + streaming deltas, run_type='chat_message') are excluded unless explicitly requested via run_types.",
   }),
   connection_id: Type.Optional(
     Type.Number({ description: "Filter by connection ID" })
@@ -102,6 +113,9 @@ export const ListRunsAction = Type.Object({
   device_worker_id: Type.Optional(
     Type.String({ description: "Filter by device worker ID" })
   ),
+  connector_key: Type.Optional(
+    Type.String({ description: "Filter by connector key (e.g. 'github')" })
+  ),
   operation_key: Type.Optional(
     Type.String({ description: "Filter by operation key" })
   ),
@@ -109,9 +123,26 @@ export const ListRunsAction = Type.Object({
   approval_status: Type.Optional(
     Type.String({ description: "Filter by approval status" })
   ),
-  /** Filter by run_type. Omit to list every run type (sync, action, auth, …). */
+  /**
+   * Filter by run_type. Omit to list every OPERATIONAL run type (sync, action,
+   * behavior, auth, …) — chat-message transport runs are excluded by default
+   * (see LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES); name 'chat_message' explicitly
+   * to inspect that low-level trace lane.
+   */
   run_types: Type.Optional(
     Type.Array(Type.String({ description: "Filter by run types" }))
+  ),
+  created_after: Type.Optional(
+    Type.String({
+      description:
+        "Only runs created at or after this ISO 8601 timestamp (inclusive)",
+    })
+  ),
+  created_before: Type.Optional(
+    Type.String({
+      description:
+        "Only runs created before this ISO 8601 timestamp (exclusive)",
+    })
   ),
   /** Filter behavior runs by behavior id(s). */
   behavior_ids: Type.Optional(

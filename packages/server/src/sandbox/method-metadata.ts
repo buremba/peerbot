@@ -695,8 +695,11 @@ export default async (_ctx, client) => {
 			"await client.operations.execute({ connection_id: 42, operation_key: 'create_issue', input: { title: 'Follow up' } });",
 	},
 	"operations.listRuns": {
-		summary: "List past operation runs.",
+		summary:
+			"List past operational runs. Filters: run_types, connector_key, operation_key, connection_id(s), feed_ids, behavior_ids, status, created_after/created_before. Chat-message transport runs (streaming deltas) are excluded by default — pass run_types: ['chat_message'] for the low-level trace view.",
 		access: "read",
+		example:
+			"await client.operations.listRuns({ connector_key: 'github', status: 'failed', created_after: '2026-07-01T00:00:00Z' });",
 	},
 	"operations.getRun": {
 		summary: "Get a single run by id.",
@@ -897,10 +900,10 @@ export default async (_ctx, client) => {
 	},
 	"metrics.series": {
 		summary:
-			"Run read-only time-bucketed SQL for sparklines. Returns { columns, rows } tabular output. Member-safe column allowlist; 5s timeout, 2000-row cap.",
+			"Run read-only time-bucketed SQL for sparklines. Returns { columns, rows, data_quality } tabular output; data_quality flags NULL/unparseable/out-of-range bucket timestamps against a bounded range (default 2000-01-01 … now+1d; override with start/end). Pass exclude_invalid_timestamps to drop flagged rows or strict to fail on them. Member-safe column allowlist; 5s timeout, 2000-row cap.",
 		access: "read",
 		example:
-			"await client.metrics.series({ sql: \"SELECT date_trunc(\\'day\\', created_at) AS bucket, COUNT(*)::int AS n FROM events GROUP BY 1 ORDER BY 1\" });",
+			"await client.metrics.series({ sql: \"SELECT date_trunc(\\'day\\', created_at) AS bucket, COUNT(*)::int AS n FROM events GROUP BY 1 ORDER BY 1\", exclude_invalid_timestamps: true });",
 	},
 
 	// top-level

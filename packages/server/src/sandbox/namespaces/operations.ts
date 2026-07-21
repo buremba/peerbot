@@ -42,11 +42,21 @@ export interface OperationsNamespace {
 		connection_ids?: number[];
 		feed_ids?: number[];
 		device_worker_id?: string;
+		connector_key?: string;
 		operation_key?: string;
 		status?: string;
 		approval_status?: string;
-		/** Omit to list every run type (sync, action, auth, …). */
+		/**
+		 * Omit to list every OPERATIONAL run type (sync, action, behavior, auth,
+		 * …). Chat-message transport runs (streaming deltas) are excluded by
+		 * default; pass run_types: ['chat_message'] for the trace view.
+		 */
 		run_types?: string[];
+		behavior_ids?: number[];
+		/** ISO 8601 inclusive lower bound on created_at. */
+		created_after?: string;
+		/** ISO 8601 exclusive upper bound on created_at. */
+		created_before?: string;
 		before_id?: number;
 		before_created_at?: string;
 		limit?: number;

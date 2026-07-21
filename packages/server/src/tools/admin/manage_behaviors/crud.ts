@@ -188,9 +188,11 @@ export async function handleCreate(
     organizationSlug = await getOrganizationSlug(organizationId);
   }
 
-  // Resolve @ref sources against the org now so a typo fails at create (422)
-  // instead of producing silent empty context at read_knowledge. Custom-SQL
-  // sources are skipped here; their id projection is enforced above.
+  // Resolve every source against the org now so a broken source fails at create
+  // (422) instead of producing silent empty context at read_knowledge: @refs are
+  // existence-checked, and custom SQL is planned (LIMIT 0) to catch bad
+  // columns/syntax. Pass the Behavior's entity_ids so {{entityId}} validates as
+  // it runs.
   if (!organizationId) {
     throw new ToolUserError('Cannot resolve Behavior sources without an organization');
   }

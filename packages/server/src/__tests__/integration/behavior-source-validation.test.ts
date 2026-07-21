@@ -110,4 +110,53 @@ describe("behavior custom-SQL source validation", () => {
 			),
 		).rejects.toThrow();
 	});
+
+	it("validates custom SQL on create_version too, not only create", async () => {
+		// Create a valid behavior, then publish a new version whose source has a
+		// bad column — the create_version path (version-actions) must reject it,
+		// same as create.
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `src-cv-${Date.now()}`,
+				name: "Source create_version",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				sources: [{ name: "src", query: "SELECT id FROM events WHERE 1=0" }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		if (created.action !== "create" || !("behavior_id" in created)) {
+			throw new Error("setup: create failed");
+		}
+		const behaviorId = String(created.behavior_id);
+
+		await expect(
+			manageBehaviors(
+				{
+					action: "create_version",
+					behavior_id: behaviorId,
+					sources: [
+						{ name: "src", query: "SELECT id, this_is_not_a_column FROM events" },
+					],
+				},
+				env,
+				ctx,
+			),
+		).rejects.toThrow(/this_is_not_a_column|column|does not exist/i);
+	});
 });

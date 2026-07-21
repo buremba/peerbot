@@ -129,9 +129,10 @@ export async function handleCreateVersion(
   // the worker's free-form summary fallback.
   assertWatcherVersionConfigValid({ prompt, classifiers, sources });
 
-  // Resolve @ref sources against the org now (typo → 422, not silent empty
-  // context at read_knowledge). The watcher row carries the org; custom-SQL
-  // sources are skipped (id projection is enforced by the config check above).
+  // Resolve every source against the org now (broken source → 422, not silent
+  // empty context at read_knowledge): @refs are existence-checked, custom SQL is
+  // planned (LIMIT 0) for bad columns/syntax. The watcher row carries the org +
+  // entity_ids so {{entityId}} validates as it runs.
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
   if (versionOrganizationId) {
     await assertWatcherSourcesResolve(

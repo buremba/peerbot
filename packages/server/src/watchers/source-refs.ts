@@ -471,13 +471,9 @@ export async function resolveWatcherSourcesForSave(
   for (const source of sources) {
     const ref = parseWatcherSourceRef(source.query);
     if (!ref) {
-      // Custom SQL. The scoped-query layer swallows a bad column (Postgres
-      // 42703) into an empty result at read time, so a typo'd source ran green
-      // forever with no operator signal. Validate it here by planning the same
-      // scoped query with LIMIT 0 (structure only, no rows materialized) and
-      // throwing on failure — a valid query that merely matches 0 rows still
-      // passes. (An unknown TABLE becomes a valid entity-type-slug CTE rather
-      // than an error, so this catches bad columns/syntax, not typo'd tables.)
+      // Custom SQL — validate it (see validateCustomSqlSource for the mechanism
+      // and its limits) so a typo'd source fails here instead of silently
+      // returning 0 rows forever at read time.
       await validateCustomSqlSource(sql, organizationId, entityIds, source);
       continue;
     }

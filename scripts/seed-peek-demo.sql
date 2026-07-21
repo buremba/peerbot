@@ -127,13 +127,29 @@ WITH ev AS (
     :'ORG',
     'Approval needed: send digest to #finance',
     'Behavior "Daily spend digest" wants to post a summary to the #finance channel. Review the proposed message before it sends.',
-    'text', 'content', 'approval', 'pending',
+    'markdown', 'content', 'approval', 'pending',
     '{"seed":"peek","notification_type":"action_approval_needed","resource_type":"run","resource_url":"/local-install/memory?view=events&run_ids=976"}'::jsonb,
     now(), now(), :'USER'
   ) RETURNING id
 )
 INSERT INTO notification_targets (event_id, user_id, delivered_at, read_at)
   SELECT id, :'USER', now(), NULL FROM ev;
+
+-- Memory event for run 976 so the approval's 'Review form' link has content.
+-- Uses E'' so \n becomes real newlines (markdown renders in EventCard).
+INSERT INTO events (
+  organization_id, title, payload_text, payload_type, semantic_type,
+  occurred_at, created_at, created_by, run_id, metadata
+) VALUES (
+  :'ORG',
+  'Proposed: post spend digest to #finance',
+  E'The Daily spend digest behavior proposes posting the following summary to the #finance Slack channel:\n\n## Daily Spend Digest — Jul 18\nTotal: €1,847.30 across 12 transactions\nFlagged: AWS Production €640, Booking.com €589\n\nAwaiting human approval before sending.',
+  'text', 'content',
+  now() - interval '25 hours', now() - interval '25 hours',
+  :'USER', 976,
+  '{"seed":"peek","interaction_type":"approval_pending"}'::jsonb
+)
+ON CONFLICT DO NOTHING;
 
 COMMIT;
 

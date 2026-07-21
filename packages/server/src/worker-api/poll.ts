@@ -606,6 +606,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       LEFT JOIN connections conn ON conn.id = r.connection_id
       LEFT JOIN connector_versions cv ON cv.connector_key = r.connector_key
         AND cv.version = r.connector_version
+        AND cv.organization_id IS NULL
       LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
         AND cd.organization_id = r.organization_id
         AND cd.status = 'active'

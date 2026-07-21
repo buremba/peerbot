@@ -214,6 +214,7 @@ async function resolveActiveConnectorVersion(
   const versionRows = await sql`
     SELECT compiled_code, source_path FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${version}
+      AND organization_id IS NULL
     LIMIT 1
   `;
   if (versionRows.length === 0) {

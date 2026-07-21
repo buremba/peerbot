@@ -121,6 +121,7 @@ export async function listScopedConnectorDefinitions(params: {
       cv.source_path
     FROM connector_definitions d
     LEFT JOIN connector_versions cv ON cv.connector_key = d.key AND cv.version = d.version
+      AND cv.organization_id IS NULL
     WHERE d.status = 'active'
       AND d.organization_id = ${params.organizationId}
     ORDER BY d.name ASC
@@ -173,6 +174,7 @@ export async function installConnectorDefinitionFromSource(params: {
 			sourceCode: resolved.sourceCode,
 			sourcePath: resolved.sourcePath,
 		},
+		versionScope: "organization",
 	});
 
 	logger.info(
@@ -269,15 +271,19 @@ export async function installConnectorFromMcpUrl(params: {
 			sourceCode: null,
 			sourcePath: null,
 		},
+		versionScope: "organization",
 	});
 
 	// Clear stale compiled code if overwriting a source-based connector.
+	// Scoped to the shared row + this org's own row: another org's private
+	// row under the same (key, version) must keep its code (#2045 follow-up).
 	if (updated) {
 		await sql`
       UPDATE connector_versions
       SET compiled_code = NULL, compiled_code_hash = NULL,
           compile_config_hash = NULL, source_code = NULL, source_path = NULL
       WHERE connector_key = ${connectorKey} AND version = ${metadata.version}
+        AND (organization_id IS NULL OR organization_id = ${params.organizationId})
     `;
 	}
 
@@ -361,6 +367,7 @@ export async function getInstalledConnectorSource(params: {
            (compiled_code IS NOT NULL) AS has_compiled
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey}
+      AND organization_id IS NULL
     ORDER BY created_at DESC, id DESC
   `) as unknown as Array<{
 		version: string;
@@ -451,6 +458,7 @@ export async function validateConnectorSource(params: {
     SELECT 1 FROM connector_versions
     WHERE connector_key = ${resolved.metadata.key}
       AND version = ${resolved.metadata.version}
+      AND organization_id IS NULL
     LIMIT 1
   `;
 
@@ -520,6 +528,7 @@ export async function updateInstalledConnectorSource(params: {
 	const existing = (await sql`
       SELECT compiled_code_hash, source_code FROM connector_versions
       WHERE connector_key = ${params.connectorKey} AND version = ${targetVersion}
+        AND organization_id IS NULL
       LIMIT 1
     `) as unknown as Array<{
 		compiled_code_hash: string | null;
@@ -548,6 +557,7 @@ export async function updateInstalledConnectorSource(params: {
 			sourceCode: resolved.sourceCode,
 			sourcePath: resolved.sourcePath,
 		},
+		versionScope: "organization",
 	});
 
 	logger.info(
@@ -595,6 +605,7 @@ export async function rollbackConnectorVersion(params: {
     SELECT version, compiled_code, compile_config_hash
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${params.version}
+      AND organization_id IS NULL
     LIMIT 1
   `) as unknown as Array<{
 		version: string;
@@ -605,6 +616,7 @@ export async function rollbackConnectorVersion(params: {
 		const retained = (await sql`
       SELECT version FROM connector_versions
       WHERE connector_key = ${params.connectorKey}
+        AND organization_id IS NULL
       ORDER BY created_at DESC, id DESC
     `) as unknown as Array<{ version: string }>;
 		throw new Error(
@@ -624,7 +636,8 @@ export async function rollbackConnectorVersion(params: {
 	}
 
 	// All-null versionRecord: the ON CONFLICT upsert COALESCEs, so the retained
-	// row keeps its stored code — only the definition metadata flips.
+	// row keeps its stored code — only the definition metadata flips. (And the
+	// all-null record means no org row is created for it — see versionScope.)
 	await upsertConnectorDefinitionRecords({
 		sql,
 		organizationId: params.organizationId,
@@ -636,6 +649,7 @@ export async function rollbackConnectorVersion(params: {
 			sourceCode: null,
 			sourcePath: null,
 		},
+		versionScope: "organization",
 	});
 
 	logger.info(

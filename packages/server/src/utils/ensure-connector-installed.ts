@@ -112,15 +112,19 @@ export async function resolveConnectorCodeForKey(
   version?: string | null
 ): Promise<string> {
   const sql = getDb();
+  // organization_id IS NULL: reads stay pinned to the shared row until the
+  // per-org read cutover (#2045 follow-up) — the dual-write phase writes
+  // org-scoped copies this query must not accidentally resolve.
   const rows = version
     ? await sql`
         SELECT version, compiled_code, compile_config_hash FROM connector_versions
         WHERE connector_key = ${connectorKey} AND version = ${version}
+          AND organization_id IS NULL
         LIMIT 1
       `
     : await sql`
         SELECT version, compiled_code, compile_config_hash FROM connector_versions
-        WHERE connector_key = ${connectorKey}
+        WHERE connector_key = ${connectorKey} AND organization_id IS NULL
         ORDER BY created_at DESC
         LIMIT 1
       `;
@@ -137,21 +141,29 @@ async function recompileStoredConnectorVersion(
   version: string
 ): Promise<string | null> {
   const sql = getDb();
+  // Pinned to the shared row while reads are: the org-scoped copies written by
+  // the dual-write phase (#2045 follow-up) converge when the read cutover
+  // scopes this resolution per org.
   const rows = await sql`
-    SELECT source_code FROM connector_versions
+    SELECT id, source_code FROM connector_versions
     WHERE connector_key = ${connectorKey} AND version = ${version}
+      AND organization_id IS NULL
     LIMIT 1
   `;
-  const sourceCode = (rows[0] as { source_code: string | null } | undefined)?.source_code ?? null;
-  if (!sourceCode) return null;
+  const row = rows[0] as { id: number; source_code: string | null } | undefined;
+  const sourceCode = row?.source_code ?? null;
+  if (!row || !sourceCode) return null;
 
   const { compiledCode, compiledCodeHash } = await compileConnectorSource(sourceCode);
+  // By primary key, never (connector_key, version): that pair no longer
+  // identifies one row — an org-scoped copy may share it with the shared row,
+  // and the fresh artifact belongs only to the row whose source produced it.
   await sql`
     UPDATE connector_versions
     SET compiled_code = ${compiledCode},
         compiled_code_hash = ${compiledCodeHash},
         compile_config_hash = ${COMPILE_CONFIG_HASH}
-    WHERE connector_key = ${connectorKey} AND version = ${version}
+    WHERE id = ${row.id}
   `;
   logger.info(
     { connector_key: connectorKey, version },
@@ -199,6 +211,9 @@ export async function upsertBundledConnectorForOrg(params: {
       sourceCode: null,
       sourcePath,
     },
+    // A source_path pointer at the bundled on-disk catalog — identical for
+    // every org, deduped on the shared organization_id-IS-NULL row.
+    versionScope: 'shared',
   });
   return {
     connectorKey: metadata.key,

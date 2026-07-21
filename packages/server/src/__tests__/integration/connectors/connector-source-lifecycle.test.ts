@@ -140,6 +140,52 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     expect(valid.active_version).toBe('1.0.0');
     expect(valid.version_exists).toBe(false);
 
+    // ---- validate surfaces extracted per-action kind + requiredScopes ----
+    // Authors must be able to confirm these semantic-policy fields survived
+    // extraction BEFORE persisting (a validate-without-install step).
+    const withActions = await manageConnections(
+      {
+        action: 'validate_connector_source',
+        source_code: `
+export default class ActionProbeConnector {
+  definition = {
+    key: '${KEY}',
+    name: 'Action Probe',
+    version: '3.0.0',
+    feeds: { articles: { key: 'articles', name: 'Articles' } },
+    actions: {
+      read_thing: { key: 'read_thing', name: 'Read thing', kind: 'read', requiresApproval: false, requiredScopes: ['probe.read'] },
+      hinted_read: { key: 'hinted_read', name: 'Hinted read', requiresApproval: false, annotations: { readOnlyHint: true } },
+      write_thing: { key: 'write_thing', name: 'Write thing', requiresApproval: true, requiredScopes: ['probe.write'] },
+    },
+  };
+  async sync() { return { events: [], checkpoint: null }; }
+  async execute() { return {}; }
+}
+`,
+      },
+      TEST_ENV,
+      ctx
+    );
+    if (!('valid' in withActions) || withActions.valid !== true) {
+      throw new Error(`expected valid preflight, got ${JSON.stringify(withActions)}`);
+    }
+    expect(withActions.actions.read_thing).toEqual({
+      kind: 'read',
+      requires_approval: false,
+      required_scopes: ['probe.read'],
+    });
+    // annotations.readOnlyHint:true classifies as read too — must match the
+    // runtime getLocalActionKind, not just an explicit kind field.
+    expect(withActions.actions.hinted_read.kind).toBe('read');
+    // kind defaults to write when omitted (matches the runtime default).
+    expect(withActions.actions.write_thing).toEqual({
+      kind: 'write',
+      requires_approval: true,
+      required_scopes: ['probe.write'],
+    });
+    expect(withActions.feed_keys).toEqual(['articles']);
+
     // ---- update guards ----
     // Wrong key inside the source: refused.
     const wrongKey = await manageConnections(

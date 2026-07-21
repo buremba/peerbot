@@ -206,6 +206,10 @@ export async function handleValidateConnectorSource(
 		installed: result.installed,
 		active_version: result.activeVersion,
 		version_exists: result.versionExists,
+		// Extracted per-action kind/requiredScopes + feed keys, so an author can
+		// confirm the semantic-policy fields survived extraction before persisting.
+		actions: result.actions,
+		feed_keys: result.feedKeys,
 	};
 }
 

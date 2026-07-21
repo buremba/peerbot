@@ -142,3 +142,53 @@ SELECT 'watchers (seeded)' AS what, count(*) FROM watchers WHERE tags @> ARRAY['
 UNION ALL SELECT 'runs (seeded)', count(*) FROM runs WHERE run_metadata->>'seed' = 'peek'
 UNION ALL SELECT 'events (seeded)', count(*) FROM events WHERE metadata->>'seed' = 'peek'
 UNION ALL SELECT 'notif targets (seeded)', count(*) FROM notification_targets JOIN events ON events.id = notification_targets.event_id WHERE events.metadata->>'seed' = 'peek';
+
+-- ---------------------------------------------------------------------------
+-- Transcripts (agent_transcript_snapshot) so behavior runs show real content.
+-- Each is a session.jsonl conversation: prompt → analysis → tool calls → summary.
+-- ---------------------------------------------------------------------------
+\set ORG 'org_47ya40wa5k8'
+
+DELETE FROM agent_transcript_snapshot WHERE conversation_id LIKE 'seed-watch-%';
+
+INSERT INTO agent_transcript_snapshot
+  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+SELECT :'ORG', 'owletto-default', 'seed-watch-9001-run-976', 976,
+$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-19T09:00:01Z","message":{"role":"user","content":"Run this Behavior now: Daily spend digest. Summarize yesterday's card transactions and flag anomalies over $500."}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-19T09:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll pull yesterday's transactions from the connected Revolut account and analyze them for anomalies."}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-19T09:00:05Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_transactions","input":{"since":"2026-07-18","until":"2026-07-19"}}]}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-07-19T09:00:09Z","message":{"role":"toolResult","content":[{"type":"tool_result","tool_use_id":"tu1","content":"12 transactions returned, total: €1,847.30"}]}}
+{"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-19T09:00:12Z","message":{"role":"assistant","content":[{"type":"text","text":"## Daily Spend Digest — Jul 18\n\n**Total: €1,847.30 across 12 transactions**\n\n### Flagged (over €500)\n- **AWS Production** — €640.00 (monthly infra)\n- **Booking.com** — €589.00 (hotel, Lisbon)\n\n### Recurring\n- Netflix €15.99, Spotify €10.99, Notion €9.00\n\n### Notes\nSpend is 23% above your 30-day average (€1,503). The Lisbon hotel is the main driver. No unusual or suspicious transactions detected."}]}}$jsonl$,
+128, 'completed', now() - interval '25 hours'
+ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
+
+INSERT INTO agent_transcript_snapshot
+  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+SELECT :'ORG', 'owletto-default', 'seed-watch-9001-run-977', 977,
+$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-18T09:00:01Z","message":{"role":"user","content":"Run this Behavior now: Daily spend digest."}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-18T09:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Fetching yesterday's transactions from Revolut..."}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-18T09:00:40Z","message":{"role":"assistant","content":[{"type":"text","text":"⚠️ The Revolut connector returned 502 Bad Gateway after 3 retries. I cannot complete the digest without transaction data. The run will be marked as failed — it will retry on the next scheduled run."}]}}$jsonl$,
+64, 'failed', now() - interval '49 hours'
+ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
+
+INSERT INTO agent_transcript_snapshot
+  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+SELECT :'ORG', 'owletto-default', 'seed-watch-9002-run-978', 978,
+$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:00:01Z","message":{"role":"user","content":"Run this Behavior now: Inbox triage. Flag emails needing a reply and draft suggested responses."}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T22:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Scanning the inbox for emails received in the last 30 minutes..."}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T22:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_emails","input":{"folder":"inbox","since_minutes":30}}]}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-07-20T22:00:10Z","message":{"role":"toolResult","content":[{"type":"tool_result","tool_use_id":"tu1","content":"8 emails returned, 3 unread"}]}}
+{"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T22:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Inbox Triage — 5 emails needing attention\n\n### 🔴 Needs reply\n1. **Sara Chen** (re: Q3 roadmap feedback) — waiting on your sign-off\n2. **Stripe** (re: payout failed) — action required\n\n### 🟡 FYI\n3. **GitHub** — security alert resolved\n4. **Linear** — weekly digest\n\n### ✅ No action\n5. **Notion** — product update\n\nI've drafted suggested replies for items 1-2 and saved them as drafts."}]}}$jsonl$,
+128, 'completed', now() - interval '2 hours'
+ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
+
+INSERT INTO agent_transcript_snapshot
+  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+SELECT :'ORG', 'lobu-builder', 'seed-watch-9003-run-980', 980,
+$jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T19:00:01Z","message":{"role":"user","content":"Run this Behavior now: Stale workspace watcher. Alert when a workspace has no activity for 7 days."}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T19:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Checking all workspaces for activity in the last 7 days..."}]}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T19:00:07Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_workspaces","input":{"inactive_days":7}}]}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-07-20T19:00:11Z","message":{"role":"toolResult","content":[{"type":"tool_result","tool_use_id":"tu1","content":"1 stale workspace found: 'acme-demo' (last activity 11 days ago)"}]}}
+{"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T19:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Stale Workspace Report\n\nFound **1 workspace** with no activity in 7+ days:\n\n- **acme-demo** — last active 11 days ago\n\nThis workspace has 3 idle behaviors and 2 disconnected connectors. Consider archiving it or pinging the owner."}]}}$jsonl$,
+128, 'completed', now() - interval '5 hours'
+ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;

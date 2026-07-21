@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-	inferWatcherGranularityFromSchedule,
-	type WatcherTimeGranularity,
+	inferBehaviorGranularityFromSchedule,
+	type BehaviorTimeGranularity,
 } from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
 import { intervals } from "../config/intervals";
@@ -235,7 +235,7 @@ async function enqueueWatcherRunForRecord(
 		throw new Error(`Behavior ${watcher.id} is not assigned to a Lobu agent.`);
 	}
 
-	const granularity = inferWatcherGranularityFromSchedule(watcher.schedule);
+	const granularity = inferBehaviorGranularityFromSchedule(watcher.schedule);
 	const { windowStart, windowEnd } = await computePendingWindow(
 		sql,
 		watcher.id,
@@ -263,7 +263,7 @@ async function enqueueWatcherRunForRecord(
 async function persistSkippedWatcherWindow(
 	sql: DbClient,
 	watcher: DueWatcherRow,
-	granularity: WatcherTimeGranularity,
+	granularity: BehaviorTimeGranularity,
 	windowStart: Date,
 	windowEnd: Date,
 ): Promise<void> {
@@ -818,7 +818,7 @@ export async function materializeDueWatcherRuns(
 			);
 			let sourceFingerprint: string | undefined;
 			if (scheduleTrigger?.skip_if_unchanged === true) {
-				const granularity = inferWatcherGranularityFromSchedule(
+				const granularity = inferBehaviorGranularityFromSchedule(
 					watcher.schedule
 				);
 				const { windowStart, windowEnd } = await computePendingWindow(

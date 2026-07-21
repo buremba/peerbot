@@ -14,7 +14,7 @@
  *      schema and ACCEPTS data that conforms — with no inline watcher schema.
  */
 
-import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
+import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
@@ -144,7 +144,7 @@ async function setupEntityTypedWatcher() {
 type Ctx = Awaited<ReturnType<typeof setupEntityTypedWatcher>>;
 
 async function queueRunningRun(ctx: Ctx) {
-  const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+  const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
   const { windowStart, windowEnd } = await computePendingWindow(
     ctx.dbClient,
     ctx.watcherId,

@@ -5,10 +5,10 @@
  */
 
 import {
-  addWatcherPeriod,
-  alignToWatcherWindowStart,
-  subtractWatcherPeriod,
-  type WatcherTimeGranularity,
+  addBehaviorPeriod,
+  alignToBehaviorWindowStart,
+  subtractBehaviorPeriod,
+  type BehaviorTimeGranularity,
 } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import type { UnprocessedRange } from '../types/watchers';
@@ -100,7 +100,7 @@ export function foldUnprocessedRanges(
 export async function computePendingWindow(
   sql: DbClient,
   watcherId: number,
-  granularity: WatcherTimeGranularity
+  granularity: BehaviorTimeGranularity
 ): Promise<WindowDates> {
   // Find the last completed leaf window for this watcher (canvas_windows =
   // one row per chain root, so this is the latest completed period). Zero-
@@ -123,16 +123,16 @@ export async function computePendingWindow(
     windowStart = new Date(lastWindow[0].window_end as string);
   } else {
     // No previous windows - start from aligned "now minus one period"
-    windowStart = alignToWatcherWindowStart(subtractWatcherPeriod(now, granularity), granularity);
+    windowStart = alignToBehaviorWindowStart(subtractBehaviorPeriod(now, granularity), granularity);
   }
 
   // Compute window end based on granularity
-  windowEnd = addWatcherPeriod(windowStart, granularity);
+  windowEnd = addBehaviorPeriod(windowStart, granularity);
 
   // Cap window_end at aligned now (don't process future dates)
-  const alignedNow = alignToWatcherWindowStart(now, granularity);
+  const alignedNow = alignToBehaviorWindowStart(now, granularity);
   // For current period, use end of period instead of aligned start
-  const currentPeriodEnd = addWatcherPeriod(alignedNow, granularity);
+  const currentPeriodEnd = addBehaviorPeriod(alignedNow, granularity);
   if (windowEnd > currentPeriodEnd) {
     windowEnd = currentPeriodEnd;
   }
@@ -140,7 +140,7 @@ export async function computePendingWindow(
   // Ensure window_start is before window_end
   if (windowStart >= windowEnd) {
     // If window is too small, extend back by one period
-    windowStart = subtractWatcherPeriod(windowEnd, granularity);
+    windowStart = subtractBehaviorPeriod(windowEnd, granularity);
   }
 
   return { windowStart, windowEnd };

@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import type { ContentItem } from '@lobu/connector-sdk';
-import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
+import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/watchers';
@@ -361,7 +361,7 @@ export async function handleWatcherMode(
   const versionSources = parseJson(watcher.version_sources) || [];
   const watcherSources =
     versionSources.length > 0 ? versionSources : parseJson(watcher.sources) || [];
-  const timeGranularity = inferWatcherGranularityFromSchedule(watcher.schedule as string | null);
+  const timeGranularity = inferBehaviorGranularityFromSchedule(watcher.schedule as string | null);
   const templatePrompt = (watcher.template_prompt as string | null) ?? undefined;
   // The extraction contract is derived from the bound entity type's
   // metadata_schema (entity-typed) — never read from a stored inline schema.

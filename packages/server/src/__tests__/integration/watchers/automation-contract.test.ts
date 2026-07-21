@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { inferWatcherGranularityFromSchedule } from "@lobu/connector-sdk";
+import { inferBehaviorGranularityFromSchedule } from "@lobu/connector-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { generateSecureToken, hashToken } from "../../../auth/oauth/utils";
 import type { DbClient } from "../../../db/client";
@@ -163,7 +163,7 @@ describe("watcher automation contract", () => {
 		const { sql, dbClient, workspace, watcherId, agent } =
 			await createAutomatedWatcher();
 
-		const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+		const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
@@ -219,7 +219,7 @@ describe("watcher automation contract", () => {
 			occurred_at: new Date(Date.now() - 60 * 60 * 1000),
 		});
 
-		const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+		const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
@@ -298,7 +298,7 @@ describe("watcher automation contract", () => {
 		const { sql, dbClient, workspace, watcherId, agent } =
 			await createAutomatedWatcher();
 
-		const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+		const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
@@ -538,7 +538,7 @@ describe("watcher automation contract", () => {
 		it("exit report acks an MCP-completed run and stamps device provenance", async () => {
 			const { sql, dbClient, workspace, api, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -677,7 +677,7 @@ describe("watcher automation contract", () => {
 			// run_metadata that complete_window already wrote.
 			const { sql, dbClient, workspace, api, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -749,7 +749,7 @@ describe("watcher automation contract", () => {
 				reaction_script: "export default async function reaction() { return; }",
 			});
 
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -881,7 +881,7 @@ describe("watcher automation contract", () => {
 		it("fails the run when the agent exits without calling complete_window", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -957,7 +957,7 @@ describe("watcher automation contract", () => {
 		it("complete-behavior endpoint marks the run failed when error is supplied", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1057,7 +1057,7 @@ describe("watcher automation contract", () => {
 		it("advances watchers.next_run_at on a terminal exit report", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1122,7 +1122,7 @@ describe("watcher automation contract", () => {
 		it("treats a duplicate exit report as idempotent (no double schedule advance)", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1223,7 +1223,7 @@ describe("watcher automation contract", () => {
 			);
 
 			// Watcher run pinned to worker B (via approved_input.device_worker_id).
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1299,7 +1299,7 @@ describe("watcher automation contract", () => {
 		async function makeRunningWatcherRun(messageId: string) {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1496,7 +1496,7 @@ describe("watcher automation contract", () => {
 	it("reconciles without crashing when an active run carries a dispatched_message_id", async () => {
 		const { sql, dbClient, workspace, watcherId, agent } =
 			await createAutomatedWatcher();
-		const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+		const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 		const { windowStart, windowEnd } = await computePendingWindow(
 			dbClient,
 			watcherId,
@@ -1574,7 +1574,7 @@ describe("watcher automation contract", () => {
 
 			// Watcher A: a stuck active run with a dispatched_message_id and no window —
 			// the exact shape of prod run 146501 that wedged reconcile.
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,
@@ -1793,7 +1793,7 @@ describe("watcher automation contract", () => {
 		}) {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
-			const granularity = inferWatcherGranularityFromSchedule("0 9 * * *");
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
 			const { windowStart, windowEnd } = await computePendingWindow(
 				dbClient,
 				watcherId,

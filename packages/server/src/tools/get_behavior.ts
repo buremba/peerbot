@@ -7,10 +7,10 @@
  */
 
 import {
-  addWatcherPeriod,
-  getFinerWatcherGranularities,
-  inferWatcherGranularityFromSchedule,
-  type WatcherTimeGranularity,
+  addBehaviorPeriod,
+  getFinerBehaviorGranularities,
+  inferBehaviorGranularityFromSchedule,
+  type BehaviorTimeGranularity,
 } from '@lobu/connector-sdk';
 import { type Static, Type } from '@sinclair/typebox';
 import { createDbClientFromEnv, type DbClient, getDb } from '../db/client';
@@ -453,8 +453,8 @@ async function getBehaviorImpl(
   if (windows.length === 0 && finalGranularity) {
     const granularityParamIndex = params.length - 2; // index of granularity param (before pageSize, offset)
 
-    for (const fallbackGranularity of getFinerWatcherGranularities(
-      finalGranularity as WatcherTimeGranularity
+    for (const fallbackGranularity of getFinerBehaviorGranularities(
+      finalGranularity as BehaviorTimeGranularity
     )) {
       const fallbackParams = [...params];
       fallbackParams[granularityParamIndex - 1] = fallbackGranularity;
@@ -903,7 +903,7 @@ async function getBehaviorImpl(
   if (args.behavior_id && watcherRow) {
     const watcherEntityIds = parseBigintArray(watcherRow.entity_ids);
     const watcherEntityId = watcherEntityIds[0] ?? 0;
-    const timeGranularity = inferWatcherGranularityFromSchedule(watcherRow.schedule);
+    const timeGranularity = inferBehaviorGranularityFromSchedule(watcherRow.schedule);
 
     // Identity scopes + latest window end were folded into the watcher
     // metadata query above. Read both off watcherRow — no extra round-trip.
@@ -1044,7 +1044,7 @@ async function getBehaviorImpl(
       }
 
       // Calculate window end based on granularity
-      windowEnd = addWatcherPeriod(windowStart, timeGranularity);
+      windowEnd = addBehaviorPeriod(windowStart, timeGranularity);
 
       // Don't go past now
       if (windowEnd > now) {

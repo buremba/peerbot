@@ -15,7 +15,7 @@
  *      creates NO duplicate entities.
  */
 
-import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
+import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { slugify } from '@lobu/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
@@ -146,7 +146,7 @@ async function setupKeyedWatcher() {
  * reusable for an idempotent replay).
  */
 async function queueRunningRun(ctx: Awaited<ReturnType<typeof setupKeyedWatcher>>) {
-  const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+  const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
   const { windowStart, windowEnd } = await computePendingWindow(
     ctx.dbClient,
     ctx.watcherId,

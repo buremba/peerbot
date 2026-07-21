@@ -206,21 +206,21 @@ export type {
   ConnectorTriggerSignal,
   SubscriptionCandidate,
 } from './behavior-triggers.js';
-export type { WatcherTimeGranularity } from './watcher-time.js';
+export type { BehaviorTimeGranularity } from './behavior-time.js';
 export {
-  addWatcherPeriod,
-  alignToWatcherWindowStart,
-  getAvailableWatcherGranularities,
-  getFinerWatcherGranularities,
-  getNextWatcherGranularity,
-  getWatcherDateTruncUnit,
-  inferWatcherGranularityFromDays,
-  inferWatcherGranularityFromSchedule,
-  isWatcherTimeGranularity,
-  shiftWatcherPeriod,
-  subtractWatcherPeriod,
-  WATCHER_TIME_GRANULARITIES,
-} from './watcher-time.js';
+  addBehaviorPeriod,
+  alignToBehaviorWindowStart,
+  getAvailableBehaviorGranularities,
+  getFinerBehaviorGranularities,
+  getNextBehaviorGranularity,
+  getBehaviorDateTruncUnit,
+  inferBehaviorGranularityFromDays,
+  inferBehaviorGranularityFromSchedule,
+  isBehaviorTimeGranularity,
+  shiftBehaviorPeriod,
+  subtractBehaviorPeriod,
+  BEHAVIOR_TIME_GRANULARITIES,
+} from './behavior-time.js';
 
 // =============================================================================
 // Browser SDK

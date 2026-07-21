@@ -18,4 +18,5 @@ CREATE TABLE IF NOT EXISTS public.deployment_pause (
 
 -- migrate:down
 
+-- squawk-ignore ban-drop-table
 DROP TABLE IF EXISTS public.deployment_pause;

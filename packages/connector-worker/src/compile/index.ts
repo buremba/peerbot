@@ -103,24 +103,35 @@ function createSdkExternalPlugin(): Plugin {
   };
 }
 
-interface NpmSpecifierPluginOptions {
+export interface NpmSpecifierPluginOptions {
   /**
    * Called when a `npm:foo@1.2.3` import resolves to a package that's not
    * installed in the current environment. The plugin externalises the
    * import (so the bundle still emits) and the runtime must supply it.
    * Use this hook to log / surface the externalisation.
+   * Ignored under `unresolved: 'error'`.
    */
   onUnresolved?: (info: { bareSpecifier: string; importer: string }) => void;
+  /**
+   * What to do when the bare package can't be resolved in the build
+   * environment: `'externalize'` (default) emits the import as external and
+   * the runtime must provide it; `'error'` fails the build with esbuild's
+   * resolution error (used by compilers whose artifacts must be fully
+   * self-contained, e.g. the server's source-text compiler).
+   */
+  unresolved?: 'externalize' | 'error';
 }
 
 /**
  * esbuild plugin that strips the `npm:` prefix from connector imports
  * (`import x from 'npm:foo@1.2.3'`) and resolves the bare specifier
- * against node_modules. When the package isn't installed in the build
- * environment, externalises so the bundle still produces — the runtime
- * is expected to provide it.
+ * against node_modules. Unresolved packages are externalised or failed
+ * per {@link NpmSpecifierPluginOptions.unresolved}. Registered as an
+ * onResolve hook, so it only ever sees real module declarations parsed
+ * from the source AST — `npm:` text inside strings or comments is data,
+ * never rewritten (#2043).
  */
-function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
+export function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
   return {
     name: 'npm-specifier',
     setup(b) {
@@ -129,11 +140,21 @@ function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
           .slice(4)
           .replace(/^(@[^/]+\/[^/@]+)@[^/]*/, '$1')
           .replace(/^([^/@]+)@[^/]*/, '$1');
+        if (!bare) {
+          return {
+            errors: [
+              {
+                text: `Invalid npm: import specifier "${args.path}". Expected npm:package@version or npm:@scope/package@version.`,
+              },
+            ],
+          };
+        }
         const resolved = await b.resolve(bare, {
           resolveDir: args.resolveDir,
           kind: args.kind,
         });
         if (resolved.errors.length > 0) {
+          if (options?.unresolved === 'error') return resolved;
           options?.onUnresolved?.({ bareSpecifier: bare, importer: args.importer });
           return { path: bare, external: true, errors: [], warnings: [] };
         }
@@ -141,6 +162,71 @@ function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
       });
     },
   };
+}
+
+/**
+ * Flatten a multi-file connector source into ONE self-contained source text:
+ * the relative import graph is inlined (source-level bundle) while `lobu` /
+ * `@lobu/connector-sdk`, `npm:` specifiers, bare packages, and node builtins
+ * stay as import statements for the downstream compiler to resolve.
+ *
+ * This is what install paths persist as `source_code` for file-backed
+ * connectors: a stored source must recompile under the strict single-file
+ * source-text compiler (`compileConnectorSource`) years later, on any replica,
+ * with no repo checkout — raw multi-file text with relative imports can never
+ * do that (#2042, the Gmail scraper-utils outage).
+ *
+ * Deterministic: same inputs produce the same output (esbuild text transform,
+ * no minification, no timestamps).
+ */
+export async function flattenConnectorSourceFromFile(filePath: string): Promise<string> {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-flatten-'));
+  const outPath = join(tmpDir, 'flattened.mjs');
+  try {
+    await build({
+      entryPoints: [filePath],
+      outfile: outPath,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'esnext',
+      plugins: [
+        {
+          name: 'external-non-relative',
+          setup(b) {
+            // Absolute-path imports (`/etc/passwd`) are NOT caught by the
+            // externalise filter below (`[^./]` excludes a leading `/`), so
+            // without this they fall through to esbuild's default resolver and,
+            // with bundle:true, get their host-file contents inlined into the
+            // flattened snapshot BEFORE the downstream source-text import guard
+            // (compiler-core) can reject them. Reject them here too, for
+            // containment. Skip the entry point: esbuild passes it as an
+            // absolute path.
+            b.onResolve({ filter: /^\// }, (args) =>
+              args.kind === 'entry-point'
+                ? undefined
+                : {
+                    errors: [
+                      {
+                        text: `Unsupported absolute import "${args.path}". Connector sources may only import from lobu, npm:... specifiers, published packages, or sibling relative files.`,
+                      },
+                    ],
+                  }
+            );
+            // Everything that is not a relative path (bare packages, npm:,
+            // lobu, node:) is left as-is for the real compile step.
+            b.onResolve({ filter: /^[^./]/ }, (args) => ({ path: args.path, external: true }));
+          },
+        },
+      ],
+      write: true,
+      minify: false,
+      sourcemap: false,
+    });
+    return await readFile(outPath, 'utf-8');
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 interface CompileOptions {

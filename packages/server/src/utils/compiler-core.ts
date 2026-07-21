@@ -3,7 +3,9 @@
  *
  * Two-step process:
  * 1. esbuild compilation (safe, pure text transform — no code execution):
- *    - Validates imports, rewrites npm: specifiers, bundles via esbuild
+ *    - Validates imports and resolves npm: specifiers via esbuild onResolve
+ *      plugins (AST-level — string/comment contents are never misread as
+ *      imports, #2043), bundles via esbuild
  *    - Produces compiled_code + compiled_code_hash (SHA-256)
  *
  * 2. Metadata extraction (isolated subprocess):
@@ -18,8 +20,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
-import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
-import { type BuildOptions, build } from 'esbuild';
+import { EXTERNAL_RUNTIME_DEPS, createNpmSpecifierPlugin } from '@lobu/connector-worker/compile';
+import { type BuildOptions, type Plugin, build } from 'esbuild';
 import logger from './logger';
 import { getErrorMessage } from "@lobu/core";
 
@@ -47,49 +49,39 @@ interface ExtractConfig {
   runnerCode: string;
 }
 
-function validateSupportedImports(sourceCode: string, label: string): void {
-  const importSpecifiers = new Set<string>();
-  const staticImportRe = /\b(?:import|export)\s[\s\S]*?\bfrom\s+['"]([^'"]+)['"]/g;
-  const sideEffectImportRe = /\bimport\s+['"]([^'"]+)['"]/g;
-
-  for (const regex of [staticImportRe, sideEffectImportRe]) {
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(sourceCode)) !== null) {
-      importSpecifiers.add(match[1]);
-    }
-  }
-
-  for (const specifier of importSpecifiers) {
-    if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('@/')) {
-      throw new Error(
-        `Unsupported import "${specifier}". ${label} sources must be single-file and may only import from lobu, npm:... specifiers, or published packages.`
-      );
-    }
-  }
-}
-
-function rewriteNpmSpecifierImports(sourceCode: string): string {
-  return sourceCode.replace(/(['"])npm:([^'"]+)\1/g, (_full, quote, specifier) => {
-    const resolved = resolveNpmSpecifier(specifier);
-    return `${quote}${resolved}${quote}`;
-  });
-}
-
-function resolveNpmSpecifier(specifier: string): string {
-  const scoped = specifier.startsWith('@');
-  const match = scoped
-    ? specifier.match(/^(?<pkg>@[^/]+\/[^/@]+)(?:@(?<version>[^/]+))?(?<subpath>\/.*)?$/)
-    : specifier.match(/^(?<pkg>[^/@]+)(?:@(?<version>[^/]+))?(?<subpath>\/.*)?$/);
-
-  if (!match?.groups?.pkg) {
-    throw new Error(
-      `Invalid npm: import specifier "npm:${specifier}". Expected npm:package@version or npm:@scope/package@version.`
-    );
-  }
-
-  const pkg = match.groups.pkg;
-  const subpath = match.groups.subpath ?? '';
-  return `${pkg}${subpath}`;
+/**
+ * Reject imports that can never resolve for a single-file source compiled from
+ * text (DB-stored connector source, run_sdk scripts, reaction scripts):
+ * relative paths, project aliases (`@/`), and absolute filesystem paths.
+ *
+ * Registered as an esbuild onResolve hook, so it fires ONLY for real module
+ * declarations parsed from the source AST — dependency-like text inside string
+ * literals, template literals, or comments is data, never an import (#2043).
+ * Scoped to declarations made by the entry source itself: bundled npm
+ * dependencies legitimately use relative imports internally and fall through
+ * to esbuild's default resolver.
+ *
+ * Absolute paths are rejected for the same single-file contract plus
+ * containment: a source compiled server-side must not be able to bundle
+ * arbitrary files from the gateway's filesystem into its artifact.
+ */
+function createImportGuardPlugin(entryPath: string, label: string): Plugin {
+  return {
+    name: 'import-guard',
+    setup(b) {
+      b.onResolve({ filter: /^(\.\.?(\/|$)|@\/|\/)/ }, (args) => {
+        if (args.kind === 'entry-point') return undefined;
+        if (args.importer !== entryPath) return undefined;
+        return {
+          errors: [
+            {
+              text: `Unsupported import "${args.path}". ${label} sources must be single-file and may only import from lobu, npm:... specifiers, or published packages.`,
+            },
+          ],
+        };
+      });
+    },
+  };
 }
 
 export function computeCodeHash(code: string): string {
@@ -109,11 +101,10 @@ export async function compileSource(
   try {
     const inputPath = join(tmpDir, 'source.ts');
     const outputPath = join(tmpDir, 'source.mjs');
-    validateSupportedImports(sourceCode, config.label);
-    const normalizedSource = rewriteNpmSpecifierImports(sourceCode);
 
-    await writeFile(inputPath, normalizedSource, 'utf-8');
+    await writeFile(inputPath, sourceCode, 'utf-8');
 
+    const { plugins: overridePlugins = [], ...buildOverrides } = config.buildOptions;
     const buildOptions: BuildOptions = {
       entryPoints: [inputPath],
       outfile: outputPath,
@@ -127,7 +118,15 @@ export async function compileSource(
       write: true,
       minify: false,
       sourcemap: false,
-      ...config.buildOptions,
+      ...buildOverrides,
+      plugins: [
+        createImportGuardPlugin(inputPath, config.label),
+        // Source-text artifacts must be self-contained: an npm: package that
+        // isn't installed in this image is a hard compile error, never a
+        // silent externalisation the runtime can't satisfy.
+        createNpmSpecifierPlugin({ unresolved: 'error' }),
+        ...overridePlugins,
+      ],
     };
 
     try {

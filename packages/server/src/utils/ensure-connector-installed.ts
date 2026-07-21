@@ -68,8 +68,26 @@ export async function resolveConnectorCode(
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
     if (stored.version) {
-      const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.version);
-      if (recompiled) return recompiled;
+      try {
+        const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.version);
+        if (recompiled) return recompiled;
+      } catch (err) {
+        // The stored source no longer compiles under the current compile
+        // configuration (e.g. a catalog snapshot taken before an import rule
+        // tightened — the Gmail scraper-utils outage, #2042). When the same
+        // key ships as bundled source in this image, the registry copy is the
+        // known-good implementation — run it instead of hard-failing every
+        // feed read. A key with no bundled counterpart is genuinely custom:
+        // surface the compile error to the caller.
+        if (findBundledConnectorFile(connectorKey)) {
+          logger.error(
+            { connector_key: connectorKey, version: stored.version, err },
+            'Stored connector source failed to recompile — falling back to bundled catalog source'
+          );
+        } else {
+          throw err;
+        }
+      }
     }
     // No stored source to recompile from (legacy row) — fall through to the
     // bundled on-disk source; the stale artifact itself must never execute.

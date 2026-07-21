@@ -12,8 +12,8 @@ import {
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
+  validatePublicUrl,
 } from '@lobu/connector-sdk';
-import { validatePublicUrl } from './scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,7 +48,7 @@ export default class RSSConnector extends ConnectorRuntime {
     key: 'rss',
     name: 'RSS / Atom',
     description: 'Fetches and parses RSS 2.0 and Atom feeds to collect articles.',
-    version: '1.0.0',
+    version: '1.0.1',
     faviconDomain: 'rss.com',
     authSchema: {
       methods: [{ type: 'none' }],

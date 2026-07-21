@@ -47,11 +47,14 @@ export default defineConfig({
       // server bun:test units job. (Sibling src/tools/admin/__tests__ is handled
       // by its own exclude above.)
       "src/tools/admin/manage_operations/__tests__/**",
-      // src/utils/__tests__ is a MIXED dir: most files are vitest-style. Only
-      // device-pin-tombstones imports bun:test, so exclude just that file (it
-      // runs via the server bun:test units job). Do NOT broaden to
+      // src/utils/__tests__ is a MIXED dir: most files are vitest-style. The
+      // files below import bun:test (device-pin tombstones, plus the #2042/#2043
+      // connector-compiler suites), so exclude just those files (they run via
+      // the server bun:test units job). Do NOT broaden to
       // src/utils/__tests__/** — that orphans the vitest files.
       "src/utils/__tests__/device-pin-tombstones.test.ts",
+      "src/utils/__tests__/catalog-connectors-compile.test.ts",
+      "src/utils/__tests__/compiler-core.test.ts",
       "**/node_modules/**",
       "**/dist/**",
     ],

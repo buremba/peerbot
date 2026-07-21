@@ -251,19 +251,23 @@ describe('virtual feed surfaces (recall + query_sql)', () => {
   }, 60_000);
 
   it('(2) refuses to address a NON-virtual feed', async () => {
-    const res = await querySql({ feed: String(nonVirtualFeedId) }, {}, ownerCtx);
-    expect(res.error).toMatch(/not a virtual feed/i);
+    // A broken feed read surfaces as a hard tool error, never a success-shaped
+    // empty table an agent could read as "no data" (#2042).
+    await expect(querySql({ feed: String(nonVirtualFeedId) }, {}, ownerCtx)).rejects.toThrow(
+      /not a virtual feed/i
+    );
   }, 60_000);
 
   it('(2) errors on an unresolvable feed reference', async () => {
-    const res = await querySql({ feed: 'vfsurf-org-db/nope' }, {}, ownerCtx);
-    expect(res.error).toMatch(/not found or not accessible/i);
+    await expect(querySql({ feed: 'vfsurf-org-db/nope' }, {}, ownerCtx)).rejects.toThrow(
+      /not found or not accessible/i
+    );
   }, 60_000);
 
   it('(2) a member cannot reach a feed on another user’s PRIVATE connection', async () => {
-    const res = await querySql({ feed: String(privRecallFeedId) }, {}, memberCtx());
-    expect(res.rows).toHaveLength(0);
-    expect(res.error).toMatch(/not found or not accessible/i);
+    await expect(querySql({ feed: String(privRecallFeedId) }, {}, memberCtx())).rejects.toThrow(
+      /not found or not accessible/i
+    );
     // …and the owner still can.
     const ok = await querySql({ feed: String(privRecallFeedId) }, {}, ownerCtx);
     expect(ok.error).toBeUndefined();

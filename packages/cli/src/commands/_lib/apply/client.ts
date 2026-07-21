@@ -29,6 +29,32 @@ export interface RemoteAgent {
   description?: string;
 }
 
+export interface RemoteDeployment {
+  id: number;
+  applyId: string;
+  createdAt: string;
+  title: string | null;
+  status: string | null;
+  gitSha: string | null;
+  gitDirty: boolean | null;
+  manifestHash: string | null;
+  rollbackOf: string | null;
+  /** Stored snapshot ({version, state, connector_versions}); null on legacy deployments. */
+  manifest: {
+    version: number;
+    state: Record<string, unknown>;
+    connector_versions: Record<string, string>;
+  } | null;
+}
+
+export interface DeploymentPauseState {
+  paused: boolean;
+  pausedAt?: string;
+  applyId?: string | null;
+  rollbackOf?: string | null;
+  pausedBy?: string | null;
+}
+
 export interface RemotePlatform {
   id: string;
   platform: string;
@@ -463,6 +489,43 @@ export class ApplyClient {
    */
   async postDeploymentSummary(summary: DeploymentSummary): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/deployments`, summary);
+  }
+
+  /** Fetch one deployment's record, including its stored manifest snapshot. */
+  async getDeployment(applyId: string): Promise<RemoteDeployment | null> {
+    try {
+      const { body } = await this.request<{ deployment?: RemoteDeployment }>(
+        "GET",
+        `/api/${this.orgSlug}/deployments/${encodeURIComponent(applyId)}`
+      );
+      return body.deployment ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Promotions-pause state (set by `lobu rollback`). */
+  async getDeploymentPause(): Promise<DeploymentPauseState> {
+    const { body } = await this.request<DeploymentPauseState>(
+      "GET",
+      `/api/${this.orgSlug}/deployments/pause`
+    );
+    return body;
+  }
+
+  async setDeploymentPause(params: {
+    applyId: string;
+    rollbackOf: string;
+  }): Promise<void> {
+    await this.request("PUT", `/api/${this.orgSlug}/deployments/pause`, {
+      apply_id: params.applyId,
+      rollback_of: params.rollbackOf,
+    });
+  }
+
+  async clearDeploymentPause(): Promise<void> {
+    await this.request("DELETE", `/api/${this.orgSlug}/deployments/pause`);
   }
 
   // ── Org inference providers ────────────────────────────────────────────────
@@ -1196,6 +1259,22 @@ export class ApplyClient {
     await this.connectionsTool({
       action: "uninstall_connector",
       connector_key: connectorKey,
+    });
+  }
+
+  /**
+   * Re-activate a retained connector version (org-local pointer flip — the
+   * bytes already live in the org's `connector_versions` rows). The engine
+   * behind `lobu rollback`'s connector pins.
+   */
+  async rollbackConnectorVersion(
+    connectorKey: string,
+    version: string
+  ): Promise<void> {
+    await this.connectionsTool({
+      action: "rollback_connector_version",
+      connector_key: connectorKey,
+      version,
     });
   }
 

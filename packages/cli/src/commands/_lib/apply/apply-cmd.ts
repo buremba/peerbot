@@ -43,6 +43,7 @@ import {
 } from "./render.js";
 import {
   buildCountsByKind,
+  buildDeploymentManifest,
   collectGitInfo,
   computeManifestHash,
   type DeploymentSummary,
@@ -59,13 +60,19 @@ interface ApplyOptions {
   url?: string;
   /** Bypass the project-link guard. */
   force?: boolean;
+  /**
+   * Clear the promotions pause a `lobu rollback` set and proceed. Without it,
+   * apply refuses while the org is paused — CI must never silently re-promote
+   * over a deliberate rollback.
+   */
+  resume?: boolean;
   /** CLI version stamped into the deployment summary. */
   cliVersion?: string;
   /** Test seam — inject a stubbed fetch. */
   fetchImpl?: typeof fetch;
 }
 
-interface PendingAuthEntry {
+export interface PendingAuthEntry {
   slug: string;
   kind: string;
   connectUrl?: string;
@@ -302,7 +309,7 @@ function hasDesiredConnectors(state: DesiredState): boolean {
   );
 }
 
-async function fetchRemoteSnapshot(
+export async function fetchRemoteSnapshot(
   client: ApplyClient,
   state: DesiredState,
   only?: "agents" | "memory",
@@ -430,7 +437,15 @@ async function installConnectorDefinitions(
   state: DesiredState,
   catalog: RemoteConnectorDefinition[],
   plan: DiffPlan
-): Promise<RemoteConnectorDefinition[]> {
+): Promise<{
+  catalog: RemoteConnectorDefinition[];
+  /**
+   * Active version per config-relevant connector key AFTER this apply — the
+   * deployment manifest's retained-version pins (`lobu rollback` repoints to
+   * these via `rollback_connector_version`, no source re-push).
+   */
+  connectorVersions: Record<string, string>;
+}> {
   const installedKeys = new Set(
     catalog.filter((d) => d.installed).map((d) => d.key)
   );
@@ -522,7 +537,18 @@ async function installConnectorDefinitions(
     );
   }
 
-  return mutated ? await client.listConnectors(true) : catalog;
+  const finalCatalog = mutated ? await client.listConnectors(true) : catalog;
+
+  // Pin the versions that are active NOW for every key this config declares
+  // or references — the self-contained part of the deployment snapshot.
+  const pinKeys = new Set([...locallySuppliedKeys, ...referenced]);
+  const connectorVersions: Record<string, string> = {};
+  for (const def of finalCatalog) {
+    if (def.installed && def.version && pinKeys.has(def.key)) {
+      connectorVersions[def.key] = def.version;
+    }
+  }
+  return { catalog: finalCatalog, connectorVersions };
 }
 
 // ── Connector config validation (against a given catalog) ──────────────────
@@ -640,6 +666,28 @@ export function locallyDeclaredConnectorKeys(state: DesiredState): Set<string> {
   return keys;
 }
 
+/**
+ * Active-version pins for every config-relevant connector key, read from a
+ * catalog snapshot. Used when the apply didn't (re)install connectors (all-noop
+ * plans) and as the fallback layer under a partial failure's install results.
+ */
+export function connectorVersionPins(
+  state: DesiredState,
+  catalog: RemoteConnectorDefinition[]
+): Record<string, string> {
+  const pinKeys = new Set([
+    ...locallyDeclaredConnectorKeys(state),
+    ...referencedConnectorKeys(state.connectors),
+  ]);
+  const pins: Record<string, string> = {};
+  for (const def of catalog) {
+    if (def.installed && def.version && pinKeys.has(def.key)) {
+      pins[def.key] = def.version;
+    }
+  }
+  return pins;
+}
+
 // ── Apply executor ─────────────────────────────────────────────────────────
 
 interface ApplyContext {
@@ -690,11 +738,13 @@ export async function pushProviderApiKeys(
 export async function executePlan(
   ctx: ApplyContext,
   pendingAuth: PendingAuthEntry[]
-): Promise<void> {
+): Promise<{ connectorVersions: Record<string, string> }> {
   const rowsByKind = (kind: DiffRow["kind"]) =>
     ctx.plan.rows.filter(
       (row) => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
     );
+
+  let connectorVersions: Record<string, string> = {};
 
   // 0) Connector definitions FIRST — install/update them (the plan was already
   //    confirmed), refetch the catalog, then re-validate connection/feed config
@@ -702,12 +752,14 @@ export async function executePlan(
   //    means a post-install schema rejection halts apply before mutating
   //    anything unrelated.
   if (hasDesiredConnectors(ctx.state)) {
-    const freshCatalog = await installConnectorDefinitions(
+    const installed = await installConnectorDefinitions(
       ctx.client,
       ctx.state,
       ctx.remote.connectorDefinitions,
       ctx.plan
     );
+    const freshCatalog = installed.catalog;
+    connectorVersions = installed.connectorVersions;
     for (const warning of validateConnectorState(ctx.state, freshCatalog, {
       requireInstalled: true,
     })) {
@@ -1117,6 +1169,8 @@ export async function executePlan(
   //     rows for definitions). The server refuses an entity-type delete while
   //     instances exist, so the data stays safe.
   await deleteRemovedDefinitions(ctx);
+
+  return { connectorVersions };
 }
 
 /**
@@ -1269,6 +1323,32 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
+
+  // Promotions-pause gate: a `lobu rollback` pauses applies for the org so a
+  // CI run can't silently re-promote the config that was just rolled back.
+  // `--resume` is the explicit acknowledgment that the config repo has been
+  // reconciled (or the newer state is wanted after all). Tolerate a failing
+  // pause endpoint (older server) — the gate is a workflow guard.
+  const pause = await client.getDeploymentPause().catch(() => null);
+  if (pause?.paused && !opts.dryRun) {
+    if (!opts.resume) {
+      printError(
+        [
+          "",
+          `Deployments are paused for "${orgSlug}" — a rollback restored deployment ${pause.rollbackOf ?? "?"}${pause.pausedAt ? ` on ${pause.pausedAt}` : ""}.`,
+          "Applying now would re-promote the config that was just rolled back.",
+          "",
+          "  Reconcile your config repo (e.g. `git revert` the bad change), then:",
+          "    lobu apply --resume",
+        ].join("\n")
+      );
+      throw new ValidationError(
+        "deployments paused by rollback — pass --resume to proceed"
+      );
+    }
+    await client.clearDeploymentPause();
+    printText(chalk.yellow("Resumed deployments (pause cleared)."));
+  }
 
   // Refuse if .lobu/project.json points at a different (context, org).
   const link = await loadProjectLink(cwd);
@@ -1456,6 +1536,12 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
         git_sha: gitInfo.sha,
         git_dirty: gitInfo.dirty,
         cli_version: opts.cliVersion ?? null,
+        // All-noop plan: the installed catalog IS this config's connector
+        // state — pin from the remote snapshot.
+        manifest: buildDeploymentManifest(
+          state,
+          connectorVersionPins(state, remote.connectorDefinitions)
+        ),
       });
     } else {
       printText(chalk.green("\nNothing to apply."));
@@ -1490,13 +1576,18 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
 
   const pendingAuth: PendingAuthEntry[] = [];
   let applyErr: unknown;
+  let connectorVersions: Record<string, string> = {};
   try {
     // Resources first, then provider keys. Keys are org-scoped
     // (inference_providers rows), so there is no agent-existence ordering
     // constraint anymore — the order is kept for stable output only.
     if (hasResourceWork) {
       printText(chalk.bold("\nApplying:"));
-      await executePlan({ client, state, plan, remote }, pendingAuth);
+      const executed = await executePlan(
+        { client, state, plan, remote },
+        pendingAuth
+      );
+      connectorVersions = executed.connectorVersions;
     }
     // Provider keys live outside the resource diff (idempotent PUT), so push
     // them on any confirmed apply (including a pending-auth-only plan). Done
@@ -1522,6 +1613,15 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // x-lobu-apply-id header; this summary row is what groups them in the UI.
   {
     const gitInfo = collectGitInfo(cwd);
+    // A partial failure's snapshot could pin connectors that never installed
+    // this run — fall back to the CURRENT remote pins for any missing key so
+    // rollback restores what was actually live, never a phantom.
+    const pins = hasResourceWork
+      ? {
+          ...connectorVersionPins(state, remote.connectorDefinitions),
+          ...connectorVersions,
+        }
+      : connectorVersionPins(state, remote.connectorDefinitions);
     await postDeploymentSummarySafe(client, {
       apply_id: applyId,
       status: applyErr ? "partial_failure" : "succeeded",
@@ -1531,6 +1631,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       git_sha: gitInfo.sha,
       git_dirty: gitInfo.dirty,
       cli_version: opts.cliVersion ?? null,
+      manifest: buildDeploymentManifest(state, pins),
       ...(applyErr
         ? {
             error:

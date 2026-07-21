@@ -43,6 +43,12 @@ routes.use("*", async (c, next) => {
 
 const DEPLOYMENT_STATUSES = new Set(["succeeded", "partial_failure"]);
 
+// Stored manifest ceiling. The manifest is the REDACTED desired-state
+// snapshot minus connector source bytes (those live in connector_versions and
+// the manifest references them as {key: version} pins), so real configs are
+// tens of KBs; the cap only guards against a pathological payload.
+const MANIFEST_MAX_BYTES = 1_000_000;
+
 function clampLimit(raw: string | undefined, fallback: number, max: number) {
 	const parsed = Number.parseInt(raw ?? String(fallback), 10);
 	return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), max) : fallback;
@@ -88,6 +94,26 @@ routes.post("/", async (c) => {
 			? body.counts_by_kind
 			: {};
 	const errorText = typeof body.error === "string" ? body.error : null;
+	// Rollback deployments reference the deployment they restored.
+	const rollbackOf = parseApplyId(
+		typeof body.rollback_of === "string" ? body.rollback_of : null,
+	);
+	// The self-contained desired-state snapshot (secrets structurally redacted
+	// CLI-side; connector bytes referenced as retained {key: version} pins, not
+	// embedded) — what `lobu rollback` re-applies.
+	let manifest: Record<string, unknown> | null = null;
+	if (body.manifest !== undefined && body.manifest !== null) {
+		if (typeof body.manifest !== "object" || Array.isArray(body.manifest)) {
+			return c.json({ error: "manifest must be an object" }, 400);
+		}
+		if (JSON.stringify(body.manifest).length > MANIFEST_MAX_BYTES) {
+			return c.json(
+				{ error: `manifest exceeds ${MANIFEST_MAX_BYTES} bytes` },
+				400,
+			);
+		}
+		manifest = body.manifest as Record<string, unknown>;
+	}
 
 	const sql = getDb();
 	// Retried POSTs (CLI network blip) must not create a second deployment row.
@@ -120,6 +146,7 @@ routes.post("/", async (c) => {
 		payloadData: {
 			counts_by_kind: countsByKind,
 			...(errorText ? { error: errorText } : {}),
+			...(manifest ? { manifest } : {}),
 		},
 		metadata: {
 			category: "deployment",
@@ -130,6 +157,7 @@ routes.post("/", async (c) => {
 			git_dirty: gitDirty,
 			cli_version: cliVersion,
 			counts,
+			...(rollbackOf ? { rollback_of: rollbackOf } : {}),
 		},
 		createdBy: applyCtx.createdBy,
 		clientId: applyCtx.clientId,
@@ -184,6 +212,7 @@ routes.get("/", async (c) => {
 				gitSha: metadata.git_sha ?? null,
 				gitDirty: metadata.git_dirty ?? null,
 				cliVersion: metadata.cli_version ?? null,
+				rollbackOf: metadata.rollback_of ?? null,
 				createdBy: row.created_by ?? null,
 			};
 		}
@@ -282,6 +311,72 @@ routes.get("/changes/:eventId", async (c) => {
 	return c.json({ change: toChangeDetail(rows[0]) });
 });
 
+// ── Promotions pause (set by `lobu rollback`, cleared by `lobu apply --resume`) ──
+// Registered before `/:applyId` so the literal segment wins the match. A
+// workflow guard for the org's own operators (CI must not silently re-promote
+// over a deliberate rollback), not a security boundary.
+
+routes.get("/pause", async (c) => {
+	const organizationId = c.get("organizationId") as string;
+	const sql = getDb();
+	const rows = await sql`
+		SELECT paused_at, apply_id, rollback_of, paused_by
+		FROM deployment_pause
+		WHERE organization_id = ${organizationId}
+		LIMIT 1
+	`;
+	if (rows.length === 0) return c.json({ paused: false });
+	const row = rows[0];
+	return c.json({
+		paused: true,
+		pausedAt: row.paused_at,
+		applyId: row.apply_id ?? null,
+		rollbackOf: row.rollback_of ?? null,
+		pausedBy: row.paused_by ?? null,
+	});
+});
+
+routes.put("/pause", async (c) => {
+	const denied = requireSessionOrAdminPat(c);
+	if (denied) return denied;
+	const organizationId = c.get("organizationId") as string;
+
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json();
+	} catch {
+		body = {};
+	}
+	const applyId = parseApplyId(
+		typeof body.apply_id === "string" ? body.apply_id : null,
+	);
+	const rollbackOf = parseApplyId(
+		typeof body.rollback_of === "string" ? body.rollback_of : null,
+	);
+	const applyCtx = getApplyContext(c);
+
+	const sql = getDb();
+	await sql`
+		INSERT INTO deployment_pause (organization_id, apply_id, rollback_of, paused_by)
+		VALUES (${organizationId}, ${applyId}, ${rollbackOf}, ${applyCtx.createdBy ?? null})
+		ON CONFLICT (organization_id) DO UPDATE
+		SET paused_at = now(),
+		    apply_id = EXCLUDED.apply_id,
+		    rollback_of = EXCLUDED.rollback_of,
+		    paused_by = EXCLUDED.paused_by
+	`;
+	return c.json({ paused: true });
+});
+
+routes.delete("/pause", async (c) => {
+	const denied = requireSessionOrAdminPat(c);
+	if (denied) return denied;
+	const organizationId = c.get("organizationId") as string;
+	const sql = getDb();
+	await sql`DELETE FROM deployment_pause WHERE organization_id = ${organizationId}`;
+	return c.json({ paused: false });
+});
+
 // ── Deployment detail ────────────────────────────────────────────────────────
 
 routes.get("/:applyId", async (c) => {
@@ -325,6 +420,8 @@ routes.get("/:applyId", async (c) => {
 			gitSha: summaryMeta.git_sha ?? null,
 			gitDirty: summaryMeta.git_dirty ?? null,
 			cliVersion: summaryMeta.cli_version ?? null,
+			rollbackOf: summaryMeta.rollback_of ?? null,
+			manifest: summaryPayload.manifest ?? null,
 			createdBy: summary.created_by ?? null,
 		},
 		changes: changeRows.map(toChangeDetail),

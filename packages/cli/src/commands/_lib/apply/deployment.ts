@@ -3,9 +3,12 @@
  *
  * Each apply run mints an `apply_id`, sends it as `x-lobu-apply-id` on every
  * mutation (the server stamps its config-audit events with it), and posts a
- * summary to `POST /api/<org>/deployments` at the end. Rollback stays
- * git-first: the summary records the config repo's HEAD SHA so the
- * Deployments UI can point at the commit to revert.
+ * summary to `POST /api/<org>/deployments` at the end — including the
+ * redacted desired-state snapshot (`manifest`) that makes the deployment
+ * self-contained: `lobu rollback <apply_id>` re-applies it through the same
+ * diff/execute engine, repointing connectors to their retained versions. The
+ * summary still records the config repo's HEAD SHA so git-first rollback
+ * (revert commit → re-apply) stays first-class for config-as-code orgs.
  */
 
 import { execFileSync } from "node:child_process";
@@ -46,16 +49,17 @@ export function collectGitInfo(cwd: string): GitInfo {
 }
 
 /**
- * sha256 of the redacted, canonicalized desired state. Beyond the key-name
- * denylist, the fields that hold RESOLVED secret values in process memory are
- * stripped structurally: agent `providerKeys[].value`, org provider `apiKey`,
- * auth-profile `credentials`, and platform `config` values (resolved from
- * `$VAR`/`secret()` at map time). The hash identifies a config revision; two
- * applies of the same config (same secrets or not) hash identically because
- * secret VALUES never participate.
+ * Structurally redact the fields that hold RESOLVED secret values in process
+ * memory — agent `providerKeys[].value`, org provider `apiKey`, auth-profile
+ * `credentials`, and platform `config` values (resolved from `$VAR`/`secret()`
+ * at map time) — then deep-redact by key-name denylist. Shared by the
+ * manifest hash and the stored deployment snapshot: a snapshot NEVER carries
+ * a secret value, so `lobu rollback` structurally cannot re-apply one.
  */
-export function computeManifestHash(state: DesiredState): string {
-  const redacted = deepRedactSecrets({
+export function redactDesiredState(
+  state: DesiredState
+): Record<string, unknown> {
+  return deepRedactSecrets({
     ...state,
     agents: state.agents.map((agent) => ({
       ...agent,
@@ -86,8 +90,65 @@ export function computeManifestHash(state: DesiredState): string {
         credentials: REDACTED_SENTINEL,
       })),
     },
-  });
-  return `sha256:${createHash("sha256").update(canonical(redacted)).digest("hex")}`;
+  }) as Record<string, unknown>;
+}
+
+/**
+ * sha256 of the redacted, canonicalized desired state. The hash identifies a
+ * config revision; two applies of the same config (same secrets or not) hash
+ * identically because secret VALUES never participate.
+ */
+export function computeManifestHash(state: DesiredState): string {
+  return `sha256:${createHash("sha256")
+    .update(canonical(redactDesiredState(state)))
+    .digest("hex")}`;
+}
+
+export const SNAPSHOT_VERSION = 1;
+
+export interface DeploymentManifest {
+  version: typeof SNAPSHOT_VERSION;
+  /**
+   * The redacted desired state, minus connector source bytes: connector
+   * definitions are stripped to declaration metadata, and the artifacts they
+   * resolved to ride `connector_versions` below as retained
+   * (org, key, version) pins — a deployment is self-contained without ever
+   * embedding code or secrets.
+   */
+  state: Record<string, unknown>;
+  /** Active connector version per declared key, recorded post-install. */
+  connector_versions: Record<string, string>;
+}
+
+/**
+ * Build the stored deployment snapshot. `connectorVersions` maps each
+ * config-declared connector key to the version active AFTER this apply
+ * (`install_connector` responses / the refreshed catalog) — the pins
+ * `lobu rollback` repoints to via `rollback_connector_version`.
+ */
+export function buildDeploymentManifest(
+  state: DesiredState,
+  connectorVersions: Record<string, string>
+): DeploymentManifest {
+  const redacted = redactDesiredState(state);
+  const connectors = (redacted.connectors ?? {}) as Record<string, unknown>;
+  const definitions = Array.isArray(connectors.definitions)
+    ? (connectors.definitions as Array<Record<string, unknown>>)
+    : [];
+  return {
+    version: SNAPSHOT_VERSION,
+    state: {
+      ...redacted,
+      connectors: {
+        ...connectors,
+        // Keep the declaration shape for display/diff labels; drop the bytes.
+        definitions: definitions.map(
+          ({ sourceCode: _sourceCode, ...def }) => def
+        ),
+      },
+    },
+    connector_versions: connectorVersions,
+  };
 }
 
 export type CountsByKind = Record<
@@ -118,4 +179,8 @@ export interface DeploymentSummary {
   git_dirty: boolean | null;
   cli_version: string | null;
   error?: string;
+  /** Self-contained snapshot for `lobu rollback` (absent on legacy CLIs). */
+  manifest?: DeploymentManifest;
+  /** Set on rollback deployments: the deployment this one restored. */
+  rollback_of?: string;
 }

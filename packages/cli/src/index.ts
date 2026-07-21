@@ -303,6 +303,10 @@ Memory:
       "--force",
       "Bypass the project-link guard if context/org don't match"
     )
+    .option(
+      "--resume",
+      "Clear the promotions pause a `lobu rollback` set and proceed"
+    )
     .action(
       async (options: {
         dryRun?: boolean;
@@ -311,6 +315,7 @@ Memory:
         org?: string;
         url?: string;
         force?: boolean;
+        resume?: boolean;
       }) => {
         if (
           options.only !== undefined &&
@@ -333,6 +338,35 @@ Memory:
           org: options.org,
           url: options.url,
           force: options.force,
+          resume: options.resume,
+          cliVersion: version,
+        });
+      }
+    );
+
+  // ─── rollback ───────────────────────────────────────────────────────────
+  program
+    .command("rollback")
+    .argument("<applyId>", "Deployment to restore (apl_… from `Deployments`)")
+    .description(
+      "Restore a previous deployment from its stored snapshot (pauses future applies until --resume)"
+    )
+    .option("--yes", "Skip the confirmation prompt (CI mode)")
+    .option("--org <slug>", "Org slug override (defaults to active session)")
+    .option("--url <url>", "Server URL override")
+    .action(
+      async (
+        applyId: string,
+        options: { yes?: boolean; org?: string; url?: string }
+      ) => {
+        const { rollbackCommand } = await import(
+          "./commands/_lib/apply/rollback-cmd.js"
+        );
+        await rollbackCommand({
+          applyId,
+          yes: options.yes,
+          org: options.org,
+          url: options.url,
           cliVersion: version,
         });
       }

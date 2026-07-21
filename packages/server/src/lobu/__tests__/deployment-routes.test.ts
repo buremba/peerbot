@@ -396,3 +396,100 @@ describe('x-lobu-apply-id end-to-end through a real mutation', () => {
     expect(metadata2.actor_source).toBe('ui');
   });
 });
+
+describe('deployment snapshots + promotions pause (lobu rollback)', () => {
+  test('stores the manifest, returns it from detail, and stamps rollback_of', async () => {
+    const app = await importDeploymentRoutes();
+    const manifest = {
+      version: 1,
+      state: { agents: [], connectors: { definitions: [], authProfiles: [], connections: [] } },
+      connector_versions: { 'zz.probe': '1.2.0' },
+    };
+
+    const posted = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(summaryBody({ manifest })),
+    });
+    expect(posted.status).toBe(201);
+
+    const detail = await app.request(`/${APPLY_ID}`);
+    expect(detail.status).toBe(200);
+    const body = (await detail.json()) as { deployment: Record<string, any> };
+    expect(body.deployment.manifest).toEqual(manifest);
+    expect(body.deployment.rollbackOf).toBeNull();
+
+    // A rollback deployment references what it restored, in detail AND feed.
+    const rollbackId = 'apl_99999999-8888-7777-6666-555555555555';
+    const rolled = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({ apply_id: rollbackId, rollback_of: APPLY_ID, manifest })
+      ),
+    });
+    expect(rolled.status).toBe(201);
+    const rolledDetail = (await (await app.request(`/${rollbackId}`)).json()) as {
+      deployment: Record<string, any>;
+    };
+    expect(rolledDetail.deployment.rollbackOf).toBe(APPLY_ID);
+    const feed = (await (await app.request('/')).json()) as {
+      items: Array<Record<string, any>>;
+    };
+    const feedRow = feed.items.find((i) => i.applyId === rollbackId);
+    expect(feedRow?.rollbackOf).toBe(APPLY_ID);
+  });
+
+  test('rejects a non-object manifest and an oversized manifest', async () => {
+    const app = await importDeploymentRoutes();
+    const notObject = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(summaryBody({ manifest: [1, 2, 3] })),
+    });
+    expect(notObject.status).toBe(400);
+
+    const oversized = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({ manifest: { blob: 'x'.repeat(1_000_001) } })
+      ),
+    });
+    expect(oversized.status).toBe(400);
+  });
+
+  test('pause lifecycle: unpaused → PUT → paused (org-scoped) → DELETE → unpaused', async () => {
+    const app = await importDeploymentRoutes();
+
+    const initial = (await (await app.request('/pause')).json()) as {
+      paused: boolean;
+    };
+    expect(initial.paused).toBe(false);
+
+    const set = await app.request('/pause', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        apply_id: 'apl_99999999-8888-7777-6666-555555555555',
+        rollback_of: APPLY_ID,
+      }),
+    });
+    expect(set.status).toBe(200);
+
+    const paused = (await (await app.request('/pause')).json()) as Record<string, any>;
+    expect(paused.paused).toBe(true);
+    expect(paused.rollbackOf).toBe(APPLY_ID);
+
+    // Pause is org-scoped: another org is unaffected.
+    authStash.organizationId = OTHER_ORG;
+    const otherOrg = (await (await app.request('/pause')).json()) as { paused: boolean };
+    expect(otherOrg.paused).toBe(false);
+    authStash.organizationId = ORG;
+
+    const cleared = await app.request('/pause', { method: 'DELETE' });
+    expect(cleared.status).toBe(200);
+    const after = (await (await app.request('/pause')).json()) as { paused: boolean };
+    expect(after.paused).toBe(false);
+  });
+});

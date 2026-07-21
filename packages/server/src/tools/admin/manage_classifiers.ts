@@ -252,13 +252,17 @@ async function handleList(
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
   const filterEntityId = args.entity_id ?? null;
-  const statusFilter = args.status ?? null;
+  // Default to active classifiers only (exclude deprecated), mirroring the
+  // behaviors list default. `status: 'all'` is the explicit escape hatch that
+  // returns every classifier regardless of lifecycle state. Without a default,
+  // repeated E2E runs left deprecated rows visible in the ordinary list (#2051).
+  const statusFilter = args.status ?? 'active';
 
   const conditions: string[] = ['fc.watcher_id IS NOT NULL', 'fc.organization_id = $1'];
   const params: unknown[] = [ctx.organizationId];
   let paramIdx = 2;
 
-  if (statusFilter) {
+  if (statusFilter !== 'all') {
     conditions.push(`fc.status = $${paramIdx++}`);
     params.push(statusFilter);
   }

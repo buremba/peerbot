@@ -97,7 +97,8 @@ export const ManageClassifiersSchema = Type.Object({
   ),
   status: Type.Optional(
     Type.String({
-      description: "[list] Filter by status (active or deprecated)",
+      description:
+        "[list] Filter by status. Defaults to 'active' (deprecated classifiers are excluded). Pass 'deprecated' to see archived ones, or 'all' to list every classifier regardless of status.",
     })
   ),
   force_regenerate: Type.Optional(

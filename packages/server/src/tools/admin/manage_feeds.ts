@@ -99,29 +99,47 @@ async function handleListFeeds(
   // `SELECT COUNT(*) FROM current_event_records` per row — O(N feeds) ×
   // an anti-join over the entire events table — ~880ms per feed on a busy
   // connection. Batching collapses it to one scan.
-  let pageQuery = sql`
-    SELECT f.*
-    FROM feeds f
-    JOIN connections c ON c.id = f.connection_id
-    WHERE f.organization_id = ${organizationId} AND c.deleted_at IS NULL AND f.deleted_at IS NULL
-  `;
-
+  // Filter predicates built ONCE and shared between the page query and the
+  // overshoot fallback count, so the two can never diverge. `where` starts with
+  // a TRUE seed so every real condition appends uniformly with AND.
+  let where = sql`f.organization_id = ${organizationId} AND c.deleted_at IS NULL AND f.deleted_at IS NULL`;
   if (args.connection_id) {
-    pageQuery = sql`${pageQuery} AND f.connection_id = ${args.connection_id}`;
+    where = sql`${where} AND f.connection_id = ${args.connection_id}`;
   }
   if (args.entity_id) {
-    pageQuery = sql`${pageQuery} AND ${sql.unsafe(
+    where = sql`${where} AND ${sql.unsafe(
       feedLinkedToBusinessEntitySql(String(args.entity_id), 'f', 'c', 'f.organization_id'),
     )}`;
   }
   if (args.status) {
-    pageQuery = sql`${pageQuery} AND f.status = ${args.status}`;
+    where = sql`${where} AND f.status = ${args.status}`;
+  }
+  // Runtime health, independent of lifecycle status: a feed keeps `status =
+  // 'active'` while its syncs fail (until it crosses the auto-pause threshold),
+  // so `status` alone can never surface active-but-failing feeds. 'failing' =
+  // the last sync failed OR at least one consecutive failure is recorded.
+  if (args.health === 'failing') {
+    where = sql`${where} AND (f.last_sync_status = 'failed' OR COALESCE(f.consecutive_failures, 0) > 0)`;
+  } else if (args.health === 'healthy') {
+    where = sql`${where} AND f.last_sync_status IS DISTINCT FROM 'failed' AND COALESCE(f.consecutive_failures, 0) = 0`;
   }
   if (args.feed_ids?.length) {
-    pageQuery = sql`${pageQuery} AND f.id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
+    where = sql`${where} AND f.id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
   }
 
-  pageQuery = sql`${pageQuery} ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${offset}`;
+  // COUNT(*) OVER() runs across the whole filtered set BEFORE LIMIT/OFFSET, so
+  // `filtered_total` is the true match count on every non-empty page — not the
+  // page length (the previous `rows.length` reported `total: 50` for a 71-feed
+  // org and made every failing feed past page 1 invisible). It is 0 on an empty
+  // page (offset past the last row); the overshoot fallback below recovers the
+  // true count there.
+  const pageQuery = sql`
+    SELECT f.*, COUNT(*) OVER()::int AS filtered_total
+    FROM feeds f
+    JOIN connections c ON c.id = f.connection_id
+    WHERE ${where}
+    ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${offset}
+  `;
 
   const query = sql`
     WITH page AS MATERIALIZED (
@@ -192,8 +210,35 @@ async function handleListFeeds(
     ORDER BY p.created_at DESC
   `;
 
-  const rows = await query;
-  return { action: 'list_feeds', feeds: rows, total: rows.length, limit, offset };
+  const rows = (await query) as Array<Record<string, unknown>>;
+  // COUNT(*) OVER() is constant across the page. On a non-empty page it is the
+  // true whole-filter count. On an empty page (offset past the last row) there
+  // is no row to read it from, so recover the true count with a bare COUNT over
+  // the SAME shared `where` — one extra query only on the rare overshoot path,
+  // keeping `total` truthful for page-jumps rather than reporting 0.
+  let total: number;
+  if (rows.length > 0) {
+    total = Number(rows[0].filtered_total ?? rows.length);
+  } else {
+    const [countRow] = (await sql`
+      SELECT COUNT(*)::int AS total
+      FROM feeds f
+      JOIN connections c ON c.id = f.connection_id
+      WHERE ${where}
+    `) as Array<{ total: number }>;
+    total = Number(countRow?.total ?? 0);
+  }
+  // Strip the window-count helper column from each feed row — it is metadata
+  // about the result set, not a feed field.
+  const feeds = rows.map(({ filtered_total: _filtered_total, ...feed }) => feed);
+  return {
+    action: 'list_feeds',
+    feeds,
+    total,
+    has_more: offset + feeds.length < total,
+    limit,
+    offset,
+  };
 }
 
 async function handleReadFeed(

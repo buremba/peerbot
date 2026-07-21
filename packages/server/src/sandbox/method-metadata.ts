@@ -813,10 +813,11 @@ export default async (_ctx, client) => {
 		access: "external",
 	},
 	"feeds.list": {
-		summary: "List data-sync feeds.",
+		summary:
+			"List data-sync feeds. `status` filters by lifecycle (active|paused); `health` filters by runtime health independent of status ('failing' = last sync failed or consecutive failures, 'healthy' = otherwise) — use it to find active-but-failing feeds the status filter cannot surface. Result carries `total` and `has_more`.",
 		access: "read",
 		signature:
-			"feeds.list(input?: { connection_id?: number; status?: string; limit?: number; offset?: number }): Promise<unknown>",
+			"feeds.list(input?: { connection_id?: number; status?: 'active' | 'paused'; health?: 'healthy' | 'failing'; feed_ids?: number[]; entity_id?: number; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"feeds.get": {
 		summary:

@@ -22,75 +22,90 @@
  * so every input is validated against a strict literal pattern first.
  */
 
-import { PG_INTERVAL_PATTERN } from '../config/intervals';
-import type { DbClient } from '../db/client';
+import { PG_INTERVAL_PATTERN } from "../config/intervals";
+import type { DbClient } from "../db/client";
 
 interface StaleRunSweepSpec {
-  /** `runs.run_type` values covered by this sweep. */
-  runTypes: readonly string[];
-  /**
-   * Which rows count as "heartbeating":
-   *  - 'any-heartbeat': any non-NULL `last_heartbeat_at` (connector lanes —
-   *    the claim doesn't stamp a heartbeat, so presence means the executor
-   *    beat at least once).
-   *  - 'beat-after-claim': only rows whose `last_heartbeat_at` advanced past
-   *    `claimed_at` (watcher lane — the claim seeds
-   *    `last_heartbeat_at = claimed_at`, so equality means "never beat" and
-   *    a non-heartbeating client falls through to the coarse path).
-   */
-  heartbeatSemantics: 'any-heartbeat' | 'beat-after-claim';
-  /** Postgres interval literal (e.g. '3 minutes'). Heartbeating rows whose
-   *  last beat is older than this are reaped. */
-  heartbeatStaleInterval: string;
-  /** Postgres interval literal. Non-heartbeating rows whose
-   *  `COALESCE(claimed_at, created_at)` is older than this are reaped. */
-  coarseStaleInterval: string;
-  /** Include never-claimed pending rows, judged solely on created_at. */
-  includePending?: boolean;
+	/** `runs.run_type` values covered by this sweep. */
+	runTypes: readonly string[];
+	/**
+	 * Which rows count as "heartbeating":
+	 *  - 'any-heartbeat': any non-NULL `last_heartbeat_at` (connector lanes —
+	 *    the claim doesn't stamp a heartbeat, so presence means the executor
+	 *    beat at least once).
+	 *  - 'beat-after-claim': only rows whose `last_heartbeat_at` advanced past
+	 *    `claimed_at` (watcher lane — the claim seeds
+	 *    `last_heartbeat_at = claimed_at`, so equality means "never beat" and
+	 *    a non-heartbeating client falls through to the coarse path).
+	 */
+	heartbeatSemantics: "any-heartbeat" | "beat-after-claim";
+	/** Postgres interval literal (e.g. '3 minutes'). Heartbeating rows whose
+	 *  last beat is older than this are reaped. */
+	heartbeatStaleInterval: string;
+	/** Postgres interval literal. Non-heartbeating rows whose
+	 *  `COALESCE(claimed_at, created_at)` is older than this are reaped. */
+	coarseStaleInterval: string;
+	/**
+	 * Include never-claimed pending rows, judged solely on created_at.
+	 *
+	 * Only rows a worker is actually allowed to claim are reaped: a run with
+	 * `approval_status = 'pending'` is parked waiting for a HUMAN to approve it —
+	 * no worker will ever claim it, so the claim-timeout must NOT apply, or a
+	 * queued-approval run is force-timed-out before anyone can approve it (#2044).
+	 * Approval flips it to `approval_status = 'approved', status = 'running'`,
+	 * after which the normal in-progress heartbeat/coarse predicate governs it.
+	 */
+	includePending?: boolean;
 }
 
 const RUN_TYPE_PATTERN = /^[a-z_]+$/;
 
 /** Validate + quote a `<n> <unit>` literal as a SQL interval expression. */
 function intervalSql(literal: string): string {
-  if (!PG_INTERVAL_PATTERN.test(literal)) {
-    throw new Error(`Invalid Postgres interval literal: ${JSON.stringify(literal)}`);
-  }
-  return `interval '${literal}'`;
+	if (!PG_INTERVAL_PATTERN.test(literal)) {
+		throw new Error(
+			`Invalid Postgres interval literal: ${JSON.stringify(literal)}`,
+		);
+	}
+	return `interval '${literal}'`;
 }
 
 function runTypeListSql(runTypes: readonly string[]): string {
-  if (runTypes.length === 0) {
-    throw new Error('StaleRunSweepSpec.runTypes must not be empty');
-  }
-  return runTypes
-    .map((runType) => {
-      if (!RUN_TYPE_PATTERN.test(runType)) {
-        throw new Error(`Invalid run_type literal: ${JSON.stringify(runType)}`);
-      }
-      return `'${runType}'`;
-    })
-    .join(', ');
+	if (runTypes.length === 0) {
+		throw new Error("StaleRunSweepSpec.runTypes must not be empty");
+	}
+	return runTypes
+		.map((runType) => {
+			if (!RUN_TYPE_PATTERN.test(runType)) {
+				throw new Error(`Invalid run_type literal: ${JSON.stringify(runType)}`);
+			}
+			return `'${runType}'`;
+		})
+		.join(", ");
 }
 
 /** SQL boolean expr: this row has a live heartbeat signal per the spec. */
-function hasHeartbeatSql(semantics: StaleRunSweepSpec['heartbeatSemantics']): string {
-  return semantics === 'beat-after-claim'
-    ? `(last_heartbeat_at IS NOT NULL
+function hasHeartbeatSql(
+	semantics: StaleRunSweepSpec["heartbeatSemantics"],
+): string {
+	return semantics === "beat-after-claim"
+		? `(last_heartbeat_at IS NOT NULL
        AND claimed_at IS NOT NULL
        AND last_heartbeat_at > claimed_at)`
-    : 'last_heartbeat_at IS NOT NULL';
+		: "last_heartbeat_at IS NOT NULL";
 }
 
 /** Exact complement of {@link hasHeartbeatSql}, spelled out (De Morgan) so
  *  the SQL is two-valued even when `claimed_at` / `last_heartbeat_at` are
  *  NULL. */
-function neverHeartbeatedSql(semantics: StaleRunSweepSpec['heartbeatSemantics']): string {
-  return semantics === 'beat-after-claim'
-    ? `(last_heartbeat_at IS NULL
+function neverHeartbeatedSql(
+	semantics: StaleRunSweepSpec["heartbeatSemantics"],
+): string {
+	return semantics === "beat-after-claim"
+		? `(last_heartbeat_at IS NULL
        OR claimed_at IS NULL
        OR last_heartbeat_at <= claimed_at)`
-    : 'last_heartbeat_at IS NULL';
+		: "last_heartbeat_at IS NULL";
 }
 
 /**
@@ -99,7 +114,7 @@ function neverHeartbeatedSql(semantics: StaleRunSweepSpec['heartbeatSemantics'])
  * `UPDATE public.runs`) without an alias.
  */
 export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
-  const inProgressPredicate = `
+	const inProgressPredicate = `
       (status IN ('claimed', 'running')
        AND (
          -- Fast path: the executor was heartbeating, then went silent.
@@ -114,13 +129,17 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
           AND COALESCE(claimed_at, created_at)
               < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
        ))`;
-  const statusPredicate = spec.includePending
-    ? `((status = 'pending'
+	const statusPredicate = spec.includePending
+		? `((status = 'pending'
+         -- A run awaiting HUMAN approval is not worker-claimable; the
+         -- claim-timeout must never reap it (#2044). Only 'auto'/'approved'
+         -- pending rows are genuinely waiting for a worker.
+         AND approval_status <> 'pending'
          AND created_at < current_timestamp - ${intervalSql(spec.coarseStaleInterval)})
         OR ${inProgressPredicate})`
-    : inProgressPredicate;
+		: inProgressPredicate;
 
-  return `
+	return `
     run_type IN (${runTypeListSql(spec.runTypes)})
     AND ${statusPredicate}
   `;
@@ -132,16 +151,16 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
  * rows transitioned.
  */
 export async function markStaleRunsAsTimeout(
-  sql: DbClient,
-  spec: StaleRunSweepSpec & {
-    /** error_message for rows reaped via the heartbeat-stale fast path. */
-    heartbeatErrorMessage: string;
-    /** error_message for rows reaped via the coarse TTL backstop. */
-    coarseErrorMessage: string;
-  }
+	sql: DbClient,
+	spec: StaleRunSweepSpec & {
+		/** error_message for rows reaped via the heartbeat-stale fast path. */
+		heartbeatErrorMessage: string;
+		/** error_message for rows reaped via the coarse TTL backstop. */
+		coarseErrorMessage: string;
+	},
 ): Promise<number> {
-  const result = await sql.unsafe(
-    `UPDATE runs
+	const result = await sql.unsafe(
+		`UPDATE runs
      SET status = 'timeout',
          completed_at = current_timestamp,
          error_message = CASE
@@ -149,7 +168,7 @@ export async function markStaleRunsAsTimeout(
            ELSE $2
          END
      WHERE ${buildStaleRunWhereSql(spec)}`,
-    [spec.heartbeatErrorMessage, spec.coarseErrorMessage]
-  );
-  return Number(result.count ?? 0);
+		[spec.heartbeatErrorMessage, spec.coarseErrorMessage],
+	);
+	return Number(result.count ?? 0);
 }

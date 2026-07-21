@@ -82,10 +82,43 @@ function buildContentQuery(opts: {
       ${a}.superseded_by,
       ${a}.run_id,
       oc.client_name,
-      -- classifications was sourced from latest_event_classifications, a denormalized cache that was
-      -- never populated (no writer) — so this field has always been '{}'. Kept empty for response-shape
-      -- stability now that the dead table is dropped.
-      '{}'::jsonb as classifications
+      -- Per-event classifications keyed by classifier attribute, matching the
+      -- list/search path shape so exact reads (content_ids / include_superseded)
+      -- surface a manual classifiers.classify immediately (#2050). One row per
+      -- (event, classifier): source priority user then llm then embedding,
+      -- newest first -- the same dedup rule as buildLatestClassificationsCteSql.
+      COALESCE(
+        (
+          SELECT jsonb_object_agg(
+            lc.attribute_key,
+            jsonb_build_object(
+              'values', lc.values,
+              'confidences', lc.confidences,
+              'source', lc.source,
+              'is_manual', lc.is_manual
+            )
+          )
+          FROM (
+            SELECT
+              fcl.attribute_key,
+              cc."values" AS values,
+              cc.confidences,
+              cc.source,
+              cc.is_manual,
+              ROW_NUMBER() OVER (
+                PARTITION BY cc.event_id, cc.classifier_id
+                ORDER BY
+                  CASE cc.source WHEN 'user' THEN 1 WHEN 'llm' THEN 2 ELSE 3 END,
+                  cc.created_at DESC
+              ) AS rn
+            FROM event_classifications cc
+            JOIN classify_facet fcl ON fcl.id = cc.classifier_id
+            WHERE cc.event_id = ${a}.id AND cc.classifier_id IS NOT NULL
+          ) lc
+          WHERE lc.rn = 1
+        ),
+        '{}'::jsonb
+      ) as classifications
     FROM ${table} ${a}
     ${join}
     LEFT JOIN connections c ON c.id = ${a}.connection_id

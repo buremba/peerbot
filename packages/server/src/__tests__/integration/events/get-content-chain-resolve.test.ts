@@ -259,4 +259,59 @@ describe('getContent > content_ids resolves the full supersede chain', () => {
     expect(result.total).toBe(2);
     expect(result.chain_total).toBe(1);
   });
+
+  // #2050: a manual `classifiers.classify` writes to event_classifications, but
+  // the exact content_ids read hard-coded `'{}'::jsonb as classifications`, so
+  // the applied classification was invisible on read-back. It must now surface.
+  it('content_ids exact read surfaces the applied classification', async () => {
+    const sql = getTestDb();
+    const t0 = new Date('2026-07-05T00:00:00Z');
+    const eventId = await insertChainRow({
+      organizationId: org.id,
+      title: 'note to classify',
+      content: 'a disposable note with a classifiable value',
+      runId: null,
+      occurredAt: t0,
+    });
+
+    // Seed a classifier + a manual (source='user') classification, mirroring
+    // what classifiers.classify commits.
+    const [facet] = await sql<{ id: number }[]>`
+      INSERT INTO classify_facet (
+        organization_id, slug, name, attribute_key, status, created_by,
+        entity_ids, attribute_values, min_similarity
+      ) VALUES (
+        ${org.id}, 'sentiment-2050', 'Sentiment 2050', 'sentiment', 'active', ${user.id},
+        ARRAY[]::bigint[], ${sql.json({ positive: { description: 'p', examples: ['great'] } })}, 0.7
+      ) RETURNING id`;
+    const classifierId = Number(facet.id);
+
+    await sql`
+      INSERT INTO event_classifications (
+        event_id, classifier_id, watcher_id, window_id, "values", confidences,
+        source, is_manual, reasoning
+      ) VALUES (
+        ${eventId}, ${classifierId}, NULL, NULL, ${'{positive}'}::text[],
+        ${sql.json({ positive: 1.0 })}, 'user', true, 'looks positive'
+      )`;
+
+    const result = await getContent(
+      { content_ids: [eventId], limit: 10 } as never,
+      {} as never,
+      ctx
+    );
+
+    const item = result.content.find((c) => c.id === eventId);
+    expect(item).toBeDefined();
+    const classifications = item?.classifications as Record<
+      string,
+      { values: string[]; source: string; is_manual: boolean }
+    > | null;
+    expect(classifications).toBeTruthy();
+    // Keyed by the classifier's attribute_key, carrying the applied value + provenance.
+    expect(classifications?.sentiment).toBeDefined();
+    expect(classifications?.sentiment.values).toEqual(['positive']);
+    expect(classifications?.sentiment.source).toBe('user');
+    expect(classifications?.sentiment.is_manual).toBe(true);
+  });
 });

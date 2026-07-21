@@ -84,7 +84,9 @@ describe("ToolError", () => {
       retryable: false,
       message: TOOL_ERRORS.NOT_FOUND.message,
     });
-    const withId = new ToolError("NETWORK", undefined, { callId: "c1" }).toJSON();
+    const withId = new ToolError("NETWORK", undefined, {
+      callId: "c1",
+    }).toJSON();
     expect(withId.call_id).toBe("c1");
   });
 });
@@ -116,31 +118,51 @@ describe("classifyToolError", () => {
     // These must NOT be swallowed by the pgCode branch's VALIDATION catch-all —
     // they should classify from the message as the transient failures they are.
     expect(
-      classifyToolError({ pgCode: "ECONNREFUSED", message: "write ECONNREFUSED 127.0.0.1:5432" })
+      classifyToolError({
+        pgCode: "ECONNREFUSED",
+        message: "write ECONNREFUSED 127.0.0.1:5432",
+      })
     ).toBe("NETWORK");
     expect(
-      classifyToolError({ pgCode: "CONNECTION_CLOSED", message: "connection terminated" })
+      classifyToolError({
+        pgCode: "CONNECTION_CLOSED",
+        message: "connection terminated",
+      })
     ).toBe("NETWORK");
     // A non-SQLSTATE code with no transient message hint → INTERNAL, not VALIDATION.
-    expect(classifyToolError({ pgCode: "SOME_DRIVER_CODE", message: "weird" })).toBe("INTERNAL");
+    expect(
+      classifyToolError({ pgCode: "SOME_DRIVER_CODE", message: "weird" })
+    ).toBe("INTERNAL");
   });
 
   test("subprocess exit reasons", () => {
-    expect(classifyToolError({ exitReason: "timeout" })).toBe("UPSTREAM_TIMEOUT");
-    expect(classifyToolError({ exitReason: "oom" })).toBe("UPSTREAM_UNAVAILABLE");
-    expect(classifyToolError({ exitReason: "crash" })).toBe("UPSTREAM_UNAVAILABLE");
+    expect(classifyToolError({ exitReason: "timeout" })).toBe(
+      "UPSTREAM_TIMEOUT"
+    );
+    expect(classifyToolError({ exitReason: "oom" })).toBe(
+      "UPSTREAM_UNAVAILABLE"
+    );
+    expect(classifyToolError({ exitReason: "crash" })).toBe(
+      "UPSTREAM_UNAVAILABLE"
+    );
   });
 
   test("error_message exit reason falls through to message matching", () => {
     expect(
-      classifyToolError({ exitReason: "error_message", message: "429 too many requests" })
+      classifyToolError({
+        exitReason: "error_message",
+        message: "429 too many requests",
+      })
     ).toBe("RATE_LIMITED");
     expect(
       classifyToolError({ exitReason: "error_message", message: "ECONNRESET" })
     ).toBe("NETWORK");
     // no structured hint and an opaque message → INTERNAL
     expect(
-      classifyToolError({ exitReason: "error_message", message: "something odd" })
+      classifyToolError({
+        exitReason: "error_message",
+        message: "something odd",
+      })
     ).toBe("INTERNAL");
   });
 
@@ -150,15 +172,21 @@ describe("classifyToolError", () => {
 
   test("structured fields win over the message string", () => {
     // message says 'timeout' (would keyword-match) but 404 is authoritative → NOT_FOUND
-    expect(classifyToolError({ httpStatus: 404, message: "timeout while fetching" })).toBe(
-      "NOT_FOUND"
-    );
+    expect(
+      classifyToolError({ httpStatus: 404, message: "timeout while fetching" })
+    ).toBe("NOT_FOUND");
   });
 
   test("message fallback", () => {
-    expect(classifyToolError({ message: "rate limit exceeded" })).toBe("RATE_LIMITED");
-    expect(classifyToolError({ message: "fetch failed: ENOTFOUND" })).toBe("NETWORK");
+    expect(classifyToolError({ message: "rate limit exceeded" })).toBe(
+      "RATE_LIMITED"
+    );
+    expect(classifyToolError({ message: "fetch failed: ENOTFOUND" })).toBe(
+      "NETWORK"
+    );
     expect(classifyToolError({})).toBe("INTERNAL");
-    expect(classifyToolError({ message: "totally unrelated" })).toBe("INTERNAL");
+    expect(classifyToolError({ message: "totally unrelated" })).toBe(
+      "INTERNAL"
+    );
   });
 });

@@ -122,12 +122,13 @@ export default async (_ctx, client) => {
 		access: "write",
 	},
 	"entities.delete": {
-		summary: "Delete an entity, optionally cascading to descendants.",
+		summary:
+			"Delete an entity. force_delete_tree hard-deletes the whole descendant tree (event history is kept, only detached); dry_run previews what would be removed/detached without mutating.",
 		access: "admin",
 		signature:
-			"entities.delete(input: { entity_id: number; force_delete_tree?: boolean }): Promise<unknown>",
+			"entities.delete(input: { entity_id: number; force_delete_tree?: boolean; dry_run?: boolean }): Promise<unknown>",
 		example:
-			"await client.entities.delete({ entity_id: 42, force_delete_tree: true });",
+			"await client.entities.delete({ entity_id: 42, force_delete_tree: true, dry_run: true });",
 	},
 	"entities.link": {
 		summary:

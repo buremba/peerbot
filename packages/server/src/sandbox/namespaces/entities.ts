@@ -66,6 +66,8 @@ export interface EntitiesNamespace {
 	delete(input: {
 		entity_id: number;
 		force_delete_tree?: boolean;
+		/** Preflight only: report what would be removed/detached, mutate nothing. */
+		dry_run?: boolean;
 	}): Promise<unknown>;
 	link(input: EntityLinkInput): Promise<unknown>;
 	unlink(input: {

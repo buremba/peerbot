@@ -1,10 +1,9 @@
 /**
- * operations.getRun must fetch internal (builder / entity-change) runs, not
- * just connector action runs.
- *
- * list_runs surfaces internal runs and approve/reject act on them, but getRun
- * filtered run_type='action' and returned "Run not found" for a run the same
- * principal could list and approve. It now accepts action + internal runs.
+ * get_run must fetch internal (builder / entity-change approval) runs, not just
+ * connector action runs. list_runs surfaces internal runs and approve/reject
+ * act on them, but get_run filtered run_type='action' and returned "Run not
+ * found" for a run the same principal could list and approve. It now accepts
+ * action + internal runs, and still rejects unrelated types (e.g. sync).
  */
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -30,11 +29,14 @@ describe("manage_operations get_run — internal runs", () => {
 		allowCrossOrg: false,
 	});
 
-	async function insertRun(run_type: string): Promise<number> {
+	async function insertRun(
+		runType: "action" | "internal" | "sync",
+		actionKey: string | null,
+	): Promise<number> {
 		const db = getTestDb();
 		const [row] = (await db`
       INSERT INTO runs (organization_id, run_type, action_key, status, created_at, run_at)
-      VALUES (${orgId}, ${run_type}, 'propose_entity_change', 'pending', now(), now())
+      VALUES (${orgId}, ${runType}, ${actionKey}, 'pending', now(), now())
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 		return Number(row.id);
@@ -55,7 +57,7 @@ describe("manage_operations get_run — internal runs", () => {
 	});
 
 	it("fetches an internal run instead of reporting 'Run not found'", async () => {
-		const id = await insertRun("internal");
+		const id = await insertRun("internal", "manage_agents");
 		const result = await getRun(id);
 		expect(result.error).toBeUndefined();
 		expect(result.action).toBe("get_run");
@@ -65,7 +67,7 @@ describe("manage_operations get_run — internal runs", () => {
 	});
 
 	it("still fetches an action run", async () => {
-		const id = await insertRun("action");
+		const id = await insertRun("action", "test_action");
 		const result = await getRun(id);
 		const run = result.run as Record<string, unknown>;
 		expect(Number(run.id)).toBe(id);
@@ -73,7 +75,7 @@ describe("manage_operations get_run — internal runs", () => {
 	});
 
 	it("does not fetch an unrelated run_type (e.g. sync)", async () => {
-		const id = await insertRun("sync");
+		const id = await insertRun("sync", null);
 		const result = await getRun(id);
 		expect(result.error).toBe("Run not found");
 	});

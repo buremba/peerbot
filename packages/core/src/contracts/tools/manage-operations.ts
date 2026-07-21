@@ -162,7 +162,7 @@ export const ListRunsAction = Type.Object({
 
 export const GetRunAction = Type.Object({
   action: Type.Literal("get_run", {
-    description: "Fetch one action run.",
+    description: "Fetch one connector action or internal approval run.",
   }),
   run_id: Type.Number(),
 });

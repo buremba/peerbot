@@ -103,12 +103,26 @@ describe("classifyToolError", () => {
     expect(classifyToolError({ httpStatus: 422 })).toBe("VALIDATION");
   });
 
-  test("PG codes", () => {
+  test("PG SQLSTATE codes", () => {
     expect(classifyToolError({ pgCode: "57014" })).toBe("UPSTREAM_TIMEOUT");
     expect(classifyToolError({ pgCode: "08006" })).toBe("NETWORK");
     expect(classifyToolError({ pgCode: "40001" })).toBe("NETWORK");
     expect(classifyToolError({ pgCode: "40P01" })).toBe("NETWORK");
     expect(classifyToolError({ pgCode: "42601" })).toBe("VALIDATION"); // syntax_error
+  });
+
+  test("non-SQLSTATE driver codes fall through to message matching (not VALIDATION)", () => {
+    // postgres.js surfaces connection-level failures with a non-SQLSTATE `code`.
+    // These must NOT be swallowed by the pgCode branch's VALIDATION catch-all —
+    // they should classify from the message as the transient failures they are.
+    expect(
+      classifyToolError({ pgCode: "ECONNREFUSED", message: "write ECONNREFUSED 127.0.0.1:5432" })
+    ).toBe("NETWORK");
+    expect(
+      classifyToolError({ pgCode: "CONNECTION_CLOSED", message: "connection terminated" })
+    ).toBe("NETWORK");
+    // A non-SQLSTATE code with no transient message hint → INTERNAL, not VALIDATION.
+    expect(classifyToolError({ pgCode: "SOME_DRIVER_CODE", message: "weird" })).toBe("INTERNAL");
   });
 
   test("subprocess exit reasons", () => {

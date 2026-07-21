@@ -208,7 +208,11 @@ export function classifyToolError(signal: ToolErrorSignal): ToolErrorCode {
     if (httpStatus >= 400) return "VALIDATION";
   }
 
-  if (pgCode) {
+  // Only a real 5-char SQLSTATE is authoritative here. The postgres.js driver also
+  // surfaces connection-level failures with a non-SQLSTATE `code` (e.g.
+  // 'ECONNREFUSED', 'CONNECTION_CLOSED') — those must fall through to the message
+  // matching below so a transient DB-connection drop stays NETWORK, not VALIDATION.
+  if (pgCode && /^[0-9A-Z]{5}$/.test(pgCode)) {
     if (pgCode === "57014") return "UPSTREAM_TIMEOUT"; // query_canceled / statement_timeout
     // 08xxx = connection exceptions (transient); 40001 = serialization failure; 40P01 = deadlock.
     if (pgCode.startsWith("08") || pgCode === "40001" || pgCode === "40P01") return "NETWORK";

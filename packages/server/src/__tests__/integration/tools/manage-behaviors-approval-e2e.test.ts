@@ -395,7 +395,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 				TEST_ENV,
 				agentCtx
 			)
-		).rejects.toThrow(/at least one field to change/i);
+		).rejects.toThrow(/runtime config only|at least one such field/i);
 	});
 
 	it("rejects set_reaction_script with no reaction_script (would silently clear)", async () => {

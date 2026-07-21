@@ -303,14 +303,15 @@ export async function upsertConnectorDefinitionRecords(params: {
    * - 'shared': a pointer at bundled on-disk source (source_path, no code) —
    *   identical for every org, deduped on one organization_id-IS-NULL row.
    * - 'organization': org-supplied bytes (install_connector / source_url /
-   *   source_code / mcp_url). Dual-write phase (#2045 follow-up): the legacy
-   *   shared row is still written and stays authoritative for reads; a
-   *   content-bearing copy is additionally written to the caller org's own
-   *   (organization_id, connector_key, version) row so the read cutover can
-   *   prefer it without cross-org collisions. Content-empty records (rollback
-   *   and mcp_url upserts pass all-NULL and rely on COALESCE keeping stored
-   *   code) never create an org row: an empty org row would shadow the
-   *   code-bearing shared row once reads prefer org rows.
+   *   source_code / mcp_url) land ONLY on the caller org's own
+   *   (organization_id, connector_key, version) row — never the shared
+   *   namespace (#2045: a shared row of custom code is a cross-org
+   *   read/activate surface). Content-empty records (rollback and mcp_url
+   *   upserts pass all-NULL and rely on COALESCE keeping stored code) never
+   *   overwrite anything; they create a marker org row only when NO row
+   *   exists for the pair at all (first mcp_url install) — a rollback target
+   *   always exists, and an empty org row must never shadow a code-bearing
+   *   shared row.
    */
   versionScope: 'shared' | 'organization';
 }): Promise<{ updated: boolean }> {
@@ -429,46 +430,50 @@ export async function upsertConnectorDefinitionRecords(params: {
   }
 
   // Persist the version's executable source for BOTH the create and the
-  // active-update paths — a definition must never point at a version row that
-  // has no compiled/source record. Pipeline-compiled artifacts arrive stamped
-  // with the fingerprint of the compile configuration that produced them
+  // active-update paths — a definition must never point at a version with no
+  // compiled/source record. Pipeline-compiled artifacts arrive stamped with
+  // the fingerprint of the compile configuration that produced them
   // (versionRecord.compileConfigHash), so a later change to
   // EXTERNAL_RUNTIME_DEPS / the compile pipeline invalidates them
   // (resolveConnectorCode recompiles instead of executing a stale bundle).
-  await sql`
-    INSERT INTO connector_versions (
-      connector_key, version, organization_id, compiled_code, compiled_code_hash,
-      compile_config_hash, source_code, source_path
-    ) VALUES (
-      ${metadata.key}, ${metadata.version}, NULL, ${params.versionRecord.compiledCode},
-      ${params.versionRecord.compiledCodeHash}, ${params.versionRecord.compileConfigHash},
-      ${params.versionRecord.sourceCode}, ${params.versionRecord.sourcePath}
-    )
-    ON CONFLICT (connector_key, version) WHERE organization_id IS NULL DO UPDATE
-    SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
-        compiled_code_hash = COALESCE(
-          EXCLUDED.compiled_code_hash,
-          connector_versions.compiled_code_hash
-        ),
-        -- The fingerprint rides with the artifact, never independently: when a
-        -- reinstall REPLACES compiled_code, take the incoming fingerprint even
-        -- when it is NULL (a pre-compiled upload replacing a pipeline-compiled
-        -- artifact must not inherit the old row's "current" attestation).
-        compile_config_hash = CASE
-          WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
-          ELSE connector_versions.compile_config_hash
-        END,
-        source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
-        source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
-  `;
-
-  // Dual-write (#2045 follow-up): org-supplied bytes additionally land on the
-  // caller org's own row so the read cutover can prefer it. Content-empty
-  // records never create an org row (see versionScope doc above).
   const record = params.versionRecord;
+  if (params.versionScope === 'shared') {
+    // Bundled catalog pointer: identical for every org, deduped on the one
+    // shared organization_id-IS-NULL row.
+    await sql`
+      INSERT INTO connector_versions (
+        connector_key, version, organization_id, compiled_code, compiled_code_hash,
+        compile_config_hash, source_code, source_path
+      ) VALUES (
+        ${metadata.key}, ${metadata.version}, NULL, ${record.compiledCode},
+        ${record.compiledCodeHash}, ${record.compileConfigHash},
+        ${record.sourceCode}, ${record.sourcePath}
+      )
+      ON CONFLICT (connector_key, version) WHERE organization_id IS NULL DO UPDATE
+      SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
+          compiled_code_hash = COALESCE(
+            EXCLUDED.compiled_code_hash,
+            connector_versions.compiled_code_hash
+          ),
+          -- The fingerprint rides with the artifact, never independently: when a
+          -- reinstall REPLACES compiled_code, take the incoming fingerprint even
+          -- when it is NULL (a pre-compiled upload replacing a pipeline-compiled
+          -- artifact must not inherit the old row's "current" attestation).
+          compile_config_hash = CASE
+            WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
+            ELSE connector_versions.compile_config_hash
+          END,
+          source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
+          source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+    `;
+    return { updated: wasActive };
+  }
+
+  // Org-supplied bytes land ONLY on the caller org's own row (#2045: a shared
+  // row of custom code is a cross-org read/activate surface).
   const hasContent =
     record.compiledCode !== null || record.sourceCode !== null || record.sourcePath !== null;
-  if (params.versionScope === 'organization' && hasContent) {
+  if (hasContent) {
     await sql`
       INSERT INTO connector_versions (
         connector_key, version, organization_id, compiled_code, compiled_code_hash,
@@ -491,6 +496,22 @@ export async function upsertConnectorDefinitionRecords(params: {
           END,
           source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
           source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+    `;
+  } else {
+    // Content-empty record (rollback / mcp_url shapes). A rollback target
+    // always exists (validated by the caller), so this only creates the
+    // marker row a first mcp_url install needs — and never when ANY row
+    // (this org's or shared) already holds the pair, so an empty org row
+    // can never shadow a code-bearing row.
+    await sql`
+      INSERT INTO connector_versions (connector_key, version, organization_id)
+      SELECT ${metadata.key}, ${metadata.version}, ${params.organizationId}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM connector_versions
+        WHERE connector_key = ${metadata.key} AND version = ${metadata.version}
+          AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+      )
+      ON CONFLICT DO NOTHING
     `;
   }
 

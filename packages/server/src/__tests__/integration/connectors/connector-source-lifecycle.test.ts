@@ -118,12 +118,10 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
       /key, name, and version/
     );
 
-    // Neither validation persisted anything (shared namespace — the org copy
-    // from the dual-write phase mirrors it and is asserted by the dual-write
-    // suite).
+    // Neither validation persisted anything.
     const afterValidate = await sql`
       SELECT version FROM connector_versions
-      WHERE connector_key = ${KEY} AND organization_id IS NULL
+      WHERE connector_key = ${KEY} AND organization_id = ${orgId}
     `;
     expect(afterValidate.map((r) => (r as { version: string }).version)).toEqual(['1.0.0']);
 
@@ -205,7 +203,7 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     expect((defAfterUpdate[0] as { description: string }).description).toBe('V2');
     const retained = await sql`
       SELECT version FROM connector_versions
-      WHERE connector_key = ${KEY} AND organization_id IS NULL
+      WHERE connector_key = ${KEY} AND organization_id = ${orgId}
       ORDER BY version
     `;
     expect(retained.map((r) => (r as { version: string }).version)).toEqual(['1.0.0', '2.0.0']);

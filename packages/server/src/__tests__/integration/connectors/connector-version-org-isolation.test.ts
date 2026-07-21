@@ -7,12 +7,9 @@
  * row — org A would silently EXECUTE org B's code. With org-preferring
  * resolution each org's own row shadows the shared row for that org only.
  *
- * Transitional note (dual-write phase): custom installs still ALSO write the
- * legacy shared row, so a shared-row copy of custom code remains visible as a
- * fallback until step 3 (backfill + stop legacy writes) retires it — identical
- * exposure to the pre-rollout behavior, no worse. The tests below assert the
- * guarantees PR 2 owns; where the end state differs from the transitional
- * state they simulate step 3 with direct SQL.
+ * Step 3 (org-only custom writes + backfill) is in: custom installs write no
+ * shared rows at all, so the guarantees below hold with no transitional
+ * exposure.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -113,15 +110,20 @@ describe('connector_versions org isolation (#2045 read cutover)', () => {
     );
     expect('error' in install ? install.error : undefined).toBeUndefined();
 
-    // Simulate the post-rollout end state: org A retains a PRIVATE 3.0.0 row
-    // (no shared copy — as after step 3 stops legacy writes).
+    // Org A retains a private 3.0.0 of the same key — a real install now
+    // produces exactly an org-only row.
+    const installA = await manageConnections(
+      { action: 'install_connector', source_code: sourceFor(KEY, '3.0.0', 'PRIVATE-A') },
+      TEST_ENV,
+      ctxA
+    );
+    expect('error' in installA ? installA.error : undefined).toBeUndefined();
     const sql = getTestDb();
-    await sql`
-      INSERT INTO connector_versions (
-        connector_key, version, organization_id, compiled_code, compiled_code_hash,
-        compile_config_hash, source_code, source_path
-      ) VALUES (${KEY}, '3.0.0', ${orgA}, '// private A', 'hash-a3', NULL, '// private A', NULL)
+    const sharedRows = await sql`
+      SELECT 1 FROM connector_versions
+      WHERE connector_key = ${KEY} AND version = '3.0.0' AND organization_id IS NULL
     `;
+    expect(sharedRows).toHaveLength(0);
 
     // Org B must not see 3.0.0 in history…
     const gotB = await manageConnections(
@@ -162,13 +164,6 @@ describe('connector_versions org isolation (#2045 read cutover)', () => {
       ctxA
     );
     expect('error' in branch ? branch.error : undefined).toBeUndefined();
-
-    // Simulate step 3 (no legacy shared copy of the branch).
-    const sql = getTestDb();
-    await sql`
-      DELETE FROM connector_versions
-      WHERE connector_key = 'hackernews' AND version = '99.0.0-acme' AND organization_id IS NULL
-    `;
 
     // Org A resolves its branch (org row shadows the bundled row)…
     const codeA = await resolveConnectorCodeForKey('hackernews', orgA);

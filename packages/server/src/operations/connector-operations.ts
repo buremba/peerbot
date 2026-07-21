@@ -91,13 +91,6 @@ function normalizeAnnotations(raw: unknown): OperationAnnotations | undefined {
 	return Object.keys(annotations).length > 0 ? annotations : undefined;
 }
 
-/**
- * Coerce a stored action's per-operation scope list into `string[] | undefined`.
- * The value comes from the serialized connector definition (`actions_schema`),
- * so it may be missing, a string array, or (defensively) a malformed blob.
- * Returns undefined when there are no scopes so the descriptor stays clean and
- * readiness treats the op as scope-unconstrained.
- */
 function normalizeRequiredScopes(raw: unknown): string[] | undefined {
 	if (!Array.isArray(raw)) return undefined;
 	const scopes = raw
@@ -448,9 +441,7 @@ function getLocalActionOperations(
 		kind: getLocalActionKind(def),
 		backend: "local_action",
 		requires_approval: def.requiresApproval ?? false,
-		required_scopes: normalizeRequiredScopes(
-			def.requiredScopes ?? def.required_scopes,
-		),
+		required_scopes: normalizeRequiredScopes(def.requiredScopes),
 		annotations:
 			normalizeAnnotations(def.annotations) ??
 			((def.requiresApproval ?? false) ? { destructiveHint: true } : undefined),

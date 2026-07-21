@@ -27,6 +27,7 @@ import type { Static } from "@sinclair/typebox";
 import {
 	hasAllScopes,
 	readGrantedScopesFromAuthData,
+	readRequestedScopesFromAuthData,
 } from "../../auth/oauth/scopes";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
@@ -140,8 +141,10 @@ type ExecutionTarget = {
 type InternalExecutionTarget = ExecutionTarget & {
 	config: Record<string, unknown> | null;
 	auth_profile_kind: string | null;
-	/** OAuth scopes actually granted on this connection's auth profile. */
+	auth_profile_slug: string | null;
 	granted_scopes: string[];
+	granted_scopes_known: boolean;
+	requested_scopes: string[];
 };
 
 type OperationTargetRow = {
@@ -155,6 +158,7 @@ type OperationTargetRow = {
 	device_online: boolean;
 	device_bound: boolean;
 	auth_profile_kind: string | null;
+	auth_profile_slug: string | null;
 	auth_data: Record<string, unknown> | null;
 };
 
@@ -426,7 +430,10 @@ function executionTargetFromRow(
 		display_name: row.display_name ?? row.slug,
 		config: row.config,
 		auth_profile_kind: row.auth_profile_kind,
+		auth_profile_slug: row.auth_profile_slug,
 		granted_scopes: readGrantedScopesFromAuthData(row.auth_data),
+		granted_scopes_known: Object.hasOwn(row.auth_data ?? {}, "granted_scopes"),
+		requested_scopes: readRequestedScopesFromAuthData(row.auth_data),
 	};
 	if (row.status !== "active") {
 		return {
@@ -540,7 +547,9 @@ function buildOperationNextAction(args: {
 	remediationTarget: ExecutionTarget | undefined;
 	remediationConfig: Record<string, unknown> | null | undefined;
 	remediationAuthKind: string | null | undefined;
+	remediationAuthProfileSlug: string | null | undefined;
 	missingScopes: string[];
+	requestedScopes: string[];
 	viewUrl: string | undefined;
 }): Record<string, unknown> {
 	const {
@@ -550,7 +559,9 @@ function buildOperationNextAction(args: {
 		remediationTarget,
 		remediationConfig,
 		remediationAuthKind,
+		remediationAuthProfileSlug,
 		missingScopes,
+		requestedScopes,
 		viewUrl,
 	} = args;
 	if (readyTarget) {
@@ -593,10 +604,18 @@ function buildOperationNextAction(args: {
 	if (readiness === "scope_upgrade_required") {
 		return {
 			action: "reauthorize",
-			sdk_method: "connections.reauthenticate",
+			sdk_method: "authProfiles.update",
 			connection_id: remediationTarget?.connection_id,
 			requested_scopes: missingScopes,
-			arguments: [{ connection_id: remediationTarget?.connection_id }],
+			arguments: [
+				{
+					auth_profile_slug: remediationAuthProfileSlug,
+					requested_scopes: Array.from(
+						new Set([...requestedScopes, ...missingScopes]),
+					),
+					reconnect: true,
+				},
+			],
 			...(viewUrl ? { view_url: viewUrl } : {}),
 		};
 	}
@@ -664,19 +683,15 @@ function buildAvailableOperation(args: {
 	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
-	// Scopes this specific action needs beyond the connector baseline (e.g. a
-	// calendar write scope for create/update/delete_event). An op declaring these
-	// is not executable on a connection whose OAuth grant does not cover them,
-	// even though the connection itself is active — readiness must say so instead
-	// of reporting it ready (a scope-blind "ready" makes the agent attempt a
-	// write that the provider rejects at execution time).
-	const requiredScopes =
-		(operation as OperationDescriptor).required_scopes ?? [];
+	const requiredScopes = operation.required_scopes ?? [];
 	const targets = internalTargets.map((target): ExecutionTarget => {
 		const {
 			config,
 			auth_profile_kind: _authProfileKind,
+			auth_profile_slug: _authProfileSlug,
 			granted_scopes,
+			granted_scopes_known,
+			requested_scopes: _requestedScopes,
 			...publicTarget
 		} = target;
 		if (resolveActionMode(operation, config) === "disabled") {
@@ -690,12 +705,9 @@ function buildAvailableOperation(args: {
 		if (
 			publicTarget.executable &&
 			requiredScopes.length > 0 &&
-			// Only gate when we actually recorded the grant's scopes. Connections
-			// authorized before scope recording (pre-#1901) have an empty
-			// granted_scopes even when the token covers the scope — treating
-			// "unknown" as "missing" would falsely block a working connection.
-			// Absence of data is not evidence of a missing scope.
-			granted_scopes.length > 0 &&
+			// Older auth profiles may not record granted_scopes. Absence is unknown;
+			// a recorded empty grant is known and must still fail the scope gate.
+			granted_scopes_known &&
 			!hasAllScopes(granted_scopes, requiredScopes)
 		) {
 			const missing = requiredScopes.filter(
@@ -749,7 +761,10 @@ function buildAvailableOperation(args: {
 			remediationTarget,
 			remediationConfig: remediationInternalTarget?.config,
 			remediationAuthKind: remediationInternalTarget?.auth_profile_kind,
+			remediationAuthProfileSlug:
+				remediationInternalTarget?.auth_profile_slug,
 			missingScopes,
+			requestedScopes: remediationInternalTarget?.requested_scopes ?? [],
 			viewUrl,
 		}),
 	};
@@ -775,6 +790,7 @@ async function loadVisibleOperationTargets(
 		        c.config,
 		        c.device_worker_id,
 		        ap.profile_kind AS auth_profile_kind,
+		        ap.slug AS auth_profile_slug,
 		        ap.auth_data AS auth_data,
 		        COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
 		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound

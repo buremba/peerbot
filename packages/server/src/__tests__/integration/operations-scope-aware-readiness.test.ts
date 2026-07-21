@@ -1,20 +1,8 @@
-/**
- * Operation readiness must respect per-operation OAuth scopes.
- *
- * A connection can be active + authenticated (so status readiness is "ready")
- * yet still lack the OAuth scope a specific write action needs. Before this
- * change, `operations.listAvailable` reported such write actions as
- * `executable: true` — e.g. a Calendar connection granted only
- * `calendar.readonly` reported `create_event` ready, then the provider rejected
- * the write at execution time. Readiness now maps an action whose declared
- * `requiredScopes` are not covered by the connection's granted scopes to
- * `readiness: "scope_upgrade_required"` (not executable) with a `reauthorize`
- * next_action carrying exactly the missing scopes, while read actions on the
- * same connection stay executable.
- */
+/** Active connections still need per-action OAuth scope readiness. */
 
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
+import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { createAuthProfile } from "../../utils/auth-profiles";
@@ -30,8 +18,6 @@ const CONNECTOR_KEY = "demo.scope.calendar";
 const READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 const WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 
-// Two write actions declaring the write scope, one read action declaring none —
-// mirrors google.calendar (create/update/delete_event vs get_event).
 const ACTIONS_SCHEMA = {
 	create_event: {
 		key: "create_event",
@@ -51,14 +37,13 @@ describe("operation readiness respects OAuth scopes", () => {
 	let orgId: string;
 	let userId: string;
 	let ctx: ToolContext;
-	// connection granted only the readonly scope
 	let readonlyConnId: number;
-	// connection granted both readonly + write scopes
 	let writableConnId: number;
 
-	async function seedScopedConnection(
-		grantedScopes: string[],
-	): Promise<number> {
+	async function seedScopedConnection(grantedScopes?: string[]): Promise<{
+		connectionId: number;
+		profileSlug: string;
+	}> {
 		const sql = getTestDb();
 		const conn = await createTestConnection({
 			organization_id: orgId,
@@ -75,10 +60,16 @@ describe("operation readiness respects OAuth scopes", () => {
 			provider: "test",
 			status: "active",
 			createdBy: userId,
-			authData: { granted_scopes: grantedScopes },
+			authData:
+				grantedScopes === undefined
+					? {}
+					: {
+							requested_scopes: [READONLY_SCOPE],
+							granted_scopes: grantedScopes,
+						},
 		});
 		await sql`UPDATE connections SET auth_profile_id = ${profile.id} WHERE id = ${conn.id}`;
-		return conn.id;
+		return { connectionId: conn.id, profileSlug: profile.slug };
 	}
 
 	beforeAll(async () => {
@@ -124,8 +115,12 @@ describe("operation readiness respects OAuth scopes", () => {
 			WHERE connector_key = ${CONNECTOR_KEY}
 		`;
 
-		readonlyConnId = await seedScopedConnection([READONLY_SCOPE]);
-		writableConnId = await seedScopedConnection([READONLY_SCOPE, WRITE_SCOPE]);
+		readonlyConnId = (
+			await seedScopedConnection([READONLY_SCOPE])
+		).connectionId;
+		writableConnId = (
+			await seedScopedConnection([READONLY_SCOPE, WRITE_SCOPE])
+		).connectionId;
 	});
 
 	async function listOp(
@@ -185,6 +180,35 @@ describe("operation readiness respects OAuth scopes", () => {
 		expect(op.next_action?.requested_scopes).toEqual([WRITE_SCOPE]);
 	});
 
+	it("provides an invokable next_action that requests the missing scope", async () => {
+		const seeded = await seedScopedConnection([READONLY_SCOPE]);
+		const op = await listOp("create_event", seeded.connectionId);
+		expect(op.next_action).toMatchObject({
+			sdk_method: "authProfiles.update",
+			arguments: [
+				{
+					auth_profile_slug: seeded.profileSlug,
+					requested_scopes: [READONLY_SCOPE, WRITE_SCOPE],
+					reconnect: true,
+				},
+			],
+		});
+
+		const [input] = op.next_action?.arguments as Array<Record<string, unknown>>;
+		const result = await manageAuthProfiles(
+			{ action: "update_auth_profile", ...input } as never,
+			{} as Env,
+			ctx,
+		);
+		expect(result).toMatchObject({
+			action: "update_auth_profile",
+			connect_url: expect.any(String),
+			auth_profile: {
+				requested_scopes: [READONLY_SCOPE, WRITE_SCOPE],
+			},
+		});
+	});
+
 	it("keeps read actions on the same connection executable", async () => {
 		const op = await listOp("get_event", readonlyConnId);
 		expect(op.executable).toBe(true);
@@ -197,14 +221,17 @@ describe("operation readiness respects OAuth scopes", () => {
 		expect(op.readiness).toBe("ready");
 	});
 
-	it("does not gate a legacy connection whose grant recorded no scopes", async () => {
-		// Connections authorized before scope recording (pre-#1901) have an empty
-		// granted_scopes even when the underlying token covers the write scope.
-		// Absence of recorded scopes is unknown, not missing — the gate must not
-		// falsely block a working connection.
-		const legacyConnId = await seedScopedConnection([]);
-		const op = await listOp("create_event", legacyConnId);
+	it("does not gate a legacy connection whose grant scopes were not recorded", async () => {
+		const legacy = await seedScopedConnection();
+		const op = await listOp("create_event", legacy.connectionId);
 		expect(op.readiness).toBe("ready");
 		expect(op.executable).toBe(true);
+	});
+
+	it("gates a known empty grant instead of treating it as legacy data", async () => {
+		const knownEmpty = await seedScopedConnection([]);
+		const op = await listOp("create_event", knownEmpty.connectionId);
+		expect(op.readiness).toBe("scope_upgrade_required");
+		expect(op.executable).toBe(false);
 	});
 });

@@ -171,8 +171,12 @@ export async function handleTest(
            c.auth_profile_id,
            c.app_auth_profile_id,
            c.status,
+           c.device_worker_id,
+           dw.label AS device_label,
+           COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
            cd.auth_schema
     FROM connections c
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
       SELECT auth_schema
       FROM connector_definitions
@@ -310,6 +314,35 @@ export async function handleTest(
       expires_at: summary.expires_at,
       ...(summary.is_expired ? testErrorFields('AUTH_INVALID') : {}),
     };
+  }
+
+  // Auth-free device connections such as apple.computer_use run on a paired
+  // device, not an auth profile — so a null profile is expected. Report whether
+  // the paired device is online instead of the misleading "No auth profile
+  // configured" warning. The 20-minute freshness window mirrors the readiness
+  // rule used across operations/feeds listings.
+  //
+  // This must precede the no-auth check: device connectors like apple.computer_use
+  // declare `auth_schema.methods: [{ type: 'none' }]`, so testing no-auth first would
+  // mask an offline device behind a generic "requires no auth profile" ok.
+  if (conn.device_worker_id) {
+    const deviceName = conn.device_label || 'paired device';
+    return conn.device_online
+      ? {
+          action: 'test',
+          status: 'ok',
+          message: `Device '${deviceName}' is online`,
+          device_online: true,
+        }
+      : {
+          action: 'test',
+          status: 'warning',
+          // Offline is transient — the device may reconnect — so this is
+          // retryable, mirroring the CDP-unreachable branch above.
+          message: `Device '${deviceName}' is offline — bring it online to execute`,
+          device_online: false,
+          ...testErrorFields('NETWORK'),
+        };
   }
 
   // Auth-free connectors (e.g. RSS/Atom) declare `authSchema.methods: [{ type: 'none' }]`

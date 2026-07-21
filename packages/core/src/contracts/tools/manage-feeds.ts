@@ -150,7 +150,7 @@ export const UpdateFeedAction = Type.Object({
   status: Type.Optional(
     Type.Union([Type.Literal("active"), Type.Literal("paused")], {
       description:
-        "Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set — a failing feed stays active; use the `list` action's `health: failing` filter to find failing feeds.",
+        "Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set — a failing feed stays active; use the `list_feeds` action's `health: failing` filter to find failing feeds.",
     })
   ),
   display_name: Type.Optional(Type.String()),

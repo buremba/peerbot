@@ -86,6 +86,24 @@ describe('connector_versions org backfill migration', () => {
         VALUES ('zz.bf.orphan', '1.0.0', NULL, '// orphan', NOW())
       `;
 
+      // Regression for #2067: a BUNDLED definition (organization_id IS NULL)
+      // whose key also carries a shared custom row — the exact prod shape
+      // (e.g. capterra, github: a NULL-org catalog definition alongside a
+      // shared source_code row). The backfill must NOT treat the bundled
+      // definition as an owner: copying to it re-emits a shared row that
+      // collides with the source row on connector_versions_shared_key_version
+      // (uncovered by the org-only ON CONFLICT), which aborted the migration.
+      // Expected: the shared custom row stays put, no error.
+      await tx`
+        INSERT INTO connector_definitions
+          (key, name, version, organization_id, status, created_at, updated_at)
+        VALUES ('zz.bf.bundledcustom', 'BF Bundled Custom', '1.0.0', NULL, 'active', NOW(), NOW())
+      `;
+      await tx`
+        INSERT INTO connector_versions (connector_key, version, organization_id, source_code, created_at)
+        VALUES ('zz.bf.bundledcustom', '1.0.0', NULL, '// bundled custom v1', NOW())
+      `;
+
       await tx.unsafe(upSection);
 
       const rows = (await tx`
@@ -126,6 +144,13 @@ describe('connector_versions org backfill migration', () => {
       const orphan = byKey('zz.bf.orphan', '1.0.0');
       expect(orphan).toHaveLength(1);
       expect(orphan[0]?.organization_id).toBeNull();
+
+      // #2067: bundled (NULL-org) definition is not an owner — no copy made,
+      // shared custom row stays exactly one shared row, migration did not abort.
+      const bundledCustom = byKey('zz.bf.bundledcustom', '1.0.0');
+      expect(bundledCustom).toHaveLength(1);
+      expect(bundledCustom[0]?.organization_id).toBeNull();
+      expect(bundledCustom[0]?.source_code).toBe('// bundled custom v1');
 
       // Roll the seeds back — this test must not leak state into the suite.
       throw new Error('__rollback__');

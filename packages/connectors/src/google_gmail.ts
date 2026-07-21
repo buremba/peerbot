@@ -95,15 +95,22 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     key: 'google.gmail',
     name: 'Gmail',
     description: 'Syncs email threads from Gmail and supports sending emails.',
-    version: '1.0.1',
+    version: '1.0.2',
     faviconDomain: 'mail.google.com',
     authSchema: {
       methods: [
         {
           type: 'oauth',
           provider: 'google',
-          requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-          optionalScopes: ['https://www.googleapis.com/auth/gmail.send'],
+          requiredScopes: [
+            'https://www.googleapis.com/auth/gmail.readonly',
+            // compose covers drafts.create AND messages.send, so it is the single
+            // write scope for create_draft/reply/send_email. It must be required
+            // (not optional) — optional scopes are only requested when the caller
+            // explicitly asks for them, so an unadorned connect() would omit it
+            // and every write op would 403 insufficient-scope.
+            'https://www.googleapis.com/auth/gmail.compose',
+          ],
           loginScopes: ['openid', 'email', 'profile'],
           clientIdKey: 'GOOGLE_CLIENT_ID',
           clientSecretKey: 'GOOGLE_CLIENT_SECRET',

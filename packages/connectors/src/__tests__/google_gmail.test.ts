@@ -162,3 +162,24 @@ describe('Gmail person attribution rule', () => {
     ]);
   });
 });
+
+describe('Gmail write scope', () => {
+  // create_draft POSTs to /drafts, which the Gmail API authorizes only under
+  // gmail.compose (or the broader gmail.modify) — gmail.readonly and gmail.send
+  // are both insufficient for drafts.create. compose must be REQUIRED, not
+  // optional: optional scopes are only sent when the caller explicitly requests
+  // them, so an unadorned connect() would omit it and create_draft would 403.
+  test('compose is a required scope so create_draft/reply/send_email are authorized', () => {
+    const connector = new GmailConnector();
+    const oauth = connector.definition.authSchema.methods.find(
+      (m: { type: string }) => m.type === 'oauth'
+    );
+    expect(oauth.requiredScopes).toContain('https://www.googleapis.com/auth/gmail.compose');
+
+    const actions = connector.definition.actions;
+    for (const key of ['create_draft', 'reply', 'send_email']) {
+      expect(actions[key]).toBeDefined();
+      expect(actions[key].key).toBe(key);
+    }
+  });
+});

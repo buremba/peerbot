@@ -135,7 +135,12 @@ export class ToolError extends Error {
     this.callId = options?.callId;
   }
 
-  toJSON(): { code: ToolErrorCode; retryable: boolean; message: string; call_id?: string } {
+  toJSON(): {
+    code: ToolErrorCode;
+    retryable: boolean;
+    message: string;
+    call_id?: string;
+  } {
     return {
       code: this.code,
       retryable: this.retryable,
@@ -215,14 +220,16 @@ export function classifyToolError(signal: ToolErrorSignal): ToolErrorCode {
   if (pgCode && /^[0-9A-Z]{5}$/.test(pgCode)) {
     if (pgCode === "57014") return "UPSTREAM_TIMEOUT"; // query_canceled / statement_timeout
     // 08xxx = connection exceptions (transient); 40001 = serialization failure; 40P01 = deadlock.
-    if (pgCode.startsWith("08") || pgCode === "40001" || pgCode === "40P01") return "NETWORK";
+    if (pgCode.startsWith("08") || pgCode === "40001" || pgCode === "40P01")
+      return "NETWORK";
     // Everything else (syntax, constraint, etc.) is the caller's fault → not retryable.
     return "VALIDATION";
   }
 
   if (exitReason) {
     if (exitReason === "timeout") return "UPSTREAM_TIMEOUT";
-    if (exitReason === "oom" || exitReason === "crash") return "UPSTREAM_UNAVAILABLE";
+    if (exitReason === "oom" || exitReason === "crash")
+      return "UPSTREAM_UNAVAILABLE";
     // "error_message" is the connector-thrown case with no structured signal —
     // fall through to message matching below.
   }
@@ -231,8 +238,10 @@ export function classifyToolError(signal: ToolErrorSignal): ToolErrorCode {
 
   if (message) {
     const lower = message.toLowerCase();
-    if (RATE_LIMIT_MESSAGE_KEYWORDS.some((kw) => lower.includes(kw))) return "RATE_LIMITED";
-    if (NETWORK_MESSAGE_KEYWORDS.some((kw) => lower.includes(kw))) return "NETWORK";
+    if (RATE_LIMIT_MESSAGE_KEYWORDS.some((kw) => lower.includes(kw)))
+      return "RATE_LIMITED";
+    if (NETWORK_MESSAGE_KEYWORDS.some((kw) => lower.includes(kw)))
+      return "NETWORK";
   }
 
   return "INTERNAL";

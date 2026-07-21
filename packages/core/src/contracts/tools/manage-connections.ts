@@ -749,6 +749,18 @@ export const ManageConnectionsResultSchema = Type.Union([
     has_token: Type.Optional(Type.Boolean()),
     has_refresh: Type.Optional(Type.Boolean()),
     expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    // Structured error taxonomy (lobu#2051 Item 2), present on error/warning results.
+    error_code: Type.Optional(
+      Type.String({
+        description:
+          "Structured error code when status is error/warning, e.g. AUTH_MISSING / AUTH_INVALID.",
+      }),
+    ),
+    retryable: Type.Optional(
+      Type.Boolean({
+        description: "Whether re-running the test may succeed. Advisory; not auto-retried.",
+      }),
+    ),
   }),
   Type.Object({
     action: Type.Literal("install_connector"),

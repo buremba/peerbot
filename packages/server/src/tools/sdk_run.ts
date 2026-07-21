@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { classifyToolError, isRetryable } from "@lobu/core";
 import { resolveMaxAccessLevel } from "../auth/tool-access";
 import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
@@ -92,6 +93,18 @@ export const SdkScriptResultSchema = Type.Object({
         stack: Type.Optional(Type.String()),
         line: Type.Optional(Type.Number()),
         column: Type.Optional(Type.Number()),
+        code: Type.Optional(
+          Type.String({
+            description:
+              "Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.",
+          }),
+        ),
+        retryable: Type.Optional(
+          Type.Boolean({
+            description:
+              "Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).",
+          }),
+        ),
       },
       { description: "Present when success=false: the thrown error, with script position." },
     ),
@@ -129,11 +142,21 @@ async function runSandbox(
     },
     limits: args.timeout_ms ? { timeoutMs: args.timeout_ms } : undefined,
   });
+  // Attach a structured code/retryable to a script error so the agent can tell a
+  // transient upstream failure (worth re-running) from a permanent script fault.
+  // run_sdk is never auto-retried by the wrapper (arbitrary side effects), so this
+  // is purely advisory.
+  const error = result.error
+    ? (() => {
+        const code = classifyToolError({ message: result.error?.message });
+        return { ...result.error, code, retryable: isRetryable(code) };
+      })()
+    : result.error;
   return {
     success: result.success,
     return_value: result.returnValue,
     logs: result.logs,
-    error: result.error,
+    error,
     duration_ms: result.durationMs,
     sdk_calls: result.sdkCalls,
     sdk_call_trace: result.sdkCallTrace,

@@ -31,6 +31,7 @@ export * from "./capabilities";
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
+export * from "./connector-query-errors";
 export * from "./constants";
 // Shared credential-store primitives (CLI + embedded server share one impl)
 export * from "./credentials";

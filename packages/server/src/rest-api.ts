@@ -119,12 +119,29 @@ async function withPublicOrg<T>(
 	} catch (error) {
 		if (error instanceof ToolUserError) {
 			return c.json(
-				{ error: error.message },
+				toolUserErrorBody(error),
 				error.httpStatus as 400 | 403 | 404 | 409 | 422
 			);
 		}
 		return c.json({ error: errorMessage(error) }, 400);
 	}
+}
+
+/**
+ * Build the JSON body for a ToolUserError, including the structured taxonomy
+ * (lobu#2051 Item 2) — `code`/`retryable`/`call_id` — when the error carries a code.
+ */
+function toolUserErrorBody(error: ToolUserError): Record<string, unknown> {
+	return {
+		error: error.message,
+		...(error.code
+			? {
+					code: error.code,
+					retryable: error.retryable,
+					...(error.callId ? { call_id: error.callId } : {}),
+				}
+			: {}),
+	};
 }
 
 /**
@@ -272,7 +289,7 @@ export async function restToolProxy(
 	} catch (error) {
 		if (error instanceof ToolUserError) {
 			return c.json(
-				{ error: error.message },
+				toolUserErrorBody(error),
 				error.httpStatus as 400 | 403 | 404 | 409 | 422
 			);
 		}

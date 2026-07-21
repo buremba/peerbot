@@ -109,5 +109,30 @@ describe('connections.test — auth-free connectors', () => {
     expect(res.action).toBe('test');
     expect(res.status).toBe('warning');
     expect(String(res.message)).toMatch(/No auth profile configured/i);
+    // Structured taxonomy (lobu#2051 Item 2): a missing-auth warning is a stable,
+    // non-retryable AUTH_MISSING — the agent shouldn't retry the identical test.
+    expect(res.error_code).toBe('AUTH_MISSING');
+    expect(res.retryable).toBe(false);
+  });
+
+  it('the auth-free ok result carries no error taxonomy', async () => {
+    const { org, user, ctx } = await seedOwnerContext({ orgName: 'Auth-Free No-Code Org' });
+    await createTestConnectorDefinition({
+      key: CONNECTORS.none,
+      name: 'Auth-free connector',
+      organization_id: org.id,
+      auth_schema: { methods: [{ type: 'none' }] },
+    });
+    const connectionId = await seedConnection(org.id, user.id, CONNECTORS.none, 'rss-ok');
+
+    const res = (await manageConnections(
+      { action: 'test', connection_id: connectionId },
+      TEST_ENV,
+      ctx
+    )) as Record<string, unknown>;
+
+    expect(res.status).toBe('ok');
+    expect(res.error_code).toBeUndefined();
+    expect(res.retryable).toBeUndefined();
   });
 });

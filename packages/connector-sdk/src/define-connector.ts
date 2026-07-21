@@ -159,6 +159,13 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
             name: action.name,
             description: action.description,
             requiresApproval: action.requiresApproval ?? false,
+            // `kind` and `requiredScopes` are semantic policy inputs (read/write
+            // classification and the per-action scope gate). Dropping them here
+            // would silently publish scoped/observational actions with neither,
+            // so a defineConnector() action would bypass the scope gate that a
+            // raw ActionDefinition enforces.
+            kind: action.kind,
+            requiredScopes: action.requiredScopes,
             annotations: action.annotations,
             inputSchema: action.inputSchema,
             outputSchema: action.outputSchema,

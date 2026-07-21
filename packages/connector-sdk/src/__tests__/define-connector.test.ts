@@ -36,6 +36,8 @@ const Github = defineConnector({
 	actions: {
 		star_repo: {
 			name: "Star repo",
+			kind: "write",
+			requiredScopes: ["public_repo"],
 			execute: async (ctx) => ({
 				success: true,
 				output: { repo: ctx.input.repo },
@@ -59,6 +61,12 @@ describe("defineConnector", () => {
 		expect(definition.actions?.star_repo?.key).toBe("star_repo");
 		// requiresApproval defaults to false
 		expect(definition.actions?.star_repo?.requiresApproval).toBe(false);
+		// Semantic policy inputs must survive lowering, else a defineConnector()
+		// action bypasses the read/write classification and the scope gate.
+		expect(definition.actions?.star_repo?.kind).toBe("write");
+		expect(definition.actions?.star_repo?.requiredScopes).toEqual([
+			"public_repo",
+		]);
 		// handler closures must NOT leak into the serializable definition
 		expect(
 			(definition.feeds?.stars as Record<string, unknown>).sync,

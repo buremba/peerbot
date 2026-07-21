@@ -310,7 +310,7 @@ export const TestAction = Type.Object({
 export const InstallConnectorAction = Type.Object({
   action: Type.Literal("install_connector", {
     description:
-      "Enable a reviewed catalog connector with connector_id, or install from exactly one source_url/source_uri/source_code/mcp_url. Catalog enablement does not authenticate external accounts.",
+      "Enable a reviewed catalog connector with connector_id, or install from exactly one source_url/source_uri/source_code/mcp_url. Catalog enablement does not authenticate external accounts. Organization-local: if the connector key is already installed for this org, the active definition is updated in place (prior versions stay retained for rollback_connector_version); the global catalog is never modified. To change an existing connector's source, prefer validate_connector_source then update_connector_source.",
   }),
   connector_id: Type.Optional(
     Type.String({
@@ -362,6 +362,90 @@ export const UninstallConnectorAction = Type.Object({
       "Archive an installed connector definition. Blocked while connections reference it.",
   }),
   connector_key: Type.String({ description: "Connector key to uninstall" }),
+});
+
+// ============================================
+// Connector source lifecycle (#2045)
+// ============================================
+//
+// Explicit, organization-local lifecycle for an installed connector's source:
+// read the active source (get_connector_source), compile-check a change with
+// no persistence (validate_connector_source), replace it with explicit
+// versioning (update_connector_source), and revert in one operation
+// (rollback_connector_version). Prior versions are retained in
+// connector_versions, so rollback never needs the original source at hand.
+
+export const GetConnectorSourceAction = Type.Object({
+  action: Type.Literal("get_connector_source", {
+    description:
+      "Read the installed source for a connector in this organization (organization-local; the global catalog is never involved). Returns the requested (default: active) version's source_code/source_path plus the retained version history usable with rollback_connector_version.",
+  }),
+  connector_key: Type.String({
+    description: "Installed connector key (e.g. google.gmail)",
+  }),
+  version: Type.Optional(
+    Type.String({
+      description:
+        "Read a specific retained version instead of the active one.",
+    })
+  ),
+});
+
+export const ValidateConnectorSourceAction = Type.Object({
+  action: Type.Literal("validate_connector_source", {
+    description:
+      "Compile connector source and return extracted metadata or compiler diagnostics WITHOUT persisting anything — the safe preflight for update_connector_source. Also reports whether the source's key is already installed in this org and whether its version collides with a retained version.",
+  }),
+  source_code: Type.String({
+    description:
+      "TypeScript or pre-compiled JavaScript connector source to validate.",
+  }),
+  compiled: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set to true if source_code is already compiled JavaScript (skip compilation)",
+    })
+  ),
+});
+
+export const UpdateConnectorSourceAction = Type.Object({
+  action: Type.Literal("update_connector_source", {
+    description:
+      "Replace an installed connector's source (organization-local; the global catalog is never modified). The source's definition.key must equal connector_key, and definition.version must be bumped when the code changes — the previously active version stays retained for rollback_connector_version. Existing connections, feeds, and credentials stay attached (they reference the connector key, not a version).",
+  }),
+  connector_key: Type.String({
+    description:
+      "Installed connector key to update. Must equal the definition.key inside source_code.",
+  }),
+  source_code: Type.String({
+    description: "New TypeScript or pre-compiled JavaScript connector source.",
+  }),
+  compiled: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set to true if source_code is already compiled JavaScript (skip compilation)",
+    })
+  ),
+  expected_version: Type.Optional(
+    Type.String({
+      description:
+        "Optimistic concurrency check: fail without persisting if the currently active version differs.",
+    })
+  ),
+});
+
+export const RollbackConnectorVersionAction = Type.Object({
+  action: Type.Literal("rollback_connector_version", {
+    description:
+      "Re-activate a previously installed version of a connector in one operation (organization-local). The retained code is re-validated before the definition flips; existing connections and feeds stay attached.",
+  }),
+  connector_key: Type.String({
+    description: "Installed connector key (e.g. google.gmail)",
+  }),
+  version: Type.String({
+    description:
+      "Retained version to re-activate (see get_connector_source's `versions`).",
+  }),
 });
 
 export const ConnectAction = Type.Object({
@@ -680,6 +764,60 @@ export const ManageConnectionsResultSchema = Type.Union([
     uninstalled: Type.Literal(true),
     connector_key: Type.String(),
   }),
+  Type.Object({
+    action: Type.Literal("get_connector_source"),
+    connector_key: Type.String(),
+    active_version: Type.String(),
+    version: Type.String(),
+    source_code: Type.Union([Type.String(), Type.Null()]),
+    source_path: Type.Union([Type.String(), Type.Null()]),
+    code_hash: Type.Union([Type.String(), Type.Null()]),
+    versions: Type.Array(
+      Type.Object({
+        version: Type.String(),
+        created_at: Type.String(),
+        has_source: Type.Boolean(),
+        has_compiled: Type.Boolean(),
+        active: Type.Boolean(),
+      })
+    ),
+  }),
+  Type.Object({
+    action: Type.Literal("validate_connector_source"),
+    valid: Type.Literal(true),
+    connector_key: Type.String(),
+    name: Type.String(),
+    version: Type.String(),
+    code_hash: Type.String(),
+    installed: Type.Boolean(),
+    active_version: Type.Union([Type.String(), Type.Null()]),
+    version_exists: Type.Boolean(),
+  }),
+  // Compile/metadata failure is a VALID validation outcome (the whole point of
+  // the preflight), not an `error` — it must survive run_sdk as a return value.
+  Type.Object({
+    action: Type.Literal("validate_connector_source"),
+    valid: Type.Literal(false),
+    diagnostics: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal("update_connector_source"),
+    success: Type.Literal(true),
+    connector_key: Type.String(),
+    name: Type.String(),
+    previous_version: Type.String(),
+    version: Type.String(),
+    code_hash: Type.String(),
+  }),
+  Type.Object({
+    action: Type.Literal("rollback_connector_version"),
+    success: Type.Literal(true),
+    connector_key: Type.String(),
+    name: Type.String(),
+    previous_version: Type.String(),
+    version: Type.String(),
+    code_hash: Type.String(),
+  }),
   // ConnectorActionOk<"toggle_connector_login", { login_enabled: boolean }>
   Type.Object({
     action: Type.Literal("toggle_connector_login"),
@@ -729,6 +867,22 @@ export type InstallConnectorInput = Omit<
   Static<typeof InstallConnectorAction>,
   "action"
 >;
+export type GetConnectorSourceInput = Omit<
+  Static<typeof GetConnectorSourceAction>,
+  "action"
+>;
+export type ValidateConnectorSourceInput = Omit<
+  Static<typeof ValidateConnectorSourceAction>,
+  "action"
+>;
+export type UpdateConnectorSourceInput = Omit<
+  Static<typeof UpdateConnectorSourceAction>,
+  "action"
+>;
+export type RollbackConnectorVersionInput = Omit<
+  Static<typeof RollbackConnectorVersionAction>,
+  "action"
+>;
 
 /**
  * Union of all action variants. Defined from the variants directly (rather
@@ -748,6 +902,10 @@ export type ConnectionsArgs =
   | Static<typeof TestAction>
   | Static<typeof InstallConnectorAction>
   | Static<typeof UninstallConnectorAction>
+  | Static<typeof GetConnectorSourceAction>
+  | Static<typeof ValidateConnectorSourceAction>
+  | Static<typeof UpdateConnectorSourceAction>
+  | Static<typeof RollbackConnectorVersionAction>
   | Static<typeof ToggleConnectorLoginAction>
   | Static<typeof UpdateConnectorAuthAction>
   | Static<typeof UpdateConnectorDefaultConfigAction>

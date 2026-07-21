@@ -652,12 +652,52 @@ export default async (_ctx, client) => {
 	},
 	"connections.installConnector": {
 		summary:
-			"Enable a reviewed catalog connector with connector_id, or install a connector definition from an explicit source.",
+			"Enable a reviewed catalog connector with connector_id, or install a connector definition from exactly one explicit source (source_url | source_uri | source_code | mcp_url). Organization-local: if the key is already installed for this org the active definition is updated in place (prior versions stay retained for rollbackConnectorVersion); the global catalog is never modified. To change an existing connector's source, prefer validateConnectorSource then updateConnectorSource.",
 		access: "admin",
+		signature:
+			"connections.installConnector(input: { connector_id?: string; source_url?: string; source_uri?: string; source_code?: string; compiled?: boolean; mcp_url?: string; auth_values?: Record<string, string> }): Promise<unknown>",
+		example:
+			"await client.connections.installConnector({ connector_id: 'google.gmail' });",
 	},
 	"connections.uninstallConnector": {
 		summary: "Uninstall a connector definition.",
 		access: "admin",
+	},
+	"connections.getConnectorSource": {
+		summary:
+			"Read the installed source for a connector in this organization (organization-local): the active (or a specific retained) version's source_code/source_path, its code hash, and the retained version history usable with rollbackConnectorVersion.",
+		access: "admin",
+		signature:
+			"connections.getConnectorSource(input: { connector_key: string; version?: string }): Promise<unknown>",
+		example:
+			"const src = await client.connections.getConnectorSource({ connector_key: 'google.gmail' });",
+	},
+	"connections.validateConnectorSource": {
+		summary:
+			"Compile connector source and return extracted metadata or compiler diagnostics WITHOUT persisting anything — the safe preflight before updateConnectorSource. Returns { valid: false, diagnostics } on compile/metadata failure; on success reports the extracted key/name/version, whether that key is installed in this org, and whether the version collides with a retained version.",
+		access: "admin",
+		signature:
+			"connections.validateConnectorSource(input: { source_code: string; compiled?: boolean }): Promise<unknown>",
+		example:
+			"const check = await client.connections.validateConnectorSource({ source_code });",
+	},
+	"connections.updateConnectorSource": {
+		summary:
+			"Replace an installed connector's source (organization-local; never the global catalog). The source's definition.key must equal connector_key and definition.version must be bumped when the code changes — the prior version stays retained for rollbackConnectorVersion. Existing connections, feeds, and credentials stay attached. Pass expected_version for an optimistic concurrency check.",
+		access: "admin",
+		signature:
+			"connections.updateConnectorSource(input: { connector_key: string; source_code: string; compiled?: boolean; expected_version?: string }): Promise<unknown>",
+		example:
+			"await client.connections.updateConnectorSource({ connector_key: 'google.gmail', source_code, expected_version: '1.4.2' });",
+	},
+	"connections.rollbackConnectorVersion": {
+		summary:
+			"Re-activate a previously installed version of a connector in one operation (organization-local). The retained code is re-validated before the definition flips; existing connections and feeds stay attached. List retained versions with getConnectorSource.",
+		access: "admin",
+		signature:
+			"connections.rollbackConnectorVersion(input: { connector_key: string; version: string }): Promise<unknown>",
+		example:
+			"await client.connections.rollbackConnectorVersion({ connector_key: 'google.gmail', version: '1.4.2' });",
 	},
 	"connections.toggleConnectorLogin": {
 		summary: "Enable/disable the login-with-connector flow.",

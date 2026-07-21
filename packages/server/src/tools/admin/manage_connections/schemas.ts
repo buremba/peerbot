@@ -4,11 +4,13 @@ export {
 	CreateAction,
 	DeleteAction,
 	GetAction,
+	GetConnectorSourceAction,
 	InstallConnectorAction,
 	ListAction,
 	ListConnectorGroupsAction,
 	ManageConnectionsResultSchema,
 	ReauthenticateAction,
+	RollbackConnectorVersionAction,
 	SetChannelAboutAction,
 	TestAction,
 	ToggleConnectorLoginAction,
@@ -17,6 +19,8 @@ export {
 	UpdateConnectorAuthAction,
 	UpdateConnectorDefaultConfigAction,
 	UpdateConnectorDefaultRepairAgentAction,
+	UpdateConnectorSourceAction,
+	ValidateConnectorSourceAction,
 } from "@lobu/core/contracts/tools/manage-connections";
 export type {
 	ConnectionFacets,

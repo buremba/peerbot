@@ -1,0 +1,268 @@
+/**
+ * Connector source lifecycle (#2045): the explicit, org-local
+ * install → get_connector_source → validate_connector_source →
+ * update_connector_source → rollback_connector_version round trip through the
+ * manage_connections tool.
+ *
+ * Contract under test:
+ *  - get returns the active source plus the retained version history
+ *  - validate compiles + reports diagnostics and NEVER persists
+ *  - update requires an installed connector, a matching definition.key, an
+ *    optional optimistic expected_version, and a version bump when the code
+ *    changes (so the prior version stays retained)
+ *  - rollback re-activates a retained version in one operation and restores
+ *    the definition's metadata from that version's stored code
+ */
+
+import { beforeAll, describe, expect, it } from 'vitest';
+import type { Env } from '../../../index';
+import { initWorkspaceProvider } from '../../../workspace';
+import { manageConnections } from '../../../tools/admin/manage_connections';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { seedOwnerContext } from '../../setup/test-fixtures';
+import type { ToolContext } from '../../../tools/registry';
+
+const TEST_ENV = {
+  ENVIRONMENT: 'test',
+  DATABASE_URL: process.env.DATABASE_URL,
+} as unknown as Env;
+
+const KEY = 'zz.lifecycleprobe';
+
+function probeSource(version: string, marker: string): string {
+  return `
+export default class LifecycleProbeConnector {
+  definition = {
+    key: '${KEY}',
+    name: 'Lifecycle Probe',
+    description: '${marker}',
+    version: '${version}',
+  };
+  async sync() { return { events: [], checkpoint: null }; }
+  async execute() { return { marker: '${marker}' }; }
+}
+`;
+}
+
+describe('manage_connections connector source lifecycle (#2045)', () => {
+  let ctx: ToolContext;
+  let orgId: string;
+
+  beforeAll(async () => {
+    await initWorkspaceProvider();
+    await cleanupTestDatabase();
+    const seeded = await seedOwnerContext({
+      orgName: 'Connector Lifecycle Org',
+      userName: 'Connector Lifecycle User',
+    });
+    ctx = seeded.ctx;
+    orgId = seeded.org.id;
+  });
+
+  it('runs the full round trip: install → get → validate → update → guards → rollback', async () => {
+    const sql = getTestDb();
+
+    // ---- install v1 from source ----
+    const installed = await manageConnections(
+      { action: 'install_connector', source_code: probeSource('1.0.0', 'V1') },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in installed ? installed.error : undefined).toBeUndefined();
+    expect('version' in installed ? installed.version : undefined).toBe('1.0.0');
+
+    // ---- get_connector_source: active source + retained history ----
+    const got = await manageConnections(
+      { action: 'get_connector_source', connector_key: KEY },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in got ? got.error : undefined).toBeUndefined();
+    if (!('active_version' in got)) throw new Error('unexpected result shape');
+    expect(got.active_version).toBe('1.0.0');
+    expect(got.version).toBe('1.0.0');
+    expect(got.source_code).toContain("marker: 'V1'");
+    expect(got.versions).toEqual([
+      expect.objectContaining({ version: '1.0.0', active: true, has_source: true }),
+    ]);
+
+    // ---- validate: broken source → diagnostics, no persistence ----
+    const invalid = await manageConnections(
+      {
+        action: 'validate_connector_source',
+        source_code: 'export default class Broken {',
+      },
+      TEST_ENV,
+      ctx
+    );
+    if (!('valid' in invalid)) throw new Error('unexpected result shape');
+    expect(invalid.valid).toBe(false);
+    expect('diagnostics' in invalid && invalid.diagnostics.length).toBeGreaterThan(0);
+
+    // ---- validate: compiles but missing identity → diagnostics too ----
+    const noIdentity = await manageConnections(
+      {
+        action: 'validate_connector_source',
+        source_code: `export default class NoKey {
+  definition = { name: 'No Key' };
+  async sync() { return { events: [], checkpoint: null }; }
+  async execute() { return {}; }
+}`,
+      },
+      TEST_ENV,
+      ctx
+    );
+    if (!('valid' in noIdentity)) throw new Error('unexpected result shape');
+    expect(noIdentity.valid).toBe(false);
+    expect('diagnostics' in noIdentity ? noIdentity.diagnostics : '').toMatch(
+      /key, name, and version/
+    );
+
+    // Neither validation persisted anything.
+    const afterValidate = await sql`
+      SELECT version FROM connector_versions WHERE connector_key = ${KEY}
+    `;
+    expect(afterValidate.map((r) => (r as { version: string }).version)).toEqual(['1.0.0']);
+
+    // ---- validate: good v2 source → preflight metadata, still no persistence ----
+    const valid = await manageConnections(
+      { action: 'validate_connector_source', source_code: probeSource('2.0.0', 'V2') },
+      TEST_ENV,
+      ctx
+    );
+    if (!('valid' in valid) || valid.valid !== true) {
+      throw new Error(`expected valid preflight, got ${JSON.stringify(valid)}`);
+    }
+    expect(valid.connector_key).toBe(KEY);
+    expect(valid.version).toBe('2.0.0');
+    expect(valid.installed).toBe(true);
+    expect(valid.active_version).toBe('1.0.0');
+    expect(valid.version_exists).toBe(false);
+
+    // ---- update guards ----
+    // Wrong key inside the source: refused.
+    const wrongKey = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: KEY,
+        source_code: probeSource('2.0.0', 'V2').replace(KEY, 'zz.otherprobe'),
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in wrongKey ? wrongKey.error : '').toContain("defines connector 'zz.otherprobe'");
+
+    // Stale optimistic version check: refused.
+    const staleExpected = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: KEY,
+        source_code: probeSource('2.0.0', 'V2'),
+        expected_version: '0.9.9',
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in staleExpected ? staleExpected.error : '').toContain('Version conflict');
+
+    // Same active version + different code: refused (rollback would be lost).
+    const noBump = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: KEY,
+        source_code: probeSource('1.0.0', 'V1-changed'),
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in noBump ? noBump.error : '').toContain('Bump the version');
+
+    // ---- update to v2 with the correct expected_version ----
+    const updated = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: KEY,
+        source_code: probeSource('2.0.0', 'V2'),
+        expected_version: '1.0.0',
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in updated ? updated.error : undefined).toBeUndefined();
+    if (!('previous_version' in updated)) throw new Error('unexpected result shape');
+    expect(updated.previous_version).toBe('1.0.0');
+    expect(updated.version).toBe('2.0.0');
+
+    // The definition flipped and BOTH versions are retained.
+    const defAfterUpdate = await sql`
+      SELECT version, description FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${KEY} AND status = 'active'
+    `;
+    expect((defAfterUpdate[0] as { version: string }).version).toBe('2.0.0');
+    expect((defAfterUpdate[0] as { description: string }).description).toBe('V2');
+    const retained = await sql`
+      SELECT version FROM connector_versions WHERE connector_key = ${KEY} ORDER BY version
+    `;
+    expect(retained.map((r) => (r as { version: string }).version)).toEqual(['1.0.0', '2.0.0']);
+
+    // ---- rollback guards ----
+    const missingVersion = await manageConnections(
+      { action: 'rollback_connector_version', connector_key: KEY, version: '9.9.9' },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in missingVersion ? missingVersion.error : '').toContain(
+      "No retained version '9.9.9'"
+    );
+    expect('error' in missingVersion ? missingVersion.error : '').toContain('1.0.0');
+
+    const alreadyActive = await manageConnections(
+      { action: 'rollback_connector_version', connector_key: KEY, version: '2.0.0' },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in alreadyActive ? alreadyActive.error : '').toContain('already the active version');
+
+    // ---- rollback to v1: one operation, definition metadata restored ----
+    const rolled = await manageConnections(
+      { action: 'rollback_connector_version', connector_key: KEY, version: '1.0.0' },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in rolled ? rolled.error : undefined).toBeUndefined();
+    if (!('previous_version' in rolled)) throw new Error('unexpected result shape');
+    expect(rolled.previous_version).toBe('2.0.0');
+    expect(rolled.version).toBe('1.0.0');
+
+    const defAfterRollback = await sql`
+      SELECT version, description FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${KEY} AND status = 'active'
+    `;
+    expect((defAfterRollback[0] as { version: string }).version).toBe('1.0.0');
+    expect((defAfterRollback[0] as { description: string }).description).toBe('V1');
+
+    // Rolling back consumed nothing: v2 stays retained for a roll-forward.
+    const finalGet = await manageConnections(
+      { action: 'get_connector_source', connector_key: KEY },
+      TEST_ENV,
+      ctx
+    );
+    if (!('active_version' in finalGet)) throw new Error('unexpected result shape');
+    expect(finalGet.active_version).toBe('1.0.0');
+    expect(finalGet.source_code).toContain("marker: 'V1'");
+    expect(finalGet.versions.map((v) => v.version).sort()).toEqual(['1.0.0', '2.0.0']);
+  }, 240_000);
+
+  it('refuses to update a connector that is not installed', async () => {
+    const result = await manageConnections(
+      {
+        action: 'update_connector_source',
+        connector_key: 'zz.neverinstalled',
+        source_code: probeSource('1.0.0', 'X').replace(KEY, 'zz.neverinstalled'),
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in result ? result.error : '').toContain('not installed in this organization');
+  }, 60_000);
+});

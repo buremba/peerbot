@@ -11,7 +11,11 @@ import type {
 	ConnectionConnectInput,
 	ConnectionCreateInput,
 	ConnectionUpdateInput,
+	GetConnectorSourceInput,
 	InstallConnectorInput,
+	RollbackConnectorVersionInput,
+	UpdateConnectorSourceInput,
+	ValidateConnectorSourceInput,
 } from "@lobu/core/contracts/tools/manage-connections";
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
@@ -45,6 +49,14 @@ export interface ConnectionsNamespace {
 	test(connection_id: number): Promise<unknown>;
 	installConnector(input: ConnectionsInstallConnectorInput): Promise<unknown>;
 	uninstallConnector(connector_key: string): Promise<unknown>;
+	getConnectorSource(input: GetConnectorSourceInput): Promise<unknown>;
+	validateConnectorSource(
+		input: ValidateConnectorSourceInput,
+	): Promise<unknown>;
+	updateConnectorSource(input: UpdateConnectorSourceInput): Promise<unknown>;
+	rollbackConnectorVersion(
+		input: RollbackConnectorVersionInput,
+	): Promise<unknown>;
 	toggleConnectorLogin(input: {
 		connector_key: string;
 		enabled: boolean;
@@ -116,6 +128,14 @@ export function buildConnectionsNamespace(
 			action("install_connector", input, "installConnector"),
 		uninstallConnector: (connector_key) =>
 			action("uninstall_connector", { connector_key }, "uninstallConnector"),
+		getConnectorSource: (input) =>
+			action("get_connector_source", input, "getConnectorSource"),
+		validateConnectorSource: (input) =>
+			action("validate_connector_source", input, "validateConnectorSource"),
+		updateConnectorSource: (input) =>
+			action("update_connector_source", input, "updateConnectorSource"),
+		rollbackConnectorVersion: (input) =>
+			action("rollback_connector_version", input, "rollbackConnectorVersion"),
 		toggleConnectorLogin: (input) =>
 			action("toggle_connector_login", input, "toggleConnectorLogin"),
 		updateConnectorAuth: (input) =>

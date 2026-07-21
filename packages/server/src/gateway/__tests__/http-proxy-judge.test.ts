@@ -7,6 +7,7 @@ import type { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
 import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
+import { withFreePortRetry } from "../../__tests__/setup/free-port.js";
 import {
   __testOnly,
   setProxyEgressJudge,
@@ -70,8 +71,13 @@ beforeAll(async () => {
     new EgressJudge({ client: fakeClient, defaultModel: "judge-test-model" })
   );
 
-  proxyPort = 10000 + Math.floor(Math.random() * 50000);
-  proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");
+  // Ask the OS for a free port and retry on collision instead of gambling on a
+  // random high port — concurrent test load otherwise races to EADDRINUSE (#976).
+  proxyServer = await withFreePortRetry(async (port) => {
+    const server = await startHttpProxy(port, "127.0.0.1");
+    proxyPort = port;
+    return server;
+  });
 });
 
 afterAll(async () => {

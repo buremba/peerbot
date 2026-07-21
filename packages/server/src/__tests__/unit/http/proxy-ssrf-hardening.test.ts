@@ -9,6 +9,7 @@ import {
   startHttpProxy,
   stopHttpProxy,
 } from "../../../gateway/proxy/http-proxy.js";
+import { withFreePortRetry } from "../../setup/free-port.js";
 
 // SSRF / network-proxy hardening regression coverage.
 //
@@ -28,8 +29,13 @@ let proxyServer: http.Server;
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
   process.env.WORKER_ALLOWED_DOMAINS = "*";
-  proxyPort = 10000 + Math.floor(Math.random() * 50000);
-  proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");
+  // Ask the OS for a free port and retry on collision instead of gambling on a
+  // random high port — concurrent test load otherwise races to EADDRINUSE (#976).
+  proxyServer = await withFreePortRetry(async (port) => {
+    const server = await startHttpProxy(port, "127.0.0.1");
+    proxyPort = port;
+    return server;
+  });
 });
 
 afterAll(async () => {

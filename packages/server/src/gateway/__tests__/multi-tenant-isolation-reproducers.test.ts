@@ -43,6 +43,7 @@ import {
   resetTestDatabase,
   seedAgentRow,
 } from "./helpers/db-setup.js";
+import { withFreePortRetry } from "../../__tests__/setup/free-port.js";
 
 // ─── Finding 3: PolicyStore cross-tenant clobbering ──────────────────────────
 
@@ -388,8 +389,14 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
     );
     setProxyGrantStore(store);
 
-    const proxyPort = 10000 + Math.floor(Math.random() * 50000);
-    const proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");
+    // Ask the OS for a free port and retry on collision instead of gambling on
+    // a random high port — concurrent test load otherwise races to EADDRINUSE
+    // (#976).
+    let proxyPort = 0;
+    const proxyServer = await withFreePortRetry(async (port) => {
+      proxyPort = port;
+      return startHttpProxy(port, "127.0.0.1");
+    });
 
     try {
       // Mint an org-B token claiming `shared-agent-id`.

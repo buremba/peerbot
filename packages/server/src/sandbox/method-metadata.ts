@@ -688,7 +688,8 @@ export default async (_ctx, client) => {
 		example: "await client.connections.reauthenticate(42);",
 	},
 	"connections.test": {
-		summary: "Test connection credentials (sends an external probe).",
+		summary:
+			"Test a connection's readiness: OAuth token validity/expiry, env/app-auth presence, browser-session cookies, or (device-bound connectors) whether the paired device is online. Only the browser-session CDP path makes an outbound network probe; the rest are metadata checks.",
 		access: "external",
 		signature:
 			"connections.test(connection_id: number): Promise<unknown> // or connections.test({ connection_id })",

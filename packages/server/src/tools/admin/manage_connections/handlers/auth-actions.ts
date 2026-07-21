@@ -171,8 +171,12 @@ export async function handleTest(
            c.auth_profile_id,
            c.app_auth_profile_id,
            c.status,
+           c.device_worker_id,
+           dw.label AS device_label,
+           COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
            cd.auth_schema
     FROM connections c
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
       SELECT auth_schema
       FROM connector_definitions
@@ -322,6 +326,31 @@ export async function handleTest(
       status: 'ok',
       message: 'Connector requires no auth profile',
     };
+  }
+
+  // Device-bound connections (e.g. apple.computer_use, browser device workers)
+  // run on a paired device, not an auth profile — so a null profile is expected.
+  // Report the device's readiness (the actual execution blocker) instead of the
+  // misleading "No auth profile configured" warning. The 20-minute freshness
+  // window mirrors the readiness rule used across operations/feeds listings.
+  if (conn.device_worker_id) {
+    const deviceName = conn.device_label || 'paired device';
+    return conn.device_online
+      ? {
+          action: 'test',
+          status: 'ok',
+          message: `Device '${deviceName}' is online and ready`,
+          device_online: true,
+        }
+      : {
+          action: 'test',
+          status: 'warning',
+          // Offline is transient — the device may reconnect — so this is
+          // retryable, mirroring the CDP-unreachable branch above.
+          message: `Device '${deviceName}' is offline — bring it online to execute`,
+          device_online: false,
+          ...testErrorFields('NETWORK'),
+        };
   }
 
   return {

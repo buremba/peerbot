@@ -744,10 +744,15 @@ export const ManageConnectionsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("test"),
-    status: Type.String(),
+    status: Type.Union(
+      [Type.Literal("ok"), Type.Literal("warning"), Type.Literal("error")],
+      { description: "Test outcome: ok, warning, or error." }
+    ),
     message: Type.String(),
     has_token: Type.Optional(Type.Boolean()),
     has_refresh: Type.Optional(Type.Boolean()),
+    /** Present for device-bound connections: whether the paired device is online. */
+    device_online: Type.Optional(Type.Boolean()),
     expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     // Structured error taxonomy (lobu#2051 Item 2), present on error/warning results.
     error_code: Type.Optional(

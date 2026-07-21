@@ -155,6 +155,7 @@ export default class ActionProbeConnector {
     feeds: { articles: { key: 'articles', name: 'Articles' } },
     actions: {
       read_thing: { key: 'read_thing', name: 'Read thing', kind: 'read', requiresApproval: false, requiredScopes: ['probe.read'] },
+      hinted_read: { key: 'hinted_read', name: 'Hinted read', requiresApproval: false, annotations: { readOnlyHint: true } },
       write_thing: { key: 'write_thing', name: 'Write thing', requiresApproval: true, requiredScopes: ['probe.write'] },
     },
   };
@@ -174,6 +175,9 @@ export default class ActionProbeConnector {
       requires_approval: false,
       required_scopes: ['probe.read'],
     });
+    // annotations.readOnlyHint:true classifies as read too — must match the
+    // runtime getLocalActionKind, not just an explicit kind field.
+    expect(withActions.actions.hinted_read.kind).toBe('read');
     // kind defaults to write when omitted (matches the runtime default).
     expect(withActions.actions.write_thing).toEqual({
       kind: 'write',

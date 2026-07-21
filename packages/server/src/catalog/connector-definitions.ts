@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { getErrorMessage } from "@lobu/core";
 import { getLoginProviderScopes } from "../auth/config";
 import { type DbClient, type DbQuery, getDb } from "../db/client";
+import { getLocalActionKind } from "../operations/connector-operations";
 import { probeMcpServer } from "../mcp-proxy/client";
 import { computeCodeHash } from "../utils/compiler-core";
 import {
@@ -472,7 +473,10 @@ function summarizeValidatedActions(
 			? (a.requiredScopes.filter((s) => typeof s === "string") as string[])
 			: [];
 		out[key] = {
-			kind: a.kind === "read" ? "read" : "write",
+			// Reuse the exact runtime classifier so the preflight can't disagree
+			// with how the action is actually treated (kind:'read' OR
+			// annotations.readOnlyHint:true → read; else write).
+			kind: getLocalActionKind(a),
 			requires_approval: a.requiresApproval === true,
 			required_scopes: scopes,
 		};

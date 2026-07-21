@@ -29,7 +29,16 @@ export const ListFeedsAction = Type.Object({
     Type.Number({ description: "Filter by linked entity ID" })
   ),
   status: Type.Optional(
-    Type.String({ description: "Filter by status: active, paused, error" })
+    Type.Union([Type.Literal("active"), Type.Literal("paused")], {
+      description:
+        "Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses — a feed that keeps failing stays 'active' (or auto-pauses). Use `health` to find failing feeds.",
+    })
+  ),
+  health: Type.Optional(
+    Type.Union([Type.Literal("healthy"), Type.Literal("failing")], {
+      description:
+        "Filter by runtime health, independent of lifecycle status. 'failing' = last sync failed or the feed has one or more consecutive failures; 'healthy' = otherwise. Surfaces active-but-failing feeds the `status` filter cannot.",
+    })
   ),
   ...PaginationFields,
 });
@@ -138,7 +147,12 @@ export const UpdateFeedAction = Type.Object({
     description: "Patch a feed (status, config, schedule, repair agent).",
   }),
   feed_id: Type.Number({ description: "Feed ID" }),
-  status: Type.Optional(Type.String({ description: "active, paused, error" })),
+  status: Type.Optional(
+    Type.Union(
+      [Type.Literal("active"), Type.Literal("paused"), Type.Literal("error")],
+      { description: "Desired feed status: active, paused, or error." }
+    )
+  ),
   display_name: Type.Optional(Type.String()),
   entity_ids: Type.Optional(Type.Array(Type.Number())),
   config: Type.Optional(Type.Record(Type.String(), Type.Any())),
@@ -197,7 +211,10 @@ export const ManageFeedsResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("list_feeds"),
     feeds: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+    /** Total feeds matching the filters across ALL pages, not just this page. */
     total: Type.Integer(),
+    /** True when more feeds match past this page (offset + returned < total). */
+    has_more: Type.Boolean(),
     limit: Type.Integer(),
     offset: Type.Integer(),
   }),

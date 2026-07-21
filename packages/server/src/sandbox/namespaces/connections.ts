@@ -20,7 +20,7 @@ import type {
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller, requirePositionalNumber } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 export type ConnectionsConnectInput = ConnectionConnectInput;
 export type ConnectionsCreateInput = ConnectionCreateInput;
@@ -91,10 +91,11 @@ export function buildConnectionsNamespace(
 		list: (input) => action("list", input),
 		get: async (connection_id) =>
 			action("get", {
-				connection_id: requirePositionalNumber(
+				connection_id: idArg(
 					"connections.get",
+					"connection_id",
 					connection_id,
-					"client.connections.get(<connection_id>)",
+					"number",
 				),
 			}),
 		create: (input) => action("create", input),
@@ -102,26 +103,29 @@ export function buildConnectionsNamespace(
 		update: (input) => action("update", input),
 		delete: async (connection_id) =>
 			action("delete", {
-				connection_id: requirePositionalNumber(
+				connection_id: idArg(
 					"connections.delete",
+					"connection_id",
 					connection_id,
-					"client.connections.delete(<connection_id>)",
+					"number",
 				),
 			}),
 		reauthenticate: async (connection_id) =>
 			action("reauthenticate", {
-				connection_id: requirePositionalNumber(
+				connection_id: idArg(
 					"connections.reauthenticate",
+					"connection_id",
 					connection_id,
-					"client.connections.reauthenticate(<connection_id>)",
+					"number",
 				),
 			}),
 		test: async (connection_id) =>
 			action("test", {
-				connection_id: requirePositionalNumber(
+				connection_id: idArg(
 					"connections.test",
+					"connection_id",
 					connection_id,
-					"client.connections.test(<connection_id>)",
+					"number",
 				),
 			}),
 		installConnector: (input) =>

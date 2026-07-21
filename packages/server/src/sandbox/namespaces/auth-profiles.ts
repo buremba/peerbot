@@ -15,7 +15,7 @@ import type { Env } from "../../index";
 import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import type { ToolContext } from "../../tools/registry";
 import type { AuthProfileKind as StoredAuthProfileKind } from "../../utils/auth-profiles";
-import { createActionCaller, requirePositionalString } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 /** Kinds manageable through the SDK — the stored kinds minus the internal-only `interactive`. */
 export type AuthProfileKind = Exclude<StoredAuthProfileKind, "interactive">;
@@ -79,10 +79,11 @@ export function buildAuthProfilesNamespace(
 			action(
 				"get_auth_profile",
 				{
-					auth_profile_slug: requirePositionalString(
+					auth_profile_slug: idArg(
 						"authProfiles.get",
+						"auth_profile_slug",
 						auth_profile_slug,
-						"client.authProfiles.get('<auth_profile_slug>')",
+						"string",
 					),
 				},
 				"get",
@@ -91,10 +92,11 @@ export function buildAuthProfilesNamespace(
 			action(
 				"test_auth_profile",
 				{
-					auth_profile_slug: requirePositionalString(
+					auth_profile_slug: idArg(
 						"authProfiles.test",
+						"auth_profile_slug",
 						auth_profile_slug,
-						"client.authProfiles.test('<auth_profile_slug>')",
+						"string",
 					),
 				},
 				"test",
@@ -105,10 +107,11 @@ export function buildAuthProfilesNamespace(
 			action(
 				"delete_auth_profile",
 				{
-					auth_profile_slug: requirePositionalString(
+					auth_profile_slug: idArg(
 						"authProfiles.delete",
+						"auth_profile_slug",
 						auth_profile_slug,
-						"client.authProfiles.delete('<auth_profile_slug>')",
+						"string",
 					),
 					...options,
 				},

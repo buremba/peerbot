@@ -18,6 +18,7 @@ import {
 	RUNTIME_HELPER_METADATA,
 	type MethodMetadata,
 } from "../sandbox/method-metadata";
+import { SDK_FIELD_ALIASES } from "../sandbox/sdk-aliases";
 import {
 	sdkMethodVisible,
 	type SdkDiscoveryMode,
@@ -206,6 +207,16 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	);
 	if (meta.signature) {
 		lines.push(`  signature: ${meta.signature}`);
+	}
+	// Rendered from the SAME registry the sandbox dispatch rewrites at runtime
+	// (sdk-aliases.ts), so documented aliases can never drift from accepted ones.
+	const aliases = SDK_FIELD_ALIASES[path];
+	if (aliases) {
+		lines.push(
+			`  accepted aliases: ${Object.entries(aliases)
+				.map(([alias, canonical]) => `${alias} → ${canonical}`)
+				.join(", ")}`,
+		);
 	}
 	if (meta.throws && meta.throws.length > 0) {
 		lines.push(`  throws: ${meta.throws.join(", ")}`);

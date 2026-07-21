@@ -4,6 +4,7 @@ import {
 	METHOD_METADATA,
 	type MethodAccess,
 } from "../../../sandbox/method-metadata";
+import { SDK_FIELD_ALIASES } from "../../../sandbox/sdk-aliases";
 import { buildClientSDK } from "../../../sandbox/client-sdk";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
@@ -293,5 +294,95 @@ describe("method-metadata", () => {
 		const read = METHOD_METADATA["knowledge.read"];
 		expect(read.summary).toContain("content_ids");
 		expect(read.example ?? "").toContain("content_ids: [");
+	});
+
+	it("documents the exact positional signature AND the accepted object form for every positional-id method", () => {
+		// #2046: these methods take a positional id at runtime but were described
+		// like named-object methods, so discovery and runtime disagreed. Every one
+		// must now document `path(field: type)` and the `{ field }` object form the
+		// runtime also accepts.
+		const positional: Array<[string, string]> = [
+			["connections.get", "connection_id"],
+			["connections.test", "connection_id"],
+			["connections.delete", "connection_id"],
+			["connections.reauthenticate", "connection_id"],
+			["agents.get", "agent_id"],
+			["agents.delete", "agent_id"],
+			["agents.setSystemAgent", "agent_id"],
+			["entitySchema.getType", "slug"],
+			["entitySchema.getRelType", "slug"],
+			["entitySchema.auditType", "slug"],
+			["operations.getRun", "run_id"],
+			["behaviors.getVersions", "behavior_id"],
+			["authProfiles.get", "auth_profile_slug"],
+			["authProfiles.test", "auth_profile_slug"],
+			["authProfiles.delete", "auth_profile_slug"],
+		];
+		for (const [path, field] of positional) {
+			const sig = METHOD_METADATA[path]?.signature ?? "";
+			expect(sig, path).toStartWith(`${path}(${field}:`);
+			expect(sig, path).toContain(`{ ${field} }`);
+		}
+	});
+
+	it("documents the exact runtime field names for the #2046 wrong-field mismatches", () => {
+		const expectations: Array<[string, string[]]> = [
+			["schedules.update", ["id: string"]],
+			["schedules.pause", ["id: string"]],
+			["schedules.cancel", ["id: string"]],
+			["viewTemplates.rollback", ["version: number"]],
+			["behaviors.setReactionScript", ["reaction_script: string"]],
+			[
+				"notifications.send",
+				["title: string", "body?: string", "'admins' | 'all' | string[]"],
+			],
+			["connections.update", ["display_name?: string"]],
+			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],
+			[
+				"classifiers.create",
+				["behavior_id: string", "attribute_values", "examples: string[]"],
+			],
+		];
+		for (const [path, fragments] of expectations) {
+			const sig = METHOD_METADATA[path]?.signature ?? "";
+			for (const fragment of fragments) {
+				expect(sig, `${path} signature documents ${fragment}`).toContain(
+					fragment,
+				);
+			}
+		}
+	});
+
+	it("documents that view-template text nodes carry their string in `content` (not `text`)", () => {
+		expect(METHOD_METADATA["viewTemplates.set"].summary).toContain(
+			"`content`",
+		);
+	});
+
+	it("exposes authProfiles.get at read tier (it returns sanitized data only)", () => {
+		// The handler serializes via serializeAuthProfile — no raw credentials or
+		// auth_data — so hiding it from query_sdk was an access-tier mismatch.
+		expect(METHOD_METADATA["authProfiles.get"].access).toBe("read");
+		// Credential-bearing siblings stay gated.
+		expect(METHOD_METADATA["authProfiles.create"].access).toBe("write");
+		expect(METHOD_METADATA["authProfiles.update"].access).toBe("write");
+		expect(METHOD_METADATA["authProfiles.test"].access).toBe("external");
+	});
+
+	it("keeps the alias registry aligned with runtime methods and their docs", () => {
+		const { namespaceMethods } = enumerateSdkMethods();
+		for (const [path, aliases] of Object.entries(SDK_FIELD_ALIASES)) {
+			expect(namespaceMethods, path).toContain(path);
+			const meta = METHOD_METADATA[path];
+			expect(meta, path).toBeDefined();
+			const doc = `${meta?.signature ?? ""} ${meta?.example ?? ""}`;
+			for (const [alias, canonical] of Object.entries(aliases)) {
+				// an alias that equals its canonical field is a registry bug
+				expect(alias, path).not.toBe(canonical);
+				expect(doc, `${path} documents canonical field ${canonical}`).toContain(
+					canonical,
+				);
+			}
+		}
 	});
 });

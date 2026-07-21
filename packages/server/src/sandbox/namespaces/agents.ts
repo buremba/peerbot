@@ -5,7 +5,7 @@
 import type { Env } from "../../index";
 import { manageAgents } from "../../tools/admin/manage_agents";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 export interface AgentsCreateInput {
 	agent_id: string;
@@ -40,11 +40,24 @@ export function buildAgentsNamespace(
 	return {
 		manage,
 		list: () => action("list", {}),
-		get: (agent_id) => action("get", { agent_id }),
+		get: (agent_id) =>
+			action("get", {
+				agent_id: idArg("agents.get", "agent_id", agent_id, "string"),
+			}),
 		create: (input) => action("create", input),
 		update: (input) => action("update", input),
-		delete: (agent_id) => action("delete", { agent_id }),
+		delete: (agent_id) =>
+			action("delete", {
+				agent_id: idArg("agents.delete", "agent_id", agent_id, "string"),
+			}),
 		setSystemAgent: (agent_id) =>
-			action("set_system_agent", { agent_id }),
+			action("set_system_agent", {
+				agent_id: idArg(
+					"agents.setSystemAgent",
+					"agent_id",
+					agent_id,
+					"string",
+				),
+			}),
 	};
 }

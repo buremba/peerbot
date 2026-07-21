@@ -8,7 +8,7 @@
 import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 export interface OperationsExecuteInput {
 	connection_id: number;
@@ -86,7 +86,12 @@ export function buildOperationsNamespace(
 		listAvailable: (input) => action("list_available", input, "listAvailable"),
 		execute: (input) => action("execute", input, "execute"),
 		listRuns: (input) => action("list_runs", input, "listRuns"),
-		getRun: (run_id) => action("get_run", { run_id }, "getRun"),
+		getRun: (run_id) =>
+			action(
+				"get_run",
+				{ run_id: idArg("operations.getRun", "run_id", run_id, "number") },
+				"getRun",
+			),
 		approve: (input) => action("approve", input, "approve"),
 		reject: (input) => action("reject", input, "reject"),
 	};

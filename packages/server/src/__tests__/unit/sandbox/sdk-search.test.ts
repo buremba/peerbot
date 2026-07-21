@@ -310,10 +310,57 @@ describe("sdkSearch", () => {
 			"client.authProfiles.get('google-calendar-account')",
 		],
 		["authProfiles.update", "reconnect?: boolean", "reconnect: true"],
+		[
+			"agents.get",
+			"agents.get(agent_id: string)",
+			"client.agents.get('builder')",
+		],
+		[
+			"entitySchema.getType",
+			"entitySchema.getType(slug: string)",
+			"client.entitySchema.getType('company')",
+		],
+		[
+			"behaviors.getVersions",
+			"behaviors.getVersions(behavior_id: string)",
+			"client.behaviors.getVersions('42')",
+		],
 	])("documents the exact %s call shape", async (path, signature, example) => {
 		const result = await sdkSearch({ query: path }, stubEnv, adminCtx);
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain(signature);
 		expect(result.results[0]).toContain(example);
+	});
+
+	it("renders accepted aliases from the runtime alias registry (one source)", async () => {
+		const entitiesGet = await sdkSearch(
+			{ query: "entities.get" },
+			stubEnv,
+			readCtx
+		);
+		expect(entitiesGet.results[0]).toContain(
+			"accepted aliases: id → entity_id"
+		);
+		const send = await sdkSearch(
+			{ query: "notifications.send" },
+			stubEnv,
+			writeCtx
+		);
+		expect(send.results[0]).toContain("accepted aliases: message → body");
+	});
+
+	it("exposes authProfiles.get in read mode with its exact signature", async () => {
+		// authProfiles.get returns serializeAuthProfile output (no raw
+		// credentials/auth_data) — hiding it from query_sdk was an access-tier
+		// mismatch (#2046).
+		const result = await sdkSearch(
+			{ query: "authProfiles.get", mode: "read" },
+			stubEnv,
+			readCtx
+		);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain(
+			"authProfiles.get(auth_profile_slug: string)"
+		);
 	});
 });

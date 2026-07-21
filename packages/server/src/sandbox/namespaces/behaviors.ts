@@ -20,7 +20,7 @@ import {
 } from "../../tools/admin/manage_behaviors";
 import { getBehavior } from "../../tools/get_behavior";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 type BehaviorId = string;
 type BehaviorActionInput = Omit<ManageBehaviorsArgs, "action" | "behavior_id"> & {
@@ -166,7 +166,15 @@ export function buildBehaviorsNamespace(
 		trigger: (input) => action("trigger", input),
 		delete: (input) => action("delete", input),
 		setReactionScript: (input) => action("set_reaction_script", input),
-		getVersions: (behavior_id) => action("get_versions", { behavior_id }),
+		getVersions: (behavior_id) =>
+			action("get_versions", {
+				behavior_id: idArg(
+					"behaviors.getVersions",
+					"behavior_id",
+					behavior_id,
+					"string",
+				),
+			}),
 		getVersionDetails: (input) =>
 			action("get_version_details", normalizeVersionDetailsInput(input)),
 		getComponentReference: () => action("get_component_reference"),

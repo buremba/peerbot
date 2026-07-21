@@ -201,6 +201,9 @@ export default async (_ctx, client) => {
 	"entitySchema.getType": {
 		summary: "Get an entity type by slug.",
 		access: "read",
+		signature:
+			"entitySchema.getType(slug: string): Promise<unknown> // or entitySchema.getType({ slug })",
+		example: "const t = await client.entitySchema.getType('company');",
 	},
 	"entitySchema.createType": {
 		summary:
@@ -221,6 +224,9 @@ export default async (_ctx, client) => {
 	"entitySchema.auditType": {
 		summary: "List historical changes to an entity type.",
 		access: "read",
+		signature:
+			"entitySchema.auditType(slug: string): Promise<unknown> // or entitySchema.auditType({ slug })",
+		example: "const audit = await client.entitySchema.auditType('company');",
 	},
 	"entitySchema.listRelTypes": {
 		summary:
@@ -232,6 +238,9 @@ export default async (_ctx, client) => {
 	"entitySchema.getRelType": {
 		summary: "Get a relationship type by slug.",
 		access: "read",
+		signature:
+			"entitySchema.getRelType(slug: string): Promise<unknown> // or entitySchema.getRelType({ slug })",
+		example: "const t = await client.entitySchema.getRelType('works-at');",
 	},
 	"entitySchema.createRelType": {
 		summary: "Create a relationship type.",
@@ -320,6 +329,8 @@ export default async (_ctx, client) => {
 		summary:
 			"Fetch one agent by id when agent_config read allows that target. Org-read gated via requireOrgReadAccess.",
 		access: "read",
+		signature:
+			"agents.get(agent_id: string): Promise<unknown> // or agents.get({ agent_id })",
 		example: "const { agent } = await client.agents.get('builder');",
 	},
 	"agents.create": {
@@ -338,10 +349,15 @@ export default async (_ctx, client) => {
 		summary:
 			"Delete an agent (may queue for approval). Requires admin tier + agent_config delete.",
 		access: "admin",
+		signature:
+			"agents.delete(agent_id: string): Promise<unknown> // or agents.delete({ agent_id })",
+		example: "await client.agents.delete('researcher');",
 	},
 	"agents.setSystemAgent": {
 		summary: "Point organization.system_agent_id at an agent. Requires admin.",
 		access: "admin",
+		signature:
+			"agents.setSystemAgent(agent_id: string): Promise<unknown> // or agents.setSystemAgent({ agent_id })",
 		example: "await client.agents.setSystemAgent('builder');",
 	},
 
@@ -422,16 +438,26 @@ export default async (_ctx, client) => {
 	},
 	"schedules.update": {
 		summary:
-			"Patch a schedule (next run, cron, wake_agent prompt). Requires admin.",
+			"Patch a schedule (next run, cron, wake_agent prompt). The schedule is addressed by `id` (not `schedule_id`). Requires admin.",
 		access: "admin",
+		signature:
+			"schedules.update(input: { id: string; description?: string; run_at?: string; cron?: string | null; prompt?: string; model?: string }): Promise<unknown>",
+		example:
+			"await client.schedules.update({ id: 'schedule-id', run_at: '2026-07-22T09:00:00Z' });",
 	},
 	"schedules.pause": {
-		summary: "Pause or resume a schedule. Requires admin.",
+		summary:
+			"Pause or resume a schedule, addressed by `id` (not `schedule_id`). Requires admin.",
 		access: "admin",
+		signature:
+			"schedules.pause(input: { id: string; paused?: boolean }): Promise<unknown>",
+		example: "await client.schedules.pause({ id: 'schedule-id' });",
 	},
 	"schedules.cancel": {
-		summary: "Permanently delete a schedule. Requires admin.",
+		summary:
+			"Permanently delete a schedule, addressed by `id` (not `schedule_id`). Requires admin.",
 		access: "admin",
+		signature: "schedules.cancel(input: { id: string }): Promise<unknown>",
 		example: "await client.schedules.cancel({ id: 'schedule-id' });",
 	},
 
@@ -440,6 +466,8 @@ export default async (_ctx, client) => {
 		summary:
 			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `behavior_source` when firing from a reaction.",
 		access: "write",
+		signature:
+			"notifications.send(input: { title: string; body?: string; card?: CardElement; recipients?: 'admins' | 'all' | string[]; resource_url?: string; connection_id?: string; data?: object; behavior_source?: { behavior_id: number; window_id: number } }): Promise<{ notified_count: number }>",
 		example:
 			"await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', behavior_source: { behavior_id: ctx.window.behavior_id, window_id: ctx.window.id } });",
 		usageExample: `// Push a Behavior digest to the org's Slack/Telegram connections + inbox.
@@ -531,8 +559,12 @@ export default async (_ctx, client) => {
 	},
 	"behaviors.setReactionScript": {
 		summary:
-			"Attach a raw TS reaction script (fires on window completion). Empty string removes it.",
+			"Attach a raw TS reaction script (fires on window completion). The source goes in `reaction_script`; empty string removes it.",
 		access: "admin",
+		signature:
+			"behaviors.setReactionScript(input: { behavior_id: string; reaction_script: string }): Promise<unknown>",
+		example:
+			"await client.behaviors.setReactionScript({ behavior_id: '42', reaction_script: 'export default async (ctx, client) => { /* … */ };' });",
 		throws: ["CompileError"],
 	},
 	"behaviors.completeWindow": {
@@ -543,6 +575,9 @@ export default async (_ctx, client) => {
 	"behaviors.getVersions": {
 		summary: "List template versions for a Behavior.",
 		access: "read",
+		signature:
+			"behaviors.getVersions(behavior_id: string): Promise<unknown> // or behaviors.getVersions({ behavior_id })",
+		example: "const versions = await client.behaviors.getVersions('42');",
 	},
 	"behaviors.getVersionDetails": {
 		summary: "Fetch a specific Behavior template version.",
@@ -593,7 +628,8 @@ export default async (_ctx, client) => {
 	"connections.get": {
 		summary: "Get a connection by id.",
 		access: "read",
-		signature: "connections.get(connection_id: number): Promise<unknown>",
+		signature:
+			"connections.get(connection_id: number): Promise<unknown> // or connections.get({ connection_id })",
 		example: "await client.connections.get(42);",
 	},
 	"connections.create": {
@@ -627,13 +663,19 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"connections.update": {
-		summary: "Update connection config or auth profile.",
+		summary:
+			"Update connection config or auth profile. The label field is `display_name` (not `name`).",
 		access: "write",
+		signature:
+			"connections.update(input: { connection_id: number; display_name?: string; slug?: string; status?: string; agent_id?: string | null; auth_profile_slug?: string | null; app_auth_profile_slug?: string | null; config?: object; entity_ids?: number[] }): Promise<unknown>",
+		example:
+			"await client.connections.update({ connection_id: 42, display_name: 'Team calendar' });",
 	},
 	"connections.delete": {
 		summary: "Delete a connection.",
 		access: "admin",
-		signature: "connections.delete(connection_id: number): Promise<unknown>",
+		signature:
+			"connections.delete(connection_id: number): Promise<unknown> // or connections.delete({ connection_id })",
 		example: "await client.connections.delete(42);",
 	},
 	"connections.reauthenticate": {
@@ -641,13 +683,14 @@ export default async (_ctx, client) => {
 			"Start a fresh auth flow for an existing OAuth-account or interactive connection. Returns connect_url for OAuth or auth_run_id for interactive pairing.",
 		access: "write",
 		signature:
-			"connections.reauthenticate(connection_id: number): Promise<unknown>",
+			"connections.reauthenticate(connection_id: number): Promise<unknown> // or connections.reauthenticate({ connection_id })",
 		example: "await client.connections.reauthenticate(42);",
 	},
 	"connections.test": {
 		summary: "Test connection credentials (sends an external probe).",
 		access: "external",
-		signature: "connections.test(connection_id: number): Promise<unknown>",
+		signature:
+			"connections.test(connection_id: number): Promise<unknown> // or connections.test({ connection_id })",
 		example: "await client.connections.test(42);",
 	},
 	"connections.installConnector": {
@@ -701,7 +744,8 @@ export default async (_ctx, client) => {
 	"operations.getRun": {
 		summary: "Get a single run by id.",
 		access: "read",
-		signature: "operations.getRun(run_id: number): Promise<unknown>",
+		signature:
+			"operations.getRun(run_id: number): Promise<unknown> // or operations.getRun({ run_id })",
 		example: "const run = await client.operations.getRun(123);",
 	},
 	"operations.approve": {
@@ -774,15 +818,18 @@ export default async (_ctx, client) => {
 			"authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: AuthProfileKind }): Promise<unknown> // not paginated",
 	},
 	"authProfiles.get": {
-		summary: "Get an auth profile by slug.",
-		access: "admin",
-		signature: "authProfiles.get(auth_profile_slug: string): Promise<unknown>",
+		summary:
+			"Get an auth profile by slug. Returns the sanitized serialization only — never raw credentials or auth_data.",
+		access: "read",
+		signature:
+			"authProfiles.get(auth_profile_slug: string): Promise<unknown> // or authProfiles.get({ auth_profile_slug })",
 		example: "await client.authProfiles.get('google-calendar-account');",
 	},
 	"authProfiles.test": {
 		summary: "Test auth-profile credentials.",
 		access: "external",
-		signature: "authProfiles.test(auth_profile_slug: string): Promise<unknown>",
+		signature:
+			"authProfiles.test(auth_profile_slug: string): Promise<unknown> // or authProfiles.test({ auth_profile_slug })",
 		example: "await client.authProfiles.test('google-calendar-account');",
 	},
 	"authProfiles.create": {
@@ -802,7 +849,7 @@ export default async (_ctx, client) => {
 		summary: "Delete an auth profile.",
 		access: "write",
 		signature:
-			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown>",
+			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown> // or authProfiles.delete({ auth_profile_slug })",
 		example: "await client.authProfiles.delete('google-calendar-account');",
 	},
 
@@ -818,8 +865,13 @@ export default async (_ctx, client) => {
 			"classifiers.list(input?: { entity_id?: number; status?: string }): Promise<unknown> // not paginated",
 	},
 	"classifiers.create": {
-		summary: "Create a classifier template.",
+		summary:
+			"Create a classifier template. REQUIRES `behavior_id` (the owning Behavior) plus `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list.",
 		access: "admin",
+		signature:
+			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
+		example:
+			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', behavior_id: '42', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},
 	"classifiers.generateEmbeddings": {
 		summary: "Generate embeddings for attribute values (cost-heavy).",
@@ -833,8 +885,12 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.classify": {
 		summary:
-			"Apply a manual classification to one or many content records (single or batch).",
+			"Apply a manual classification to one or many content records (single or batch). The classifier is addressed by `classifier_slug` (a string — NOT the numeric `classifier_id` other CRUD methods use); `source` accepts only 'llm' or 'user'.",
 		access: "admin",
+		signature:
+			"classifiers.classify(input: { classifier_slug: string; content_id?: number; value?: string | null; reasoning?: string; classifications?: Array<{ content_id: number; value: string | null; reasoning?: string }>; source?: 'llm' | 'user' }): Promise<unknown>",
+		example:
+			"await client.classifiers.classify({ classifier_slug: 'sentiment', content_id: 101, value: 'positive', source: 'user' });",
 	},
 
 	// viewTemplates
@@ -851,14 +907,19 @@ export default async (_ctx, client) => {
 	},
 	"viewTemplates.set": {
 		summary:
-			"Create or update a view template version. Params: { resource_type: 'entity' | 'entity_type', resource_id, json_template, tab_name?, tab_order?, change_notes? }. json_template is a DSL node tree (nodes: text | data | if | each | component; a `data` node takes an optional `format`: currency|date|url|enum|boolean|number|auto|text) and may nest a `data_sources` key of named read-only SQL queries. The node tree is validated on set — a malformed template is rejected, not stored.",
+			"Create or update a view template version. Params: { resource_type: 'entity' | 'entity_type', resource_id, json_template, tab_name?, tab_order?, change_notes? }. json_template is a DSL node tree (nodes: text | data | if | each | component; a `text` node carries its string in `content` — not `text`; a `data` node takes an optional `format`: currency|date|url|enum|boolean|number|auto|text) and may nest a `data_sources` key of named read-only SQL queries. The node tree is validated on set — a malformed template is rejected, not stored.",
 		access: "admin",
 		example:
 			"await client.viewTemplates.set({ resource_type: 'entity_type', resource_id: 'deal', tab_name: 'Pipeline', json_template: { type: 'div', data_sources: { rows: { query: \"SELECT name, metadata->>'arr' AS arr FROM entities WHERE entity_type = 'deal'\" } }, children: [ { type: 'each', items: 'rows', as: 'r', render: { type: 'card', children: [ { type: 'data', path: 'r.name' }, { type: 'data', path: 'r.arr', format: 'currency' } ] } } ] } });",
 	},
 	"viewTemplates.rollback": {
-		summary: "Roll back to a previous template version.",
+		summary:
+			"Roll back to a previous template version. Takes `version` — the version NUMBER, not a `version_id` row id.",
 		access: "admin",
+		signature:
+			"viewTemplates.rollback(input: { resource_type: 'entity' | 'entity_type'; resource_id: string | number; version: number; tab_name?: string }): Promise<unknown>",
+		example:
+			"await client.viewTemplates.rollback({ resource_type: 'entity_type', resource_id: 'deal', version: 3 });",
 	},
 	"viewTemplates.removeTab": {
 		summary: "Remove a named tab from a template.",

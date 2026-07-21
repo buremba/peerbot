@@ -1,6 +1,7 @@
 import type { Env } from "../../index";
 import type { ToolContext } from "../../tools/registry";
 import { ToolUserError } from "../../utils/errors";
+import { applyFieldAliases } from "../sdk-aliases";
 
 type AdminHandler = (args: any, env: Env, ctx: ToolContext) => Promise<unknown>;
 
@@ -26,25 +27,36 @@ export class ClientSdkActionError extends ToolUserError {
 	}
 }
 
-export function requirePositionalNumber(
+/**
+ * Resolve a single-id argument for a method documented as
+ * `path(field: type)` — the canonical positional form — while also accepting
+ * the intuitive object form `path({ field: value })` (#2046 contract-alias
+ * window). The object form is strict: exactly the canonical field, no extra
+ * keys, so options are never silently dropped. Anything else fails with
+ * guidance naming BOTH accepted call shapes and a neutral placeholder (never
+ * a real-looking id an agent might copy verbatim).
+ */
+export function idArg(
 	method: string,
+	field: string,
 	value: unknown,
-	example: string,
-): number {
-	if (typeof value === "number" && Number.isFinite(value)) return value;
+	kind: "number" | "string",
+): number | string {
+	const matches = (v: unknown): boolean =>
+		kind === "number"
+			? typeof v === "number" && Number.isFinite(v)
+			: typeof v === "string";
+	if (matches(value)) return value as number | string;
+	if (value && typeof value === "object" && !Array.isArray(value)) {
+		const record = value as Record<string, unknown>;
+		const keys = Object.keys(record);
+		if (keys.length === 1 && keys[0] === field && matches(record[field])) {
+			return record[field] as number | string;
+		}
+	}
+	const placeholder = kind === "number" ? `<${field}>` : `'<${field}>'`;
 	throw new ToolUserError(
-		`${method} expects a positional number. Call ${example}; do not pass an object.`,
-	);
-}
-
-export function requirePositionalString(
-	method: string,
-	value: unknown,
-	example: string,
-): string {
-	if (typeof value === "string") return value;
-	throw new ToolUserError(
-		`${method} expects a positional string. Call ${example}; do not pass an object.`,
+		`${method} expects the ${field}. Call client.${method}(${placeholder}) or client.${method}({ ${field}: ${placeholder} }).`,
 	);
 }
 
@@ -176,9 +188,14 @@ export function createActionCaller(
 		// `action` key (e.g. from a read-only query_sdk script) can never override
 		// the discriminator and reach a write/delete handler.
 		const { action: _ignored, ...rest } = input as Record<string, unknown>;
+		// Rewrite accepted field aliases (sdk-aliases.ts) to their canonical
+		// names — the same registry search_sdk renders, so discovery == runtime.
+		const canonical = sdkNamespace
+			? applyFieldAliases(`${sdkNamespace}.${publicMethod}`, rest)
+			: rest;
 		let result: T;
 		try {
-			result = await manage<T>({ ...rest, action: actionName });
+			result = await manage<T>({ ...canonical, action: actionName });
 		} catch (err) {
 			throw rewriteInternalToolName(err, sdkNamespace, publicMethod);
 		}

@@ -11,7 +11,7 @@
 import type { Env } from "../../index";
 import { manageEntitySchema } from "../../tools/admin/manage_entity_schema";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { createActionCaller, idArg } from "./action-call";
 
 export interface EntitySchemaAddRuleInput {
 	slug: string;
@@ -112,14 +112,35 @@ export function buildEntitySchemaNamespace(
 	return {
 		manage,
 		listTypes: (input) => callEntity({ action: "list", ...input }, "listTypes"),
-		getType: (slug) => callEntity({ action: "get", slug }, "getType"),
+		getType: (slug) =>
+			callEntity(
+				{
+					action: "get",
+					slug: idArg("entitySchema.getType", "slug", slug, "string"),
+				},
+				"getType",
+			),
 		createType: (input) => callEntity({ action: "create", ...input }, "createType"),
 		updateType: (input) => callEntity({ action: "update", ...input }, "updateType"),
 		deleteType: (input) => callEntity({ action: "delete", ...input }, "deleteType"),
-		auditType: (slug) => callEntity({ action: "audit", slug }, "auditType"),
+		auditType: (slug) =>
+			callEntity(
+				{
+					action: "audit",
+					slug: idArg("entitySchema.auditType", "slug", slug, "string"),
+				},
+				"auditType",
+			),
 
 		listRelTypes: (input) => callRel({ action: "list", ...input }, "listRelTypes"),
-		getRelType: (slug) => callRel({ action: "get", slug }, "getRelType"),
+		getRelType: (slug) =>
+			callRel(
+				{
+					action: "get",
+					slug: idArg("entitySchema.getRelType", "slug", slug, "string"),
+				},
+				"getRelType",
+			),
 		createRelType: (input) => callRel({ action: "create", ...input }, "createRelType"),
 		updateRelType: (input) => callRel({ action: "update", ...input }, "updateRelType"),
 		deleteRelType: (input) => callRel({ action: "delete", ...input }, "deleteRelType"),

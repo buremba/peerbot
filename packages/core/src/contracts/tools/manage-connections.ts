@@ -810,6 +810,18 @@ export const ManageConnectionsResultSchema = Type.Union([
     installed: Type.Boolean(),
     active_version: Type.Union([Type.String(), Type.Null()]),
     version_exists: Type.Boolean(),
+    // Extracted per-action semantic-policy summary (kind / requires_approval /
+    // required_scopes), keyed by action key, so an author can confirm those
+    // fields survived extraction before persisting. Plus the extracted feed keys.
+    actions: Type.Record(
+      Type.String(),
+      Type.Object({
+        kind: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+        requires_approval: Type.Boolean(),
+        required_scopes: Type.Array(Type.String()),
+      }),
+    ),
+    feed_keys: Type.Array(Type.String()),
   }),
   // Compile/metadata failure is a VALID validation outcome (the whole point of
   // the preflight), not an `error` — it must survive run_sdk as a return value.

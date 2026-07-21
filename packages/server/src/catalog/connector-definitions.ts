@@ -429,6 +429,19 @@ export async function getInstalledConnectorSource(params: {
 	};
 }
 
+/**
+ * Compact per-action semantic-policy summary surfaced by the preflight so an
+ * author can confirm `kind` and `requiredScopes` survived extraction BEFORE
+ * persisting — the whole point of a validate-without-install step. Keyed by
+ * action key. Omits the (large) input/output schemas; those live in the
+ * installed definition's actions_schema.
+ */
+export type ValidatedActionSummary = {
+	kind: "read" | "write";
+	requires_approval: boolean;
+	required_scopes: string[];
+};
+
 export type ConnectorSourceValidation =
 	| {
 			valid: true;
@@ -439,8 +452,33 @@ export type ConnectorSourceValidation =
 			installed: boolean;
 			activeVersion: string | null;
 			versionExists: boolean;
+			actions: Record<string, ValidatedActionSummary>;
+			feedKeys: string[];
 	  }
 	| { valid: false; diagnostics: string };
+
+/**
+ * Reduce the extracted `actions` blob to the semantic-policy fields authors
+ * need to verify: kind (defaults to write, matching the runtime), whether it
+ * requires approval, and requiredScopes. Tolerant of missing/legacy shapes.
+ */
+function summarizeValidatedActions(
+	actions: Record<string, unknown> | null,
+): Record<string, ValidatedActionSummary> {
+	const out: Record<string, ValidatedActionSummary> = {};
+	for (const [key, raw] of Object.entries(actions ?? {})) {
+		const a = (raw ?? {}) as Record<string, unknown>;
+		const scopes = Array.isArray(a.requiredScopes)
+			? (a.requiredScopes.filter((s) => typeof s === "string") as string[])
+			: [];
+		out[key] = {
+			kind: a.kind === "read" ? "read" : "write",
+			requires_approval: a.requiresApproval === true,
+			required_scopes: scopes,
+		};
+	}
+	return out;
+}
 
 /**
  * Compile + extract + validate connector source WITHOUT persisting anything —
@@ -485,6 +523,8 @@ export async function validateConnectorSource(params: {
 		installed: def !== null,
 		activeVersion: def?.version ?? null,
 		versionExists: versionRows.length > 0,
+		actions: summarizeValidatedActions(resolved.metadata.actions),
+		feedKeys: Object.keys(resolved.metadata.feeds ?? {}),
 	};
 }
 

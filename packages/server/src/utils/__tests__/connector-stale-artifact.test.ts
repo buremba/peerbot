@@ -51,8 +51,8 @@ let storedSourceCode: string | null = STORED_SOURCE;
 function fakeSql(strings: TemplateStringsArray, ...params: unknown[]): Promise<unknown[]> {
   const text = strings.join('?').replace(/\s+/g, ' ').trim();
   queries.push({ text, params });
-  if (/SELECT source_code FROM connector_versions/i.test(text)) {
-    return Promise.resolve(storedSourceCode === null ? [] : [{ source_code: storedSourceCode }]);
+  if (/source_code FROM connector_versions/i.test(text)) {
+    return Promise.resolve(storedSourceCode === null ? [] : [{ id: 1, source_code: storedSourceCode }]);
   }
   return Promise.resolve([]);
 }

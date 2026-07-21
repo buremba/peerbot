@@ -69,6 +69,7 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
     LEFT JOIN connector_versions cv
       ON cv.connector_key = c.connector_key
      AND cv.version = COALESCE(f.pinned_version, resolved_def.version)
+     AND cv.organization_id IS NULL
     WHERE f.status = 'active'
       AND c.status = 'active'
       AND c.deleted_at IS NULL

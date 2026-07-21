@@ -116,6 +116,7 @@ async function ensureDeviceConnectorWired(
       FROM connector_definitions cd
       LEFT JOIN connector_versions cv
         ON cv.connector_key = cd.key AND cv.version = cd.version
+        AND cv.organization_id IS NULL
       LEFT JOIN connections c
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
@@ -240,6 +241,10 @@ async function ensureDeviceConnectorWired(
           sourceCode: null,
           sourcePath,
         },
+        // A device-manifest connector's sourcePath is meaningful only to the
+        // owning user's daemon → their org's row. A bundled device connector
+        // points at the shared on-disk catalog → shared row.
+        versionScope: source ? 'organization' : 'shared',
       });
 
       // 3. Reuse or create the connection (no-auth, active, private). Match on

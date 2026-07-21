@@ -118,9 +118,12 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
       /key, name, and version/
     );
 
-    // Neither validation persisted anything.
+    // Neither validation persisted anything (shared namespace — the org copy
+    // from the dual-write phase mirrors it and is asserted by the dual-write
+    // suite).
     const afterValidate = await sql`
-      SELECT version FROM connector_versions WHERE connector_key = ${KEY}
+      SELECT version FROM connector_versions
+      WHERE connector_key = ${KEY} AND organization_id IS NULL
     `;
     expect(afterValidate.map((r) => (r as { version: string }).version)).toEqual(['1.0.0']);
 
@@ -201,7 +204,9 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     expect((defAfterUpdate[0] as { version: string }).version).toBe('2.0.0');
     expect((defAfterUpdate[0] as { description: string }).description).toBe('V2');
     const retained = await sql`
-      SELECT version FROM connector_versions WHERE connector_key = ${KEY} ORDER BY version
+      SELECT version FROM connector_versions
+      WHERE connector_key = ${KEY} AND organization_id IS NULL
+      ORDER BY version
     `;
     expect(retained.map((r) => (r as { version: string }).version)).toEqual(['1.0.0', '2.0.0']);
 
@@ -293,13 +298,17 @@ describe('manage_connections connector source lifecycle (#2045)', () => {
     );
     expect('error' in clobber ? clobber.error : '').toContain('Bump the version');
 
-    // v1's retained source is intact — the rollback target was not corrupted.
+    // v1's retained source is intact on EVERY row (shared + dual-write org
+    // copy) — the rollback target was not corrupted.
     const v1 = await sql`
       SELECT source_code FROM connector_versions
-      WHERE connector_key = ${RKEY} AND version = '1.0.0' LIMIT 1
+      WHERE connector_key = ${RKEY} AND version = '1.0.0'
     `;
-    expect((v1[0] as { source_code: string }).source_code).toContain("marker: 'R1'");
-    expect((v1[0] as { source_code: string }).source_code).not.toContain('R1-tampered');
+    expect(v1.length).toBeGreaterThan(0);
+    for (const row of v1) {
+      expect((row as { source_code: string }).source_code).toContain("marker: 'R1'");
+      expect((row as { source_code: string }).source_code).not.toContain('R1-tampered');
+    }
   }, 120_000);
 
   it('refuses to update a connector that is not installed', async () => {

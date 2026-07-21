@@ -12,12 +12,20 @@ import { cleanupTestDatabase } from "../../setup/test-db";
 /**
  * Concurrent CREATE INDEX IF NOT EXISTS silently no-ops when an INVALID
  * leftover of the same name exists (failed prior concurrent build). The INVALID
- * carcass is dropped by a companion heal migration (a `DO` block in the default
- * transactional migration) that runs immediately before the `transaction:false`
- * CONCURRENTLY build. The two are split across files because dbmate runs a
- * multi-statement `transaction:false` body in one implicit transaction, which
- * CREATE INDEX CONCURRENTLY rejects — so each CONCURRENTLY migration must be a
- * single statement. `files` lists the heal + build pair, applied in order.
+ * carcass must be dropped by a heal `DO` block that runs immediately before the
+ * `transaction:false` CONCURRENTLY build.
+ *
+ * Two layouts appear in the tree, both exercised here:
+ *  - Legacy: the heal lives in its own companion migration applied just before
+ *    the build (`files` = [heal, build]).
+ *  - Inline: the heal `DO` and the CONCURRENTLY build share one
+ *    `transaction:false` file (`files` = [build]). This is the retry-safe
+ *    layout — a standalone heal records as applied on first success, so a later
+ *    crash of the build leaves an INVALID carcass the retry never clears; the
+ *    inline heal re-runs on every attempt. Both runners (scripts/migrate-up.mjs
+ *    in prod, db/migration-loader.ts here) split a `transaction:false` body into
+ *    top-level statements so CONCURRENTLY is never trapped in an implicit
+ *    multi-statement transaction. `files` is applied in order.
  */
 const HEAL_MIGRATIONS = [
 	{
@@ -63,6 +71,24 @@ const HEAL_MIGRATIONS = [
 		seedSql: `
       CREATE INDEX IF NOT EXISTS channel_messages_org_dedup
         ON channel_messages (id)
+    `,
+	},
+	{
+		// Inline heal + build in one transaction:false file (retry-safe layout).
+		files: ["20260721120020_connector_versions_org_unique.sql"],
+		index: "connector_versions_org_key_version",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS connector_versions_org_key_version
+        ON connector_versions (id)
+    `,
+	},
+	{
+		// Inline heal + build in one transaction:false file (retry-safe layout).
+		files: ["20260721120030_connector_versions_shared_unique.sql"],
+		index: "connector_versions_shared_key_version",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS connector_versions_shared_key_version
+        ON connector_versions (id)
     `,
 	},
 ] as const;

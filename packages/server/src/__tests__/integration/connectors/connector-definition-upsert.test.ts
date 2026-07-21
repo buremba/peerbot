@@ -61,6 +61,7 @@ describe('upsertConnectorDefinitionRecords', () => {
       organizationId: orgId,
       metadata: metadataFor('1.0.0'),
       versionRecord: versionRecordFor('1.0.0'),
+      versionScope: 'organization',
     });
     expect(first.updated).toBe(false);
 
@@ -71,21 +72,35 @@ describe('upsertConnectorDefinitionRecords', () => {
       organizationId: orgId,
       metadata: metadataFor('1.1.0'),
       versionRecord: versionRecordFor('1.1.0'),
+      versionScope: 'organization',
     });
     expect(second.updated).toBe(true);
 
+    // Dual-write phase (#2045 follow-up): org-supplied content lands on the
+    // legacy shared row (reads' pin) AND the org's own row.
     const versions = await sql<
-      { version: string; source_code: string | null; compile_config_hash: string | null }[]
+      {
+        version: string;
+        organization_id: string | null;
+        source_code: string | null;
+        compile_config_hash: string | null;
+      }[]
     >`
-      SELECT version, source_code, compile_config_hash FROM connector_versions
+      SELECT version, organization_id, source_code, compile_config_hash FROM connector_versions
       WHERE connector_key = 'upsert-probe'
-      ORDER BY version
+      ORDER BY version, organization_id NULLS FIRST
     `;
-    const byVersion = new Map(versions.map((v) => [v.version, v.source_code]));
+    const shared = versions.filter((v) => v.organization_id === null);
+    const orgRows = versions.filter((v) => v.organization_id === orgId);
+    const byVersion = new Map(shared.map((v) => [v.version, v.source_code]));
     // Both versions' executable source rows exist — the definition never points
     // at a version with no source record.
     expect(byVersion.has('1.0.0')).toBe(true);
     expect(byVersion.get('1.1.0')).toBe('// source 1.1.0');
+    // The org copies mirror the shared rows byte-for-byte.
+    expect(orgRows.map((v) => [v.version, v.source_code])).toEqual(
+      shared.map((v) => [v.version, v.source_code])
+    );
     // Every installed artifact carries the compile-config fingerprint —
     // resolveConnectorCode refuses unstamped/mismatched artifacts as stale.
     for (const v of versions) {

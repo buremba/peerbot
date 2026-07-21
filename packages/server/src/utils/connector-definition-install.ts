@@ -297,6 +297,22 @@ export async function upsertConnectorDefinitionRecords(params: {
   organizationId: string;
   metadata: ConnectorMetadata;
   versionRecord: ConnectorVersionPersistence;
+  /**
+   * Which connector_versions namespace the version row belongs to.
+   *
+   * - 'shared': a pointer at bundled on-disk source (source_path, no code) —
+   *   identical for every org, deduped on one organization_id-IS-NULL row.
+   * - 'organization': org-supplied bytes (install_connector / source_url /
+   *   source_code / mcp_url). Dual-write phase (#2045 follow-up): the legacy
+   *   shared row is still written and stays authoritative for reads; a
+   *   content-bearing copy is additionally written to the caller org's own
+   *   (organization_id, connector_key, version) row so the read cutover can
+   *   prefer it without cross-org collisions. Content-empty records (rollback
+   *   and mcp_url upserts pass all-NULL and rely on COALESCE keeping stored
+   *   code) never create an org row: an empty org row would shadow the
+   *   code-bearing shared row once reads prefer org rows.
+   */
+  versionScope: 'shared' | 'organization';
 }): Promise<{ updated: boolean }> {
   const { sql } = params;
   const { metadata } = params;
@@ -421,14 +437,14 @@ export async function upsertConnectorDefinitionRecords(params: {
   // (resolveConnectorCode recompiles instead of executing a stale bundle).
   await sql`
     INSERT INTO connector_versions (
-      connector_key, version, compiled_code, compiled_code_hash,
+      connector_key, version, organization_id, compiled_code, compiled_code_hash,
       compile_config_hash, source_code, source_path
     ) VALUES (
-      ${metadata.key}, ${metadata.version}, ${params.versionRecord.compiledCode},
+      ${metadata.key}, ${metadata.version}, NULL, ${params.versionRecord.compiledCode},
       ${params.versionRecord.compiledCodeHash}, ${params.versionRecord.compileConfigHash},
       ${params.versionRecord.sourceCode}, ${params.versionRecord.sourcePath}
     )
-    ON CONFLICT (connector_key, version) DO UPDATE
+    ON CONFLICT (connector_key, version) WHERE organization_id IS NULL DO UPDATE
     SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
         compiled_code_hash = COALESCE(
           EXCLUDED.compiled_code_hash,
@@ -445,6 +461,38 @@ export async function upsertConnectorDefinitionRecords(params: {
         source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
         source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
   `;
+
+  // Dual-write (#2045 follow-up): org-supplied bytes additionally land on the
+  // caller org's own row so the read cutover can prefer it. Content-empty
+  // records never create an org row (see versionScope doc above).
+  const record = params.versionRecord;
+  const hasContent =
+    record.compiledCode !== null || record.sourceCode !== null || record.sourcePath !== null;
+  if (params.versionScope === 'organization' && hasContent) {
+    await sql`
+      INSERT INTO connector_versions (
+        connector_key, version, organization_id, compiled_code, compiled_code_hash,
+        compile_config_hash, source_code, source_path
+      ) VALUES (
+        ${metadata.key}, ${metadata.version}, ${params.organizationId}, ${record.compiledCode},
+        ${record.compiledCodeHash}, ${record.compileConfigHash},
+        ${record.sourceCode}, ${record.sourcePath}
+      )
+      ON CONFLICT (organization_id, connector_key, version) WHERE organization_id IS NOT NULL
+      DO UPDATE
+      SET compiled_code = COALESCE(EXCLUDED.compiled_code, connector_versions.compiled_code),
+          compiled_code_hash = COALESCE(
+            EXCLUDED.compiled_code_hash,
+            connector_versions.compiled_code_hash
+          ),
+          compile_config_hash = CASE
+            WHEN EXCLUDED.compiled_code IS NOT NULL THEN EXCLUDED.compile_config_hash
+            ELSE connector_versions.compile_config_hash
+          END,
+          source_code = COALESCE(EXCLUDED.source_code, connector_versions.source_code),
+          source_path = COALESCE(EXCLUDED.source_path, connector_versions.source_path)
+    `;
+  }
 
   return { updated: wasActive };
 }

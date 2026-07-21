@@ -39,6 +39,12 @@ export const ListInstalledAction = Type.Object({
         "Merge global catalog entries for connectors (org) or skills (agent).",
     })
   ),
+  detail: Type.Optional(
+    Type.Union([Type.Literal("summary"), Type.Literal("full")], {
+      description:
+        "Response verbosity. 'summary' (default) returns identity + capability flags only. 'full' additionally inlines each connector's auth/feeds/actions/options schemas — large (100KB+ for a full org); request it only when you actually need the schemas.",
+    })
+  ),
 });
 
 export const ManageCatalogSchema = Type.Union([

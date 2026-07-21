@@ -68,7 +68,10 @@ async function handleListInstalled(
 
 	const installed: Record<string, unknown> = {};
 
-	const listOptions = { includeCatalog: Boolean(args.include_catalog) };
+	const listOptions = {
+		includeCatalog: Boolean(args.include_catalog),
+		detail: args.detail ?? "summary",
+	};
 
 	if (resolvedOrgKinds.length > 0) {
 		Object.assign(

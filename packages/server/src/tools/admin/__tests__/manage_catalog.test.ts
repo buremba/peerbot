@@ -61,7 +61,7 @@ describe("manage_catalog list_installed", () => {
 				memberRole: "owner",
 				isAuthenticated: true,
 			}),
-			{ includeCatalog: false }
+			{ includeCatalog: false, detail: "summary" }
 		);
 		expect(installed.listAgentInstalled).not.toHaveBeenCalled();
 		expect(result).toEqual({
@@ -85,7 +85,33 @@ describe("manage_catalog list_installed", () => {
 			"org-1",
 			["connectors"],
 			expect.any(Object),
-			{ includeCatalog: true }
+			{ includeCatalog: true, detail: "summary" }
+		);
+	});
+
+	it("defaults detail to summary and forwards an explicit detail: full", async () => {
+		await manageCatalog(
+			{ action: "list_installed", kinds: ["connectors"] },
+			{} as never,
+			ctx
+		);
+		expect(installed.listOrgInstalled).toHaveBeenLastCalledWith(
+			"org-1",
+			["connectors"],
+			expect.any(Object),
+			{ includeCatalog: false, detail: "summary" }
+		);
+
+		await manageCatalog(
+			{ action: "list_installed", kinds: ["connectors"], detail: "full" },
+			{} as never,
+			ctx
+		);
+		expect(installed.listOrgInstalled).toHaveBeenLastCalledWith(
+			"org-1",
+			["connectors"],
+			expect.any(Object),
+			{ includeCatalog: false, detail: "full" }
 		);
 	});
 });

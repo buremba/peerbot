@@ -27,6 +27,13 @@ const configStore = createPostgresAgentConfigStore();
 
 export type ListInstalledOptions = {
 	includeCatalog?: boolean;
+	/**
+	 * 'summary' (default) omits the large per-connector auth/feeds/actions/
+	 * options schema blobs; 'full' inlines them. The summary keeps the response
+	 * compact for the common "what's installed / is it capable" query — the
+	 * schemas alone are 100KB+ for a full org.
+	 */
+	detail?: "summary" | "full";
 };
 
 export async function listOrgInstalled(
@@ -47,6 +54,7 @@ export async function listOrgInstalled(
 			organizationId,
 			rows.map((row) => row.key)
 		);
+		const full = options.detail === "full";
 		const installedItems = rows.map((row) => {
 			const operationsSummary = summaries.get(row.key) ?? {
 				...EMPTY_SUMMARY,
@@ -59,11 +67,18 @@ export async function listOrgInstalled(
 					description: row.description,
 					status: row.status,
 					login_enabled: Boolean(row.login_enabled),
-					auth_schema: row.auth_schema,
-					feeds_schema: row.feeds_schema,
-					actions_schema: row.actions_schema,
-					behavior_events: row.behavior_events ?? undefined,
-					options_schema: row.options_schema,
+					// The four schema blobs are the bulk of the payload (100KB+ for a
+					// full org). Inline them only for detail: 'full'; the default
+					// summary keeps identity + capability flags.
+					...(full
+						? {
+								auth_schema: row.auth_schema,
+								feeds_schema: row.feeds_schema,
+								actions_schema: row.actions_schema,
+								behavior_events: row.behavior_events ?? undefined,
+								options_schema: row.options_schema,
+							}
+						: {}),
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,
 					runtime: row.runtime,

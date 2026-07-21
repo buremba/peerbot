@@ -623,8 +623,13 @@ export default async (_ctx, client) => {
 		example: "await client.catalog.listCatalog({ kinds: ['connectors'] });",
 	},
 	"catalog.listInstalled": {
-		summary: "List installed org or agent resources.",
+		summary:
+			"List installed resources. Org kinds: 'connectors', 'behaviors'. Agent kinds (require agent_id): 'skills', 'providers', 'guardrails', 'channels'. Defaults to org connectors. `detail` defaults to 'summary' (compact); pass 'full' to inline connector schemas.",
 		access: "read",
+		signature:
+			"catalog.listInstalled(input?: { kinds?: string[]; agent_id?: string; include_catalog?: boolean; detail?: 'summary' | 'full' }): Promise<unknown>",
+		example:
+			"await client.catalog.listInstalled({ kinds: ['connectors'], detail: 'summary' });",
 	},
 	"connections.get": {
 		summary: "Get a connection by id.",

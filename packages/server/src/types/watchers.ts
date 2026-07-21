@@ -158,9 +158,9 @@ export const WatcherMetadataSchema = Type.Object({
   available_versions: Type.Optional(Type.Array(WatcherVersionInfoSchema)),
   reaction_script: Type.Optional(Type.String()),
   behavior_run: Type.Optional(WatcherRunSchema),
-  /** Computed scheduling health (item 3, #2033): `degraded` when an active
-   *  behavior has missed a firing (next_run_at overdue past the cron margin) or
-   *  its latest run is stuck pending past the stale interval; else `healthy`. */
+  /** Computed health (item 3, #2033): `degraded` when an active
+   *  behavior's latest run failed/timed out, it missed a firing, or its latest
+   *  run is stuck pending past the stale interval; else `healthy`. */
   health: Type.Optional(
     Type.Union([Type.Literal('healthy'), Type.Literal('degraded')])
   ),

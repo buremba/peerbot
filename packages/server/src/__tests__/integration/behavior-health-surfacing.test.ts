@@ -1,10 +1,9 @@
 /**
- * Behavior scheduling-health surfacing (item 3, #2033).
+ * Behavior health surfacing (item 3, #2033).
  *
  * 3.1: manage_behaviors `list` returns a computed `health` field —
- *   `degraded` for an ACTIVE behavior whose next_run_at is overdue past the
- *   missed-firing margin (a behavior that has silently stopped firing), and
- *   `healthy` for a behavior scheduled in the future.
+ *   `degraded` for an active behavior that missed a firing, has a stale pending
+ *   run, or whose latest run failed/timed out; `healthy` otherwise.
  *
  * 3.2: getSchedulerHealth (the /health/scheduler alarm path) surfaces overdue
  *   active behaviors and stuck-pending behavior runs in `issues[]` — previously
@@ -143,6 +142,88 @@ describe("behavior health surfacing (#2033)", () => {
       (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
     ) as { health?: string } | undefined;
     expect(row?.health).toBe("healthy");
+  });
+
+  it("3.1 (integration): a failed latest run degrades an on-schedule behavior", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const sql = getTestDb();
+    // On schedule (future) so the ONLY unhealthy signal is the failed run —
+    // proving health reflects the run outcome, not just the scheduler cursor.
+    await sql`
+      UPDATE watchers
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${behaviorId}
+    `;
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, watcher_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
+         'No model is configured', current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as
+      | { health?: string; last_scheduling_error?: string | null }
+      | undefined;
+    expect(row?.health).toBe("degraded");
+    expect(row?.last_scheduling_error).toBe("No model is configured");
+  });
+
+  it("3.3: list emits behavior_* lineage keys, never the internal watcher_* names", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
+    expect(row?.behavior_group_id).toBe(String(behaviorId));
+    expect(row?.source_behavior_id).toBeNull();
+    expect(row).not.toHaveProperty("watcher_group_id");
+    expect(row).not.toHaveProperty("source_watcher_id");
+  });
+
+  it("3.4: legacy client.watchers.* in a run error is rewritten to client.behaviors.*", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const sql = getTestDb();
+    await sql`
+      UPDATE watchers
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${behaviorId}
+    `;
+    // An archived run error persisted with the pre-rename internal namespace.
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, watcher_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
+         'Agent never called client.watchers.completeWindow()',
+         current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as
+      | { behavior_run_error?: string | null; last_scheduling_error?: string | null }
+      | undefined;
+    // Both the raw error field and the health-echoed error carry the public vocab.
+    expect(row?.behavior_run_error).toBe(
+      "Agent never called client.behaviors.completeWindow()",
+    );
+    expect(row?.last_scheduling_error).toBe(
+      "Agent never called client.behaviors.completeWindow()",
+    );
+    expect(JSON.stringify(row)).not.toContain("client.watchers.");
   });
 
   it("3.2: getSchedulerHealth surfaces an overdue behavior in issues[]", async () => {

@@ -1,12 +1,12 @@
 /**
- * Computed scheduling-health derivation for behaviors (item 3, #2033).
+ * Computed health derivation for behaviors (item 3, #2033).
  *
  * The behavior reaper (watchers/automation.ts) already times out stuck pending
  * runs and self-heals `next_run_at`, but nothing SURFACED that a behavior was
  * unhealthy: get_behavior / list returned `next_run_at` / run status raw and
  * the caller had to eyeball it. This helper turns those already-selected fields
  * into a single `health` verdict + a `last_scheduling_error` so the API and UI
- * can flag a behavior that has silently stopped firing.
+ * can flag a behavior that stopped firing or whose latest run failed.
  *
  * Pure + input-only: every field it reads is already selected by both
  * get_behavior.ts and manage_behaviors/list.ts, so no migration and no extra
@@ -49,6 +49,9 @@ function pgIntervalToMs(literal: string): number {
 /** The latest run status transitions that mean "in flight" (not terminal). */
 const IN_FLIGHT_RUN_STATUSES = new Set(['claimed', 'running']);
 
+/** Terminal execution failures that degrade an active behavior. */
+const FAILED_RUN_STATUSES = new Set(['failed', 'timeout']);
+
 export interface BehaviorHealthInput {
   /** Behavior `status` (only `active` behaviors can be degraded). */
   status: string | null | undefined;
@@ -78,9 +81,11 @@ function toMs(value: string | Date | null | undefined): number | null {
 }
 
 /**
- * Derive a behavior's scheduling health from already-selected fields.
+ * Derive a behavior's health from already-selected fields.
  *
- * `degraded` when the behavior is `active` AND either:
+ * `degraded` when the behavior is `active` AND any of:
+ *   - its latest run ended in a terminal failure (`failed`/`timeout`) — the
+ *     automation ran and broke, regardless of the scheduler cursor; or
  *   - its `next_run_at` is in the past by more than the missed-firing margin
  *     (a missed firing), UNLESS a run is currently in flight (claimed/running)
  *     — an active dispatch is healthy, we don't false-degrade mid-tick; or
@@ -96,13 +101,20 @@ export function computeBehaviorHealth(
   const reasons: string[] = [];
   const lastError = input.latestRunError ?? null;
 
-  // Only active behaviors have a scheduling obligation; archived/paused ones
-  // are healthy-by-definition (they're intentionally not firing).
+  // Archived behaviors are intentionally idle and therefore healthy.
   if (input.status !== 'active') {
     return { health: 'healthy', reasons, last_scheduling_error: lastError };
   }
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
+
+  if (FAILED_RUN_STATUSES.has(input.latestRunStatus ?? '')) {
+    reasons.push(
+      lastError
+        ? `latest run ${input.latestRunStatus}: ${lastError}`
+        : `latest run ${input.latestRunStatus}`,
+    );
+  }
 
   // Missed firing: next_run_at is well in the past and nothing is dispatching.
   const nextRunMs = toMs(input.nextRunAt);

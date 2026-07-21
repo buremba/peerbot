@@ -245,6 +245,7 @@ async function executeLocalActionInline(
 	try {
 		compiledCode = await resolveConnectorCodeForKey(
 			connection.connector_key,
+			organizationId,
 			connectorVersion ?? null,
 		);
 	} catch (err) {

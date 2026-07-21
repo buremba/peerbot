@@ -73,7 +73,10 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   // existing raw-DB connection must not run pushdown under LOBU_CLOUD_MODE either.
   assertConnectorAllowedInCloud(conn.connector_key);
 
-  const compiledCode = await resolveConnectorCodeForKey(conn.connector_key);
+  const compiledCode = await resolveConnectorCodeForKey(
+    conn.connector_key,
+    p.scope.organizationId
+  );
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
     organizationId: p.scope.organizationId,
@@ -209,7 +212,10 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   // Execution-time cloud gate, identical to the slug pushdown above.
   assertConnectorAllowedInCloud(feed.connector_key);
 
-  const compiledCode = await resolveConnectorCodeForKey(feed.connector_key);
+  const compiledCode = await resolveConnectorCodeForKey(
+    feed.connector_key,
+    p.scope.organizationId
+  );
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
     organizationId: p.scope.organizationId,

@@ -114,9 +114,14 @@ async function ensureDeviceConnectorWired(
           '[]'::jsonb
         ) AS active_feed_keys
       FROM connector_definitions cd
-      LEFT JOIN connector_versions cv
-        ON cv.connector_key = cd.key AND cv.version = cd.version
-        AND cv.organization_id IS NULL
+      LEFT JOIN LATERAL (
+        SELECT connector_key
+        FROM connector_versions
+        WHERE connector_key = cd.key AND version = cd.version
+          AND (organization_id = cd.organization_id OR organization_id IS NULL)
+        ORDER BY organization_id NULLS LAST
+        LIMIT 1
+      ) cv ON TRUE
       LEFT JOIN connections c
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key

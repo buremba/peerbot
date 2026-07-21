@@ -140,7 +140,10 @@ export async function registerConnectorWebhook(params: {
       if (config.webhook_external_id) return;
       if (!connectionWantsWebhook(config)) return;
 
-      const compiledCode = await resolveConnectorCodeForKey(connection.connector_key);
+      const compiledCode = await resolveConnectorCodeForKey(
+        connection.connector_key,
+        organizationId
+      );
 
       const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
         organizationId,
@@ -243,7 +246,10 @@ export async function unregisterConnectorWebhook(params: {
       const externalId = config.webhook_external_id;
       if (!externalId) return;
 
-      const compiledCode = await resolveConnectorCodeForKey(connection.connector_key);
+      const compiledCode = await resolveConnectorCodeForKey(
+        connection.connector_key,
+        organizationId
+      );
       const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
         organizationId,
         connectionId,

@@ -51,8 +51,12 @@ let storedSourceCode: string | null = STORED_SOURCE;
 function fakeSql(strings: TemplateStringsArray, ...params: unknown[]): Promise<unknown[]> {
   const text = strings.join('?').replace(/\s+/g, ' ').trim();
   queries.push({ text, params });
-  if (/source_code FROM connector_versions/i.test(text)) {
-    return Promise.resolve(storedSourceCode === null ? [] : [{ id: 1, source_code: storedSourceCode }]);
+  if (/SELECT source_code.* FROM connector_versions/i.test(text)) {
+    return Promise.resolve(
+      storedSourceCode === null
+        ? []
+        : [{ id: 1, source_code: storedSourceCode, version: '1.0.0' }]
+    );
   }
   return Promise.resolve([]);
 }
@@ -73,6 +77,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     // 'zz.staleprobe' has no bundled source on disk, so the ONLY valid escape
     // hatch is recompiling connector_versions.source_code.
     const code = await resolveConnectorCode('zz.staleprobe', {
+      id: 1,
       version: '1.0.0',
       compiled_code: STALE_BUNDLE,
       compile_config_hash: null,
@@ -94,6 +99,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
 
     const code = await resolveConnectorCode('zz.staleprobe', {
+      id: 1,
       version: '1.0.0',
       compiled_code: STALE_BUNDLE,
       compile_config_hash: COMPILE_CONFIG_HASH,
@@ -115,6 +121,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
 
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
     const code = await resolveConnectorCode('zz.staleprobe', {
+      id: 1,
       version: '1.0.0',
       compiled_code: precompiled.compiledCode,
       compile_config_hash: null,
@@ -131,6 +138,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
 
     await expect(
       resolveConnectorCode('zz.staleprobe', {
+        id: 1,
         version: '1.0.0',
         compiled_code: STALE_BUNDLE,
         compile_config_hash: 'fingerprint-of-a-previous-pipeline',

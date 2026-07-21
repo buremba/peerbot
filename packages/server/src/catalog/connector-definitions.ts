@@ -120,8 +120,14 @@ export async function listScopedConnectorDefinitions(params: {
       d.updated_at,
       cv.source_path
     FROM connector_definitions d
-    LEFT JOIN connector_versions cv ON cv.connector_key = d.key AND cv.version = d.version
-      AND cv.organization_id IS NULL
+    LEFT JOIN LATERAL (
+      SELECT source_path
+      FROM connector_versions
+      WHERE connector_key = d.key AND version = d.version
+        AND (organization_id = d.organization_id OR organization_id IS NULL)
+      ORDER BY organization_id NULLS LAST
+      LIMIT 1
+    ) cv ON TRUE
     WHERE d.status = 'active'
       AND d.organization_id = ${params.organizationId}
     ORDER BY d.name ASC
@@ -362,12 +368,20 @@ export async function getInstalledConnectorSource(params: {
 	const def = await getScopedConnectorDefinition(params);
 	assertInstalled(def, params.connectorKey);
 
+	// Org fence (#2045): only this org's own rows and the shared rows are
+	// visible — never another org's private artifact. When a version exists as
+	// both (post-dual-write), the org's own row wins.
 	const rows = (await sql`
-    SELECT version, created_at, source_code, source_path, compiled_code_hash,
-           (compiled_code IS NOT NULL) AS has_compiled
-    FROM connector_versions
-    WHERE connector_key = ${params.connectorKey}
-      AND organization_id IS NULL
+    SELECT version, created_at, source_code, source_path, compiled_code_hash, has_compiled
+    FROM (
+      SELECT DISTINCT ON (version)
+             version, created_at, id, source_code, source_path, compiled_code_hash,
+             (compiled_code IS NOT NULL) AS has_compiled
+      FROM connector_versions
+      WHERE connector_key = ${params.connectorKey}
+        AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+      ORDER BY version, organization_id NULLS LAST
+    ) v
     ORDER BY created_at DESC, id DESC
   `) as unknown as Array<{
 		version: string;
@@ -458,7 +472,7 @@ export async function validateConnectorSource(params: {
     SELECT 1 FROM connector_versions
     WHERE connector_key = ${resolved.metadata.key}
       AND version = ${resolved.metadata.version}
-      AND organization_id IS NULL
+      AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
     LIMIT 1
   `;
 
@@ -528,7 +542,8 @@ export async function updateInstalledConnectorSource(params: {
 	const existing = (await sql`
       SELECT compiled_code_hash, source_code FROM connector_versions
       WHERE connector_key = ${params.connectorKey} AND version = ${targetVersion}
-        AND organization_id IS NULL
+        AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+      ORDER BY organization_id NULLS LAST
       LIMIT 1
     `) as unknown as Array<{
 		compiled_code_hash: string | null;
@@ -601,23 +616,28 @@ export async function rollbackConnectorVersion(params: {
 		);
 	}
 
+	// Org fence (#2045): a rollback target must be this org's own retained row
+	// or a shared row — another org's private artifact is never activatable.
 	const rows = (await sql`
-    SELECT version, compiled_code, compile_config_hash
+    SELECT id, version, compiled_code, compile_config_hash
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${params.version}
-      AND organization_id IS NULL
+      AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+    ORDER BY organization_id NULLS LAST
     LIMIT 1
   `) as unknown as Array<{
+		id: number;
 		version: string;
 		compiled_code: string | null;
 		compile_config_hash: string | null;
 	}>;
 	if (rows.length === 0) {
 		const retained = (await sql`
-      SELECT version FROM connector_versions
+      SELECT DISTINCT ON (version) version, created_at, id
+      FROM connector_versions
       WHERE connector_key = ${params.connectorKey}
-        AND organization_id IS NULL
-      ORDER BY created_at DESC, id DESC
+        AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+      ORDER BY version, organization_id NULLS LAST
     `) as unknown as Array<{ version: string }>;
 		throw new Error(
 			`No retained version '${params.version}' for connector '${params.connectorKey}'. ` +

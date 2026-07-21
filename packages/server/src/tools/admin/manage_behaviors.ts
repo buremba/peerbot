@@ -553,7 +553,7 @@ function assertWatcherUpdateArgs(args: ManageBehaviorsArgs): void {
   }
   if (present(WATCHER_PATCHABLE_FIELDS).length === 0) {
     throw new ToolUserError(
-      'update requires at least one field to change (e.g. triggers, agent_id, tags, model_config).'
+      "update changes runtime config only (e.g. triggers, agent_id, tags, model_config) and needs at least one such field. It cannot change status — a Behavior is retired via action: 'delete' (→ archived); name/description/prompt/sources are version-owned (action: 'create_version')."
     );
   }
 }

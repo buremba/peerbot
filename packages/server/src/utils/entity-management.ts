@@ -755,8 +755,27 @@ export async function getEntity(
 }
 
 /**
+ * Force-delete dependency report: what a hard delete of the tree removes or
+ * detaches. Computed up front so `dry_run` can return it without mutating and
+ * the real delete can echo exactly what it touched. Event rows are append-only
+ * and are only ever detached, never deleted.
+ */
+export interface ForceDeleteTreeReport {
+  entities: number;
+  relationships: number;
+  behaviors_deleted: number;
+  behaviors_detached: number;
+  feeds_deleted: number;
+  feeds_detached: number;
+  events_detached: number;
+}
+
+/**
  * Delete entity
  * Soft delete by default (sets deleted_at), hard delete with force=true.
+ * A hard delete removes the tree + its relationships, deletes/detaches
+ * dependent behaviors and feeds, and detaches (never deletes) event rows that
+ * reference the tree. `dryRun` returns the dependency report without mutating.
  * Requires write access (entity must belong to user's organization)
  */
 export async function deleteEntity(
@@ -764,16 +783,21 @@ export async function deleteEntity(
 	force: boolean = false,
 	env: Env,
 	ctx: ToolContext,
-	opts?: { skipHooks?: boolean },
-): Promise<{ message: string; deleted: number }> {
+	opts?: { skipHooks?: boolean; dryRun?: boolean },
+): Promise<{
+  message: string;
+  deleted: number;
+  dry_run?: boolean;
+  tree?: ForceDeleteTreeReport;
+}> {
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
 
   // Validate write access (uses PG for auth tables)
   await requireWriteAccess(pgSql, entityId, ctx);
 
-  // Run beforeDelete hook
-  if (!opts?.skipHooks) {
+  // Run beforeDelete hook (a dry run mutates nothing, so hooks stay silent)
+  if (!opts?.skipHooks && !opts?.dryRun) {
     const entityRow = await sql`
       SELECT et.slug AS entity_type, e.metadata
       FROM entities e
@@ -816,19 +840,56 @@ export async function deleteEntity(
     const entityTreeIds = await loadEntityTreeIds(sql, entityId);
     const entityTreeIdsLiteral = pgBigintArray(entityTreeIds);
 
-    const eventHistory = await sql`
-      SELECT COUNT(*) as count
-      FROM current_event_records ev
-      WHERE ev.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+    // Preflight dependency report: what this delete removes vs. detaches.
+    // A behavior/feed whose entities all live inside the tree is deleted with
+    // it; one that also spans outside entities is detached (tree ids pruned
+    // from its entity_ids). Event rows are append-only history — they are
+    // counted here and DETACHED below, never deleted.
+    const preflight = await sql<Record<string, number>>`
+      SELECT
+        (SELECT COUNT(*) FROM entity_relationships r
+          WHERE r.from_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
+             OR r.to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[]))::int AS relationships,
+        (SELECT COUNT(*) FROM watchers w
+          WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS behaviors_deleted,
+        (SELECT COUNT(*) FROM watchers w
+          WHERE w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            AND NOT (w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]))::int AS behaviors_detached,
+        (SELECT COUNT(*) FROM feeds f
+          WHERE f.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            AND f.entity_ids <@ ${entityTreeIdsLiteral}::bigint[])::int AS feeds_deleted,
+        (SELECT COUNT(*) FROM feeds f
+          WHERE f.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            AND NOT (f.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]))::int AS feeds_detached,
+        (SELECT COUNT(*) FROM events e
+          WHERE e.entity_ids && ${entityTreeIdsLiteral}::bigint[])::int AS events_detached
     `;
+    const report: ForceDeleteTreeReport = {
+      entities: entityTreeIds.length,
+      relationships: Number(preflight[0]?.relationships || 0),
+      behaviors_deleted: Number(preflight[0]?.behaviors_deleted || 0),
+      behaviors_detached: Number(preflight[0]?.behaviors_detached || 0),
+      feeds_deleted: Number(preflight[0]?.feeds_deleted || 0),
+      feeds_detached: Number(preflight[0]?.feeds_detached || 0),
+      events_detached: Number(preflight[0]?.events_detached || 0),
+    };
 
-    const eventCount = Number(eventHistory[0]?.count || 0);
-    if (eventCount > 0) {
-      throw new Error(
-        `Cannot hard delete entity tree: ${eventCount} event rows reference this entity tree. Soft delete the entity instead to preserve event history.`
-      );
+    if (opts?.dryRun) {
+      return {
+        message: `Dry run: force delete would remove ${report.entities} entities and detach ${report.events_detached} event rows`,
+        deleted: 0,
+        dry_run: true,
+        tree: report,
+      };
     }
 
+    // Deletion predicate for behaviors/feeds: only rows whose entity set is
+    // non-empty AND fully inside the tree. Requiring the overlap (&&) first is
+    // load-bearing — a bare `entity_ids <@ tree` (or a COALESCE to '{}') also
+    // matches every empty/NULL-linked row IN EVERY ORG (empty set ⊂ anything),
+    // and lets the GIN index on entity_ids drive the scan instead of a
+    // full-table pass.
     await sql.begin(async (tx) => {
       await tx`
         DELETE FROM entity_relationships
@@ -843,7 +904,8 @@ export async function deleteEntity(
         WHERE watcher_id IN (
           SELECT id
           FROM watchers
-          WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+          WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
         )
       `;
       // Before hard-deleting watchers: if any of those rows are group roots
@@ -860,12 +922,16 @@ export async function deleteEntity(
             SELECT w.id AS old_root
             FROM watchers w
             WHERE w.id = w.watcher_group_id
-              AND COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+              AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+              AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
           JOIN watchers s
             ON s.watcher_group_id = r.old_root
            AND s.id <> r.old_root
-           AND NOT (COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[])
+           AND NOT (
+             COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
+             AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+           )
            AND NOT EXISTS (
              SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
            )
@@ -883,12 +949,16 @@ export async function deleteEntity(
             SELECT w.id AS old_root
             FROM watchers w
             WHERE w.id = w.watcher_group_id
-              AND COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+              AND w.entity_ids && ${entityTreeIdsLiteral}::bigint[]
+              AND w.entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
           ) r
           JOIN watchers s
             ON s.watcher_group_id = r.old_root
            AND s.id <> r.old_root
-           AND NOT (COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[])
+           AND NOT (
+             COALESCE(s.entity_ids, '{}'::bigint[]) && ${entityTreeIdsLiteral}::bigint[]
+             AND COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+           )
            AND NOT EXISTS (
              SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
            )
@@ -898,96 +968,62 @@ export async function deleteEntity(
       `;
       await tx`
         DELETE FROM watchers
-        WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+        WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
+          AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
       `;
+      // Detach survivors: prune tree ids from watchers that also span entities
+      // outside the tree. Fully-contained rows were deleted above, so pruning
+      // can never leave an empty entity set behind — no orphan sweep needed.
       await tx`
         UPDATE watchers
         SET entity_ids = ARRAY(
           SELECT linked_id
-          FROM unnest(COALESCE(entity_ids, '{}'::bigint[])) AS linked_id
+          FROM unnest(entity_ids) AS linked_id
           WHERE NOT (linked_id = ANY(${entityTreeIdsLiteral}::bigint[]))
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-      // Canvas-on-events: key link-row cleanup on the denormalized watcher_id.
-      await tx`
-        DELETE FROM watcher_window_events
-        WHERE watcher_id IN (
-          SELECT id
-          FROM watchers
-          WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
-        )
-      `;
-      // Same group-root ownership transfer as above — predicate here is
-      // "now-orphaned watcher rows" (entity_ids is empty after the array
-      // pruning a few statements up).
-      await tx`
-        UPDATE watcher_versions wv
-        SET watcher_id = s.new_root
-        FROM (
-          SELECT r.old_root, MIN(s.id) AS new_root
-          FROM (
-            SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
-              AND cardinality(COALESCE(w.entity_ids, '{}'::bigint[])) = 0
-          ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
-           AND s.id <> r.old_root
-           AND cardinality(COALESCE(s.entity_ids, '{}'::bigint[])) > 0
-           AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
-           )
-          GROUP BY r.old_root
-        ) s
-        WHERE wv.watcher_id = s.old_root
-      `;
-      await tx`
-        UPDATE watchers w
-        SET watcher_group_id = s.new_root,
-            source_watcher_id = CASE WHEN w.source_watcher_id = s.old_root THEN s.new_root ELSE w.source_watcher_id END
-        FROM (
-          SELECT r.old_root, MIN(s.id) AS new_root
-          FROM (
-            SELECT w.id AS old_root
-            FROM watchers w
-            WHERE w.id = w.watcher_group_id
-              AND cardinality(COALESCE(w.entity_ids, '{}'::bigint[])) = 0
-          ) r
-          JOIN watchers s
-            ON s.watcher_group_id = r.old_root
-           AND s.id <> r.old_root
-           AND cardinality(COALESCE(s.entity_ids, '{}'::bigint[])) > 0
-           AND NOT EXISTS (
-             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
-           )
-          GROUP BY r.old_root
-        ) s
-        WHERE w.watcher_group_id = s.old_root
-      `;
-      await tx`
-        DELETE FROM watchers
-        WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
-      `;
 
       await tx`
         DELETE FROM feeds
-        WHERE COALESCE(entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+        WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
+          AND entity_ids <@ ${entityTreeIdsLiteral}::bigint[]
       `;
       await tx`
         UPDATE feeds
         SET entity_ids = ARRAY(
           SELECT linked_id
-          FROM unnest(COALESCE(entity_ids, '{}'::bigint[])) AS linked_id
+          FROM unnest(entity_ids) AS linked_id
           WHERE NOT (linked_id = ANY(${entityTreeIdsLiteral}::bigint[]))
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-      await tx`
-        DELETE FROM feeds
-        WHERE cardinality(COALESCE(entity_ids, '{}'::bigint[])) = 0
-      `;
+
+      // Detach event references instead of blocking on them: `events` is
+      // append-only (never DELETE), but the platform's own lifecycle events
+      // (change audits etc.) reference fresh entities immediately, so a hard
+      // delete must prune the tree ids out of events.entity_ids — the rows
+      // survive as history, they just stop pointing at deleted entities.
+      // Batched so a large history can't push one UPDATE past
+      // statement_timeout; still atomic (all batches share this transaction).
+      const EVENT_DETACH_BATCH = 5000;
+      for (;;) {
+        const detached = await tx<{ id: number }>`
+          UPDATE events e
+          SET entity_ids = ARRAY(
+            SELECT linked_id
+            FROM unnest(e.entity_ids) AS linked_id
+            WHERE NOT (linked_id = ANY(${entityTreeIdsLiteral}::bigint[]))
+          )
+          WHERE e.id IN (
+            SELECT id FROM events
+            WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
+            LIMIT ${EVENT_DETACH_BATCH}
+          )
+          RETURNING e.id
+        `;
+        if (detached.length < EVENT_DETACH_BATCH) break;
+      }
 
       await tx`
         DELETE FROM entities
@@ -996,8 +1032,20 @@ export async function deleteEntity(
     });
 
     return {
-      message: 'Entity and all descendants deleted successfully',
+      message:
+        report.events_detached > 0
+          ? `Entity and all descendants deleted; ${report.events_detached} event rows kept as history and detached`
+          : 'Entity and all descendants deleted successfully',
       deleted: entityTreeIds.length,
+      tree: report,
+    };
+  }
+
+  if (opts?.dryRun) {
+    return {
+      message: 'Dry run: entity would be soft-deleted',
+      deleted: 0,
+      dry_run: true,
     };
   }
 

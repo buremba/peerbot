@@ -217,7 +217,14 @@ export const ManageEntitySchema = Type.Object({
   // Delete options
   force_delete_tree: Type.Optional(
     Type.Boolean({
-      description: "[delete] Force delete entity and all descendants",
+      description:
+        "[delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.",
+    })
+  ),
+  dry_run: Type.Optional(
+    Type.Boolean({
+      description:
+        "[delete] Preflight only: report what the delete would remove/detach without mutating anything",
     })
   ),
 
@@ -459,6 +466,20 @@ export const ManageEntityResultSchema = Type.Union([
     success: Type.Boolean(),
     message: Type.String(),
     deleted_count: Type.Integer(),
+    dry_run: Type.Optional(Type.Boolean()),
+    // Force-delete dependency report: what the delete removed/detached (or,
+    // with dry_run, would). Events are never deleted — only detached.
+    tree: Type.Optional(
+      Type.Object({
+        entities: Type.Integer(),
+        relationships: Type.Integer(),
+        behaviors_deleted: Type.Integer(),
+        behaviors_detached: Type.Integer(),
+        feeds_deleted: Type.Integer(),
+        feeds_detached: Type.Integer(),
+        events_detached: Type.Integer(),
+      })
+    ),
     approval_queued: Type.Optional(Type.Boolean()),
     approval_url: Type.Optional(Type.String()),
     approval_run_id: Type.Optional(Type.Integer()),

@@ -1334,6 +1334,25 @@ async function handleDelete(
 	if (deleteDecision.outcome === "deny") {
 		throw new ToolUserError(deleteDecision.reason, 403);
 	}
+	// Preflight: report what the delete would remove/detach without mutating.
+	// Runs after the gate's deny check (a denied principal gets no preview) but
+	// before defer queues anything — a dry run must never create an approval.
+	if (args?.dry_run) {
+		const preview = await deleteEntity(entityId, force, env, ctx, {
+			dryRun: true,
+		});
+		return {
+			action: "delete",
+			success: true,
+			message:
+				deleteDecision.outcome === "defer"
+					? `${preview.message} (a real delete would be queued for approval)`
+					: preview.message,
+			deleted_count: 0,
+			dry_run: true,
+			tree: preview.tree,
+		};
+	}
 	if (deleteDecision.outcome === "defer") {
 		const res = await deleteDecision.deferred.queue(ctx, env);
 		return {
@@ -1363,6 +1382,7 @@ async function handleDelete(
 		success: true,
 		message: result.message,
 		deleted_count: result.deleted,
+		tree: result.tree,
 	};
 }
 

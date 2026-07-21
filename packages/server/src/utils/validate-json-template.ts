@@ -5,8 +5,8 @@
  * WHY server-side: storage is opaque JSONB, so without this a malformed template
  * saves fine and fails silently at render (in the browser). This validates the
  * invariants that actually cause silent breakage — node shape, required fields
- * per node type, and the `format` enum on data bindings — so authoring fails
- * FAST with a path-qualified error.
+ * per node type, handler bindings, and the `format` enum on data bindings — so
+ * authoring fails FAST with a path-qualified error.
  *
  * WHAT IT DOESN'T DO (on purpose): it does NOT allowlist component `type`
  * strings. The renderer's component set is extended app-side (entity-board,
@@ -39,6 +39,38 @@ function fail(path: string, message: string): never {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function validateHandlerProps(
+	props: Record<string, unknown>,
+	path: string,
+	shadowedKeys?: Set<string>,
+): void {
+	for (const [key, value] of Object.entries(props)) {
+		if (shadowedKeys?.has(key) || !/^on[A-Z]/.test(key)) continue;
+		if (typeof value !== "string" || !value.startsWith("@") || value.length === 1) {
+			fail(
+				`${path}.${key}`,
+				`handler props must bind an action as "@actionName" (got ${
+					typeof value === "string" ? `"${value}"` : typeof value
+				})`,
+			);
+		}
+	}
+}
+
+function validateComponentHandlers(
+	node: Record<string, unknown>,
+	path: string,
+): void {
+	// The renderer accepts both flat props and an explicit `props` bag.
+	const explicitProps = isPlainObject(node.props) ? node.props : undefined;
+	validateHandlerProps(
+		node,
+		path,
+		explicitProps ? new Set(Object.keys(explicitProps)) : undefined,
+	);
+	if (explicitProps) validateHandlerProps(explicitProps, `${path}.props`);
 }
 
 function validateNode(node: unknown, path: string): void {
@@ -104,13 +136,14 @@ function validateNode(node: unknown, path: string): void {
 			if (node.props !== undefined && !isPlainObject(node.props)) {
 				fail(`${path}.props`, "props must be an object");
 			}
+			validateComponentHandlers(node, path);
 			if (node.children !== undefined) {
 				if (!Array.isArray(node.children)) {
 					fail(`${path}.children`, "children must be an array of nodes");
 				}
-				node.children.forEach((child, i) =>
-					validateNode(child, `${path}.children[${i}]`),
-				);
+				node.children.forEach((child, i) => {
+					validateNode(child, `${path}.children[${i}]`);
+				});
 			}
 			return;
 		}
@@ -138,6 +171,39 @@ export function validateJsonTemplate(template: unknown): void {
 		);
 	}
 	validateNode(template, "");
+}
+
+/** Validate handler bindings without imposing a storage shape on the template. */
+export function validateTemplateHandlers(template: unknown): void {
+	if (!isPlainObject(template)) return;
+	if ("type" in template) {
+		walkHandlers(template, "");
+	} else if (isPlainObject(template.root)) {
+		walkHandlers(template.root, ".root");
+	}
+}
+
+function walkHandlers(node: unknown, path: string): void {
+	if (!isPlainObject(node)) return;
+	if (node.type === "if") {
+		walkHandlers(node.then, `${path}.then`);
+		if (node.else !== undefined) walkHandlers(node.else, `${path}.else`);
+		return;
+	}
+	if (node.type === "each") {
+		if (typeof node.render !== "string") {
+			walkHandlers(node.render, `${path}.render`);
+		}
+		return;
+	}
+	if (node.type === "text" || node.type === "data") return;
+
+	validateComponentHandlers(node, path);
+	if (Array.isArray(node.children)) {
+		node.children.forEach((child, i) => {
+			walkHandlers(child, `${path}.children[${i}]`);
+		});
+	}
 }
 
 export { VALUE_FORMATS };

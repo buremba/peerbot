@@ -2,18 +2,16 @@
  * Integration test: save_content payload_type='json_template' save-side schema.
  *
  * save_content (save_memory) validates the json_template contract at the
- * handler level (save_content.ts), AFTER the org write gate and after
- * `ensureMemberEntityType` (a DB write) — so this is necessarily a DB-backed
- * test, not a pure unit test.
+ * handler level after `ensureMemberEntityType` (a DB write), so this is
+ * necessarily a DB-backed test rather than a pure unit test.
  *
  * Pinned behavior:
  *   - payload_type='json_template' with NO payload_template → ToolUserError
  *     ("payload_template is required when payload_type is 'json_template'").
  *   - payload_type='json_template' WITH a payload_template that lacks a `root`
- *     key → the handler does NOT enforce template structure; the save
- *     SUCCEEDS and stores the template verbatim. (Structure is the renderer's
- *     problem — and the renderer degrades gracefully on malformed templates;
- *     see packages/owletto json-renderer/renderer.test.ts.)
+ *     key → the handler does not enforce template structure; the save succeeds
+ *     and stores the template verbatim.
+ *   - event-handler props must use the renderer's "@actionName" binding form.
  *
  * Vitest CI gap note (mirrors neighbors): runs locally / in the CI
  * integration job against the pgvector DB via DATABASE_URL.
@@ -73,9 +71,7 @@ describe('saveContent > json_template save-side schema', () => {
   });
 
   it('saves successfully when payload_template lacks a `root` key (no structural enforcement)', async () => {
-    // The handler only checks presence of payload_template, not its shape. A
-    // template missing `root` is accepted and stored verbatim; the renderer is
-    // responsible for graceful degradation at display time.
+    // A template missing `root` is accepted and stored verbatim.
     const result = await saveContent(
       {
         payload_type: 'json_template',
@@ -101,5 +97,23 @@ describe('saveContent > json_template save-side schema', () => {
     expect(rows[0].payload_type).toBe('json_template');
     expect(rows[0].payload_template).toMatchObject({ version: 1 });
     expect((rows[0].payload_template as Record<string, unknown>).root).toBeUndefined();
+  });
+
+  it('rejects a handler prop without an action binding', async () => {
+    await expect(
+      saveContent(
+        {
+          payload_type: 'json_template',
+          payload_template: {
+            root: { type: 'button', props: { onClick: 'approve' } },
+          },
+          payload_data: {},
+          semantic_type: 'content',
+          metadata: {},
+        } as never,
+        {} as never,
+        ctx
+      )
+    ).rejects.toThrow(/json_template\.root\.props\.onClick/);
   });
 });

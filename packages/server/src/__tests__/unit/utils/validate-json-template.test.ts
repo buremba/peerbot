@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateJsonTemplate } from '../../../utils/validate-json-template';
+import {
+  validateJsonTemplate,
+  validateTemplateHandlers,
+} from '../../../utils/validate-json-template';
 
 describe('validateJsonTemplate', () => {
   describe('accepts valid templates', () => {
@@ -39,6 +42,7 @@ describe('validateJsonTemplate', () => {
         validateJsonTemplate({
           type: 'div',
           children: [
+            // biome-ignore lint/suspicious/noThenProperty: template DSL conditional branch.
             { type: 'if', condition: 'ok', then: { type: 'text', content: 'yes' } },
             { type: 'each', items: 'xs', as: 'x', render: '- {{x}}' },
           ],
@@ -99,6 +103,7 @@ describe('validateJsonTemplate', () => {
     });
 
     it('an if node without a condition or then', () => {
+      // biome-ignore lint/suspicious/noThenProperty: template DSL conditional branch.
       expect(() => validateJsonTemplate({ type: 'if', then: { type: 'text', content: 'a' } })).toThrow(/string `condition`/);
       expect(() => validateJsonTemplate({ type: 'if', condition: 'c' })).toThrow(/requires a `then`/);
     });
@@ -111,6 +116,50 @@ describe('validateJsonTemplate', () => {
       expect(() => validateJsonTemplate({ type: 'div', children: 'x' })).toThrow(/children must be an array/);
     });
 
+    it('a handler prop that does not bind an "@action"', () => {
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { onClick: 'approve' } })
+      ).toThrow(/handler props must bind an action as "@actionName"/);
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { onClick: '{{handler}}' } })
+      ).toThrow(/handler props must bind an action as "@actionName"/);
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { onChange: 42 } })
+      ).toThrow(/handler props must bind an action as "@actionName"/);
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { onClick: '@' } })
+      ).toThrow(/handler props must bind an action as "@actionName"/);
+      expect(() =>
+        validateJsonTemplate({ type: 'button', onClick: 'approve' })
+      ).toThrow(/json_template\.onClick/);
+    });
+
+    it('accepts a correctly bound handler prop', () => {
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { onClick: '@approve' } })
+      ).not.toThrow();
+      expect(() =>
+        validateJsonTemplate({
+          type: 'button',
+          onClick: 'shadowed',
+          props: { onClick: '@approve' },
+        })
+      ).not.toThrow();
+      // Non-handler props are untouched — only /^on[A-Z]/ keys are constrained.
+      expect(() =>
+        validateJsonTemplate({ type: 'button', props: { once: 'yes', on: 'x' } })
+      ).not.toThrow();
+    });
+
+    it('reports the path of a nested handler failure', () => {
+      expect(() =>
+        validateJsonTemplate({
+          type: 'div',
+          children: [{ type: 'button', props: { onClick: 'nope' } }],
+        })
+      ).toThrow(/json_template\.children\[0\]\.props\.onClick/);
+    });
+
     it('reports the path of a nested failure', () => {
       expect(() =>
         validateJsonTemplate({
@@ -119,5 +168,32 @@ describe('validateJsonTemplate', () => {
         })
       ).toThrow(/json_template\.children\[0\]\.children\[0\]/);
     });
+  });
+});
+
+describe('validateTemplateHandlers', () => {
+  it('accepts wrapper and bare-root storage shapes', () => {
+    expect(() =>
+      validateTemplateHandlers({ root: { type: 'button', props: { onClick: '@approve' } } })
+    ).not.toThrow();
+    expect(() =>
+      validateTemplateHandlers({ type: 'button', onClick: '@approve' })
+    ).not.toThrow();
+  });
+
+  it('validates flat and nested component handler props', () => {
+    expect(() =>
+      validateTemplateHandlers({ root: { type: 'button', onClick: 'approve' } })
+    ).toThrow(/json_template\.root\.onClick/);
+    expect(() =>
+      validateTemplateHandlers({
+        root: {
+          type: 'if',
+          condition: 'ready',
+          // biome-ignore lint/suspicious/noThenProperty: template DSL conditional branch.
+          then: { type: 'button', props: { onClick: '@' } },
+        },
+      })
+    ).toThrow(/json_template\.root\.then\.props\.onClick/);
   });
 });

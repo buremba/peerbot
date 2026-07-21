@@ -20,11 +20,12 @@ SET LOCAL lobu.allow_event_delete = 'on';
 DELETE FROM notification_targets
   USING events
   WHERE notification_targets.event_id = events.id
+    AND events.organization_id = :'ORG'
     AND events.metadata->>'seed' = 'peek';
-DELETE FROM events WHERE metadata->>'seed' = 'peek';
-DELETE FROM runs WHERE run_metadata->>'seed' = 'peek';
-DELETE FROM watchers WHERE tags @> ARRAY['seed-peek']::text[];
-DELETE FROM connections WHERE slug = 'seed-gmail';
+DELETE FROM events WHERE organization_id = :'ORG' AND metadata->>'seed' = 'peek';
+DELETE FROM runs WHERE organization_id = :'ORG' AND run_metadata->>'seed' = 'peek';
+DELETE FROM watchers WHERE organization_id = :'ORG' AND tags @> ARRAY['seed-peek']::text[];
+DELETE FROM connections WHERE organization_id = :'ORG' AND slug IN ('seed-gmail', 'seed-slack');
 
 -- ---------------------------------------------------------------------------
 -- Behaviors (watchers). watcher_group_id is NOT NULL but unconstrained.
@@ -102,6 +103,20 @@ ON CONFLICT (id) DO UPDATE SET
   status = EXCLUDED.status;
 
 -- ---------------------------------------------------------------------------
+-- One Slack connection so the pending Slack approval links to a real connector
+-- of the matching connector_key (not the Gmail connection).
+-- ---------------------------------------------------------------------------
+INSERT INTO connections (
+  id, organization_id, connector_key, display_name, status, slug,
+  credential_mode, created_by, created_at, updated_at
+) VALUES
+  (2, :'ORG', 'slack', 'Slack · #finance', 'active', 'seed-slack',
+   'byo', :'USER', now() - interval '10 days', now())
+ON CONFLICT (id) DO UPDATE SET
+  display_name = EXCLUDED.display_name,
+  status = EXCLUDED.status;
+
+-- ---------------------------------------------------------------------------
 -- Sync runs (link to the connectors page).
 -- ---------------------------------------------------------------------------
 INSERT INTO runs (
@@ -133,7 +148,7 @@ INSERT INTO runs (
   created_at, run_at, approval_status, items_collected,
   created_by_user_id, run_metadata
 ) VALUES (
-  :'ORG', 'action', 'pending', 'slack', 1,
+  :'ORG', 'action', 'pending', 'slack', 2,
   now() - interval '20 minutes', now() - interval '20 minutes',
   'pending', 0, :'USER',
   '{"seed":"peek","proposer":"behavior:daily-spend-digest"}'::jsonb
@@ -190,7 +205,7 @@ UNION ALL SELECT 'notif targets (seeded)', count(*) FROM notification_targets JO
 -- ---------------------------------------------------------------------------
 \set ORG 'org_47ya40wa5k8'
 
-DELETE FROM agent_transcript_snapshot WHERE conversation_id LIKE 'seed-watch-%';
+DELETE FROM agent_transcript_snapshot WHERE organization_id = :'ORG' AND conversation_id LIKE 'seed-watch-%';
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)

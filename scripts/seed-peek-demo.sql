@@ -28,36 +28,52 @@ DELETE FROM watchers WHERE organization_id = :'ORG' AND tags @> ARRAY['seed-peek
 DELETE FROM connections WHERE organization_id = :'ORG' AND slug IN ('seed-gmail', 'seed-slack');
 
 -- ---------------------------------------------------------------------------
--- Behaviors (watchers). watcher_group_id is NOT NULL but unconstrained.
+-- Behaviors (watchers). Resolve seed rows by their org-scoped slug/tags rather
+-- than fixed global ids: the DB assigns each id and dependent rows reference the
+-- captured value. The top-of-script cleanup already removes prior seed rows, so
+-- no id upsert is needed (a fixed id could retag/delete an unrelated watcher).
+-- watcher_group_id (NOT NULL, unconstrained) is set to each watcher's own id so
+-- each seed behavior stays its own group.
 -- ---------------------------------------------------------------------------
 INSERT INTO watchers (
-  id, organization_id, agent_id, name, slug, description, status,
+  organization_id, agent_id, name, slug, description, status,
   schedule, triggers, model_config, sources, created_by, watcher_group_id,
   created_at, updated_at, notification_channel, notification_priority, tags
-) VALUES
-  (9001, :'ORG', 'owletto-default', 'Daily spend digest',
-   'daily-spend-digest',
-   'Summarize yesterday''s card transactions and flag anomalies over $500.',
-   'active', '0 9 * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-   :'USER', 9001, now() - interval '6 days', now(), 'canvas', 'normal',
-   ARRAY['seed-peek']::text[]),
-  (9002, :'ORG', 'owletto-default', 'Inbox triage',
-   'inbox-triage',
-   'Flag emails needing a reply and draft suggested responses.',
-   'active', '*/30 * * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-   :'USER', 9002, now() - interval '4 days', now(), 'canvas', 'normal',
-   ARRAY['seed-peek']::text[]),
-  (9003, :'ORG', 'lobu-builder', 'Stale workspace watcher',
-   'stale-workspace-watcher',
-   'Alert when a workspace has no activity for 7 days.',
-   'active', '0 10 * * 1', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
-   :'USER', 9003, now() - interval '3 days', now(), 'canvas', 'normal',
-   ARRAY['seed-peek']::text[])
-ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name,
-  slug = EXCLUDED.slug,
-  description = EXCLUDED.description,
-  tags = EXCLUDED.tags;
+) VALUES (
+  :'ORG', 'owletto-default', 'Daily spend digest', 'daily-spend-digest',
+  'Summarize yesterday''s card transactions and flag anomalies over $500.',
+  'active', '0 9 * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
+  :'USER', 0, now() - interval '6 days', now(), 'canvas', 'normal',
+  ARRAY['seed-peek']::text[]
+) RETURNING id AS w_spend \gset
+
+INSERT INTO watchers (
+  organization_id, agent_id, name, slug, description, status,
+  schedule, triggers, model_config, sources, created_by, watcher_group_id,
+  created_at, updated_at, notification_channel, notification_priority, tags
+) VALUES (
+  :'ORG', 'owletto-default', 'Inbox triage', 'inbox-triage',
+  'Flag emails needing a reply and draft suggested responses.',
+  'active', '*/30 * * * *', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
+  :'USER', 0, now() - interval '4 days', now(), 'canvas', 'normal',
+  ARRAY['seed-peek']::text[]
+) RETURNING id AS w_inbox \gset
+
+INSERT INTO watchers (
+  organization_id, agent_id, name, slug, description, status,
+  schedule, triggers, model_config, sources, created_by, watcher_group_id,
+  created_at, updated_at, notification_channel, notification_priority, tags
+) VALUES (
+  :'ORG', 'lobu-builder', 'Stale workspace watcher', 'stale-workspace-watcher',
+  'Alert when a workspace has no activity for 7 days.',
+  'active', '0 10 * * 1', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
+  :'USER', 0, now() - interval '3 days', now(), 'canvas', 'normal',
+  ARRAY['seed-peek']::text[]
+) RETURNING id AS w_stale \gset
+
+-- Each seed behavior is its own group (group_id = own id).
+UPDATE watchers SET watcher_group_id = id
+  WHERE organization_id = :'ORG' AND id IN (:w_spend, :w_inbox, :w_stale);
 
 -- ---------------------------------------------------------------------------
 -- Behavior runs (run_type = 'behavior') — the agent-scoped activity feed.
@@ -67,54 +83,52 @@ INSERT INTO runs (
   created_at, run_at, completed_at, error_message,
   items_collected, created_by_user_id, run_metadata
 ) VALUES
-  (:'ORG', 'behavior', 'completed', 9001,
+  (:'ORG', 'behavior', 'completed', :w_spend,
    now() - interval '25 hours', now() - interval '25 hours',
    now() - interval '25 hours' + interval '3 minutes', NULL, 12, :'USER',
    '{"seed":"peek"}'::jsonb),
-  (:'ORG', 'behavior', 'failed', 9001,
+  (:'ORG', 'behavior', 'failed', :w_spend,
    now() - interval '49 hours', now() - interval '49 hours',
    now() - interval '49 hours' + interval '40 seconds',
    'Upstream feed returned 502 Bad Gateway after 3 retries', 0, :'USER',
    '{"seed":"peek"}'::jsonb),
-  (:'ORG', 'behavior', 'completed', 9002,
+  (:'ORG', 'behavior', 'completed', :w_inbox,
    now() - interval '2 hours', now() - interval '2 hours',
    now() - interval '2 hours' + interval '90 seconds', NULL, 5, :'USER',
    '{"seed":"peek"}'::jsonb),
-  (:'ORG', 'behavior', 'completed', 9002,
+  (:'ORG', 'behavior', 'completed', :w_inbox,
    now() - interval '90 minutes', now() - interval '90 minutes',
    now() - interval '90 minutes' + interval '75 seconds', NULL, 8, :'USER',
    '{"seed":"peek"}'::jsonb),
-  (:'ORG', 'behavior', 'completed', 9003,
+  (:'ORG', 'behavior', 'completed', :w_stale,
    now() - interval '5 hours', now() - interval '5 hours',
    now() - interval '5 hours' + interval '12 seconds', NULL, 1, :'USER',
    '{"seed":"peek"}'::jsonb);
 
 -- ---------------------------------------------------------------------------
 -- One Gmail connection so sync runs link to a real connector detail page.
+-- Id is DB-assigned and captured; the top cleanup (by slug) handles re-runs, so
+-- there is no fixed-id upsert that could clobber an unrelated connection (id=1).
 -- ---------------------------------------------------------------------------
 INSERT INTO connections (
-  id, organization_id, connector_key, display_name, status, slug,
+  organization_id, connector_key, display_name, status, slug,
   credential_mode, created_by, created_at, updated_at
-) VALUES
-  (1, :'ORG', 'gmail', 'Gmail · work account', 'active', 'seed-gmail',
-   'byo', :'USER', now() - interval '10 days', now())
-ON CONFLICT (id) DO UPDATE SET
-  display_name = EXCLUDED.display_name,
-  status = EXCLUDED.status;
+) VALUES (
+  :'ORG', 'gmail', 'Gmail · work account', 'active', 'seed-gmail',
+  'byo', :'USER', now() - interval '10 days', now()
+) RETURNING id AS conn_gmail \gset
 
 -- ---------------------------------------------------------------------------
 -- One Slack connection so the pending Slack approval links to a real connector
 -- of the matching connector_key (not the Gmail connection).
 -- ---------------------------------------------------------------------------
 INSERT INTO connections (
-  id, organization_id, connector_key, display_name, status, slug,
+  organization_id, connector_key, display_name, status, slug,
   credential_mode, created_by, created_at, updated_at
-) VALUES
-  (2, :'ORG', 'slack', 'Slack · #finance', 'active', 'seed-slack',
-   'byo', :'USER', now() - interval '10 days', now())
-ON CONFLICT (id) DO UPDATE SET
-  display_name = EXCLUDED.display_name,
-  status = EXCLUDED.status;
+) VALUES (
+  :'ORG', 'slack', 'Slack · #finance', 'active', 'seed-slack',
+  'byo', :'USER', now() - interval '10 days', now()
+) RETURNING id AS conn_slack \gset
 
 -- ---------------------------------------------------------------------------
 -- Sync runs (link to the connectors page).
@@ -124,11 +138,11 @@ INSERT INTO runs (
   created_at, run_at, completed_at, error_message, items_collected,
   created_by_user_id, run_metadata
 ) VALUES
-  (:'ORG', 'sync', 'completed', 'gmail', 1,
+  (:'ORG', 'sync', 'completed', 'gmail', :conn_gmail,
    now() - interval '3 hours', now() - interval '3 hours',
    now() - interval '3 hours' + interval '20 seconds', NULL, 47, :'USER',
    '{"seed":"peek"}'::jsonb),
-  (:'ORG', 'sync', 'failed', 'gmail', 1,
+  (:'ORG', 'sync', 'failed', 'gmail', :conn_gmail,
    now() - interval '9 hours', now() - interval '9 hours',
    now() - interval '9 hours' + interval '15 seconds',
    'OAuth token expired — reconnect Gmail', 0, :'USER',
@@ -148,7 +162,7 @@ INSERT INTO runs (
   created_at, run_at, approval_status, items_collected,
   created_by_user_id, run_metadata
 ) VALUES (
-  :'ORG', 'action', 'pending', 'slack', 2,
+  :'ORG', 'action', 'pending', 'slack', :conn_slack,
   now() - interval '20 minutes', now() - interval '20 minutes',
   'pending', 0, :'USER',
   '{"seed":"peek","proposer":"behavior:daily-spend-digest"}'::jsonb
@@ -191,26 +205,18 @@ WITH ev AS (
 INSERT INTO notification_targets (event_id, user_id, delivered_at, read_at)
   SELECT id, :'USER', now(), NULL FROM ev;
 
-COMMIT;
-
-\echo '--- seed summary ---'
-SELECT 'watchers (seeded)' AS what, count(*) FROM watchers WHERE tags @> ARRAY['seed-peek']::text[]
-UNION ALL SELECT 'runs (seeded)', count(*) FROM runs WHERE run_metadata->>'seed' = 'peek'
-UNION ALL SELECT 'events (seeded)', count(*) FROM events WHERE metadata->>'seed' = 'peek'
-UNION ALL SELECT 'notif targets (seeded)', count(*) FROM notification_targets JOIN events ON events.id = notification_targets.event_id WHERE events.metadata->>'seed' = 'peek';
-
 -- ---------------------------------------------------------------------------
 -- Transcripts (agent_transcript_snapshot) so behavior runs show real content.
 -- Each is a session.jsonl conversation: prompt → analysis → tool calls → summary.
+-- These stay in the SAME transaction as the records above: a transcript failure
+-- must roll back the whole seed so there is never a partially-seeded E2E state.
 -- ---------------------------------------------------------------------------
-\set ORG 'org_47ya40wa5k8'
-
 DELETE FROM agent_transcript_snapshot WHERE organization_id = :'ORG' AND conversation_id LIKE 'seed-watch-%';
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'owletto-default',
-  'seed-watch-9001-run-' || r.id, r.id,
+  'seed-watch-daily-spend-digest-run-' || r.id, r.id,
 $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-19T09:00:01Z","message":{"role":"user","content":"Run this Behavior now: Daily spend digest. Summarize yesterday's card transactions and flag anomalies over $500."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-19T09:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll pull yesterday's transactions from the connected Revolut account and analyze them for anomalies."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-19T09:00:05Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_transactions","input":{"since":"2026-07-18","until":"2026-07-19"}}]}}
@@ -218,25 +224,25 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-19T09:00
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-19T09:00:12Z","message":{"role":"assistant","content":[{"type":"text","text":"## Daily Spend Digest — Jul 18\n\n**Total: €1,847.30 across 12 transactions**\n\n### Flagged (over €500)\n- **AWS Production** — €640.00 (monthly infra)\n- **Booking.com** — €589.00 (hotel, Lisbon)\n\n### Recurring\n- Netflix €15.99, Spotify €10.99, Notion €9.00\n\n### Notes\nSpend is 23% above your 30-day average (€1,503). The Lisbon hotel is the main driver. No unusual or suspicious transactions detected."}]}}$jsonl$,
 128, 'completed', now() - interval '25 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = 9001 AND r.status = 'completed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_spend AND r.status = 'completed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'owletto-default',
-  'seed-watch-9001-run-' || r.id, r.id,
+  'seed-watch-daily-spend-digest-run-' || r.id, r.id,
 $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-18T09:00:01Z","message":{"role":"user","content":"Run this Behavior now: Daily spend digest."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-18T09:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Fetching yesterday's transactions from Revolut..."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-18T09:00:40Z","message":{"role":"assistant","content":[{"type":"text","text":"⚠️ The Revolut connector returned 502 Bad Gateway after 3 retries. I cannot complete the digest without transaction data. The run will be marked as failed — it will retry on the next scheduled run."}]}}$jsonl$,
 64, 'failed', now() - interval '49 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = 9001 AND r.status = 'failed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_spend AND r.status = 'failed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'owletto-default',
-  'seed-watch-9002-run-' || r.id, r.id,
+  'seed-watch-inbox-triage-run-' || r.id, r.id,
 $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:00:01Z","message":{"role":"user","content":"Run this Behavior now: Inbox triage. Flag emails needing a reply and draft suggested responses."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T22:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Scanning the inbox for emails received in the last 30 minutes..."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T22:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_emails","input":{"folder":"inbox","since_minutes":30}}]}}
@@ -244,13 +250,13 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:00
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T22:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Inbox Triage — 5 emails needing attention\n\n### 🔴 Needs reply\n1. **Sara Chen** (re: Q3 roadmap feedback) — waiting on your sign-off\n2. **Stripe** (re: payout failed) — action required\n\n### 🟡 FYI\n3. **GitHub** — security alert resolved\n4. **Linear** — weekly digest\n\n### ✅ No action\n5. **Notion** — product update\n\nI've drafted suggested replies for items 1-2 and saved them as drafts."}]}}$jsonl$,
 128, 'completed', now() - interval '2 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = 9002 AND r.status = 'completed' AND r.items_collected = 5
+WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 5
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'lobu-builder',
-  'seed-watch-9003-run-' || r.id, r.id,
+  'seed-watch-stale-workspace-watcher-run-' || r.id, r.id,
 $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T19:00:01Z","message":{"role":"user","content":"Run this Behavior now: Stale workspace watcher. Alert when a workspace has no activity for 7 days."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T19:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Checking all workspaces for activity in the last 7 days..."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T19:00:07Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_workspaces","input":{"inactive_days":7}}]}}
@@ -258,14 +264,14 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T19:00
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T19:00:14Z","message":{"role":"assistant","content":[{"type":"text","text":"## Stale Workspace Report\n\nFound **1 workspace** with no activity in 7+ days:\n\n- **acme-demo** — last active 11 days ago\n\nThis workspace has 3 idle behaviors and 2 disconnected connectors. Consider archiving it or pinging the owner."}]}}$jsonl$,
 128, 'completed', now() - interval '5 hours'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = 9003 AND r.status = 'completed'
+WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_stale AND r.status = 'completed'
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
 
 -- Second Inbox-triage run (items_collected = 8) — so its run isn't an empty transcript either.
 INSERT INTO agent_transcript_snapshot
   (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
 SELECT :'ORG', 'owletto-default',
-  'seed-watch-9002-run-' || r.id, r.id,
+  'seed-watch-inbox-triage-run-' || r.id, r.id,
 $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:30:01Z","message":{"role":"user","content":"Run this Behavior now: Inbox triage. Flag emails needing a reply and draft suggested responses."}}
 {"type":"message","id":"m2","parentId":"m1","timestamp":"2026-07-20T22:30:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Scanning the inbox for new mail..."}]}}
 {"type":"message","id":"m3","parentId":"m2","timestamp":"2026-07-20T22:30:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"list_emails","input":{"folder":"inbox","since_minutes":30}}]}}
@@ -273,5 +279,14 @@ $jsonl${"type":"message","id":"m1","parentId":null,"timestamp":"2026-07-20T22:30
 {"type":"message","id":"m5","parentId":"m4","timestamp":"2026-07-20T22:30:15Z","message":{"role":"assistant","content":[{"type":"text","text":"## Inbox Triage — 8 emails needing attention\n\n### 🔴 Needs reply\n1. **Acme Legal** (re: contract redlines) — deadline Friday\n2. **Priya Patel** (re: design review) — waiting on you\n3. **AWS Support** (re: case #4821) — response needed\n\n### 🟡 FYI\n4-6. GitHub, Linear, Vercel digests\n\n### ✅ No action\n7-8. Newsletters\n\nDrafted replies for items 1-3."}]}}$jsonl$,
 160, 'completed', now() - interval '90 minutes'
 FROM runs r
-WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = 9002 AND r.status = 'completed' AND r.items_collected = 8
+WHERE r.run_metadata->>'seed' = 'peek' AND r.watcher_id = :w_inbox AND r.status = 'completed' AND r.items_collected = 8
 ON CONFLICT (organization_id, agent_id, conversation_id, run_id) DO UPDATE SET snapshot_jsonl = EXCLUDED.snapshot_jsonl;
+
+COMMIT;
+
+\echo '--- seed summary ---'
+SELECT 'watchers (seeded)' AS what, count(*) FROM watchers WHERE tags @> ARRAY['seed-peek']::text[]
+UNION ALL SELECT 'runs (seeded)', count(*) FROM runs WHERE run_metadata->>'seed' = 'peek'
+UNION ALL SELECT 'events (seeded)', count(*) FROM events WHERE metadata->>'seed' = 'peek'
+UNION ALL SELECT 'notif targets (seeded)', count(*) FROM notification_targets JOIN events ON events.id = notification_targets.event_id WHERE events.metadata->>'seed' = 'peek'
+UNION ALL SELECT 'transcripts (seeded)', count(*) FROM agent_transcript_snapshot WHERE organization_id = :'ORG' AND conversation_id LIKE 'seed-watch-%';

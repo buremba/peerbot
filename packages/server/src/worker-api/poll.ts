@@ -588,6 +588,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.app_auth_profile_id,
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
+        cv.id AS connector_version_row_id,
         cv.compiled_code,
         cv.compile_config_hash,
         cd.runtime AS connector_runtime,
@@ -604,9 +605,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
-      LEFT JOIN connector_versions cv ON cv.connector_key = r.connector_key
-        AND cv.version = r.connector_version
-        AND cv.organization_id IS NULL
+      LEFT JOIN LATERAL (
+        SELECT id, compiled_code, compile_config_hash
+        FROM connector_versions
+        WHERE connector_key = r.connector_key
+          AND version = r.connector_version
+          AND (organization_id = r.organization_id OR organization_id IS NULL)
+        ORDER BY organization_id NULLS LAST
+        LIMIT 1
+      ) cv ON TRUE
       LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
         AND cd.organization_id = r.organization_id
         AND cd.status = 'active'
@@ -667,6 +674,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     app_auth_profile_id: number | null;
     connection_config: Record<string, unknown> | null;
     connection_device_worker_id: string | null;
+    connector_version_row_id: number | null;
     compiled_code: string | null;
     compile_config_hash: string | null;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
@@ -834,6 +842,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteBridgeOnlyConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
+        id: row.connector_version_row_id,
         version: row.connector_version,
         compiled_code: row.compiled_code,
         compile_config_hash: row.compile_config_hash,

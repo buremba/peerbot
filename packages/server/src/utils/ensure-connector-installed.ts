@@ -35,6 +35,13 @@ import logger from './logger';
  * produced `compiled_code`.
  */
 export type StoredConnectorVersion = {
+  /**
+   * Primary key of the row the columns came from. (connector_key, version) no
+   * longer identifies one row — an org-scoped copy may share the pair with
+   * the shared bundled row — so the recompile-repersist path must address the
+   * exact row it resolved. NULL when the reader's LEFT JOIN found no row.
+   */
+  id: number | null;
   version: string | null;
   compiled_code: string | null;
   compile_config_hash: string | null;
@@ -67,9 +74,9 @@ export async function resolveConnectorCode(
 ): Promise<string> {
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
-    if (stored.version) {
+    if (stored.id != null) {
       try {
-        const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.version);
+        const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
         if (recompiled) return recompiled;
       } catch (err) {
         // The stored source no longer compiles under the current compile
@@ -109,23 +116,28 @@ export async function resolveConnectorCode(
  */
 export async function resolveConnectorCodeForKey(
   connectorKey: string,
+  organizationId: string,
   version?: string | null
 ): Promise<string> {
   const sql = getDb();
-  // organization_id IS NULL: reads stay pinned to the shared row until the
-  // per-org read cutover (#2045 follow-up) — the dual-write phase writes
-  // org-scoped copies this query must not accidentally resolve.
+  // Org-preferring resolution (#2045): the org's own artifact row shadows the
+  // shared bundled/legacy row for that org only; shared rows stay every org's
+  // fallback. The no-version variant prefers ANY org row over a newer shared
+  // row — an org that branched a bundled connector stays on its branch until
+  // it updates or rolls back.
   const rows = version
     ? await sql`
-        SELECT version, compiled_code, compile_config_hash FROM connector_versions
+        SELECT id, version, compiled_code, compile_config_hash FROM connector_versions
         WHERE connector_key = ${connectorKey} AND version = ${version}
-          AND organization_id IS NULL
+          AND (organization_id = ${organizationId} OR organization_id IS NULL)
+        ORDER BY organization_id NULLS LAST
         LIMIT 1
       `
     : await sql`
-        SELECT version, compiled_code, compile_config_hash FROM connector_versions
-        WHERE connector_key = ${connectorKey} AND organization_id IS NULL
-        ORDER BY created_at DESC
+        SELECT id, version, compiled_code, compile_config_hash FROM connector_versions
+        WHERE connector_key = ${connectorKey}
+          AND (organization_id = ${organizationId} OR organization_id IS NULL)
+        ORDER BY (organization_id IS NULL), created_at DESC
         LIMIT 1
       `;
   return resolveConnectorCode(connectorKey, (rows[0] as StoredConnectorVersion | undefined) ?? null);
@@ -138,19 +150,15 @@ export async function resolveConnectorCodeForKey(
  */
 async function recompileStoredConnectorVersion(
   connectorKey: string,
-  version: string
+  rowId: number
 ): Promise<string | null> {
   const sql = getDb();
-  // Pinned to the shared row while reads are: the org-scoped copies written by
-  // the dual-write phase (#2045 follow-up) converge when the read cutover
-  // scopes this resolution per org.
   const rows = await sql`
-    SELECT id, source_code FROM connector_versions
-    WHERE connector_key = ${connectorKey} AND version = ${version}
-      AND organization_id IS NULL
+    SELECT source_code, version FROM connector_versions
+    WHERE id = ${rowId}
     LIMIT 1
   `;
-  const row = rows[0] as { id: number; source_code: string | null } | undefined;
+  const row = rows[0] as { source_code: string | null; version: string } | undefined;
   const sourceCode = row?.source_code ?? null;
   if (!row || !sourceCode) return null;
 
@@ -158,15 +166,17 @@ async function recompileStoredConnectorVersion(
   // By primary key, never (connector_key, version): that pair no longer
   // identifies one row — an org-scoped copy may share it with the shared row,
   // and the fresh artifact belongs only to the row whose source produced it.
+  // Each row converges independently across replicas (Postgres-mediated),
+  // exactly as the single shared row did before org scoping.
   await sql`
     UPDATE connector_versions
     SET compiled_code = ${compiledCode},
         compiled_code_hash = ${compiledCodeHash},
         compile_config_hash = ${COMPILE_CONFIG_HASH}
-    WHERE id = ${row.id}
+    WHERE id = ${rowId}
   `;
   logger.info(
-    { connector_key: connectorKey, version },
+    { connector_key: connectorKey, version: row.version, row_id: rowId },
     'Recompiled stale connector artifact (compile configuration changed)'
   );
   return compiledCode;

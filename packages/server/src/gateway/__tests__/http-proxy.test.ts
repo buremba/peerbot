@@ -24,6 +24,7 @@ import {
   startHttpProxy,
   stopHttpProxy,
 } from "../proxy/http-proxy.js";
+import { getFreePort, withFreePortRetry } from "../../__tests__/setup/free-port.js";
 
 // Generate a stable 32-byte encryption key for tests
 const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
@@ -46,8 +47,13 @@ beforeAll(async () => {
   // module/env — no ordering dependence, no reset needed.
   process.env.WORKER_ALLOWED_DOMAINS = "*";
 
-  proxyPort = 10000 + Math.floor(Math.random() * 50000);
-  proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");
+  // Ask the OS for a free port and retry on collision instead of gambling on a
+  // random high port — concurrent test load otherwise races to EADDRINUSE (#976).
+  proxyServer = await withFreePortRetry(async (port) => {
+    const server = await startHttpProxy(port, "127.0.0.1");
+    proxyPort = port;
+    return server;
+  });
 });
 
 afterAll(async () => {
@@ -327,7 +333,7 @@ describe("HTTP Proxy Authentication", () => {
 
 describe("HTTP Proxy Startup", () => {
   test("rejects on port conflict (EADDRINUSE)", async () => {
-    const blockingPort = 10000 + Math.floor(Math.random() * 50000);
+    const blockingPort = await getFreePort("127.0.0.1");
     const blocker = http.createServer();
     await new Promise<void>((resolve) =>
       blocker.listen(blockingPort, "127.0.0.1", resolve)
@@ -345,13 +351,17 @@ describe("HTTP Proxy Startup", () => {
   });
 
   test("binds to specified host and port", async () => {
-    const port = 10000 + Math.floor(Math.random() * 50000);
-    const server = await startHttpProxy(port, "127.0.0.1");
+    let boundPort = 0;
+    const server = await withFreePortRetry(async (port) => {
+      const s = await startHttpProxy(port, "127.0.0.1");
+      boundPort = port;
+      return s;
+    });
     try {
       const addr = server.address();
       expect(addr).not.toBeNull();
       if (typeof addr === "object" && addr) {
-        expect(addr.port).toBe(port);
+        expect(addr.port).toBe(boundPort);
         expect(addr.address).toBe("127.0.0.1");
       }
     } finally {

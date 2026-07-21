@@ -1397,15 +1397,19 @@ async function handleGetRun(
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
   const sql = getDb();
+  // Include 'internal' runs (builder / entity-change approvals), not just
+  // connector 'action' runs: list_runs surfaces them and approve/reject act on
+  // them, so a caller that can list and approve an internal run must be able to
+  // get_run it too. An action-only filter returned "Run not found" for it.
   const rows = await sql`
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
-           r.approval_status, r.status, r.error_message,
+           r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at
     FROM runs r
     WHERE r.id = ${args.run_id}
       AND r.organization_id = ${ctx.organizationId}
-      AND r.run_type = 'action'
+      AND r.run_type IN ('action', 'internal')
     LIMIT 1
   `;
 	if (rows.length === 0) return { error: "Run not found" };

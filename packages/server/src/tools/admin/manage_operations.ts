@@ -1480,7 +1480,11 @@ async function handleGetRun(
   // Include 'internal' runs (builder / entity-change approvals), not just
   // connector 'action' runs: list_runs surfaces them and approve/reject act on
   // them, so a caller that can list and approve an internal run must be able to
-  // get_run it too. An action-only filter returned "Run not found" for it.
+  // get_run it too. get_run must resolve ANY run_type that list_runs surfaces —
+  // action, internal, behavior, sync — not just action+internal. It uses the
+  // SAME excluded-types set as the list_runs default so the two can never drift:
+  // a run visible in the list is always fetchable here. Only the chat-message
+  // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
@@ -1489,7 +1493,7 @@ async function handleGetRun(
     FROM runs r
     WHERE r.id = ${args.run_id}
       AND r.organization_id = ${ctx.organizationId}
-      AND r.run_type IN ('action', 'internal')
+      AND r.run_type <> ALL(${pgTextArray([...LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES])}::text[])
     LIMIT 1
   `;
 	if (rows.length === 0) return { error: "Run not found" };

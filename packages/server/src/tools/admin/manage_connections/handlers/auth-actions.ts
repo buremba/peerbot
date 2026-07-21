@@ -316,23 +316,15 @@ export async function handleTest(
     };
   }
 
-  // Auth-free connectors (e.g. RSS/Atom) declare `authSchema.methods: [{ type: 'none' }]`
-  // and legitimately have no auth profile. Reporting "No auth profile configured" for
-  // them is a false warning on a perfectly valid connection (#2051). If the connector
-  // supports the `none` auth method, an absent profile is expected — report ok.
-  if (connectorSupportsNoAuth(conn.auth_schema)) {
-    return {
-      action: 'test',
-      status: 'ok',
-      message: 'Connector requires no auth profile',
-    };
-  }
-
   // Device-bound connections (e.g. apple.computer_use, browser device workers)
   // run on a paired device, not an auth profile — so a null profile is expected.
   // Report the device's readiness (the actual execution blocker) instead of the
   // misleading "No auth profile configured" warning. The 20-minute freshness
   // window mirrors the readiness rule used across operations/feeds listings.
+  //
+  // This must precede the no-auth check: device connectors like apple.computer_use
+  // declare `authSchema.methods: [{ type: 'none' }]`, so testing no-auth first would
+  // mask an offline device behind a bogus "requires no auth profile" ok.
   if (conn.device_worker_id) {
     const deviceName = conn.device_label || 'paired device';
     return conn.device_online
@@ -351,6 +343,18 @@ export async function handleTest(
           device_online: false,
           ...testErrorFields('NETWORK'),
         };
+  }
+
+  // Auth-free connectors (e.g. RSS/Atom) declare `authSchema.methods: [{ type: 'none' }]`
+  // and legitimately have no auth profile. Reporting "No auth profile configured" for
+  // them is a false warning on a perfectly valid connection (#2051). If the connector
+  // supports the `none` auth method, an absent profile is expected — report ok.
+  if (connectorSupportsNoAuth(conn.auth_schema)) {
+    return {
+      action: 'test',
+      status: 'ok',
+      message: 'Connector requires no auth profile',
+    };
   }
 
   return {

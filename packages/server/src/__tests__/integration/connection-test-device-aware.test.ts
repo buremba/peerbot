@@ -14,7 +14,11 @@ import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { createTestConnection, seedOwnerContext } from "../setup/test-fixtures";
+import {
+	createTestConnection,
+	createTestConnectorDefinition,
+	seedOwnerContext,
+} from "../setup/test-fixtures";
 
 const CONNECTOR_KEY = "apple.computer_use";
 
@@ -32,6 +36,17 @@ describe("connections.test device readiness", () => {
 		orgId = org.id;
 		userId = user.id;
 		ctx = ownerCtx;
+
+		// The real apple.computer_use connector declares `auth: none`, so an active
+		// connector_definition with methods:[{type:'none'}] must exist for this test
+		// to reproduce production: without it, the no-auth branch never fires and the
+		// device branch is falsely reachable regardless of ordering.
+		await createTestConnectorDefinition({
+			key: CONNECTOR_KEY,
+			name: "Apple Computer Use",
+			organization_id: orgId,
+			auth_schema: { methods: [{ type: "none" }] },
+		});
 	});
 
 	async function seedDeviceConnection(online: boolean): Promise<number> {

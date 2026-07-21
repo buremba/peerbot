@@ -1,5 +1,33 @@
 # Changelog
 
+## [14.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.1.0...lobu-v14.2.0) (2026-07-21)
+
+
+### Features
+
+* consolidate reactive automation on Behaviors ([#2023](https://github.com/lobu-ai/lobu/issues/2023)) ([c3161a7](https://github.com/lobu-ai/lobu/commit/c3161a785c85222f808b06895908494ab04e33ad))
+* **gmail:** mint contacts on outbound send, not receive-only ([#2027](https://github.com/lobu-ai/lobu/issues/2027)) ([22b0907](https://github.com/lobu-ai/lobu/commit/22b0907175b683e7fd519b98bf134c45f5231c02))
+* integrate Midas connector and optimize Revolut schemas ([#2010](https://github.com/lobu-ai/lobu/issues/2010)) ([aae5688](https://github.com/lobu-ai/lobu/commit/aae56884033b6882824a2d7a7f3850cd874c594d))
+* list_activity feed + Home + agent attention inject ([#2022](https://github.com/lobu-ai/lobu/issues/2022)) ([f4858e1](https://github.com/lobu-ai/lobu/commit/f4858e119ac542d25cde5e833ff4b2fd6b6e0034))
+
+
+### Bug Fixes
+
+* **cli:** correct GitHub connection auth + dead example ref in AGENTS.md template ([#2029](https://github.com/lobu-ai/lobu/issues/2029)) ([d324524](https://github.com/lobu-ai/lobu/commit/d32452476c23e85bb490bdce2600e47259e48883))
+* **compiler:** AST-level import validation, self-contained catalog sources, hard feed errors ([#2042](https://github.com/lobu-ai/lobu/issues/2042), [#2043](https://github.com/lobu-ai/lobu/issues/2043)) ([75a59d4](https://github.com/lobu-ai/lobu/commit/75a59d465e9610bac6f55f7a070220ec09d76263))
+* **feeds:** omit schedule means manual-only, clear default 6h ([#2021](https://github.com/lobu-ai/lobu/issues/2021)) ([df7dd93](https://github.com/lobu-ai/lobu/commit/df7dd93bc58bc040ce2aa1e1c563397bf49ad99b))
+* **gateway:** heartbeat-only ACKs no longer pin the worker idle clock ([#1999](https://github.com/lobu-ai/lobu/issues/1999)) ([#2026](https://github.com/lobu-ai/lobu/issues/2026)) ([6032152](https://github.com/lobu-ai/lobu/commit/6032152f77d614f5a2f1cd4a495d58b0241872fa))
+* **gmail:** require gmail.compose so create_draft is authorized ([#2061](https://github.com/lobu-ai/lobu/issues/2061)) ([4006999](https://github.com/lobu-ai/lobu/commit/4006999b3490acf4ef4d2badedf8a9c9de32bd2e))
+* **migrations:** split DO-heal from CONCURRENTLY so dbmate can apply them [migration-never-applied] ([#2032](https://github.com/lobu-ai/lobu/issues/2032)) ([cf25980](https://github.com/lobu-ai/lobu/commit/cf25980443bc6a68c1c13b4f120e318bcddfc8d5))
+* **p0:** classifier value round-trip + repair migration, atomic approval-event tx, readiness capability probe ([#2033](https://github.com/lobu-ai/lobu/issues/2033)) ([#2037](https://github.com/lobu-ai/lobu/issues/2037)) ([df0b2d5](https://github.com/lobu-ai/lobu/commit/df0b2d5848387930a9fb6354de79c48ca6df6969))
+* **personal-agent:** buremba schema source of truth + prune ([#2013](https://github.com/lobu-ai/lobu/issues/2013)) ([c18a794](https://github.com/lobu-ai/lobu/commit/c18a79495759b49165a3654ca69e57937194267b))
+* **personal-agent:** use chrome_dispatcher for Midas connector ([#2018](https://github.com/lobu-ai/lobu/issues/2018)) ([a3214b7](https://github.com/lobu-ai/lobu/commit/a3214b7a3d5bc9e403ab2347be6d2720994aed45))
+* **personal-agent:** use chrome_dispatcher for Midas connector ([#2018](https://github.com/lobu-ai/lobu/issues/2018)) ([a3214b7](https://github.com/lobu-ai/lobu/commit/a3214b7a3d5bc9e403ab2347be6d2720994aed45))
+* remove redundant financial_asset entity ([#2012](https://github.com/lobu-ai/lobu/issues/2012)) ([547fdbb](https://github.com/lobu-ai/lobu/commit/547fdbbaf02432d8b49aafac4e2f49cbc42d1a0e))
+* resolve Claude PreToolUse hooks from project root ([#2024](https://github.com/lobu-ai/lobu/issues/2024)) ([d247a57](https://github.com/lobu-ai/lobu/commit/d247a57d40c93c0bac42d0b3950a2638a9ec44b9))
+* **scheduler:** feed failure backoff + auto-pause, behavior health surfacing, github empty-body guard ([#2033](https://github.com/lobu-ai/lobu/issues/2033)) ([#2035](https://github.com/lobu-ai/lobu/issues/2035)) ([976c41c](https://github.com/lobu-ai/lobu/commit/976c41c815dd97a662123314bf6e17649c11e8e9))
+* **sdk:** consistent knowledge delete key, honor include_deleted, expose enums, read-mode admin lists ([#2033](https://github.com/lobu-ai/lobu/issues/2033)) ([#2036](https://github.com/lobu-ai/lobu/issues/2036)) ([d42916a](https://github.com/lobu-ai/lobu/commit/d42916aaa56832111ffc21991d34ba4f0a7d2328))
+
 ## [14.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.0.0...lobu-v14.1.0) (2026-07-16)
 
 

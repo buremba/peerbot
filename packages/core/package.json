@@ -82,6 +82,12 @@
       "import": "./dist/contracts/tools/manage-agents.js",
       "require": "./dist/contracts/tools/manage-agents.js"
     },
+    "./contracts/field-engine": {
+      "types": "./dist/contracts/field-engine.d.ts",
+      "bun": "./src/contracts/field-engine.ts",
+      "import": "./dist/contracts/field-engine.js",
+      "require": "./dist/contracts/field-engine.js"
+    },
     "./contracts/tools/manage-conversations": {
       "types": "./dist/contracts/tools/manage-conversations.d.ts",
       "bun": "./src/contracts/tools/manage-conversations.ts",

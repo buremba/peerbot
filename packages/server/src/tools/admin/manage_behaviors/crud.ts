@@ -194,7 +194,12 @@ export async function handleCreate(
   if (!organizationId) {
     throw new ToolUserError('Cannot resolve Behavior sources without an organization');
   }
-  await assertWatcherSourcesResolve(sql, organizationId, sources);
+  await assertWatcherSourcesResolve(
+    sql,
+    organizationId,
+    sources,
+    entityId ? [entityId] : [],
+  );
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
   });

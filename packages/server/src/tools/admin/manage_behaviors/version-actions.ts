@@ -3,7 +3,7 @@
  *   create_version, upgrade, get_versions, get_version_details
  */
 
-import { getDb } from '../../../db/client';
+import { getDb, parsePgNumberArray } from '../../../db/client';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
@@ -56,7 +56,7 @@ export async function handleCreateVersion(
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
-           i.schedule, i.timezone, i.triggers
+           i.entity_ids, i.schedule, i.timezone, i.triggers
     FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
@@ -134,7 +134,12 @@ export async function handleCreateVersion(
   // sources are skipped (id projection is enforced by the config check above).
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
   if (versionOrganizationId) {
-    await assertWatcherSourcesResolve(sql, versionOrganizationId, sources);
+    await assertWatcherSourcesResolve(
+      sql,
+      versionOrganizationId,
+      sources,
+      parsePgNumberArray(watcherRows[0].entity_ids),
+    );
   }
 
   const triggerWrite = resolveBehaviorTriggerWrite({

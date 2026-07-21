@@ -8,24 +8,32 @@ import { executeDataSources } from '../utils/execute-data-sources';
  * query the reader uses, wrapped in `SELECT ... LIMIT 0` so Postgres plans and
  * type-checks it (undefined column → 42703, syntax error, admin-table access)
  * without materializing any rows, and throws on failure. A structurally valid
- * query that merely matches 0 rows passes. Note: an unknown TABLE is rewritten
+ * query that merely matches 0 rows passes.
+ *
+ * `entityIds` mirrors what the runtime reader supplies (the Behavior's own
+ * entity_ids). It is passed through so `{{entityId}}` substitutes exactly as it
+ * will at run time: an entity-bound Behavior validates its `{{entityId}}` source
+ * cleanly, while an ORG-SCOPED Behavior (no entity_ids) leaves `{{entityId}}`
+ * unresolved and is rejected here — the same source would fail on every runtime
+ * read, so catching it at save is the point. Note: an unknown TABLE is rewritten
  * by the scoped-query layer into a valid entity-type-slug CTE, so it is NOT
- * caught here — only bad columns / syntax / restricted tables are.
+ * caught here — only bad columns / syntax / restricted tables / unresolved
+ * template variables are.
  */
 async function validateCustomSqlSource(
   sql: DbClient,
   organizationId: string,
+  entityIds: number[],
   source: WatcherSource
 ): Promise<void> {
   await executeDataSources(
     { [source.name]: { query: source.query } },
     {
       organizationId,
-      // Supply placeholder context so template variables a legitimate source
-      // uses — {{entityId}}, {{query.*}} — substitute cleanly rather than
-      // tripping the "Unknown context variables" guard at validate time. The
-      // dummy entity id never affects results: the query runs LIMIT 0.
-      entityIds: [0],
+      // Only supply entity ids the Behavior actually has, so {{entityId}} on an
+      // org-scoped Behavior stays unresolved and fails validation (matching the
+      // runtime). {{query.*}} substitutes to NULL with an empty query map.
+      entityIds: entityIds.length > 0 ? entityIds : undefined,
       query: {},
     },
     sql,
@@ -455,7 +463,10 @@ async function compileRefToQuery(
 export async function resolveWatcherSourcesForSave(
   sql: DbClient,
   organizationId: string,
-  sources: WatcherSource[]
+  sources: WatcherSource[],
+  // The Behavior's own entity_ids (empty for an org-scoped Behavior). Threaded
+  // into custom-SQL validation so {{entityId}} resolves exactly as at run time.
+  entityIds: number[] = []
 ): Promise<void> {
   for (const source of sources) {
     const ref = parseWatcherSourceRef(source.query);
@@ -467,7 +478,7 @@ export async function resolveWatcherSourcesForSave(
       // throwing on failure — a valid query that merely matches 0 rows still
       // passes. (An unknown TABLE becomes a valid entity-type-slug CTE rather
       // than an error, so this catches bad columns/syntax, not typo'd tables.)
-      await validateCustomSqlSource(sql, organizationId, source);
+      await validateCustomSqlSource(sql, organizationId, entityIds, source);
       continue;
     }
 

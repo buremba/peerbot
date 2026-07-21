@@ -255,10 +255,13 @@ export function assertWatcherVersionConfigValid(parsed: {
 export async function assertWatcherSourcesResolve(
   sql: DbClient,
   organizationId: string,
-  sources: Array<{ name: string; query: string }>
+  sources: Array<{ name: string; query: string }>,
+  // The Behavior's entity_ids (empty/omitted for an org-scoped Behavior), so
+  // {{entityId}} in a custom-SQL source validates exactly as it runs.
+  entityIds: number[] = []
 ): Promise<void> {
   try {
-    await resolveWatcherSourcesForSave(sql, organizationId, sources);
+    await resolveWatcherSourcesForSave(sql, organizationId, sources, entityIds);
   } catch (err) {
     throw new ToolUserError(
       `Behavior validation failed: ${err instanceof Error ? err.message : String(err)}`,

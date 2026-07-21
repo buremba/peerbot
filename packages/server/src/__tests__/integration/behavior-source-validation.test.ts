@@ -15,7 +15,11 @@ import type { Env } from "../../index";
 import { manageBehaviors } from "../../tools/admin/manage_behaviors";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase } from "../setup/test-db";
-import { createTestAgent, seedOwnerContext } from "../setup/test-fixtures";
+import {
+	createTestAgent,
+	createTestEntity,
+	seedOwnerContext,
+} from "../setup/test-fixtures";
 
 const env = {} as Env;
 
@@ -27,12 +31,22 @@ describe("behavior custom-SQL source validation", () => {
 		await cleanupTestDatabase();
 	});
 
-	async function createWithSource(query: string) {
+	async function createWithSource(
+		query: string,
+		opts: { entityBound?: boolean } = {},
+	) {
 		const { org, user, ctx } = await seedOwnerContext();
 		const agent = await createTestAgent({
 			organizationId: org.id,
 			ownerUserId: user.id,
 		});
+		const entity = opts.entityBound
+			? await createTestEntity({
+					name: `src-validate-entity-${Date.now()}`,
+					organization_id: org.id,
+					created_by: user.id,
+				})
+			: null;
 		return manageBehaviors(
 			{
 				action: "create",
@@ -40,6 +54,7 @@ describe("behavior custom-SQL source validation", () => {
 				name: "Source validate",
 				prompt: "Summarize.",
 				agent_id: agent.agentId,
+				...(entity ? { entity_id: Number(entity.id) } : {}),
 				sources: [{ name: "src", query }],
 				triggers: [
 					{
@@ -74,13 +89,25 @@ describe("behavior custom-SQL source validation", () => {
 		expect("behavior_id" in created).toBe(true);
 	});
 
-	it("accepts a valid source that uses the {{entityId}} template variable", async () => {
-		// Save-time validation must substitute template variables like the reader
-		// does, not reject them as "Unknown context variables".
+	it("accepts a {{entityId}} source on an entity-bound behavior", async () => {
+		// The behavior has an entity_id, so {{entityId}} resolves at run time —
+		// validation must accept it (not trip the Unknown-context-variables guard).
 		const created = await createWithSource(
 			"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
+			{ entityBound: true },
 		);
 		expect(created.action).toBe("create");
 		expect("behavior_id" in created).toBe(true);
+	});
+
+	it("rejects a {{entityId}} source on an org-scoped behavior", async () => {
+		// No entity binding → {{entityId}} never resolves at run time, so the
+		// source would fail on every read. Reject it at save instead of accepting
+		// a silently-broken source.
+		await expect(
+			createWithSource(
+				"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
+			),
+		).rejects.toThrow();
 	});
 });

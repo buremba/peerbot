@@ -129,8 +129,11 @@ describe('connector_versions org isolation (#2045 read cutover)', () => {
       TEST_ENV,
       ctxB
     );
+    expect('error' in gotB ? gotB.error : undefined).toBeUndefined();
     const versions = 'versions' in gotB ? gotB.versions : [];
-    expect(versions.map((v: { version: string }) => v.version)).not.toContain('3.0.0');
+    const versionStrings = versions.map((v: { version: string }) => v.version);
+    expect(versionStrings).toContain('1.0.0');
+    expect(versionStrings).not.toContain('3.0.0');
 
     // …nor activate it.
     const rolled = await manageConnections(

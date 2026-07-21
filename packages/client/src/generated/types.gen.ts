@@ -2734,9 +2734,13 @@ export type ManageFeedsData = {
          */
         entity_id?: number;
         /**
-         * Filter by status: active, paused, error
+         * Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses.
          */
-        status?: string;
+        status?: "active" | "paused";
+        /**
+         * Filter by runtime health, independent of lifecycle status. 'failing' = last sync failed or one or more consecutive failures; 'healthy' = otherwise.
+         */
+        health?: "healthy" | "failing";
         /**
          * Page size (default: 100)
          */
@@ -2836,9 +2840,9 @@ export type ManageFeedsData = {
          */
         feed_id: number;
         /**
-         * active, paused, error
+         * Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set.
          */
-        status?: string;
+        status?: "active" | "paused";
         display_name?: string;
         entity_ids?: Array<number>;
         config?: {
@@ -2922,6 +2926,7 @@ export type ManageFeedsResponses = {
           [key: string]: unknown;
         }>;
         total: number;
+        has_more: boolean;
         limit: number;
         offset: number;
       }

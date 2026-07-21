@@ -1,16 +1,28 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { getErrorMessage } from "@lobu/core";
 import { getLoginProviderScopes } from "../auth/config";
 import { type DbClient, type DbQuery, getDb } from "../db/client";
 import { probeMcpServer } from "../mcp-proxy/client";
+import { computeCodeHash } from "../utils/compiler-core";
+import {
+	getCatalogConnectorInstallability,
+	resolveFileSourcePath,
+} from "../utils/connector-catalog";
+import {
+	extractConnectorMetadata,
+	validateConnectorMetadata,
+} from "../utils/connector-compiler";
 import {
 	type ConnectorInstallResult,
+	connectorSourcePathToUri,
 	resolveConnectorInstallSource,
 	upsertConnectorDefinitionRecords,
 } from "../utils/connector-definition-install";
 import {
-	getCatalogConnectorInstallability,
-} from "../utils/connector-catalog";
-import { upsertBundledConnectorForOrg } from "../utils/ensure-connector-installed";
+	resolveConnectorCode,
+	upsertBundledConnectorForOrg,
+} from "../utils/ensure-connector-installed";
 import logger from "../utils/logger";
 import { listCatalogEntries } from "./load";
 
@@ -289,6 +301,358 @@ export async function installConnectorFromMcpUrl(params: {
 		updated,
 		authSchema: null,
 		mcpConfig: metadata.mcpConfig,
+	};
+}
+
+// ============================================
+// Connector source lifecycle (#2045)
+// ============================================
+//
+// Organization-local operations over an installed connector's source. All of
+// them key off the org's active `connector_definitions` row; the retained
+// `connector_versions` rows (one per key+version, kept forever by the install
+// upsert) are what make rollback a one-operation revert.
+
+export type ConnectorVersionSummary = {
+	version: string;
+	created_at: string;
+	has_source: boolean;
+	has_compiled: boolean;
+	active: boolean;
+};
+
+export type InstalledConnectorSource = {
+	connectorKey: string;
+	activeVersion: string;
+	version: string;
+	sourceCode: string | null;
+	sourcePath: string | null;
+	codeHash: string | null;
+	versions: ConnectorVersionSummary[];
+};
+
+function assertInstalled(
+	def: ScopedConnectorDefinitionRow | null,
+	connectorKey: string,
+): asserts def is ScopedConnectorDefinitionRow {
+	if (!def) {
+		throw new Error(
+			`Connector '${connectorKey}' is not installed in this organization. Use install_connector to install it first.`,
+		);
+	}
+}
+
+/**
+ * Read the installed source for a connector (org-local). Bundled connectors
+ * store only a `source_path` on their version row; for those the on-disk
+ * bundled source is read so the caller still sees the active code.
+ */
+export async function getInstalledConnectorSource(params: {
+	organizationId: string;
+	connectorKey: string;
+	version?: string;
+}): Promise<InstalledConnectorSource> {
+	const sql = getDb();
+	const def = await getScopedConnectorDefinition(params);
+	assertInstalled(def, params.connectorKey);
+
+	const rows = (await sql`
+    SELECT version, created_at, source_code, source_path, compiled_code_hash,
+           (compiled_code IS NOT NULL) AS has_compiled
+    FROM connector_versions
+    WHERE connector_key = ${params.connectorKey}
+    ORDER BY created_at DESC, id DESC
+  `) as unknown as Array<{
+		version: string;
+		created_at: string;
+		source_code: string | null;
+		source_path: string | null;
+		compiled_code_hash: string | null;
+		has_compiled: boolean;
+	}>;
+
+	const targetVersion = params.version ?? def.version;
+	const target = rows.find((row) => row.version === targetVersion);
+	if (!target) {
+		throw new Error(
+			`No retained version '${targetVersion}' for connector '${params.connectorKey}'. ` +
+				`Retained versions: ${rows.map((row) => row.version).join(", ") || "(none)"}.`,
+		);
+	}
+
+	let sourceCode = target.source_code;
+	if (sourceCode === null && target.source_path) {
+		// Bundled install: the version row points at on-disk source instead of
+		// carrying a copy. Best-effort read; a missing file just yields null.
+		const uri = connectorSourcePathToUri(target.source_path);
+		const filePath = uri ? resolveFileSourcePath(uri) : null;
+		if (filePath) {
+			sourceCode = await readFile(filePath, "utf-8").catch(() => null);
+		}
+	}
+
+	return {
+		connectorKey: params.connectorKey,
+		activeVersion: def.version,
+		version: target.version,
+		sourceCode,
+		sourcePath: target.source_path,
+		codeHash: target.compiled_code_hash,
+		versions: rows.map((row) => ({
+			version: row.version,
+			created_at: new Date(row.created_at).toISOString(),
+			has_source: row.source_code !== null || row.source_path !== null,
+			has_compiled: row.has_compiled,
+			active: row.version === def.version,
+		})),
+	};
+}
+
+export type ConnectorSourceValidation =
+	| {
+			valid: true;
+			connectorKey: string;
+			name: string;
+			version: string;
+			codeHash: string;
+			installed: boolean;
+			activeVersion: string | null;
+			versionExists: boolean;
+	  }
+	| { valid: false; diagnostics: string };
+
+/**
+ * Compile + extract + validate connector source WITHOUT persisting anything —
+ * the true preflight `install_connector`'s dry-run never was. Reuses the exact
+ * install pipeline (`resolveConnectorInstallSource`), so a `valid: true` here
+ * means `update_connector_source` with the same payload will compile.
+ */
+export async function validateConnectorSource(params: {
+	organizationId: string;
+	sourceCode: string;
+	compiled?: boolean;
+}): Promise<ConnectorSourceValidation> {
+	let resolved: Awaited<ReturnType<typeof resolveConnectorInstallSource>>;
+	try {
+		resolved = await resolveConnectorInstallSource({
+			sourceCode: params.sourceCode,
+			compiled: params.compiled,
+		});
+	} catch (error) {
+		return { valid: false, diagnostics: getErrorMessage(error) };
+	}
+
+	const sql = getDb();
+	const def = await getScopedConnectorDefinition({
+		organizationId: params.organizationId,
+		connectorKey: resolved.metadata.key,
+	});
+	const versionRows = await sql`
+    SELECT 1 FROM connector_versions
+    WHERE connector_key = ${resolved.metadata.key}
+      AND version = ${resolved.metadata.version}
+    LIMIT 1
+  `;
+
+	return {
+		valid: true,
+		connectorKey: resolved.metadata.key,
+		name: resolved.metadata.name,
+		version: resolved.metadata.version,
+		codeHash: resolved.compiledCodeHash,
+		installed: def !== null,
+		activeVersion: def?.version ?? null,
+		versionExists: versionRows.length > 0,
+	};
+}
+
+export type ConnectorVersionChange = {
+	connectorKey: string;
+	name: string;
+	previousVersion: string;
+	version: string;
+	codeHash: string;
+};
+
+/**
+ * Replace an installed connector's source (org-local), reusing the install
+ * persist path. Guards that make it safe where `install_connector` is not:
+ * the connector must already be installed, the source's key must match, an
+ * optional `expectedVersion` gives optimistic concurrency, and overwriting ANY
+ * retained version's row with different code is rejected (a changed source must
+ * bump `definition.version` so the prior code stays retained for rollback).
+ */
+export async function updateInstalledConnectorSource(params: {
+	organizationId: string;
+	connectorKey: string;
+	sourceCode: string;
+	compiled?: boolean;
+	expectedVersion?: string;
+}): Promise<ConnectorVersionChange> {
+	const sql = getDb();
+	const def = await getScopedConnectorDefinition(params);
+	assertInstalled(def, params.connectorKey);
+
+	if (params.expectedVersion && params.expectedVersion !== def.version) {
+		throw new Error(
+			`Version conflict: expected active version '${params.expectedVersion}' but '${def.version}' is active. ` +
+				`Re-read with get_connector_source and retry.`,
+		);
+	}
+
+	const resolved = await resolveConnectorInstallSource({
+		sourceCode: params.sourceCode,
+		compiled: params.compiled,
+	});
+	if (resolved.metadata.key !== params.connectorKey) {
+		throw new Error(
+			`source_code defines connector '${resolved.metadata.key}', not '${params.connectorKey}'. ` +
+				`Refusing to update (use install_connector to install a new connector).`,
+		);
+	}
+
+	// A retained version's stored code is immutable: overwriting ANY existing
+	// (key, version) row with different code destroys a rollback target. The
+	// guard must key on the version being WRITTEN (resolved.metadata.version) —
+	// not the active version — because updating to a retained *non-active*
+	// version silently clobbered its code otherwise (#2045 review finding).
+	const targetVersion = resolved.metadata.version;
+	const existing = (await sql`
+      SELECT compiled_code_hash, source_code FROM connector_versions
+      WHERE connector_key = ${params.connectorKey} AND version = ${targetVersion}
+      LIMIT 1
+    `) as unknown as Array<{
+		compiled_code_hash: string | null;
+		source_code: string | null;
+	}>;
+	const row = existing[0];
+	const sameCode =
+		!row ||
+		row.source_code === resolved.sourceCode ||
+		row.compiled_code_hash === resolved.compiledCodeHash;
+	if (!sameCode) {
+		throw new Error(
+			`Version '${targetVersion}' of '${params.connectorKey}' is already retained with different code. ` +
+				`Bump the version in the connector definition so the existing code stays retained for rollback_connector_version.`,
+		);
+	}
+
+	await upsertConnectorDefinitionRecords({
+		sql,
+		organizationId: params.organizationId,
+		metadata: resolved.metadata,
+		versionRecord: {
+			compiledCode: resolved.compiledCode,
+			compiledCodeHash: resolved.compiledCodeHash,
+			compileConfigHash: resolved.compileConfigHash,
+			sourceCode: resolved.sourceCode,
+			sourcePath: resolved.sourcePath,
+		},
+	});
+
+	logger.info(
+		{
+			connector_key: params.connectorKey,
+			previous_version: def.version,
+			version: resolved.metadata.version,
+		},
+		"Connector source updated",
+	);
+
+	return {
+		connectorKey: params.connectorKey,
+		name: resolved.metadata.name,
+		previousVersion: def.version,
+		version: resolved.metadata.version,
+		codeHash: resolved.compiledCodeHash,
+	};
+}
+
+/**
+ * Re-activate a retained prior version (org-local, one operation). The stored
+ * code is resolved through `resolveConnectorCode` (recompiles from retained
+ * source when the compile config drifted) and re-validated BEFORE the
+ * definition flips — a version whose code can no longer be resolved never
+ * becomes active. The retained version row itself is untouched (the persist
+ * upsert COALESCEs null fields).
+ */
+export async function rollbackConnectorVersion(params: {
+	organizationId: string;
+	connectorKey: string;
+	version: string;
+}): Promise<ConnectorVersionChange> {
+	const sql = getDb();
+	const def = await getScopedConnectorDefinition(params);
+	assertInstalled(def, params.connectorKey);
+
+	if (def.version === params.version) {
+		throw new Error(
+			`Version '${params.version}' is already the active version of '${params.connectorKey}'.`,
+		);
+	}
+
+	const rows = (await sql`
+    SELECT version, compiled_code, compile_config_hash
+    FROM connector_versions
+    WHERE connector_key = ${params.connectorKey} AND version = ${params.version}
+    LIMIT 1
+  `) as unknown as Array<{
+		version: string;
+		compiled_code: string | null;
+		compile_config_hash: string | null;
+	}>;
+	if (rows.length === 0) {
+		const retained = (await sql`
+      SELECT version FROM connector_versions
+      WHERE connector_key = ${params.connectorKey}
+      ORDER BY created_at DESC, id DESC
+    `) as unknown as Array<{ version: string }>;
+		throw new Error(
+			`No retained version '${params.version}' for connector '${params.connectorKey}'. ` +
+				`Retained versions: ${retained.map((row) => row.version).join(", ") || "(none)"}.`,
+		);
+	}
+
+	const code = await resolveConnectorCode(params.connectorKey, rows[0]);
+	const metadata = await extractConnectorMetadata(code);
+	validateConnectorMetadata(metadata);
+	if (metadata.key !== params.connectorKey || metadata.version !== params.version) {
+		throw new Error(
+			`Retained code for '${params.connectorKey}@${params.version}' resolved to ` +
+				`'${metadata.key}@${metadata.version}' — cannot roll back safely.`,
+		);
+	}
+
+	// All-null versionRecord: the ON CONFLICT upsert COALESCEs, so the retained
+	// row keeps its stored code — only the definition metadata flips.
+	await upsertConnectorDefinitionRecords({
+		sql,
+		organizationId: params.organizationId,
+		metadata,
+		versionRecord: {
+			compiledCode: null,
+			compiledCodeHash: null,
+			compileConfigHash: null,
+			sourceCode: null,
+			sourcePath: null,
+		},
+	});
+
+	logger.info(
+		{
+			connector_key: params.connectorKey,
+			previous_version: def.version,
+			version: params.version,
+		},
+		"Connector rolled back to retained version",
+	);
+
+	return {
+		connectorKey: params.connectorKey,
+		name: metadata.name,
+		previousVersion: def.version,
+		version: params.version,
+		codeHash: computeCodeHash(code),
 	};
 }
 

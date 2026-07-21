@@ -16,6 +16,10 @@
  * - test: Test connection credentials
  * - install_connector: Install connector from URL, inline source, or MCP server URL into the current org
  * - uninstall_connector: Archive the org-scoped connector definition
+ * - get_connector_source: Read an installed connector's source + retained version history (org-local)
+ * - validate_connector_source: Compile source and return diagnostics without persisting (preflight)
+ * - update_connector_source: Replace an installed connector's source with explicit versioning
+ * - rollback_connector_version: Re-activate a retained prior version in one operation
  * - toggle_connector_login: Toggle connector as a login provider
  * - update_connector_auth: Update reusable default auth profiles for an installed org connector
  */
@@ -28,12 +32,16 @@ import {
 import { handleSetChannelAbout } from "./manage_connections/handlers/channel-about";
 import { handleConnect } from "./manage_connections/handlers/connect";
 import {
+	handleGetConnectorSource,
 	handleInstallConnector,
+	handleRollbackConnectorVersion,
 	handleToggleConnectorLogin,
 	handleUninstallConnector,
 	handleUpdateConnectorAuth,
 	handleUpdateConnectorDefaultConfig,
 	handleUpdateConnectorDefaultRepairAgent,
+	handleUpdateConnectorSource,
+	handleValidateConnectorSource,
 } from "./manage_connections/handlers/connector-management";
 import {
 	handleApplyChatConnection,
@@ -50,10 +58,12 @@ import {
 	CreateAction,
 	DeleteAction,
 	GetAction,
+	GetConnectorSourceAction,
 	InstallConnectorAction,
 	ListAction,
 	ListConnectorGroupsAction,
 	ReauthenticateAction,
+	RollbackConnectorVersionAction,
 	SetChannelAboutAction,
 	TestAction,
 	ToggleConnectorLoginAction,
@@ -62,6 +72,8 @@ import {
 	UpdateConnectorAuthAction,
 	UpdateConnectorDefaultConfigAction,
 	UpdateConnectorDefaultRepairAgentAction,
+	UpdateConnectorSourceAction,
+	ValidateConnectorSourceAction,
 } from "./manage_connections/schemas";
 
 // ============================================
@@ -89,6 +101,22 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	uninstall_connector: action(
 		UninstallConnectorAction,
 		handleUninstallConnector,
+	),
+	get_connector_source: action(
+		GetConnectorSourceAction,
+		handleGetConnectorSource,
+	),
+	validate_connector_source: action(
+		ValidateConnectorSourceAction,
+		handleValidateConnectorSource,
+	),
+	update_connector_source: action(
+		UpdateConnectorSourceAction,
+		handleUpdateConnectorSource,
+	),
+	rollback_connector_version: action(
+		RollbackConnectorVersionAction,
+		handleRollbackConnectorVersion,
 	),
 	toggle_connector_login: action(
 		ToggleConnectorLoginAction,

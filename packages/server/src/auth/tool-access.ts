@@ -85,6 +85,13 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"test",
 		"install_connector",
 		"uninstall_connector",
+		// Connector source lifecycle (#2045): reading installed source, compiling
+		// arbitrary source server-side, replacing a definition, and reverting it
+		// are all connector administration.
+		"get_connector_source",
+		"validate_connector_source",
+		"update_connector_source",
+		"rollback_connector_version",
 		"toggle_connector_login",
 		"update_connector_auth",
 		"update_connector_default_config",

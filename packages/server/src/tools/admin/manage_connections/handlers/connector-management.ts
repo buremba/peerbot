@@ -1,6 +1,8 @@
 /**
  * Connector management action handlers:
- * install_connector, uninstall_connector, toggle_connector_login,
+ * install_connector, uninstall_connector, get_connector_source,
+ * validate_connector_source, update_connector_source,
+ * rollback_connector_version, toggle_connector_login,
  * update_connector_auth, update_connector_default_config,
  * update_connector_default_repair_agent,
  */
@@ -12,12 +14,16 @@ import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import logger from "../../../../utils/logger";
 import type { ToolContext } from "../../../registry";
 import {
+	getInstalledConnectorSource,
 	installCatalogConnectorDefinition,
 	installConnectorDefinitionFromSource,
 	installConnectorFromMcpUrl,
+	rollbackConnectorVersion,
 	toggleConnectorLoginEnabled,
 	uninstallConnectorDefinition,
 	updateActiveConnectorDefinitionField,
+	updateInstalledConnectorSource,
+	validateConnectorSource,
 } from "../../../../catalog/connector-definitions";
 import {
 	maybeUpsertAuthAfterInstall,
@@ -141,6 +147,147 @@ export async function handleUninstallConnector(
 		uninstalled: true,
 		connector_key: args.connector_key,
 	};
+}
+
+// ============================================
+// Connector source lifecycle (#2045)
+// ============================================
+
+export async function handleGetConnectorSource(
+	args: Extract<ConnectionsArgs, { action: "get_connector_source" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	try {
+		const source = await getInstalledConnectorSource({
+			organizationId: ctx.organizationId,
+			connectorKey: args.connector_key,
+			version: args.version,
+		});
+		return {
+			action: "get_connector_source",
+			connector_key: source.connectorKey,
+			active_version: source.activeVersion,
+			version: source.version,
+			source_code: source.sourceCode,
+			source_path: source.sourcePath,
+			code_hash: source.codeHash,
+			versions: source.versions,
+		};
+	} catch (error) {
+		return { error: getErrorMessage(error) };
+	}
+}
+
+export async function handleValidateConnectorSource(
+	args: Extract<ConnectionsArgs, { action: "validate_connector_source" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	const result = await validateConnectorSource({
+		organizationId: ctx.organizationId,
+		sourceCode: args.source_code,
+		compiled: args.compiled,
+	});
+	if (!result.valid) {
+		// A failed compile is the preflight WORKING, not a tool error — return it
+		// as a value so run_sdk callers can read the diagnostics.
+		return {
+			action: "validate_connector_source",
+			valid: false,
+			diagnostics: result.diagnostics,
+		};
+	}
+	return {
+		action: "validate_connector_source",
+		valid: true,
+		connector_key: result.connectorKey,
+		name: result.name,
+		version: result.version,
+		code_hash: result.codeHash,
+		installed: result.installed,
+		active_version: result.activeVersion,
+		version_exists: result.versionExists,
+	};
+}
+
+export async function handleUpdateConnectorSource(
+	args: Extract<ConnectionsArgs, { action: "update_connector_source" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	try {
+		const updated = await updateInstalledConnectorSource({
+			organizationId: ctx.organizationId,
+			connectorKey: args.connector_key,
+			sourceCode: args.source_code,
+			compiled: args.compiled,
+			expectedVersion: args.expected_version,
+		});
+
+		recordToolConfigChange(ctx, {
+			resourceKind: "connector-definition",
+			resourceId: updated.connectorKey,
+			op: "updated",
+			summary: `Connector '${updated.connectorKey}' source updated (v${updated.previousVersion} → v${updated.version})`,
+			// key/version/hash only — never compiled code.
+			state: {
+				connector_key: updated.connectorKey,
+				previous_version: updated.previousVersion,
+				version: updated.version,
+				code_hash: updated.codeHash,
+			},
+			changedFields: ["source_code", "version"],
+		});
+
+		return {
+			action: "update_connector_source",
+			success: true,
+			connector_key: updated.connectorKey,
+			name: updated.name,
+			previous_version: updated.previousVersion,
+			version: updated.version,
+			code_hash: updated.codeHash,
+		};
+	} catch (error) {
+		return { error: `Update failed: ${getErrorMessage(error)}` };
+	}
+}
+
+export async function handleRollbackConnectorVersion(
+	args: Extract<ConnectionsArgs, { action: "rollback_connector_version" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	try {
+		const rolled = await rollbackConnectorVersion({
+			organizationId: ctx.organizationId,
+			connectorKey: args.connector_key,
+			version: args.version,
+		});
+
+		recordToolConfigChange(ctx, {
+			resourceKind: "connector-definition",
+			resourceId: rolled.connectorKey,
+			op: "updated",
+			summary: `Connector '${rolled.connectorKey}' rolled back (v${rolled.previousVersion} → v${rolled.version})`,
+			state: {
+				connector_key: rolled.connectorKey,
+				previous_version: rolled.previousVersion,
+				version: rolled.version,
+				code_hash: rolled.codeHash,
+			},
+			changedFields: ["version"],
+		});
+
+		return {
+			action: "rollback_connector_version",
+			success: true,
+			connector_key: rolled.connectorKey,
+			name: rolled.name,
+			previous_version: rolled.previousVersion,
+			version: rolled.version,
+			code_hash: rolled.codeHash,
+		};
+	} catch (error) {
+		return { error: `Rollback failed: ${getErrorMessage(error)}` };
+	}
 }
 
 // ============================================

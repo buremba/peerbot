@@ -1,6 +1,48 @@
 import type { DbClient } from '../db/client';
 import { slugToRuntimeConnectionId } from '../lobu/stores/connections-projection';
 import type { WatcherSource } from '../types/watchers';
+import { executeDataSources } from '../utils/execute-data-sources';
+
+/**
+ * Validate a custom-SQL Behavior source at save time. Runs the SAME scoped
+ * query the reader uses, wrapped in `SELECT ... LIMIT 0` so Postgres plans and
+ * type-checks it (undefined column → 42703, syntax error, admin-table access)
+ * without materializing any rows, and throws on failure. A structurally valid
+ * query that merely matches 0 rows passes.
+ *
+ * `entityIds` mirrors what the runtime reader supplies (the Behavior's own
+ * entity_ids). It is passed through so `{{entityId}}` substitutes exactly as it
+ * will at run time: an entity-bound Behavior validates its `{{entityId}}` source
+ * cleanly, while an ORG-SCOPED Behavior (no entity_ids) leaves `{{entityId}}`
+ * unresolved and is rejected here — the same source would fail on every runtime
+ * read, so catching it at save is the point. Note: an unknown TABLE is rewritten
+ * by the scoped-query layer into a valid entity-type-slug CTE, so it is NOT
+ * caught here — only bad columns / syntax / restricted tables / unresolved
+ * template variables are.
+ */
+async function validateCustomSqlSource(
+  sql: DbClient,
+  organizationId: string,
+  entityIds: number[],
+  source: WatcherSource
+): Promise<void> {
+  await executeDataSources(
+    { [source.name]: { query: source.query } },
+    {
+      organizationId,
+      // Only supply entity ids the Behavior actually has, so {{entityId}} on an
+      // org-scoped Behavior stays unresolved and fails validation (matching the
+      // runtime). {{query.*}} substitutes to NULL with an empty query map.
+      entityIds: entityIds.length > 0 ? entityIds : undefined,
+      query: {},
+    },
+    sql,
+    {
+      throwOnError: true,
+      wrapQuery: (scopedSql) => `SELECT * FROM (${scopedSql}) AS _validate LIMIT 0`,
+    }
+  );
+}
 
 // 'channel' is a chat-transcript source (streaming feed → channel_messages). It
 // is prompt CONTEXT, not events: its rows must never be signed as event
@@ -421,11 +463,20 @@ async function compileRefToQuery(
 export async function resolveWatcherSourcesForSave(
   sql: DbClient,
   organizationId: string,
-  sources: WatcherSource[]
+  sources: WatcherSource[],
+  // The Behavior's own entity_ids (empty for an org-scoped Behavior). Threaded
+  // into custom-SQL validation so {{entityId}} resolves exactly as at run time.
+  entityIds: number[] = []
 ): Promise<void> {
   for (const source of sources) {
     const ref = parseWatcherSourceRef(source.query);
-    if (!ref) continue; // custom SQL — id projection is enforced by the caller's config validation
+    if (!ref) {
+      // Custom SQL — validate it (see validateCustomSqlSource for the mechanism
+      // and its limits) so a typo'd source fails here instead of silently
+      // returning 0 rows forever at read time.
+      await validateCustomSqlSource(sql, organizationId, entityIds, source);
+      continue;
+    }
 
     if (ref.type === 'entity') {
       const exists = await sql<{ id: number }>`

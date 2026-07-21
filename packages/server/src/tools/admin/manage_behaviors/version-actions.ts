@@ -3,7 +3,7 @@
  *   create_version, upgrade, get_versions, get_version_details
  */
 
-import { getDb } from '../../../db/client';
+import { getDb, parsePgNumberArray } from '../../../db/client';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
@@ -56,7 +56,7 @@ export async function handleCreateVersion(
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
-           i.schedule, i.timezone, i.triggers
+           i.entity_ids, i.schedule, i.timezone, i.triggers
     FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
@@ -129,12 +129,18 @@ export async function handleCreateVersion(
   // the worker's free-form summary fallback.
   assertWatcherVersionConfigValid({ prompt, classifiers, sources });
 
-  // Resolve @ref sources against the org now (typo → 422, not silent empty
-  // context at read_knowledge). The watcher row carries the org; custom-SQL
-  // sources are skipped (id projection is enforced by the config check above).
+  // Resolve every source against the org now (broken source → 422, not silent
+  // empty context at read_knowledge): @refs are existence-checked, custom SQL is
+  // planned (LIMIT 0) for bad columns/syntax. The watcher row carries the org +
+  // entity_ids so {{entityId}} validates as it runs.
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
   if (versionOrganizationId) {
-    await assertWatcherSourcesResolve(sql, versionOrganizationId, sources);
+    await assertWatcherSourcesResolve(
+      sql,
+      versionOrganizationId,
+      sources,
+      parsePgNumberArray(watcherRows[0].entity_ids),
+    );
   }
 
   const triggerWrite = resolveBehaviorTriggerWrite({

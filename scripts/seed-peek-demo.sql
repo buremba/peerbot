@@ -128,7 +128,7 @@ WITH ev AS (
     'Approval needed: send digest to #finance',
     'Behavior "Daily spend digest" wants to post a summary to the #finance channel. Review the proposed message before it sends.',
     'text', 'content', 'approval', 'pending',
-    '{"seed":"peek","notification_type":"action_approval_needed","resource_type":"run","resource_url":"/local-install/memory?view=events&run_ids=9001"}'::jsonb,
+    '{"seed":"peek","notification_type":"action_approval_needed","resource_type":"run","resource_url":"/local-install/memory?view=events&run_ids=976"}'::jsonb,
     now(), now(), :'USER'
   ) RETURNING id
 )

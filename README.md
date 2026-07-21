@@ -8,7 +8,7 @@ https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
 ## Two ways in
 
-### 1. Full agent — Slack, Telegram, watchers, connectors
+### 1. Full agent — Slack, Telegram, behaviors, connectors
 
 Scaffold and run locally with the CLI. Lobu boots as a single Node process with zero-config embedded Postgres by default (or bring your own — pgvector required — via `DATABASE_URL`). `lobu run` opens the web UI on `:8787` and can wire Slack via the hosted bot or your own app.
 
@@ -63,15 +63,15 @@ flowchart LR
 
 Most agent stacks treat MCP as the memory: every turn, the agent calls GitHub, Slack, and CRM tools to reconstruct what happened. That knowledge stays siloed in the session and disappears when the chat ends.
 
-Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into one durable, append-only event log. Watchers and chat agents read the same org-scoped knowledge graph — typed entities, relationships, searchable events — so anyone can resume where the organization left off, not where one conversation left off.
+Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into one durable, append-only event log. Behaviors and chat agents read the same org-scoped knowledge graph — typed entities, relationships, searchable events — so anyone can resume where the organization left off, not where one conversation left off.
 
-### Memory — ingest, entities, watchers
+### Memory — ingest, entities, behaviors
 
 **Ingest.** [Connectors](https://lobu.ai/sdks/connectors/) pull on a schedule; webhooks and the [REST API](https://lobu.ai/sdks/rest-api/) push. Stripe charges, GitHub PRs, form submissions, and connector polls all land as rows in the same log — a stable record of what happened in the world, not something the agent has to re-fetch through MCP every turn.
 
 **Entities.** You define the schema (`Company`, `Project`, `Incident`, …) in `lobu.config.ts`. Events attach to entity instances (`Company:Acme`) and build a live knowledge graph the whole org shares. Corrections supersede old facts; nothing is deleted, so provenance and time-travel stay intact.
 
-**Watchers.** Standing goals on a cron or tight interval: read new rows in the log (including webhook-fed events like `pull_request.opened`), extract structured memory onto dynamic entities, and optionally run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat.
+**Behaviors.** Standing goals on a cron or tight interval: read new rows in the log (including webhook-fed events like `pull_request.opened`), extract structured memory onto dynamic entities, and optionally run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat.
 
 Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/sdks/connectors/) · [Reactions](https://lobu.ai/sdks/reactions/)
 
@@ -99,7 +99,7 @@ Lobu is the **infrastructure layer** for autonomous agents. Frameworks like Lang
 | Open source / self-host | Yes | No | Yes |
 | Model choice | 16 providers | Claude only | Per setup |
 | Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API, MCP | Slack (beta) | [15+ chat platforms](https://openclaw.ai/integrations) |
-| Custom connectors / watchers | Yes (`lobu.config.ts`) | Admin-provisioned tools | Skills + local setup |
+| Custom connectors / behaviors | Yes (`lobu.config.ts`) | Admin-provisioned tools | Skills + local setup |
 | Secrets & network | Gateway proxy, domain-filtered egress | Managed | Direct from agent, no built-in isolation |
 
 ## Agent configuration

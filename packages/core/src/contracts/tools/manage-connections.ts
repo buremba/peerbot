@@ -754,12 +754,13 @@ export const ManageConnectionsResultSchema = Type.Union([
       Type.String({
         description:
           "Structured error code when status is error/warning, e.g. AUTH_MISSING / AUTH_INVALID.",
-      }),
+      })
     ),
     retryable: Type.Optional(
       Type.Boolean({
-        description: "Whether re-running the test may succeed. Advisory; not auto-retried.",
-      }),
+        description:
+          "Whether re-running the test may succeed. Advisory; not auto-retried.",
+      })
     ),
   }),
   Type.Object({

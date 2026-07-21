@@ -26,6 +26,7 @@ import {
 } from '../utils/org-guidance';
 import { ensureMemberEntityType } from '../utils/member-entity-type';
 import { requireWriteAccess } from '../utils/organization-access';
+import { validateTemplateHandlers } from '../utils/validate-json-template';
 import { trackWatcherReaction } from '../utils/watcher-reactions';
 import { isSystemContext } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
@@ -240,6 +241,15 @@ async function saveContentImpl(
   }
   if (payloadType === 'json_template' && !args.payload_template) {
     throw new ToolUserError("payload_template is required when payload_type is 'json_template'");
+  }
+  // Events retain their existing permissive template shape, but handler values
+  // must use the renderer's action-binding syntax.
+  if (payloadType === 'json_template') {
+    try {
+      validateTemplateHandlers(args.payload_template);
+    } catch (err) {
+      throw new ToolUserError((err as Error).message, 422);
+    }
   }
 
   // 1. Require write access for each entity

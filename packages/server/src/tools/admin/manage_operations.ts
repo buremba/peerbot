@@ -690,6 +690,12 @@ function buildAvailableOperation(args: {
 		if (
 			publicTarget.executable &&
 			requiredScopes.length > 0 &&
+			// Only gate when we actually recorded the grant's scopes. Connections
+			// authorized before scope recording (pre-#1901) have an empty
+			// granted_scopes even when the token covers the scope — treating
+			// "unknown" as "missing" would falsely block a working connection.
+			// Absence of data is not evidence of a missing scope.
+			granted_scopes.length > 0 &&
 			!hasAllScopes(granted_scopes, requiredScopes)
 		) {
 			const missing = requiredScopes.filter(

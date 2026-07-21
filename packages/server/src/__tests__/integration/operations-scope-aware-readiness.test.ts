@@ -196,4 +196,15 @@ describe("operation readiness respects OAuth scopes", () => {
 		expect(op.executable).toBe(true);
 		expect(op.readiness).toBe("ready");
 	});
+
+	it("does not gate a legacy connection whose grant recorded no scopes", async () => {
+		// Connections authorized before scope recording (pre-#1901) have an empty
+		// granted_scopes even when the underlying token covers the write scope.
+		// Absence of recorded scopes is unknown, not missing — the gate must not
+		// falsely block a working connection.
+		const legacyConnId = await seedScopedConnection([]);
+		const op = await listOp("create_event", legacyConnId);
+		expect(op.readiness).toBe("ready");
+		expect(op.executable).toBe(true);
+	});
 });

@@ -196,6 +196,17 @@ export async function handleList(
 
 		const { organization_id: _orgId, ...rest } = watcher;
 
+		// Old persisted run-error rows can carry the internal `client.watchers.*`
+		// namespace (the SDK alias was renamed watchers→behaviors; forward-path
+		// templates already emit `client.behaviors.*`, but archived error_message
+		// rows still hold the legacy string). Rewrite it at read time so the
+		// public projection never surfaces the internal vocabulary.
+		if (typeof (rest as Record<string, unknown>).behavior_run_error === "string") {
+			(rest as Record<string, unknown>).behavior_run_error = (
+				(rest as Record<string, unknown>).behavior_run_error as string
+			).replaceAll("client.watchers.", "client.behaviors.");
+		}
+
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;
 			delete (rest as Record<string, unknown>).classifiers;
@@ -223,7 +234,12 @@ export async function handleList(
 			nextRunAt: watcher.next_run_at,
 			latestRunStatus: watcher.behavior_run_status,
 			latestRunCreatedAt: watcher.behavior_run_created_at,
-			latestRunError: watcher.behavior_run_error,
+			// Use the vocab-rewritten error so last_scheduling_error also carries the
+			// public `client.behaviors.*` namespace, not the legacy internal one.
+			latestRunError: (rest as Record<string, unknown>).behavior_run_error as
+				| string
+				| null
+				| undefined,
 		});
 
 		return {

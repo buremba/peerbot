@@ -189,6 +189,43 @@ describe("behavior health surfacing (#2033)", () => {
     expect(row).not.toHaveProperty("source_watcher_id");
   });
 
+  it("3.4: legacy client.watchers.* in a run error is rewritten to client.behaviors.*", async () => {
+    const { behaviorId, ctx } = await createScheduledBehavior();
+    const sql = getTestDb();
+    await sql`
+      UPDATE watchers
+      SET next_run_at = current_timestamp + interval '5 minutes'
+      WHERE id = ${behaviorId}
+    `;
+    // An archived run error persisted with the pre-rename internal namespace.
+    await sql`
+      INSERT INTO runs
+        (organization_id, run_type, watcher_id, status, approval_status,
+         error_message, created_at, completed_at)
+      VALUES
+        (${ctx.organizationId}, 'behavior', ${behaviorId}, 'failed', 'auto',
+         'Agent never called client.watchers.completeWindow()',
+         current_timestamp - interval '2 minutes',
+         current_timestamp - interval '1 minute')
+    `;
+
+    const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
+    if (result.action !== "list") throw new Error("expected list result");
+    const row = result.behaviors.find(
+      (b) => String((b as { behavior_id?: unknown }).behavior_id) === String(behaviorId),
+    ) as
+      | { behavior_run_error?: string | null; last_scheduling_error?: string | null }
+      | undefined;
+    // Both the raw error field and the health-echoed error carry the public vocab.
+    expect(row?.behavior_run_error).toBe(
+      "Agent never called client.behaviors.completeWindow()",
+    );
+    expect(row?.last_scheduling_error).toBe(
+      "Agent never called client.behaviors.completeWindow()",
+    );
+    expect(JSON.stringify(row)).not.toContain("client.watchers.");
+  });
+
   it("3.2: getSchedulerHealth surfaces an overdue behavior in issues[]", async () => {
     const { behaviorId } = await createScheduledBehavior();
     const sql = getTestDb();

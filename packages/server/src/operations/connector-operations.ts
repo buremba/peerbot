@@ -91,6 +91,15 @@ function normalizeAnnotations(raw: unknown): OperationAnnotations | undefined {
 	return Object.keys(annotations).length > 0 ? annotations : undefined;
 }
 
+function normalizeRequiredScopes(raw: unknown): string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const scopes = raw
+		.filter((scope): scope is string => typeof scope === "string")
+		.map((scope) => scope.trim())
+		.filter(Boolean);
+	return scopes.length > 0 ? scopes : undefined;
+}
+
 function operationIdFromPath(method: string, pathTemplate: string): string {
 	return `${method}_${pathTemplate.replace(/[{}]/g, "").replace(/[^a-zA-Z0-9]+/g, "_")}`.replace(
 		/^_+|_+$/g,
@@ -432,6 +441,7 @@ function getLocalActionOperations(
 		kind: getLocalActionKind(def),
 		backend: "local_action",
 		requires_approval: def.requiresApproval ?? false,
+		required_scopes: normalizeRequiredScopes(def.requiredScopes),
 		annotations:
 			normalizeAnnotations(def.annotations) ??
 			((def.requiresApproval ?? false) ? { destructiveHint: true } : undefined),

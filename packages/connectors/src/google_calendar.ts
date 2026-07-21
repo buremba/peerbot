@@ -143,6 +143,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Create Event',
         description: 'Create a new event on Google Calendar.',
         requiresApproval: true,
+        requiredScopes: ['https://www.googleapis.com/auth/calendar.events'],
         inputSchema: {
           type: 'object',
           required: ['summary', 'start', 'end'],
@@ -168,6 +169,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Update Event',
         description: 'Update an existing calendar event.',
         requiresApproval: true,
+        requiredScopes: ['https://www.googleapis.com/auth/calendar.events'],
         inputSchema: {
           type: 'object',
           required: ['event_id'],
@@ -190,6 +192,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         name: 'Delete Event',
         description: 'Delete/cancel an event.',
         requiresApproval: true,
+        requiredScopes: ['https://www.googleapis.com/auth/calendar.events'],
         inputSchema: {
           type: 'object',
           required: ['event_id'],

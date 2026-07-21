@@ -597,6 +597,11 @@ export interface ActionDefinition {
   requiresApproval: boolean;
 	/** Semantic effect used by operation discovery and policy. Defaults to write. */
 	kind?: 'read' | 'write';
+	/**
+	 * OAuth scopes this action needs beyond `authSchema.requiredScopes`.
+	 * Readiness is gated when the connection's recorded grant lacks them.
+	 */
+	requiredScopes?: string[];
   /** MCP tool annotations for client-side confirmation UX */
   annotations?: {
 		readOnlyHint?: boolean;

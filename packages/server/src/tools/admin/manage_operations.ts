@@ -24,6 +24,11 @@ import {
 	RejectBatchAction,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { Static } from "@sinclair/typebox";
+import {
+	hasAllScopes,
+	readGrantedScopesFromAuthData,
+	readRequestedScopesFromAuthData,
+} from "../../auth/oauth/scopes";
 import { compileConnectionRowVisibility } from "../../authz/connection-visibility";
 import {
 	agentExistsInOrg,
@@ -136,6 +141,10 @@ type ExecutionTarget = {
 type InternalExecutionTarget = ExecutionTarget & {
 	config: Record<string, unknown> | null;
 	auth_profile_kind: string | null;
+	auth_profile_slug: string | null;
+	granted_scopes: string[];
+	granted_scopes_known: boolean;
+	requested_scopes: string[];
 };
 
 type OperationTargetRow = {
@@ -149,6 +158,8 @@ type OperationTargetRow = {
 	device_online: boolean;
 	device_bound: boolean;
 	auth_profile_kind: string | null;
+	auth_profile_slug: string | null;
+	auth_data: Record<string, unknown> | null;
 };
 
 /**
@@ -419,6 +430,10 @@ function executionTargetFromRow(
 		display_name: row.display_name ?? row.slug,
 		config: row.config,
 		auth_profile_kind: row.auth_profile_kind,
+		auth_profile_slug: row.auth_profile_slug,
+		granted_scopes: readGrantedScopesFromAuthData(row.auth_data),
+		granted_scopes_known: Object.hasOwn(row.auth_data ?? {}, "granted_scopes"),
+		requested_scopes: readRequestedScopesFromAuthData(row.auth_data),
 	};
 	if (row.status !== "active") {
 		return {
@@ -469,6 +484,9 @@ function operationReadinessReason(
 	}
 	if (readiness === "device_offline") {
 		return "Every visible active device-bound connection is offline.";
+	}
+	if (readiness === "scope_upgrade_required") {
+		return "This operation needs OAuth scopes the connection has not granted. Reauthorize to grant them.";
 	}
 	if (readiness === "disabled") {
 		return "This operation is disabled on every visible connection.";
@@ -529,6 +547,9 @@ function buildOperationNextAction(args: {
 	remediationTarget: ExecutionTarget | undefined;
 	remediationConfig: Record<string, unknown> | null | undefined;
 	remediationAuthKind: string | null | undefined;
+	remediationAuthProfileSlug: string | null | undefined;
+	missingScopes: string[];
+	requestedScopes: string[];
 	viewUrl: string | undefined;
 }): Record<string, unknown> {
 	const {
@@ -538,6 +559,9 @@ function buildOperationNextAction(args: {
 		remediationTarget,
 		remediationConfig,
 		remediationAuthKind,
+		remediationAuthProfileSlug,
+		missingScopes,
+		requestedScopes,
 		viewUrl,
 	} = args;
 	if (readyTarget) {
@@ -575,6 +599,24 @@ function buildOperationNextAction(args: {
 			action: "connect",
 			sdk_method: "connections.connect",
 			arguments: [{ connector_key: operation.connector_key }],
+		};
+	}
+	if (readiness === "scope_upgrade_required") {
+		return {
+			action: "reauthorize",
+			sdk_method: "authProfiles.update",
+			connection_id: remediationTarget?.connection_id,
+			requested_scopes: missingScopes,
+			arguments: [
+				{
+					auth_profile_slug: remediationAuthProfileSlug,
+					requested_scopes: Array.from(
+						new Set([...requestedScopes, ...missingScopes]),
+					),
+					reconnect: true,
+				},
+			],
+			...(viewUrl ? { view_url: viewUrl } : {}),
 		};
 	}
 	if (readiness === "disabled") {
@@ -641,21 +683,44 @@ function buildAvailableOperation(args: {
 	const { operation, internalTargets, includeInputSchema, viewUrl } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
+	const requiredScopes = operation.required_scopes ?? [];
 	const targets = internalTargets.map((target): ExecutionTarget => {
 		const {
 			config,
 			auth_profile_kind: _authProfileKind,
+			auth_profile_slug: _authProfileSlug,
+			granted_scopes,
+			granted_scopes_known,
+			requested_scopes: _requestedScopes,
 			...publicTarget
 		} = target;
-		if (resolveActionMode(operation, config) !== "disabled") {
-			return publicTarget;
+		if (resolveActionMode(operation, config) === "disabled") {
+			return {
+				...publicTarget,
+				status: "disabled",
+				executable: false,
+				reason: "This operation is disabled on the connection.",
+			};
 		}
-		return {
-			...publicTarget,
-			status: "disabled",
-			executable: false,
-			reason: "This operation is disabled on the connection.",
-		};
+		if (
+			publicTarget.executable &&
+			requiredScopes.length > 0 &&
+			// Older auth profiles may not record granted_scopes. Absence is unknown;
+			// a recorded empty grant is known and must still fail the scope gate.
+			granted_scopes_known &&
+			!hasAllScopes(granted_scopes, requiredScopes)
+		) {
+			const missing = requiredScopes.filter(
+				(scope) => !hasAllScopes(granted_scopes, [scope]),
+			);
+			return {
+				...publicTarget,
+				status: "scope_upgrade_required",
+				executable: false,
+				reason: `Missing OAuth scope(s): ${missing.join(", ")}. Reauthorize the connection to grant them.`,
+			};
+		}
+		return publicTarget;
 	});
 	// Capability gate (#2033 item 2): a local_action op whose compiled runtime
 	// does NOT override execute() is declared in the catalog but would throw
@@ -672,6 +737,15 @@ function buildAvailableOperation(args: {
 	const remediationInternalTarget = internalTargets.find(
 		(target) => target.connection_id === remediationTarget?.connection_id,
 	);
+	const missingScopes =
+		readiness === "scope_upgrade_required"
+			? requiredScopes.filter(
+					(scope) =>
+						!hasAllScopes(remediationInternalTarget?.granted_scopes ?? [], [
+							scope,
+						]),
+				)
+			: [];
 	return {
 		...(publicOperation as AvailableOperation),
 		...(includeInputSchema ? {} : { input_schema: undefined }),
@@ -687,6 +761,10 @@ function buildAvailableOperation(args: {
 			remediationTarget,
 			remediationConfig: remediationInternalTarget?.config,
 			remediationAuthKind: remediationInternalTarget?.auth_profile_kind,
+			remediationAuthProfileSlug:
+				remediationInternalTarget?.auth_profile_slug,
+			missingScopes,
+			requestedScopes: remediationInternalTarget?.requested_scopes ?? [],
 			viewUrl,
 		}),
 	};
@@ -712,6 +790,8 @@ async function loadVisibleOperationTargets(
 		        c.config,
 		        c.device_worker_id,
 		        ap.profile_kind AS auth_profile_kind,
+		        ap.slug AS auth_profile_slug,
+		        ap.auth_data AS auth_data,
 		        COALESCE(dw.last_seen_at > now() - interval '20 minutes', false) AS device_online,
 		        (c.device_worker_id IS NOT NULL OR latest.runtime IS NOT NULL) AS device_bound
 		 FROM connections c

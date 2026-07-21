@@ -60,6 +60,12 @@ interface SubprocessDiagnostics {
   exitSignal: string | null;
   outputTail: string;
   exitReason: SubprocessExitReason;
+  /**
+   * Upstream HTTP status when the connector threw the SDK's HttpStatusError, so
+   * the gateway can classify 429/5xx honestly rather than by keyword-matching the
+   * redacted message (lobu#2051 Item 2). Undefined for non-HTTP failures.
+   */
+  httpStatus?: number;
 }
 
 export class SubprocessError extends Error implements SubprocessDiagnostics {
@@ -67,6 +73,7 @@ export class SubprocessError extends Error implements SubprocessDiagnostics {
   exitSignal: string | null;
   outputTail: string;
   exitReason: SubprocessExitReason;
+  httpStatus?: number;
 
   constructor(
     message: string,
@@ -79,6 +86,7 @@ export class SubprocessError extends Error implements SubprocessDiagnostics {
     this.exitSignal = diagnostics.exitSignal;
     this.outputTail = diagnostics.outputTail;
     this.exitReason = diagnostics.exitReason;
+    this.httpStatus = diagnostics.httpStatus;
   }
 }
 
@@ -437,11 +445,17 @@ export class SubprocessExecutor implements SyncExecutor {
         if (msg.type === 'error') {
           terminalMessageReceived = true;
           const tail = redactOutput(combinedTail());
+          // A numeric HTTP status (from the SDK's HttpStatusError) is not
+          // secret-bearing, so it rides alongside the redacted message and lets
+          // the gateway classify 429/5xx honestly (lobu#2051 Item 2).
+          const ipcHttpStatus =
+            typeof msg.error?.httpStatus === 'number' ? msg.error.httpStatus : undefined;
           const diagnostics: SubprocessDiagnostics = {
             exitCode: null,
             exitSignal: null,
             outputTail: tail,
             exitReason: 'error_message',
+            httpStatus: ipcHttpStatus,
           };
           // Connector code is allowed to throw with the offending value
           // embedded — `throw new Error('failed with api_key=sk_live_…')`.

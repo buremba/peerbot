@@ -11,6 +11,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
+import { extractHttpStatus } from './http-status.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
 const EVENT_CHUNK_SIZE = 100;
@@ -403,6 +404,7 @@ function installUncaughtHandlers(): void {
     handled = true;
     const e =
       err instanceof Error ? err : new Error(typeof err === 'string' ? err : safeStringify(err));
+    const httpStatus = extractHttpStatus(err);
     try {
       await sendIPC({
         type: 'error',
@@ -410,6 +412,11 @@ function installUncaughtHandlers(): void {
           message: e.message,
           stack: e.stack,
           name: e.name,
+          // Propagate a structured HTTP status (e.g. from the SDK's HttpStatusError)
+          // so the gateway can classify 429/5xx honestly instead of re-parsing the
+          // redacted message string (lobu#2051 Item 2). A plain number carries no
+          // secret, so it survives redaction unmodified.
+          ...(httpStatus !== undefined ? { httpStatus } : {}),
         },
       });
     } catch {
@@ -539,6 +546,9 @@ async function main() {
           message: error.message,
           stack: error.stack,
           name: error.name,
+          ...(extractHttpStatus(error) !== undefined
+            ? { httpStatus: extractHttpStatus(error) }
+            : {}),
         },
       });
     } finally {

@@ -318,6 +318,18 @@ function createServerForContext(
       }
       return { content: [{ type: 'text' as const, text }] };
     } catch (error: any) {
+      // Surface the structured taxonomy (lobu#2051 Item 2) when the thrown error
+      // carries a code, so the client/agent gets a stable code + retryability +
+      // per-call correlation id alongside the human message.
+      const code = error?.code as string | undefined;
+      const structuredError =
+        typeof code === 'string' && typeof error?.retryable === 'boolean'
+          ? {
+              code,
+              retryable: error.retryable as boolean,
+              ...(error.callId ? { call_id: error.callId as string } : {}),
+            }
+          : undefined;
       return {
         content: [
           {
@@ -326,6 +338,7 @@ function createServerForContext(
           },
         ],
         isError: true,
+        ...(structuredError ? { structuredContent: { error: structuredError } } : {}),
       };
     }
   });

@@ -20,7 +20,7 @@ import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole } from '../access-control';
-import { getErrorMessage } from "@lobu/core";
+import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 
 export const QuerySqlSchema = Type.Object({
@@ -120,6 +120,10 @@ interface QuerySqlResult {
   execution_time_ms: number;
   coverage?: QuerySqlCoverage;
   error?: string;
+  /** Structured error code (lobu#2051 Item 2), set alongside `error`. */
+  error_code?: ToolErrorCode;
+  /** Whether retrying the identical query may succeed. Advisory for the agent. */
+  retryable?: boolean;
 }
 
 interface SuggestedVirtualFeed {
@@ -209,7 +213,33 @@ async function resolveVirtualFeedId(ref: string, scope: AuthzScope): Promise<num
   return rows[0].id;
 }
 
-function errorResult(message: string, startTime: number): QuerySqlResult {
+/**
+ * Classify a connector/pushdown failure for a hard (thrown) error. Prefers the
+ * structured `httpStatus` the connector executor propagates (from the SDK's
+ * HttpStatusError, lobu#2051 Item 2) over message matching, so a 429/5xx is
+ * honestly retryable. Falls back to the message; an otherwise-unclassifiable
+ * broken feed/connector run is UPSTREAM_5XX by default.
+ */
+export function classifyPushdownFailure(err: unknown): ToolErrorCode {
+  const httpStatus =
+    err && typeof err === 'object' && typeof (err as { httpStatus?: unknown }).httpStatus === 'number'
+      ? (err as { httpStatus: number }).httpStatus
+      : undefined;
+  const code = classifyToolError({ httpStatus, message: getErrorMessage(err) });
+  return code === 'INTERNAL' ? 'UPSTREAM_5XX' : code;
+}
+
+/**
+ * A soft-error result (lobu#2051 Item 2). `code` defaults to `VALIDATION` because
+ * every non-DB-catch call site here is an argument/scope fault (bad column, unknown
+ * org, malformed query) — none of those are retryable. The DB catch and the
+ * timeout path pass explicit codes.
+ */
+function errorResult(
+  message: string,
+  startTime: number,
+  code: ToolErrorCode = 'VALIDATION'
+): QuerySqlResult {
   return {
     rows: [],
     columns: [],
@@ -217,6 +247,8 @@ function errorResult(message: string, startTime: number): QuerySqlResult {
     has_more: false,
     execution_time_ms: Date.now() - startTime,
     error: message,
+    error_code: code,
+    retryable: isRetryable(code),
   };
 }
 
@@ -311,7 +343,7 @@ export async function querySqlImpl(
   // but it stays a hard REJECT (throw), not a structured { error }, preserving the
   // "missing sql rejects at the tool boundary, naming the field" contract.
   if (!baseSql && !args.feed) {
-    throw new ToolUserError('query_sql requires `sql` (or a `feed` to read).', 400);
+    throw new ToolUserError('query_sql requires `sql` (or a `feed` to read).', 400, 'VALIDATION');
   }
 
   // The base query is wrapped as `SELECT * FROM (<sql>) _t [ORDER BY …] LIMIT …`,
@@ -405,7 +437,7 @@ export async function querySqlImpl(
     try {
       feedId = await resolveVirtualFeedId(args.feed, scope);
     } catch (err) {
-      throw new ToolUserError(getErrorMessage(err), 404);
+      throw new ToolUserError(getErrorMessage(err), 404, 'NOT_FOUND');
     }
     try {
       const r = await readVirtualFeed({
@@ -432,7 +464,8 @@ export async function querySqlImpl(
         `virtual feed read failed (feed=${args.feed}): ${getErrorMessage(err)}. ` +
           'The feed itself is broken or its connector cannot run — this is not an empty result. ' +
           'Check the connector with client.connections.test, or client.feeds.get for feed config.',
-        502
+        502,
+        classifyPushdownFailure(err)
       );
     }
   }
@@ -476,7 +509,8 @@ export async function querySqlImpl(
       throw new ToolUserError(
         `connection pushdown failed (connection=${args.connection}): ${getErrorMessage(err)}. ` +
           'The query did not run against the source — this is not an empty result.',
-        502
+        502,
+        classifyPushdownFailure(err)
       );
     }
   }
@@ -566,12 +600,20 @@ export async function querySqlImpl(
     const msg = getErrorMessage(error);
     logger.error({ error }, 'query_sql error');
 
-    if (msg.includes('timeout') || msg.includes('statement timeout')) {
-      return errorResult('QUERY_TIMEOUT: Query exceeded 5 second timeout.', startTime);
+    // Classify via SQLSTATE where available (57014 = statement timeout), falling
+    // back to message matching. The `error_code`/`retryable` fields let the agent
+    // distinguish a transient timeout (worth retrying) from a permanent SQL fault.
+    const pgCode = (error as { code?: string } | null)?.code;
+    if (pgCode === '57014' || msg.includes('timeout') || msg.includes('statement timeout')) {
+      return errorResult('Query exceeded the 5 second timeout.', startTime, 'UPSTREAM_TIMEOUT');
     }
     if (msg.includes('read-only')) {
-      return errorResult('READ_ONLY_VIOLATION: Only read-only queries are allowed.', startTime);
+      return errorResult('Only read-only queries are allowed.', startTime, 'VALIDATION');
     }
-    return errorResult(`SQL_ERROR: ${msg}`, startTime);
+    return errorResult(
+      msg,
+      startTime,
+      classifyToolError({ pgCode: pgCode ?? undefined, message: msg })
+    );
   }
 }

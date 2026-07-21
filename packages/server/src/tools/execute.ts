@@ -4,7 +4,9 @@
  * Used by both the MCP Streamable HTTP handler and the REST API proxy.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Context } from 'hono';
+import { isToolError, retryWithBackoff, ToolError } from '@lobu/core';
 import {
   getRequiredAccessLevel,
   hasRequiredMcpScope,
@@ -14,7 +16,7 @@ import {
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
-import { ToolNotRegisteredError } from '../utils/errors';
+import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
 import { recordToolInvocationAudit } from './audit';
@@ -211,8 +213,29 @@ export async function executeTool(
   const toolContext = toToolContext(authCtx);
   const startTime = Date.now();
 
+  // Per-invocation correlation id (lobu#2051 Item 2). Distinct from the
+  // background-run `run_id` (a bigint on the runs table) — this identifies a
+  // single tool call so a failure can be traced across logs/audit/response.
+  const callId = randomUUID();
+
+  const runHandler = () =>
+    trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));
+
   try {
-    const result = await trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));
+    // Auto-retry (lobu#2051 Item 2): only transient thrown ToolErrors, and only
+    // for read/test tools on the allowlist. Mutations and run_sdk are never
+    // retried here — re-running them could double-write. Soft-error results
+    // (query_sql/query_sdk `{error, retryable}`) never throw, so they're never
+    // auto-retried; their `retryable` flag is advisory for the agent.
+    const result = RETRYABLE_TOOLS.has(toolName)
+      ? await retryWithBackoff(runHandler, {
+          maxRetries: 2,
+          baseDelay: 500,
+          maxDelay: 4000,
+          jitter: 'full',
+          shouldRetry: (err) => isRetryableToolError(err),
+        })
+      : await runHandler();
     await recordToolInvocationAudit({
       toolName,
       args,
@@ -222,6 +245,11 @@ export async function executeTool(
     });
     return result;
   } catch (error) {
+    // Stamp the correlation id onto typed errors so the response boundaries can
+    // surface `call_id` alongside the structured `code`/`retryable`.
+    if (error instanceof ToolError || error instanceof ToolUserError) {
+      error.callId = callId;
+    }
     await recordToolInvocationAudit({
       toolName,
       args,
@@ -231,6 +259,26 @@ export async function executeTool(
     });
     throw error;
   }
+}
+
+/**
+ * Tools safe to auto-retry on a transient failure (lobu#2051 Item 2): read-only,
+ * with no side effects. Mutations and `run_sdk` (arbitrary user script) are
+ * excluded — retrying them risks a double-write.
+ *
+ * `manage_connections.test` is deliberately NOT here: it's a *sub-action* of a
+ * tool that also mutates, and putting the whole tool on the allowlist would
+ * auto-retry those mutations too. `handleTest` never throws (it returns a soft
+ * `{status,message,error_code}` result), so it gains nothing from auto-retry
+ * anyway — its `retryable` flag is advisory for the agent.
+ */
+const RETRYABLE_TOOLS = new Set(['query_sql', 'query_sdk']);
+
+/** True when a thrown value is a retryable typed error. */
+function isRetryableToolError(err: Error): boolean {
+  if (isToolError(err)) return err.retryable;
+  if (err instanceof ToolUserError) return err.retryable;
+  return false;
 }
 
 /**

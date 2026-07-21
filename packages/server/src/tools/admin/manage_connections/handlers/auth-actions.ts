@@ -2,6 +2,7 @@
  * Auth-related action handlers: reauthenticate, test.
  */
 
+import { isRetryable, type ToolErrorCode } from '@lobu/core';
 import { getDb } from '../../../../db/client';
 import {
   getAuthProfileById,
@@ -208,7 +209,12 @@ export async function handleTest(
     `;
 
     if (accountRows.length === 0) {
-      return { action: 'test', status: 'error', message: 'Linked OAuth account not found' };
+      return {
+        action: 'test',
+        status: 'error',
+        message: 'Linked OAuth account not found',
+        ...testErrorFields('NOT_FOUND'),
+      };
     }
 
     const account = accountRows[0] as any;
@@ -217,15 +223,17 @@ export async function handleTest(
         action: 'test',
         status: 'error',
         message: 'No access token available. Re-authenticate.',
+        ...testErrorFields('AUTH_MISSING'),
       };
     }
 
     const expiresAt = account.accessTokenExpiresAt ? new Date(account.accessTokenExpiresAt) : null;
     const isExpired = expiresAt && expiresAt.getTime() < Date.now();
+    const hardExpired = isExpired && !account.has_refresh;
 
     return {
       action: 'test',
-      status: isExpired && !account.has_refresh ? 'error' : 'ok',
+      status: hardExpired ? 'error' : 'ok',
       message: isExpired
         ? account.has_refresh
           ? 'Token expired but refresh token available'
@@ -234,6 +242,7 @@ export async function handleTest(
       has_token: account.has_token,
       has_refresh: account.has_refresh,
       expires_at: expiresAt?.toISOString() ?? null,
+      ...(hardExpired ? testErrorFields('AUTH_INVALID') : {}),
     };
   }
 
@@ -254,6 +263,7 @@ export async function handleTest(
       message: hasKeys
         ? `${label} profile '${profileToTest.slug}' configured`
         : `${label} profile '${profileToTest.slug}' has no credentials`,
+      ...(hasKeys ? {} : testErrorFields('AUTH_MISSING')),
     };
   }
 
@@ -261,6 +271,8 @@ export async function handleTest(
     const summary = summarizeBrowserSessionAuthData(authProfile.auth_data, conn.connector_key);
     if (summary.cdp_url) {
       const readiness = await getBrowserSessionReadiness(authProfile.auth_data, conn.connector_key);
+      // A configured-but-unreachable CDP endpoint is transient (the browser may
+      // come back), so this warning is retryable — unlike the missing-cookie ones.
       return {
         action: 'test',
         status: readiness.usable ? 'ok' : 'warning',
@@ -268,6 +280,7 @@ export async function handleTest(
           ? `Browser auth profile '${authProfile.slug}' CDP endpoint reachable`
           : `Browser auth profile '${authProfile.slug}' CDP configured but endpoint not responding at ${summary.cdp_url}`,
         expires_at: summary.expires_at,
+        ...(readiness.usable ? {} : testErrorFields('NETWORK')),
       };
     }
     if (summary.cookie_count === 0) {
@@ -276,6 +289,7 @@ export async function handleTest(
         status: 'warning',
         message: `Browser auth profile '${authProfile.slug}' has no cookies`,
         expires_at: summary.expires_at,
+        ...testErrorFields('AUTH_MISSING'),
       };
     }
     if (!summary.auth_cookie_name) {
@@ -284,6 +298,7 @@ export async function handleTest(
         status: 'warning',
         message: `Browser auth profile '${authProfile.slug}' has no likely auth cookie`,
         expires_at: summary.expires_at,
+        ...testErrorFields('AUTH_MISSING'),
       };
     }
     return {
@@ -293,6 +308,7 @@ export async function handleTest(
         ? `${summary.auth_cookie_name} expired`
         : `${summary.auth_cookie_name} valid`,
       expires_at: summary.expires_at,
+      ...(summary.is_expired ? testErrorFields('AUTH_INVALID') : {}),
     };
   }
 
@@ -308,7 +324,20 @@ export async function handleTest(
     };
   }
 
-  return { action: 'test', status: 'warning', message: 'No auth profile configured' };
+  return {
+    action: 'test',
+    status: 'warning',
+    message: 'No auth profile configured',
+    ...testErrorFields('AUTH_MISSING'),
+  };
+}
+
+/**
+ * Structured error fields for a connection-test error/warning result (lobu#2051
+ * Item 2). `retryable` comes from the catalog so it can't drift from the code.
+ */
+function testErrorFields(code: ToolErrorCode): { error_code: ToolErrorCode; retryable: boolean } {
+  return { error_code: code, retryable: isRetryable(code) };
 }
 
 /**

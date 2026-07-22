@@ -1,10 +1,6 @@
 import { ListInstalledAction } from "@lobu/core/contracts/tools/manage-catalog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as installed from "../../../catalog/installed";
-import {
-	AGENT_INSTALLED_KINDS,
-	ORG_INSTALLED_KINDS,
-} from "../../../catalog/types";
 import { manageCatalog } from "../manage_catalog";
 
 const ctx = {
@@ -75,27 +71,21 @@ describe("manage_catalog list_installed", () => {
 		});
 	});
 
-	it("advertises only kinds the handler actually accepts", async () => {
-		// The contract description is the agent's only guide to legal `kinds`
-		// values. Anything named there must survive `handleListInstalled`'s
-		// unknown-kind check, or an agent that follows the docs gets an error.
-		const prose = [
-			ListInstalledAction.properties.action.description,
-			ListInstalledAction.properties.kinds.description,
-		].join(" ");
-		const documented = [
-			...prose.matchAll(
-				/\b(connectors|behaviors|skills|providers|guardrails|channels)\b/g
-			),
-		].map((m) => m[1]);
-		expect(documented.length).toBeGreaterThan(0);
+	it("does not advertise the rejected channels kind", async () => {
+		const result = await manageCatalog(
+			{ action: "list_installed", kinds: ["channels"] },
+			{} as never,
+			ctx
+		);
 
-		const supported = new Set<string>([
-			...ORG_INSTALLED_KINDS,
-			...AGENT_INSTALLED_KINDS,
-		]);
-		expect([...new Set(documented)].filter((k) => !supported.has(k))).toEqual(
-			[]
+		expect(result).toEqual({
+			error: "Unsupported installed kind(s): channels",
+		});
+		expect(ListInstalledAction.properties.action.description).not.toContain(
+			"channels"
+		);
+		expect(ListInstalledAction.properties.kinds.description).not.toContain(
+			"channels"
 		);
 	});
 

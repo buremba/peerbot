@@ -155,16 +155,26 @@ describe("sandbox runtime", () => {
     });
   });
 
-  it("read mode: a known-but-hidden namespace throws a structured error, not undefined", async () => {
-    // `notifications` has only a write method (`send`), so read mode filters the
-    // whole namespace out of the manifest. Before the stub, `client.notifications`
-    // was undefined and the guest died with the opaque "Cannot read properties of
-    // undefined (reading 'send')". Now it must throw a NamespaceNotAvailable error
-    // naming the namespace, so discovery and runtime agree.
+  it("read mode: notifications.send is absent while list is callable", async () => {
+    // list/markRead are read-tier; send stays write-only. Guest-side manifest
+    // strips send so calling it is a TypeError (not a host dispatch). list still
+    // dispatches when the host SDK exposes it.
     const stubSdk = {
+      notifications: {
+        list: async () => ({ notifications: [], nextCursor: null }),
+      },
       query: async () => [],
       log: () => undefined,
     } as unknown as ClientSDK;
+
+    const listed = await runScript({
+      source:
+        "export default async (_ctx, client) => client.notifications.list({ unread_only: true });",
+      sdk: stubSdk,
+      sdkMode: "read",
+    });
+    expect(listed.success).toBe(true);
+    expect(listed.returnValue).toEqual({ notifications: [], nextCursor: null });
 
     const result = await runScript({
       source:
@@ -174,8 +184,7 @@ describe("sandbox runtime", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error?.message).toContain("NamespaceNotAvailable");
-    expect(result.error?.message).toContain("notifications");
+    expect(result.error?.message ?? "").toMatch(/not a function|undefined/i);
     // The stub must NOT dispatch to the host — it fails guest-side.
     expect(result.sdkCalls).toBe(0);
   });

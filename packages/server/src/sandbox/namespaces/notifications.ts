@@ -1,14 +1,24 @@
 /**
- * ClientSDK `notifications` namespace — a thin wrapper over the `notify` tool
- * that lets reactions (and `run_sdk` scripts) write a notification to the inbox
- * and fan it out to the org's bot connections (Slack/Telegram).
+ * ClientSDK `notifications` namespace.
+ *
+ * `send` wraps the `notify` tool (in-app inbox + bot fan-out). `list` /
+ * `markRead` reuse the REST service layer (`listNotifications` / `markAsRead`)
+ * so agents can read and ack their own inbox without duplicate SQL.
+ *
+ * SDK-only by design — no `manage_notifications` MCP tool; agents compose
+ * through `query_sdk` / `run_sdk` like other admin namespaces.
  */
 
 import type { CardElement } from "chat";
 import type { Env } from "../../index";
+import {
+	listNotifications,
+	markAsRead,
+} from "../../notifications/service";
 import { notify } from "../../tools/admin/notify";
 import type { ToolContext } from "../../tools/registry";
-import { createActionCaller } from "./action-call";
+import { ToolUserError } from "../../utils/errors";
+import { createActionCaller, idArg } from "./action-call";
 
 export interface NotificationsSendInput {
 	/** Notification title (≤200 chars). */
@@ -35,8 +45,37 @@ export interface NotificationsSendInput {
 	behavior_source?: { behavior_id: number; window_id: number };
 }
 
+export interface NotificationsListInput {
+	/** Keyset cursor: return notifications with id strictly less than this. */
+	cursor?: number | null;
+	/** Page size (service caps at 50; default 20). */
+	limit?: number;
+	/** When true, only unread notifications. */
+	unread_only?: boolean;
+}
+
+export interface NotificationsListResult {
+	notifications: Record<string, unknown>[];
+	nextCursor: number | null;
+}
+
 export interface NotificationsNamespace {
 	send(input: NotificationsSendInput): Promise<{ notified_count: number }>;
+	list(input?: NotificationsListInput): Promise<NotificationsListResult>;
+	/**
+	 * Mark one of the caller's notifications as read. Accepts a positional id
+	 * or `{ notification_id }`.
+	 */
+	markRead(
+		notificationId: number | { notification_id: number },
+	): Promise<{ success: true }>;
+}
+
+function requireUserId(ctx: ToolContext): string {
+	if (!ctx.userId) {
+		throw new ToolUserError("Authenticated user required", 401);
+	}
+	return ctx.userId;
 }
 
 export function buildNotificationsNamespace(
@@ -47,5 +86,29 @@ export function buildNotificationsNamespace(
 
 	return {
 		send: (input) => action("send", input),
+		async list(input) {
+			const userId = requireUserId(ctx);
+			return listNotifications({
+				organizationId: ctx.organizationId,
+				userId,
+				cursor: input?.cursor ?? null,
+				limit: input?.limit,
+				unreadOnly: input?.unread_only ?? false,
+			});
+		},
+		async markRead(notificationId) {
+			const userId = requireUserId(ctx);
+			const id = idArg(
+				"notifications.markRead",
+				"notification_id",
+				notificationId,
+				"number",
+			) as number;
+			const updated = await markAsRead(ctx.organizationId, userId, id);
+			if (!updated) {
+				throw new ToolUserError("Not found or already read", 404);
+			}
+			return { success: true as const };
+		},
 	};
 }

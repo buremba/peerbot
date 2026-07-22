@@ -3,7 +3,7 @@ import { defineAgent, defineBehavior, defineConfig } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
-import { computeDiff, type RemoteSnapshot } from "../diff.js";
+import { computeDiff, type DiffPlan, type RemoteSnapshot } from "../diff.js";
 import { mapProjectToDesiredState } from "../map-config.js";
 import { renderPlan, renderProgress, renderSummary } from "../render.js";
 
@@ -804,20 +804,7 @@ describe("renderSummary", () => {
   });
 });
 
-/**
- * Internal plan rows still use kind: "watcher" (DesiredState.watchers +
- * counts_by_kind keys). User-facing apply output must say "behavior" —
- * never the legacy "watcher" label or heading.
- */
 describe("renderPlan — behavior labels (not watcher)", () => {
-  const desiredBehavior = {
-    slug: "weekly-digest",
-    agent: "triage",
-    name: "Weekly digest",
-    prompt: "Produce a digest.",
-    triggers: [{ kind: "schedule" as const, cron: "0 9 * * 1" }],
-  };
-
   /** Labels/headings only — not substrings of resource slugs. */
   function expectNoWatcherLabels(text: string): void {
     expect(text).not.toMatch(/(?:^|\n)\s*watchers?:\s*(?:\n|$)/);
@@ -825,26 +812,19 @@ describe("renderPlan — behavior labels (not watcher)", () => {
   }
 
   test("plan create/update/drift rows print behavior, never watcher", () => {
-    const desired = buildState([], { watchers: [desiredBehavior] });
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      watchers: [
-        {
-          slug: "weekly-digest",
-          name: "Weekly digest",
-          agent_id: "triage",
-          prompt: "Old prompt",
-          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
-        },
-        { slug: "orphaned-digest" },
+    const plan: DiffPlan = {
+      rows: [
+        { kind: "watcher", verb: "update", id: "weekly-digest" },
+        { kind: "watcher", verb: "create", id: "new-digest" },
+        { kind: "watcher", verb: "drift", id: "orphaned-digest" },
       ],
+      counts: { create: 1, update: 1, noop: 0, drift: 1, delete: 0 },
+      notes: [],
     };
-    const plan = computeDiff(desired, remote);
-    // Sanity: internal kind is still "watcher" (not a wire field on manage_behaviors).
-    expect(plan.rows.some((r) => r.kind === "watcher")).toBe(true);
 
     const text = renderPlan(plan);
     expect(text).toContain("behaviors:");
+    expect(text).toContain("behavior new-digest");
     expect(text).toContain("behavior weekly-digest");
     expect(text).toContain("behavior orphaned-digest");
     expectNoWatcherLabels(text);

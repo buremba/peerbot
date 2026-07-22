@@ -115,10 +115,11 @@ exports[`renderPlan — behavior labels (not watcher) plan create/update/drift r
 Plan:
 
   behaviors:
-  ~ behavior weekly-digest (prompt)
+  ~ behavior weekly-digest
+  + behavior new-digest
   ? behavior orphaned-digest (drift — ignored in v1, not deleted)
 
-Summary: 0 create, 1 update, 0 noop, 1 drift"
+Summary: 1 create, 1 update, 0 noop, 1 drift"
 `;
 
 exports[`apply diff — connectors render includes the connectors sections 1`] = `

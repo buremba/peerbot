@@ -90,8 +90,10 @@ describe('deep-link token exchange', () => {
     expect(html).toContain('sessionStorage');
     expect(html).toContain('location.hash');
     expect(html).toContain('replaceState');
-    // Browser-handoff deep link (sidepanel → Memory run).
+    // Browser-handoff deep link (sidepanel → Memory run / conversation).
     expect(html).toContain('h.get("run")');
+    expect(html).toContain('h.get("agent")');
+    expect(html).toContain('h.get("thread")');
     expect(html).toContain('/#run=');
   });
 

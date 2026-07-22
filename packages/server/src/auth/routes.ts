@@ -536,16 +536,26 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
   var token = h.get("token") || "";
   var worker = h.get("worker") || "";
   var run = h.get("run") || "";
+  var agent = h.get("agent") || "";
+  var thread = h.get("thread") || "";
+  var event = h.get("event") || "";
+  var message = h.get("message") || "";
   // Strip the token out of the URL before doing anything else.
   history.replaceState(null, "", location.pathname);
-  // Chrome extension deep links (sidepanel): device page or a Memory run.
+  // Chrome extension deep links (sidepanel): device page, Memory run, or chat.
   // Prefer run over worker when both are present — handoff panels care about
-  // the staged action, not the device.
-  var next = run
-    ? "/#run=" + encodeURIComponent(run)
-    : worker
-      ? "/#worker=" + encodeURIComponent(worker)
-      : "/";
+  // the staged action, not the device. Optional agent/thread/event/message
+  // ride alongside run for conversation + scroll targets.
+  var next = "/";
+  if (run) {
+    next = "/#run=" + encodeURIComponent(run);
+    if (agent) next += "&agent=" + encodeURIComponent(agent);
+    if (thread) next += "&thread=" + encodeURIComponent(thread);
+    if (event) next += "&event=" + encodeURIComponent(event);
+    if (message) next += "&message=" + encodeURIComponent(message);
+  } else if (worker) {
+    next = "/#worker=" + encodeURIComponent(worker);
+  }
   if (!token) { location.replace("/"); return; }
   var retried = false;
   function fail(msg) {

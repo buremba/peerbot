@@ -1,5 +1,23 @@
 name: Build and Push Images
 
+# Every run publishes images tagged `date -u +%Y%m%d-%H%M%S` (generate-tag
+# below), so concurrent runs — including manual dispatches from other refs —
+# can compute the SAME tag and overwrite each other. On 2026-07-22 five PRs
+# merged within 14s, all five runs stamped `20260722-121441`, and prod ended up
+# on whichever pushed last: two merged PRs never deployed, every workflow green.
+#
+# Serializing makes the tag unique in practice (runs are minutes apart, not
+# milliseconds). The tag cannot simply carry the commit SHA instead: Flux's
+# ImagePolicy matches '^(\d{8})-(\d{6})$' and lives in the owletto submodule, so
+# changing the format needs a coordinated two-repo change and a mismatch stops
+# every deploy.
+#
+# cancel-in-progress stays false: a cancelled run can leave the chart pointing
+# at a tag whose sibling images were never pushed.
+concurrency:
+  group: build-images
+  cancel-in-progress: false
+
 on:
   push:
     branches:
@@ -41,7 +59,7 @@ jobs:
     steps:
       - name: Generate shared timestamp tag
         id: timestamp
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
   # Connector-runtime parity smoke gate (main/deploy side). RUNS the built worker
   # artifact's self-check before any image is pushed, so the packaging/parity

@@ -8,6 +8,7 @@ import {
   listEntities,
   type RelationshipColumnSpec,
 } from './utils/entity-management';
+import { entityLinkMatchSql } from './utils/content-search';
 import { escapeHtml } from './utils/html';
 import { getConfiguredPublicOrigin } from './utils/public-origin';
 import { RESERVED_PATHS_SET } from './utils/reserved';
@@ -103,6 +104,84 @@ const PUBLIC_APP_ROUTE_PREFIXES = new Set([
 
 function getPublicOrigin(requestUrl: string): string {
   return getConfiguredPublicOrigin() ?? new URL(requestUrl).origin;
+}
+
+/**
+ * `$`-prefixed entity types ($member, $canvas) are per-tenant system internals.
+ * They must never surface on a public page — not as a route, not as a bootstrap
+ * entry, and not as a rendered child link.
+ */
+function isSystemEntityTypeSlug(slug: string | null | undefined): boolean {
+  return typeof slug === 'string' && slug.startsWith('$');
+}
+
+/**
+ * `resolvePath` is authorization-aware but not public-page-aware: it happily
+ * returns system types and their entities. Public pages both RENDER from this
+ * result and serialize it into `window.__LOBU_PUBLIC_BOOTSTRAP__`, so filtering
+ * at the source cleans the HTML and the bootstrap together. Wrapping the call
+ * (rather than each render site) means a future page kind cannot forget it.
+ */
+async function resolvePublicPath(
+  ...args: Parameters<typeof resolvePath>
+): Promise<ResolvePathResult> {
+  const resolved = (await resolvePath(...args)) as ResolvePathResult & {
+    bootstrap?: {
+      entity_types?: Array<{ slug?: string }>;
+      recent_content?: Array<{ entity_ids?: number[] }>;
+    };
+    children?: Array<{ entity_type?: string }>;
+  };
+  // The type list the workspace page renders and serializes.
+  if (Array.isArray(resolved.bootstrap?.entity_types)) {
+    resolved.bootstrap.entity_types = resolved.bootstrap.entity_types.filter(
+      (type) => !isSystemEntityTypeSlug(type?.slug)
+    );
+  }
+  // Child links on an entity page — a $canvas hangs off its Behavior's entity.
+  if (Array.isArray(resolved.children)) {
+    resolved.children = resolved.children.filter(
+      (child) => !isSystemEntityTypeSlug(child?.entity_type)
+    );
+  }
+  // Recent knowledge is org-wide and carries entity_name + payload text. An
+  // event attached to a system entity (e.g. a canvas_state on a $canvas) would
+  // otherwise publish that entity's name and internal content. `entity_ids` is
+  // empty for connector/identity-linked events, so resolve the link with the
+  // same predicate the read path uses rather than trusting that column.
+  const recent = resolved.bootstrap?.recent_content;
+  if (Array.isArray(recent) && recent.length > 0) {
+    const eventIds = recent
+      .map((item) => Number((item as { id?: unknown }).id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (eventIds.length > 0) {
+      // IDs are integer-validated above, so inlining them is safe and avoids the
+      // driver flattening a bigint[] bind parameter. Resolve the link the same
+      // way the read path does (entity_ids OR an identity-namespace stamp).
+      // Deleted system entities are deliberately NOT excluded: `events` is
+      // append-only, so soft-deleting a $canvas leaves its events behind — an
+      // `e.deleted_at IS NULL` filter here would un-hide their titles/payloads.
+      const systemRows = await getDb().unsafe<{ id: number }>(
+        `SELECT DISTINCT ev.id
+           FROM events ev
+           JOIN entities e
+             ON e.organization_id = ev.organization_id
+           JOIN entity_types et
+             ON et.id = e.entity_type_id
+            AND et.slug LIKE '$%'
+          WHERE ev.id IN (${eventIds.join(',')})
+            AND ${entityLinkMatchSql('e.id', 'ev')}`,
+        []
+      );
+      const systemEventIds = new Set(systemRows.map((row) => Number(row.id)));
+      if (systemEventIds.size > 0) {
+        resolved.bootstrap.recent_content = recent.filter(
+          (item) => !systemEventIds.has(Number((item as { id?: unknown }).id))
+        );
+      }
+    }
+  }
+  return resolved;
 }
 
 function buildToolContext(requestUrl: string, organizationId: string): ToolContext {
@@ -359,6 +438,10 @@ async function getPublicEntityType(
       WHERE et.organization_id = $1
         AND et.slug = $2
         AND et.deleted_at IS NULL
+        -- $-prefixed types ($member, $canvas) are per-tenant system internals.
+        -- Returning null here 404s both the type listing page and every entity
+        -- page beneath it, matching what the sitemap advertises.
+        AND et.slug NOT LIKE '$%'
       LIMIT 1
     `,
     [organizationId, slug]
@@ -933,7 +1016,7 @@ export async function buildPublicPageModel(
 
   try {
     if (segments.length === 1) {
-      const resolvedPath = await resolvePath(
+      const resolvedPath = await resolvePublicPath(
         { path: normalizedPath, include_bootstrap: true },
         env,
         toolCtx
@@ -953,7 +1036,7 @@ export async function buildPublicPageModel(
         );
       }
       const [ownerResolvedPath, entityList] = await Promise.all([
-        resolvePath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
+        resolvePublicPath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
         getPublicEntityTypeList(organization.id, env, requestUrl, entityType.slug),
       ]);
       return applyBootstrapStrip(
@@ -975,10 +1058,19 @@ export async function buildPublicPageModel(
       if (PUBLIC_APP_ROUTE_PREFIXES.has(entitySegments[i]!)) {
         return null;
       }
+      // Every even segment is an entity-type slug. A system type anywhere in
+      // the path 404s the whole route — the two-segment type lookup alone
+      // doesn't cover deep paths like /org/brand/acme/$canvas/behavior-canvas.
+      if (isSystemEntityTypeSlug(entitySegments[i])) {
+        return applyBootstrapStrip(
+          buildNotFoundModel(organization, requestUrl, normalizedPath),
+          subdomainOrg
+        );
+      }
     }
 
     if ((segments.length - 1) % 2 === 0) {
-      const resolvedPath = await resolvePath(
+      const resolvedPath = await resolvePublicPath(
         { path: normalizedPath, include_bootstrap: true },
         env,
         toolCtx
@@ -1032,6 +1124,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
       FROM "organization" o
       JOIN entity_types et ON et.organization_id = o.id AND et.deleted_at IS NULL
       WHERE o.visibility = 'public'
+        AND et.slug NOT LIKE '$%'
       GROUP BY o.slug, et.slug
       ORDER BY o.slug ASC, et.slug ASC
     `,
@@ -1059,6 +1152,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         WHERE o.visibility = 'public'
           AND e.deleted_at IS NULL
           AND e.parent_id IS NULL
+          AND et.slug NOT LIKE '$%'
 
         UNION ALL
 
@@ -1074,6 +1168,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         JOIN entity_types et_child ON et_child.id = child.entity_type_id
         JOIN entity_paths ON entity_paths.id = child.parent_id
         WHERE child.deleted_at IS NULL
+          AND et_child.slug NOT LIKE '$%'
       )
       SELECT
         o.slug AS organization_slug,

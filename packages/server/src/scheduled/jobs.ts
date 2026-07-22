@@ -25,6 +25,7 @@ import {
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
+import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
 import { getDb, pgTextArray } from '../db/client';
@@ -218,6 +219,23 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '*/15 * * * *' }
+  );
+
+  // $member projection-drift alerter — flags better-auth members with no
+  // resolvable `$member` + `auth:signup` claim (enforced channels hidden from
+  // them) and self-heal-proof "poison" claims owned by a non-$member entity.
+  // Read-only smoke detector, not a repair; logs on a non-zero count, riding the
+  // pino→Sentry path. Single-claimant per tick. Hourly is plenty — drift only
+  // enters on a provisioning-hook failure, which is rare and non-time-critical.
+  scheduler.register(
+    'member-claim-drift',
+    async () => {
+      const result = await runMemberClaimDriftCheck();
+      if (result.missingClaim > 0 || result.poisonClaim > 0) {
+        logger.info({ ...result }, '[task] member-claim-drift found drift');
+      }
+    },
+    { cron: '0 * * * *' },
   );
 
   scheduler.register(

@@ -7,6 +7,7 @@ import {
 	createTestUser,
 } from "../../setup/test-fixtures";
 import { post } from "../../setup/test-helpers";
+import { ensureMemberEntity } from "../../../utils/member-entity";
 
 vi.mock("../../../email/send", () => ({
 	sendTransactionalEmail: vi.fn().mockResolvedValue({ id: null }),
@@ -67,5 +68,48 @@ describe("invitation member placeholder", () => {
         AND deleted_at IS NULL
     `;
 		expect(claims).toHaveLength(0);
+	});
+
+	it("refuses to write an auth_user_id claim when userId does not own the email (runtime invariant)", async () => {
+		// The structural backstop for the bug PR #2126 fixed by convention: even a
+		// caller that passes a mismatched (userId, email) pair straight into
+		// ensureMemberEntity must NOT get a claim written — the entity is resolved
+		// by email, so the claim would hand `userId` the visibility of whoever
+		// owns `email`.
+		const sql = getTestDb();
+		const victimEmail = "victim-invariant@test.example.com";
+
+		// inviterUserId is a real user, but their email is inviter@…, NOT victim@…
+		await ensureMemberEntity({
+			organizationId: orgId,
+			userId: inviterUserId,
+			name: victimEmail,
+			email: victimEmail,
+			role: "member",
+			status: "active",
+		});
+
+		const victimRows = await sql<{ id: number }>`
+      SELECT e.id
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.organization_id = e.organization_id
+      WHERE et.slug = '$member'
+        AND e.organization_id = ${orgId}
+        AND e.metadata->>'email' = ${victimEmail}
+        AND e.deleted_at IS NULL
+    `;
+		expect(victimRows).toHaveLength(1);
+
+		// The mismatch guard fired: NO auth_user_id claim was written for the
+		// inviter onto the victim-email entity.
+		const leaked = await sql<{ identifier: string }>`
+      SELECT identifier
+      FROM entity_identities
+      WHERE organization_id = ${orgId}
+        AND entity_id = ${Number(victimRows[0].id)}
+        AND namespace = 'auth_user_id'
+        AND deleted_at IS NULL
+    `;
+		expect(leaked).toHaveLength(0);
 	});
 });

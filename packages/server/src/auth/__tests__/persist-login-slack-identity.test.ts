@@ -21,7 +21,7 @@ import {
 	createTestOrganization,
 	createTestUser,
 } from "../../__tests__/setup/test-fixtures";
-import { resolveTenantMember } from "../../identity/auth-hook";
+import { resolveMemberOrgsForUser } from "../../identity/auth-hook";
 import type { PersistLoginSlackIdentityDeps } from "../subject-identities";
 import {
 	persistLoginSlackIdentity,
@@ -65,7 +65,7 @@ function depsWith(
 	raw: Record<string, unknown> | null,
 ): PersistLoginSlackIdentityDeps {
 	return {
-		resolveTenantMember,
+		resolveMemberOrgsForUser,
 		getEnabledLoginProviderConfigs: async () => [
 			{
 				connectorKey: "slack",
@@ -92,7 +92,7 @@ function trackingDeps(raw: Record<string, unknown> | null): {
 	return {
 		calls,
 		deps: {
-			resolveTenantMember,
+			resolveMemberOrgsForUser,
 			getEnabledLoginProviderConfigs: async () => {
 				calls.configs = true;
 				return [];
@@ -264,7 +264,7 @@ describe("persistLoginSlackIdentity", () => {
 				accountId: USER,
 			},
 			{
-				resolveTenantMember,
+				resolveMemberOrgsForUser,
 				getEnabledLoginProviderConfigs: async () => [],
 				fetchUserInfoWithRaw: async () => {
 					fetched = true;

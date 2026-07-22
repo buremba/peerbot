@@ -25,7 +25,7 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../../authz/access-graph";
-import { resolveTenantMember } from "../../../identity/auth-hook";
+import { resolveMemberOrgsForUser } from "../../../identity/auth-hook";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
@@ -54,7 +54,7 @@ function makeJwt(claims: Record<string, unknown>): string {
  * no userinfo fetch / provider-config read at all.
  */
 const noNetworkDeps = {
-	resolveTenantMember,
+	resolveMemberOrgsForUser,
 	getEnabledLoginProviderConfigs: async () => {
 		throw new Error("provider-config lookup must not run on the id_token path");
 	},
@@ -162,5 +162,185 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 		expect(personRows).toHaveLength(1);
 		expect(personRows[0].slug).toBe("$member");
 		expect(Number(personRows[0].id)).toBe(memberEntityId);
+	});
+
+	it("ADOPTS a slack_user_id already owned by a connector-minted person onto the $member", async () => {
+		// The REMEDIAL ordering (the prod reality): the ACL sync runs on a timer
+		// and mints a `person` for the workspace member BEFORE the human ever
+		// signs in. The claim is then already taken, so the pre-existing
+		// `writeIdentities` ON CONFLICT DO NOTHING would silently lose and the
+		// gate — which only resolves a $member — would keep hiding every enforced
+		// channel. adoptChatIdentityOntoMember must re-point the claim.
+		const org = await createTestOrganization({
+			name: "Acme",
+			visibility: "private",
+		});
+		const alice = await createTestUser({
+			name: "Alice",
+			email: "alice@acme.test",
+		});
+		await addUserToOrganization(alice.id, org.id, "owner");
+		const agent = await createTestAgent({ organizationId: org.id });
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+      ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+      DO NOTHING
+    `;
+
+		// $member exists (auth_user_id + email), NO slack_user_id yet.
+		const { memberEntityId } = await provisionMemberAndCoreIdentities(org.id, {
+			userId: alice.id,
+			email: "alice@acme.test",
+			name: "Alice",
+		});
+
+		await insertChatConnectionRow({
+			id: CONN,
+			agentId: agent.agentId,
+			platform: "slack",
+			organizationId: org.id,
+			status: "active",
+		});
+
+		// FIRST: the ACL sync mints a `person` carrying the slack_user_id, because
+		// the $member has no slack claim yet to collapse onto.
+		const firstSync = await buildAccessGraph({
+			organizationId: org.id,
+			connectionId: CONN,
+			connectorKey: slackAclSource.key,
+			resourceNamespace: slackAclSource.resourceNamespace,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },
+			]),
+		});
+		// The edge landed on a NEW person, not the $member.
+		expect(firstSync.memberEntityIds).not.toContain(memberEntityId);
+		const personBefore = await sql<{ entity_id: number; slug: string }>`
+      SELECT ei.entity_id, et.slug
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE ei.organization_id = ${org.id}
+        AND ei.namespace = 'slack_user_id'
+        AND ei.identifier = ${`${TEAM}:${SLACK_USER}`}
+        AND ei.deleted_at IS NULL
+      LIMIT 1
+    `;
+		expect(personBefore).toHaveLength(1);
+		expect(personBefore[0].slug).toBe("person");
+		const personId = Number(personBefore[0].entity_id);
+
+		// THEN: Alice signs in. adoptChatIdentityOntoMember re-points the claim
+		// from the person onto her $member.
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId: alice.id,
+				accessToken: "xoxp-token",
+				accountId: SLACK_USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": SLACK_USER,
+					sub: SLACK_USER,
+				}),
+			},
+			noNetworkDeps,
+		);
+
+		// The claim now belongs to the $member, sourced auth:signup, with a
+		// merged_from trail back to the person it was taken from.
+		const after = await sql<{
+			entity_id: number;
+			source_connector: string;
+			merged_from_entity_id: number | null;
+		}>`
+      SELECT entity_id, source_connector, merged_from_entity_id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'slack_user_id'
+        AND identifier = ${`${TEAM}:${SLACK_USER}`}
+        AND deleted_at IS NULL
+    `;
+		expect(after).toHaveLength(1);
+		expect(Number(after[0].entity_id)).toBe(memberEntityId);
+		expect(after[0].source_connector).toBe("auth:signup");
+		expect(Number(after[0].merged_from_entity_id)).toBe(personId);
+
+		// And the next ACL sync now lands the channel edge on the $member — the
+		// symptom (enforced channels hidden from the real member) is fixed.
+		const secondSync = await buildAccessGraph({
+			organizationId: org.id,
+			connectionId: CONN,
+			connectorKey: slackAclSource.key,
+			resourceNamespace: slackAclSource.resourceNamespace,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
+				{ channelId: "C01ENG", name: "eng", memberSlackUserIds: [SLACK_USER] },
+			]),
+		});
+		expect(secondSync.memberEntityIds).toContain(memberEntityId);
+	});
+
+	it("leaves a slack_user_id owned by a DIFFERENT $member untouched (fail closed, never steal)", async () => {
+		// Two humans cannot share one workspace account. If the claim is already
+		// held by another $member, adoption must NOT reassign it — that would be
+		// an identity theft, not a repair.
+		const org = await createTestOrganization({
+			name: "Acme",
+			visibility: "private",
+		});
+		const alice = await createTestUser({
+			name: "Alice",
+			email: "alice@acme.test",
+		});
+		const bob = await createTestUser({ name: "Bob", email: "bob@acme.test" });
+		await addUserToOrganization(alice.id, org.id, "owner");
+		await addUserToOrganization(bob.id, org.id, "member");
+
+		// Bob's $member already owns the slack id (however it got there).
+		const { memberEntityId: bobMember } = await provisionMemberAndCoreIdentities(
+			org.id,
+			{ userId: bob.id, email: "bob@acme.test", name: "Bob" },
+		);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${bobMember}, 'slack_user_id', ${`${TEAM}:${SLACK_USER}`}, 'auth:signup')
+    `;
+
+		// Alice (a different human) signs in claiming the SAME slack id.
+		await provisionMemberAndCoreIdentities(org.id, {
+			userId: alice.id,
+			email: "alice@acme.test",
+			name: "Alice",
+		});
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId: alice.id,
+				accessToken: "xoxp-token",
+				accountId: SLACK_USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": SLACK_USER,
+					sub: SLACK_USER,
+				}),
+			},
+			noNetworkDeps,
+		);
+
+		// The claim is STILL Bob's — never silently reassigned to Alice.
+		const rows = await sql<{ entity_id: number }>`
+      SELECT entity_id FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'slack_user_id'
+        AND identifier = ${`${TEAM}:${SLACK_USER}`}
+        AND deleted_at IS NULL
+    `;
+		expect(rows).toHaveLength(1);
+		expect(Number(rows[0].entity_id)).toBe(bobMember);
 	});
 });

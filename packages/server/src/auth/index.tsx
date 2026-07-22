@@ -24,6 +24,7 @@ import { connectorCapabilityRegistry } from "../identity/capability-registry";
 import type { Env } from "../index";
 import { notifyInvitationReceived } from "../notifications/triggers";
 import { recordLifecycleEvent } from "../utils/insert-event";
+import logger from "../utils/logger";
 import {
 	deleteMemberEntity,
 	ensureMemberEntity,
@@ -382,9 +383,21 @@ export async function createAuth(
 								extra: { user_id: user.id, role: member.role },
 							});
 						} catch (err) {
-							console.error(
-								"[Auth] Failed to create $member entity after addMember:",
-								err,
+							// A swallow here is how projection drift enters: the member
+							// row commits but its $member + auth:signup claim doesn't, so
+							// the authz gate hides every enforced channel from them.
+							// Log structured so the member-claim-drift alerter's finding
+							// has a greppable cause; the hook still can't throw (that
+							// would fail the whole add-member request).
+							logger.error(
+								{
+									err,
+									event: "member_claim_drift",
+									hook: "afterAddMember",
+									organizationId: org.id,
+									userId: user.id,
+								},
+								"[Auth] Failed to create $member entity after addMember",
 							);
 						}
 					},
@@ -410,9 +423,18 @@ export async function createAuth(
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
-							console.error(
-								"[Auth] Failed to update $member entity after acceptInvitation:",
-								err,
+							// See afterAddMember: a swallow here leaves the accepted
+							// member without a resolvable claim → enforced channels
+							// hidden. Structured for the member-claim-drift alerter.
+							logger.error(
+								{
+									err,
+									event: "member_claim_drift",
+									hook: "afterAcceptInvitation",
+									organizationId: org.id,
+									userId: user.id,
+								},
+								"[Auth] Failed to update $member entity after acceptInvitation",
 							);
 						}
 					},

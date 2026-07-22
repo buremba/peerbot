@@ -67,6 +67,14 @@ export interface ResolvedTenantMember {
  * Find the user's personal org and `$member` entity id. Returns null when
  * personal-org provisioning hasn't yet completed for this user — ingest
  * will be retried on the next account refresh.
+ *
+ * SINGLE-ORG ON PURPOSE. Callers of this write PERSONAL identity facts (Google
+ * profile/contacts and their tombstones) onto the resolved `$member`. Those
+ * facts belong in the user's own filing cabinet, so this must never fan out
+ * across the shared orgs a user happens to belong to — that would expose one
+ * member's personal data to their org-mates. If you need "every org this user
+ * is a member of" (e.g. to stamp a workspace-scoped chat identity), use
+ * `resolveMemberOrgsForUser` instead; do NOT widen this.
  */
 export async function resolveTenantMember(
 	userId: string,
@@ -95,7 +103,15 @@ export async function resolveTenantMember(
      AND et.slug = '$member'
     WHERE m."userId" = ${userId}
       AND o.visibility = 'private'
-    ORDER BY o."createdAt" ASC
+    -- Prefer the org EXPLICITLY tagged as this user's personal one. Ordering by
+    -- createdAt alone is a heuristic that silently picks the oldest private org
+    -- the user belongs to — which, once a shared org gains an auth:signup claim,
+    -- can be someone else's org, redirecting this user's personal identity facts
+    -- into it. The tag is written by personal-org provisioning and by
+    -- afterCreateOrganization, so it is the authoritative signal; createdAt stays
+    -- only as the tiebreak for users provisioned before the tag existed.
+    ORDER BY (o.metadata::jsonb->>'personal_org_for_user_id' = ${userId}) DESC,
+             o."createdAt" ASC
     LIMIT 1
   `;
 	if (rows.length === 0) return null;
@@ -103,6 +119,51 @@ export async function resolveTenantMember(
 		tenantOrganizationId: String(rows[0].organization_id),
 		memberEntityId: Number(rows[0].entity_id),
 	};
+}
+
+/**
+ * Every org where this user is a better-auth member AND already has a `$member`
+ * entity carrying the trusted `auth:signup` claim.
+ *
+ * This is the multi-org counterpart to `resolveTenantMember`, for writing a
+ * WORKSPACE-SCOPED identity (e.g. Slack's `T…:U…`) onto the user's `$member` in
+ * each org that can act on it. Safe to fan out precisely because the value being
+ * written is already scoped to the external workspace it came from — unlike the
+ * personal identity facts `resolveTenantMember` guards, it carries no data that
+ * one org's members shouldn't see.
+ *
+ * Membership still comes from the better-auth `member` row: this only ever
+ * returns orgs the user is genuinely a member of, so it cannot create org
+ * membership from connector data.
+ */
+export async function resolveMemberOrgsForUser(
+	userId: string,
+): Promise<ResolvedTenantMember[]> {
+	const sql = getDb();
+	const rows = await sql<{ organization_id: string; entity_id: number }>`
+    SELECT m."organizationId" AS organization_id, e.id AS entity_id
+    FROM "member" m
+    JOIN entity_identities ei
+      ON ei.organization_id = m."organizationId"
+     AND ei.namespace = 'auth_user_id'
+     AND ei.identifier = ${userId}
+     AND ei.deleted_at IS NULL
+     AND ei.source_connector = 'auth:signup'
+    JOIN entities e
+      ON e.id = ei.entity_id
+     AND e.organization_id = ei.organization_id
+     AND e.deleted_at IS NULL
+    JOIN entity_types et
+      ON et.id = e.entity_type_id
+     AND et.organization_id = e.organization_id
+     AND et.slug = '$member'
+    WHERE m."userId" = ${userId}
+    ORDER BY m."organizationId" ASC
+  `;
+	return rows.map((r) => ({
+		tenantOrganizationId: String(r.organization_id),
+		memberEntityId: Number(r.entity_id),
+	}));
 }
 
 /**

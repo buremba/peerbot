@@ -11,7 +11,7 @@ import { fetchUserInfoWithRaw } from "../connect/oauth-providers";
 import { getDb } from "../db/client";
 import {
 	type ResolvedTenantMember,
-	resolveTenantMember,
+	resolveMemberOrgsForUser,
 } from "../identity/auth-hook";
 import logger from "../utils/logger";
 import {
@@ -59,6 +59,93 @@ async function writeIdentities(
       DO NOTHING
     `;
 	}
+}
+
+/**
+ * Point a workspace-scoped chat identity at the user's `$member`, taking it over
+ * from a connector-minted `person` when one already owns it.
+ *
+ * Why an UPDATE and not another INSERT: `entity_identities` has a live-unique
+ * index on `(organization_id, namespace, identifier)`, so the claim exists at
+ * most once. `writeIdentities`' `ON CONFLICT DO NOTHING` therefore SILENTLY LOSES
+ * whenever the ACL sync minted a `person` for this workspace user before the
+ * human ever signed in — which is the normal ordering, since channel sync runs
+ * on a timer and sign-in is a one-off. The gate only ever resolves a `$member`
+ * (channel-visibility.ts), so leaving the claim on the `person` hides every
+ * enforced channel from its real owner.
+ *
+ * Re-pointing the claim is sufficient on its own: the ACL graph builder resolves
+ * members by whoever owns the identity (`resolveMembers` is deliberately
+ * type-agnostic) and reconciles `member_of` edges from that entity on the next
+ * sync tick, so the edges follow the claim. Writing edges here by hand would be
+ * undone by that same reconcile.
+ *
+ * SAFETY: only ever called with an identity proven by the provider's own OIDC
+ * token for THIS user, and only for an org the user is already a better-auth
+ * member of. It never grants org membership, and it never matches on a
+ * user-editable field such as a Slack profile email — a workspace admin can set
+ * those, which would let an attacker attach their `U…` to a victim's `$member`.
+ *
+ * The takeover is scoped to `person` entities minted from connector data. A
+ * claim already held by another `$member` is a genuine identity conflict (two
+ * humans, one Slack id) and is left alone — fail closed, never steal.
+ */
+async function adoptChatIdentityOntoMember(
+	sql: Sql,
+	organizationId: string,
+	memberEntityId: number,
+	namespace: string,
+	identifier: string,
+): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
+	const inserted = await sql<{ id: number }>`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector
+    ) VALUES (
+      ${organizationId}, ${memberEntityId}, ${namespace}, ${identifier}, 'auth:signup'
+    )
+    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id
+  `;
+	if (inserted.length > 0) return "created";
+
+	// Someone already owns it. Take it over only when the holder is a `person`
+	// (connector-minted); a `$member` holder means two humans claim one workspace
+	// id, which must be resolved by a human, not silently reassigned.
+	const adopted = await sql<{ id: number }>`
+    UPDATE entity_identities ei
+    SET entity_id = ${memberEntityId},
+        source_connector = 'auth:signup',
+        -- Keep a trail back to the person we took this from, matching the
+        -- convention in entity-merge.ts (COALESCE so a re-run never overwrites
+        -- the ORIGINAL owner with an intermediate one).
+        merged_from_entity_id = COALESCE(ei.merged_from_entity_id, ei.entity_id),
+        updated_at = current_timestamp
+    FROM entities e
+    JOIN entity_types et
+      ON et.id = e.entity_type_id
+     AND et.organization_id = e.organization_id
+    WHERE ei.organization_id = ${organizationId}
+      AND ei.namespace = ${namespace}
+      AND ei.identifier = ${identifier}
+      AND ei.deleted_at IS NULL
+      AND e.id = ei.entity_id
+      AND e.organization_id = ei.organization_id
+      AND et.slug = 'person'
+    RETURNING ei.id
+  `;
+	if (adopted.length > 0) return "adopted";
+
+	const mine = await sql<{ id: number }>`
+    SELECT id FROM entity_identities
+    WHERE organization_id = ${organizationId}
+      AND namespace = ${namespace}
+      AND identifier = ${identifier}
+      AND entity_id = ${memberEntityId}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+	return mine.length > 0 ? "already-owned" : "conflict";
 }
 
 async function findMemberEntityIdByEmail(
@@ -169,25 +256,37 @@ export function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
  * singletons is unreliable — dependency injection is the durable alternative.
  */
 export interface PersistLoginSlackIdentityDeps {
-	resolveTenantMember: (userId: string) => Promise<ResolvedTenantMember | null>;
+	/**
+	 * EVERY org where this user is a `$member`, not just their personal one — a
+	 * Slack workspace identity is meaningful in each org whose ACL graph covers
+	 * that workspace, and the authz gate resolves per-org.
+	 */
+	resolveMemberOrgsForUser: (
+		userId: string,
+	) => Promise<ResolvedTenantMember[]>;
 	getEnabledLoginProviderConfigs: typeof getEnabledLoginProviderConfigs;
 	fetchUserInfoWithRaw: typeof fetchUserInfoWithRaw;
 }
 
 const defaultPersistDeps: PersistLoginSlackIdentityDeps = {
-	resolveTenantMember,
+	resolveMemberOrgsForUser,
 	getEnabledLoginProviderConfigs,
 	fetchUserInfoWithRaw,
 };
 
 /**
  * On Slack sign-in, write the user's team-scoped `slack_user_id` (`T…:U…`) onto
- * their `$member` entity, sourced `auth:signup`. Idempotent — a duplicate is a
- * no-op via the `entity_identities` unique index.
+ * their `$member` entity, sourced `auth:signup`, in EVERY org where they are a
+ * member. Idempotent.
  *
  * Effect: the ACL Slack channel-graph collapses the workspace member onto the
  * existing `$member` instead of forking a separate `person`, because both sides
  * now resolve on the same canonical `slack_user_id`.
+ *
+ * Runs across every member org, not just the personal one: a workspace is
+ * commonly connected to a SHARED org, and the authz gate resolves per-org — so
+ * writing only to the personal org leaves the user invisible in exactly the org
+ * whose channels they are trying to read.
  *
  * Fire-and-forget — failures log and never throw into the auth hook.
  */
@@ -199,8 +298,8 @@ export async function persistLoginSlackIdentity(
 		if (account.providerId.trim().toLowerCase() !== "slack") return;
 		if (!account.accessToken) return;
 
-		const resolved = await deps.resolveTenantMember(account.userId);
-		if (!resolved) {
+		const memberOrgs = await deps.resolveMemberOrgsForUser(account.userId);
+		if (memberOrgs.length === 0) {
 			log.debug(
 				{ userId: account.userId },
 				"slack-identity: no tenant $member yet — skipping slack_user_id write",
@@ -231,8 +330,10 @@ export async function persistLoginSlackIdentity(
 		// injected deps seam so it stays testable.
 		if (!teamId) {
 			source = "userinfo-fallback";
+			// Any member org can supply the Slack provider config — it names the
+			// userinfo endpoint, which is identical across orgs.
 			const cfgs = await deps.getEnabledLoginProviderConfigs(
-				resolved.tenantOrganizationId,
+				memberOrgs[0].tenantOrganizationId,
 			);
 			const slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
 			const { raw } = await deps.fetchUserInfoWithRaw({
@@ -257,21 +358,39 @@ export async function persistLoginSlackIdentity(
 			return;
 		}
 
-		await writeIdentities(
-			getDb(),
-			resolved.tenantOrganizationId,
-			resolved.memberEntityId,
-			"auth:signup",
-			[{ namespace: SLACK_IDENTITY.USER_ID, identifier: combined }],
-		);
-		log.debug(
-			{
-				userId: account.userId,
-				organizationId: resolved.tenantOrganizationId,
-				source,
-			},
-			"slack-identity: wrote slack_user_id onto $member",
-		);
+		const sql = getDb();
+		for (const org of memberOrgs) {
+			const outcome = await adoptChatIdentityOntoMember(
+				sql,
+				org.tenantOrganizationId,
+				org.memberEntityId,
+				SLACK_IDENTITY.USER_ID,
+				combined,
+			);
+			if (outcome === "conflict") {
+				// Another `$member` in this org already holds this Slack id. Two
+				// humans cannot share one workspace account, so this is a data
+				// problem a person must look at — never silently reassign.
+				log.warn(
+					{
+						userId: account.userId,
+						organizationId: org.tenantOrganizationId,
+						memberEntityId: org.memberEntityId,
+					},
+					"slack-identity: slack_user_id already claimed by a different $member — leaving it alone",
+				);
+				continue;
+			}
+			log.debug(
+				{
+					userId: account.userId,
+					organizationId: org.tenantOrganizationId,
+					source,
+					outcome,
+				},
+				"slack-identity: linked slack_user_id to $member",
+			);
+		}
 	} catch (err) {
 		log.error(
 			{ err, userId: account.userId, providerId: account.providerId },

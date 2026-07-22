@@ -162,9 +162,10 @@ export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
   for (const row of rows) {
     if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
       continue;
-    const kind = out[row.kind] ?? {};
-    out[row.kind] = kind;
-    kind[row.verb] = (kind[row.verb] ?? 0) + 1;
+    const key = row.kind === "watcher" ? "behavior" : row.kind;
+    const bucket = out[key] ?? {};
+    out[key] = bucket;
+    bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;
   }
   return out;
 }

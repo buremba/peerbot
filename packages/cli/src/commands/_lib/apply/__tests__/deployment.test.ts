@@ -121,7 +121,7 @@ describe("buildCountsByKind", () => {
     ] as unknown as DiffRow[];
     expect(buildCountsByKind(rows)).toEqual({
       agent: { create: 1 },
-      watcher: { update: 2 },
+      behavior: { update: 2 },
       feed: { delete: 1 },
     });
   });

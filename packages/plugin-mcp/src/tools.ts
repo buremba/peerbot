@@ -28,7 +28,7 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
-  // Same shape as manage_agents: watcher definition create/update/delete may
+  // Same shape as manage_agents: behavior definition create/update/delete may
   // return pending_approval under the agent_config write-gate.
   "manage_behaviors",
   // manage_entity's update path queues a human-owned-field change for approval
@@ -43,13 +43,13 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
  * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
- *   - manage_behaviors write gate → same `pending_approval` shape (watcher
+ *   - manage_behaviors write gate → same `pending_approval` shape (behavior
  *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
- *     entity field the agent proposed changing).
+ *     entity field an agent or Behavior proposed changing).
  *
- * Fire-and-forget — a failed post never breaks the tool call (the agent still
+ * Best-effort — a failed post never breaks the tool call (the agent still
  * narrates the result, and the events-tab approval card remains the fallback).
  * Returns true when a card was posted (caller logs at debug only).
  *
@@ -65,7 +65,7 @@ export async function maybePostApprovalCard(
   const body = buildApprovalCardBody(toolName, rawResultText);
   if (!body) return false;
 
-  // Fire-and-forget: a failed post must never break the tool call (the agent
+  // Best-effort: a failed post must never break the tool call (the agent
   // still narrates the result, and the events-tab approval card is the
   // fallback). gatewayFetch throws on a hard network error, so guard it too.
   let error: TextResult | undefined;
@@ -91,8 +91,8 @@ export async function maybePostApprovalCard(
  * Parse a gated tool result into the /internal/interactions/create body, or
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
- * `proposal` (the agent row diff); manage_behaviors carries flat watcher args
- * plus `resourceKind: "watcher"`. All share the `tool_approval` transport.
+ * `proposal` (the agent row diff); manage_behaviors carries flat behavior args
+ * plus `resourceKind: "behavior"`. All share the `tool_approval` transport.
  */
 function buildApprovalCardBody(
   toolName: string,
@@ -113,7 +113,7 @@ function buildApprovalCardBody(
       return null;
     }
     // Server proposal is `{ args: ManageBehaviorsArgs }`; SPA renderer needs the
-    // flat watcher fields (action, slug, prompt, schedule, …).
+    // flat behavior fields (action, slug, prompt, schedule, …).
     const rawProposal = parsed.proposal;
     const flatProposal =
       rawProposal &&
@@ -126,7 +126,7 @@ function buildApprovalCardBody(
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: "watcher",
+      resourceKind: "behavior",
       proposal: flatProposal,
       current: parsed.current ?? null,
     };
@@ -170,7 +170,7 @@ function buildApprovalCardBody(
       fields: parsed.approval_fields ?? null,
       current: parsed.approval_current ?? null,
       attribution:
-        parsed.approval_attribution === "watcher" ? "watcher" : "agent",
+        parsed.approval_attribution === "behavior" ? "behavior" : "agent",
     };
   }
 

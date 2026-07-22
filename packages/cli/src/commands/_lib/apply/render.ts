@@ -9,6 +9,13 @@ const VERB_PREFIX = {
   delete: chalk.red("-"),
 } as const;
 
+/**
+ * User-facing labels for plan/progress output.
+ *
+ * Diff rows keep an internal kind of `"watcher"` (DesiredState / counts_by_kind
+ * still use that key; manage_behaviors wire payloads never carry it). Printed
+ * text must say "behavior" so `lobu apply` never surfaces the old term.
+ */
 const KIND_LABEL: Record<DiffRow["kind"], string> = {
   agent: "agent",
   settings: "settings",

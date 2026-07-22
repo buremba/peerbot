@@ -90,6 +90,9 @@ describe('deep-link token exchange', () => {
     expect(html).toContain('sessionStorage');
     expect(html).toContain('location.hash');
     expect(html).toContain('replaceState');
+    // Browser-handoff deep link (sidepanel → Memory run).
+    expect(html).toContain('h.get("run")');
+    expect(html).toContain('/#run=');
   });
 
   // The load-bearing claim: the session token from /extension-session, sent as

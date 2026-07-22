@@ -1069,6 +1069,9 @@ export async function prepareLinkedInComment(
       await dispatcher.dispatch("focus_tab", {
         tab_id: tabId,
         draw_attention: true,
+        // Open Owletto sidepanel so Memory can show this parent run (holder_run_id
+        // is stamped on the tab by chrome navigate).
+        open_sidepanel: true,
         ...chromeOriginsInput(),
       });
     } catch {
@@ -1082,6 +1085,8 @@ export async function prepareLinkedInComment(
         title: "LinkedIn comment ready",
         message:
           "Draft is in the comment box — review and click Post yourself. Lobu did not submit.",
+        tab_id: tabId,
+        click_url: postUrl,
         ...chromeOriginsInput(),
       });
     } catch {

@@ -1277,6 +1277,10 @@ describe("prepare_comment helpers", () => {
     // Never click Post (no click_ref at all on the happy path).
     expect(keys).not.toContain("click_ref");
     expect(keys).not.toContain("type_ref");
+    const focus = log.find((e) => e.key === "focus_tab");
+    expect(focus?.input.open_sidepanel).toBe(true);
+    const note = log.find((e) => e.key === "show_notification");
+    expect(note?.input.tab_id).toBe(42);
   });
 
   test("prepareLinkedInComment falls back to type_ref when evaluate misses", async () => {

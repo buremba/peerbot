@@ -535,9 +535,17 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
   var h = new URLSearchParams(location.hash.slice(1));
   var token = h.get("token") || "";
   var worker = h.get("worker") || "";
+  var run = h.get("run") || "";
   // Strip the token out of the URL before doing anything else.
   history.replaceState(null, "", location.pathname);
-  var next = worker ? "/#worker=" + encodeURIComponent(worker) : "/";
+  // Chrome extension deep links (sidepanel): device page or a Memory run.
+  // Prefer run over worker when both are present — handoff panels care about
+  // the staged action, not the device.
+  var next = run
+    ? "/#run=" + encodeURIComponent(run)
+    : worker
+      ? "/#worker=" + encodeURIComponent(worker)
+      : "/";
   if (!token) { location.replace("/"); return; }
   var retried = false;
   function fail(msg) {

@@ -1,3 +1,4 @@
+import { ListInstalledAction } from "@lobu/core/contracts/tools/manage-catalog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as installed from "../../../catalog/installed";
 import { manageCatalog } from "../manage_catalog";
@@ -68,6 +69,24 @@ describe("manage_catalog list_installed", () => {
 			action: "list_installed",
 			installed: { connectors: { kind: "connectors", items: [] } },
 		});
+	});
+
+	it("does not advertise the rejected channels kind", async () => {
+		const result = await manageCatalog(
+			{ action: "list_installed", kinds: ["channels"] },
+			{} as never,
+			ctx
+		);
+
+		expect(result).toEqual({
+			error: "Unsupported installed kind(s): channels",
+		});
+		expect(ListInstalledAction.properties.action.description).not.toContain(
+			"channels"
+		);
+		expect(ListInstalledAction.properties.kinds.description).not.toContain(
+			"channels"
+		);
 	});
 
 	it("forwards include_catalog to installed listers", async () => {

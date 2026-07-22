@@ -22,12 +22,12 @@ export const ListCatalogAction = Type.Object({
 export const ListInstalledAction = Type.Object({
   action: Type.Literal("list_installed", {
     description:
-      "List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.",
+      "List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.",
   }),
   kinds: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails, channels.",
+        "Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails.",
     })
   ),
   agent_id: Type.Optional(

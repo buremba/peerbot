@@ -463,6 +463,31 @@ export default async (_ctx, client) => {
 	},
 
 	// notifications
+	"notifications.list": {
+		summary:
+			"List the caller's in-app inbox notifications (same store as REST GET /notifications). Keyset-paginated by event id; optional unread_only filter. Returns `{ notifications, nextCursor }`.",
+		access: "read",
+		signature:
+			"notifications.list(input?: { cursor?: number | null; limit?: number; unread_only?: boolean }): Promise<{ notifications: object[]; nextCursor: number | null }>",
+		example:
+			"const { notifications, nextCursor } = await client.notifications.list({ unread_only: true, limit: 20 });",
+		usageExample: `// Read unread inbox items without changing their state.
+export default async (_ctx, client) => {
+  const { notifications, nextCursor } = await client.notifications.list({
+    unread_only: true,
+    limit: 20,
+  });
+  return { notifications, nextCursor };
+};`,
+	},
+	"notifications.markRead": {
+		summary:
+			"Mark one of the caller's notifications as read (same store as REST PATCH /notifications/:id/read). Accepts a positional id or `{ notification_id }`. Returns `{ success: true }` or throws when missing/already read. Use via run_sdk because it changes inbox state.",
+		access: "write",
+		signature:
+			"notifications.markRead(notification_id: number): Promise<{ success: true }> // or notifications.markRead({ notification_id })",
+		example: "await client.notifications.markRead({ notification_id: 42 });",
+	},
 	"notifications.send": {
 		summary:
 			"Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a Behavior reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `behavior_source` when firing from a reaction.",

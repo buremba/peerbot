@@ -155,29 +155,39 @@ describe("sandbox runtime", () => {
     });
   });
 
-  it("read mode: a known-but-hidden namespace throws a structured error, not undefined", async () => {
-    // `notifications` has only a write method (`send`), so read mode filters the
-    // whole namespace out of the manifest. Before the stub, `client.notifications`
-    // was undefined and the guest died with the opaque "Cannot read properties of
-    // undefined (reading 'send')". Now it must throw a NamespaceNotAvailable error
-    // naming the namespace, so discovery and runtime agree.
+  it("read mode: notification mutations are absent while list is callable", async () => {
     const stubSdk = {
+      notifications: {
+        list: async () => ({ notifications: [], nextCursor: null }),
+      },
       query: async () => [],
       log: () => undefined,
     } as unknown as ClientSDK;
 
-    const result = await runScript({
+    const listed = await runScript({
       source:
-        "export default async (_ctx, client) => client.notifications.send({ title: 'x' });",
+        "export default async (_ctx, client) => client.notifications.list({ unread_only: true });",
       sdk: stubSdk,
       sdkMode: "read",
     });
+    expect(listed.success).toBe(true);
+    expect(listed.returnValue).toEqual({ notifications: [], nextCursor: null });
 
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toContain("NamespaceNotAvailable");
-    expect(result.error?.message).toContain("notifications");
-    // The stub must NOT dispatch to the host — it fails guest-side.
-    expect(result.sdkCalls).toBe(0);
+    for (const call of [
+      "client.notifications.markRead(1)",
+      "client.notifications.send({ title: 'x' })",
+    ]) {
+      const result = await runScript({
+        source: `export default async (_ctx, client) => ${call};`,
+        sdk: stubSdk,
+        sdkMode: "read",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.message ?? "").toMatch(/not a function|undefined/i);
+      // The mutation must fail guest-side without dispatching to the host.
+      expect(result.sdkCalls).toBe(0);
+    }
   });
 
   it("read mode: a genuinely unknown namespace stays undefined (not a false stub)", async () => {

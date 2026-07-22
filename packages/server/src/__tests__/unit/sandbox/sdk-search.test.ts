@@ -183,17 +183,25 @@ describe("sdkSearch", () => {
 		expect(result.notes ?? "").not.toContain("none are visible");
 	});
 
-	it("names a write-only namespace in read mode instead of a silent dead end", async () => {
-		// A namespace whose methods are ALL non-read (notifications = send only) is
-		// filtered out of read mode. search_sdk must still hint that it exists behind
-		// run_sdk, not return an empty dead end that reads as "does not exist".
-		const result = await sdkSearch(
+	it("discovers notifications.list in read mode; mutations need run_sdk", async () => {
+		const listed = await sdkSearch(
 			{ query: "notifications", mode: "read" },
 			stubEnv,
 			readCtx
 		);
-		expect(result.notes ?? "").toContain("notifications.*");
-		expect(result.notes ?? "").toContain("run_sdk");
+		expect(listed.match_count).toBeGreaterThan(0);
+		const joined = listed.results.join("\n");
+		expect(joined).toContain("notifications.list");
+		expect(joined).not.toContain("notifications.markRead");
+		expect(joined).not.toContain("notifications.send");
+
+		const markRead = await sdkSearch(
+			{ query: "notifications.markRead", mode: "read" },
+			stubEnv,
+			readCtx
+		);
+		expect(markRead.match_count).toBe(0);
+		expect(markRead.notes ?? "").toContain("run_sdk");
 	});
 
 	it("shows admin methods to admin-tier callers", async () => {

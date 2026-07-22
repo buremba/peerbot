@@ -317,6 +317,7 @@ describe("method-metadata", () => {
 			["authProfiles.get", "auth_profile_slug"],
 			["authProfiles.test", "auth_profile_slug"],
 			["authProfiles.delete", "auth_profile_slug"],
+			["notifications.markRead", "notification_id"],
 		];
 		for (const [path, field] of positional) {
 			const sig = METHOD_METADATA[path]?.signature ?? "";

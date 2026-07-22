@@ -23,6 +23,10 @@ import {
   createTestUser,
 } from '../../setup/test-fixtures';
 import { get } from '../../setup/test-helpers';
+import {
+  CANVAS_ENTITY_TYPE_SLUG,
+  MEMBER_ENTITY_TYPE_SLUG,
+} from '../../../tools/constants';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_AVAILABLE = existsSync(
@@ -77,6 +81,27 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       content: 'Customers describe Acme Brand as polished and reliable.',
       connector_key: 'contract.public',
     });
+
+    // System built-in types are per-tenant internals and must not be advertised in the sitemap.
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, description, icon, created_at, updated_at)
+      VALUES
+        (${publicOrg.id}, ${MEMBER_ENTITY_TYPE_SLUG}, 'Member', 'Organization member', '👤', NOW(), NOW()),
+        (${publicOrg.id}, ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Behavior canvas', 'layout', NOW(), NOW())
+    `;
+    await createTestEntity({
+      name: 'Roster Person',
+      entity_type: MEMBER_ENTITY_TYPE_SLUG,
+      organization_id: publicOrg.id,
+      created_by: user.id,
+    });
+    await createTestEntity({
+      name: 'Behavior Canvas',
+      entity_type: CANVAS_ENTITY_TYPE_SLUG,
+      organization_id: publicOrg.id,
+      parent_id: brand.id,
+      created_by: user.id,
+    });
   });
 
   it('renders crawlable HTML and bootstrap data for a public workspace', async () => {
@@ -125,6 +150,45 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(sitemapXml).toContain(
       '<loc>http://localhost/public-contract-org/brand/acme-brand</loc>'
     );
+    expect(sitemapXml).toContain(
+      '<loc>http://localhost/public-contract-org/brand/acme-brand/product/acme-product</loc>'
+    );
     expect(sitemapXml).not.toContain('private-contract-org');
+  });
+
+  it('sitemap excludes $-prefixed system entity types and their entities', async () => {
+    const sitemap = await get('/sitemap.xml', { env: { PUBLIC_GATEWAY_URL: publicGatewayUrl } });
+    const sitemapXml = await sitemap.text();
+
+    expect(sitemap.status).toBe(200);
+    expect(sitemapXml).not.toContain(`/${MEMBER_ENTITY_TYPE_SLUG}`);
+    expect(sitemapXml).not.toContain('roster-person');
+    expect(sitemapXml).not.toContain(`/${CANVAS_ENTITY_TYPE_SLUG}`);
+    expect(sitemapXml).not.toContain('behavior-canvas');
+    // Guard the whole class, not just today's built-ins.
+    expect(sitemapXml).not.toMatch(/<loc>[^<]*\/\$/);
+  });
+
+  it('404s $-prefixed system type and entity pages instead of rendering them', async () => {
+    const env = { PUBLIC_GATEWAY_URL: publicGatewayUrl };
+
+    // The type listing page previously rendered 200 and exposed member names.
+    const typePage = await get(`/public-contract-org/${MEMBER_ENTITY_TYPE_SLUG}`, {
+      headers: { Accept: 'text/html' },
+      env,
+    });
+    const typeBody = await typePage.text();
+    expect(typePage.status).toBe(404);
+    expect(typeBody).toContain('noindex,nofollow');
+    expect(typeBody).not.toContain('Roster Person');
+
+    // Entity pages beneath a system type must 404 too, not just the listing.
+    const entityPage = await get(
+      `/public-contract-org/${MEMBER_ENTITY_TYPE_SLUG}/roster-person`,
+      { headers: { Accept: 'text/html' }, env }
+    );
+    const entityBody = await entityPage.text();
+    expect(entityPage.status).toBe(404);
+    expect(entityBody).not.toContain('Roster Person');
   });
 });

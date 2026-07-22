@@ -359,6 +359,10 @@ async function getPublicEntityType(
       WHERE et.organization_id = $1
         AND et.slug = $2
         AND et.deleted_at IS NULL
+        -- $-prefixed types ($member, $canvas) are per-tenant system internals.
+        -- Returning null here 404s both the type listing page and every entity
+        -- page beneath it, matching what the sitemap advertises.
+        AND et.slug NOT LIKE '$%'
       LIMIT 1
     `,
     [organizationId, slug]
@@ -1032,6 +1036,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
       FROM "organization" o
       JOIN entity_types et ON et.organization_id = o.id AND et.deleted_at IS NULL
       WHERE o.visibility = 'public'
+        AND et.slug NOT LIKE '$%'
       GROUP BY o.slug, et.slug
       ORDER BY o.slug ASC, et.slug ASC
     `,
@@ -1059,6 +1064,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         WHERE o.visibility = 'public'
           AND e.deleted_at IS NULL
           AND e.parent_id IS NULL
+          AND et.slug NOT LIKE '$%'
 
         UNION ALL
 
@@ -1074,6 +1080,7 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         JOIN entity_types et_child ON et_child.id = child.entity_type_id
         JOIN entity_paths ON entity_paths.id = child.parent_id
         WHERE child.deleted_at IS NULL
+          AND et_child.slug NOT LIKE '$%'
       )
       SELECT
         o.slug AS organization_slug,

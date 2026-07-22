@@ -5,7 +5,7 @@
  * call a chrome connector action against the paired Owletto extension in
  * the same org. We:
  *
- *   1. Look up the parent sync run's org (+ optional data connection) from runs.
+ *   1. Look up the parent connector run's org (+ optional data connection) from runs.
  *   2. Pick an online chrome connection / extension (prefer parent connection's
  *      chrome-extension pin when set — browser affinity for LinkedIn/X/etc.).
  *   3. Enqueue an action run via `createConnectorOperationRun` (the same
@@ -84,7 +84,7 @@ export type ResolveOnlineChromeOptions = {
    * Prefer this device_workers.id when it is an online debugger-capable
    * chrome-extension. Used for browser affinity: a LinkedIn/X/Revolut
    * connection may set device_worker_id to a chrome-extension worker to mean
-   * "scrape with this browser" (parent sync still runs on the fleet — see
+   * "scrape with this browser" (the parent connector run stays on the fleet — see
    * poll.ts browser-affinity claim rules).
    */
   preferredDeviceWorkerId?: string | null;
@@ -506,9 +506,9 @@ export async function resolveOnlineChromeConnection(
 }
 
 /**
- * Look up browser affinity for a parent sync: if the data connection is pinned
+ * Look up browser affinity for a parent connector run: if its data connection is pinned
  * to a chrome-extension worker, that pin means "use this browser" (not "run
- * the parent sync on the extension" — see poll.ts).
+ * the parent connector on the extension" — see poll.ts).
  */
 export async function preferredBrowserWorkerForConnection(
   connectionId: number | null | undefined,
@@ -538,10 +538,10 @@ export async function dispatchChromeActionToExtension(params: {
   organizationId: string;
   actionKey: string;
   actionInput: Record<string, unknown>;
-  /** Parent run id, for log correlation only. */
+  /** Parent connector run id, also used to scope extension-owned tabs. */
   parentRunId?: number;
   /**
-   * Data connection that owns the parent sync (e.g. LinkedIn). When pinned to
+   * Data connection that owns the parent connector run (e.g. LinkedIn). When pinned to
    * a chrome-extension, scrapes target that browser.
    */
   parentConnectionId?: number | null;
@@ -577,7 +577,7 @@ export async function dispatchChromeActionToExtension(params: {
   }
 
   // Stamp holder_run_id on every chrome action so the extension can scope
-  // scratch-tab ownership/cleanup to the parent sync run.
+  // scratch-tab ownership/cleanup to the parent connector run.
   const operationInput: Record<string, unknown> = { ...(actionInput ?? {}) };
   if (
     parentRunId != null &&
@@ -648,7 +648,8 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
 
   const sql = getDb();
 
-  // Authorize: parent run must exist, be a running sync claimed by this worker.
+  // Authorize: parent run must exist, be a running connector execution claimed
+  // by this worker. Both sync() and execute() receive chrome_dispatcher.
   // connection_id drives browser affinity when pinned to a chrome-extension.
   const parentRows = (await sql`
     SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id
@@ -675,9 +676,9 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   if (parentRun.claimed_by !== body.worker_id) {
     return c.json({ error: 'parent_run is not claimed by this worker' }, 403);
   }
-  if (parentRun.run_type !== 'sync') {
+  if (parentRun.run_type !== 'sync' && parentRun.run_type !== 'action') {
     return c.json(
-      { error: `parent_run must be a sync run, got ${parentRun.run_type}` },
+      { error: `parent_run must be a sync or action run, got ${parentRun.run_type}` },
       400
     );
   }

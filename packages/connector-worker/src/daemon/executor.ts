@@ -445,17 +445,29 @@ async function executeActionRun(
         // `executeLocalActionInline`, which merges the connection's own config
         // so an action can read e.g. a `restaurants_url`), this worker-fleet
         // action path does not yet receive per-connection config (the poll
-        // response doesn't carry it). Connectors whose actions need connection
-        // config — and the extension-driving ones, which also need an
-        // onChromeDispatch hook not wired here — run on the inline path. If a
-        // future connector needs config on the fleet path, plumb the
-        // connection config into the action poll response and merge it here.
+        // response doesn't carry it). If a future connector needs config on the
+        // fleet path, plumb the connection config into the action poll response
+        // and merge it here.
+        //
+        // Chrome: onChromeDispatch is wired the same as sync jobs so
+        // prepare_comment / other extension-driving actions can stage UI via
+        // the paired Owletto extension (parent_run_id = this action run).
         actionKey: action_key,
         actionInput: (action_input ?? {}) as Record<string, unknown>,
         config: mergeEnv(env, job.connection_credentials, null),
         env,
         sessionState: null,
         credentials: credentials ?? null,
+      },
+      hooks: {
+        onChromeDispatch: async (actionKey, actionInput) => {
+          return client.dispatchChromeAction({
+            parent_run_id: run_id,
+            worker_id: client.id,
+            action_key: actionKey,
+            action_input: actionInput,
+          });
+        },
       },
     });
 

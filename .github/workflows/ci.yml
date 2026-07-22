@@ -42,10 +42,10 @@ jobs:
         # AppArmor by default; bwrap needs them, so flip the sysctl. See
         # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
         run: |
-          # Retry: a transient apt mirror failure used to hand the job on to the
-          # test steps, where the bwrap escape matrix would silently auto-skip.
-          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
-          # flake is a red build, not a false green — retry to keep that rare.
+          # apt mirrors flake. Enforcement (LOBU_REQUIRE_EXEC_SANDBOX) means a
+          # failed install is now a RED build rather than a silent skip, so
+          # retry to keep that rare, and exit non-zero when genuinely exhausted
+          # instead of falling through to the test steps.
           installed=""
           for attempt in 1 2 3; do
             if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
@@ -55,7 +55,6 @@ jobs:
             echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
             sleep $((attempt * 5))
           done
-          # Fail loudly rather than falling through to a green run without bwrap.
           if [ -z "$installed" ]; then
             echo "::error::bubblewrap install failed after 3 attempts"
             exit 1
@@ -237,10 +236,10 @@ jobs:
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
         run: |
-          # Retry: a transient apt mirror failure used to hand the job on to the
-          # test steps, where the bwrap escape matrix would silently auto-skip.
-          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
-          # flake is a red build, not a false green — retry to keep that rare.
+          # apt mirrors flake. Enforcement (LOBU_REQUIRE_EXEC_SANDBOX) means a
+          # failed install is now a RED build rather than a silent skip, so
+          # retry to keep that rare, and exit non-zero when genuinely exhausted
+          # instead of falling through to the test steps.
           installed=""
           for attempt in 1 2 3; do
             if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
@@ -250,7 +249,6 @@ jobs:
             echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
             sleep $((attempt * 5))
           done
-          # Fail loudly rather than falling through to a green run without bwrap.
           if [ -z "$installed" ]; then
             echo "::error::bubblewrap install failed after 3 attempts"
             exit 1
@@ -318,10 +316,10 @@ jobs:
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
         run: |
-          # Retry: a transient apt mirror failure used to hand the job on to the
-          # test steps, where the bwrap escape matrix would silently auto-skip.
-          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
-          # flake is a red build, not a false green — retry to keep that rare.
+          # apt mirrors flake. Enforcement (LOBU_REQUIRE_EXEC_SANDBOX) means a
+          # failed install is now a RED build rather than a silent skip, so
+          # retry to keep that rare, and exit non-zero when genuinely exhausted
+          # instead of falling through to the test steps.
           installed=""
           for attempt in 1 2 3; do
             if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
@@ -331,7 +329,6 @@ jobs:
             echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
             sleep $((attempt * 5))
           done
-          # Fail loudly rather than falling through to a green run without bwrap.
           if [ -z "$installed" ]; then
             echo "::error::bubblewrap install failed after 3 attempts"
             exit 1

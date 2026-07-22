@@ -341,7 +341,7 @@ describeDarwin("sandbox-exec escape matrix", () => {
 });
 
 // Real escape-matrix tests against bwrap. Auto-skip when not on Linux, when
-// bwrap isn't on PATH, or when user namespaces are blocked at the OS level
+// bwrap isn't installed at a supported path, or when namespaces are blocked
 // (Ubuntu 24.04 / GitHub Actions default until apparmor sysctl is flipped).
 // Probed once at module load so each test starts with a known-good sandbox.
 const isLinux = process.platform === "linux";
@@ -365,6 +365,8 @@ const linuxBwrapWorks = (() => {
       [
         "--unshare-user",
         "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
         "--unshare-net",
         "--ro-bind",
         "/usr",
@@ -403,6 +405,9 @@ const requireSandbox =
 describe("bwrap escape matrix availability", () => {
   test("a working bwrap is present when the environment requires one", () => {
     if (!requireSandbox) return;
+    // Compared as an object so a failure names the platform too — on a
+    // non-Linux runner `false` alone reads as "bwrap broken" when the real
+    // cause is that the job is on the wrong OS.
     expect({
       platform: process.platform,
       bwrapDeliversIsolation: linuxBwrapWorks,

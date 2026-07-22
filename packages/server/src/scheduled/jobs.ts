@@ -221,18 +221,17 @@ function registerMaintenanceTasks(
     { cron: '*/15 * * * *' }
   );
 
-  // $member projection-drift alerter — flags better-auth members with no
-  // resolvable `$member` + `auth:signup` claim (enforced channels hidden from
-  // them) and self-heal-proof "poison" claims owned by a non-$member entity.
-  // Read-only smoke detector, not a repair; logs on a non-zero count, riding the
-  // pino→Sentry path. Single-claimant per tick. Hourly is plenty — drift only
-  // enters on a provisioning-hook failure, which is rare and non-time-critical.
+  // Read-only detector for members whose trusted $member claim is missing or
+  // blocked by another live claim. Cron dispatch is single-claimant per tick.
   scheduler.register(
     'member-claim-drift',
     async () => {
       const result = await runMemberClaimDriftCheck();
       if (result.missingClaim > 0 || result.poisonClaim > 0) {
-        logger.info({ ...result }, '[task] member-claim-drift found drift');
+        logger.error(
+          { ...result },
+          '[task] member-claim-drift found members without a resolvable $member claim',
+        );
       }
     },
     { cron: '0 * * * *' },

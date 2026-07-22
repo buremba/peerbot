@@ -204,7 +204,7 @@ export async function ensurePersonalOrganization(
 		} catch (error) {
 			// Drift risk: the personal org + member row exist, but without the
 			// $member + auth:signup claim the user resolves to nothing in the authz
-			// gate. Structured for the member-claim-drift alerter; non-fatal so a
+			// gate. Structured to correlate with the drift detector; non-fatal so a
 			// failed identity write can't break org creation (it's retried on the
 			// next call — the helper is idempotent).
 			logger.error(

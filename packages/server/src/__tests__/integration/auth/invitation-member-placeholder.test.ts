@@ -7,6 +7,7 @@ import {
 	createTestUser,
 } from "../../setup/test-fixtures";
 import { post } from "../../setup/test-helpers";
+import { provisionMemberAndCoreIdentities } from "../../../auth/subject-identities";
 import { ensureMemberEntity } from "../../../utils/member-entity";
 
 vi.mock("../../../email/send", () => ({
@@ -70,16 +71,10 @@ describe("invitation member placeholder", () => {
 		expect(claims).toHaveLength(0);
 	});
 
-	it("refuses to write an auth_user_id claim when userId does not own the email (runtime invariant)", async () => {
-		// The structural backstop for the bug PR #2126 fixed by convention: even a
-		// caller that passes a mismatched (userId, email) pair straight into
-		// ensureMemberEntity must NOT get a claim written — the entity is resolved
-		// by email, so the claim would hand `userId` the visibility of whoever
-		// owns `email`.
+	it("refuses claims when userId does not own the member email", async () => {
 		const sql = getTestDb();
 		const victimEmail = "victim-invariant@test.example.com";
 
-		// inviterUserId is a real user, but their email is inviter@…, NOT victim@…
 		await ensureMemberEntity({
 			organizationId: orgId,
 			userId: inviterUserId,
@@ -88,6 +83,13 @@ describe("invitation member placeholder", () => {
 			role: "member",
 			status: "active",
 		});
+		await expect(
+			provisionMemberAndCoreIdentities(orgId, {
+				userId: inviterUserId,
+				email: victimEmail,
+				name: victimEmail,
+			}),
+		).rejects.toThrow("does not own");
 
 		const victimRows = await sql<{ id: number }>`
       SELECT e.id
@@ -100,8 +102,6 @@ describe("invitation member placeholder", () => {
     `;
 		expect(victimRows).toHaveLength(1);
 
-		// The mismatch guard fired: NO auth_user_id claim was written for the
-		// inviter onto the victim-email entity.
 		const leaked = await sql<{ identifier: string }>`
       SELECT identifier
       FROM entity_identities

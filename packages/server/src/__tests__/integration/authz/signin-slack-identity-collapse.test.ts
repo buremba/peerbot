@@ -170,7 +170,7 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 		// signs in. The claim is then already taken, so the pre-existing
 		// `writeIdentities` ON CONFLICT DO NOTHING would silently lose and the
 		// gate — which only resolves a $member — would keep hiding every enforced
-		// channel. adoptChatIdentityOntoMember must re-point the claim.
+		// channel. The sign-in path must re-point the claim.
 		const org = await createTestOrganization({
 			name: "Acme",
 			visibility: "private",
@@ -233,8 +233,7 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 		expect(personBefore[0].slug).toBe("person");
 		const personId = Number(personBefore[0].entity_id);
 
-		// THEN: Alice signs in. adoptChatIdentityOntoMember re-points the claim
-		// from the person onto her $member.
+		// THEN: Alice signs in and the claim moves from the person to her $member.
 		await persistLoginSlackIdentity(
 			{
 				providerId: "slack",

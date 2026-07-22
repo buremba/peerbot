@@ -425,7 +425,7 @@ export async function createAuth(
 						} catch (err) {
 							// See afterAddMember: a swallow here leaves the accepted
 							// member without a resolvable claim → enforced channels
-							// hidden. Structured for the member-claim-drift alerter.
+							// hidden. Use the same fields as the other drift-prone hooks.
 							logger.error(
 								{
 									err,

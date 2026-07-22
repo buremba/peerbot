@@ -110,7 +110,10 @@ export async function resolveTenantMember(
     -- into it. The tag is written by personal-org provisioning and by
     -- afterCreateOrganization, so it is the authoritative signal; createdAt stays
     -- only as the tiebreak for users provisioned before the tag existed.
-    ORDER BY (o.metadata::jsonb->>'personal_org_for_user_id' = ${userId}) DESC,
+    ORDER BY COALESCE(
+               o.metadata::jsonb->>'personal_org_for_user_id' = ${userId},
+               false
+             ) DESC,
              o."createdAt" ASC
     LIMIT 1
   `;

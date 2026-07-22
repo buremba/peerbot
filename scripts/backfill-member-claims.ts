@@ -7,14 +7,13 @@
  * The authz channel-visibility gate resolves a signed-in user to their `$member`
  * entity via an `entity_identities` row (namespace `auth_user_id`, source
  * `auth:signup`, on a `$member` entity). The provisioning hooks that write that
- * claim only started doing so on 2026-06-28 (the ACL gate PR). Every better-auth
- * `member` row created before then has NO such claim, so the gate resolves those
- * users to nothing and hides every enforced channel from them.
+ * claim only started doing so on 2026-06-28 (the ACL gate PR). Older member rows
+ * that have not passed through provisioning again can therefore lack the claim,
+ * making every enforced channel invisible to those users.
  *
  * The forward path is now correct — this fills in the historical rows so those
  * users resolve, exactly as a fresh sign-up would. It is NOT a migration
- * (docs/MIGRATIONS.md: no scan inside the blocking Helm hook), and it is
- * cosmetic-safe to run post-deploy alongside live traffic.
+ * (docs/MIGRATIONS.md: no scan inside the blocking Helm hook).
  *
  * ─── Exactly what it does ────────────────────────────────────────────────────
  * For each `(user, org)` member row lacking the claim, it calls the SAME
@@ -39,19 +38,20 @@
  *
  * ─── Safety ──────────────────────────────────────────────────────────────────
  *   - DRY-RUN by default; pass `--execute` to actually write.
- *   - Idempotent: provisionMemberAndCoreIdentities is ON CONFLICT DO NOTHING, so
- *     a second run backfills 0 rows.
+ *   - Idempotent for healable rows: a second run finds no repaired rows.
+ *   - Refuses rows where another live auth_user_id claim blocks the repair.
  *   - Per-row: a failure logs and continues (never aborts the whole batch).
  *
  * ─── Usage ───────────────────────────────────────────────────────────────────
  *   bun run scripts/backfill-member-claims.ts                  # dry-run
  *   bun run scripts/backfill-member-claims.ts --execute        # write
  *   bun run scripts/backfill-member-claims.ts --org <id>       # one org
- *   bun run scripts/backfill-member-claims.ts --include-shared # also shared orgs
+ *   bun run scripts/backfill-member-claims.ts --include-shared # include private shared orgs
  *
  * DATABASE_URL must point at the target database.
  */
 
+import { parseArgs as parseNodeArgs } from "node:util";
 import { provisionMemberAndCoreIdentities } from "../packages/server/src/auth/subject-identities";
 import { getDb } from "../packages/server/src/db/client";
 
@@ -64,6 +64,8 @@ interface DriftRow {
   name: string | null;
   /** True when this org is explicitly tagged as the user's personal org. */
   isPersonal: boolean;
+  /** A live auth_user_id row that prevents the correct claim from being inserted. */
+  hasBlockingClaim: boolean;
 }
 
 interface BackfillOptions {
@@ -73,14 +75,21 @@ interface BackfillOptions {
 }
 
 function parseArgs(argv: string[]): BackfillOptions {
-  const opts: BackfillOptions = { execute: false, includeShared: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--execute") opts.execute = true;
-    else if (a === "--include-shared") opts.includeShared = true;
-    else if (a === "--org") opts.org = argv[++i];
-  }
-  return opts;
+  const { values } = parseNodeArgs({
+    args: argv,
+    options: {
+      execute: { type: "boolean" },
+      org: { type: "string" },
+      "include-shared": { type: "boolean" },
+    },
+    allowPositionals: false,
+    strict: true,
+  });
+  return {
+    execute: values.execute ?? false,
+    includeShared: values["include-shared"] ?? false,
+    ...(values.org ? { org: values.org } : {}),
+  };
 }
 
 async function findDrift(org?: string): Promise<DriftRow[]> {
@@ -93,6 +102,7 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
     email: string | null;
     name: string | null;
     isPersonal: boolean;
+    hasBlockingClaim: boolean;
   }>`
     SELECT
       m."userId"          AS "userId",
@@ -101,7 +111,18 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
       o.visibility        AS visibility,
       u.email             AS email,
       u.name              AS name,
-      (o.metadata::jsonb->>'personal_org_for_user_id' = m."userId") AS "isPersonal"
+      COALESCE(
+        o.metadata::jsonb->>'personal_org_for_user_id' = m."userId",
+        false
+      ) AS "isPersonal",
+      EXISTS (
+        SELECT 1
+        FROM entity_identities blocker
+        WHERE blocker.organization_id = m."organizationId"
+          AND blocker.namespace = 'auth_user_id'
+          AND blocker.identifier = m."userId"
+          AND blocker.deleted_at IS NULL
+      ) AS "hasBlockingClaim"
     FROM "member" m
     JOIN organization o ON o.id = m."organizationId"
     JOIN "user" u ON u.id = m."userId"
@@ -128,12 +149,45 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
   return rows;
 }
 
+async function hasResolvableClaim(
+  organizationId: string,
+  userId: string
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ found: boolean }>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM entity_identities ei
+      JOIN entities e
+        ON e.id = ei.entity_id
+       AND e.organization_id = ei.organization_id
+       AND e.deleted_at IS NULL
+      JOIN entity_types et
+        ON et.id = e.entity_type_id
+       AND et.organization_id = e.organization_id
+       AND et.slug = '$member'
+      WHERE ei.organization_id = ${organizationId}
+        AND ei.namespace = 'auth_user_id'
+        AND ei.identifier = ${userId}
+        AND ei.source_connector = 'auth:signup'
+        AND ei.deleted_at IS NULL
+    ) AS found
+  `;
+  return rows[0]?.found ?? false;
+}
+
 async function main(): Promise<void> {
+  let opts: BackfillOptions;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
   if (!process.env.DATABASE_URL) {
     console.error("set DATABASE_URL");
     process.exit(1);
   }
-  const opts = parseArgs(process.argv.slice(2));
   const drift = await findDrift(opts.org);
 
   console.log(
@@ -142,11 +196,20 @@ async function main(): Promise<void> {
   );
 
   let backfilled = 0;
+  let skippedBlocked = 0;
   let skippedShared = 0;
   let skippedNoEmail = 0;
   let failed = 0;
 
   for (const row of drift) {
+    if (row.hasBlockingClaim) {
+      skippedBlocked++;
+      console.error(
+        `  skip (blocking auth_user_id claim) user=${row.userId} org=${row.orgSlug}`
+      );
+      continue;
+    }
+
     // Retarget guard: writing a claim into a private, NON-personal (shared) org
     // can only change resolveTenantMember targeting, never fix a personal-org
     // symptom. Skip unless explicitly opted in on a targeting-safe build.
@@ -181,6 +244,9 @@ async function main(): Promise<void> {
         email: row.email,
         name: row.name,
       });
+      if (!(await hasResolvableClaim(row.organizationId, row.userId))) {
+        throw new Error("provisioning returned without a resolvable claim");
+      }
       backfilled++;
       console.log(`  backfilled user=${row.userId} org=${row.orgSlug}`);
     } catch (err) {
@@ -194,9 +260,10 @@ async function main(): Promise<void> {
 
   console.log(
     `\nDone. ${opts.execute ? "backfilled" : "would backfill"}=${backfilled}` +
-      ` skipped-shared=${skippedShared} skipped-no-email=${skippedNoEmail} failed=${failed}`
+      ` skipped-blocked=${skippedBlocked} skipped-shared=${skippedShared}` +
+      ` skipped-no-email=${skippedNoEmail} failed=${failed}`
   );
-  process.exit(failed > 0 ? 1 : 0);
+  process.exit(failed > 0 || skippedBlocked > 0 ? 1 : 0);
 }
 
 void main();

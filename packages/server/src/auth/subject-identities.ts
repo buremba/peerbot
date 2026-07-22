@@ -63,7 +63,7 @@ async function writeIdentities(
 
 /**
  * Point a workspace-scoped chat identity at the user's `$member`, taking it over
- * from a connector-minted `person` when one already owns it.
+ * from a `person` entity when one already owns it.
  *
  * Why an UPDATE and not another INSERT: `entity_identities` has a live-unique
  * index on `(organization_id, namespace, identifier)`, so the claim exists at
@@ -86,22 +86,21 @@ async function writeIdentities(
  * user-editable field such as a Slack profile email — a workspace admin can set
  * those, which would let an attacker attach their `U…` to a victim's `$member`.
  *
- * The takeover is scoped to `person` entities minted from connector data. A
- * claim already held by another `$member` is a genuine identity conflict (two
- * humans, one Slack id) and is left alone — fail closed, never steal.
+ * The takeover is scoped to `person` entities. A claim already held by another
+ * `$member` is a genuine identity conflict (two humans, one Slack id) and is
+ * left alone — fail closed, never steal.
  */
-async function adoptChatIdentityOntoMember(
+async function adoptSlackIdentityOntoMember(
 	sql: Sql,
 	organizationId: string,
 	memberEntityId: number,
-	namespace: string,
 	identifier: string,
 ): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
 	const inserted = await sql<{ id: number }>`
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector
     ) VALUES (
-      ${organizationId}, ${memberEntityId}, ${namespace}, ${identifier}, 'auth:signup'
+      ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup'
     )
     ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
     DO NOTHING
@@ -109,9 +108,8 @@ async function adoptChatIdentityOntoMember(
   `;
 	if (inserted.length > 0) return "created";
 
-	// Someone already owns it. Take it over only when the holder is a `person`
-	// (connector-minted); a `$member` holder means two humans claim one workspace
-	// id, which must be resolved by a human, not silently reassigned.
+	// Take over only from a `person`; a `$member` holder means two humans claim
+	// one workspace id, which must not be silently reassigned.
 	const adopted = await sql<{ id: number }>`
     UPDATE entity_identities ei
     SET entity_id = ${memberEntityId},
@@ -126,7 +124,7 @@ async function adoptChatIdentityOntoMember(
       ON et.id = e.entity_type_id
      AND et.organization_id = e.organization_id
     WHERE ei.organization_id = ${organizationId}
-      AND ei.namespace = ${namespace}
+      AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
       AND ei.identifier = ${identifier}
       AND ei.deleted_at IS NULL
       AND e.id = ei.entity_id
@@ -139,7 +137,7 @@ async function adoptChatIdentityOntoMember(
 	const mine = await sql<{ id: number }>`
     SELECT id FROM entity_identities
     WHERE organization_id = ${organizationId}
-      AND namespace = ${namespace}
+      AND namespace = ${SLACK_IDENTITY.USER_ID}
       AND identifier = ${identifier}
       AND entity_id = ${memberEntityId}
       AND deleted_at IS NULL
@@ -177,6 +175,19 @@ export async function provisionMemberAndCoreIdentities(
 	organizationId: string,
 	subject: PersonalSubject,
 ): Promise<{ memberEntityId: number }> {
+	const sql = getDb();
+	const owners = await sql<{ email: string | null }>`
+    SELECT email FROM "user" WHERE id = ${subject.userId} LIMIT 1
+  `;
+	if (
+		owners[0]?.email?.trim().toLowerCase() !==
+		subject.email.trim().toLowerCase()
+	) {
+		throw new Error(
+			`Refusing to provision identities for user ${subject.userId}: user does not own the member email`,
+		);
+	}
+
 	await ensureMemberEntity({
 		organizationId,
 		userId: subject.userId,
@@ -187,7 +198,6 @@ export async function provisionMemberAndCoreIdentities(
 		status: "active",
 	});
 
-	const sql = getDb();
 	const memberEntityId = await findMemberEntityIdByEmail(
 		sql,
 		organizationId,
@@ -360,11 +370,10 @@ export async function persistLoginSlackIdentity(
 
 		const sql = getDb();
 		for (const org of memberOrgs) {
-			const outcome = await adoptChatIdentityOntoMember(
+			const outcome = await adoptSlackIdentityOntoMember(
 				sql,
 				org.tenantOrganizationId,
 				org.memberEntityId,
-				SLACK_IDENTITY.USER_ID,
 				combined,
 			);
 			if (outcome === "conflict") {

@@ -6,7 +6,8 @@
  * PRIMARY (decode the stored OIDC id_token — no network) with a userinfo-fetch
  * FALLBACK. These cases pin: the id_token path (and that it makes NO fetch),
  * a clean fallback write, idempotency, the missing-team guard (never write a
- * bare id), malformed-id_token → fallback, and the non-Slack no-op.
+ * bare id), multi-org fanout, malformed-id_token → fallback, and the non-Slack
+ * no-op.
  *
  * The network reads (userinfo fetch + provider config) are injected stubs; the
  * DB write path is REAL against the embedded test database — the `isolate:false`
@@ -165,6 +166,37 @@ describe("persistLoginSlackIdentity", () => {
     `;
 		expect(rows).toHaveLength(1);
 		expect(Number(rows[0].entity_id)).toBe(memberEntityId);
+	});
+
+	it("writes the team-scoped identity to every org where the user has a trusted $member claim", async () => {
+		const first = await seedMember();
+		const secondOrg = await createTestOrganization({
+			name: "Second Acme",
+			visibility: "private",
+		});
+		await addUserToOrganization(first.userId, secondOrg.id, "member");
+		await provisionMemberAndCoreIdentities(secondOrg.id, {
+			userId: first.userId,
+			email: "alice@acme.test",
+			name: "Alice",
+		});
+
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId: first.userId,
+				accessToken: "xoxp-token",
+				accountId: USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": USER,
+				}),
+			},
+			trackingDeps(null).deps,
+		);
+
+		expect(await slackIdentityCount(first.orgId, `${TEAM}:${USER}`)).toBe(1);
+		expect(await slackIdentityCount(secondOrg.id, `${TEAM}:${USER}`)).toBe(1);
 	});
 
 	it("FALLBACK: no id_token → fetches userinfo and writes the team-scoped slack_user_id", async () => {

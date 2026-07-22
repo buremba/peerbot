@@ -71,6 +71,57 @@ describe("behavior custom-SQL source validation", () => {
 		);
 	}
 
+	async function createCloneFixture(query: string) {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const sourceEntity = await createTestEntity({
+			name: `cfv-source-${Date.now()}`,
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const targetEntity = await createTestEntity({
+			name: `cfv-target-${Date.now()}`,
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `cfv-src-${Date.now()}`,
+				name: "Clone source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				entity_id: Number(sourceEntity.id),
+				sources: [{ name: "src", query }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		if (created.action !== "create" || !("behavior_id" in created)) {
+			throw new Error("setup: create failed");
+		}
+		const [row] = await getTestDb()<{ current_version_id: number }[]>`
+			SELECT current_version_id FROM watchers WHERE id = ${String(created.behavior_id)}
+		`;
+		return {
+			ctx,
+			organizationId: org.id,
+			targetEntityId: Number(targetEntity.id),
+			versionId: Number(row.current_version_id),
+		};
+	}
+
 	it("rejects a source that references a non-existent column", async () => {
 		// Projects `id` (so it passes the id-projection guard) but references a
 		// bogus column — must be caught by the new scoped-query validation, not
@@ -195,121 +246,46 @@ describe("behavior custom-SQL source validation", () => {
 	});
 
 	it("validates cloned sources on create_from_version too", async () => {
-		// Save-time validation never re-runs, so a version authored while a table
-		// existed can outlive it. Cloning that version used to copy its sources
-		// straight into N new Behaviors with no check, minting N silently-empty
-		// "healthy" Behaviors — the exact state save-time validation prevents.
-		const { org, user, ctx } = await seedOwnerContext();
-		const agent = await createTestAgent({
-			organizationId: org.id,
-			ownerUserId: user.id,
-		});
-		const entity = await createTestEntity({
-			name: `cfv-target-${Date.now()}`,
-			organization_id: org.id,
-			created_by: user.id,
-		});
-		const created = await manageBehaviors(
-			{
-				action: "create",
-				slug: `cfv-src-${Date.now()}`,
-				name: "Clone source",
-				prompt: "Summarize.",
-				agent_id: agent.agentId,
-				sources: [{ name: "src", query: "SELECT id FROM events WHERE 1=0" }],
-				triggers: [
-					{
-						kind: "schedule",
-						cron: "* * * * *",
-						execution: "window",
-						active_run: "coalesce",
-					},
-				],
-			},
-			env,
-			ctx,
-		);
-		if (created.action !== "create" || !("behavior_id" in created)) {
-			throw new Error("setup: create failed");
-		}
-		const [row] = await getTestDb()<{ current_version_id: number }[]>`
-			SELECT current_version_id FROM watchers WHERE id = ${String(created.behavior_id)}
-		`;
+		const { ctx, organizationId, targetEntityId, versionId } =
+			await createCloneFixture("SELECT id FROM events WHERE 1=0");
 
-		// Corrupt the STORED version so the clone reads an unresolvable source,
-		// mirroring a table/entity-type that was dropped after the version was
-		// authored. Writing it directly bypasses save-time validation, which is
-		// precisely how such a row comes to exist.
+		// Simulate a referenced table being dropped after the version was authored.
 		await getTestDb()`
 			UPDATE watcher_versions
 			SET version_sources = ${getTestDb().json([
 				{ name: "src", query: "SELECT id FROM evetns" },
 			])}
-			WHERE id = ${Number(row.current_version_id)}
+			WHERE id = ${versionId}
 		`;
 
 		await expect(
 			manageBehaviors(
 				{
 					action: "create_from_version",
-					version_id: String(row.current_version_id),
-					entity_ids: [Number(entity.id)],
+					version_id: String(versionId),
+					entity_ids: [targetEntityId],
 				},
 				env,
 				ctx,
 			),
 		).rejects.toThrow(/unknown table or entity type|evetns/i);
 
-		// The fan-out must not have half-landed.
 		const [{ n }] = await getTestDb()<{ n: string }[]>`
 			SELECT COUNT(*)::text AS n FROM watchers
-			WHERE organization_id = ${org.id} AND ${Number(entity.id)} = ANY(entity_ids)
+			WHERE organization_id = ${organizationId} AND ${targetEntityId} = ANY(entity_ids)
 		`;
 		expect(Number(n)).toBe(0);
 	});
 
-	it("still clones a version whose sources are valid", async () => {
-		const { org, user, ctx } = await seedOwnerContext();
-		const agent = await createTestAgent({
-			organizationId: org.id,
-			ownerUserId: user.id,
-		});
-		const entity = await createTestEntity({
-			name: `cfv-ok-${Date.now()}`,
-			organization_id: org.id,
-			created_by: user.id,
-		});
-		const created = await manageBehaviors(
-			{
-				action: "create",
-				slug: `cfv-ok-src-${Date.now()}`,
-				name: "Clone ok",
-				prompt: "Summarize.",
-				agent_id: agent.agentId,
-				sources: [{ name: "src", query: "SELECT id FROM events WHERE 1=0" }],
-				triggers: [
-					{
-						kind: "schedule",
-						cron: "* * * * *",
-						execution: "window",
-						active_run: "coalesce",
-					},
-				],
-			},
-			env,
-			ctx,
+	it("clones a valid source using the target entity context", async () => {
+		const { ctx, targetEntityId, versionId } = await createCloneFixture(
+			"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
 		);
-		if (created.action !== "create" || !("behavior_id" in created)) {
-			throw new Error("setup: create failed");
-		}
-		const [row] = await getTestDb()<{ current_version_id: number }[]>`
-			SELECT current_version_id FROM watchers WHERE id = ${String(created.behavior_id)}
-		`;
 		const cloned = (await manageBehaviors(
 			{
 				action: "create_from_version",
-				version_id: String(row.current_version_id),
-				entity_ids: [Number(entity.id)],
+				version_id: String(versionId),
+				entity_ids: [targetEntityId],
 			},
 			env,
 			ctx,

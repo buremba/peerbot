@@ -3,7 +3,7 @@
  *
  * A user-scoped device worker's base scope is [token's bound org, personal org].
  * This helper widens it to orgs where the device has an active pin AND its owner
- * is still a member. Pinning is the owner's consent (see watcher-device-access);
+ * is still a member. Pinning is the owner's consent (see behavior-device-access);
  * the membership join revokes scope when the owner leaves the org.
  */
 import { beforeEach, describe, expect, it } from 'vitest';

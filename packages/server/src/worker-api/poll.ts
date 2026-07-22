@@ -31,7 +31,7 @@ import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
-import { stripServerOnlyExecutionConfig } from '../tools/admin/watcher-execution-config';
+import { stripServerOnlyExecutionConfig } from '../tools/admin/behavior-execution-config';
 import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';

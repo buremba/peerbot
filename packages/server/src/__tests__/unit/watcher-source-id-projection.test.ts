@@ -2,7 +2,7 @@
  * Unit coverage for queryProjectsIdColumn — the save-time guard that catches
  * watcher source queries which omit an `id` column.
  *
- * Bug being pinned: watcher-mode content aggregation (queryContentData in
+ * Bug being pinned: behavior-mode content aggregation (queryContentData in
  * get_content.ts) keys every row by `row.id`, and the signed window_token only
  * carries those numeric ids. A source query like
  * `SELECT origin_id, payload_text FROM events` produces zero content_ids, so

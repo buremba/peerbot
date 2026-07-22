@@ -642,7 +642,7 @@ SINCE="$(node -e 'process.stdout.write("2000-01-01")')"
 UNTIL="$(node -e 'const d=new Date(Date.now()+86400000);process.stdout.write(d.toISOString().slice(0,10))')"
 RK="$RUN_DIR/read-knowledge.json"
 api read_knowledge "{\"behavior_id\":$WATCHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$RK" 2>/dev/null \
-  || { cat "$RK" >&2; fail "read_knowledge (watcher-mode) failed"; }
+  || { cat "$RK" >&2; fail "read_knowledge (behavior mode) failed"; }
 WINDOW_TOKEN="$(jget window_token < "$RK")"
 [ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 

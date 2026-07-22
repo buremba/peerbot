@@ -1,7 +1,7 @@
 /**
- * Tool: read_knowledge — watcher mode.
+ * Tool: read_knowledge — behavior mode.
  *
- * When watcher_id is provided, fetch content for all of the watcher's
+ * When behavior_id is provided, fetch content for all of the watcher's
  * sources, compute the pending window, and generate a window_token for the
  * complete_window action.
  */
@@ -309,10 +309,10 @@ export async function fingerprintWatcherSources(args: {
 }
 
 // ============================================
-// Watcher Mode Handler
+// Behavior Mode Handler
 // ============================================
 
-export async function handleWatcherMode(
+export async function handleBehaviorMode(
   args: GetContentArgs,
   env: Env,
   sql: DbClient,
@@ -549,7 +549,7 @@ export async function handleWatcherMode(
     availableOperations = operations.length > 0 ? operations : undefined;
     pastFeedback = feedbackSummary;
   } catch (err) {
-    logger.warn({ err }, '[get_content] Failed to fetch reaction data for watcher mode');
+    logger.warn({ err }, '[get_content] Failed to fetch reaction data for behavior mode');
   }
 
   // Append past reactions, feedback, and guidance to the rendered prompt

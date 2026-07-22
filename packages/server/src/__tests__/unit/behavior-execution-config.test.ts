@@ -17,7 +17,7 @@ import { ManageBehaviorsSchema } from '../../tools/admin/manage_behaviors';
 import {
   assertValidExecutionConfig,
   type ExecutionConfigCaller,
-} from '../../tools/admin/watcher-execution-config';
+} from '../../tools/admin/behavior-execution-config';
 import { validateToolArgs } from '../../tools/validate-args';
 import { ToolUserError } from '../../utils/errors';
 

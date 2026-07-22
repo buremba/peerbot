@@ -79,7 +79,7 @@ export function buildOrgScopeWhere(options: {
  *    are visible in both authed and unauthed cases.
  *
  * Returns an empty fragment when no scope is requested (callers like the
- * watcher-mode path that already select by other constraints).
+ * behavior-mode path that already select by other constraints).
  *
  * Thin adapter over the one connection-visibility compiler (M1): builds an
  * {@link AuthzScope} from this seam's legacy `{ organizationId, userId }` shape

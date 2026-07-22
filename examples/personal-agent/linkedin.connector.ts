@@ -251,9 +251,11 @@ const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
 ];
 
 /**
- * Attribute only people whose `linkedin_slug` came from the row's first
- * profile link. The engine skips rules with no resolved identity, so an
- * engagement card cannot create a name-only entity for its unlinked author.
+ * Attribute only people whose `linkedin_slug` was resolved from the row's
+ * profile links. The engine skips rules with no resolved identity, so a card
+ * that exposes no link for a member cannot create a name-only entity for them.
+ * When an engagement card exposes links for both members, it carries both
+ * slugs so the author can be minted instead of being dropped.
  */
 const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
   {
@@ -307,6 +309,19 @@ const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
 // selector config defined here. The extension runs a site-agnostic scrape
 // engine — the LinkedIn selectors live in this connector, not the extension.
 
+/** One profile/company anchor scraped from a home-feed card. */
+interface HomeFeedLink {
+  /** The `/in/<slug>` or `/company/<slug>` href. */
+  href?: string;
+  /**
+   * The anchor's accessible name — LinkedIn renders these as `View <Name>'s
+   * profile` (person) or `View company: <Name>` (company). Used to match an
+   * anchor to the actor/author named elsewhere in the card, so identity never
+   * depends on link order.
+   */
+  name?: string;
+}
+
 /** A row produced by the extension's cs_scrape from HOME_FEED_SCRAPE_CONFIG. */
 interface HomeFeedRow {
   /** The componentkey token (base64url-ish, NOT a numeric activity id). */
@@ -314,10 +329,15 @@ interface HomeFeedRow {
   body?: string;
   author?: string;
   /**
-   * Href of the first profile or company link in the row. On engagement cards
-   * that is the reacting member's link; otherwise it is the author's link.
+   * The post-author's name, read from the card's control-menu button
+   * (`aria-label="Open control menu for post by <Author>"`). LinkedIn names the
+   * author here on the observed plain, engagement, promoted, and company card
+   * shapes, regardless of link order. This is preferred over the body-text
+   * heuristic when present.
    */
-  profile_href?: string;
+  author_control_label?: string;
+  /** Every profile/company anchor in the card, each with its accessible name. */
+  links?: HomeFeedLink[];
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
@@ -354,12 +374,26 @@ const HOME_FEED_SCRAPE_CONFIG = {
       take: "text",
       firstLine: true,
     },
-    profile_href: {
-      // Include company authors so a later person mention cannot be mistaken
-      // for the author. normalizeLinkedInSlug rejects company URLs.
-      selector: 'a[href*="/in/"], a[href*="/company/"]',
+    author_control_label: {
+      // The post's own control-menu button supplies the preferred author signal
+      // independently of profile-link order — see HomeFeedRow.
+      selector: 'button[aria-label*="control menu for post by"]',
       take: "attr",
-      attr: "href",
+      attr: "aria-label",
+    },
+    links: {
+      // Every profile/company anchor with its accessible name, so
+      // buildHomeFeedEvents can match the author/engager by NAME rather than by
+      // fragile DOM position. `aria` reads the anchor's own or descendant
+      // aria-label ("View <Name>'s profile"); `alt` covers the avatar img on
+      // company links ("View company: <Name>").
+      selector: 'a[href*="/in/"], a[href*="/company/"]',
+      take: "objectAll",
+      parts: {
+        href: { take: "attr", attr: "href" },
+        name: { take: "aria" },
+        nameAlt: { take: "alt" },
+      },
     },
   },
 } as const;
@@ -475,6 +509,109 @@ export function parseHomeFeedAuthor(body: string): string {
 }
 
 /**
+ * Pull the post author's name out of the control-menu aria-label
+ * ("Open control menu for post by <Author>"). Returns "" when the field is
+ * missing (older cards / extensions) so callers fall back to the body parse.
+ */
+function parseAuthorControlLabel(label?: string): string {
+  if (!label) return "";
+  const m = label.match(/control menu for post by\s+(.+)$/i);
+  return m ? cleanHomeFeedDisplayName(m[1]) : "";
+}
+
+/** A comparison key that ignores case, accents, and punctuation. */
+function nameKey(name: string): string {
+  return cleanHomeFeedDisplayName(name)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^\p{L}\p{N} ]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The accessible name LinkedIn renders on a profile/company anchor. */
+function linkDisplayName(link: HomeFeedLink): string {
+  const raw = link.name || "";
+  // "View <Name>'s profile" / "View <Name>'s graphic" (person avatars) and
+  // "View company: <Name>" (company avatars).
+  const person = raw.match(/^View\s+(.+?)['’]s\s+(?:profile|graphic)/i);
+  if (person) return cleanHomeFeedDisplayName(person[1]);
+  const company = raw.match(/^View company:\s+(.+)$/i);
+  if (company) return cleanHomeFeedDisplayName(company[1]);
+  return cleanHomeFeedDisplayName(raw);
+}
+
+/**
+ * Coerce the extension's `links` field into HomeFeedLink[]. The objectAll scrape
+ * emits `{href, name, nameAlt}` per anchor (name = aria-label, nameAlt = img
+ * alt); coalesce them into one accessible name. Guards a non-array value so a
+ * malformed/absent field yields no links rather than a crash.
+ */
+function normalizeHomeFeedLinks(raw: unknown): HomeFeedLink[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((l) => {
+    const link = (l ?? {}) as {
+      href?: string;
+      name?: string;
+      nameAlt?: string;
+    };
+    return { href: link.href, name: link.name || link.nameAlt || "" };
+  });
+}
+
+/**
+ * Whether the paired extension understood the `objectAll` scrape take. A build
+ * that predates it ignores the take and returns the field as plain text, so
+ * `row.links` arrives as a string rather than an array. Attribution still
+ * degrades gracefully (events emit with author names, just no slugs), but the
+ * caller surfaces this so a stale extension is observable rather than silent.
+ * A card with genuinely no profile links yields `[]`, which is indistinguishable
+ * from support — so support is inferred from ANY row producing an array.
+ */
+export function homeFeedObjectAllSupported(rows: HomeFeedRow[]): boolean {
+  const withLinks = rows.filter((r) => r?.links !== undefined);
+  if (withLinks.length === 0) return true; // no evidence either way — assume ok
+  return withLinks.some((r) => Array.isArray(r.links));
+}
+
+/** Whether an href points at a `/company/` page rather than a member. */
+function isCompanyHref(href?: string): boolean {
+  return /\/company\//i.test(href ?? "");
+}
+
+/**
+ * Resolve a member's `/in/<slug>` from the card's anchors by matching a target
+ * display name to the anchor's accessible name. Matching by NAME (not DOM
+ * position) makes attribution robust to link count and order.
+ *
+ * Attribution requires the name to resolve UNAMBIGUOUSLY to one member. It
+ * returns undefined when:
+ *  - a company anchor shares the name (the target is that company, e.g. a
+ *    company author whose name also appears on a person mention), or
+ *  - more than one distinct member slug matches the name.
+ * This prevents a same-named person mention from being promoted to author when
+ * the real author is a company or a different same-named person.
+ */
+function resolveMemberSlug(
+  links: HomeFeedLink[],
+  targetName: string
+): string | undefined {
+  const target = nameKey(targetName);
+  if (!target) return undefined;
+  const memberSlugs = new Set<string>();
+  let companyMatch = false;
+  for (const link of links) {
+    if (nameKey(linkDisplayName(link)) !== target) continue;
+    const slug = normalizeLinkedInSlug(link.href);
+    if (slug) memberSlugs.add(slug);
+    else if (isCompanyHref(link.href)) companyMatch = true;
+  }
+  if (companyMatch || memberSlugs.size !== 1) return undefined;
+  return [...memberSlugs][0];
+}
+
+/**
  * The home feed mixes in ads, suggestions, and non-post noise. These never
  * become useful events, so drop them before emitting. Heuristic by necessity —
  * the home feed has no structured "is this an ad" field over the content-script
@@ -521,38 +658,56 @@ export function buildHomeFeedEvents(
     );
     const actorBanner =
       parsedAuthor.banner?.kind === "actor" ? parsedAuthor.banner : null;
-    // If the DOM supplied a different member name, the body phrase was part of
-    // a plain author's name rather than a social-context banner.
-    const banner =
+    const controlAuthor = parseAuthorControlLabel(row.author_control_label);
+    // A phrase such as "We Love This Company" can resemble an engagement
+    // banner. When available, the control-menu author disambiguates it without
+    // depending on which profile link appears first. Older results fall back to
+    // comparing the banner actor with the first visible profile name.
+    let banner = parsedAuthor.banner;
+    if (actorBanner && controlAuthor) {
+      if (nameKey(parsedAuthor.author) !== nameKey(controlAuthor))
+        banner = null;
+    } else if (
       actorBanner &&
       domAuthor &&
       actorBanner.actor.localeCompare(domAuthor, undefined, {
         sensitivity: "accent",
       }) !== 0
-        ? null
-        : parsedAuthor.banner;
-    // The first profile link can belong to the reacting member on
-    // social-context cards, so prefer the body author there. Otherwise the DOM
-    // field is more reliable than the heuristic body parser.
+    ) {
+      banner = null;
+    }
+    // The control-menu label names the post author independently of link order
+    // and body parsing. Older extension results lack it, so retain the existing
+    // body/DOM fallback.
     const author =
-      (banner ? parsedAuthor.author : "") || domAuthor || parsedAuthor.author;
+      controlAuthor ||
+      (banner ? parsedAuthor.author : "") ||
+      domAuthor ||
+      parsedAuthor.author;
 
-    // The row's single captured profile href belongs to the engager on actor
-    // banners and to the author everywhere else (see HomeFeedRow.profile_href).
-    const slug = normalizeLinkedInSlug(row.profile_href);
-    const profileUrl = slug ? `https://www.linkedin.com/in/${slug}` : undefined;
+    // Resolve slugs by matching a NAME to the anchor's accessible name, never by
+    // link order. The control-menu label names the true author on observed card
+    // shapes; the banner names the engager. Each maps to at most one /in/ slug
+    // — a company author or an unlinked member simply resolves to none.
+    const links = normalizeHomeFeedLinks(row.links);
+    const profileUrlFor = (s: string) => `https://www.linkedin.com/in/${s}`;
     const engagement = banner?.kind === "actor" ? banner : null;
+    const authorSlug = resolveMemberSlug(links, author);
+    const engagerSlug = engagement
+      ? resolveMemberSlug(links, engagement.actor)
+      : undefined;
     const metadata: Record<string, unknown> = { author };
     if (engagement) {
       metadata.social_actor = engagement.actor;
       metadata.social_action = engagement.action;
-      if (slug) {
-        metadata.social_actor_slug = slug;
-        metadata.social_actor_profile_url = profileUrl;
+      if (engagerSlug) {
+        metadata.social_actor_slug = engagerSlug;
+        metadata.social_actor_profile_url = profileUrlFor(engagerSlug);
       }
-    } else if (slug) {
-      metadata.author_linkedin_slug = slug;
-      metadata.author_profile_url = profileUrl;
+    }
+    if (authorSlug) {
+      metadata.author_linkedin_slug = authorSlug;
+      metadata.author_profile_url = profileUrlFor(authorSlug);
     }
 
     events.push({
@@ -2500,6 +2655,12 @@ export default class LinkedInConnector extends ConnectorRuntime<
 
     const events = buildHomeFeedEvents(rows, new Date());
 
+    // Capability gate: author/engager slugs need the `objectAll` scrape take. An
+    // older extension can't produce it, so identity degrades to name-only.
+    // Surface it in metadata (rather than failing) so a stale extension is
+    // observable — events still flow, just without slugs.
+    const objectAllSupported = homeFeedObjectAllSupported(rows);
+
     return {
       events,
       // The home feed exposes no stable per-post cursor (opaque token ids, no
@@ -2509,6 +2670,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         items_found: events.length,
         items_scraped: rows.length,
         backend: "extension-cs-scrape",
+        object_all_supported: objectAllSupported,
       },
     };
   }

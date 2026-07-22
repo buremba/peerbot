@@ -10,6 +10,7 @@ mock.module("@lobu/connector-sdk", connectorSdkMock);
 
 let LinkedInConnector: any;
 let buildHomeFeedEvents: any;
+let homeFeedObjectAllSupported: any;
 let parseHomeFeedAuthor: any;
 let isHomeFeedNoise: any;
 let filterPostsSinceCheckpoint: any;
@@ -36,6 +37,7 @@ beforeAll(async () => {
   const mod = await import("../linkedin.connector");
   LinkedInConnector = mod.default;
   buildHomeFeedEvents = mod.buildHomeFeedEvents;
+  homeFeedObjectAllSupported = mod.homeFeedObjectAllSupported;
   parseHomeFeedAuthor = mod.parseHomeFeedAuthor;
   isHomeFeedNoise = mod.isHomeFeedNoise;
   filterPostsSinceCheckpoint = mod.filterPostsSinceCheckpoint;
@@ -225,7 +227,12 @@ describe("buildHomeFeedEvents", () => {
         {
           id: "tok",
           body: "Feed post Emir Karabeg reposted this Sim Visit website 2h • Follow Sim Retreat Malibu ‘26 11 2 2",
-          profile_href: "https://www.linkedin.com/in/emirkarabeg/",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/emirkarabeg/",
+              name: "View Emir Karabeg’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -249,7 +256,17 @@ describe("buildHomeFeedEvents", () => {
           id: "tok",
           body: "Feed post Deb Mukherjee likes this 🦔 james hawkins • 2nd self driving 8h • Connect",
           author: "🦔 Deb Mukherjee",
-          profile_href: "https://www.linkedin.com/in/debgotwired/",
+          author_control_label: "Open control menu for post by james hawkins",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/debgotwired/",
+              name: "View Deb Mukherjee’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/in/jameshawkins/",
+              name: "View james hawkins’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -260,6 +277,7 @@ describe("buildHomeFeedEvents", () => {
       social_actor: "Deb Mukherjee",
       social_action: "like",
       social_actor_slug: "debgotwired",
+      author_linkedin_slug: "jameshawkins",
     });
   });
 
@@ -293,14 +311,19 @@ describe("buildHomeFeedEvents", () => {
     expect(ev.metadata).toEqual({ author: "Hugo Lu" });
   });
 
-  test("attributes the profile href to the author on a plain card", () => {
+  test("resolves the author slug by matching the control-menu label on a plain card", () => {
     const [ev] = buildHomeFeedEvents(
       [
         {
           id: "tok",
           body: "Feed post Maria Malykh • 1st Founder & CTO | Automating R&D Tax 3h • I'm not an early planner",
-          profile_href:
-            "https://www.linkedin.com/in/maria-malykh-ilyina/?miniProfileUrn=abc",
+          author_control_label: "Open control menu for post by Maria Malykh",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/maria-malykh-ilyina/?miniProfileUrn=abc",
+              name: "View Maria Malykh’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -313,27 +336,372 @@ describe("buildHomeFeedEvents", () => {
     });
   });
 
-  test("attributes the profile href to the engager on a social-context card", () => {
-    // DOM order on engagement cards: the reacting member's link comes first,
-    // so the single captured href belongs to them — never to the author.
+  test("uses the control-menu author when the body header is stale", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Stale Header • 2nd Founder 3h • Current post body",
+          author_control_label: "Open control menu for post by Current Author",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/current-author/",
+              name: "View Current Author’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Current Author");
+    expect(ev.metadata).toMatchObject({
+      author: "Current Author",
+      author_linkedin_slug: "current-author",
+    });
+  });
+
+  test("attributes engager and author by name on a social-context card", () => {
+    // The engager is named by the banner, the author by the control-menu label.
+    // Each resolves to its own link by name — order-independent.
     const [ev] = buildHomeFeedEvents(
       [
         {
           id: "tok",
           body: "Feed post Deb Mukherjee likes this Adam Robinson • 2nd CEO @ MoltSets 8h • Connect unlimited contact data",
-          profile_href: "https://www.linkedin.com/in/debgotwired/",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/debgotwired/",
+              name: "View Deb Mukherjee’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/in/adam-robinson/",
+              name: "View Adam Robinson’s profile",
+            },
+          ],
         },
       ],
       new Date()
     );
-    expect(ev.author_name).toBe("Adam Robinson");
     expect(ev.metadata).toEqual({
       author: "Adam Robinson",
       social_actor: "Deb Mukherjee",
       social_action: "like",
       social_actor_slug: "debgotwired",
       social_actor_profile_url: "https://www.linkedin.com/in/debgotwired",
+      author_linkedin_slug: "adam-robinson",
+      author_profile_url: "https://www.linkedin.com/in/adam-robinson",
     });
+  });
+
+  test("keeps engagement attribution when the author link comes first", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this Adam Robinson • 2nd CEO 8h • Connect",
+          author: "Adam Robinson",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/adam-robinson/",
+              name: "View Adam Robinson’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/in/debgotwired/",
+              name: "View Deb Mukherjee’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toMatchObject({
+      author_linkedin_slug: "adam-robinson",
+      social_actor: "Deb Mukherjee",
+      social_actor_slug: "debgotwired",
+    });
+  });
+
+  test("ignores post-body mention links when resolving the author", () => {
+    // A mention link the author didn't write must never be picked as the author.
+    // Only the link whose accessible name matches the control-menu author wins.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Adam Robinson • 2nd CEO 8h • Connect shoutout to a friend",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/adam-robinson/",
+              name: "View Adam Robinson’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/in/some-mention/",
+              name: "View Some Mention’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toMatchObject({
+      author_linkedin_slug: "adam-robinson",
+    });
+    expect(ev.metadata).not.toHaveProperty("social_actor_slug");
+  });
+
+  test("gives a company author no person slug even with a person mention present", () => {
+    // The control-menu author is a company (no /in/ link); a person mention in
+    // the post must not be promoted to author.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this MoltSets 8h • Follow",
+          author_control_label: "Open control menu for post by MoltSets",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/debgotwired/",
+              name: "View Deb Mukherjee’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/company/moltsets/",
+              name: "View company: MoltSets",
+            },
+            {
+              href: "https://www.linkedin.com/in/some-mention/",
+              name: "View Some Mention’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toEqual({
+      author: "MoltSets",
+      social_actor: "Deb Mukherjee",
+      social_action: "like",
+      social_actor_slug: "debgotwired",
+      social_actor_profile_url: "https://www.linkedin.com/in/debgotwired",
+    });
+  });
+
+  test("does not promote a same-named person mention over a company author", () => {
+    // Name collision: the author is the company "Adam" and a person mention is
+    // also named "Adam". Matching by name alone would wrongly attribute the
+    // person; a company anchor sharing the name must block person attribution.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Adam • 2nd Company update mentioning a same-named person here",
+          author_control_label: "Open control menu for post by Adam",
+          links: [
+            {
+              href: "https://www.linkedin.com/company/adam/",
+              name: "View company: Adam",
+            },
+            {
+              href: "https://www.linkedin.com/in/adam-person/",
+              name: "View Adam’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).not.toHaveProperty("author_linkedin_slug");
+  });
+
+  test("does not attribute when two distinct members share the author's name", () => {
+    // Two different "Jane Doe" profiles match the name — ambiguous, so neither
+    // is attributed rather than guessing one.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Jane Doe • 2nd Founder posting something long enough to keep",
+          author_control_label: "Open control menu for post by Jane Doe",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/jane-doe-1/",
+              name: "View Jane Doe’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/in/jane-doe-2/",
+              name: "View Jane Doe’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).not.toHaveProperty("author_linkedin_slug");
+  });
+
+  test("ignores a malformed non-array links field", () => {
+    // A stale/garbled field must yield no slugs rather than crashing or minting
+    // garbage — normalizeHomeFeedLinks accepts only a real array.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Adam Robinson • 2nd CEO 8h • Connect",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: "Adam Robinson" as unknown as never,
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).not.toHaveProperty("author_linkedin_slug");
+    expect(ev.metadata).not.toHaveProperty("author_profile_url");
+  });
+
+  // Fixtures recorded from the live linkedin.com/feed/ DOM on 2026-07-22 via
+  // the paired Owletto extension. They pin three observed shapes: an
+  // actor-less "Recommended for you" banner, an engagement card whose author is
+  // a COMPANY, and a promoted "follow this Page" card whose leading links belong
+  // to followers, not the author.
+  test("live DOM: actor-less banner author resolves by control label", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "r1",
+          body: "Feed post Recommended for you Victor Baron • 2nd Founder & CEO at Ampere All-In-One Financial Service For Businesses | Building First-world App Busine",
+          author_control_label: "Open control menu for post by Victor Baron",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/victor-baron/",
+              name: "View Victor Baron’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/company/openai/",
+              name: "View company: OpenAI",
+            },
+            {
+              href: "https://www.linkedin.com/company/google/",
+              name: "View company: Google",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Victor Baron");
+    expect(ev.metadata).toEqual({
+      author: "Victor Baron",
+      author_linkedin_slug: "victor-baron",
+      author_profile_url: "https://www.linkedin.com/in/victor-baron",
+    });
+  });
+
+  test("live DOM: engagement card with a company author gives the author no person slug", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "r5",
+          body: "Feed post Onur Demirtaş likes this Swipeline TR 13h • Follow Twitter'ın kurucu ortağı ve Block'un CEO'su Jack Dorsey, X hesabından paylaştığı gönderiy",
+          author_control_label: "Open control menu for post by Swipeline TR",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/onurdmrts/",
+              name: "View Onur Demirtaş’s profile",
+            },
+            {
+              href: "https://www.linkedin.com/company/swipelinetr/posts/",
+              name: "View company: Swipeline TR",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Swipeline TR");
+    expect(ev.metadata).toEqual({
+      author: "Swipeline TR",
+      social_actor: "Onur Demirtaş",
+      social_action: "like",
+      social_actor_slug: "onurdmrts",
+      social_actor_profile_url: "https://www.linkedin.com/in/onurdmrts",
+    });
+  });
+
+  test("live DOM: a 'follow this Page' promoted card is dropped as noise", () => {
+    // The leading links belong to connections who follow the page, NOT the
+    // author (CodeRabbit). It is filtered before routing; this pins that.
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "r3",
+          body: "Feed post Gorkem Cetin, Matthew Gregory and 22 other connections follow this Page CodeRabbit 36,825 followers Promoted Build vs. Buy: What does an AI ",
+          author_control_label: "Open control menu for post by CodeRabbit",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/gorkemcetin/",
+              name: "Gorkem Cetin",
+            },
+            {
+              href: "https://www.linkedin.com/in/matthewgregory/",
+              name: "Matthew Gregory",
+            },
+            {
+              href: "https://www.linkedin.com/company/coderabbitai/posts/",
+              name: "View company: CodeRabbit",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test("keeps both roles when the same member authors and engages", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Adam Robinson reposted this Adam Robinson • 2nd CEO 8h • Connect",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/adam-robinson/",
+              name: "View Adam Robinson’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toMatchObject({
+      social_actor: "Adam Robinson",
+      social_actor_slug: "adam-robinson",
+      author_linkedin_slug: "adam-robinson",
+    });
+  });
+
+  test("omits the author slug when a social card exposes only the engager link", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this Adam Robinson • 2nd CEO 8h • Connect",
+          author_control_label: "Open control menu for post by Adam Robinson",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/debgotwired/",
+              name: "View Deb Mukherjee’s profile",
+            },
+          ],
+        },
+      ],
+      new Date()
+    );
+    // Only the engager exposes a link; the author is named but not linked.
+    expect(ev.metadata).toMatchObject({ social_actor_slug: "debgotwired" });
+    expect(ev.metadata).not.toHaveProperty("author_linkedin_slug");
   });
 
   test("preserves a comma suffix in the engager's display name", () => {
@@ -343,7 +711,13 @@ describe("buildHomeFeedEvents", () => {
           id: "tok",
           body: "Feed post John Smith, MBA likes this Alice Jones • 2nd Founder 2h • Follow",
           author: "John Smith, MBA",
-          profile_href: "https://www.linkedin.com/in/john-smith/",
+          author_control_label: "Open control menu for post by Alice Jones",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/john-smith/",
+              name: "View John Smith, MBA’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -362,7 +736,14 @@ describe("buildHomeFeedEvents", () => {
           id: "tok",
           body: "Feed post We Love This Company • 2nd Community 2h • Follow",
           author: "We Love This Company",
-          profile_href: "https://www.linkedin.com/in/we-love-this-company/",
+          author_control_label:
+            "Open control menu for post by We Love This Company",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/we-love-this-company/",
+              name: "View We Love This Company’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -381,12 +762,22 @@ describe("buildHomeFeedEvents", () => {
         {
           id: "c",
           body: "Feed post Barry McCardel commented Caroline Haynes • 2nd GTM at Hex 20h • Follow After an incredible year",
-          profile_href: "https://www.linkedin.com/in/barrymccardel/",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/barrymccardel/",
+              name: "View Barry McCardel’s profile",
+            },
+          ],
         },
         {
           id: "r",
           body: "Feed post Sabri Karagönen reposted this Hardal 17h • Follow Hardal is now integrated with Bruin",
-          profile_href: "https://www.linkedin.com/in/sabrikaragonen/",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/sabrikaragonen/",
+              name: "View Sabri Karagönen’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -411,7 +802,12 @@ describe("buildHomeFeedEvents", () => {
         {
           id: "tok",
           body: "Feed post Ali Veli and 3 others like this Ayşe Yılmaz • 2nd Data engineer 4h • Connect",
-          profile_href: "https://www.linkedin.com/in/aliveli/",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/aliveli/",
+              name: "View Ali Veli’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -425,14 +821,20 @@ describe("buildHomeFeedEvents", () => {
   });
 
   test("attributes the href to the author on an actor-less banner card", () => {
-    // "Voices worth following" / "Recommended for you" have no engager link,
-    // so the first profile link is the author's.
+    // "Voices worth following" / "Recommended for you" have no engager; the
+    // author resolves by the control-menu label.
     const [ev] = buildHomeFeedEvents(
       [
         {
           id: "tok",
           body: "Feed post Voices worth following Elizabeth Reid • 2nd VP, Search 13h • Follow Bonjour France!",
-          profile_href: "https://www.linkedin.com/in/elizabeth-reid-56356724/",
+          author_control_label: "Open control menu for post by Elizabeth Reid",
+          links: [
+            {
+              href: "https://www.linkedin.com/in/elizabeth-reid-56356724/",
+              name: "View Elizabeth Reid’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -465,7 +867,17 @@ describe("buildHomeFeedEvents", () => {
           id: "tok",
           body: "Feed post Acme Corp • 3rd+ Company update with a tagged member",
           author: "Acme Corp",
-          profile_href: "https://www.linkedin.com/company/acme/",
+          author_control_label: "Open control menu for post by Acme Corp",
+          links: [
+            {
+              href: "https://www.linkedin.com/company/acme/",
+              name: "View company: Acme Corp",
+            },
+            {
+              href: "https://www.linkedin.com/in/tagged-member/",
+              name: "View Tagged Member’s profile",
+            },
+          ],
         },
       ],
       new Date()
@@ -528,6 +940,36 @@ describe("buildHomeFeedEvents", () => {
       "Hugo Lu",
       "Hardal",
     ]);
+  });
+});
+
+describe("homeFeedObjectAllSupported", () => {
+  test("true when a row returns links as an array", () => {
+    expect(
+      homeFeedObjectAllSupported([
+        { id: "a", links: [{ href: "/in/x", name: "View X’s profile" }] },
+      ])
+    ).toBe(true);
+  });
+
+  test("false when the extension returns links as a string (no objectAll)", () => {
+    // An older extension ignores the take and returns the field as plain text.
+    expect(
+      homeFeedObjectAllSupported([
+        { id: "a", links: "some card text" as unknown as never },
+      ])
+    ).toBe(false);
+  });
+
+  test("assumes supported when no row carries a links field", () => {
+    // A batch of link-less cards is not evidence of a stale extension.
+    expect(homeFeedObjectAllSupported([{ id: "a" }, { id: "b" }])).toBe(true);
+  });
+
+  test("true if any row is an array even when others are link-less", () => {
+    expect(
+      homeFeedObjectAllSupported([{ id: "a" }, { id: "b", links: [] }])
+    ).toBe(true);
   });
 });
 
@@ -807,18 +1249,31 @@ describe("LinkedInConnector home_feed", () => {
     expect(
       (calls[0].input.scrape_config as { scroll: { max: number } }).scroll.max
     ).toBe(4);
-    expect(
-      (
-        calls[0].input.scrape_config as {
-          fields: { profile_href: { selector: string } };
-        }
-      ).fields.profile_href.selector
-    ).toContain("/company/");
+    const cfg = calls[0].input.scrape_config as {
+      fields: {
+        links: {
+          selector: string;
+          take: string;
+          parts: Record<string, unknown>;
+        };
+        author_control_label: { selector: string; attr: string };
+      };
+    };
+    // objectAll captures each anchor with its href + accessible name, so the
+    // author/engager are matched by NAME rather than DOM position.
+    expect(cfg.fields.links.take).toBe("objectAll");
+    expect(cfg.fields.links.selector).toContain("/company/");
+    expect(Object.keys(cfg.fields.links.parts)).toContain("href");
+    expect(cfg.fields.author_control_label.selector).toContain(
+      "control menu for post by"
+    );
 
     expect(res.events).toHaveLength(2);
     expect(res.events[0].origin_id).toBe("li_home_tok1");
     expect(res.events[1].origin_id).toBe("li_home_tok2");
     expect(res.metadata.backend).toBe("extension-cs-scrape");
+    // These mock rows carry no links field, so support is assumed.
+    expect(res.metadata.object_all_supported).toBe(true);
   });
 
   test("throws a clear error when not logged into LinkedIn", async () => {

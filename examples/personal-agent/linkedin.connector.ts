@@ -729,10 +729,7 @@ export function pickCommentTextboxRef(
     /text editor/i,
   ];
   const candidates = tree.filter(
-    (n) =>
-      n.role === "textbox" ||
-      n.tag === "textarea" ||
-      n.tag === "div" // contenteditable often role=textbox; keep div as weak fallthrough
+    (n) => n.role === "textbox" || n.tag === "textarea" || n.tag === "div" // contenteditable often role=textbox; keep div as weak fallthrough
   );
   for (const node of candidates) {
     if (node.role === "textbox" && nameMatches(node.name, goodName)) {
@@ -741,17 +738,13 @@ export function pickCommentTextboxRef(
   }
   // Any textbox whose name mentions comment.
   for (const node of candidates) {
-    if (
-      node.role === "textbox" &&
-      node.name &&
-      /comment/i.test(node.name)
-    ) {
+    if (node.role === "textbox" && node.name && /comment/i.test(node.name)) {
       return { document_epoch: documentEpoch, ref_id: node.ref_id };
     }
   }
   // Last resort: empty-named textboxes are common once the composer is open.
   const emptyTextboxes = candidates.filter(
-    (n) => n.role === "textbox" && (!n.name || !n.name.trim())
+    (n) => n.role === "textbox" && !n.name?.trim()
   );
   if (emptyTextboxes.length === 1) {
     return {
@@ -1011,9 +1004,7 @@ export async function prepareLinkedInComment(
       ...chromeOriginsInput(),
     });
     if (evalOut.exception) {
-      throw new Error(
-        `prepare_comment: evaluate failed: ${evalOut.exception}`
-      );
+      throw new Error(`prepare_comment: evaluate failed: ${evalOut.exception}`);
     }
     const value = evalOut.value;
     if (value?.ok) {

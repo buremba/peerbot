@@ -1155,7 +1155,9 @@ describe("prepare_comment helpers", () => {
     expect(normalizeLinkedInPostUrl("li_post_7312345678901234567")).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
     );
-    expect(normalizeLinkedInPostUrl("urn:li:activity:7312345678901234567")).toBe(
+    expect(
+      normalizeLinkedInPostUrl("urn:li:activity:7312345678901234567")
+    ).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
     );
     expect(
@@ -1203,7 +1205,7 @@ describe("prepare_comment helpers", () => {
 
   test("buildFillCommentExpression embeds body safely and never auto-submits", () => {
     const expr = buildFillCommentExpression('hello "world"\nline2');
-    expect(expr).toContain("hello \\\"world\\\"");
+    expect(expr).toContain('hello \\"world\\"');
     expect(expr).toContain("insertText");
     expect(expr).not.toMatch(/\.click\(\).*Post/i);
     // Composer open may click "Comment", but expression must not target Post submit.

@@ -392,6 +392,24 @@ const linuxBwrapWorks = (() => {
     return false;
   }
 })();
+// `describe.skip` is invisible in a green run: if the bubblewrap install step
+// flakes, every escape test below silently disappears and CI still reports
+// success — the sandbox would be unverified precisely when it matters. CI sets
+// LOBU_REQUIRE_EXEC_SANDBOX=1 to make that skip a hard failure instead.
+const requireSandbox =
+  process.env.LOBU_REQUIRE_EXEC_SANDBOX === "1" ||
+  process.env.LOBU_REQUIRE_EXEC_SANDBOX === "true";
+
+describe("bwrap escape matrix availability", () => {
+  test("a working bwrap is present when the environment requires one", () => {
+    if (!requireSandbox) return;
+    expect({
+      platform: process.platform,
+      bwrapDeliversIsolation: linuxBwrapWorks,
+    }).toEqual({ platform: "linux", bwrapDeliversIsolation: true });
+  });
+});
+
 const describeBwrap = linuxBwrapWorks ? describe : describe.skip;
 
 describeBwrap("bwrap escape matrix", () => {

@@ -42,8 +42,24 @@ jobs:
         # AppArmor by default; bwrap needs them, so flip the sysctl. See
         # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
+          # Retry: a transient apt mirror failure used to hand the job on to the
+          # test steps, where the bwrap escape matrix would silently auto-skip.
+          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
+          # flake is a red build, not a false green — retry to keep that rare.
+          installed=""
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
+              installed=1
+              break
+            fi
+            echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          # Fail loudly rather than falling through to a green run without bwrap.
+          if [ -z "$installed" ]; then
+            echo "::error::bubblewrap install failed after 3 attempts"
+            exit 1
+          fi
           # Only flip the AppArmor userns restriction when the kernel exposes
           # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
           # don't restrict unprivileged user namespaces and lack this sysctl key.
@@ -114,6 +130,13 @@ jobs:
         # passes; if Linux turns out different we'll narrow this back down,
         # but we own the WASM concern via run-script-runtime.test.ts under
         # Node + isolated-vm in the integration job below.
+        #
+        # LOBU_REQUIRE_EXEC_SANDBOX turns a missing/non-functional bwrap into a
+        # test failure. Without it the exec-sandbox escape matrix `describe.skip`s
+        # itself and the job still goes green — the one place we verify the
+        # sandbox actually contains a hostile command would vanish unnoticed.
+        env:
+          LOBU_REQUIRE_EXEC_SANDBOX: "1"
         run: |
           bun test packages/agent-worker --coverage
           mv coverage/lcov.info coverage/agent-worker.lcov.info
@@ -214,8 +237,24 @@ jobs:
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
+          # Retry: a transient apt mirror failure used to hand the job on to the
+          # test steps, where the bwrap escape matrix would silently auto-skip.
+          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
+          # flake is a red build, not a false green — retry to keep that rare.
+          installed=""
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
+              installed=1
+              break
+            fi
+            echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          # Fail loudly rather than falling through to a green run without bwrap.
+          if [ -z "$installed" ]; then
+            echo "::error::bubblewrap install failed after 3 attempts"
+            exit 1
+          fi
           # Only flip the AppArmor userns restriction when the kernel exposes
           # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
           # don't restrict unprivileged user namespaces and lack this sysctl key.
@@ -279,8 +318,24 @@ jobs:
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
+          # Retry: a transient apt mirror failure used to hand the job on to the
+          # test steps, where the bwrap escape matrix would silently auto-skip.
+          # The unit suite now fails closed via LOBU_REQUIRE_EXEC_SANDBOX, so a
+          # flake is a red build, not a false green — retry to keep that rare.
+          installed=""
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y bubblewrap coreutils; then
+              installed=1
+              break
+            fi
+            echo "apt-get failed (attempt $attempt/3); retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          # Fail loudly rather than falling through to a green run without bwrap.
+          if [ -z "$installed" ]; then
+            echo "::error::bubblewrap install failed after 3 attempts"
+            exit 1
+          fi
           # Only flip the AppArmor userns restriction when the kernel exposes
           # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
           # don't restrict unprivileged user namespaces and lack this sysctl key.

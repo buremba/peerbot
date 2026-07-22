@@ -94,6 +94,7 @@ async function promote(
 			windowId: 1,
 			parentEntityId: ctx.parentId,
 			createdBy: ctx.createdBy,
+			validContentIds: new Set<number>(),
 		}),
 	);
 }

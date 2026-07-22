@@ -58,6 +58,9 @@ import { isUniqueViolation } from './pg-errors';
 /** Namespace for the stable-key identity claim in `entity_identities`. */
 const WATCHER_KEY_NAMESPACE = 'watcher_key';
 
+/** Agent-authored field naming the content a promoted row came from. */
+const SOURCE_EVENT_ID_FIELD = 'source_event_id';
+
 export interface PromoteKeyedEntitiesParams {
   /** Transaction-bound SQL handle (MUST be the window-write transaction). */
   tx: DbClient;
@@ -68,6 +71,14 @@ export interface PromoteKeyedEntitiesParams {
   organizationId: string;
   /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
   windowId: number;
+  /**
+   * The exact content IDs the window_token granted for this completion.
+   * A promoted row may cite its origin via `source_event_id`; that value comes
+   * from agent output and is otherwise stored verbatim, so an agent could point
+   * a promotion at content its window never read. Citations outside this set are
+   * dropped (the row still promotes — only the unverifiable claim is removed).
+   */
+  validContentIds: Set<number>;
   /** The watcher's bound parent entity (entity_ids[0]); null when unbound. */
   parentEntityId: number | null;
   /**
@@ -473,7 +484,9 @@ export async function promoteKeyedEntities(
     organizationId,
     windowId,
     parentEntityId,
+    validContentIds,
   } = params;
+  let droppedCitations = 0;
   const result: PromoteKeyedEntitiesResult = {
     promoted: 0,
     created: 0,
@@ -565,6 +578,27 @@ export async function promoteKeyedEntities(
     const fieldValues = Object.fromEntries(
       Object.entries(entityRecord).filter(([k]) => k !== keyingConfig.key_output_field)
     );
+    // `source_event_id` is an agent-authored provenance claim. Keep it only when
+    // it names content this window actually read — same rule the classifier
+    // applies to citations. An unverifiable id is worse than none: it reads like
+    // proof of origin while pointing anywhere in the org.
+    if (SOURCE_EVENT_ID_FIELD in fieldValues) {
+      const claimed = Number(fieldValues[SOURCE_EVENT_ID_FIELD]);
+      if (!Number.isFinite(claimed) || !validContentIds.has(Math.trunc(claimed))) {
+        logger.warn(
+          {
+            watcherId,
+            organizationId,
+            windowId,
+            stableKey,
+            claimedSourceEventId: fieldValues[SOURCE_EVENT_ID_FIELD],
+          },
+          '[promote-keyed-entities] dropping source_event_id not present in this window'
+        );
+        delete fieldValues[SOURCE_EVENT_ID_FIELD];
+        droppedCitations += 1;
+      }
+    }
     const metadata: Record<string, unknown> = {
       ...fieldValues,
       watcher_id: watcherId,
@@ -668,6 +702,7 @@ export async function promoteKeyedEntities(
       entityTypeSlug,
       promoted: result.promoted,
       created: result.created,
+      droppedCitations,
     },
     '[promote-keyed-entities] promoted keyed window rows into entities'
   );

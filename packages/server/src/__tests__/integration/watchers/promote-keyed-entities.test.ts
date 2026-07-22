@@ -296,6 +296,64 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
   });
 
+  it('keeps an in-window source_event_id but drops one the window never read', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, parentEntityId } = ctx;
+
+    // Place the in-window event inside the behavior's pending daily window so
+    // read_knowledge actually grants it in the token's content_ids.
+    const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
+    const { windowStart } = await computePendingWindow(
+      ctx.dbClient,
+      ctx.watcherId,
+      granularity
+    );
+    const inWindow = await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(windowStart.getTime() + 60 * 60 * 1000),
+    });
+    // Content that exists in the org but is NOT part of this window's token.
+    const outOfWindow = await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Unrelated content the agent must not be able to cite.',
+      occurred_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    await completeWithToken(ctx, token, runId, {
+      problems: [
+        { category: 'Stability', name: 'App Crashes', source_event_id: Number(inWindow.id) },
+        {
+          category: 'Performance',
+          name: 'Slow Loading',
+          source_event_id: Number(outOfWindow.id),
+        },
+      ],
+    });
+
+    const rows = await sql`
+      SELECT ei.identifier, e.metadata->>'source_event_id' AS source_event_id
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      WHERE ei.organization_id = ${workspace.org.id}
+        AND ei.namespace = 'watcher_key'
+      ORDER BY ei.identifier
+    `;
+    const bySlug = Object.fromEntries(
+      rows.map((r) => [String(r.identifier).split('::').pop(), r.source_event_id])
+    );
+
+    // The verifiable claim survives; the unverifiable one is stripped rather
+    // than stored as false provenance. Both rows still promote.
+    expect(bySlug['app-crashes']).toBe(String(inWindow.id));
+    expect(bySlug['slow-loading']).toBeNull();
+    expect(Object.keys(bySlug)).toHaveLength(2);
+  });
+
   it("a create=deny policy on the watcher's OWNING AGENT blocks its promotions", async () => {
     // The v1.1 fix: a watcher is its agent's autonomous mode, so the agent's own
     // envelope binds the watcher. Pin entity create=deny to THIS watcher's agent;

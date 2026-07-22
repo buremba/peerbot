@@ -23,6 +23,7 @@
  * scheduled/jobs.ts), so multi-replica safe with no extra coordination.
  */
 
+import { resolvableMemberClaimExists } from "../authz/member-claim-predicate";
 import { getDb } from "../db/client";
 
 interface MemberClaimDriftResult {
@@ -47,23 +48,7 @@ export async function runMemberClaimDriftCheck(): Promise<MemberClaimDriftResult
 	const missingRows = await sql<{ n: number }>`
     SELECT count(*)::int AS n
     FROM "member" m
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM entity_identities ei
-      JOIN entities e
-        ON e.id = ei.entity_id
-       AND e.organization_id = ei.organization_id
-       AND e.deleted_at IS NULL
-      JOIN entity_types et
-        ON et.id = e.entity_type_id
-       AND et.organization_id = e.organization_id
-       AND et.slug = '$member'
-      WHERE ei.organization_id = m."organizationId"
-        AND ei.namespace = 'auth_user_id'
-        AND ei.identifier = m."userId"
-        AND ei.source_connector = 'auth:signup'
-        AND ei.deleted_at IS NULL
-    )
+    WHERE NOT ${resolvableMemberClaimExists(sql, sql`m."organizationId"`, sql`m."userId"`)}
   `;
 
 	// Any live claim that blocks the correct insert without satisfying the gate.

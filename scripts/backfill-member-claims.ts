@@ -79,6 +79,7 @@ export function decideSharedPrivateBackfill(opts: {
 
 import { parseArgs as parseNodeArgs } from "node:util";
 import { provisionMemberAndCoreIdentities } from "../packages/server/src/auth/subject-identities";
+import { resolvableMemberClaimExists } from "../packages/server/src/authz/member-claim-predicate";
 import { getDb } from "../packages/server/src/db/client";
 
 interface DriftRow {
@@ -157,23 +158,7 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
     FROM "member" m
     JOIN organization o ON o.id = m."organizationId"
     JOIN "user" u ON u.id = m."userId"
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM entity_identities ei
-      JOIN entities e
-        ON e.id = ei.entity_id
-       AND e.organization_id = ei.organization_id
-       AND e.deleted_at IS NULL
-      JOIN entity_types et
-        ON et.id = e.entity_type_id
-       AND et.organization_id = e.organization_id
-       AND et.slug = '$member'
-      WHERE ei.organization_id = m."organizationId"
-        AND ei.namespace = 'auth_user_id'
-        AND ei.identifier = m."userId"
-        AND ei.source_connector = 'auth:signup'
-        AND ei.deleted_at IS NULL
-    )
+    WHERE NOT ${resolvableMemberClaimExists(sql, sql`m."organizationId"`, sql`m."userId"`)}
     ${org ? sql`AND m."organizationId" = ${org}` : sql``}
     ORDER BY o."createdAt" ASC
   `;
@@ -186,23 +171,7 @@ async function hasResolvableClaim(
 ): Promise<boolean> {
   const sql = getDb();
   const rows = await sql<{ found: boolean }>`
-    SELECT EXISTS (
-      SELECT 1
-      FROM entity_identities ei
-      JOIN entities e
-        ON e.id = ei.entity_id
-       AND e.organization_id = ei.organization_id
-       AND e.deleted_at IS NULL
-      JOIN entity_types et
-        ON et.id = e.entity_type_id
-       AND et.organization_id = e.organization_id
-       AND et.slug = '$member'
-      WHERE ei.organization_id = ${organizationId}
-        AND ei.namespace = 'auth_user_id'
-        AND ei.identifier = ${userId}
-        AND ei.source_connector = 'auth:signup'
-        AND ei.deleted_at IS NULL
-    ) AS found
+    SELECT ${resolvableMemberClaimExists(sql, sql`${organizationId}`, sql`${userId}`)} AS found
   `;
   return rows[0]?.found ?? false;
 }
@@ -294,9 +263,7 @@ async function main(): Promise<void> {
     }
 
     if (!opts.execute) {
-      console.log(
-        `  would backfill user=${row.userId} org=${row.orgSlug} email=${row.email}`
-      );
+      console.log(`  would backfill user=${row.userId} org=${row.orgSlug}`);
       backfilled++;
       continue;
     }

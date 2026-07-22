@@ -1,4 +1,9 @@
-import { createLogger } from "@lobu/core";
+import {
+  coerceApprovalAttribution,
+  createLogger,
+  InteractionResourceKind,
+  type ToolApprovalCreateBody,
+} from "@lobu/core";
 import {
   createGatewayClient,
   gatewayFetch,
@@ -92,18 +97,21 @@ export async function maybePostApprovalCard(
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
  * `proposal` (the agent row diff); manage_behaviors carries flat behavior args
- * plus `resourceKind: "behavior"`. All share the `tool_approval` transport.
+ * plus `resourceKind: behavior`. All share the `tool_approval` transport.
+ * Wire literals come from `@lobu/core` (`interaction-envelope` contract).
  */
 function buildApprovalCardBody(
   toolName: string,
   rawResultText: string
-): Record<string, unknown> | null {
-  let parsed: Record<string, unknown>;
+): ToolApprovalCreateBody | null {
+  let raw: unknown;
   try {
-    parsed = JSON.parse(rawResultText);
+    raw = JSON.parse(rawResultText);
   } catch {
     return null;
   }
+  const parsed = recordOrNull(raw);
+  if (!parsed) return null;
 
   if (toolName === "manage_behaviors") {
     if (
@@ -114,21 +122,15 @@ function buildApprovalCardBody(
     }
     // Server proposal is `{ args: ManageBehaviorsArgs }`; SPA renderer needs the
     // flat behavior fields (action, slug, prompt, schedule, …).
-    const rawProposal = parsed.proposal;
-    const flatProposal =
-      rawProposal &&
-      typeof rawProposal === "object" &&
-      (rawProposal as { args?: unknown }).args &&
-      typeof (rawProposal as { args: unknown }).args === "object"
-        ? (rawProposal as { args: Record<string, unknown> }).args
-        : ((rawProposal as Record<string, unknown> | null) ?? null);
+    const rawProposal = recordOrNull(parsed.proposal);
+    const flatProposal = recordOrNull(rawProposal?.args) ?? rawProposal;
     return {
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: "behavior",
+      resourceKind: InteractionResourceKind.Behavior,
       proposal: flatProposal,
-      current: parsed.current ?? null,
+      current: recordOrNull(parsed.current),
     };
   }
 
@@ -143,9 +145,9 @@ function buildApprovalCardBody(
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: "agent",
-      proposal: parsed.proposal ?? null,
-      current: parsed.current ?? null,
+      resourceKind: InteractionResourceKind.Agent,
+      proposal: recordOrNull(parsed.proposal),
+      current: recordOrNull(parsed.current),
     };
   }
 
@@ -163,18 +165,23 @@ function buildApprovalCardBody(
         typeof parsed.approval_action === "string"
           ? parsed.approval_action
           : "change",
-      resourceKind: "entity",
-      proposal: parsed.approval_proposal ?? null,
+      resourceKind: InteractionResourceKind.Entity,
+      proposal: recordOrNull(parsed.approval_proposal),
       // entity_field_change diff: field_path -> proposed / current. The SPA
       // routes on `fields` (non-empty) to the entity-field-change card.
-      fields: parsed.approval_fields ?? null,
-      current: parsed.approval_current ?? null,
-      attribution:
-        parsed.approval_attribution === "behavior" ? "behavior" : "agent",
+      fields: recordOrNull(parsed.approval_fields),
+      current: recordOrNull(parsed.approval_current),
+      attribution: coerceApprovalAttribution(parsed.approval_attribution),
     };
   }
 
   return null;
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 export async function callMcpTool(

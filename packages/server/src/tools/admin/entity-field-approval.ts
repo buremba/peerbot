@@ -8,6 +8,10 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+	ApprovalAttribution,
+	type ApprovalAttribution as ApprovalAttributionType,
+} from "@lobu/core/contracts/interaction-envelope";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
@@ -60,8 +64,8 @@ export interface EntityFieldChangeProposal {
 	 * into ONE batch approval card. Stripped from action_input before the insert.
 	 */
 	window_id?: number | null;
-	/** Who proposed the change — drives the card label/author. Defaults to 'watcher'. */
-	attribution?: "behavior" | "agent";
+	/** Who proposed the change — drives the card label/author. Defaults to 'behavior'. */
+	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 	/**
 	 * The ONE human who owns every gated field (distinct
@@ -90,7 +94,7 @@ export interface EntityDeleteProposal {
 	watcher_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
-	attribution?: "behavior" | "agent";
+	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 }
 
@@ -101,7 +105,7 @@ export interface EntityCreateProposal {
 	watcher_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
 	window_id?: number | null;
-	attribution?: "behavior" | "agent";
+	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 }
 
@@ -128,7 +132,7 @@ export interface EntityMergeProposal {
 	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
-	attribution?: "behavior" | "agent";
+	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 }
 
@@ -229,13 +233,13 @@ function entityChangeIdempotencyKey(
 async function loadWatcherLabel(
 	ctx: ToolContext,
 	watcherId: number | null | undefined,
-	attribution: "behavior" | "agent" | undefined,
+	attribution: ApprovalAttributionType | undefined,
 ): Promise<{
 	actorLabel: string;
 	watcherName: string | null;
 	watcherAgentId: string | null;
 }> {
-	if (attribution !== "behavior") {
+	if (attribution !== ApprovalAttribution.Behavior) {
 		return { actorLabel: "An agent", watcherName: null, watcherAgentId: null };
 	}
 	if (!watcherId) {
@@ -554,8 +558,9 @@ export async function proposeEntityChange(
 
 	const fieldKeys = updateProposal ? Object.keys(updateProposal.fields) : [];
 	const fieldList = fieldKeys.join(", ");
-	const attribution = proposal.attribution ?? "behavior";
-	const actorNoun = attribution === "agent" ? "An agent" : "A Behavior";
+	const attribution = proposal.attribution ?? ApprovalAttribution.Behavior;
+	const actorNoun =
+		attribution === ApprovalAttribution.Agent ? "An agent" : "A Behavior";
 	const [{ actorLabel, watcherName, watcherAgentId }, entity] =
 		await Promise.all([
 			loadWatcherLabel(ctx, proposal.watcher_id, attribution),

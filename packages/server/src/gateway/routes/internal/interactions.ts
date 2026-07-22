@@ -4,6 +4,10 @@ import {
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
+import {
+	isApprovalAttribution,
+	isInteractionResourceKind,
+} from "@lobu/core/contracts/interaction-envelope";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
@@ -91,8 +95,12 @@ export function createInteractionRoutes(
             // entity_field_change (manage_entity) carries a human-owned-field
             // diff + who proposed it; manage_agents leaves these null.
             (body.fields ?? null) as Record<string, unknown> | null,
-            typeof body.attribution === "string" ? body.attribution : null,
-            typeof body.resourceKind === "string" ? body.resourceKind : null
+            // Keep malformed/legacy cards non-fatal without lying to the
+            // downstream contract about their discriminator values.
+            isApprovalAttribution(body.attribution) ? body.attribution : null,
+            isInteractionResourceKind(body.resourceKind)
+              ? body.resourceKind
+              : null
           );
           // The live approval card is a one-shot SSE push, and the transcript
           // doesn't carry interaction parts — so on reload the card is lost.

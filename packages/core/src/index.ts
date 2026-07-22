@@ -33,6 +33,11 @@ export type { CommandContext, CommandDefinition } from "./command-registry";
 export { CommandRegistry } from "./command-registry";
 export * from "./connector-query-errors";
 export * from "./constants";
+// Interaction-envelope wire literals (tool_approval resourceKind / attribution).
+// Deep import `@lobu/core/contracts/interaction-envelope` also works under
+// bundler/NodeNext resolution; plugin packages with classic `moduleResolution:
+// "node"` must use this root re-export.
+export * from "./contracts/interaction-envelope";
 // Shared credential-store primitives (CLI + embedded server share one impl)
 export * from "./credentials";
 // Errors & logging

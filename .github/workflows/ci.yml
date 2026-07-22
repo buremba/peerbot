@@ -41,23 +41,7 @@ jobs:
         # Ubuntu 24.04 (ubuntu-latest) blocks unprivileged user namespaces via
         # AppArmor by default; bwrap needs them, so flip the sysctl. See
         # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
-          # Only flip the AppArmor userns restriction when the kernel exposes
-          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
-          # don't restrict unprivileged user namespaces and lack this sysctl key.
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --version
-          ls -la /usr/bin/true /bin/true 2>&1 || true
-          # Probe with multiple bind mounts. /bin and /usr/bin are sometimes the
-          # same symlinked tree, sometimes not, depending on distro layout.
-          bwrap --unshare-user --unshare-pid \
-            --ro-bind / / \
-            --proc /proc --dev /dev \
-            -- /usr/bin/true && echo "bwrap userns OK"
+        run: bash scripts/install-bubblewrap.sh probe
 
       - name: Install dependencies
         run: bun install
@@ -114,6 +98,13 @@ jobs:
         # passes; if Linux turns out different we'll narrow this back down,
         # but we own the WASM concern via run-script-runtime.test.ts under
         # Node + isolated-vm in the integration job below.
+        #
+        # LOBU_REQUIRE_EXEC_SANDBOX turns a missing/non-functional bwrap into a
+        # test failure. Without it the exec-sandbox escape matrix `describe.skip`s
+        # itself and the job still goes green — the one place we verify the
+        # sandbox actually contains a hostile command would vanish unnoticed.
+        env:
+          LOBU_REQUIRE_EXEC_SANDBOX: "1"
         run: |
           bun test packages/agent-worker --coverage
           mv coverage/lcov.info coverage/agent-worker.lcov.info
@@ -213,27 +204,7 @@ jobs:
       # The worker's exec-sandbox uses bwrap on Linux; ubuntu-latest blocks
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
-          # Only flip the AppArmor userns restriction when the kernel exposes
-          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
-          # don't restrict unprivileged user namespaces and lack this sysctl key.
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --version
-
-      # NOTE: `lobu run`'s embedded Postgres (PG18) is NEEDED-linked against
-      # ICU 60, which ubuntu-latest no longer carries. We do NOT install a
-      # system libicu60 (the old archive .deb was fragile and didn't help local
-      # Linux devs) — instead scripts/sdk-e2e.sh runs
-      # scripts/sdk-e2e/fix-embedded-pg-icu.mjs, which creates the missing
-      # `.so.60` SONAME symlinks in the embedded-postgres native/lib dir (it
-      # already ships libicu*.so.60.2). The binaries' `$ORIGIN/../lib` rpath then
-      # resolves their bundled ICU with zero system deps. Prod is unaffected
-      # (external Postgres; embedded-postgres pruned from the app image).
-
+        run: bash scripts/install-bubblewrap.sh
       - name: Build all packages (CLI + server bundle + sdk + pgvector-embedded)
         run: make build-packages
 
@@ -278,20 +249,7 @@ jobs:
       # The worker's exec-sandbox uses bwrap on Linux; ubuntu-latest blocks
       # unprivileged user namespaces via AppArmor, so flip the sysctl too.
       - name: Install bubblewrap (worker exec-sandbox)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap coreutils
-          # Only flip the AppArmor userns restriction when the kernel exposes
-          # it (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs
-          # don't restrict unprivileged user namespaces and lack this sysctl key.
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --version
-
-      # Embedded Postgres (PG18) ICU shim — see the sdk-e2e job note above;
-      # scripts/cli-smoke.sh runs the same scripts/sdk-e2e/fix-embedded-pg-icu.mjs.
-
+        run: bash scripts/install-bubblewrap.sh
       - name: Build all packages (CLI + server bundle + sdk + pgvector-embedded)
         run: make build-packages
 

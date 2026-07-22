@@ -459,11 +459,16 @@ describe("channel streaming feeds", () => {
     // Make the owner a channel member → they can read it again.
     const channelEntityId =
       graph.resourceEntityIds[slackChannelKey("TENF", "CENF")];
+    // ensureMemberEntity enforces userId-owns-email: the auth_user_id/auth:signup
+    // claim (which the gate resolves on) is only written when the userId owns the
+    // email the $member is provisioned under. The real sign-in path always passes
+    // the signed-in user's own email, so seed with it here — a constructed
+    // owner-<id>@example.com would mismatch the user row and be refused.
     await ensureMemberEntity({
       organizationId: orgId,
       userId: workspace.users.owner.id,
       name: "Owner",
-      email: `owner-${workspace.users.owner.id}@example.com`,
+      email: workspace.users.owner.email,
     });
     const [member] = await sql`
       SELECT e.id FROM entities e

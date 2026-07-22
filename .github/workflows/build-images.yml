@@ -1,22 +1,22 @@
 name: Build and Push Images
 
-# Serialize image builds on main. The shared tag is `date -u +%Y%m%d-%H%M%S`
-# (generate-tag below), and Flux's ImagePolicy matches that exact format
-# `^(\d{8})-(\d{6})$` — so the tag cannot carry a commit SHA without a
-# coordinated change in the owletto submodule's image-policies.yaml, and a
-# mismatch there stops every deploy.
+# Every run publishes images tagged `date -u +%Y%m%d-%H%M%S` (generate-tag
+# below), so concurrent runs — including manual dispatches from other refs —
+# can compute the SAME tag and overwrite each other. On 2026-07-22 five PRs
+# merged within 14s, all five runs stamped `20260722-121441`, and prod ended up
+# on whichever pushed last: two merged PRs never deployed, every workflow green.
 #
-# That makes same-second collisions the failure mode: on 2026-07-22 five PRs
-# merged within 14s, all five builds computed tag `20260722-121441`, and each
-# pushed it in turn. Prod ended up on whichever won the race — two merged PRs
-# silently never deployed, with all workflows green.
+# Serializing makes the tag unique in practice (runs are minutes apart, not
+# milliseconds). The tag cannot simply carry the commit SHA instead: Flux's
+# ImagePolicy matches '^(\d{8})-(\d{6})$' and lives in the owletto submodule, so
+# changing the format needs a coordinated two-repo change and a mismatch stops
+# every deploy.
 #
-# Serializing costs queue time on a burst of merges but guarantees distinct
-# timestamps, so the newest push is always the newest commit. Do NOT add
-# cancel-in-progress: a cancelled run leaves the chart pointing at a tag whose
-# images were never pushed.
+# cancel-in-progress stays false: a cancelled run can leave the chart pointing
+# at a tag whose sibling images were never pushed.
 concurrency:
-  group: build-images-${{ github.ref }}
+  group: build-images
+  cancel-in-progress: false
 
 on:
   push:
@@ -54,40 +54,12 @@ env:
 jobs:
   generate-tag:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: read
-      packages: read
     outputs:
       tag: ${{ steps.timestamp.outputs.tag }}
     steps:
-      # `docker manifest inspect` needs auth against ghcr; without it every
-      # lookup fails and the collision check below would pass vacuously.
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Generate shared timestamp tag
         id: timestamp
-        # Belt-and-braces on top of the workflow `concurrency` group: if a tag
-        # somehow already exists in the registry, this run would overwrite it and
-        # silently strand whichever commit built it (see the header comment).
-        # Wait out the second and re-stamp rather than clobbering.
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 30); do
-            tag="$(date -u +'%Y%m%d-%H%M%S')"
-            if ! docker manifest inspect "ghcr.io/${{ github.repository_owner }}/lobu-app:${tag}" >/dev/null 2>&1; then
-              echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "tag ${tag} already published — waiting 1s for a fresh timestamp"
-            sleep 1
-          done
-          echo "could not obtain an unused timestamp tag after 30s" >&2
-          exit 1
+        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
   # Connector-runtime parity smoke gate (main/deploy side). RUNS the built worker
   # artifact's self-check before any image is pushed, so the packaging/parity

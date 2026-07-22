@@ -536,13 +536,25 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
   var token = h.get("token") || "";
   var worker = h.get("worker") || "";
   var run = h.get("run") || "";
+  var agent = h.get("agent") || "";
+  var thread = h.get("thread") || "";
+  var message = h.get("message") || h.get("message_id") || "";
   // Strip the token out of the URL before doing anything else.
   history.replaceState(null, "", location.pathname);
-  // Chrome extension deep links (sidepanel): device page or Memory run.
-  // Prefer run over worker when both are present — handoff panels care about
-  // the staged action, not the device.
+  // Chrome extension deep links (sidepanel): conversation handoff, Memory run,
+  // or device page. Prefer agent+thread (browser handoff conversation) over
+  // run (Memory peek) over worker (device). SPA home (/) re-reads the hash.
   var next = "/";
-  if (run) {
+  if (agent && thread) {
+    next =
+      "/#agent=" +
+      encodeURIComponent(agent) +
+      "&thread=" +
+      encodeURIComponent(thread);
+    if (message) {
+      next += "&message=" + encodeURIComponent(message);
+    }
+  } else if (run) {
     next = "/#run=" + encodeURIComponent(run);
   } else if (worker) {
     next = "/#worker=" + encodeURIComponent(worker);

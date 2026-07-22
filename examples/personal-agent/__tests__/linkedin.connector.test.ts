@@ -27,6 +27,10 @@ let prepareLinkedInComment: any;
 let buildFillCommentExpression: any;
 let buildInjectHandoffBannerExpression: any;
 let truncateHandoffReason: any;
+let normalizeCommentMatchText: any;
+let commentBodiesMatch: any;
+let buildScrapeCommentsExpression: any;
+let verifyLinkedInStagedComment: any;
 
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
@@ -46,6 +50,10 @@ beforeAll(async () => {
   buildFillCommentExpression = mod.buildFillCommentExpression;
   buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
   truncateHandoffReason = mod.truncateHandoffReason;
+  normalizeCommentMatchText = mod.normalizeCommentMatchText;
+  commentBodiesMatch = mod.commentBodiesMatch;
+  buildScrapeCommentsExpression = mod.buildScrapeCommentsExpression;
+  verifyLinkedInStagedComment = mod.verifyLinkedInStagedComment;
   const identityMod = await import("../linkedin-identity");
   normalizeLinkedInSlug = identityMod.normalizeLinkedInSlug;
   normalizeLinkedInMemberId = identityMod.normalizeLinkedInMemberId;
@@ -1278,8 +1286,191 @@ describe("prepare_comment helpers", () => {
       { required: ["post_url"] },
       { required: ["activity_id"] },
     ]);
-    expect(c.definition.version).toBe("3.2.0");
+    expect(c.definition.version).toBe("3.3.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
+  });
+
+  test("definition declares verify_staged_comment as read-only", () => {
+    const c = new LinkedInConnector();
+    const action = c.definition.actions?.verify_staged_comment;
+    expect(action?.key).toBe("verify_staged_comment");
+    expect(action?.requiresApproval).toBe(false);
+    expect(action?.kind).toBe("read");
+    expect(action?.annotations?.destructiveHint).toBe(false);
+    expect(action?.annotations?.idempotentHint).toBe(true);
+    expect(
+      action?.outputSchema?.properties?.match?.properties?.match_kind?.enum
+    ).toEqual(["exact", "prefix", "contains"]);
+  });
+
+  test("commentBodiesMatch normalizes without accepting weak partial matches", () => {
+    expect(normalizeCommentMatchText("  Hello\nWorld  ")).toBe("hello world");
+    expect(commentBodiesMatch("Hello world", "Hello world").ok).toBe(true);
+    expect(commentBodiesMatch("Hello world", "Hello world").kind).toBe("exact");
+    expect(
+      commentBodiesMatch(
+        "A sufficiently distinctive draft body that continues after truncation",
+        "A sufficiently distinctive draft body"
+      ).kind
+    ).toBe("prefix");
+    expect(
+      commentBodiesMatch(
+        "a reasonably long draft body",
+        "Prefix a reasonably long draft body suffix"
+      ).kind
+    ).toBe("contains");
+    expect(
+      commentBodiesMatch(
+        "Great insight followed by the rest of the staged draft",
+        "Great insight"
+      ).ok
+    ).toBe(false);
+    expect(
+      commentBodiesMatch(
+        "This staged draft has an embedded generic phrase",
+        "staged draft"
+      ).ok
+    ).toBe(false);
+    expect(commentBodiesMatch("hello", "goodbye").ok).toBe(false);
+  });
+
+  test("buildScrapeCommentsExpression is read-only (no submit)", () => {
+    const expr = buildScrapeCommentsExpression();
+    expect(expr).toContain("comments-comment-item");
+    expect(expr).not.toMatch(
+      /insertText|dispatchKeyEvent|key:\s*['"]Enter['"]/
+    );
+    expect(expr).not.toMatch(/Post[\s\S]*\.click\(/);
+  });
+
+  test("prepareLinkedInComment stamps conversation handoff on navigate", async () => {
+    const log: Array<{ key: string; input: Record<string, unknown> }> = [];
+    const dispatcher = {
+      dispatch: async (key: string, input: Record<string, unknown>) => {
+        log.push({ key, input });
+        if (key === "navigate") {
+          return {
+            tab_id: 9,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+          };
+        }
+        if (key === "wait_for_selector") return { found: true };
+        if (key === "evaluate") {
+          return {
+            value: { ok: true, reason: "typed", preview: "hi" },
+          };
+        }
+        if (key === "focus_tab" || key === "show_notification") return {};
+        throw new Error(`unexpected ${key}`);
+      },
+    };
+    const result = await prepareLinkedInComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "hi there draft",
+      agentId: "agent_abc",
+      threadId: "thread_xyz",
+      messageId: "msg_1",
+      notify: false,
+      banner: false,
+    });
+    const nav = log.find((e) => e.key === "navigate");
+    expect(nav?.input.holder_agent_id).toBe("agent_abc");
+    expect(nav?.input.holder_thread_id).toBe("thread_xyz");
+    expect(nav?.input.holder_message_id).toBe("msg_1");
+    expect(result.agent_id).toBe("agent_abc");
+
+    log.length = 0;
+    const incomplete = await prepareLinkedInComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "another draft",
+      agentId: "agent_without_thread",
+      notify: false,
+      banner: false,
+    });
+    const incompleteNav = log.find((e) => e.key === "navigate");
+    expect(incompleteNav?.input.holder_agent_id).toBeUndefined();
+    expect(incomplete.agent_id).toBeUndefined();
+  });
+
+  test("verifyLinkedInStagedComment matches scraped comments", async () => {
+    const log: string[] = [];
+    const dispatcher = {
+      dispatch: async (key: string, input: Record<string, unknown>) => {
+        log.push(key);
+        if (key === "navigate") {
+          return {
+            tab_id: 3,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+          };
+        }
+        if (key === "wait_for_selector") return { found: true };
+        if (key === "evaluate") {
+          const expr = String(input.expression);
+          if (expr.includes("load more comments")) return { value: true };
+          return {
+            value: {
+              ok: true,
+              comments: [
+                { author: "Other", text: "unrelated" },
+                {
+                  author: "Burak",
+                  text: "Great insight — thanks for sharing.",
+                },
+              ],
+              count: 2,
+            },
+          };
+        }
+        if (key === "focus_tab") return {};
+        throw new Error(`unexpected ${key}`);
+      },
+    };
+    const result = await verifyLinkedInStagedComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "Great insight — thanks for sharing.",
+      author_hint: "Burak",
+    });
+    expect(result.verified).toBe(true);
+    expect(result.comments_scanned).toBe(2);
+    expect(result.match?.author).toBe("Burak");
+    expect(result.match?.match_kind).toBe("exact");
+    expect(log).not.toContain("click_ref");
+    expect(log).not.toContain("type_ref");
+  });
+
+  test("verifyLinkedInStagedComment reports no match cleanly", async () => {
+    const dispatcher = {
+      dispatch: async (key: string) => {
+        if (key === "navigate") {
+          return {
+            tab_id: 3,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+          };
+        }
+        if (key === "wait_for_selector") return {};
+        if (key === "evaluate") {
+          return {
+            value: {
+              comments: [{ author: "A", text: "something else" }],
+              count: 1,
+            },
+          };
+        }
+        if (key === "focus_tab") return {};
+        return {};
+      },
+    };
+    const result = await verifyLinkedInStagedComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "the staged draft that was never posted",
+      focus: false,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.reason).toBe("no_matching_comment");
+    expect(result.comments_scanned).toBe(1);
   });
 
   test("prepareLinkedInComment stages via evaluate (primary) and never clicks Post", async () => {
@@ -1474,5 +1665,47 @@ describe("prepare_comment helpers", () => {
     expect(result.output?.prepared).toBe(true);
     expect(result.output?.tab_id).toBe(5);
     expect(result.output?.method).toBe("evaluate");
+  });
+
+  test("execute verify_staged_comment routes through the read path", async () => {
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "verify_staged_comment",
+      input: {
+        activity_id: "7312345678901234567",
+        body: "Nice post",
+        author_hint: "Burak",
+        focus: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async (key: string, input: Record<string, unknown>) => {
+            if (key === "navigate") {
+              return {
+                tab_id: 6,
+                current_url:
+                  "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+              };
+            }
+            if (key === "wait_for_selector") return {};
+            if (key === "evaluate") {
+              const expr = String(input.expression);
+              if (expr.includes("load|show|view")) return { value: false };
+              return {
+                value: {
+                  comments: [{ author: "Burak", text: "Nice post" }],
+                },
+              };
+            }
+            throw new Error(`unexpected ${key}`);
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.verified).toBe(true);
+    expect(result.output?.match?.author).toBe("Burak");
   });
 });

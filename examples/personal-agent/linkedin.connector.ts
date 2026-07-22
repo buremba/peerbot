@@ -24,6 +24,10 @@
  * Write handoff: `prepare_comment` opens a post in the paired Chrome,
  * fills the comment composer, focuses the tab, and stops. The human clicks
  * Post themselves — Lobu never submits the comment.
+ *
+ * Closed-loop (optional): `verify_staged_comment` re-opens the post and scrapes
+ * visible comments to check whether the human actually posted the draft.
+ * Staging ≠ verified posted.
  */
 
 import {
@@ -618,6 +622,10 @@ type PrepareCommentResult = {
   banner_shown?: boolean;
   /** Truncated reason shown on the banner (if any). */
   reason_preview?: string;
+  /** Optional agent chat handoff (stamped on the owned Chrome tab). */
+  agent_id?: string;
+  thread_id?: string;
+  message_id?: string;
   message: string;
 };
 
@@ -1100,6 +1108,14 @@ export async function prepareLinkedInComment(
     notify?: boolean;
     /** Inject in-page handoff banner (default true). */
     banner?: boolean;
+    /**
+     * Optional Owletto sidepanel deep-link: when set with threadId, the
+     * extension stamps agent+thread on the owned tab so the sidepanel opens
+     * the conversation (and optionally scrolls to messageId).
+     */
+    agentId?: string;
+    threadId?: string;
+    messageId?: string;
   }
 ): Promise<PrepareCommentResult> {
   const body = opts.body.trim();
@@ -1116,6 +1132,19 @@ export async function prepareLinkedInComment(
   const notify = opts.notify !== false;
   const banner = opts.banner !== false;
   const reasonPreview = truncateHandoffReason(opts.reason);
+  const agentId = opts.agentId?.trim() || undefined;
+  const threadId = opts.threadId?.trim() || undefined;
+  const messageId = opts.messageId?.trim() || undefined;
+  const handoff =
+    agentId && threadId ? { agentId, threadId, messageId } : undefined;
+  const handoffFields: Record<string, string> = {};
+  if (handoff) {
+    handoffFields.holder_agent_id = handoff.agentId;
+    handoffFields.holder_thread_id = handoff.threadId;
+    if (handoff.messageId) {
+      handoffFields.holder_message_id = handoff.messageId;
+    }
+  }
 
   // Refuse accidental submit clicks through the chrome dispatcher.
   const safeDispatch: ChromeActionDispatcher = {
@@ -1141,6 +1170,7 @@ export async function prepareLinkedInComment(
     url: postUrl,
     open_in_new_tab: true,
     wait_for_load: true,
+    ...handoffFields,
     ...chromeOriginsInput(),
   });
   const tabId = nav.tab_id;
@@ -1326,8 +1356,305 @@ export async function prepareLinkedInComment(
     method,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
+    agent_id: handoff?.agentId,
+    thread_id: handoff?.threadId,
+    message_id: handoff?.messageId,
     message:
       "Comment staged in your browser. Review the draft and click Post yourself — Lobu did not submit.",
+  };
+}
+
+// ── verify_staged_comment (read: did the human Post?) ────────────────
+
+export type ScrapedComment = {
+  author?: string;
+  text: string;
+};
+
+export type VerifyStagedCommentResult = {
+  /** True when a visible comment matches the expected body. */
+  verified: boolean;
+  post_url: string;
+  body: string;
+  tab_id?: number;
+  comments_scanned: number;
+  match?: {
+    author?: string;
+    text_preview: string;
+    match_kind: "exact" | "prefix" | "contains";
+  };
+  /** Why verification failed or was inconclusive. */
+  reason?: string;
+  message: string;
+};
+
+/** Collapse whitespace / case for comment body comparison. */
+export function normalizeCommentMatchText(text: string): string {
+  return text
+    .normalize("NFKC")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Match staged draft text against a scraped comment body.
+ * Allows LinkedIn "…more" truncation and longer surrounding blocks.
+ */
+export function commentBodiesMatch(
+  expected: string,
+  actual: string
+): { ok: true; kind: "exact" | "prefix" | "contains" } | { ok: false } {
+  const e = normalizeCommentMatchText(expected);
+  const a = normalizeCommentMatchText(actual);
+  if (!e || !a) return { ok: false };
+  if (a === e) return { ok: true, kind: "exact" };
+  // Partial matches must be distinctive enough not to verify common phrases.
+  if (Math.min(e.length, a.length) < 24) return { ok: false };
+  // LinkedIn may truncate the visible comment before its "See more" control.
+  if (e.startsWith(a)) return { ok: true, kind: "prefix" };
+  // Some DOM variants wrap the comment body in a longer text block.
+  if (a.includes(e)) return { ok: true, kind: "contains" };
+  return { ok: false };
+}
+
+/**
+ * JS expression: scrape visible comments on a LinkedIn post/permalink page.
+ * Best-effort DOM selectors — LinkedIn class names churn.
+ */
+export function buildScrapeCommentsExpression(): string {
+  return `(() => {
+  const roots = [
+    ...document.querySelectorAll('article.comments-comment-item'),
+    ...document.querySelectorAll('.comments-comment-item'),
+    ...document.querySelectorAll('.comments-comment-entity'),
+    ...document.querySelectorAll('[class*="comments-comment-item"]'),
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const root of roots) {
+    if (!(root instanceof HTMLElement)) continue;
+    if (seen.has(root)) continue;
+    seen.add(root);
+    const textEl =
+      root.querySelector('.update-components-text') ||
+      root.querySelector('.comments-comment-item__main-content') ||
+      root.querySelector('[class*="comment-item__main"]') ||
+      root.querySelector('.feed-shared-inline-show-more-text') ||
+      root.querySelector('[data-test-id="main-feed-activity-card"] span[dir="ltr"]') ||
+      root.querySelector('span[dir="ltr"]');
+    let text = (textEl?.innerText || textEl?.textContent || '').replace(/\\s+/g, ' ').trim();
+    // Drop "See more" / "…more" chrome.
+    text = text.replace(/\\s*…?\\s*see more\\s*$/i, '').replace(/\\s*…more\\s*$/i, '').trim();
+    if (!text || text.length < 2) continue;
+    const authorEl =
+      root.querySelector('.comments-post-meta__name-text') ||
+      root.querySelector('.comments-comment-meta__description-title') ||
+      root.querySelector('a[href*="/in/"] span[aria-hidden="true"]') ||
+      root.querySelector('a[href*="/in/"]');
+    const author = (authorEl?.textContent || '').replace(/\\s+/g, ' ').trim() || undefined;
+    out.push({ author, text: text.slice(0, 2000) });
+    if (out.length >= 80) break;
+  }
+  return { ok: true, comments: out, count: out.length, url: location.href };
+})()`;
+}
+
+/**
+ * Re-open a LinkedIn post and check whether a comment matching `body` is visible.
+ * Read-only — never types or submits. Matching is best-effort DOM scrape.
+ */
+export async function verifyLinkedInStagedComment(
+  dispatcher: ChromeActionDispatcher,
+  opts: {
+    postUrl: string;
+    body: string;
+    /** Require the author's display name to include this (case-insensitive). */
+    author_hint?: string;
+    focus?: boolean;
+  }
+): Promise<VerifyStagedCommentResult> {
+  const body = opts.body.trim();
+  if (!body) {
+    throw new Error("verify_staged_comment: body must be non-empty");
+  }
+  const postUrl = normalizeLinkedInPostUrl(opts.postUrl);
+  if (!postUrl) {
+    throw new Error(
+      `verify_staged_comment: invalid post_url / activity_id: ${JSON.stringify(opts.postUrl)}`
+    );
+  }
+  const authorHint = opts.author_hint?.trim().toLowerCase() || undefined;
+  const focus = opts.focus !== false;
+
+  const nav = await dispatcher.dispatch<{
+    tab_id?: number;
+    current_url?: string;
+  }>("navigate", {
+    url: postUrl,
+    open_in_new_tab: true,
+    wait_for_load: true,
+    ...chromeOriginsInput(),
+  });
+  const tabId = nav.tab_id;
+  if (typeof tabId !== "number") {
+    throw new Error("verify_staged_comment: navigate did not return tab_id");
+  }
+  if (isLinkedInAuthWall(nav.current_url)) {
+    throw new Error(
+      `Not logged into LinkedIn (landed on ${nav.current_url}). Sign in in the paired Chrome profile, then retry.`
+    );
+  }
+
+  try {
+    await dispatcher.dispatch("wait_for_selector", {
+      tab_id: tabId,
+      selector:
+        ".comments-comment-item, .comments-comment-entity, .feed-shared-update-v2, article",
+      timeout_ms: 8000,
+      ...chromeOriginsInput(),
+    });
+  } catch {
+    // Non-fatal — page may still expose comments.
+  }
+
+  // Best-effort: expand the comments section / load more (never Post).
+  try {
+    await dispatcher.dispatch("evaluate", {
+      tab_id: tabId,
+      expression: `(() => {
+        const labels = [/^(load|show|view) more comments/i, /^\\d+\\s+comments?$/i, /^comments$/i];
+        const clickables = [
+          ...document.querySelectorAll('button, [role="button"], a'),
+        ];
+        const control = clickables.find((el) => {
+          const n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+          return n && labels.some((re) => re.test(n));
+        });
+        if (control) {
+          try { control.click(); } catch (_) {}
+        }
+        return !!control;
+      })()`,
+      await_promise: false,
+      ...chromeOriginsInput(),
+    });
+  } catch {
+    // Expand is optional.
+  }
+
+  try {
+    await dispatcher.dispatch("wait_for_selector", {
+      tab_id: tabId,
+      selector: ".comments-comment-item, .comments-comment-entity",
+      timeout_ms: 3000,
+      ...chromeOriginsInput(),
+    });
+  } catch {
+    // A post can legitimately have no comments.
+  }
+
+  if (focus) {
+    try {
+      await dispatcher.dispatch("focus_tab", {
+        tab_id: tabId,
+        draw_attention: true,
+        ...chromeOriginsInput(),
+      });
+    } catch {
+      // Focus is best-effort.
+    }
+  }
+
+  let comments: ScrapedComment[] = [];
+  try {
+    const scrape = await dispatcher.dispatch<{
+      value?: { comments?: unknown; count?: number };
+      exception?: string;
+    }>("evaluate", {
+      tab_id: tabId,
+      expression: buildScrapeCommentsExpression(),
+      await_promise: true,
+      ...chromeOriginsInput(),
+    });
+    if (scrape.exception) {
+      return {
+        verified: false,
+        post_url: postUrl,
+        body,
+        tab_id: tabId,
+        comments_scanned: 0,
+        reason: `scrape_exception: ${scrape.exception}`,
+        message:
+          "Could not scrape comments on the page. Open the post in Chrome and confirm the comment is visible.",
+      };
+    }
+    const raw = scrape.value?.comments;
+    if (Array.isArray(raw)) {
+      comments = raw.filter(
+        (c): c is ScrapedComment =>
+          !!c &&
+          typeof c === "object" &&
+          typeof c.text === "string" &&
+          c.text.trim().length > 0 &&
+          (c.author === undefined || typeof c.author === "string")
+      );
+    }
+  } catch (err) {
+    return {
+      verified: false,
+      post_url: postUrl,
+      body,
+      tab_id: tabId,
+      comments_scanned: 0,
+      reason: err instanceof Error ? err.message : String(err),
+      message: "Comment scrape failed (extension evaluate error).",
+    };
+  }
+
+  const candidates = authorHint
+    ? comments.filter((c) =>
+        (c.author ?? "").toLowerCase().includes(authorHint)
+      )
+    : comments;
+
+  for (const c of candidates) {
+    const m = commentBodiesMatch(body, c.text);
+    if (!m.ok) continue;
+    return {
+      verified: true,
+      post_url: postUrl,
+      body,
+      tab_id: tabId,
+      comments_scanned: comments.length,
+      match: {
+        author: c.author,
+        text_preview: c.text.slice(0, 160),
+        match_kind: m.kind,
+      },
+      message: `Verified: a visible comment matches the staged draft${
+        c.author ? ` (author: ${c.author})` : ""
+      }.`,
+    };
+  }
+
+  return {
+    verified: false,
+    post_url: postUrl,
+    body,
+    tab_id: tabId,
+    comments_scanned: comments.length,
+    reason:
+      comments.length === 0
+        ? "no_comments_visible"
+        : authorHint
+          ? "no_matching_comment_for_author"
+          : "no_matching_comment",
+    message:
+      comments.length === 0
+        ? "No comments visible on the post yet. The human may not have posted, comments may be collapsed, or the DOM selectors missed them."
+        : "Comments are visible but none matched the staged draft body. The human may have edited the text before posting.",
   };
 }
 
@@ -1588,8 +1915,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
     key: "linkedin",
     name: "LinkedIn",
     description:
-      "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft in the browser for the human to Post.",
-    version: "3.2.0",
+      "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
+    version: "3.3.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -1824,6 +2151,21 @@ export default class LinkedInConnector extends ConnectorRuntime<
               description:
                 "Inject a small in-page Lobu handoff banner (default true).",
             },
+            agent_id: {
+              type: "string",
+              description:
+                "Optional agent id for Owletto sidepanel conversation deep-link (requires thread_id).",
+            },
+            thread_id: {
+              type: "string",
+              description:
+                "Optional agent chat thread id for sidepanel conversation deep-link (requires agent_id).",
+            },
+            message_id: {
+              type: "string",
+              description:
+                "Optional chat message id to scroll to when the sidepanel opens the conversation.",
+            },
           },
         },
         outputSchema: {
@@ -1836,6 +2178,79 @@ export default class LinkedInConnector extends ConnectorRuntime<
             method: { type: "string" },
             banner_shown: { type: "boolean" },
             reason_preview: { type: "string" },
+            agent_id: { type: "string" },
+            thread_id: { type: "string" },
+            message_id: { type: "string" },
+            message: { type: "string" },
+          },
+        },
+      },
+      verify_staged_comment: {
+        key: "verify_staged_comment",
+        name: "Verify staged comment",
+        description:
+          "Re-open a LinkedIn post in the paired Chrome browser and check whether a comment matching the draft body is visible. Read-only — never posts. Best-effort DOM scrape (not a guarantee of publication).",
+        requiresApproval: false,
+        kind: "read",
+        annotations: {
+          openWorldHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+        },
+        inputSchema: {
+          type: "object",
+          required: ["body"],
+          anyOf: [{ required: ["post_url"] }, { required: ["activity_id"] }],
+          properties: {
+            post_url: {
+              type: "string",
+              description:
+                "LinkedIn post URL, activity id, or URN (same shapes as prepare_comment).",
+            },
+            activity_id: {
+              type: "string",
+              description:
+                "Activity id when post_url is omitted (digits or urn:li:activity:…).",
+            },
+            body: {
+              type: "string",
+              description: "Expected comment text (the staged draft).",
+              minLength: 1,
+              maxLength: 3000,
+            },
+            author_hint: {
+              type: "string",
+              description:
+                "Optional author display-name substring to require when matching.",
+              maxLength: 200,
+            },
+            focus: {
+              type: "boolean",
+              description:
+                "Bring the post tab to the foreground (default true).",
+            },
+          },
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            verified: { type: "boolean" },
+            post_url: { type: "string" },
+            body: { type: "string" },
+            tab_id: { type: "integer" },
+            comments_scanned: { type: "integer" },
+            match: {
+              type: "object",
+              properties: {
+                author: { type: "string" },
+                text_preview: { type: "string" },
+                match_kind: {
+                  type: "string",
+                  enum: ["exact", "prefix", "contains"],
+                },
+              },
+            },
+            reason: { type: "string" },
             message: { type: "string" },
           },
         },
@@ -1845,7 +2260,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
 
   async execute(ctx: ActionContext): Promise<ActionResult> {
     try {
-      if (ctx.actionKey !== "prepare_comment") {
+      if (
+        ctx.actionKey !== "prepare_comment" &&
+        ctx.actionKey !== "verify_staged_comment"
+      ) {
         return { success: false, error: `Unknown action: ${ctx.actionKey}` };
       }
       const body =
@@ -1864,9 +2282,34 @@ export default class LinkedInConnector extends ConnectorRuntime<
           error: "post_url or activity_id is required",
         };
       }
+      const dispatcher = requireExtensionDispatcher(ctx);
+
+      if (ctx.actionKey === "verify_staged_comment") {
+        const authorHint =
+          typeof ctx.input.author_hint === "string"
+            ? ctx.input.author_hint.trim()
+            : "";
+        const output = await verifyLinkedInStagedComment(dispatcher, {
+          postUrl: postUrlRaw,
+          body,
+          author_hint: authorHint || undefined,
+          focus: ctx.input.focus !== false,
+        });
+        return { success: true, output };
+      }
+
       const reason =
         typeof ctx.input.reason === "string" ? ctx.input.reason.trim() : "";
-      const dispatcher = requireExtensionDispatcher(ctx);
+      const agentId =
+        typeof ctx.input.agent_id === "string" ? ctx.input.agent_id.trim() : "";
+      const threadId =
+        typeof ctx.input.thread_id === "string"
+          ? ctx.input.thread_id.trim()
+          : "";
+      const messageId =
+        typeof ctx.input.message_id === "string"
+          ? ctx.input.message_id.trim()
+          : "";
       const output = await prepareLinkedInComment(dispatcher, {
         postUrl: postUrlRaw,
         body,
@@ -1874,6 +2317,9 @@ export default class LinkedInConnector extends ConnectorRuntime<
         focus: ctx.input.focus !== false,
         notify: ctx.input.notify !== false,
         banner: ctx.input.banner !== false,
+        agentId: agentId || undefined,
+        threadId: threadId || undefined,
+        messageId: messageId || undefined,
       });
       return { success: true, output };
     } catch (error) {

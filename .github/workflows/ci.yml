@@ -565,6 +565,21 @@ jobs:
         # running nowhere — a skipped test is indistinguishable from a passing one.
         run: bun scripts/check-test-runner-coverage.mjs
 
+      - name: Exposed-surface naming gate
+        # "watcher" is the internal engine/DB term; the agent-facing surface says
+        # "Behavior". MCP tool schemas, ClientSDK discovery metadata and callable
+        # method names, and the public reaction types must not leak the old word —
+        # renaming half a wire contract is how `watcher_source` survived the
+        # rename and reached prod.
+        run: bun scripts/check-exposed-surface-naming.ts
+
+      - name: Exposed-surface naming gate fixtures
+        # The guard itself is the thing most likely to rot silently: four earlier
+        # revisions PASSED CLEAN on violations they were written to catch. These
+        # fixtures mutate the real scanned files and assert the exit code, so a
+        # guard that stops catching regressions fails here instead of going quiet.
+        run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

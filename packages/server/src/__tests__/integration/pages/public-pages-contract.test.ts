@@ -169,6 +169,43 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(sitemapXml).not.toMatch(/<loc>[^<]*\/\$/);
   });
 
+  it('404s a deep entity route whose path contains a system type', async () => {
+    // The two-segment type lookup does not cover deep paths — a $canvas child
+    // hanging off a public parent must 404 on its own full route.
+    const response = await get(
+      `/public-contract-org/brand/acme-brand/${CANVAS_ENTITY_TYPE_SLUG}/behavior-canvas`,
+      { headers: { Accept: 'text/html' }, env: { PUBLIC_GATEWAY_URL: publicGatewayUrl } }
+    );
+    const body = await response.text();
+    expect(response.status).toBe(404);
+    expect(body).toContain('noindex,nofollow');
+    expect(body).not.toContain('Behavior Canvas');
+  });
+
+  it('omits system types and their entities from rendered HTML and bootstrap', async () => {
+    const env = { PUBLIC_GATEWAY_URL: publicGatewayUrl };
+
+    // Workspace page: the entity-type list is both rendered and serialized into
+    // window.__LOBU_PUBLIC_BOOTSTRAP__.
+    const workspaceBody = await (
+      await get('/public-contract-org', { headers: { Accept: 'text/html' }, env })
+    ).text();
+    expect(workspaceBody).not.toContain(`/public-contract-org/${CANVAS_ENTITY_TYPE_SLUG}`);
+    expect(workspaceBody).not.toContain(`"${CANVAS_ENTITY_TYPE_SLUG}"`);
+    expect(workspaceBody).not.toContain(`"${MEMBER_ENTITY_TYPE_SLUG}"`);
+    // Ordinary types still render — the filter must not be over-broad.
+    expect(workspaceBody).toContain('"brand"');
+
+    // Entity page: a $canvas child must not appear in the child list.
+    const entityBody = await (
+      await get('/public-contract-org/brand/acme-brand', { headers: { Accept: 'text/html' }, env })
+    ).text();
+    expect(entityBody).not.toContain('Behavior Canvas');
+    expect(entityBody).not.toContain(`"${CANVAS_ENTITY_TYPE_SLUG}"`);
+    // The ordinary child is still listed.
+    expect(entityBody).toContain('Acme Product');
+  });
+
   it('404s $-prefixed system type and entity pages instead of rendering them', async () => {
     const env = { PUBLIC_GATEWAY_URL: publicGatewayUrl };
 

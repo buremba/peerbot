@@ -105,6 +105,44 @@ function getPublicOrigin(requestUrl: string): string {
   return getConfiguredPublicOrigin() ?? new URL(requestUrl).origin;
 }
 
+/**
+ * `$`-prefixed entity types ($member, $canvas) are per-tenant system internals.
+ * They must never surface on a public page — not as a route, not as a bootstrap
+ * entry, and not as a rendered child link.
+ */
+function isSystemEntityTypeSlug(slug: string | null | undefined): boolean {
+  return typeof slug === 'string' && slug.startsWith('$');
+}
+
+/**
+ * `resolvePath` is authorization-aware but not public-page-aware: it happily
+ * returns system types and their entities. Public pages both RENDER from this
+ * result and serialize it into `window.__LOBU_PUBLIC_BOOTSTRAP__`, so filtering
+ * at the source cleans the HTML and the bootstrap together. Wrapping the call
+ * (rather than each render site) means a future page kind cannot forget it.
+ */
+async function resolvePublicPath(
+  ...args: Parameters<typeof resolvePath>
+): Promise<ResolvePathResult> {
+  const resolved = (await resolvePath(...args)) as ResolvePathResult & {
+    bootstrap?: { entity_types?: Array<{ slug?: string }> };
+    children?: Array<{ entity_type?: string }>;
+  };
+  // The type list the workspace page renders and serializes.
+  if (Array.isArray(resolved.bootstrap?.entity_types)) {
+    resolved.bootstrap.entity_types = resolved.bootstrap.entity_types.filter(
+      (type) => !isSystemEntityTypeSlug(type?.slug)
+    );
+  }
+  // Child links on an entity page — a $canvas hangs off its Behavior's entity.
+  if (Array.isArray(resolved.children)) {
+    resolved.children = resolved.children.filter(
+      (child) => !isSystemEntityTypeSlug(child?.entity_type)
+    );
+  }
+  return resolved;
+}
+
 function buildToolContext(requestUrl: string, organizationId: string): ToolContext {
   return {
     organizationId,
@@ -937,7 +975,7 @@ export async function buildPublicPageModel(
 
   try {
     if (segments.length === 1) {
-      const resolvedPath = await resolvePath(
+      const resolvedPath = await resolvePublicPath(
         { path: normalizedPath, include_bootstrap: true },
         env,
         toolCtx
@@ -957,7 +995,7 @@ export async function buildPublicPageModel(
         );
       }
       const [ownerResolvedPath, entityList] = await Promise.all([
-        resolvePath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
+        resolvePublicPath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
         getPublicEntityTypeList(organization.id, env, requestUrl, entityType.slug),
       ]);
       return applyBootstrapStrip(
@@ -979,10 +1017,19 @@ export async function buildPublicPageModel(
       if (PUBLIC_APP_ROUTE_PREFIXES.has(entitySegments[i]!)) {
         return null;
       }
+      // Every even segment is an entity-type slug. A system type anywhere in
+      // the path 404s the whole route — the two-segment type lookup alone
+      // doesn't cover deep paths like /org/brand/acme/$canvas/behavior-canvas.
+      if (isSystemEntityTypeSlug(entitySegments[i])) {
+        return applyBootstrapStrip(
+          buildNotFoundModel(organization, requestUrl, normalizedPath),
+          subdomainOrg
+        );
+      }
     }
 
     if ((segments.length - 1) % 2 === 0) {
-      const resolvedPath = await resolvePath(
+      const resolvedPath = await resolvePublicPath(
         { path: normalizedPath, include_bootstrap: true },
         env,
         toolCtx

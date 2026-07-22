@@ -1118,7 +1118,7 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
 		const windowResult = await sql`
       SELECT
         iw.id,
-        iw.watcher_id,
+        iw.watcher_id AS behavior_id,
         iw.granularity,
         iw.window_start,
         iw.window_end,
@@ -1130,8 +1130,8 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
         iw.model_used,
         iw.run_metadata,
         i.entity_ids,
-        i.slug as watcher_slug,
-        i.name as watcher_name,
+        i.slug AS behavior_slug,
+        i.name AS behavior_name,
         e.name as entity_name,
         et.slug AS entity_type,
         parent.name as parent_name,
@@ -1155,20 +1155,7 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
 			return c.json({ error: "Window not found" }, 404);
 		}
 
-		// Project to the public Behavior vocabulary. `watcher_id` / `watchers` are
-		// sanctioned INTERNAL names (table + column), so the rename belongs here at
-		// the wire boundary rather than in the SQL. Returning the raw row leaked
-		// watcher_id/watcher_slug/watcher_name on a public org route while every
-		// sibling surface — get_behavior, MCP list/get, SDK, client types — emits
-		// behavior_*; see get_behavior.ts, which canonicalizes the same columns.
-		const { watcher_id, watcher_slug, watcher_name, ...window } =
-			windowResult[0] as Record<string, unknown>;
-		return c.json({
-			...window,
-			behavior_id: watcher_id,
-			behavior_slug: watcher_slug,
-			behavior_name: watcher_name,
-		});
+		return c.json(windowResult[0]);
 	} catch (error) {
 		return c.json({ error: errorMessage(error) }, 500);
 	}

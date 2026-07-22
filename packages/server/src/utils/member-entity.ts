@@ -7,7 +7,7 @@
  */
 
 import { getDb } from '../db/client';
-import { createEntity } from './entity-management';
+import { createEntity, type EntityData } from './entity-management';
 import { ensureMemberEntityType, resolveMemberSchemaFieldsFromSchema } from './member-entity-type';
 
 /**
@@ -31,7 +31,24 @@ export async function resolveMemberSchemaFields(organizationId: string): Promise
 
 interface EnsureMemberEntityParams {
   organizationId: string;
+  /**
+   * The auth user whose IDENTITY this $member represents. Drives the
+   * `auth_user_id` claim (source `auth:signup`) the authz gate resolves on, and
+   * — for a self-provisioning caller — authorship. Pass this ONLY when the
+   * member being provisioned is `userId`'s own row (sign-in, self-join). Never
+   * pass a third party's id here: the claim is written onto the entity resolved
+   * BY EMAIL, so a mismatched id would let that user resolve to — and inherit
+   * the channel visibility of — this member. For a pending invitee (no signed-in
+   * identity yet) leave this unset; use `createdByUserId` for authorship.
+   */
   userId?: string;
+  /**
+   * Authorship-only attribution (entities.created_by), used when the actor
+   * creating the row is NOT the member's own identity — e.g. an inviter creating
+   * an invitee placeholder. Never writes an identity claim. Ignored when
+   * `userId` is set (self-provisioning already covers authorship).
+   */
+  createdByUserId?: string;
   name: string;
   email: string;
   image?: string;
@@ -75,16 +92,20 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
     if (params.image && imageField) metadata[imageField] = params.image;
     if (params.role) metadata.role = params.role;
 
-    const entityData: Record<string, unknown> = {
+    const entityData: EntityData = {
       entity_type: '$member',
       name: params.name.trim(),
       organization_id: params.organizationId,
       metadata,
     };
-    if (params.userId) {
-      (entityData as any).created_by = params.userId;
+    // Authorship: the member's own id when self-provisioning, else the explicit
+    // actor (inviter). Identity attribution (the auth_user_id claim below) is a
+    // SEPARATE concern — only `userId` ever drives it.
+    const createdBy = params.userId ?? params.createdByUserId;
+    if (createdBy) {
+      entityData.created_by = createdBy;
     }
-    await createEntity(entityData as any, { skipHooks: true });
+    await createEntity(entityData, { skipHooks: true });
     memberEntityId = await findIdByEmail();
   }
 

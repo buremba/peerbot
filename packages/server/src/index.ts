@@ -1380,8 +1380,8 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
 	// org's (visibility='public') — the same local-or-public resolution entity
 	// creation uses. The write gate keys on the slug, so a catalog-backed type
 	// (e.g. `company`) must be offerable as a per-type exception. Dedupe by slug,
-	// preferring the org-owned row, and drop `$member` (per-tenant, never a public
-	// catalog type) to mirror the entity-write resolver.
+	// preferring the org-owned row. `$`-prefixed types are platform-managed
+	// system types, so omit them from operator-authored entity mutation policies.
 	const typeRows = await getDb()<{
 		slug: string;
 		name: string;
@@ -1392,7 +1392,7 @@ app.get("/api/:orgSlug/agent/:agentId/permissions", mcpAuth, async (c) => {
       FROM entity_types et
       LEFT JOIN organization o ON o.id = et.organization_id
       WHERE et.deleted_at IS NULL
-        AND et.slug <> '$member'
+        AND et.slug NOT LIKE '$%'
         AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
       ORDER BY et.slug, (et.organization_id = ${organizationId}) DESC, et.id ASC
     ) t
@@ -1863,7 +1863,7 @@ app.get("/api/:orgSlug/write-permissions", mcpAuth, async (c) => {
       FROM entity_types et
       LEFT JOIN organization o ON o.id = et.organization_id
       WHERE et.deleted_at IS NULL
-        AND et.slug <> '$member'
+        AND et.slug NOT LIKE '$%'
         AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
       ORDER BY et.slug, (et.organization_id = ${organizationId}) DESC, et.id ASC
     ) t

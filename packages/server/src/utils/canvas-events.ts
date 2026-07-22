@@ -25,6 +25,7 @@
  */
 
 import type { DbClient } from '../db/client';
+import { CANVAS_ENTITY_TYPE_SLUG } from '../tools/constants';
 
 /** Namespace for the per-watcher canvas identity claim in `entity_identities`. */
 export const WATCHER_CANVAS_NAMESPACE = 'watcher_canvas';
@@ -67,11 +68,10 @@ async function resolveCanvasCreator(
  * concurrent claim (ON CONFLICT DO NOTHING) and resolves the winner.
  *
  * The canvas entity is a child of the watcher's bound entity (`parentEntityId`)
- * when present, else a root entity. It uses the same `canvas` entity type as
- * other lazily-created system entities would; it falls back to no type binding
- * only if no `canvas` type is registered (entity_type_id is NOT NULL, so we pick
- * a sensible default). Runs on the caller's transaction handle so the entity +
- * identity writes commit atomically with the canvas event.
+ * when present, else a root entity. It binds to the built-in `$canvas` entity
+ * type, created on demand for the org (entity_type_id is NOT NULL). Runs on the
+ * caller's transaction handle so the entity + identity writes commit atomically
+ * with the canvas event.
  */
 export async function ensureCanvasEntity(params: {
   tx: DbClient;
@@ -104,36 +104,24 @@ export async function ensureCanvasEntity(params: {
     return null;
   }
 
-  // Resolve an entity type to bind to (entities.entity_type_id is NOT NULL).
-  // Prefer a `canvas` type (org-first, then public via organization.visibility,
-  // skipping view-backed derived types — same precedence as createEntity);
-  // otherwise fall back to any stored type in the org so the canvas entity can
-  // still be created and anchor the chain.
-  const typeRows = await tx<{ id: number | string; backing_sql: string | null }>`
-    SELECT et.id, et.backing_sql
-    FROM entity_types et
-    LEFT JOIN organization o ON o.id = et.organization_id
-    WHERE et.slug = 'canvas'
-      AND et.deleted_at IS NULL
-      AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
-    ORDER BY (et.organization_id = ${organizationId}) DESC, et.id ASC
-    LIMIT 1
+  // Resolve the entity type to bind to (entities.entity_type_id is NOT NULL).
+  // The old fallback used any stored org type when no user-authored `canvas`
+  // type existed. That was commonly `$member`, exposing canvases through the
+  // member roster and its privacy policy. Create a dedicated system type.
+  const typeRows = await tx<{ id: number | string }>`
+    INSERT INTO entity_types (
+      slug, name, description, icon, organization_id, created_at, updated_at
+    )
+    VALUES (
+      ${CANVAS_ENTITY_TYPE_SLUG}, 'Canvas', 'Per-Behavior canvas window', 'layout',
+      ${organizationId}, current_timestamp, current_timestamp
+    )
+    ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+    DO UPDATE SET updated_at = entity_types.updated_at
+    RETURNING id
   `;
-  let entityTypeId: number | null =
-    typeRows.length > 0 && !typeRows[0].backing_sql ? Number(typeRows[0].id) : null;
-  if (entityTypeId == null) {
-    const anyType = await tx<{ id: number | string }>`
-      SELECT et.id
-      FROM entity_types et
-      WHERE et.organization_id = ${organizationId}
-        AND et.deleted_at IS NULL
-        AND et.backing_sql IS NULL
-      ORDER BY et.id ASC
-      LIMIT 1
-    `;
-    if (anyType.length === 0) return null;
-    entityTypeId = Number(anyType[0].id);
-  }
+  if (typeRows.length === 0) return null;
+  const entityTypeId = Number(typeRows[0].id);
 
   // 2. Create the entity (sequence-allocated id — multi-replica safe). Slug is
   //    unique per (org, parent); a collision here is astronomically unlikely

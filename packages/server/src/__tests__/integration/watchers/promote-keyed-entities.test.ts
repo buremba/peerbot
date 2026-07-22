@@ -247,7 +247,12 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const promoted = childTypes.filter((r) => r.source !== 'watcher_canvas');
     expect(promoted).toHaveLength(2);
     expect(promoted.every((r) => String(r.slug) === 'topic')).toBe(true);
-    expect(childTypes.filter((r) => r.source === 'watcher_canvas')).toHaveLength(1);
+    const canvasChildren = childTypes.filter((r) => r.source === 'watcher_canvas');
+    expect(canvasChildren).toHaveLength(1);
+    // The canvas entity must carry the built-in `$canvas` type. Without an
+    // explicitly created `canvas` type, the old fallback commonly bound it to
+    // `$member`, exposing it through the access-controlled member roster.
+    expect(String(canvasChildren[0].slug)).toBe('$canvas');
 
     // Origin provenance lives on the entity itself — each promoted child carries
     // its window_id / stable_key in metadata (no separate observation event).

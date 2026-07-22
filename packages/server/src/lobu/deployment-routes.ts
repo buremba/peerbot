@@ -33,6 +33,39 @@ function normalizeResourceKind(kind: unknown): string | null {
 	return kind === "watcher" ? "behavior" : String(kind);
 }
 
+/**
+ * Deployment summaries historically keyed `counts_by_kind` with the CLI's
+ * internal DiffRow kind `"watcher"`. Public surface uses `"behavior"`.
+ * Normalize on read only — events is append-only; do not rewrite stored rows.
+ */
+function normalizeCountsByKind(raw: unknown): Record<string, unknown> | null {
+	if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+		return null;
+	}
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		const normalized = key === "watcher" ? "behavior" : key;
+		const existing = out[normalized];
+		if (
+			existing != null &&
+			typeof existing === "object" &&
+			!Array.isArray(existing) &&
+			value != null &&
+			typeof value === "object" &&
+			!Array.isArray(value)
+		) {
+			// Defensive merge if a row somehow holds both keys (should not happen).
+			out[normalized] = {
+				...(existing as Record<string, unknown>),
+				...(value as Record<string, unknown>),
+			};
+		} else {
+			out[normalized] = value;
+		}
+	}
+	return out;
+}
+
 routes.use("*", mcpAuth);
 
 routes.use("*", async (c, next) => {
@@ -414,7 +447,7 @@ routes.get("/:applyId", async (c) => {
 			title: summary.title,
 			status: summaryMeta.status ?? null,
 			counts: summaryMeta.counts ?? null,
-			countsByKind: summaryPayload.counts_by_kind ?? null,
+			countsByKind: normalizeCountsByKind(summaryPayload.counts_by_kind),
 			error: summaryPayload.error ?? null,
 			manifestHash: summaryMeta.manifest_hash ?? null,
 			gitSha: summaryMeta.git_sha ?? null,

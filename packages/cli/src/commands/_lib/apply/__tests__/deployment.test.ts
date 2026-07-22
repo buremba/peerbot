@@ -121,9 +121,21 @@ describe("buildCountsByKind", () => {
     ] as unknown as DiffRow[];
     expect(buildCountsByKind(rows)).toEqual({
       agent: { create: 1 },
-      watcher: { update: 2 },
+      // Internal DiffRow kind is still "watcher"; wire key is the public
+      // discriminator "behavior".
+      behavior: { update: 2 },
       feed: { delete: 1 },
     });
+  });
+
+  test("never emits the legacy watcher wire key", () => {
+    const rows = [
+      { kind: "watcher", verb: "create" },
+      { kind: "watcher", verb: "delete" },
+    ] as unknown as DiffRow[];
+    const counts = buildCountsByKind(rows);
+    expect(counts).toEqual({ behavior: { create: 1, delete: 1 } });
+    expect(counts).not.toHaveProperty("watcher");
   });
 });
 

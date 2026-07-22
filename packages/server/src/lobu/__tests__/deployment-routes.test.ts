@@ -324,6 +324,101 @@ describe('GET /deployments/:applyId (detail)', () => {
     expect(change.before.soulMd).toBe('v1');
   });
 
+  test('new writes with public behavior key round-trip as behavior', async () => {
+    const app = await importDeploymentRoutes();
+    const posted = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        summaryBody({
+          counts_by_kind: {
+            agent: { create: 1 },
+            behavior: { update: 2 },
+          },
+        })
+      ),
+    });
+    expect(posted.status).toBe(201);
+
+    const res = await app.request(`/${APPLY_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deployment: { countsByKind: Record<string, unknown> } };
+    expect(body.deployment.countsByKind).toEqual({
+      agent: { create: 1 },
+      behavior: { update: 2 },
+    });
+    expect(body.deployment.countsByKind).not.toHaveProperty('watcher');
+
+    // Stored payload keeps the public key (no write-side rewrite needed once CLI maps).
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    const rows = await sql`
+      SELECT payload_data FROM events
+      WHERE organization_id = ${ORG}
+        AND metadata->>'category' = 'deployment'
+        AND metadata->>'apply_id' = ${APPLY_ID}
+      LIMIT 1
+    `;
+    const stored = (rows[0].payload_data as { counts_by_kind: Record<string, unknown> })
+      .counts_by_kind;
+    expect(stored).toEqual({ agent: { create: 1 }, behavior: { update: 2 } });
+    expect(stored).not.toHaveProperty('watcher');
+  });
+
+  test('legacy stored watcher key in counts_by_kind reads back as behavior', async () => {
+    // Insert a deployment row the way a pre-rename CLI would have stored it —
+    // do not mutate via POST so we exercise read-path normalization only.
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    await sql`
+      INSERT INTO events
+        (organization_id, origin_id, title, semantic_type, origin_type, payload_type, payload_data, metadata)
+      VALUES (
+        ${ORG},
+        ${`deployment_${APPLY_ID}`},
+        ${'Deployment legacy watcher counts'},
+        'change',
+        'deployment',
+        'empty',
+        ${sql.json({
+          counts_by_kind: {
+            agent: { create: 1 },
+            watcher: { update: 3 },
+          },
+        })},
+        ${sql.json({
+          category: 'deployment',
+          apply_id: APPLY_ID,
+          status: 'succeeded',
+          counts: { create: 1, update: 3, noop: 0, drift: 0, delete: 0 },
+        })}
+      )
+    `;
+
+    const app = await importDeploymentRoutes();
+    const res = await app.request(`/${APPLY_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deployment: { countsByKind: Record<string, unknown> } };
+    expect(body.deployment.countsByKind).toEqual({
+      agent: { create: 1 },
+      behavior: { update: 3 },
+    });
+    expect(body.deployment.countsByKind).not.toHaveProperty('watcher');
+
+    // Stored row remains untouched (append-only / no migration).
+    const rows = await sql`
+      SELECT payload_data FROM events
+      WHERE organization_id = ${ORG}
+        AND metadata->>'category' = 'deployment'
+        AND metadata->>'apply_id' = ${APPLY_ID}
+      LIMIT 1
+    `;
+    const stored = (rows[0].payload_data as { counts_by_kind: Record<string, unknown> })
+      .counts_by_kind;
+    expect(stored).toHaveProperty('watcher');
+    expect(stored).not.toHaveProperty('behavior');
+  });
+
   test('404s for an unknown apply id', async () => {
     const app = await importDeploymentRoutes();
     const res = await app.request('/apl_00000000-0000-0000-0000-000000000000');

@@ -156,15 +156,26 @@ export type CountsByKind = Record<
   { create?: number; update?: number; delete?: number }
 >;
 
+/**
+ * Map an internal DiffRow kind to the public `counts_by_kind` wire key.
+ * Diff rows still use `watcher`; the deployments API public discriminator is
+ * `behavior` (product rename). Display labels live in render.ts; this is the
+ * wire boundary only.
+ */
+function wireCountsKind(kind: DiffRow["kind"]): string {
+  return kind === "watcher" ? "behavior" : kind;
+}
+
 /** Per-resource-kind create/update/delete tallies for the summary payload. */
 export function buildCountsByKind(rows: DiffRow[]): CountsByKind {
   const out: CountsByKind = {};
   for (const row of rows) {
     if (row.verb !== "create" && row.verb !== "update" && row.verb !== "delete")
       continue;
-    const kind = out[row.kind] ?? {};
-    out[row.kind] = kind;
-    kind[row.verb] = (kind[row.verb] ?? 0) + 1;
+    const key = wireCountsKind(row.kind);
+    const bucket = out[key] ?? {};
+    out[key] = bucket;
+    bucket[row.verb] = (bucket[row.verb] ?? 0) + 1;
   }
   return out;
 }

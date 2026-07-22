@@ -180,12 +180,34 @@ describe("buildHomeFeedEvents", () => {
       ],
       new Date()
     );
-    expect(ev.author_name).toBe("🦔 james hawkins");
+    // Leading emoji decoration on the actor name is stripped for a clean title.
+    expect(ev.author_name).toBe("james hawkins");
     // No profile href on this row → engagement is named but not identified.
     expect(ev.metadata).toEqual({
-      author: "🦔 james hawkins",
+      author: "james hawkins",
       social_actor: "Deb Mukherjee",
       social_action: "like",
+    });
+  });
+
+  test("strips Visit website CTA fused into the author after a repost banner", () => {
+    // Production body: company page CTA text sits next to the original author.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Emir Karabeg reposted this Sim Visit website 2h • Follow Sim Retreat Malibu ‘26 11 2 2",
+          profile_href: "https://www.linkedin.com/in/emirkarabeg/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Sim");
+    expect(ev.metadata).toMatchObject({
+      author: "Sim",
+      social_actor: "Emir Karabeg",
+      social_action: "repost",
+      social_actor_slug: "emirkarabeg",
     });
   });
 
@@ -487,7 +509,7 @@ describe("parseHomeFeedAuthor", () => {
       parseHomeFeedAuthor(
         "Feed post Deb Mukherjee likes this 🦔 james hawkins • 2nd self driving software and co-ceo at posthog 8h • Connect this is what happens"
       )
-    ).toBe("🦔 james hawkins");
+    ).toBe("james hawkins");
     expect(
       parseHomeFeedAuthor(
         "Feed post Onur Demirtaş likes this Erkan Ayan • 2nd erkanayan.net 8h • Connect 📍 something"
@@ -605,6 +627,20 @@ describe("isHomeFeedNoise", () => {
   test("drops suggested rows", () => {
     expect(
       isHomeFeedNoise("Feed post Suggested Matt Graham • 2nd CEO @ RapidDev")
+    ).toBe(true);
+  });
+
+  test("drops LinkedIn ad / boost promos without a real member header", () => {
+    // Production empties: no " • " degree marker, no Author badge — pure promo.
+    expect(
+      isHomeFeedNoise(
+        "Feed post Get more leads with boosting Boost your best content on LinkedIn to get more quality leads Learn more"
+      )
+    ).toBe(true);
+    expect(
+      isHomeFeedNoise(
+        "Feed post Try LinkedIn Ads Build your brand and drive quality leads. Spend €200 to get an extra"
+      )
     ).toBe(true);
   });
 

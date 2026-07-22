@@ -384,6 +384,26 @@ type HomeFeedBanner =
   | { kind: "actor"; actor: string; action: string }
   | { kind: "actorless" };
 
+/** Strip relative-time tokens, fused CTAs, and leading emoji from a name. */
+function cleanHomeFeedDisplayName(raw: string): string {
+  let name = raw.trim();
+  // A repost segment puts a relative-time token (e.g. "17h") right after the
+  // original poster's name and before the marker — strip it so we keep just
+  // the name.
+  name = name.replace(/\s+\d+\s*[smhdwy]o?$/i, "").trim();
+  // Feed cards sometimes fuse UI chrome into the name after a repost /
+  // company author: "Sim Visit website", "Acme View job".
+  name = name
+    .replace(
+      /\s+(?:Visit website|View (?:job|page|profile)|Apply now|Register now|Sign up)$/i,
+      ""
+    )
+    .trim();
+  // Leading emoji / symbol decorations on display names (e.g. "🦔 james").
+  name = name.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  return name.slice(0, 60);
+}
+
 function parseHomeFeedAuthorDetails(body: string): {
   author: string;
   banner: HomeFeedBanner | null;
@@ -399,7 +419,10 @@ function parseHomeFeedAuthorDetails(body: string): {
     // marker. Resolve that bounded prefix before scanning for banner phrases
     // so words in the post content cannot affect attribution.
     const badge = text.match(/^(.{1,60}?)\s+Author\b/);
-    return { author: badge ? badge[1].trim() : "", banner: null };
+    return {
+      author: badge ? cleanHomeFeedDisplayName(badge[1]) : "",
+      banner: null,
+    };
   }
   let header = text.slice(0, sepIdx).trim();
 
@@ -418,9 +441,9 @@ function parseHomeFeedAuthorDetails(body: string): {
     const pluralActors = actorGroup.match(/^(.*?)\s+and\s+\d+\s+others?$/i);
     // "A and 3 others" / "A, B and 22 others" use A's profile link. Preserve
     // commas in a single member's display name (for example, "A, MBA").
-    const actor = (
+    const actor = cleanHomeFeedDisplayName(
       pluralActors ? pluralActors[1].split(",")[0] : actorGroup
-    ).trim();
+    );
     banner = {
       kind: "actor",
       actor: actor.slice(0, 60),
@@ -434,11 +457,7 @@ function parseHomeFeedAuthorDetails(body: string): {
   // keep only the leading one.
   const premiumIdx = name.indexOf(" Premium Profile");
   if (premiumIdx !== -1) name = name.slice(0, premiumIdx);
-  // A repost segment puts a relative-time token (e.g. "17h") right after the
-  // original poster's name and before the marker — strip it so we keep just
-  // the name.
-  name = name.replace(/\s+\d+\s*[smhdwy]o?$/i, "").trim();
-  return { author: name.slice(0, 60), banner };
+  return { author: cleanHomeFeedDisplayName(name), banner };
 }
 
 export function parseHomeFeedAuthor(body: string): string {
@@ -455,6 +474,11 @@ export function isHomeFeedNoise(body: string): boolean {
   if (!body || body.trim().length < 30) return true;
   if (/\bPromoted\b/i.test(body.slice(0, 130))) return true;
   if (/\bSuggested\b/i.test(body.slice(0, 30))) return true;
+  // Platform self-promo cards (no real member header). Bodies from production
+  // syncs: "Get more leads with boosting…", "Try LinkedIn Ads…".
+  if (/\b(?:Try )?LinkedIn Ads\b/i.test(body)) return true;
+  if (/\bGet more leads with boosting\b/i.test(body)) return true;
+  if (/\bBoost your best content on LinkedIn\b/i.test(body)) return true;
   return false;
 }
 
@@ -810,7 +834,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files.",
-    version: "3.1.0",
+    version: "3.1.1",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

@@ -24,6 +24,8 @@ let pickCommentTextboxRef: any;
 let pickCommentSubmitRef: any;
 let prepareLinkedInComment: any;
 let buildFillCommentExpression: any;
+let buildInjectHandoffBannerExpression: any;
+let truncateHandoffReason: any;
 
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
@@ -40,6 +42,8 @@ beforeAll(async () => {
   pickCommentSubmitRef = mod.pickCommentSubmitRef;
   prepareLinkedInComment = mod.prepareLinkedInComment;
   buildFillCommentExpression = mod.buildFillCommentExpression;
+  buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
+  truncateHandoffReason = mod.truncateHandoffReason;
   const identityMod = await import("../linkedin-identity");
   normalizeLinkedInSlug = identityMod.normalizeLinkedInSlug;
   normalizeLinkedInMemberId = identityMod.normalizeLinkedInMemberId;
@@ -1212,6 +1216,26 @@ describe("prepare_comment helpers", () => {
     expect(expr).toContain("composer_not_found");
   });
 
+  test("truncateHandoffReason caps length for the banner", () => {
+    expect(truncateHandoffReason("  short  ")).toBe("short");
+    expect(truncateHandoffReason("")).toBeUndefined();
+    const long = "x".repeat(200);
+    const t = truncateHandoffReason(long, 40)!;
+    expect(t.length).toBeLessThanOrEqual(40);
+    expect(t.endsWith("…")).toBe(true);
+  });
+
+  test("buildInjectHandoffBannerExpression is Lobu-branded and not a submit", () => {
+    const expr = buildInjectHandoffBannerExpression({
+      reason: 'Met them at "AI" meetup',
+    });
+    expect(expr).toContain("lobu-handoff-banner");
+    expect(expr).toContain("Lobu staged this comment");
+    expect(expr).toContain("Owletto side panel");
+    expect(expr).toContain('Met them at \\"AI\\" meetup');
+    expect(expr).not.toMatch(/click\(\)\s*;[\s\S]*Post|Post[\s\S]*\.click\(/);
+  });
+
   test("definition declares prepare_comment write action", () => {
     const c = new LinkedInConnector();
     const action = c.definition.actions?.prepare_comment;
@@ -1223,6 +1247,7 @@ describe("prepare_comment helpers", () => {
 
   test("prepareLinkedInComment stages via evaluate (primary) and never clicks Post", async () => {
     const log: Array<{ key: string; input: Record<string, unknown> }> = [];
+    let evaluateCalls = 0;
     const dispatcher = {
       dispatch: async (key: string, input: Record<string, unknown>) => {
         log.push({ key, input });
@@ -1236,16 +1261,22 @@ describe("prepare_comment helpers", () => {
         }
         if (key === "wait_for_selector") return { found: true };
         if (key === "evaluate") {
-          expect(String(input.expression)).toContain(
-            "Great insight — thanks for sharing."
-          );
-          return {
-            value: {
-              ok: true,
-              reason: "typed",
-              preview: "Great insight — thanks for sharing.",
-            },
-          };
+          evaluateCalls += 1;
+          const expr = String(input.expression);
+          if (evaluateCalls === 1) {
+            expect(expr).toContain("Great insight — thanks for sharing.");
+            return {
+              value: {
+                ok: true,
+                reason: "typed",
+                preview: "Great insight — thanks for sharing.",
+              },
+            };
+          }
+          // Banner inject
+          expect(expr).toContain("lobu-handoff-banner");
+          expect(expr).toContain("Met at conference");
+          return { value: { ok: true, anchored: true } };
         }
         if (key === "focus_tab") return { focused: true, tab_id: 42 };
         if (key === "show_notification") return { shown: true };
@@ -1256,6 +1287,7 @@ describe("prepare_comment helpers", () => {
     const result = await prepareLinkedInComment(dispatcher, {
       postUrl: "7312345678901234567",
       body: "Great insight — thanks for sharing.",
+      reason: "Met at conference",
     });
 
     expect(result).toMatchObject({
@@ -1263,6 +1295,8 @@ describe("prepare_comment helpers", () => {
       tab_id: 42,
       method: "evaluate",
       body: "Great insight — thanks for sharing.",
+      banner_shown: true,
+      reason_preview: "Met at conference",
     });
     expect(result.post_url).toContain("activity:7312345678901234567");
 
@@ -1270,6 +1304,7 @@ describe("prepare_comment helpers", () => {
     expect(keys).toEqual([
       "navigate",
       "wait_for_selector",
+      "evaluate",
       "evaluate",
       "focus_tab",
       "show_notification",
@@ -1281,10 +1316,12 @@ describe("prepare_comment helpers", () => {
     expect(focus?.input.open_sidepanel).toBe(true);
     const note = log.find((e) => e.key === "show_notification");
     expect(note?.input.tab_id).toBe(42);
+    expect(String(note?.input.message)).toContain("Met at conference");
   });
 
   test("prepareLinkedInComment falls back to type_ref when evaluate misses", async () => {
     const log: string[] = [];
+    let evaluateCalls = 0;
     const dispatcher = {
       dispatch: async (key: string, input: Record<string, unknown>) => {
         log.push(key);
@@ -1297,7 +1334,12 @@ describe("prepare_comment helpers", () => {
         }
         if (key === "wait_for_selector") return {};
         if (key === "evaluate") {
-          return { value: { ok: false, reason: "composer_not_found" } };
+          evaluateCalls += 1;
+          // First call is fill; later is banner.
+          if (evaluateCalls === 1) {
+            return { value: { ok: false, reason: "composer_not_found" } };
+          }
+          return { value: { ok: true, anchored: false } };
         }
         if (key === "get_accessibility_tree") {
           return {
@@ -1331,6 +1373,7 @@ describe("prepare_comment helpers", () => {
     });
     expect(result.method).toBe("type_ref");
     expect(result.prepared).toBe(true);
+    expect(result.banner_shown).toBe(true);
     expect(log).toContain("evaluate");
     expect(log).toContain("type_ref");
     expect(log).not.toContain("show_notification");

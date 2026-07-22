@@ -614,6 +614,10 @@ export type PrepareCommentResult = {
   body: string;
   /** How the composer was filled: a11y type_ref vs evaluate fallback. */
   method: "type_ref" | "evaluate";
+  /** Whether the in-page handoff banner was injected. */
+  banner_shown?: boolean;
+  /** Truncated reason shown on the banner (if any). */
+  reason_preview?: string;
   message: string;
 };
 
@@ -809,6 +813,151 @@ async function snapshotTree(
   };
 }
 
+/** Cap reason text for in-page banner (full reason lives in the sidepanel). */
+export function truncateHandoffReason(
+  reason: string | undefined | null,
+  maxLen = 120
+): string | undefined {
+  if (reason == null) return undefined;
+  const t = reason.replace(/\s+/g, " ").trim();
+  if (!t) return undefined;
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
+/**
+ * JS expression: inject a small Lobu handoff banner on the page.
+ * Not the full reason UI — one short line + "details in side panel".
+ * Best-effort; LinkedIn re-renders may remove it.
+ */
+export function buildInjectHandoffBannerExpression(opts: {
+  reason?: string;
+  title?: string;
+}): string {
+  const title = opts.title ?? "Lobu staged this comment";
+  const reason = truncateHandoffReason(opts.reason);
+  const titleLit = JSON.stringify(title);
+  const reasonLit = JSON.stringify(reason ?? null);
+  return `(async()=>{
+  const TITLE = ${titleLit};
+  const REASON = ${reasonLit};
+  const ID = 'lobu-handoff-banner';
+  try {
+    const prev = document.getElementById(ID);
+    if (prev) prev.remove();
+  } catch (_) {}
+
+  const root = document.createElement('div');
+  root.id = ID;
+  root.setAttribute('role', 'status');
+  root.setAttribute('data-lobu', 'handoff-banner');
+  // Keep styles self-contained; avoid LinkedIn class collisions.
+  root.style.cssText = [
+    'position:fixed',
+    'top:12px',
+    'left:50%',
+    'transform:translateX(-50%)',
+    'z-index:2147483646',
+    'max-width:min(520px,calc(100vw - 24px))',
+    'font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif',
+    'color:#0f172a',
+    'background:#fff',
+    'border:1px solid #cbd5e1',
+    'border-left:4px solid #0ea5e9',
+    'border-radius:10px',
+    'box-shadow:0 8px 28px rgba(15,23,42,.18)',
+    'padding:10px 12px',
+    'display:flex',
+    'gap:10px',
+    'align-items:flex-start',
+    'pointer-events:auto',
+  ].join(';');
+
+  const body = document.createElement('div');
+  body.style.cssText = 'flex:1;min-width:0';
+
+  const head = document.createElement('div');
+  head.style.cssText = 'font-weight:600;margin:0 0 2px;color:#0c4a6e';
+  head.textContent = TITLE;
+
+  const line = document.createElement('div');
+  line.style.cssText = 'color:#334155;margin:0 0 2px';
+  line.textContent = 'Review the draft and click Post yourself — Lobu did not submit.';
+
+  body.appendChild(head);
+  body.appendChild(line);
+
+  if (REASON) {
+    const why = document.createElement('div');
+    why.style.cssText = 'color:#64748b;margin:4px 0 0;font-size:12px';
+    why.textContent = 'Why: ' + REASON;
+    body.appendChild(why);
+  }
+
+  const foot = document.createElement('div');
+  foot.style.cssText = 'color:#64748b;margin:4px 0 0;font-size:12px';
+  foot.textContent = 'Full context in the Owletto side panel.';
+  body.appendChild(foot);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '×';
+  close.style.cssText = [
+    'flex:none',
+    'border:0',
+    'background:transparent',
+    'color:#64748b',
+    'font:20px/1 sans-serif',
+    'cursor:pointer',
+    'padding:0 2px',
+  ].join(';');
+  close.onclick = function () { try { root.remove(); } catch (_) {} };
+
+  root.appendChild(body);
+  root.appendChild(close);
+
+  // Prefer anchoring near the comment composer when we can find it.
+  let anchored = false;
+  try {
+    const composer =
+      document.querySelector('.comments-comment-box-comment__text-editor .ql-editor') ||
+      document.querySelector('.comments-comment-box__form .ql-editor') ||
+      document.querySelector('div.ql-editor[contenteditable="true"]') ||
+      document.querySelector('div[role="textbox"][contenteditable="true"]');
+    if (composer) {
+      const host =
+        composer.closest('.comments-comment-box') ||
+        composer.closest('form') ||
+        composer.parentElement;
+      if (host && host.parentElement) {
+        root.style.position = 'relative';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.transform = 'none';
+        root.style.margin = '8px 0 12px';
+        root.style.maxWidth = '100%';
+        host.parentElement.insertBefore(root, host);
+        anchored = true;
+      }
+    }
+  } catch (_) {}
+
+  if (!anchored) {
+    (document.body || document.documentElement).appendChild(root);
+  }
+
+  // Soft auto-dismiss after 90s so we don't leave permanent chrome on the page.
+  try {
+    setTimeout(function () {
+      try { if (root.isConnected) root.remove(); } catch (_) {}
+    }, 90000);
+  } catch (_) {}
+
+  return { ok: true, anchored: anchored, has_reason: !!REASON };
+})()`;
+}
+
 /** JS expression: open the comment composer if collapsed, then fill it. */
 export function buildFillCommentExpression(body: string): string {
   // JSON.stringify for safe embedding of the draft text.
@@ -932,8 +1081,12 @@ export async function prepareLinkedInComment(
   opts: {
     postUrl: string;
     body: string;
+    /** Short why for the in-page banner; full context stays in the sidepanel. */
+    reason?: string;
     focus?: boolean;
     notify?: boolean;
+    /** Inject in-page handoff banner (default true). */
+    banner?: boolean;
   }
 ): Promise<PrepareCommentResult> {
   const body = opts.body.trim();
@@ -948,6 +1101,8 @@ export async function prepareLinkedInComment(
   }
   const focus = opts.focus !== false;
   const notify = opts.notify !== false;
+  const banner = opts.banner !== false;
+  const reasonPreview = truncateHandoffReason(opts.reason);
 
   const nav = await dispatcher.dispatch<{
     tab_id?: number;
@@ -1064,6 +1219,26 @@ export async function prepareLinkedInComment(
     );
   }
 
+  let bannerShown = false;
+  if (banner) {
+    try {
+      const bannerOut = await dispatcher.dispatch<{
+        value?: { ok?: boolean; anchored?: boolean };
+        exception?: string;
+      }>("evaluate", {
+        tab_id: tabId,
+        expression: buildInjectHandoffBannerExpression({
+          reason: reasonPreview,
+        }),
+        await_promise: true,
+        ...chromeOriginsInput(),
+      });
+      bannerShown = bannerOut.value?.ok === true && !bannerOut.exception;
+    } catch {
+      // Banner is best-effort; draft is already staged.
+    }
+  }
+
   if (focus) {
     try {
       await dispatcher.dispatch("focus_tab", {
@@ -1081,10 +1256,12 @@ export async function prepareLinkedInComment(
 
   if (notify) {
     try {
+      const notifyMsg = reasonPreview
+        ? `Draft ready — ${reasonPreview}`
+        : "Draft is in the comment box — review and click Post yourself. Lobu did not submit.";
       await dispatcher.dispatch("show_notification", {
         title: "LinkedIn comment ready",
-        message:
-          "Draft is in the comment box — review and click Post yourself. Lobu did not submit.",
+        message: notifyMsg.slice(0, 240),
         tab_id: tabId,
         click_url: postUrl,
         ...chromeOriginsInput(),
@@ -1100,6 +1277,8 @@ export async function prepareLinkedInComment(
     post_url: postUrl,
     body,
     method,
+    banner_shown: bannerShown,
+    reason_preview: reasonPreview,
     message:
       "Comment staged in your browser. Review the draft and click Post yourself — Lobu did not submit.",
   };
@@ -1576,6 +1755,12 @@ export default class LinkedInConnector extends ConnectorRuntime<
               minLength: 1,
               maxLength: 3000,
             },
+            reason: {
+              type: "string",
+              description:
+                "Optional short why for the in-page banner (truncated). Full context stays in the Owletto side panel.",
+              maxLength: 500,
+            },
             focus: {
               type: "boolean",
               description:
@@ -1585,6 +1770,11 @@ export default class LinkedInConnector extends ConnectorRuntime<
               type: "boolean",
               description:
                 "Show a desktop notification when the draft is ready (default true).",
+            },
+            banner: {
+              type: "boolean",
+              description:
+                "Inject a small in-page Lobu handoff banner (default true).",
             },
           },
         },
@@ -1596,6 +1786,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
             post_url: { type: "string" },
             body: { type: "string" },
             method: { type: "string" },
+            banner_shown: { type: "boolean" },
+            reason_preview: { type: "string" },
             message: { type: "string" },
           },
         },
@@ -1624,12 +1816,16 @@ export default class LinkedInConnector extends ConnectorRuntime<
           error: "post_url or activity_id is required",
         };
       }
+      const reason =
+        typeof ctx.input.reason === "string" ? ctx.input.reason.trim() : "";
       const dispatcher = requireExtensionDispatcher(ctx);
       const output = await prepareLinkedInComment(dispatcher, {
         postUrl: postUrlRaw,
         body,
+        reason: reason || undefined,
         focus: ctx.input.focus !== false,
         notify: ctx.input.notify !== false,
+        banner: ctx.input.banner !== false,
       });
       return { success: true, output };
     } catch (error) {

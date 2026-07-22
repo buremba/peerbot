@@ -692,6 +692,7 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.entity_relationships WHERE organization_id = ${orgP} AND deleted_at IS NULL)`
       );
     } else if (table === 'entity_relationship_types') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'rt')} FROM public.entity_relationship_types rt ` +
           'LEFT JOIN public.organization o ON o.id = rt.organization_id ' +

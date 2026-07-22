@@ -27,11 +27,24 @@ const SPA_WIRE_FILES = [
   "packages/owletto/src/lib/api/agents.ts",
 ] as const;
 
+/**
+ * Blank out // and block comments, preserving newlines. JSDoc must NOT count as
+ * SPA support: a docblock saying `"agent" | "behavior"` while the code handles
+ * neither would otherwise satisfy this test (verified — deleting the SPA's only
+ * `attribution === "behavior"` branch still passed before this was added).
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\/[^\n]*/g, "");
+}
+
 function extractQuotedLiterals(
-  source: string,
+  raw: string,
   field: "resourceKind" | "attribution"
 ): string[] {
   const found = new Set<string>();
+  const source = stripComments(raw);
 
   // Comparisons: resourceKind === "behavior", attribution !== 'agent'
   const cmp = new RegExp(`${field}\\s*(?:===|!==)\\s*['"]([^'"]+)['"]`, "g");
@@ -39,8 +52,7 @@ function extractQuotedLiterals(
     found.add(m[1]!);
   }
 
-  // Type / JSDoc unions: resourceKind: 'agent' | 'behavior' | null
-  // Also: attribution: 'agent' | 'behavior'
+  // Type unions: resourceKind: 'agent' | 'behavior' | null
   const union = new RegExp(
     `${field}\\??\\s*:\\s*((?:['"][^'"]+['"]\\s*\\|\\s*)*['"][^'"]+['"](?:\\s*\\|\\s*null)?)`,
     "g"
@@ -81,6 +93,9 @@ describe("interaction-envelope SPA/core parity", () => {
   it("SPA attribution literals match APPROVAL_ATTRIBUTIONS", () => {
     const spa = loadSpaLiterals("attribution");
     if (spa === null) return;
+    // The SPA declares the full union on the field type (agent | behavior) and
+    // branches explicitly on behavior. Requiring the whole set — from code, not
+    // JSDoc — is what makes a one-sided rename fail here.
     expect(spa).toEqual([...APPROVAL_ATTRIBUTIONS].sort());
   });
 

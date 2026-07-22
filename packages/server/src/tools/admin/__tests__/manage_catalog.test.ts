@@ -1,5 +1,10 @@
+import { ListInstalledAction } from "@lobu/core/contracts/tools/manage-catalog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as installed from "../../../catalog/installed";
+import {
+	AGENT_INSTALLED_KINDS,
+	ORG_INSTALLED_KINDS,
+} from "../../../catalog/types";
 import { manageCatalog } from "../manage_catalog";
 
 const ctx = {
@@ -68,6 +73,30 @@ describe("manage_catalog list_installed", () => {
 			action: "list_installed",
 			installed: { connectors: { kind: "connectors", items: [] } },
 		});
+	});
+
+	it("advertises only kinds the handler actually accepts", async () => {
+		// The contract description is the agent's only guide to legal `kinds`
+		// values. Anything named there must survive `handleListInstalled`'s
+		// unknown-kind check, or an agent that follows the docs gets an error.
+		const prose = [
+			ListInstalledAction.properties.action.description,
+			ListInstalledAction.properties.kinds.description,
+		].join(" ");
+		const documented = [
+			...prose.matchAll(
+				/\b(connectors|behaviors|skills|providers|guardrails|channels)\b/g
+			),
+		].map((m) => m[1]);
+		expect(documented.length).toBeGreaterThan(0);
+
+		const supported = new Set<string>([
+			...ORG_INSTALLED_KINDS,
+			...AGENT_INSTALLED_KINDS,
+		]);
+		expect([...new Set(documented)].filter((k) => !supported.has(k))).toEqual(
+			[]
+		);
 	});
 
 	it("forwards include_catalog to installed listers", async () => {

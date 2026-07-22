@@ -1305,8 +1305,10 @@ describe("prepare_comment helpers", () => {
     expect(commentBodiesMatch("Hello world", "Hello world").ok).toBe(true);
     expect(commentBodiesMatch("Hello world", "Hello world").kind).toBe("exact");
     expect(
-      commentBodiesMatch("Great insight thanks", "Great insight thanks for more context")
-        .ok
+      commentBodiesMatch(
+        "Great insight thanks",
+        "Great insight thanks for more context"
+      ).ok
     ).toBe(true);
     expect(
       commentBodiesMatch(
@@ -1320,7 +1322,9 @@ describe("prepare_comment helpers", () => {
   test("buildScrapeCommentsExpression is read-only (no submit)", () => {
     const expr = buildScrapeCommentsExpression();
     expect(expr).toContain("comments-comment-item");
-    expect(expr).not.toMatch(/insertText|dispatchKeyEvent|key:\s*['"]Enter['"]/);
+    expect(expr).not.toMatch(
+      /insertText|dispatchKeyEvent|key:\s*['"]Enter['"]/
+    );
     expect(expr).not.toMatch(/Post[\s\S]*\.click\(/);
   });
 

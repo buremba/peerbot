@@ -1508,7 +1508,7 @@ export async function verifyLinkedInStagedComment(
     await dispatcher.dispatch("wait_for_selector", {
       tab_id: tabId,
       selector:
-        '.comments-comment-item, .comments-comment-entity, .feed-shared-update-v2, article',
+        ".comments-comment-item, .comments-comment-entity, .feed-shared-update-v2, article",
       timeout_ms: 8000,
       ...chromeOriginsInput(),
     });
@@ -1568,7 +1568,10 @@ export async function verifyLinkedInStagedComment(
     if (Array.isArray(raw)) {
       comments = raw.filter(
         (c): c is ScrapedComment =>
-          !!c && typeof c === "object" && typeof c.text === "string" && c.text.trim().length > 0
+          !!c &&
+          typeof c === "object" &&
+          typeof c.text === "string" &&
+          c.text.trim().length > 0
       );
     }
   } catch (err) {

@@ -688,12 +688,16 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.connector_definitions WHERE organization_id = ${orgP})`
       );
     } else if (table === 'entity_relationships') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.entity_relationships WHERE organization_id = ${orgP} AND deleted_at IS NULL)`
       );
     } else if (table === 'entity_relationship_types') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table)} FROM public.entity_relationship_types WHERE organization_id = ${orgP})`
+        `"${safeName}" AS (SELECT ${sel(table, 'rt')} FROM public.entity_relationship_types rt ` +
+          'LEFT JOIN public.organization o ON o.id = rt.organization_id ' +
+          `WHERE rt.deleted_at IS NULL AND (rt.organization_id = ${orgP} OR o.visibility = 'public'))`
       );
     } else {
       // Treat as entity_type slug — uses entities columns

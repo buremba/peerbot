@@ -1,4 +1,5 @@
 import { describe, expect, inject, it } from 'vitest';
+import { validateAndScopeQuery } from '../execute-data-sources';
 import {
   buildColumnList,
   QUERYABLE_SCHEMA,
@@ -21,6 +22,8 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'user',
       'feeds',
       'connector_definitions',
+      'entity_relationships',
+      'entity_relationship_types',
     ];
     for (const t of expected) {
       expect(QUERYABLE_TABLE_NAMES.has(t)).toBe(true);
@@ -101,6 +104,31 @@ describe('validateTableQuery', () => {
   it('should reject queries referencing excluded PII columns', () => {
     const result = validateTableQuery('SELECT email FROM "user"');
     expect(result.valid).toBe(false);
+  });
+});
+
+describe('validateAndScopeQuery', () => {
+  it('should validate and scope graph queries', () => {
+    const scoped = validateAndScopeQuery(
+      `SELECT e.id FROM entities e
+       WHERE NOT EXISTS (
+         SELECT 1 FROM entity_relationships er
+         JOIN entity_relationship_types ert ON ert.id = er.relationship_type_id
+         WHERE er.from_entity_id = e.id AND ert.slug = 'works_at')`,
+      'org_test',
+      { safeColumns: SAFE_COLUMN_DEFS }
+    );
+
+    expect(scoped.tableRefs).toEqual(
+      expect.arrayContaining(['entities', 'entity_relationships', 'entity_relationship_types'])
+    );
+    expect(scoped.params).toEqual(['org_test']);
+    expect(scoped.sql).toMatch(
+      /public\.entity_relationships WHERE organization_id = \$1 AND deleted_at IS NULL/
+    );
+    expect(scoped.sql).toMatch(
+      /public\.entity_relationship_types rt LEFT JOIN public\.organization o.*rt\.deleted_at IS NULL.*rt\.organization_id = \$1 OR o\.visibility = 'public'/
+    );
   });
 });
 
@@ -188,5 +216,46 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     expect(missing, `DB columns missing from QUERYABLE_SCHEMA:\n  ${missing.join('\n  ')}`).toEqual(
       []
     );
+  });
+
+  it('should execute graph CTEs with local and public relationship types only', async (ctx) => {
+    const databaseUrl = inject('databaseUrl');
+    if (!databaseUrl) {
+      ctx.skip();
+      return;
+    }
+    process.env.DATABASE_URL = databaseUrl;
+
+    const { getDb } = await import('../../db/client');
+    const sql = getDb();
+    await sql`
+      INSERT INTO organization (id, name, slug, visibility)
+      VALUES
+        ('schema-scope-local', 'Schema Scope Local', 'schema-scope-local', 'private'),
+        ('schema-scope-public', 'Schema Scope Public', 'schema-scope-public', 'public'),
+        ('schema-scope-private', 'Schema Scope Private', 'schema-scope-private', 'private')
+    `;
+    await sql`
+      INSERT INTO entity_relationship_types
+        (organization_id, slug, name, deleted_at)
+      VALUES
+        ('schema-scope-local', 'schema-scope-local', 'Local', NULL),
+        ('schema-scope-public', 'schema-scope-public', 'Public', NULL),
+        ('schema-scope-private', 'schema-scope-private', 'Private', NULL),
+        ('schema-scope-public', 'schema-scope-deleted', 'Deleted', NOW())
+    `;
+
+    const scoped = validateAndScopeQuery(
+      `SELECT ert.slug
+       FROM entity_relationship_types ert
+       LEFT JOIN entity_relationships er ON er.relationship_type_id = ert.id
+       WHERE ert.slug LIKE 'schema-scope-%'
+       ORDER BY ert.slug`,
+      'schema-scope-local',
+      { safeColumns: SAFE_COLUMN_DEFS }
+    );
+    const rows = await sql.unsafe(scoped.sql, scoped.params);
+
+    expect(rows.map((row) => row.slug)).toEqual(['schema-scope-local', 'schema-scope-public']);
   });
 });

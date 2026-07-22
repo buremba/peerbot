@@ -370,6 +370,45 @@ export const QUERYABLE_SCHEMA = {
         'supports_execute'
       ),
     },
+    // entity_relationships — org-scoped, live graph edges.
+    {
+      name: 'entity_relationships',
+      columns: cols(
+        'id',
+        'organization_id',
+        'from_entity_id',
+        'to_entity_id',
+        'relationship_type_id',
+        'metadata',
+        'confidence',
+        'source',
+        'created_by',
+        'updated_by',
+        'deleted_at',
+        'created_at',
+        'updated_at'
+      ),
+    },
+    // entity_relationship_types — local and public-catalog edge definitions.
+    {
+      name: 'entity_relationship_types',
+      columns: cols(
+        'id',
+        'slug',
+        'name',
+        'description',
+        'organization_id',
+        'created_by',
+        'metadata_schema',
+        'is_symmetric',
+        'inverse_type_id',
+        'status',
+        'deleted_at',
+        'created_at',
+        'updated_at',
+        'metadata'
+      ),
+    },
   ],
 };
 

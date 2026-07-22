@@ -1173,6 +1173,24 @@ describe("prepare_comment helpers", () => {
     ).toBe(
       "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
     );
+    expect(
+      normalizeLinkedInPostUrl(
+        "https://www.linkedin.com/feed/?updateEntityUrn=urn%3Ali%3Aactivity%3A7312345678901234567"
+      )
+    ).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(
+      normalizeLinkedInPostUrl(
+        "http://www.linkedin.com/posts/example_activity-7312345678901234567-x"
+      )
+    ).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(
+      normalizeLinkedInPostUrl("https://www.linkedin.com/feed/")
+    ).toBeNull();
+    expect(normalizeLinkedInPostUrl("ftp://linkedin.com/post")).toBeNull();
     expect(normalizeLinkedInPostUrl("https://evil.example/x")).toBeNull();
     expect(normalizeLinkedInPostUrl("")).toBeNull();
   });
@@ -1224,7 +1242,7 @@ describe("prepare_comment helpers", () => {
     expect(expr).toContain("isSubmitLabel");
     expect(expr).toContain("submitted: false");
     expect(expr).not.toMatch(
-      /dispatchKeyEvent|key:\s*['\"]Enter['\"]|Meta\+Enter/i
+      /dispatchKeyEvent|key:\s*['"]Enter['"]|Meta\+Enter/i
     );
     expect(expr).toContain("composer_not_found");
   });
@@ -1256,6 +1274,10 @@ describe("prepare_comment helpers", () => {
     expect(action?.requiresApproval).toBe(true);
     expect(action?.kind).toBe("write");
     expect(action?.annotations?.destructiveHint).toBe(false);
+    expect(action?.inputSchema?.anyOf).toEqual([
+      { required: ["post_url"] },
+      { required: ["activity_id"] },
+    ]);
     expect(c.definition.version).toBe("3.2.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
@@ -1327,14 +1349,12 @@ describe("prepare_comment helpers", () => {
     // Never click Post (no click_ref at all on the happy path).
     expect(keys).not.toContain("click_ref");
     expect(keys).not.toContain("type_ref");
-    const focus = log.find((e) => e.key === "focus_tab");
-    expect(focus?.input.open_sidepanel).toBe(true);
     const note = log.find((e) => e.key === "show_notification");
     expect(note?.input.tab_id).toBe(42);
     expect(String(note?.input.message)).toContain("Met at conference");
   });
 
-  test("prepareLinkedInComment falls back to type_ref when evaluate misses", async () => {
+  test("prepareLinkedInComment falls back to type_ref when evaluate is unavailable", async () => {
     const log: string[] = [];
     let evaluateCalls = 0;
     const dispatcher = {
@@ -1344,7 +1364,7 @@ describe("prepare_comment helpers", () => {
           return {
             tab_id: 9,
             current_url:
-              "https://www.linkedin.com/feed/update/urn:li:activity:99",
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
           };
         }
         if (key === "wait_for_selector") return {};
@@ -1352,7 +1372,7 @@ describe("prepare_comment helpers", () => {
           evaluateCalls += 1;
           // First call is fill; later is banner.
           if (evaluateCalls === 1) {
-            return { value: { ok: false, reason: "composer_not_found" } };
+            throw new Error("evaluate unavailable");
           }
           return { value: { ok: true, anchored: false } };
         }
@@ -1382,7 +1402,8 @@ describe("prepare_comment helpers", () => {
     };
 
     const result = await prepareLinkedInComment(dispatcher, {
-      postUrl: "https://www.linkedin.com/feed/update/urn:li:activity:99",
+      postUrl:
+        "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
       body: "hi",
       notify: false,
     });

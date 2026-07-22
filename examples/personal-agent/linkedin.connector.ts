@@ -21,7 +21,7 @@
  * dedups all people on the shared `linkedin_slug`/`email` identity: a person met
  * live and a person in the CSV export collapse to the same entity.
  *
- * Write handoff (spike): `prepare_comment` opens a post in the paired Chrome,
+ * Write handoff: `prepare_comment` opens a post in the paired Chrome,
  * fills the comment composer, focuses the tab, and stops. The human clicks
  * Post themselves — Lobu never submits the comment.
  */
@@ -594,7 +594,7 @@ function requireExtensionDispatcher(ctx: {
 // ── prepare_comment handoff (browser stage, human submits) ───────────
 
 /** Interactive a11y node from chrome `get_accessibility_tree`. */
-export type A11yNode = {
+type A11yNode = {
   ref_id: number;
   role?: string;
   name?: string;
@@ -602,17 +602,17 @@ export type A11yNode = {
   href?: string;
 };
 
-export type ElementRef = {
+type ElementRef = {
   document_epoch: number;
   ref_id: number;
 };
 
-export type PrepareCommentResult = {
+type PrepareCommentResult = {
   prepared: boolean;
   tab_id: number;
   post_url: string;
   body: string;
-  /** How the composer was filled: a11y type_ref vs evaluate fallback. */
+  /** How the composer was filled: evaluate or the a11y type_ref fallback. */
   method: "type_ref" | "evaluate";
   /** Whether the in-page handoff banner was injected. */
   banner_shown?: boolean;
@@ -651,20 +651,20 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
           ? raw
           : `https://${raw}`;
     const u = new URL(withScheme);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    u.protocol = "https:";
     const host = u.hostname.toLowerCase().replace(/^www\./, "");
     if (host !== "linkedin.com" && !host.endsWith(".linkedin.com")) {
       return null;
     }
     // Prefer canonical feed/update URLs when we can extract an activity id.
-    const fromPath = u.pathname.match(/activity[:%3A](\d{6,})/i);
-    const fromQuery = u.search.match(/activity[:%3A-]?(\d{6,})/i);
-    const activityId = fromPath?.[1] ?? fromQuery?.[1];
+    const activityId = `${u.pathname}${u.search}`.match(
+      /(?:urn(?::|%3A)li(?::|%3A))?activity(?::|%3A|-)(\d{6,})/i
+    )?.[1];
     if (activityId) {
       return `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}`;
     }
-    // Keep posts/… and other linkedin URLs as-is (strip hash only).
-    u.hash = "";
-    return u.toString();
+    return null;
   } catch {
     return null;
   }
@@ -716,7 +716,7 @@ export function isCommentOpenLabel(name: string | undefined | null): boolean {
 
 /**
  * Prefer the social-action "Comment" control (not "Add a comment…" textbox,
- * not "Post" submit). Names vary by locale; English-first for the spike.
+ * not "Post" submit). Names vary by locale; this path is English-first.
  */
 export function pickCommentButtonRef(
   tree: A11yNode[],
@@ -732,7 +732,6 @@ export function pickCommentButtonRef(
     if (!isCommentOpenLabel(node.name)) continue;
     // Skip textboxes that happen to have "comment" in the name.
     if (node.role === "textbox" || node.tag === "textarea") continue;
-    if (isCommentSubmitLabel(node.name)) continue;
     return { document_epoch: documentEpoch, ref_id: node.ref_id };
   }
   return null;
@@ -753,24 +752,20 @@ export function pickCommentTextboxRef(
     /^comment$/i,
     /text editor/i,
   ];
-  const candidates = tree.filter(
-    (n) => n.role === "textbox" || n.tag === "textarea" || n.tag === "div" // contenteditable often role=textbox; keep div as weak fallthrough
-  );
+  const candidates = tree.filter((n) => n.role === "textbox");
   for (const node of candidates) {
-    if (node.role === "textbox" && nameMatches(node.name, goodName)) {
+    if (nameMatches(node.name, goodName)) {
       return { document_epoch: documentEpoch, ref_id: node.ref_id };
     }
   }
   // Any textbox whose name mentions comment.
   for (const node of candidates) {
-    if (node.role === "textbox" && node.name && /comment/i.test(node.name)) {
+    if (node.name && /comment/i.test(node.name)) {
       return { document_epoch: documentEpoch, ref_id: node.ref_id };
     }
   }
   // Last resort: empty-named textboxes are common once the composer is open.
-  const emptyTextboxes = candidates.filter(
-    (n) => n.role === "textbox" && !n.name?.trim()
-  );
+  const emptyTextboxes = candidates.filter((n) => !n.name?.trim());
   if (emptyTextboxes.length === 1) {
     return {
       document_epoch: documentEpoch,
@@ -813,7 +808,7 @@ async function snapshotTree(
   };
 }
 
-/** Cap reason text for in-page banner (full reason lives in the sidepanel). */
+/** Cap the explanation shown in the in-page banner. */
 export function truncateHandoffReason(
   reason: string | undefined | null,
   maxLen = 120
@@ -827,7 +822,7 @@ export function truncateHandoffReason(
 
 /**
  * JS expression: inject a small Lobu handoff banner on the page.
- * Not the full reason UI — one short line + "details in side panel".
+ * The banner points the user to the side panel for the run details.
  * Best-effort; LinkedIn re-renders may remove it.
  */
 export function buildInjectHandoffBannerExpression(opts: {
@@ -896,7 +891,7 @@ export function buildInjectHandoffBannerExpression(opts: {
 
   const foot = document.createElement('div');
   foot.style.cssText = 'color:#64748b;margin:4px 0 0;font-size:12px';
-  foot.textContent = 'Full context in the Owletto side panel.';
+  foot.textContent = 'Open the Owletto side panel for run details.';
   body.appendChild(foot);
 
   const close = document.createElement('button');
@@ -1099,7 +1094,7 @@ export async function prepareLinkedInComment(
   opts: {
     postUrl: string;
     body: string;
-    /** Short why for the in-page banner; full context stays in the sidepanel. */
+    /** Short explanation for the in-page banner. */
     reason?: string;
     focus?: boolean;
     notify?: boolean;
@@ -1132,10 +1127,8 @@ export async function prepareLinkedInComment(
           );
         }
       }
-      const { allowed_click: _allowed, ...input } = action_input as Record<
-        string,
-        unknown
-      > & { allowed_click?: string };
+      const input = { ...action_input };
+      delete input.allowed_click;
       return dispatcher.dispatch(action_key, input);
     },
   };
@@ -1176,35 +1169,47 @@ export async function prepareLinkedInComment(
   let method: "type_ref" | "evaluate" = "evaluate";
   let typed = false;
 
-  // Live spike (2026-07): LinkedIn's current feed/post UI rarely exposes the
+  // LinkedIn's current feed/post UI rarely exposes the
   // Quill composer as an a11y textbox after clicking Comment, so evaluate
   // (contenteditable/ql-editor selectors + insertText) is the primary path.
   // type_ref remains a secondary attempt when the tree does surface a textbox.
   {
-    const evalOut = await safeDispatch.dispatch<{
-      value?: {
-        ok?: boolean;
-        reason?: string;
-        preview?: string;
-        submitted?: boolean;
-      };
-      exception?: string;
-    }>("evaluate", {
-      tab_id: tabId,
-      expression: buildFillCommentExpression(body),
-      await_promise: true,
-      ...chromeOriginsInput(),
-    });
-    if (evalOut.exception) {
-      throw new Error(`prepare_comment: evaluate failed: ${evalOut.exception}`);
+    let evalOut:
+      | {
+          value?: {
+            ok?: boolean;
+            reason?: string;
+            preview?: string;
+            submitted?: boolean;
+          };
+          exception?: string;
+        }
+      | undefined;
+    try {
+      evalOut = await safeDispatch.dispatch<{
+        value?: {
+          ok?: boolean;
+          reason?: string;
+          preview?: string;
+          submitted?: boolean;
+        };
+        exception?: string;
+      }>("evaluate", {
+        tab_id: tabId,
+        expression: buildFillCommentExpression(body),
+        await_promise: true,
+        ...chromeOriginsInput(),
+      });
+    } catch {
+      // The a11y path below can still stage the draft when evaluate is blocked.
     }
-    const value = evalOut.value;
+    const value = evalOut?.value;
     if (value?.submitted === true) {
       throw new Error(
         "prepare_comment: fill expression reported submitted=true — aborting (must never auto-post)"
       );
     }
-    if (value?.ok) {
+    if (!evalOut?.exception && value?.ok) {
       method = "evaluate";
       typed = true;
     }
@@ -1225,12 +1230,6 @@ export async function prepareLinkedInComment(
       if (!textbox) {
         const commentBtn = pickCommentButtonRef(snap.tree, snap.document_epoch);
         if (commentBtn) {
-          const btnNode = snap.tree.find((n) => n.ref_id === commentBtn.ref_id);
-          if (btnNode && isCommentSubmitLabel(btnNode.name)) {
-            throw new Error(
-              "prepare_comment: refused to click submit-labelled control"
-            );
-          }
           await safeDispatch.dispatch("click_ref", {
             tab_id: tabId,
             ref: commentBtn,
@@ -1257,7 +1256,6 @@ export async function prepareLinkedInComment(
       if (
         err instanceof Error &&
         (err.message.includes("Not logged into LinkedIn") ||
-          err.message.includes("refused to click") ||
           err.message.includes("blocked click_ref"))
       ) {
         throw err;
@@ -1296,7 +1294,6 @@ export async function prepareLinkedInComment(
       await safeDispatch.dispatch("focus_tab", {
         tab_id: tabId,
         draw_attention: true,
-        open_sidepanel: true,
         ...chromeOriginsInput(),
       });
     } catch {
@@ -1787,11 +1784,12 @@ export default class LinkedInConnector extends ConnectorRuntime<
         inputSchema: {
           type: "object",
           required: ["body"],
+          anyOf: [{ required: ["post_url"] }, { required: ["activity_id"] }],
           properties: {
             post_url: {
               type: "string",
               description:
-                'LinkedIn post URL, or activity id / URN (e.g. "https://www.linkedin.com/feed/update/urn:li:activity:123", "urn:li:activity:123", or "123").',
+                'LinkedIn post URL, or activity id / URN (e.g. "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567", "urn:li:activity:7312345678901234567", or "7312345678901234567").',
             },
             activity_id: {
               type: "string",
@@ -1808,7 +1806,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
             reason: {
               type: "string",
               description:
-                "Optional short why for the in-page banner (truncated). Full context stays in the Owletto side panel.",
+                "Optional short explanation for the in-page banner (truncated).",
               maxLength: 500,
             },
             focus: {

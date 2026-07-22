@@ -13,6 +13,8 @@
  *   - a real `$member` row does not move
  *   - a row that merely *claims* source=watcher_canvas in metadata, with no
  *     identity row, does not move
+ *   - a row whose only `watcher_canvas` identity is soft-deleted does not move
+ *     (the claim must be live: `deleted_at IS NULL`)
  *   - re-running is a no-op (migrations may be replayed)
  *   - exactly one `$canvas` type per org
  *
@@ -45,6 +47,7 @@ interface Captured {
   claimedCanvasSlug: string | null;
   realMemberSlug: string | null;
   metadataOnlySlug: string | null;
+  deletedIdentitySlug: string | null;
   canvasTypeCount: number;
   slugsAfterRerun: string[];
 }
@@ -64,6 +67,7 @@ describe('$canvas backfill migration', () => {
       claimedCanvasSlug: null,
       realMemberSlug: null,
       metadataOnlySlug: null,
+      deletedIdentitySlug: null,
       canvasTypeCount: 0,
       slugsAfterRerun: [],
     };
@@ -128,11 +132,31 @@ describe('$canvas backfill migration', () => {
           RETURNING id
         `;
 
+        // Held a `watcher_canvas` claim once, but it is now soft-deleted. The
+        // backfill matches only live claims (`deleted_at IS NULL`), so a stale
+        // claim must NOT move the entity; else replaying with historical rows
+        // would re-type former canvases.
+        const [deletedCanvas] = await tx<{ id: number }[]>`
+          INSERT INTO entities
+            (organization_id, entity_type_id, name, slug, metadata, created_by, created_at, updated_at)
+          VALUES (
+            ${orgId}, ${memberType.id}, 'Canvas · watcher 2', 'watcher-canvas-2',
+            ${tx.json({ watcher_id: 2, source: 'watcher_canvas' })},
+            ${user.id}, current_timestamp, current_timestamp
+          )
+          RETURNING id
+        `;
+        await tx`
+          INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, deleted_at)
+          VALUES (${orgId}, ${deletedCanvas.id}, 'watcher_canvas', '2', current_timestamp)
+        `;
+
         await tx.unsafe(upSection);
 
         result.claimedCanvasSlug = await slugOf(tx, canvas.id);
         result.realMemberSlug = await slugOf(tx, member.id);
         result.metadataOnlySlug = await slugOf(tx, impostor.id);
+        result.deletedIdentitySlug = await slugOf(tx, deletedCanvas.id);
 
         const typeRows = await tx<{ n: string }[]>`
           SELECT COUNT(*)::text AS n
@@ -147,6 +171,7 @@ describe('$canvas backfill migration', () => {
           (await slugOf(tx, canvas.id)) ?? '',
           (await slugOf(tx, member.id)) ?? '',
           (await slugOf(tx, impostor.id)) ?? '',
+          (await slugOf(tx, deletedCanvas.id)) ?? '',
         ];
 
         throw new Rollback();
@@ -170,11 +195,15 @@ describe('$canvas backfill migration', () => {
     expect(captured.metadataOnlySlug).toBe('$member');
   });
 
+  it('ignores an entity whose only watcher_canvas identity is soft-deleted', () => {
+    expect(captured.deletedIdentitySlug).toBe('$member');
+  });
+
   it('creates exactly one $canvas type for the org', () => {
     expect(captured.canvasTypeCount).toBe(1);
   });
 
   it('is idempotent across a replay', () => {
-    expect(captured.slugsAfterRerun).toEqual(['$canvas', '$member', '$member']);
+    expect(captured.slugsAfterRerun).toEqual(['$canvas', '$member', '$member', '$member']);
   });
 });

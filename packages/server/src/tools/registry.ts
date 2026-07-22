@@ -6,10 +6,10 @@
  *
  * Glossary — "namespace" in tool descriptions below means three different things,
  * none of which is a memory-scope axis:
- *   1. `search_sdk`'s `namespace` param — a ClientSDK module name
- *      (`watchers`, `entities`, `knowledge`, ...).
+ *   1. A namespace passed in `search_sdk`'s `query` param — a ClientSDK property name
+ *      (`behaviors`, `entities`, `knowledge`, ...).
  *   2. `resolve_path`'s "namespace-based URL path" — the first URL segment
- *      (org slug or entity-type slug).
+ *      (an organization slug or `@user` handle).
  *   3. `entity_identities.namespace` (deep in SQL) — the identifier type
  *      (`email`, `phone`, `wa_jid`); see `identity-normalize.ts`.
  *

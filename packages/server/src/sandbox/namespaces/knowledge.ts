@@ -1,9 +1,9 @@
 /**
  * ClientSDK `knowledge` namespace.
  *
- * Wraps `search_memory`, `saveContent` (save_memory),
- * `getContent` (read_knowledge), and `deleteContent` (delete_knowledge).
- * The SDK surface mirrors the MCP tool surface for consistency.
+ * Wraps the `search_memory`, `save_memory`, and `read_knowledge` handlers.
+ * `deleteContent` is SDK-only, exposed as `client.knowledge.delete` rather
+ * than as a registered MCP tool.
  */
 
 import type { Env } from "../../index";

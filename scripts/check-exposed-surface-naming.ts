@@ -188,42 +188,172 @@ function scanTypeBoxSchemas(file: string, violations: Violation[]): void {
   }
 }
 
-/**
- * ClientSDK namespace surface: `*Namespace` method names plus every property
- * name reachable from an exported type in the file — method parameter and
- * return types, nested type literals, and exported input/output declarations.
- *
- * Recursion matters: an agent-facing key is agent-facing at any depth, so
- * `{ source: { watcher_id } }` and an inline `method(input: { watcher_id })`
- * are violations exactly like a top-level member. Scanning only direct members
- * is how two false negatives shipped past earlier revisions of this guard.
- */
-function scanNamespaceSurface(file: string, violations: Violation[]): void {
-  const source = parse(file);
-
-  function walk(node: ts.Node): void {
-    const name = propertyName(node);
-    const text = name && propertyNameText(name);
-    if (name && text && BANNED.test(text)) {
-      addViolation(violations, file, source, name);
+/** Resolve a relative import specifier to a source file on disk. */
+function resolveImport(
+  fromFile: string,
+  specifier: string
+): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = resolve(dirname(fromFile), specifier);
+  for (const candidate of [`${base}.ts`, join(base, "index.ts")]) {
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not this candidate; try the next.
     }
-    ts.forEachChild(node, walk);
   }
+  return undefined;
+}
 
+/**
+ * Map every locally-imported type name to the file that defines it AND the name
+ * it is declared under there.
+ *
+ * The distinction matters for aliased imports. `import type { AuthProfileKind
+ * as StoredAuthProfileKind }` is referenced locally as `StoredAuthProfileKind`,
+ * but the declaring module knows it as `AuthProfileKind` — looking up the local
+ * alias in the target file finds nothing and silently gives up, which is
+ * exactly how this guard kept passing on a banned member of an imported type.
+ */
+function importedTypeOrigins(
+  file: string,
+  source: ts.SourceFile
+): Map<string, { file: string; exportedName: string }> {
+  const origins = new Map<string, { file: string; exportedName: string }>();
   for (const statement of source.statements) {
-    const isNamespaceInterface =
-      ts.isInterfaceDeclaration(statement) &&
-      statement.name.text.endsWith("Namespace");
-    const isExportedType =
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+    const target = resolveImport(file, statement.moduleSpecifier.text);
+    if (!target) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      origins.set(element.name.text, {
+        file: target,
+        // `propertyName` is the name in the source module when aliased.
+        exportedName: (element.propertyName ?? element.name).text,
+      });
+    }
+  }
+  return origins;
+}
+
+/** Find a named type/interface declaration at the top level of a file. */
+function findTypeDeclaration(
+  source: ts.SourceFile,
+  name: string
+): ts.Node | undefined {
+  for (const statement of source.statements) {
+    if (
       (ts.isInterfaceDeclaration(statement) ||
         ts.isTypeAliasDeclaration(statement)) &&
-      statement.modifiers?.some(
-        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
-      );
-    if (isNamespaceInterface || isExportedType) {
-      walk(statement);
+      statement.name.text === name
+    ) {
+      return statement;
     }
   }
+  return undefined;
+}
+
+/**
+ * ClientSDK namespace surface: `*Namespace` method names plus every property
+ * name and string literal reachable from an exported type in the file — method
+ * parameter and return types, nested type literals, exported input/output
+ * declarations, and the definitions of types they reference.
+ *
+ * Recursion matters in two directions, and missing either one has already
+ * shipped a false negative past an earlier revision of this guard:
+ *
+ *   - Depth: an agent-facing key is agent-facing at any depth, so
+ *     `{ source: { watcher_id } }` and `method(input: { watcher_id })` are
+ *     violations exactly like a top-level member.
+ *   - Reference: `profile_kind: AuthProfileKind` puts whatever
+ *     `AuthProfileKind` resolves to on the wire. Scanning only the current
+ *     file let a banned member of an imported type pass clean, so type
+ *     references are followed into their defining module (local paths only —
+ *     node_modules is not our surface to police).
+ *
+ * String literals count here, not just property names: a referenced type is
+ * frequently a union of wire values (`"watcher" | "behavior"`), which is
+ * exposed vocabulary even though no property carries the word.
+ */
+function scanNamespaceSurface(file: string, violations: Violation[]): void {
+  const seen = new Set<string>();
+
+  function scanFile(currentFile: string, rootNames: string[] | null): void {
+    let source: ts.SourceFile;
+    try {
+      source = parse(currentFile);
+    } catch {
+      return;
+    }
+    const imports = importedTypeOrigins(currentFile, source);
+
+    function walk(node: ts.Node): void {
+      const name = propertyName(node);
+      const text = name && propertyNameText(name);
+      if (name && text && BANNED.test(text)) {
+        addViolation(violations, currentFile, source, name);
+      }
+
+      if (
+        (ts.isStringLiteral(node) || isTemplateText(node)) &&
+        BANNED.test(node.text)
+      ) {
+        addViolation(violations, currentFile, source, node);
+      }
+
+      // Follow `foo: SomeType` into SomeType's declaration.
+      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+        const referenced = node.typeName.text;
+        const local = findTypeDeclaration(source, referenced);
+        if (local) {
+          const key = `${currentFile}#${referenced}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            walk(local);
+          }
+        } else {
+          const origin = imports.get(referenced);
+          if (origin) scanFile(origin.file, [origin.exportedName]);
+        }
+      }
+
+      ts.forEachChild(node, walk);
+    }
+
+    if (rootNames) {
+      for (const name of rootNames) {
+        const key = `${currentFile}#${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const declaration = findTypeDeclaration(source, name);
+        if (declaration) walk(declaration);
+      }
+      return;
+    }
+
+    for (const statement of source.statements) {
+      const isNamespaceInterface =
+        ts.isInterfaceDeclaration(statement) &&
+        statement.name.text.endsWith("Namespace");
+      const isExportedType =
+        (ts.isInterfaceDeclaration(statement) ||
+          ts.isTypeAliasDeclaration(statement)) &&
+        statement.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+        );
+      if (isNamespaceInterface || isExportedType) {
+        walk(statement);
+      }
+    }
+  }
+
+  scanFile(file, null);
 }
 
 /** Published declaration text, including JSDoc. */

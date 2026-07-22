@@ -24,6 +24,11 @@ const CONTRACT_FILE = join(
   REPO_ROOT,
   "packages/core/src/contracts/tools/manage-entity.ts"
 );
+/** Defines `AuthProfileKind`, which the auth-profiles namespace imports aliased. */
+const IMPORTED_TYPE_FILE = join(
+  REPO_ROOT,
+  "packages/server/src/utils/auth-profiles.ts"
+);
 
 const touched: string[] = [];
 
@@ -86,6 +91,21 @@ describe("check-exposed-surface-naming", () => {
       "export interface",
       "export interface GuardFixtureNested { source: { watcher_id: number } }\n\n"
     );
+    expect(runGuard()).toBe(1);
+  });
+
+  // `auth-profiles` namespace exposes `profile_kind: AuthProfileKind`, which
+  // resolves through `Exclude<StoredAuthProfileKind, …>` to a type imported
+  // *under an alias* from ../../utils/auth-profiles. The banned value therefore
+  // lives in a file the guard never scans directly and is reachable only by
+  // following the reference — and by mapping the alias back to the name the
+  // defining module actually declares. Adding the union member to the real
+  // referenced type is what makes this fixture exercise that path; a fresh
+  // unreferenced type would prove nothing, since nothing points at it.
+  it("fails on a banned literal inside an aliased imported type", () => {
+    // Anchored on the first union member so the inserted one joins the existing
+    // declaration rather than creating a second, unreferenced one.
+    mutate(IMPORTED_TYPE_FILE, "  | 'env'", "  | 'watcher_kind'\n");
     expect(runGuard()).toBe(1);
   });
 

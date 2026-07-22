@@ -111,6 +111,32 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       content: 'CANVAS INTERNAL PAYLOAD',
       connector_key: 'contract.canvas',
     });
+
+    // Identity-graph attribution: an event carrying an identifier claimed by a
+    // system entity is linked WITHOUT appearing in events.entity_ids. This is
+    // the branch entityLinkMatchSql exists for — a filter that trusted
+    // entity_ids alone would miss it entirely.
+    const systemMember = await createTestEntity({
+      name: 'Roster Person Identity',
+      entity_type: MEMBER_ENTITY_TYPE_SLUG,
+      organization_id: publicOrg.id,
+      created_by: user.id,
+    });
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, created_at, updated_at)
+      VALUES (${publicOrg.id}, ${systemMember.id}, 'email', 'roster-identity@contract.test', NOW(), NOW())
+    `;
+    const identityEvent = await createTestEvent({
+      organization_id: publicOrg.id,
+      title: 'Identity linked member note',
+      content: 'IDENTITY LINKED PAYLOAD',
+      connector_key: 'contract.identity',
+    });
+    await sql`
+      UPDATE events
+      SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ email: 'roster-identity@contract.test' })}
+      WHERE id = ${identityEvent.id}
+    `;
   });
 
   it('renders crawlable HTML and bootstrap data for a public workspace', async () => {
@@ -209,6 +235,10 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(workspaceBody).not.toContain('Behavior Canvas');
     expect(workspaceBody).not.toContain('Canvas internal state');
     expect(workspaceBody).not.toContain('CANVAS INTERNAL PAYLOAD');
+    // Identity-linked (entity_ids empty) must be filtered on the same footing.
+    expect(workspaceBody).not.toContain('Roster Person Identity');
+    expect(workspaceBody).not.toContain('Identity linked member note');
+    expect(workspaceBody).not.toContain('IDENTITY LINKED PAYLOAD');
     // Ordinary recent content is still listed.
     expect(workspaceBody).toContain('Brand launch feedback');
 

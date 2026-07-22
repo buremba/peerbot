@@ -118,12 +118,13 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-/** Scan exposed literals and lowercase/snake_case wire keys, excluding comments. */
+/** Scan exposed literals and context-appropriate property names, excluding comments. */
 function scanSyntaxNode(
   file: string,
   source: ts.SourceFile,
   root: ts.Node,
-  violations: Violation[]
+  violations: Violation[],
+  allPropertyNamesAreExposed = false
 ): void {
   function visit(node: ts.Node): void {
     if (
@@ -135,7 +136,12 @@ function scanSyntaxNode(
 
     const name = propertyName(node);
     const text = name && propertyNameText(name);
-    if (text && BANNED_SNAKE_KEY.test(text)) {
+    if (
+      text &&
+      (allPropertyNamesAreExposed
+        ? BANNED.test(text)
+        : BANNED_SNAKE_KEY.test(text))
+    ) {
       addViolation(violations, file, source, name);
     }
 
@@ -176,7 +182,7 @@ function scanTypeBoxSchemas(file: string, violations: Violation[]): void {
     for (const declaration of statement.declarationList.declarations) {
       const initializer = declaration.initializer;
       if (initializer && containsTypeBoxCall(initializer)) {
-        scanSyntaxNode(file, source, initializer, violations);
+        scanSyntaxNode(file, source, initializer, violations, true);
       }
     }
   }
@@ -193,6 +199,38 @@ function scanNamespaceMethods(file: string, violations: Violation[]): void {
       continue;
     }
     for (const member of statement.members) {
+      const name = propertyName(member);
+      const text = name && propertyNameText(name);
+      if (name && text && BANNED.test(text)) {
+        addViolation(violations, file, source, name);
+      }
+    }
+  }
+}
+
+/**
+ * Exported interface / type-alias members in a namespace file. These describe
+ * the arguments an agent passes to a ClientSDK method (e.g.
+ * `NotificationsSendInput`), so their property names are agent-facing wire keys
+ * even though scanNamespaceMethods only looks at `*Namespace` method names.
+ */
+function scanExportedTypeMembers(file: string, violations: Violation[]): void {
+  const source = parse(file);
+  for (const statement of source.statements) {
+    const exported = statement.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+    );
+    if (!exported) continue;
+
+    const members = ts.isInterfaceDeclaration(statement)
+      ? statement.members
+      : ts.isTypeAliasDeclaration(statement) &&
+          ts.isTypeLiteralNode(statement.type)
+        ? statement.type.members
+        : undefined;
+    if (!members) continue;
+
+    for (const member of members) {
       const name = propertyName(member);
       const text = name && propertyNameText(name);
       if (name && text && BANNED.test(text)) {
@@ -247,10 +285,14 @@ for (const file of [
   scanExposedSyntax(file, violations);
 }
 
-// Runtime-callable ClientSDK namespace member names.
+// Runtime-callable ClientSDK namespace member names, plus the exported input /
+// output types that describe their arguments — `watcher_id` on an exported
+// namespace interface is an agent-facing wire key even though it is not a
+// method name.
 const namespacesDir = join(REPO_ROOT, "packages/server/src/sandbox/namespaces");
 for (const file of collectTsFiles(namespacesDir)) {
   scanNamespaceMethods(file, violations);
+  scanExportedTypeMembers(file, violations);
 }
 
 const seen = new Set<string>();

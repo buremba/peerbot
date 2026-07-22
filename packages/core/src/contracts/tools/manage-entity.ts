@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { ApprovalAttributionSchema } from "../interaction-envelope";
 
 function SortOrderField(description: string) {
   return Type.Optional(
@@ -396,9 +397,7 @@ export const ManageEntityResultSchema = Type.Union([
       Type.Record(Type.String(), Type.Unknown())
     ),
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-    approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
-    ),
+    approval_attribution: Type.Optional(ApprovalAttributionSchema),
   }),
   Type.Object({
     action: Type.Literal("update"),
@@ -419,9 +418,7 @@ export const ManageEntityResultSchema = Type.Union([
     /** Blocked field_path -> current human-owned value, for the diff. */
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     /** Who proposed the blocked change: 'agent' | 'behavior'. */
-    approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
-    ),
+    approval_attribution: Type.Optional(ApprovalAttributionSchema),
   }),
   Type.Object({
     action: Type.Literal("list"),
@@ -488,9 +485,7 @@ export const ManageEntityResultSchema = Type.Union([
       Type.Record(Type.String(), Type.Unknown())
     ),
     approval_current: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-    approval_attribution: Type.Optional(
-      Type.Union([Type.Literal("agent"), Type.Literal("behavior")])
-    ),
+    approval_attribution: Type.Optional(ApprovalAttributionSchema),
   }),
   Type.Object({
     action: Type.Literal("link"),
@@ -550,10 +545,7 @@ export const ManageEntityResultSchema = Type.Union([
         entity_ids: Type.Optional(Type.Array(Type.Integer())),
         winner_entity_id: Type.Integer(),
       }),
-      approval_attribution: Type.Union([
-        Type.Literal("agent"),
-        Type.Literal("behavior"),
-      ]),
+      approval_attribution: ApprovalAttributionSchema,
       next_steps: Type.Array(Type.String()),
       resolution: Type.Optional(
         Type.Object({

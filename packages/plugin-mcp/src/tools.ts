@@ -1,4 +1,8 @@
-import { createLogger } from "@lobu/core";
+import {
+  coerceApprovalAttribution,
+  createLogger,
+  InteractionResourceKind,
+} from "@lobu/core";
 import {
   createGatewayClient,
   gatewayFetch,
@@ -28,7 +32,7 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
-  // Same shape as manage_agents: behavior definition create/update/delete may
+  // Same shape as manage_agents: watcher definition create/update/delete may
   // return pending_approval under the agent_config write-gate.
   "manage_behaviors",
   // manage_entity's update path queues a human-owned-field change for approval
@@ -43,13 +47,13 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
  * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
- *   - manage_behaviors write gate → same `pending_approval` shape (behavior
+ *   - manage_behaviors write gate → same `pending_approval` shape (watcher
  *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
- *     entity field an agent or Behavior proposed changing).
+ *     entity field the agent proposed changing).
  *
- * Best-effort — a failed post never breaks the tool call (the agent still
+ * Fire-and-forget — a failed post never breaks the tool call (the agent still
  * narrates the result, and the events-tab approval card remains the fallback).
  * Returns true when a card was posted (caller logs at debug only).
  *
@@ -65,7 +69,7 @@ export async function maybePostApprovalCard(
   const body = buildApprovalCardBody(toolName, rawResultText);
   if (!body) return false;
 
-  // Best-effort: a failed post must never break the tool call (the agent
+  // Fire-and-forget: a failed post must never break the tool call (the agent
   // still narrates the result, and the events-tab approval card is the
   // fallback). gatewayFetch throws on a hard network error, so guard it too.
   let error: TextResult | undefined;
@@ -92,7 +96,8 @@ export async function maybePostApprovalCard(
  * null when the result is not a pending approval. entity_field_change carries
  * `fields`/`attribution` (the human-owned-field diff); manage_agents carries
  * `proposal` (the agent row diff); manage_behaviors carries flat behavior args
- * plus `resourceKind: "behavior"`. All share the `tool_approval` transport.
+ * plus `resourceKind: behavior`. All share the `tool_approval` transport.
+ * Wire literals come from `@lobu/core` (`interaction-envelope` contract).
  */
 function buildApprovalCardBody(
   toolName: string,
@@ -126,7 +131,7 @@ function buildApprovalCardBody(
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: "behavior",
+      resourceKind: InteractionResourceKind.Behavior,
       proposal: flatProposal,
       current: parsed.current ?? null,
     };
@@ -143,7 +148,7 @@ function buildApprovalCardBody(
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
-      resourceKind: "agent",
+      resourceKind: InteractionResourceKind.Agent,
       proposal: parsed.proposal ?? null,
       current: parsed.current ?? null,
     };
@@ -163,14 +168,13 @@ function buildApprovalCardBody(
         typeof parsed.approval_action === "string"
           ? parsed.approval_action
           : "change",
-      resourceKind: "entity",
+      resourceKind: InteractionResourceKind.Entity,
       proposal: parsed.approval_proposal ?? null,
       // entity_field_change diff: field_path -> proposed / current. The SPA
       // routes on `fields` (non-empty) to the entity-field-change card.
       fields: parsed.approval_fields ?? null,
       current: parsed.approval_current ?? null,
-      attribution:
-        parsed.approval_attribution === "behavior" ? "behavior" : "agent",
+      attribution: coerceApprovalAttribution(parsed.approval_attribution),
     };
   }
 

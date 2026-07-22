@@ -7,6 +7,10 @@ import {
   createLogger,
   type UserSuggestion,
 } from "@lobu/core";
+import type {
+  ApprovalAttribution,
+  InteractionResourceKind,
+} from "@lobu/core/contracts/interaction-envelope";
 
 const logger = createLogger("interactions");
 
@@ -127,9 +131,9 @@ export interface PostedDurableApproval extends BaseMessage {
    *  The SPA routes on this (non-empty) to the entity-field-change card. */
   fields: Record<string, unknown> | null;
   /** Who proposed the entity_field_change: 'agent' | 'behavior'. Null for manage_agents. */
-  attribution: string | null;
+  attribution: ApprovalAttribution | null;
   /** Discriminator for the SPA: "agent" | "behavior" | "entity". */
-  resourceKind: string | null;
+  resourceKind: InteractionResourceKind | null;
   /** Headless-origin marker (parity with PostedQuestion/PostedToolApproval). */
   source?: string;
 }
@@ -268,8 +272,8 @@ export class InteractionService extends EventEmitter {
     current: Record<string, unknown> | null,
     source?: string,
     fields: Record<string, unknown> | null = null,
-    attribution: string | null = null,
-    resourceKind: string | null = null
+    attribution: ApprovalAttribution | null = null,
+    resourceKind: InteractionResourceKind | null = null
   ): Promise<PostedDurableApproval> {
     assertRoutableInteraction(connectionId, platform, "approval card");
     if (this.beforeCreateHook) {

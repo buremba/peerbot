@@ -20,6 +20,10 @@
  */
 
 import {
+	ApprovalAttribution,
+	type ApprovalAttribution as ApprovalAttributionType,
+} from "@lobu/core/contracts/interaction-envelope";
+import {
 	type ManageEntityArgs,
 	type ManageEntityResult,
 	ManageEntityResultSchema,
@@ -302,8 +306,10 @@ async function handleCreate(
 		metadata: entityData.metadata ?? {},
 	};
 	const actor = await actingPrincipalFor(args, ctx);
-	const attribution: "agent" | "behavior" =
-		actor.kind === "watcher" ? "behavior" : "agent";
+	const attribution: ApprovalAttributionType =
+		actor.kind === "watcher"
+			? ApprovalAttribution.Behavior
+			: ApprovalAttribution.Agent;
 	const createDecision = await runMutationGate({
 		action: "create",
 		organizationId: ctx.organizationId,
@@ -466,7 +472,10 @@ async function handleUpdate(
 	const updateActor = await actingPrincipalFor(args, ctx);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
-		attribution: updateActor.kind === "watcher" ? "behavior" : "agent",
+		attribution:
+			updateActor.kind === "watcher"
+				? ApprovalAttribution.Behavior
+				: ApprovalAttribution.Agent,
 		principalId: updateActor.id,
 		// Trusted reaction-session window WINS — see the create path.
 		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
@@ -711,7 +720,10 @@ async function handleMerge(
 	}
 
 	if (actor.kind !== "user" && resolution?.decision === "review") {
-		const attribution = actor.kind === "watcher" ? "behavior" : "agent";
+		const attribution: ApprovalAttributionType =
+			actor.kind === "watcher"
+				? ApprovalAttribution.Behavior
+				: ApprovalAttribution.Agent;
 		if (
 			await wasResolutionRejected(sql, {
 				organizationId: ctx.organizationId,
@@ -1303,8 +1315,10 @@ async function handleDelete(
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
-	const attribution: "agent" | "behavior" =
-		deleteActor.kind === "watcher" ? "behavior" : "agent";
+	const attribution: ApprovalAttributionType =
+		deleteActor.kind === "watcher"
+			? ApprovalAttribution.Behavior
+			: ApprovalAttribution.Agent;
 	const current = {
 		id: entity.id,
 		entity_type: entity.entity_type,

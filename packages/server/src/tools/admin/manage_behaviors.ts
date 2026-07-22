@@ -21,6 +21,7 @@
  * This file is the entry point only — action handlers live in ./manage_behaviors/.
  */
 
+import { InteractionResourceKind } from '@lobu/core/contracts/interaction-envelope';
 import {
   ListBehaviorsResultSchema,
   ListBehaviorsSchema,
@@ -728,7 +729,7 @@ async function queueWatcherWriteForApproval(
       tool: 'manage_behaviors',
       action_key: MANAGE_BEHAVIORS_ACTION_KEY,
       action: args.action,
-      resourceKind: 'behavior',
+      resourceKind: InteractionResourceKind.Behavior,
       watcher_id: args.behavior_id ?? null,
       proposal,
       current: current ?? null,

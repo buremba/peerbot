@@ -70,6 +70,12 @@
       "import": "./dist/contracts/agent-settings.js",
       "require": "./dist/contracts/agent-settings.js"
     },
+    "./contracts/interaction-envelope": {
+      "types": "./dist/contracts/interaction-envelope.d.ts",
+      "bun": "./src/contracts/interaction-envelope.ts",
+      "import": "./dist/contracts/interaction-envelope.js",
+      "require": "./dist/contracts/interaction-envelope.js"
+    },
     "./contracts/worker/protocol": {
       "types": "./dist/contracts/worker/protocol.d.ts",
       "bun": "./src/contracts/worker/protocol.ts",

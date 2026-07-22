@@ -1223,7 +1223,9 @@ describe("prepare_comment helpers", () => {
     expect(expr).toContain("insertText");
     expect(expr).toContain("isSubmitLabel");
     expect(expr).toContain("submitted: false");
-    expect(expr).not.toMatch(/dispatchKeyEvent|key:\s*['\"]Enter['\"]|Meta\+Enter/i);
+    expect(expr).not.toMatch(
+      /dispatchKeyEvent|key:\s*['\"]Enter['\"]|Meta\+Enter/i
+    );
     expect(expr).toContain("composer_not_found");
   });
 

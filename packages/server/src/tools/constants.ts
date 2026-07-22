@@ -8,6 +8,9 @@
 /** Slug of the built-in workspace-member entity type. */
 export const MEMBER_ENTITY_TYPE_SLUG = '$member';
 
+/** Slug of the built-in per-Behavior canvas entity type. */
+export const CANVAS_ENTITY_TYPE_SLUG = '$canvas';
+
 /** Semantic type of tombstone events that supersede "deleted" events. */
 export const TOMBSTONE_SEMANTIC_TYPE = 'tombstone';
 

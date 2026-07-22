@@ -1597,6 +1597,16 @@ export async function supersedeActionEvent(
 				? { error_message: extraMetadata.error_message }
 				: {}),
 			...extraMetadata,
+			// Superseding copies the prior metadata forward, so a durable approval
+			// written before the Behaviors rename (#2034) would keep minting NEW
+			// rows carrying `resourceKind: "watcher"` every time it is resolved.
+			// Canonicalize on write: history keeps whatever it recorded, but nothing
+			// emitted from here reintroduces the pre-rename value. Must stay below
+			// both spreads so neither the prior row nor a caller can restore it.
+			...(priorMetadata.resourceKind === "watcher" ||
+			extraMetadata.resourceKind === "watcher"
+				? { resourceKind: "behavior" }
+				: {}),
 		},
 		authorName: orig.author_name ?? null,
 	}, { sql });

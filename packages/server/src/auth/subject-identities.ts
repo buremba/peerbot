@@ -340,12 +340,21 @@ export async function persistLoginSlackIdentity(
 		// injected deps seam so it stays testable.
 		if (!teamId) {
 			source = "userinfo-fallback";
-			// Any member org can supply the Slack provider config — it names the
-			// userinfo endpoint, which is identical across orgs.
-			const cfgs = await deps.getEnabledLoginProviderConfigs(
-				memberOrgs[0].tenantOrganizationId,
-			);
-			const slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
+			// Any member org that has Slack login enabled can supply the config —
+			// it names the userinfo endpoint, which is identical across orgs. Don't
+			// bet on memberOrgs[0]: the first org may not have Slack configured while
+			// a later one does, which would leave userinfoUrl undefined. Scan until
+			// one yields a Slack config.
+			let slackCfg:
+				| Awaited<ReturnType<typeof deps.getEnabledLoginProviderConfigs>>[number]
+				| undefined;
+			for (const org of memberOrgs) {
+				const cfgs = await deps.getEnabledLoginProviderConfigs(
+					org.tenantOrganizationId,
+				);
+				slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
+				if (slackCfg) break;
+			}
 			const { raw } = await deps.fetchUserInfoWithRaw({
 				provider: "slack",
 				accessToken: account.accessToken,

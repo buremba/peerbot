@@ -245,6 +245,79 @@ describe("persistLoginSlackIdentity", () => {
 		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
 	});
 
+	it("FALLBACK: finds the Slack config on a later member org, not just the first", async () => {
+		// Two member orgs. resolveMemberOrgsForUser orders by organizationId ASC,
+		// so exactly one of them is "first". Only ONE has Slack login configured;
+		// the fallback must scan past a config-less org to find it, or it would
+		// call the userinfo fetch with userinfoUrl: undefined.
+		const userinfoUrl = "https://slack.test/openid/connect/userInfo";
+		const orgA = await createTestOrganization({
+			name: "OrgA",
+			visibility: "private",
+		});
+		const orgB = await createTestOrganization({
+			name: "OrgB",
+			visibility: "private",
+		});
+		const user = await createTestUser({
+			name: "Bob",
+			email: "bob@acme.test",
+		});
+		await addUserToOrganization(user.id, orgA.id, "member");
+		await addUserToOrganization(user.id, orgB.id, "member");
+		await provisionMemberAndCoreIdentities(orgA.id, {
+			userId: user.id,
+			email: "bob@acme.test",
+			name: "Bob",
+		});
+		await provisionMemberAndCoreIdentities(orgB.id, {
+			userId: user.id,
+			email: "bob@acme.test",
+			name: "Bob",
+		});
+		// Whichever org sorts first has NO Slack config; the OTHER one does.
+		const [firstOrgId, secondOrgId] =
+			orgA.id < orgB.id ? [orgA.id, orgB.id] : [orgB.id, orgA.id];
+
+		let seenUserinfoUrl: string | undefined = "UNSET";
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId: user.id,
+				accessToken: "xoxp-token",
+				accountId: USER,
+			},
+			{
+				resolveMemberOrgsForUser,
+				getEnabledLoginProviderConfigs: async (orgId?: string | null) =>
+					orgId === secondOrgId
+						? [
+								{
+									connectorKey: "slack",
+									provider: "slack",
+									loginScopes: [],
+									clientIdKey: "SLACK_CLIENT_ID",
+									clientSecretKey: "SLACK_CLIENT_SECRET",
+									userinfoUrl,
+								},
+							]
+						: [],
+				fetchUserInfoWithRaw: async (args) => {
+					seenUserinfoUrl = args.userinfoUrl;
+					return {
+						raw: { "https://slack.com/team_id": TEAM },
+						normalized: null,
+					};
+				},
+			},
+		);
+
+		// The fetch got the real endpoint from the second org, not undefined.
+		expect(seenUserinfoUrl).toBe(userinfoUrl);
+		expect(await slackIdentityCount(firstOrgId, `${TEAM}:${USER}`)).toBe(1);
+		expect(await slackIdentityCount(secondOrgId, `${TEAM}:${USER}`)).toBe(1);
+	});
+
 	it("is idempotent — a second call writes no duplicate", async () => {
 		const { orgId, userId } = await seedMember();
 		const deps = depsWith({ "https://slack.com/team_id": TEAM });

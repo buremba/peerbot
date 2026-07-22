@@ -68,7 +68,7 @@ function runGuard(): number {
 afterEach(() => {
   for (const file of touched.splice(0)) {
     copyFileSync(`${file}.guardbak`, file);
-    Bun.spawnSync(["rm", "-f", `${file}.guardbak`]);
+    rmSync(`${file}.guardbak`, { force: true });
   }
   for (const file of created.splice(0)) {
     rmSync(file, { force: true });

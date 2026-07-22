@@ -94,16 +94,15 @@ export async function handleCreateVersion(
   // `sources: []` used to be conflated with "omitted" and silently re-inherited
   // the stored sources. The three authoring intents, in precedence order:
   //
-  //   1. Prompt edited            → derive fresh from the new prompt's `@`-chips
-  //      (unioned with any explicit sources). The prompt is authoritative: a
-  //      deleted chip's source must NOT linger, an edited SQL chip must not keep
-  //      its OLD query under the same name (union-merge is monotonic, add-only),
-  //      so we derive fresh rather than union with stored.
-  //   2. `sources` passed (prompt not edited) → EXPLICIT replacement. The given
-  //      list is authoritative even when empty (`[]` clears). This is the fix:
-  //      an API caller that passes sources means exactly that list.
-  //   3. Neither prompt nor sources supplied → INHERIT the stored sources, so a
-  //      metadata-only bump (schedule/name) preserves a legacy watcher's sources.
+  //   1. Source-token prompt edited → derive fresh from the new prompt's
+  //      `@`-chips (unioned with any explicit sources). The prompt is
+  //      authoritative: a deleted chip's source must NOT linger, an edited SQL
+  //      chip must not keep its OLD query under the same name (union-merge is
+  //      monotonic, add-only), so we derive fresh rather than union with stored.
+  //   2. `sources` passed without a source-token edit → EXPLICIT replacement.
+  //      The given list is authoritative even when empty (`[]` clears).
+  //   3. Neither a source-token edit nor sources supplied → INHERIT the stored
+  //      sources, so a metadata-only bump (schedule/name) preserves them.
   const promptSources = extractSourcesFromPromptTokens(prompt);
   const sourcesProvided = args.sources !== undefined;
   const explicitSources = args.sources ?? [];
@@ -111,11 +110,17 @@ export async function handleCreateVersion(
     watcherRows[0].sources,
     [] as Array<{ name: string; query: string }>
   );
-  const sources = promptEdited
-    ? mergePromptSources(explicitSources, promptSources)
-    : sourcesProvided
-      ? explicitSources
-      : storedSources;
+  // Include the previous prompt so removing its last token clears its source.
+  const previousPromptHadSourceTokens =
+    promptEdited && extractSourcesFromPromptTokens((prev.prompt as string) ?? '').length > 0;
+  const shouldDerivePromptSources =
+    promptEdited && (promptSources.length > 0 || previousPromptHadSourceTokens);
+  const sources =
+    shouldDerivePromptSources
+      ? mergePromptSources(explicitSources, promptSources)
+      : sourcesProvided
+        ? explicitSources
+        : storedSources;
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);

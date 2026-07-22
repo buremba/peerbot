@@ -318,15 +318,14 @@ describe("manage_behaviors update — version-owned fields are not silently drop
 
 /**
  * #2048 — create_version source semantics: explicit-set REPLACES (even []),
- * omitting INHERITS, prompt-edit derives from the prompt's @-chips. The bug was
- * that `sources: []` (or a different list) passed WITHOUT a prompt edit was
- * conflated with "omitted" and silently re-inherited the stored sources.
+ * omitting INHERITS, and edits to source-token prompts derive from those tokens.
+ * The bug was that `sources: []` (or a different list) passed WITHOUT a prompt
+ * edit was conflated with "omitted" and silently re-inherited the stored sources.
  *
  * red→green: before the fix, "explicitly clears" and "explicitly replaces" both
  * inherited the original sources; after, the passed list is authoritative.
  */
 describe("manage_behaviors create_version — source replacement semantics (#2048)", () => {
-	let orgId: string;
 	let ownerCtx: AuthContext;
 	let behaviorId: string;
 
@@ -359,7 +358,6 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 		await cleanupTestDatabase();
 		await initWorkspaceProvider();
 		const org = await createTestOrganization({ name: "cv sources #2048" });
-		orgId = org.id;
 		const owner = await createTestUser({ email: "cv-owner@test.com" });
 		await addUserToOrganization(owner.id, org.id, "owner");
 		ownerCtx = baseCtx(org.id, owner.id);
@@ -392,6 +390,26 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 	it("baseline: the created behavior has the two explicit sources", async () => {
 		const names = (await fetchSources()).map((s) => s.name).sort();
 		expect(names).toEqual(["alpha", "beta"]);
+	});
+
+	it("preserves stored sources when only plain prompt text changes", async () => {
+		const result = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				prompt: "Analyze the data concisely.",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { source_count?: number; removed_sources?: string[] };
+
+		expect(result.source_count).toBe(2);
+		expect(result.removed_sources).toBeUndefined();
+		expect((await fetchSources()).map((source) => source.name).sort()).toEqual([
+			"alpha",
+			"beta",
+		]);
 	});
 
 	it("omitting sources on a metadata-only bump INHERITS the stored sources", async () => {
@@ -442,6 +460,35 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 		expect(res.source_count).toBe(0);
 		// Only "alpha" remained from the prior version; it is now removed.
 		expect(res.removed_sources).toEqual(["alpha"]);
+		expect(await fetchSources()).toEqual([]);
+	});
+
+	it("removes the derived source when the last source token is removed", async () => {
+		const chip = `@[sql:s1:Recent](#sql=${encodeURIComponent("SELECT id FROM events WHERE 1=0")})`;
+		await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				prompt: `Look at ${chip} closely.`,
+			},
+			TEST_ENV,
+			ownerCtx,
+		);
+		expect((await fetchSources()).map((s) => s.name)).toEqual(["recent"]);
+
+		const chipRemoved = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				prompt: "Look at nothing in particular.",
+			},
+			TEST_ENV,
+			ownerCtx,
+		)) as { source_count?: number; removed_sources?: string[] };
+		expect(chipRemoved.source_count).toBe(0);
+		expect(chipRemoved.removed_sources).toEqual(["recent"]);
 		expect(await fetchSources()).toEqual([]);
 	});
 });

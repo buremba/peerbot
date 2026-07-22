@@ -137,6 +137,24 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ email: 'roster-identity@contract.test' })}
       WHERE id = ${identityEvent.id}
     `;
+
+    // `events` is append-only, so soft-deleting a system entity leaves its
+    // events behind. They must stay suppressed, not become public.
+    const deletedCanvas = await createTestEntity({
+      name: 'Deleted Behavior Canvas',
+      entity_type: CANVAS_ENTITY_TYPE_SLUG,
+      organization_id: publicOrg.id,
+      parent_id: brand.id,
+      created_by: user.id,
+    });
+    await createTestEvent({
+      entity_id: deletedCanvas.id,
+      organization_id: publicOrg.id,
+      title: 'Deleted canvas internal state',
+      content: 'DELETED CANVAS PAYLOAD',
+      connector_key: 'contract.deleted',
+    });
+    await sql`UPDATE entities SET deleted_at = NOW() WHERE id = ${deletedCanvas.id}`;
   });
 
   it('renders crawlable HTML and bootstrap data for a public workspace', async () => {
@@ -239,6 +257,9 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(workspaceBody).not.toContain('Roster Person Identity');
     expect(workspaceBody).not.toContain('Identity linked member note');
     expect(workspaceBody).not.toContain('IDENTITY LINKED PAYLOAD');
+    // Soft-deleting the system entity must not un-hide its append-only events.
+    expect(workspaceBody).not.toContain('Deleted canvas internal state');
+    expect(workspaceBody).not.toContain('DELETED CANVAS PAYLOAD');
     // Ordinary recent content is still listed.
     expect(workspaceBody).toContain('Brand launch feedback');
 

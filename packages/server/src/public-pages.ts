@@ -158,12 +158,14 @@ async function resolvePublicPath(
       // IDs are integer-validated above, so inlining them is safe and avoids the
       // driver flattening a bigint[] bind parameter. Resolve the link the same
       // way the read path does (entity_ids OR an identity-namespace stamp).
+      // Deleted system entities are deliberately NOT excluded: `events` is
+      // append-only, so soft-deleting a $canvas leaves its events behind — an
+      // `e.deleted_at IS NULL` filter here would un-hide their titles/payloads.
       const systemRows = await getDb().unsafe<{ id: number }>(
         `SELECT DISTINCT ev.id
            FROM events ev
            JOIN entities e
              ON e.organization_id = ev.organization_id
-            AND e.deleted_at IS NULL
            JOIN entity_types et
              ON et.id = e.entity_type_id
             AND et.slug LIKE '$%'

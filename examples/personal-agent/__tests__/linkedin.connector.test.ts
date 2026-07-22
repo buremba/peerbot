@@ -169,6 +169,21 @@ describe("buildHomeFeedEvents", () => {
     expect(ev.metadata).toEqual({ author: "DOM Author" });
   });
 
+  test("uses the post author when the DOM selector finds the reacting member", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this 🦔 james hawkins • 2nd self driving software and co-ceo at posthog 8h • Connect",
+          author: "Deb Mukherjee",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("🦔 james hawkins");
+    expect(ev.metadata).toEqual({ author: "🦔 james hawkins" });
+  });
+
   test("strips the connection-degree marker from a DOM-selector author", () => {
     const [ev] = buildHomeFeedEvents(
       [
@@ -280,6 +295,81 @@ describe("parseHomeFeedAuthor", () => {
         "Feed post Sabri Karagönen reposted this Hardal 17h • Follow Hardal is now integrated with Bruin"
       )
     ).toBe("Hardal");
+  });
+
+  test('strips a "likes this" social-context banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Deb Mukherjee likes this 🦔 james hawkins • 2nd self driving software and co-ceo at posthog 8h • Connect this is what happens"
+      )
+    ).toBe("🦔 james hawkins");
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Onur Demirtaş likes this Erkan Ayan • 2nd erkanayan.net 8h • Connect 📍 something"
+      )
+    ).toBe("Erkan Ayan");
+  });
+
+  test('strips a "commented" social-context banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Barry McCardel commented Caroline Haynes • 2nd GTM at Hex 20h • Follow After an incredible run"
+      )
+    ).toBe("Caroline Haynes");
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Joseph Jacks commented Roelof Botha • 3rd+ Investor 3h • Follow I am hiring"
+      )
+    ).toBe("Roelof Botha");
+  });
+
+  test('strips a "finds this insightful" banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Arpit Choudhury finds this insightful Paul Walsh • 2nd Online safety & security 5h • Follow"
+      )
+    ).toBe("Paul Walsh");
+  });
+
+  test('strips a plural "and N others like this" banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Ali Veli and 3 others like this Ayşe Yılmaz • 2nd Data engineer 4h • Connect"
+      )
+    ).toBe("Ayşe Yılmaz");
+  });
+
+  test('strips a "Recommended for you" banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Recommended for you Rich Nicholls, MBA • 3rd+ Director of Operations & Compliance 1d • Follow"
+      )
+    ).toBe("Rich Nicholls, MBA");
+  });
+
+  test("takes the author after stacked social-context banners", () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Alice likes this Bob reposted this Carol 5h • Follow"
+      )
+    ).toBe("Carol");
+  });
+
+  test('recovers the author from an expanded-post "Author" badge row without a degree marker', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Daniel Kravtsov Author CEO, Improvado | Building the Agentic Marketing OS | A revenue ecosystem"
+      )
+    ).toBe("Daniel Kravtsov");
+    expect(parseHomeFeedAuthor("Q Author Founder and CEO")).toBe("Q");
+  });
+
+  test('keeps only the leading name on a "Premium Profile" badge row', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Joseph Jacks Premium Profile 1st Joseph Jacks • 1st Autodidact. 2h Epic run at a16z"
+      )
+    ).toBe("Joseph Jacks");
   });
 
   test('returns empty string when no " • " marker is present', () => {

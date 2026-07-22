@@ -295,32 +295,56 @@ const HOME_FEED_SCRAPE_CONFIG = {
 } as const;
 
 /**
- * Best-effort author extraction from a home-feed row's body text. The home
- * feed DOM obfuscates the actor classes, so the selector often misses and the
- * only reliable place the author name appears is the row's body text. This is
- * inherently heuristic — the feed can't use network capture, so there is no
- * structured author field to read.
+ * Best-effort author extraction from a home-feed row's body text. Social
+ * context such as "X likes this" appears before the post author, and stacked
+ * context can contain more than one banner. The author follows the last one.
  */
-export function parseHomeFeedAuthor(body: string): string {
-  if (!body) return "";
-  let text = body.replace(/^feed post\s+/i, "").trim();
+const HOME_FEED_SOCIAL_CONTEXT_RE =
+  /\b(?:(?:likes?|loves?|celebrates?|supports?) this|finds? this (?:insightful|funny)|commented(?: on this)?|reposted this|recommended for you)\s*/gi;
 
-  // A repost surfaces the resharer first, then "reposted this", then the
-  // original poster whose content this actually is — take the original poster.
-  const repostIdx = text.toLowerCase().indexOf("reposted this");
-  if (repostIdx !== -1) {
-    text = text.slice(repostIdx + "reposted this".length).trim();
+function parseHomeFeedAuthorDetails(body: string): {
+  author: string;
+  hasSocialContext: boolean;
+} {
+  if (!body) return { author: "", hasSocialContext: false };
+  const text = body.replace(/^feed post\s+/i, "").trim();
+
+  // Limit banner matching to the row header so post content cannot be mistaken
+  // for social context.
+  const sepIdx = text.indexOf(" • ");
+  let header = (sepIdx === -1 ? text : text.slice(0, sepIdx)).trim();
+
+  let lastBannerEnd = -1;
+  for (const match of header.matchAll(HOME_FEED_SOCIAL_CONTEXT_RE)) {
+    lastBannerEnd = match.index + match[0].length;
+  }
+  const hasSocialContext = lastBannerEnd !== -1;
+  if (hasSocialContext) header = header.slice(lastBannerEnd).trim();
+
+  if (sepIdx === -1) {
+    // Expanded-post cards can use "<Name> Author <headline>" without a degree
+    // marker; "Author" is LinkedIn's literal badge text.
+    const badge = header.match(/^(.{1,60}?)\s+Author\b/);
+    return {
+      author: badge ? badge[1].trim() : "",
+      hasSocialContext,
+    };
   }
 
-  // The author is the leading name before the " • " connection-degree marker.
-  const sepIdx = text.indexOf(" • ");
-  if (sepIdx === -1) return "";
-  let name = text.slice(0, sepIdx).trim();
+  let name = header;
+  // A "<Name> Premium Profile <degree> <Name>" badge row repeats the name —
+  // keep only the leading one.
+  const premiumIdx = name.indexOf(" Premium Profile");
+  if (premiumIdx !== -1) name = name.slice(0, premiumIdx);
   // A repost segment puts a relative-time token (e.g. "17h") right after the
   // original poster's name and before the marker — strip it so we keep just
   // the name.
   name = name.replace(/\s+\d+\s*[smhdwy]o?$/i, "").trim();
-  return name.slice(0, 60);
+  return { author: name.slice(0, 60), hasSocialContext };
+}
+
+export function parseHomeFeedAuthor(body: string): string {
+  return parseHomeFeedAuthorDetails(body).author;
 }
 
 /**
@@ -352,12 +376,15 @@ export function buildHomeFeedEvents(
     if (!row?.id || !row.body || seen.has(row.id)) continue;
     if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
-    // The DOM actor span often includes the connection-degree marker
-    // ("Julien Hurault • 1st"); strip it the same way body-parse does. Fall
-    // back to parsing the name out of the post body when the selector misses.
+    const parsedAuthor = parseHomeFeedAuthorDetails(row.body);
+    const domAuthor = (row.author ?? "").trim().split(" • ")[0].trim();
+    // The first profile link can belong to the reacting member on
+    // social-context cards, so prefer the body author there. Otherwise the DOM
+    // field is more reliable than the heuristic body parser.
     const author =
-      (row.author ?? "").trim().split(" • ")[0].trim() ||
-      parseHomeFeedAuthor(row.body ?? "");
+      (parsedAuthor.hasSocialContext ? parsedAuthor.author : "") ||
+      domAuthor ||
+      parsedAuthor.author;
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,

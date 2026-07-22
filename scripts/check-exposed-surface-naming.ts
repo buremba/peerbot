@@ -192,7 +192,7 @@ function scanAgentFacingLiteralsAndSnakeKeys(
   // snake_case keys only — all-lowercase with optional underscores. This matches
   // MCP/JSON schema property names and deliberately skips camelCase internals
   // like actingWatcherId.
-  const keyRe = /\b([a-z][a-z0-9_]*watcher[a-z0-9_]*)\s*\??\s*:/g;
+  const keyRe = /\b([a-z0-9_]*watcher[a-z0-9_]*)\s*\??\s*:/g;
   for (const m of src.matchAll(keyRe)) {
     addViolation(violations, file, src, m.index + (m[0]!.indexOf(m[1]!) ?? 0));
   }

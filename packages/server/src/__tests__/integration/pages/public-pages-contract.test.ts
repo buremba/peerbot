@@ -95,12 +95,21 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
       organization_id: publicOrg.id,
       created_by: user.id,
     });
-    await createTestEntity({
+    const canvas = await createTestEntity({
       name: 'Behavior Canvas',
       entity_type: CANVAS_ENTITY_TYPE_SLUG,
       organization_id: publicOrg.id,
       parent_id: brand.id,
       created_by: user.id,
+    });
+    // Recent-content is org-wide: an event on a system entity would otherwise
+    // publish that entity's name and its internal payload.
+    await createTestEvent({
+      entity_id: canvas.id,
+      organization_id: publicOrg.id,
+      title: 'Canvas internal state',
+      content: 'CANVAS INTERNAL PAYLOAD',
+      connector_key: 'contract.canvas',
     });
   });
 
@@ -195,6 +204,13 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(workspaceBody).not.toContain(`"${MEMBER_ENTITY_TYPE_SLUG}"`);
     // Ordinary types still render — the filter must not be over-broad.
     expect(workspaceBody).toContain('"brand"');
+
+    // Recent knowledge must not carry a system entity's name or payload.
+    expect(workspaceBody).not.toContain('Behavior Canvas');
+    expect(workspaceBody).not.toContain('Canvas internal state');
+    expect(workspaceBody).not.toContain('CANVAS INTERNAL PAYLOAD');
+    // Ordinary recent content is still listed.
+    expect(workspaceBody).toContain('Brand launch feedback');
 
     // Entity page: a $canvas child must not appear in the child list.
     const entityBody = await (

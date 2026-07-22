@@ -8,6 +8,7 @@ import {
   listEntities,
   type RelationshipColumnSpec,
 } from './utils/entity-management';
+import { entityLinkMatchSql } from './utils/content-search';
 import { escapeHtml } from './utils/html';
 import { getConfiguredPublicOrigin } from './utils/public-origin';
 import { RESERVED_PATHS_SET } from './utils/reserved';
@@ -125,7 +126,10 @@ async function resolvePublicPath(
   ...args: Parameters<typeof resolvePath>
 ): Promise<ResolvePathResult> {
   const resolved = (await resolvePath(...args)) as ResolvePathResult & {
-    bootstrap?: { entity_types?: Array<{ slug?: string }> };
+    bootstrap?: {
+      entity_types?: Array<{ slug?: string }>;
+      recent_content?: Array<{ entity_ids?: number[] }>;
+    };
     children?: Array<{ entity_type?: string }>;
   };
   // The type list the workspace page renders and serializes.
@@ -139,6 +143,41 @@ async function resolvePublicPath(
     resolved.children = resolved.children.filter(
       (child) => !isSystemEntityTypeSlug(child?.entity_type)
     );
+  }
+  // Recent knowledge is org-wide and carries entity_name + payload text. An
+  // event attached to a system entity (e.g. a canvas_state on a $canvas) would
+  // otherwise publish that entity's name and internal content. `entity_ids` is
+  // empty for connector/identity-linked events, so resolve the link with the
+  // same predicate the read path uses rather than trusting that column.
+  const recent = resolved.bootstrap?.recent_content;
+  if (Array.isArray(recent) && recent.length > 0) {
+    const eventIds = recent
+      .map((item) => Number((item as { id?: unknown }).id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (eventIds.length > 0) {
+      // IDs are integer-validated above, so inlining them is safe and avoids the
+      // driver flattening a bigint[] bind parameter. Resolve the link the same
+      // way the read path does (entity_ids OR an identity-namespace stamp).
+      const systemRows = await getDb().unsafe<{ id: number }>(
+        `SELECT DISTINCT ev.id
+           FROM events ev
+           JOIN entities e
+             ON e.organization_id = ev.organization_id
+            AND e.deleted_at IS NULL
+           JOIN entity_types et
+             ON et.id = e.entity_type_id
+            AND et.slug LIKE '$%'
+          WHERE ev.id IN (${eventIds.join(',')})
+            AND ${entityLinkMatchSql('e.id', 'ev')}`,
+        []
+      );
+      const systemEventIds = new Set(systemRows.map((row) => Number(row.id)));
+      if (systemEventIds.size > 0) {
+        resolved.bootstrap.recent_content = recent.filter(
+          (item) => !systemEventIds.has(Number((item as { id?: unknown }).id))
+        );
+      }
+    }
   }
   return resolved;
 }

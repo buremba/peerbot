@@ -735,6 +735,24 @@ export async function handleCreateFromVersion(
   `;
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 
+  // Resolve the cloned sources against the org BEFORE the fan-out, same as
+  // `create` does. Validation is save-time only and never re-runs, so a version
+  // that was valid when authored can reference a table or entity type that has
+  // since been dropped; cloning it would mint N Behaviors that silently read
+  // nothing and stay "healthy" forever. Validate per entity — the sources are
+  // shared, but `{{entityId}}` resolves per assignment, so a source valid for
+  // one target is not automatically valid for another. Outside the transaction:
+  // a 422 here must not roll back a partial fan-out, it must prevent one.
+  const clonedSources = (version.version_sources ?? version.sources ?? []) as Array<{
+    name: string;
+    query: string;
+  }>;
+  if (clonedSources.length > 0) {
+    for (const entityId of entityIds) {
+      await assertWatcherSourcesResolve(sql, organizationId, clonedSources, [entityId]);
+    }
+  }
+
   const createdBy = ctx.userId ?? 'system';
   const created: Array<{
     behavior_id: string;
@@ -775,7 +793,7 @@ export async function handleCreateFromVersion(
           .replace(/[^a-z0-9-]/g, '-');
 
         const watcherId = await getNextNumericId(tx, 'watchers');
-        const sources = version.version_sources ?? version.sources ?? [];
+        const sources = clonedSources;
         // The new assignment shares the source's existing watcher_versions row
         // rather than getting its own duplicate copy. version_id (the arg) is
         // the row in watcher_versions we're cloning from; that becomes the

@@ -689,6 +689,32 @@ function nameMatches(name: string | undefined, patterns: RegExp[]): boolean {
 }
 
 /**
+ * Labels that would *submit* a comment/post. prepare_comment must never click
+ * these — only the human hits Post.
+ */
+export function isCommentSubmitLabel(name: string | undefined | null): boolean {
+  if (!name) return false;
+  const n = name.replace(/\s+/g, " ").trim();
+  if (/^(post|submit|send|publish|share)$/i.test(n)) return true;
+  if (/^(post|submit|send)\s+(comment|reply)$/i.test(n)) return true;
+  return false;
+}
+
+/** Labels that open the composer (not submit). */
+export function isCommentOpenLabel(name: string | undefined | null): boolean {
+  if (!name) return false;
+  if (isCommentSubmitLabel(name)) return false;
+  const n = name.replace(/\s+/g, " ").trim();
+  return (
+    /^comment$/i.test(n) ||
+    /^comments$/i.test(n) ||
+    /^comment on /i.test(n) ||
+    /^leave a comment/i.test(n) ||
+    /^post a comment/i.test(n)
+  );
+}
+
+/**
  * Prefer the social-action "Comment" control (not "Add a comment…" textbox,
  * not "Post" submit). Names vary by locale; English-first for the spike.
  */
@@ -696,12 +722,6 @@ export function pickCommentButtonRef(
   tree: A11yNode[],
   documentEpoch: number
 ): ElementRef | null {
-  const patterns = [
-    /^comment$/i,
-    /^comments$/i,
-    /^comment on /i,
-    /^leave a comment/i,
-  ];
   // Prefer explicit buttons over links/generics.
   const ranked = [...tree].sort((a, b) => {
     const score = (n: A11yNode) =>
@@ -709,9 +729,10 @@ export function pickCommentButtonRef(
     return score(a) - score(b);
   });
   for (const node of ranked) {
-    if (!nameMatches(node.name, patterns)) continue;
+    if (!isCommentOpenLabel(node.name)) continue;
     // Skip textboxes that happen to have "comment" in the name.
     if (node.role === "textbox" || node.tag === "textarea") continue;
+    if (isCommentSubmitLabel(node.name)) continue;
     return { document_epoch: documentEpoch, ref_id: node.ref_id };
   }
   return null;
@@ -755,27 +776,6 @@ export function pickCommentTextboxRef(
       document_epoch: documentEpoch,
       ref_id: emptyTextboxes[0]!.ref_id,
     };
-  }
-  return null;
-}
-
-/**
- * Never match the submit control — prepare_comment must not click these.
- * Used only as a guard if we ever expand auto-click behavior.
- */
-export function pickCommentSubmitRef(
-  tree: A11yNode[],
-  documentEpoch: number
-): ElementRef | null {
-  const patterns = [/^post$/i, /^comment$/i, /^submit$/i, /^send$/i];
-  for (const node of tree) {
-    if (node.role !== "button" && node.tag !== "button") continue;
-    if (!nameMatches(node.name, patterns)) continue;
-    // "Comment" social action is not the submit once the composer is open;
-    // submit is usually "Post" in English. Keep this helper for tests.
-    if (/^post$/i.test(node.name?.trim() ?? "")) {
-      return { document_epoch: documentEpoch, ref_id: node.ref_id };
-    }
   }
   return null;
 }
@@ -1002,6 +1002,25 @@ export function buildFillCommentExpression(body: string): string {
     return null;
   }
 
+  // SAFETY: never click submit controls. Only the human posts.
+  function isSubmitLabel(label) {
+    const n = String(label || '').replace(/\\s+/g, ' ').trim();
+    if (/^(post|submit|send|publish|share)$/i.test(n)) return true;
+    if (/^(post|submit|send)\\s+(comment|reply)$/i.test(n)) return true;
+    return false;
+  }
+  function isOpenLabel(label) {
+    if (isSubmitLabel(label)) return false;
+    const n = String(label || '').replace(/\\s+/g, ' ').trim();
+    return (
+      /^comment$/i.test(n) ||
+      /^comments$/i.test(n) ||
+      /^comment on /i.test(n) ||
+      /^leave a comment/i.test(n) ||
+      /^post a comment/i.test(n)
+    );
+  }
+
   function openComposer() {
     if (findComposer()) return true;
     const nodes = Array.from(
@@ -1017,16 +1036,8 @@ export function buildFillCommentExpression(body: string): string {
       )
         .replace(/\\s+/g, ' ')
         .trim();
-      if (/^comment$/i.test(label) || /^comments$/i.test(label) || /^comment on /i.test(label)) {
-        el.click();
-        return true;
-      }
-    }
-    // Social-actions bar: button with "Comment" span.
-    for (const el of nodes) {
-      if (!visible(el)) continue;
-      const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-      if (/^comment$/i.test(t)) {
+      if (isSubmitLabel(label)) continue;
+      if (isOpenLabel(label)) {
         el.click();
         return true;
       }
@@ -1053,7 +1064,7 @@ export function buildFillCommentExpression(body: string): string {
   } catch (_) {
     composer.textContent = '';
   }
-  // insertText fires beforeinput/input on most contenteditables (Quill-friendly).
+  // insertText only — never Enter / Cmd+Enter (those can submit on LinkedIn).
   const inserted = document.execCommand('insertText', false, text);
   if (!inserted) {
     composer.textContent = text;
@@ -1061,20 +1072,27 @@ export function buildFillCommentExpression(body: string): string {
   }
   await sleep(100);
   const got = (composer.innerText || composer.textContent || '').trim();
-  // Scroll composer into view so the human sees the draft.
+  // Scroll composer into view so the human sees the draft. Do NOT click Post.
   try { composer.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
   return {
     ok: got.length > 0,
     reason: got.length > 0 ? 'typed' : 'empty_after_type',
     preview: got.slice(0, 120),
     used_insert_text: !!inserted,
+    submitted: false,
   };
 })()`;
 }
 
 /**
  * Stage a LinkedIn comment in the paired Chrome: navigate → fill composer →
- * focus → notify. Never clicks Post/Submit.
+ * focus → notify.
+ *
+ * HARD RULE — never auto-post:
+ *  - never click Post / Submit / Send
+ *  - never press Enter / Cmd+Enter after typing
+ *  - only open the composer (Comment) + type draft text
+ * The human must click Post themselves.
  */
 export async function prepareLinkedInComment(
   dispatcher: ChromeActionDispatcher,
@@ -1104,7 +1122,25 @@ export async function prepareLinkedInComment(
   const banner = opts.banner !== false;
   const reasonPreview = truncateHandoffReason(opts.reason);
 
-  const nav = await dispatcher.dispatch<{
+  // Refuse accidental submit clicks through the chrome dispatcher.
+  const safeDispatch: ChromeActionDispatcher = {
+    dispatch: async (action_key, action_input) => {
+      if (action_key === "click_ref") {
+        if (action_input.allowed_click !== "comment_open") {
+          throw new Error(
+            "prepare_comment: blocked click_ref — only comment-open is allowed (never Post/submit)"
+          );
+        }
+      }
+      const { allowed_click: _allowed, ...input } = action_input as Record<
+        string,
+        unknown
+      > & { allowed_click?: string };
+      return dispatcher.dispatch(action_key, input);
+    },
+  };
+
+  const nav = await safeDispatch.dispatch<{
     tab_id?: number;
     current_url?: string;
     title?: string;
@@ -1126,7 +1162,7 @@ export async function prepareLinkedInComment(
 
   // Give the post chrome a beat to hydrate the social-action bar.
   try {
-    await dispatcher.dispatch("wait_for_selector", {
+    await safeDispatch.dispatch("wait_for_selector", {
       tab_id: tabId,
       selector:
         'button, [role="button"], .feed-shared-social-action-bar, .comments-comment-box',
@@ -1145,11 +1181,12 @@ export async function prepareLinkedInComment(
   // (contenteditable/ql-editor selectors + insertText) is the primary path.
   // type_ref remains a secondary attempt when the tree does surface a textbox.
   {
-    const evalOut = await dispatcher.dispatch<{
+    const evalOut = await safeDispatch.dispatch<{
       value?: {
         ok?: boolean;
         reason?: string;
         preview?: string;
+        submitted?: boolean;
       };
       exception?: string;
     }>("evaluate", {
@@ -1162,6 +1199,11 @@ export async function prepareLinkedInComment(
       throw new Error(`prepare_comment: evaluate failed: ${evalOut.exception}`);
     }
     const value = evalOut.value;
+    if (value?.submitted === true) {
+      throw new Error(
+        "prepare_comment: fill expression reported submitted=true — aborting (must never auto-post)"
+      );
+    }
     if (value?.ok) {
       method = "evaluate";
       typed = true;
@@ -1169,9 +1211,10 @@ export async function prepareLinkedInComment(
   }
 
   // Path B: a11y type_ref when evaluate missed the composer.
+  // Only click "Comment" open controls; never Post/submit.
   if (!typed) {
     try {
-      let snap = await snapshotTree(dispatcher, tabId);
+      let snap = await snapshotTree(safeDispatch, tabId);
       if (isLinkedInAuthWall(snap.current_url)) {
         throw new Error(
           `Not logged into LinkedIn (landed on ${snap.current_url}). Sign in in the paired Chrome profile, then retry.`
@@ -1182,18 +1225,25 @@ export async function prepareLinkedInComment(
       if (!textbox) {
         const commentBtn = pickCommentButtonRef(snap.tree, snap.document_epoch);
         if (commentBtn) {
-          await dispatcher.dispatch("click_ref", {
+          const btnNode = snap.tree.find((n) => n.ref_id === commentBtn.ref_id);
+          if (btnNode && isCommentSubmitLabel(btnNode.name)) {
+            throw new Error(
+              "prepare_comment: refused to click submit-labelled control"
+            );
+          }
+          await safeDispatch.dispatch("click_ref", {
             tab_id: tabId,
             ref: commentBtn,
+            allowed_click: "comment_open",
             ...chromeOriginsInput(),
           });
-          snap = await snapshotTree(dispatcher, tabId);
+          snap = await snapshotTree(safeDispatch, tabId);
           textbox = pickCommentTextboxRef(snap.tree, snap.document_epoch);
         }
       }
 
       if (textbox) {
-        await dispatcher.dispatch("type_ref", {
+        await safeDispatch.dispatch("type_ref", {
           tab_id: tabId,
           ref: textbox,
           text: body,
@@ -1206,7 +1256,9 @@ export async function prepareLinkedInComment(
     } catch (err) {
       if (
         err instanceof Error &&
-        err.message.includes("Not logged into LinkedIn")
+        (err.message.includes("Not logged into LinkedIn") ||
+          err.message.includes("refused to click") ||
+          err.message.includes("blocked click_ref"))
       ) {
         throw err;
       }
@@ -1222,7 +1274,7 @@ export async function prepareLinkedInComment(
   let bannerShown = false;
   if (banner) {
     try {
-      const bannerOut = await dispatcher.dispatch<{
+      const bannerOut = await safeDispatch.dispatch<{
         value?: { ok?: boolean; anchored?: boolean };
         exception?: string;
       }>("evaluate", {
@@ -1241,11 +1293,9 @@ export async function prepareLinkedInComment(
 
   if (focus) {
     try {
-      await dispatcher.dispatch("focus_tab", {
+      await safeDispatch.dispatch("focus_tab", {
         tab_id: tabId,
         draw_attention: true,
-        // Open Owletto sidepanel so Memory can show this parent run (holder_run_id
-        // is stamped on the tab by chrome navigate).
         open_sidepanel: true,
         ...chromeOriginsInput(),
       });
@@ -1259,7 +1309,7 @@ export async function prepareLinkedInComment(
       const notifyMsg = reasonPreview
         ? `Draft ready — ${reasonPreview}`
         : "Draft is in the comment box — review and click Post yourself. Lobu did not submit.";
-      await dispatcher.dispatch("show_notification", {
+      await safeDispatch.dispatch("show_notification", {
         title: "LinkedIn comment ready",
         message: notifyMsg.slice(0, 240),
         tab_id: tabId,
@@ -1726,7 +1776,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         key: "prepare_comment",
         name: "Prepare comment",
         description:
-          "Open a LinkedIn post in the paired Chrome browser, fill the comment box with a draft, focus the tab, and stop. The human must click Post — this action never submits.",
+          "Stage a comment draft on LinkedIn in the paired Chrome browser (open post, fill composer, banner). NEVER submits — the human must click Post. No auto-post path exists.",
         requiresApproval: true,
         kind: "write",
         annotations: {

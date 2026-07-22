@@ -21,7 +21,8 @@ let normalizeLinkedInPostUrl: any;
 let isLinkedInAuthWall: any;
 let pickCommentButtonRef: any;
 let pickCommentTextboxRef: any;
-let pickCommentSubmitRef: any;
+let isCommentSubmitLabel: any;
+let isCommentOpenLabel: any;
 let prepareLinkedInComment: any;
 let buildFillCommentExpression: any;
 let buildInjectHandoffBannerExpression: any;
@@ -39,7 +40,8 @@ beforeAll(async () => {
   isLinkedInAuthWall = mod.isLinkedInAuthWall;
   pickCommentButtonRef = mod.pickCommentButtonRef;
   pickCommentTextboxRef = mod.pickCommentTextboxRef;
-  pickCommentSubmitRef = mod.pickCommentSubmitRef;
+  isCommentSubmitLabel = mod.isCommentSubmitLabel;
+  isCommentOpenLabel = mod.isCommentOpenLabel;
   prepareLinkedInComment = mod.prepareLinkedInComment;
   buildFillCommentExpression = mod.buildFillCommentExpression;
   buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
@@ -1185,7 +1187,18 @@ describe("prepare_comment helpers", () => {
     ).toBe(false);
   });
 
-  test("pickComment*Ref finds composer controls and Post submit", () => {
+  test("submit labels are never treated as open-composer controls", () => {
+    expect(isCommentSubmitLabel("Post")).toBe(true);
+    expect(isCommentSubmitLabel("Submit")).toBe(true);
+    expect(isCommentSubmitLabel("Send")).toBe(true);
+    expect(isCommentSubmitLabel("Post comment")).toBe(true);
+    expect(isCommentSubmitLabel("Comment")).toBe(false);
+    expect(isCommentOpenLabel("Comment")).toBe(true);
+    expect(isCommentOpenLabel("Post")).toBe(false);
+    expect(isCommentOpenLabel("Post a comment")).toBe(true);
+  });
+
+  test("pickComment*Ref finds composer controls without selecting Post", () => {
     const tree = [
       { ref_id: 1, role: "button", name: "Like", tag: "button" },
       { ref_id: 2, role: "button", name: "Comment", tag: "button" },
@@ -1201,18 +1214,16 @@ describe("prepare_comment helpers", () => {
       document_epoch: 7,
       ref_id: 4,
     });
-    expect(pickCommentSubmitRef(tree, 7)).toEqual({
-      document_epoch: 7,
-      ref_id: 5,
-    });
+    expect(pickCommentButtonRef(tree, 7)?.ref_id).not.toBe(5);
   });
 
   test("buildFillCommentExpression embeds body safely and never auto-submits", () => {
     const expr = buildFillCommentExpression('hello "world"\nline2');
     expect(expr).toContain('hello \\"world\\"');
     expect(expr).toContain("insertText");
-    expect(expr).not.toMatch(/\.click\(\).*Post/i);
-    // Composer open may click "Comment", but expression must not target Post submit.
+    expect(expr).toContain("isSubmitLabel");
+    expect(expr).toContain("submitted: false");
+    expect(expr).not.toMatch(/dispatchKeyEvent|key:\s*['\"]Enter['\"]|Meta\+Enter/i);
     expect(expr).toContain("composer_not_found");
   });
 
@@ -1236,13 +1247,15 @@ describe("prepare_comment helpers", () => {
     expect(expr).not.toMatch(/click\(\)\s*;[\s\S]*Post|Post[\s\S]*\.click\(/);
   });
 
-  test("definition declares prepare_comment write action", () => {
+  test("definition declares prepare_comment write action with human gate", () => {
     const c = new LinkedInConnector();
     const action = c.definition.actions?.prepare_comment;
     expect(action?.key).toBe("prepare_comment");
     expect(action?.requiresApproval).toBe(true);
     expect(action?.kind).toBe("write");
+    expect(action?.annotations?.destructiveHint).toBe(false);
     expect(c.definition.version).toBe("3.2.0");
+    expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
 
   test("prepareLinkedInComment stages via evaluate (primary) and never clicks Post", async () => {

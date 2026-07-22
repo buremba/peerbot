@@ -522,6 +522,11 @@ export async function handleCompleteWindow(
       );
     }
 
+    // The content this window_token actually granted. Both promotion (8.5) and
+    // classification (9) validate agent-supplied content references against it,
+    // so it is defined once here rather than per-consumer.
+    const validContentIds = new Set(batchContentIds);
+
     // ============================================
     // STEP 8.5: Promote keyed rows into child entities (P2 phase 1)
     // computeStableKeys (STEP 2.6) stamped a deterministic stable key onto each
@@ -542,6 +547,7 @@ export async function handleCompleteWindow(
         windowId,
         parentEntityId,
         createdBy: watcherCreatedBy,
+        validContentIds,
       });
       // Owned-field changes and policy-held creates the watcher couldn't apply —
       // flush each AFTER the window transaction commits (approvals must not ride
@@ -585,7 +591,6 @@ export async function handleCompleteWindow(
     // STEP 9: Process classifications
     // If this fails (e.g., embeddings service down), the transaction rolls back
     // ============================================
-    const validContentIds = new Set(batchContentIds);
     await processWatcherClassifications(
       tx,
       watcherId,

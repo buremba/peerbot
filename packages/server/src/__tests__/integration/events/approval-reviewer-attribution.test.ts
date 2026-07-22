@@ -32,7 +32,8 @@ async function insertActionRun(organizationId: string): Promise<number> {
 
 async function insertPendingApprovalEvent(
   organizationId: string,
-  runId: number
+  runId: number,
+  extraMetadata: Record<string, unknown> = {}
 ): Promise<number> {
   const inserted = await insertEvent({
     entityIds: [],
@@ -45,7 +46,7 @@ async function insertPendingApprovalEvent(
     runId,
     interactionType: 'approval',
     interactionStatus: 'pending',
-    metadata: { status: 'pending_approval' },
+    metadata: { status: 'pending_approval', ...extraMetadata },
   });
   return Number(inserted.id);
 }
@@ -92,6 +93,53 @@ describe('approval reviewer attribution', () => {
     expect(approved.created_by).toBe(reviewer.id);
     expect(approved.metadata.reviewed_by_id).toBe(reviewer.id);
     expect(approved.metadata.reviewed_by_name).toBe('Ada Approver');
+  });
+
+  // Superseding spreads the prior row's metadata forward. A durable approval
+  // written before the Behaviors rename (#2034) therefore keeps minting NEW
+  // rows tagged `resourceKind: "watcher"` every time it is resolved — so the
+  // legacy set is open, not closed, and no one-shot backfill can drain it.
+  // The SPA matches `resourceKind === "behavior"` with no fallback, so such a
+  // row renders no approval card. Canonicalizing on write closes the source.
+  it('canonicalizes a legacy watcher resourceKind when superseding', async () => {
+    const org = await createTestOrganization();
+    const reviewer = await createTestUser({ name: 'Ada Approver' });
+    const runId = await insertActionRun(org.id);
+    await insertPendingApprovalEvent(org.id, runId, {
+      resourceKind: 'watcher',
+    });
+
+    const approvedId = await supersedeActionEvent(
+      runId,
+      org.id,
+      'confirmed',
+      'behavior — executing',
+      'Operation confirmed',
+      {},
+      { userId: reviewer.id, name: reviewer.name }
+    );
+
+    const approved = await metadataFor(approvedId!);
+    expect(approved.metadata.resourceKind).toBe('behavior');
+  });
+
+  it('leaves a non-legacy resourceKind untouched when superseding', async () => {
+    const org = await createTestOrganization();
+    const runId = await insertActionRun(org.id);
+    await insertPendingApprovalEvent(org.id, runId, {
+      resourceKind: 'entity',
+    });
+
+    const approvedId = await supersedeActionEvent(
+      runId,
+      org.id,
+      'confirmed',
+      'entity — executing',
+      'Operation confirmed'
+    );
+
+    const approved = await metadataFor(approvedId!);
+    expect(approved.metadata.resourceKind).toBe('entity');
   });
 
   it('records the reviewer + reason on a reject transition', async () => {

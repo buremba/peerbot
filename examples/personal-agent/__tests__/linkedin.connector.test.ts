@@ -17,6 +17,13 @@ let parseCompanyUpdates: any;
 let normalizeLinkedInSlug: any;
 let normalizeLinkedInMemberId: any;
 let LINKEDIN_IDENTITY: any;
+let normalizeLinkedInPostUrl: any;
+let isLinkedInAuthWall: any;
+let pickCommentButtonRef: any;
+let pickCommentTextboxRef: any;
+let pickCommentSubmitRef: any;
+let prepareLinkedInComment: any;
+let buildFillCommentExpression: any;
 
 beforeAll(async () => {
   const mod = await import("../linkedin.connector");
@@ -26,6 +33,13 @@ beforeAll(async () => {
   isHomeFeedNoise = mod.isHomeFeedNoise;
   filterPostsSinceCheckpoint = mod.filterPostsSinceCheckpoint;
   parseCompanyUpdates = mod.parseCompanyUpdates;
+  normalizeLinkedInPostUrl = mod.normalizeLinkedInPostUrl;
+  isLinkedInAuthWall = mod.isLinkedInAuthWall;
+  pickCommentButtonRef = mod.pickCommentButtonRef;
+  pickCommentTextboxRef = mod.pickCommentTextboxRef;
+  pickCommentSubmitRef = mod.pickCommentSubmitRef;
+  prepareLinkedInComment = mod.prepareLinkedInComment;
+  buildFillCommentExpression = mod.buildFillCommentExpression;
   const identityMod = await import("../linkedin-identity");
   normalizeLinkedInSlug = identityMod.normalizeLinkedInSlug;
   normalizeLinkedInMemberId = identityMod.normalizeLinkedInMemberId;
@@ -1132,3 +1146,248 @@ describe("LinkedInConnector live post author identity (member id)", () => {
 function resolvePath(obj: any, dotPath: string): unknown {
   return dotPath.split(".").reduce((acc, key) => acc?.[key], obj);
 }
+
+describe("prepare_comment helpers", () => {
+  test("normalizeLinkedInPostUrl accepts urls, urns, and bare ids", () => {
+    expect(normalizeLinkedInPostUrl("7312345678901234567")).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(normalizeLinkedInPostUrl("li_post_7312345678901234567")).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(normalizeLinkedInPostUrl("urn:li:activity:7312345678901234567")).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(
+      normalizeLinkedInPostUrl(
+        "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567/"
+      )
+    ).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567"
+    );
+    expect(normalizeLinkedInPostUrl("https://evil.example/x")).toBeNull();
+    expect(normalizeLinkedInPostUrl("")).toBeNull();
+  });
+
+  test("isLinkedInAuthWall detects login walls", () => {
+    expect(isLinkedInAuthWall("https://www.linkedin.com/login")).toBe(true);
+    expect(isLinkedInAuthWall("https://www.linkedin.com/authwall")).toBe(true);
+    expect(
+      isLinkedInAuthWall(
+        "https://www.linkedin.com/feed/update/urn:li:activity:1"
+      )
+    ).toBe(false);
+  });
+
+  test("pickComment*Ref finds composer controls and Post submit", () => {
+    const tree = [
+      { ref_id: 1, role: "button", name: "Like", tag: "button" },
+      { ref_id: 2, role: "button", name: "Comment", tag: "button" },
+      { ref_id: 3, role: "button", name: "Repost", tag: "button" },
+      { ref_id: 4, role: "textbox", name: "Add a comment…", tag: "div" },
+      { ref_id: 5, role: "button", name: "Post", tag: "button" },
+    ];
+    expect(pickCommentButtonRef(tree, 7)).toEqual({
+      document_epoch: 7,
+      ref_id: 2,
+    });
+    expect(pickCommentTextboxRef(tree, 7)).toEqual({
+      document_epoch: 7,
+      ref_id: 4,
+    });
+    expect(pickCommentSubmitRef(tree, 7)).toEqual({
+      document_epoch: 7,
+      ref_id: 5,
+    });
+  });
+
+  test("buildFillCommentExpression embeds body safely and never auto-submits", () => {
+    const expr = buildFillCommentExpression('hello "world"\nline2');
+    expect(expr).toContain("hello \\\"world\\\"");
+    expect(expr).toContain("insertText");
+    expect(expr).not.toMatch(/\.click\(\).*Post/i);
+    // Composer open may click "Comment", but expression must not target Post submit.
+    expect(expr).toContain("composer_not_found");
+  });
+
+  test("definition declares prepare_comment write action", () => {
+    const c = new LinkedInConnector();
+    const action = c.definition.actions?.prepare_comment;
+    expect(action?.key).toBe("prepare_comment");
+    expect(action?.requiresApproval).toBe(true);
+    expect(action?.kind).toBe("write");
+    expect(c.definition.version).toBe("3.2.0");
+  });
+
+  test("prepareLinkedInComment stages via evaluate (primary) and never clicks Post", async () => {
+    const log: Array<{ key: string; input: Record<string, unknown> }> = [];
+    const dispatcher = {
+      dispatch: async (key: string, input: Record<string, unknown>) => {
+        log.push({ key, input });
+        if (key === "navigate") {
+          return {
+            tab_id: 42,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+            title: "Post",
+          };
+        }
+        if (key === "wait_for_selector") return { found: true };
+        if (key === "evaluate") {
+          expect(String(input.expression)).toContain(
+            "Great insight — thanks for sharing."
+          );
+          return {
+            value: {
+              ok: true,
+              reason: "typed",
+              preview: "Great insight — thanks for sharing.",
+            },
+          };
+        }
+        if (key === "focus_tab") return { focused: true, tab_id: 42 };
+        if (key === "show_notification") return { shown: true };
+        throw new Error(`unexpected dispatch ${key}`);
+      },
+    };
+
+    const result = await prepareLinkedInComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "Great insight — thanks for sharing.",
+    });
+
+    expect(result).toMatchObject({
+      prepared: true,
+      tab_id: 42,
+      method: "evaluate",
+      body: "Great insight — thanks for sharing.",
+    });
+    expect(result.post_url).toContain("activity:7312345678901234567");
+
+    const keys = log.map((e) => e.key);
+    expect(keys).toEqual([
+      "navigate",
+      "wait_for_selector",
+      "evaluate",
+      "focus_tab",
+      "show_notification",
+    ]);
+    // Never click Post (no click_ref at all on the happy path).
+    expect(keys).not.toContain("click_ref");
+    expect(keys).not.toContain("type_ref");
+  });
+
+  test("prepareLinkedInComment falls back to type_ref when evaluate misses", async () => {
+    const log: string[] = [];
+    const dispatcher = {
+      dispatch: async (key: string, input: Record<string, unknown>) => {
+        log.push(key);
+        if (key === "navigate") {
+          return {
+            tab_id: 9,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:99",
+          };
+        }
+        if (key === "wait_for_selector") return {};
+        if (key === "evaluate") {
+          return { value: { ok: false, reason: "composer_not_found" } };
+        }
+        if (key === "get_accessibility_tree") {
+          return {
+            document_epoch: 1,
+            tree: [
+              { ref_id: 1, role: "button", name: "Comment", tag: "button" },
+              {
+                ref_id: 2,
+                role: "textbox",
+                name: "Add a comment…",
+                tag: "div",
+              },
+              { ref_id: 3, role: "button", name: "Post", tag: "button" },
+            ],
+          };
+        }
+        if (key === "type_ref") {
+          expect((input.ref as { ref_id: number }).ref_id).toBe(2);
+          expect(input.text).toBe("hi");
+          return {};
+        }
+        if (key === "focus_tab" || key === "show_notification") return {};
+        throw new Error(`unexpected ${key} ${JSON.stringify(input)}`);
+      },
+    };
+
+    const result = await prepareLinkedInComment(dispatcher, {
+      postUrl: "https://www.linkedin.com/feed/update/urn:li:activity:99",
+      body: "hi",
+      notify: false,
+    });
+    expect(result.method).toBe("type_ref");
+    expect(result.prepared).toBe(true);
+    expect(log).toContain("evaluate");
+    expect(log).toContain("type_ref");
+    expect(log).not.toContain("show_notification");
+    // Must not click the Post submit control.
+    expect(log).not.toContain("click_ref");
+  });
+
+  test("prepareLinkedInComment fails closed on auth wall", async () => {
+    const dispatcher = {
+      dispatch: async (key: string) => {
+        if (key === "navigate") {
+          return {
+            tab_id: 1,
+            current_url: "https://www.linkedin.com/login",
+          };
+        }
+        throw new Error(`unexpected ${key}`);
+      },
+    };
+    await expect(
+      prepareLinkedInComment(dispatcher, {
+        postUrl: "1234567890123",
+        body: "x",
+      })
+    ).rejects.toThrow(/Not logged into LinkedIn/);
+  });
+
+  test("execute prepare_comment returns success output via dispatcher", async () => {
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "prepare_comment",
+      input: {
+        activity_id: "7312345678901234567",
+        body: "Nice post",
+        notify: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async (key: string) => {
+            if (key === "navigate") {
+              return {
+                tab_id: 5,
+                current_url:
+                  "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+              };
+            }
+            if (key === "wait_for_selector") return {};
+            if (key === "evaluate") {
+              return {
+                value: { ok: true, reason: "typed", preview: "Nice post" },
+              };
+            }
+            if (key === "focus_tab") return {};
+            return {};
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.prepared).toBe(true);
+    expect(result.output?.tab_id).toBe(5);
+    expect(result.output?.method).toBe("evaluate");
+  });
+});

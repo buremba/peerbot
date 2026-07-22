@@ -20,9 +20,15 @@
  * Folding both into ONE connector (key "linkedin") means a single connection
  * dedups all people on the shared `linkedin_slug`/`email` identity: a person met
  * live and a person in the CSV export collapse to the same entity.
+ *
+ * Write handoff (spike): `prepare_comment` opens a post in the paired Chrome,
+ * fills the comment composer, focuses the tab, and stops. The human clicks
+ * Post themselves — Lobu never submits the comment.
  */
 
 import {
+  type ActionContext,
+  type ActionResult,
   type ChromeActionDispatcher,
   type ConnectorDefinition,
   ConnectorRuntime,
@@ -585,6 +591,524 @@ function requireExtensionDispatcher(ctx: {
   return handle;
 }
 
+// ── prepare_comment handoff (browser stage, human submits) ───────────
+
+/** Interactive a11y node from chrome `get_accessibility_tree`. */
+export type A11yNode = {
+  ref_id: number;
+  role?: string;
+  name?: string;
+  tag?: string;
+  href?: string;
+};
+
+export type ElementRef = {
+  document_epoch: number;
+  ref_id: number;
+};
+
+export type PrepareCommentResult = {
+  prepared: boolean;
+  tab_id: number;
+  post_url: string;
+  body: string;
+  /** How the composer was filled: a11y type_ref vs evaluate fallback. */
+  method: "type_ref" | "evaluate";
+  message: string;
+};
+
+/**
+ * Normalize a post URL or activity id into a linkedin.com update URL.
+ * Accepts full URLs, `urn:li:activity:…`, bare activity digits, or
+ * `/feed/update/…` paths.
+ */
+export function normalizeLinkedInPostUrl(input: string): string | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  // Bare activity id (digits only, possibly with li_post_ prefix from events).
+  const bareId = raw.replace(/^li_post_/, "");
+  if (/^\d{6,}$/.test(bareId)) {
+    return `https://www.linkedin.com/feed/update/urn:li:activity:${bareId}`;
+  }
+
+  // urn:li:activity:123 or activity:123
+  const urnMatch = raw.match(/(?:urn:li:)?activity:(\d{6,})/i);
+  if (urnMatch && !raw.includes("://") && !raw.startsWith("/")) {
+    return `https://www.linkedin.com/feed/update/urn:li:activity:${urnMatch[1]}`;
+  }
+
+  try {
+    const withScheme = raw.startsWith("//")
+      ? `https:${raw}`
+      : raw.startsWith("/")
+        ? `https://www.linkedin.com${raw}`
+        : raw.includes("://")
+          ? raw
+          : `https://${raw}`;
+    const u = new URL(withScheme);
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    if (host !== "linkedin.com" && !host.endsWith(".linkedin.com")) {
+      return null;
+    }
+    // Prefer canonical feed/update URLs when we can extract an activity id.
+    const fromPath = u.pathname.match(/activity[:%3A](\d{6,})/i);
+    const fromQuery = u.search.match(/activity[:%3A-]?(\d{6,})/i);
+    const activityId = fromPath?.[1] ?? fromQuery?.[1];
+    if (activityId) {
+      return `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}`;
+    }
+    // Keep posts/… and other linkedin URLs as-is (strip hash only).
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** True when navigate landed on login / authwall rather than the post. */
+export function isLinkedInAuthWall(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes("/login") ||
+    lower.includes("/authwall") ||
+    lower.includes("/checkpoint") ||
+    lower.includes("uas/login")
+  );
+}
+
+function nameMatches(name: string | undefined, patterns: RegExp[]): boolean {
+  if (!name) return false;
+  const n = name.trim();
+  return patterns.some((re) => re.test(n));
+}
+
+/**
+ * Prefer the social-action "Comment" control (not "Add a comment…" textbox,
+ * not "Post" submit). Names vary by locale; English-first for the spike.
+ */
+export function pickCommentButtonRef(
+  tree: A11yNode[],
+  documentEpoch: number
+): ElementRef | null {
+  const patterns = [
+    /^comment$/i,
+    /^comments$/i,
+    /^comment on /i,
+    /^leave a comment/i,
+  ];
+  // Prefer explicit buttons over links/generics.
+  const ranked = [...tree].sort((a, b) => {
+    const score = (n: A11yNode) =>
+      n.role === "button" || n.tag === "button" ? 0 : 1;
+    return score(a) - score(b);
+  });
+  for (const node of ranked) {
+    if (!nameMatches(node.name, patterns)) continue;
+    // Skip textboxes that happen to have "comment" in the name.
+    if (node.role === "textbox" || node.tag === "textarea") continue;
+    return { document_epoch: documentEpoch, ref_id: node.ref_id };
+  }
+  return null;
+}
+
+/**
+ * Find the comment composer textbox. LinkedIn uses contenteditable/Quill
+ * editors that surface as role=textbox with names like "Add a comment…".
+ */
+export function pickCommentTextboxRef(
+  tree: A11yNode[],
+  documentEpoch: number
+): ElementRef | null {
+  const goodName = [
+    /add a comment/i,
+    /write a comment/i,
+    /leave a comment/i,
+    /^comment$/i,
+    /text editor/i,
+  ];
+  const candidates = tree.filter(
+    (n) =>
+      n.role === "textbox" ||
+      n.tag === "textarea" ||
+      n.tag === "div" // contenteditable often role=textbox; keep div as weak fallthrough
+  );
+  for (const node of candidates) {
+    if (node.role === "textbox" && nameMatches(node.name, goodName)) {
+      return { document_epoch: documentEpoch, ref_id: node.ref_id };
+    }
+  }
+  // Any textbox whose name mentions comment.
+  for (const node of candidates) {
+    if (
+      node.role === "textbox" &&
+      node.name &&
+      /comment/i.test(node.name)
+    ) {
+      return { document_epoch: documentEpoch, ref_id: node.ref_id };
+    }
+  }
+  // Last resort: empty-named textboxes are common once the composer is open.
+  const emptyTextboxes = candidates.filter(
+    (n) => n.role === "textbox" && (!n.name || !n.name.trim())
+  );
+  if (emptyTextboxes.length === 1) {
+    return {
+      document_epoch: documentEpoch,
+      ref_id: emptyTextboxes[0]!.ref_id,
+    };
+  }
+  return null;
+}
+
+/**
+ * Never match the submit control — prepare_comment must not click these.
+ * Used only as a guard if we ever expand auto-click behavior.
+ */
+export function pickCommentSubmitRef(
+  tree: A11yNode[],
+  documentEpoch: number
+): ElementRef | null {
+  const patterns = [/^post$/i, /^comment$/i, /^submit$/i, /^send$/i];
+  for (const node of tree) {
+    if (node.role !== "button" && node.tag !== "button") continue;
+    if (!nameMatches(node.name, patterns)) continue;
+    // "Comment" social action is not the submit once the composer is open;
+    // submit is usually "Post" in English. Keep this helper for tests.
+    if (/^post$/i.test(node.name?.trim() ?? "")) {
+      return { document_epoch: documentEpoch, ref_id: node.ref_id };
+    }
+  }
+  return null;
+}
+
+function chromeOriginsInput(): { allowed_origins: string[] } {
+  return { allowed_origins: LINKEDIN_ALLOWED_ORIGINS };
+}
+
+type TreeSnapshot = {
+  document_epoch: number;
+  tree: A11yNode[];
+  current_url?: string;
+};
+
+async function snapshotTree(
+  dispatcher: ChromeActionDispatcher,
+  tabId: number
+): Promise<TreeSnapshot> {
+  const out = await dispatcher.dispatch<TreeSnapshot & Record<string, unknown>>(
+    "get_accessibility_tree",
+    {
+      tab_id: tabId,
+      filter: "interactive",
+      ...chromeOriginsInput(),
+    }
+  );
+  const tree = Array.isArray(out.tree) ? (out.tree as A11yNode[]) : [];
+  const document_epoch =
+    typeof out.document_epoch === "number" ? out.document_epoch : 0;
+  return {
+    document_epoch,
+    tree,
+    current_url:
+      typeof out.current_url === "string" ? out.current_url : undefined,
+  };
+}
+
+/** JS expression: open the comment composer if collapsed, then fill it. */
+export function buildFillCommentExpression(body: string): string {
+  // JSON.stringify for safe embedding of the draft text.
+  const textLit = JSON.stringify(body);
+  return `(async()=>{
+  const text = ${textLit};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function visible(el) {
+    if (!el) return false;
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function findComposer() {
+    const selectors = [
+      '.comments-comment-box-comment__text-editor .ql-editor',
+      '.comments-comment-box__form .ql-editor',
+      'form.comments-comment-box__form div.ql-editor',
+      'div.comments-comment-texteditor .ql-editor',
+      'div.ql-editor[contenteditable="true"]',
+      'div[role="textbox"][contenteditable="true"]',
+      'div[contenteditable="true"][aria-label*="comment" i]',
+      'div[contenteditable="true"][data-placeholder*="comment" i]',
+    ];
+    for (const sel of selectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && visible(el)) return el;
+      } catch (_) {}
+    }
+    // Broader: any visible contenteditable textbox in a comments region.
+    const regions = document.querySelectorAll(
+      '.comments-comment-box, .feed-shared-update-v2__comments-container, [class*="comments-comment"]'
+    );
+    for (const region of regions) {
+      const el = region.querySelector('[contenteditable="true"]');
+      if (el && visible(el)) return el;
+    }
+    return null;
+  }
+
+  function openComposer() {
+    if (findComposer()) return true;
+    const nodes = Array.from(
+      document.querySelectorAll('button, [role="button"]')
+    );
+    for (const el of nodes) {
+      if (!visible(el)) continue;
+      const label = (
+        el.getAttribute('aria-label') ||
+        el.innerText ||
+        el.textContent ||
+        ''
+      )
+        .replace(/\\s+/g, ' ')
+        .trim();
+      if (/^comment$/i.test(label) || /^comments$/i.test(label) || /^comment on /i.test(label)) {
+        el.click();
+        return true;
+      }
+    }
+    // Social-actions bar: button with "Comment" span.
+    for (const el of nodes) {
+      if (!visible(el)) continue;
+      const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (/^comment$/i.test(t)) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  openComposer();
+  await sleep(600);
+  let composer = findComposer();
+  if (!composer) {
+    openComposer();
+    await sleep(800);
+    composer = findComposer();
+  }
+  if (!composer) {
+    return { ok: false, reason: 'composer_not_found' };
+  }
+
+  composer.focus();
+  try {
+    document.execCommand('selectAll', false, undefined);
+    document.execCommand('delete', false, undefined);
+  } catch (_) {
+    composer.textContent = '';
+  }
+  // insertText fires beforeinput/input on most contenteditables (Quill-friendly).
+  const inserted = document.execCommand('insertText', false, text);
+  if (!inserted) {
+    composer.textContent = text;
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+  }
+  await sleep(100);
+  const got = (composer.innerText || composer.textContent || '').trim();
+  // Scroll composer into view so the human sees the draft.
+  try { composer.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+  return {
+    ok: got.length > 0,
+    reason: got.length > 0 ? 'typed' : 'empty_after_type',
+    preview: got.slice(0, 120),
+    used_insert_text: !!inserted,
+  };
+})()`;
+}
+
+/**
+ * Stage a LinkedIn comment in the paired Chrome: navigate → fill composer →
+ * focus → notify. Never clicks Post/Submit.
+ */
+export async function prepareLinkedInComment(
+  dispatcher: ChromeActionDispatcher,
+  opts: {
+    postUrl: string;
+    body: string;
+    focus?: boolean;
+    notify?: boolean;
+  }
+): Promise<PrepareCommentResult> {
+  const body = opts.body.trim();
+  if (!body) {
+    throw new Error("prepare_comment: body must be non-empty");
+  }
+  const postUrl = normalizeLinkedInPostUrl(opts.postUrl);
+  if (!postUrl) {
+    throw new Error(
+      `prepare_comment: invalid post_url / activity_id: ${JSON.stringify(opts.postUrl)}`
+    );
+  }
+  const focus = opts.focus !== false;
+  const notify = opts.notify !== false;
+
+  const nav = await dispatcher.dispatch<{
+    tab_id?: number;
+    current_url?: string;
+    title?: string;
+  }>("navigate", {
+    url: postUrl,
+    open_in_new_tab: true,
+    wait_for_load: true,
+    ...chromeOriginsInput(),
+  });
+  const tabId = nav.tab_id;
+  if (typeof tabId !== "number") {
+    throw new Error("prepare_comment: navigate did not return tab_id");
+  }
+  if (isLinkedInAuthWall(nav.current_url)) {
+    throw new Error(
+      `Not logged into LinkedIn (landed on ${nav.current_url}). Sign in in the paired Chrome profile, then retry.`
+    );
+  }
+
+  // Give the post chrome a beat to hydrate the social-action bar.
+  try {
+    await dispatcher.dispatch("wait_for_selector", {
+      tab_id: tabId,
+      selector:
+        'button, [role="button"], .feed-shared-social-action-bar, .comments-comment-box',
+      timeout_ms: 8000,
+      ...chromeOriginsInput(),
+    });
+  } catch {
+    // Non-fatal — page may still be usable; fall through to a11y/evaluate.
+  }
+
+  let method: "type_ref" | "evaluate" = "evaluate";
+  let typed = false;
+
+  // Live spike (2026-07): LinkedIn's current feed/post UI rarely exposes the
+  // Quill composer as an a11y textbox after clicking Comment, so evaluate
+  // (contenteditable/ql-editor selectors + insertText) is the primary path.
+  // type_ref remains a secondary attempt when the tree does surface a textbox.
+  {
+    const evalOut = await dispatcher.dispatch<{
+      value?: {
+        ok?: boolean;
+        reason?: string;
+        preview?: string;
+      };
+      exception?: string;
+    }>("evaluate", {
+      tab_id: tabId,
+      expression: buildFillCommentExpression(body),
+      await_promise: true,
+      ...chromeOriginsInput(),
+    });
+    if (evalOut.exception) {
+      throw new Error(
+        `prepare_comment: evaluate failed: ${evalOut.exception}`
+      );
+    }
+    const value = evalOut.value;
+    if (value?.ok) {
+      method = "evaluate";
+      typed = true;
+    }
+  }
+
+  // Path B: a11y type_ref when evaluate missed the composer.
+  if (!typed) {
+    try {
+      let snap = await snapshotTree(dispatcher, tabId);
+      if (isLinkedInAuthWall(snap.current_url)) {
+        throw new Error(
+          `Not logged into LinkedIn (landed on ${snap.current_url}). Sign in in the paired Chrome profile, then retry.`
+        );
+      }
+
+      let textbox = pickCommentTextboxRef(snap.tree, snap.document_epoch);
+      if (!textbox) {
+        const commentBtn = pickCommentButtonRef(snap.tree, snap.document_epoch);
+        if (commentBtn) {
+          await dispatcher.dispatch("click_ref", {
+            tab_id: tabId,
+            ref: commentBtn,
+            ...chromeOriginsInput(),
+          });
+          snap = await snapshotTree(dispatcher, tabId);
+          textbox = pickCommentTextboxRef(snap.tree, snap.document_epoch);
+        }
+      }
+
+      if (textbox) {
+        await dispatcher.dispatch("type_ref", {
+          tab_id: tabId,
+          ref: textbox,
+          text: body,
+          clear_first: true,
+          ...chromeOriginsInput(),
+        });
+        method = "type_ref";
+        typed = true;
+      }
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        err.message.includes("Not logged into LinkedIn")
+      ) {
+        throw err;
+      }
+    }
+  }
+
+  if (!typed) {
+    throw new Error(
+      "prepare_comment: could not fill comment composer (evaluate + a11y both missed it). Is the post still available and commentable?"
+    );
+  }
+
+  if (focus) {
+    try {
+      await dispatcher.dispatch("focus_tab", {
+        tab_id: tabId,
+        draw_attention: true,
+        ...chromeOriginsInput(),
+      });
+    } catch {
+      // Focus is best-effort; the draft is still staged.
+    }
+  }
+
+  if (notify) {
+    try {
+      await dispatcher.dispatch("show_notification", {
+        title: "LinkedIn comment ready",
+        message:
+          "Draft is in the comment box — review and click Post yourself. Lobu did not submit.",
+        ...chromeOriginsInput(),
+      });
+    } catch {
+      // Notifications are optional (permission may be denied).
+    }
+  }
+
+  return {
+    prepared: true,
+    tab_id: tabId,
+    post_url: postUrl,
+    body,
+    method,
+    message:
+      "Comment staged in your browser. Review the draft and click Post yourself — Lobu did not submit.",
+  };
+}
+
 export function filterPostsSinceCheckpoint(
   posts: LinkedInPost[],
   checkpoint: LinkedInCheckpoint
@@ -842,8 +1366,8 @@ export default class LinkedInConnector extends ConnectorRuntime<
     key: "linkedin",
     name: "LinkedIn",
     description:
-      "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files.",
-    version: "3.1.2",
+      "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft in the browser for the human to Post.",
+    version: "3.2.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -1022,7 +1546,103 @@ export default class LinkedInConnector extends ConnectorRuntime<
         ),
       },
     },
+    actions: {
+      prepare_comment: {
+        key: "prepare_comment",
+        name: "Prepare comment",
+        description:
+          "Open a LinkedIn post in the paired Chrome browser, fill the comment box with a draft, focus the tab, and stop. The human must click Post — this action never submits.",
+        requiresApproval: true,
+        kind: "write",
+        annotations: {
+          openWorldHint: true,
+          destructiveHint: false,
+          idempotentHint: false,
+        },
+        inputSchema: {
+          type: "object",
+          required: ["body"],
+          properties: {
+            post_url: {
+              type: "string",
+              description:
+                'LinkedIn post URL, or activity id / URN (e.g. "https://www.linkedin.com/feed/update/urn:li:activity:123", "urn:li:activity:123", or "123").',
+            },
+            activity_id: {
+              type: "string",
+              description:
+                "Activity id when post_url is omitted (digits or urn:li:activity:…).",
+            },
+            body: {
+              type: "string",
+              description:
+                "Draft comment text. Left in the composer for the user to edit/send.",
+              minLength: 1,
+              maxLength: 3000,
+            },
+            focus: {
+              type: "boolean",
+              description:
+                "Bring the staged tab to the foreground (default true).",
+            },
+            notify: {
+              type: "boolean",
+              description:
+                "Show a desktop notification when the draft is ready (default true).",
+            },
+          },
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            prepared: { type: "boolean" },
+            tab_id: { type: "integer" },
+            post_url: { type: "string" },
+            body: { type: "string" },
+            method: { type: "string" },
+            message: { type: "string" },
+          },
+        },
+      },
+    },
   };
+
+  async execute(ctx: ActionContext): Promise<ActionResult> {
+    try {
+      if (ctx.actionKey !== "prepare_comment") {
+        return { success: false, error: `Unknown action: ${ctx.actionKey}` };
+      }
+      const body =
+        typeof ctx.input.body === "string" ? ctx.input.body.trim() : "";
+      if (!body) {
+        return { success: false, error: "body is required" };
+      }
+      const postUrlRaw =
+        (typeof ctx.input.post_url === "string" && ctx.input.post_url.trim()) ||
+        (typeof ctx.input.activity_id === "string" &&
+          ctx.input.activity_id.trim()) ||
+        "";
+      if (!postUrlRaw) {
+        return {
+          success: false,
+          error: "post_url or activity_id is required",
+        };
+      }
+      const dispatcher = requireExtensionDispatcher(ctx);
+      const output = await prepareLinkedInComment(dispatcher, {
+        postUrl: postUrlRaw,
+        body,
+        focus: ctx.input.focus !== false,
+        notify: ctx.input.notify !== false,
+      });
+      return { success: true, output };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 
   async sync(
     ctx: SyncContext<LinkedInCheckpoint, LinkedInConfig>

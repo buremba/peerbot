@@ -154,11 +154,9 @@ describe("createLobuCustomTools", () => {
   });
 });
 
-// Builder gate: when a manage_agents write returns a `pending_approval` result,
-// the worker forwards it as a `tool_approval` interaction card so the SPA chat
-// renders the interactive Approve/Reject diff. Same /internal/interactions/create
-// emission point ask_user uses → owner-gated thread_response delivery.
-describe("maybePostApprovalCard (builder gate)", () => {
+// Approval gates return structured pending results that the worker forwards as
+// `tool_approval` interaction cards for owner-gated thread_response delivery.
+describe("maybePostApprovalCard", () => {
   const gw = {
     gatewayUrl: "http://gateway",
     workerToken: "worker-token",
@@ -219,7 +217,7 @@ describe("maybePostApprovalCard (builder gate)", () => {
           url,
           body: init?.body ? JSON.parse(String(init.body)) : null,
         });
-        return Response.json({ id: "appr-w1" });
+        return Response.json({ id: "appr-b1" });
       }
     ) as unknown as typeof fetch;
 
@@ -255,7 +253,7 @@ describe("maybePostApprovalCard (builder gate)", () => {
       interactionType: "tool_approval",
       runId: 77,
       action: "create",
-      resourceKind: "watcher",
+      resourceKind: "behavior",
       proposal: {
         action: "create",
         slug: "launch-tracker",
@@ -372,7 +370,7 @@ describe("maybePostApprovalCard (builder gate)", () => {
     });
   });
 
-  test("carries watcher attribution when a manage_entity update was watcher-sourced", async () => {
+  test("carries behavior attribution when a manage_entity update was Behavior-sourced", async () => {
     const posts: Array<{ body: any }> = [];
     globalThis.fetch = mock(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -390,12 +388,12 @@ describe("maybePostApprovalCard (builder gate)", () => {
         approval_run_id: 43,
         approval_fields: { "metadata.stage": "won" },
         approval_current: { "metadata.stage": "lead" },
-        approval_attribution: "watcher",
+        approval_attribution: "behavior",
       })
     );
 
     expect(posted).toBe(true);
-    expect(posts[0]!.body.attribution).toBe("watcher");
+    expect(posts[0]!.body.attribution).toBe("behavior");
   });
 
   test("does nothing for a manage_entity update with no blocked fields", async () => {

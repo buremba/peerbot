@@ -7,7 +7,7 @@
  */
 
 import { getDb } from '../db/client';
-import { createEntity } from './entity-management';
+import { createEntity, type EntityData } from './entity-management';
 import { ensureMemberEntityType, resolveMemberSchemaFieldsFromSchema } from './member-entity-type';
 
 /**
@@ -92,7 +92,7 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
     if (params.image && imageField) metadata[imageField] = params.image;
     if (params.role) metadata.role = params.role;
 
-    const entityData: Record<string, unknown> = {
+    const entityData: EntityData = {
       entity_type: '$member',
       name: params.name.trim(),
       organization_id: params.organizationId,
@@ -103,9 +103,9 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
     // SEPARATE concern — only `userId` ever drives it.
     const createdBy = params.userId ?? params.createdByUserId;
     if (createdBy) {
-      (entityData as any).created_by = createdBy;
+      entityData.created_by = createdBy;
     }
-    await createEntity(entityData as any, { skipHooks: true });
+    await createEntity(entityData, { skipHooks: true });
     memberEntityId = await findIdByEmail();
   }
 

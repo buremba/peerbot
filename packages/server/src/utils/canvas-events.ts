@@ -105,15 +105,9 @@ export async function ensureCanvasEntity(params: {
   }
 
   // Resolve the entity type to bind to (entities.entity_type_id is NOT NULL).
-  // The built-in `$canvas` type is org-owned and created on demand, so a canvas
-  // entity always carries a type that MEANS "canvas".
-  //
-  // This used to fall back to "any stored type in the org, lowest id first" when
-  // no type existed. Nothing ever provisions a canvas type, so that fallback was
-  // the only path — and the lowest-id type is `$member`, which made every canvas
-  // entity masquerade as a workspace Member. `$member` is access-controlled
-  // (member-list visibility, email hiding), so canvases were both polluting the
-  // member roster and inheriting a privileged type. Create the real type instead.
+  // The old fallback used any stored org type when no user-authored `canvas`
+  // type existed. That was commonly `$member`, exposing canvases through the
+  // member roster and its privacy policy. Create a dedicated system type.
   const typeRows = await tx<{ id: number | string }>`
     INSERT INTO entity_types (
       slug, name, description, icon, organization_id, created_at, updated_at

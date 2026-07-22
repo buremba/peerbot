@@ -1,20 +1,19 @@
 -- migrate:up
 
--- Canvas entities were binding to an arbitrary entity type.
+-- Canvas entities could bind to an unrelated entity type.
 --
 -- `ensureCanvasEntity` needs an entity_type_id (the column is NOT NULL). It
 -- looked for a type with slug 'canvas' and, finding none, fell back to "any
--- stored type in the org, lowest id first". Nothing in the product ever creates
--- a canvas type, so that fallback was the ONLY path in every org — and the
--- lowest-id type is normally `$member`, which is provisioned first. So every
--- canvas entity was typed as a workspace Member: it showed up in the member
--- roster and inherited `$member`'s access policy (member-list visibility and
--- email hiding).
+-- stored type in the org, lowest id first". Lobu does not provision that type,
+-- so most orgs took the fallback; the lowest-id type is commonly `$member`,
+-- which is provisioned early. Those canvas entities were typed as workspace
+-- Members: they showed up in the member roster and inherited `$member`'s access
+-- policy (member-list visibility and email hiding).
 --
 -- The code now creates and binds a built-in `$canvas` type. This backfill moves
 -- the already-mislabeled rows onto it. Canvas entities are identified by
--- metadata->>'source' = 'watcher_canvas', which `ensureCanvasEntity` has always
--- written, so the selection is exact rather than name-matched.
+-- a live `watcher_canvas` identity claim, the authoritative per-watcher canvas
+-- identity used by `ensureCanvasEntity`.
 --
 -- `events` is untouched: entity_ids still point at the same entity ids, only the
 -- entity's type binding changes.
@@ -28,8 +27,12 @@ SELECT DISTINCT
   '$canvas', 'Canvas', 'Per-Behavior canvas window', 'layout',
   e.organization_id, current_timestamp, current_timestamp
 FROM public.entities e
-WHERE e.metadata->>'source' = 'watcher_canvas'
-  AND e.deleted_at IS NULL
+JOIN public.entity_identities ei
+  ON ei.entity_id = e.id
+ AND ei.organization_id = e.organization_id
+ AND ei.namespace = 'watcher_canvas'
+ AND ei.deleted_at IS NULL
+WHERE e.deleted_at IS NULL
 ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
 DO NOTHING;
 
@@ -41,15 +44,22 @@ FROM public.entity_types ct
 WHERE ct.slug = '$canvas'
   AND ct.organization_id = e.organization_id
   AND ct.deleted_at IS NULL
-  AND e.metadata->>'source' = 'watcher_canvas'
   AND e.deleted_at IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM public.entity_identities ei
+    WHERE ei.entity_id = e.id
+      AND ei.organization_id = e.organization_id
+      AND ei.namespace = 'watcher_canvas'
+      AND ei.deleted_at IS NULL
+  )
   AND e.entity_type_id IS DISTINCT FROM ct.id;
 
 -- migrate:down
 
--- Irreversible by design: the pre-migration binding was an arbitrary
--- lowest-id type that differed per org and was never recorded, so there is
--- nothing faithful to restore. Rolling back the code is safe on its own —
+-- Irreversible by design: the prior binding varied by org and this migration
+-- does not record it, so there is nothing faithful to restore. Rolling back the
+-- code is safe on its own —
 -- ensureCanvasEntity's reuse fast-path resolves canvases by their
 -- `watcher_canvas` identity claim, not by entity type.
 SELECT 1;

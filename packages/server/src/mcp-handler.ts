@@ -550,7 +550,16 @@ async function recoverSessionAuthContext(
     }
   }
 
-  authCtx.requestedAgentId = persisted.requestedAgentId;
+  // A recovered session cannot move between agents. When the persisted row is
+  // unbound, verified request auth may supply one; conflicting bindings fail.
+  if (
+    authCtx.requestedAgentId &&
+    persisted.requestedAgentId &&
+    authCtx.requestedAgentId !== persisted.requestedAgentId
+  ) {
+    return null;
+  }
+  authCtx.requestedAgentId = persisted.requestedAgentId ?? authCtx.requestedAgentId;
   authCtx.instructions = authCtx.organizationId
     ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined)
     : undefined;
@@ -776,7 +785,9 @@ async function resolveAuthWithInstructions(
   const authCtx: AuthContext & { instructions?: string } = extractAuthContext(c);
   if (req) {
     const initialize = await readInitializeRequest(req);
-    authCtx.requestedAgentId = initialize?.requestedAgentId ?? null;
+    // Verified worker auth already supplies an agent. Only fall back to the
+    // initialize metadata used by ordinary MCP clients when auth has none.
+    authCtx.requestedAgentId = authCtx.requestedAgentId ?? initialize?.requestedAgentId ?? null;
   }
   if (authCtx.organizationId) {
     authCtx.instructions = (await buildWorkspaceInstructions(authCtx.organizationId)) ?? undefined;
@@ -931,6 +942,11 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       // auth context current before tools read ToolContext.sourceContext.
       session.authCtx.sourceContext = freshCtx.sourceContext ?? null;
       session.authCtx.adminTools = freshCtx.adminTools ?? null;
+
+      if (freshCtx.agentId && freshCtx.agentId !== session.authCtx.agentId) {
+        clearSession();
+        return buildJsonRpcErrorResponse('Session agent changed. Re-initialize.', null, 400);
+      }
 
       if (session.authCtx.scopedToOrg) {
         if (freshCtx.organizationId !== session.authCtx.organizationId) {

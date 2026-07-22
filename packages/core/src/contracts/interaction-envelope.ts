@@ -7,9 +7,9 @@
  * one side (e.g. watcher → behavior) silently broke card routing on another
  * (plugin-mcp kept emitting "watcher" while owletto routed on "behavior").
  *
- * Single source:
- *  - Emitters import the const objects below (no bare string literals).
- *  - TypeBox schemas derive Static<> types for compile-time checking.
+ * Contract:
+ *  - Worker and server approval emitters import the named constants below.
+ *  - Literal arrays, TypeBox schemas, and Static<> types derive from them.
  *  - A parity test asserts SPA-side accepted literals match these unions.
  *
  * Config-audit `resourceKind` (deployments feed: connection, feed, …) is a
@@ -26,28 +26,28 @@ import { type Static, Type } from "@sinclair/typebox";
  * Produced by plugin-mcp (card post) and manage_behaviors (event metadata);
  * consumed by the SPA to pick the right approval card renderer.
  */
-export const INTERACTION_RESOURCE_KINDS = [
-  "agent",
-  "behavior",
-  "entity",
-] as const;
-
-export type InteractionResourceKind =
-  (typeof INTERACTION_RESOURCE_KINDS)[number];
-
-export const InteractionResourceKindSchema = Type.Union(
-  INTERACTION_RESOURCE_KINDS.map((k) => Type.Literal(k))
-);
-
-/**
- * Named constants for emitters. Prefer these over bare string literals so a
- * typo is a type error and grep finds every producer via the import.
- */
 export const InteractionResourceKind = {
   Agent: "agent",
   Behavior: "behavior",
   Entity: "entity",
-} as const satisfies Record<string, InteractionResourceKind>;
+} as const;
+
+export type InteractionResourceKind =
+  (typeof InteractionResourceKind)[keyof typeof InteractionResourceKind];
+
+export const INTERACTION_RESOURCE_KINDS = Object.freeze(
+  Object.values(InteractionResourceKind)
+);
+
+export const InteractionResourceKindSchema = Type.Union(
+  INTERACTION_RESOURCE_KINDS.map((kind) => Type.Literal(kind))
+);
+
+export function isInteractionResourceKind(
+  value: unknown
+): value is InteractionResourceKind {
+  return INTERACTION_RESOURCE_KINDS.some((kind) => kind === value);
+}
 
 // ── attribution (who proposed a gated entity-field change) ──────────────────
 
@@ -57,27 +57,34 @@ export const InteractionResourceKind = {
  * `attribution` on the interaction envelope; the SPA labels "An agent" vs
  * "A Behavior".
  */
-export const APPROVAL_ATTRIBUTIONS = ["agent", "behavior"] as const;
-
-export type ApprovalAttribution = (typeof APPROVAL_ATTRIBUTIONS)[number];
-
-export const ApprovalAttributionSchema = Type.Union(
-  APPROVAL_ATTRIBUTIONS.map((a) => Type.Literal(a))
-);
-
 export const ApprovalAttribution = {
   Agent: "agent",
   Behavior: "behavior",
-} as const satisfies Record<string, ApprovalAttribution>;
+} as const;
+
+export type ApprovalAttribution =
+  (typeof ApprovalAttribution)[keyof typeof ApprovalAttribution];
+
+export const APPROVAL_ATTRIBUTIONS = Object.freeze(
+  Object.values(ApprovalAttribution)
+);
+
+export const ApprovalAttributionSchema = Type.Union(
+  APPROVAL_ATTRIBUTIONS.map((attribution) => Type.Literal(attribution))
+);
+
+export function isApprovalAttribution(
+  value: unknown
+): value is ApprovalAttribution {
+  return APPROVAL_ATTRIBUTIONS.some((attribution) => attribution === value);
+}
 
 /**
  * Coerce a wire value to ApprovalAttribution. Unknown / missing → agent
  * (matches the historical plugin-mcp default when attribution was absent).
  */
 export function coerceApprovalAttribution(value: unknown): ApprovalAttribution {
-  return value === ApprovalAttribution.Behavior
-    ? ApprovalAttribution.Behavior
-    : ApprovalAttribution.Agent;
+  return isApprovalAttribution(value) ? value : ApprovalAttribution.Agent;
 }
 
 // ── tool_approval create body (worker → gateway) ────────────────────────────
@@ -86,8 +93,8 @@ export function coerceApprovalAttribution(value: unknown): ApprovalAttribution {
  * Body shape posted to POST /internal/interactions/create when
  * interactionType === "tool_approval". Field optionality mirrors today's
  * emitters (manage_agents omits fields/attribution; manage_entity may omit
- * proposal). This is the shared type surface — runtime validation is still
- * permissive at the route (legacy/malformed cards must not 500).
+ * proposal). The gateway normalizes unknown discriminators to null rather
+ * than rejecting the whole request, so malformed cards do not 500 the worker.
  */
 export const ToolApprovalCreateBodySchema = Type.Object({
   interactionType: Type.Literal("tool_approval"),

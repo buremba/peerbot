@@ -450,4 +450,17 @@ describe("maybePostApprovalCard", () => {
     expect(posted).toBe(false);
     expect(posts).toHaveLength(0);
   });
+
+  test("does nothing for a non-object JSON result", async () => {
+    const posts: string[] = [];
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return Response.json({});
+    }) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(gw, "manage_agents", "null");
+
+    expect(posted).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
 });

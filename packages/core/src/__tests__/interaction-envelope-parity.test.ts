@@ -14,6 +14,8 @@ import { describe, expect, it } from "bun:test";
 import {
   APPROVAL_ATTRIBUTIONS,
   INTERACTION_RESOURCE_KINDS,
+  isApprovalAttribution,
+  isInteractionResourceKind,
 } from "../contracts/interaction-envelope";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
@@ -46,17 +48,6 @@ function extractQuotedLiterals(
   for (const m of source.matchAll(union)) {
     for (const lit of m[1]!.matchAll(/['"]([^'"]+)['"]/g)) {
       if (lit[1] !== "null") found.add(lit[1]!);
-    }
-  }
-
-  // JSDoc-only forms: attribution: 'agent' | 'behavior'.
-  const jsdoc = new RegExp(
-    `${field}[^\\n]*?((?:['"][^'"]+['"]\\s*\\|\\s*)+['"][^'"]+['"])`,
-    "g"
-  );
-  for (const m of source.matchAll(jsdoc)) {
-    for (const lit of m[1]!.matchAll(/['"]([^'"]+)['"]/g)) {
-      found.add(lit[1]!);
     }
   }
 
@@ -94,12 +85,16 @@ describe("interaction-envelope SPA/core parity", () => {
   });
 
   it("core contract exports the expected canonical sets", () => {
-    // Pin the wire values so a silent rename in the const array is a test fail.
+    // Pin the wire values so a silent rename in the constants is a test fail.
     expect([...INTERACTION_RESOURCE_KINDS]).toEqual([
       "agent",
       "behavior",
       "entity",
     ]);
     expect([...APPROVAL_ATTRIBUTIONS]).toEqual(["agent", "behavior"]);
+    expect(isInteractionResourceKind("behavior")).toBe(true);
+    expect(isInteractionResourceKind("watcher")).toBe(false);
+    expect(isApprovalAttribution("agent")).toBe(true);
+    expect(isApprovalAttribution("watcher")).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import {
   coerceApprovalAttribution,
   createLogger,
   InteractionResourceKind,
+  type ToolApprovalCreateBody,
 } from "@lobu/core";
 import {
   createGatewayClient,
@@ -32,7 +33,7 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   // not formatted markdown, to forward an approval card into the chat (see
   // maybePostApprovalCard / createMcpToolDefinitions).
   "manage_agents",
-  // Same shape as manage_agents: watcher definition create/update/delete may
+  // Same shape as manage_agents: behavior definition create/update/delete may
   // return pending_approval under the agent_config write-gate.
   "manage_behaviors",
   // manage_entity's update path queues a human-owned-field change for approval
@@ -47,13 +48,13 @@ const TOOLS_REQUESTING_JSON_FORMAT = new Set([
  * Approve/Reject diff. Handles three producers:
  *   - manage_agents write gate → `{ status: 'pending_approval', run_id,
  *     action, proposal, current }` (the builder agent's create/update/delete).
- *   - manage_behaviors write gate → same `pending_approval` shape (watcher
+ *   - manage_behaviors write gate → same `pending_approval` shape (behavior
  *     definition create/update/delete under agent_config).
  *   - manage_entity update gate → `{ approval_queued: true, approval_run_id,
  *     approval_fields, approval_current, approval_attribution }` (a human-owned
- *     entity field the agent proposed changing).
+ *     entity field an agent or Behavior proposed changing).
  *
- * Fire-and-forget — a failed post never breaks the tool call (the agent still
+ * Best-effort — a failed post never breaks the tool call (the agent still
  * narrates the result, and the events-tab approval card remains the fallback).
  * Returns true when a card was posted (caller logs at debug only).
  *
@@ -69,7 +70,7 @@ export async function maybePostApprovalCard(
   const body = buildApprovalCardBody(toolName, rawResultText);
   if (!body) return false;
 
-  // Fire-and-forget: a failed post must never break the tool call (the agent
+  // Best-effort: a failed post must never break the tool call (the agent
   // still narrates the result, and the events-tab approval card is the
   // fallback). gatewayFetch throws on a hard network error, so guard it too.
   let error: TextResult | undefined;
@@ -102,13 +103,15 @@ export async function maybePostApprovalCard(
 function buildApprovalCardBody(
   toolName: string,
   rawResultText: string
-): Record<string, unknown> | null {
-  let parsed: Record<string, unknown>;
+): ToolApprovalCreateBody | null {
+  let raw: unknown;
   try {
-    parsed = JSON.parse(rawResultText);
+    raw = JSON.parse(rawResultText);
   } catch {
     return null;
   }
+  const parsed = recordOrNull(raw);
+  if (!parsed) return null;
 
   if (toolName === "manage_behaviors") {
     if (
@@ -119,21 +122,15 @@ function buildApprovalCardBody(
     }
     // Server proposal is `{ args: ManageBehaviorsArgs }`; SPA renderer needs the
     // flat behavior fields (action, slug, prompt, schedule, …).
-    const rawProposal = parsed.proposal;
-    const flatProposal =
-      rawProposal &&
-      typeof rawProposal === "object" &&
-      (rawProposal as { args?: unknown }).args &&
-      typeof (rawProposal as { args: unknown }).args === "object"
-        ? (rawProposal as { args: Record<string, unknown> }).args
-        : ((rawProposal as Record<string, unknown> | null) ?? null);
+    const rawProposal = recordOrNull(parsed.proposal);
+    const flatProposal = recordOrNull(rawProposal?.args) ?? rawProposal;
     return {
       interactionType: "tool_approval",
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
       resourceKind: InteractionResourceKind.Behavior,
       proposal: flatProposal,
-      current: parsed.current ?? null,
+      current: recordOrNull(parsed.current),
     };
   }
 
@@ -149,8 +146,8 @@ function buildApprovalCardBody(
       runId: parsed.run_id,
       action: typeof parsed.action === "string" ? parsed.action : "change",
       resourceKind: InteractionResourceKind.Agent,
-      proposal: parsed.proposal ?? null,
-      current: parsed.current ?? null,
+      proposal: recordOrNull(parsed.proposal),
+      current: recordOrNull(parsed.current),
     };
   }
 
@@ -169,16 +166,22 @@ function buildApprovalCardBody(
           ? parsed.approval_action
           : "change",
       resourceKind: InteractionResourceKind.Entity,
-      proposal: parsed.approval_proposal ?? null,
+      proposal: recordOrNull(parsed.approval_proposal),
       // entity_field_change diff: field_path -> proposed / current. The SPA
       // routes on `fields` (non-empty) to the entity-field-change card.
-      fields: parsed.approval_fields ?? null,
-      current: parsed.approval_current ?? null,
+      fields: recordOrNull(parsed.approval_fields),
+      current: recordOrNull(parsed.approval_current),
       attribution: coerceApprovalAttribution(parsed.approval_attribution),
     };
   }
 
   return null;
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 export async function callMcpTool(

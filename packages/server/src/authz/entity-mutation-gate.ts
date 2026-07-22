@@ -37,6 +37,7 @@
  * (no shared mutable state affecting decisions).
  */
 
+import type { ApprovalAttribution } from "@lobu/core/contracts/interaction-envelope";
 import type { DbClient } from "../db/client";
 import type { Env } from "../index";
 import type { ToolContext } from "../tools/registry";
@@ -50,7 +51,7 @@ import {
 export type MutationPrincipalKind = "user" | "agent" | "watcher";
 
 /** Attribution for a deferred (queued-for-approval) mutation. */
-export type MutationAttribution = "behavior" | "agent";
+export type MutationAttribution = ApprovalAttribution;
 
 /** Field ownership as seen by an update request ("human" pins the value). */
 export type FieldOwner = "human" | "none";

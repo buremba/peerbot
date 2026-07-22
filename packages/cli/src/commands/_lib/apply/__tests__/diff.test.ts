@@ -3,9 +3,9 @@ import { defineAgent, defineBehavior, defineConfig } from "@lobu/cli/config";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
-import { computeDiff, type RemoteSnapshot } from "../diff.js";
+import { computeDiff, type DiffPlan, type RemoteSnapshot } from "../diff.js";
 import { mapProjectToDesiredState } from "../map-config.js";
-import { renderPlan, renderSummary } from "../render.js";
+import { renderPlan, renderProgress, renderSummary } from "../render.js";
 
 // Force chalk to render plain text in snapshots regardless of TTY detection.
 // `chalk.level = 0` strips colors so snapshot diffs aren't TTY-dependent.
@@ -801,6 +801,40 @@ describe("renderSummary", () => {
     const desired = buildState([]);
     const plan = computeDiff(desired, emptyRemote());
     expect(renderSummary(plan)).toMatchSnapshot();
+  });
+});
+
+describe("renderPlan — behavior labels (not watcher)", () => {
+  /** Labels/headings only — not substrings of resource slugs. */
+  function expectNoWatcherLabels(text: string): void {
+    expect(text).not.toMatch(/(?:^|\n)\s*watchers?:\s*(?:\n|$)/);
+    expect(text).not.toMatch(/[+=~?-]\s+watcher\s+\S/);
+  }
+
+  test("plan create/update/drift rows print behavior, never watcher", () => {
+    const plan: DiffPlan = {
+      rows: [
+        { kind: "watcher", verb: "update", id: "weekly-digest" },
+        { kind: "watcher", verb: "create", id: "new-digest" },
+        { kind: "watcher", verb: "drift", id: "orphaned-digest" },
+      ],
+      counts: { create: 1, update: 1, noop: 0, drift: 1, delete: 0 },
+      notes: [],
+    };
+
+    const text = renderPlan(plan);
+    expect(text).toContain("behaviors:");
+    expect(text).toContain("behavior new-digest");
+    expect(text).toContain("behavior weekly-digest");
+    expect(text).toContain("behavior orphaned-digest");
+    expectNoWatcherLabels(text);
+    expect(text).toMatchSnapshot();
+  });
+
+  test("renderProgress uses the behavior label for watcher-kind rows", () => {
+    const line = renderProgress("create", "watcher", "weekly-digest");
+    expect(line).toContain("behavior weekly-digest");
+    expectNoWatcherLabels(line);
   });
 });
 

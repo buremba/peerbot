@@ -464,9 +464,19 @@ export async function createAuth(
 						organization: org,
 					}) => {
 						try {
+							// Create the invitee's placeholder $member keyed on the
+							// INVITED email. Attribute authorship to the inviter via
+							// `createdByUserId`, but do NOT pass `userId`: that would write
+							// `auth_user_id = <inviter>` (source `auth:signup`) onto the
+							// entity resolved BY the invitee's email, and the authz gate
+							// resolves a logged-in user to their $member via exactly that
+							// claim — so the inviter would resolve to, and inherit the
+							// channel visibility of, the invitee. A pending invitee has no
+							// signed-in identity; their real auth_user_id is minted when
+							// they accept and sign in.
 							await ensureMemberEntity({
 								organizationId: org.id,
-								userId: inviter.id,
+								createdByUserId: inviter.id,
 								name: invitation.email,
 								email: invitation.email,
 								role: invitation.role,

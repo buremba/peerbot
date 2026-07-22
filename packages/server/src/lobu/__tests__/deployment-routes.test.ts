@@ -324,31 +324,6 @@ describe('GET /deployments/:applyId (detail)', () => {
     expect(change.before.soulMd).toBe('v1');
   });
 
-  test('legacy stored watcher key in counts_by_kind reads back as behavior', async () => {
-    const app = await importDeploymentRoutes();
-    const posted = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(
-        summaryBody({
-          counts_by_kind: {
-            agent: { create: 1 },
-            watcher: { update: 3 },
-          },
-        })
-      )
-    });
-    expect(posted.status).toBe(201);
-
-    const res = await app.request(`/${APPLY_ID}`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { deployment: { countsByKind: Record<string, unknown> } };
-    expect(body.deployment.countsByKind).toEqual({
-      agent: { create: 1 },
-      behavior: { update: 3 },
-    });
-  });
-
   test('404s for an unknown apply id', async () => {
     const app = await importDeploymentRoutes();
     const res = await app.request('/apl_00000000-0000-0000-0000-000000000000');

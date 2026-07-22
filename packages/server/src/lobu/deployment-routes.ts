@@ -33,21 +33,6 @@ function normalizeResourceKind(kind: unknown): string | null {
 	return kind === "watcher" ? "behavior" : String(kind);
 }
 
-/**
- * Deployment summaries historically keyed `counts_by_kind` with the CLI's
- * internal DiffRow kind `"watcher"`. Public surface uses `"behavior"`.
- * Normalize on read only — events is append-only; do not rewrite stored rows.
- */
-function normalizeCountsByKind(raw: unknown): Record<string, unknown> | null {
-	if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
-		return null;
-	}
-	const { watcher, ...counts } = raw as Record<string, unknown>;
-	return watcher === undefined
-		? counts
-		: { ...counts, behavior: counts.behavior ?? watcher };
-}
-
 routes.use("*", mcpAuth);
 
 routes.use("*", async (c, next) => {
@@ -429,7 +414,7 @@ routes.get("/:applyId", async (c) => {
 			title: summary.title,
 			status: summaryMeta.status ?? null,
 			counts: summaryMeta.counts ?? null,
-			countsByKind: normalizeCountsByKind(summaryPayload.counts_by_kind),
+			countsByKind: summaryPayload.counts_by_kind ?? null,
 			error: summaryPayload.error ?? null,
 			manifestHash: summaryMeta.manifest_hash ?? null,
 			gitSha: summaryMeta.git_sha ?? null,

@@ -21,6 +21,8 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'user',
       'feeds',
       'connector_definitions',
+      'entity_relationships',
+      'entity_relationship_types',
     ];
     for (const t of expected) {
       expect(QUERYABLE_TABLE_NAMES.has(t)).toBe(true);
@@ -101,6 +103,28 @@ describe('validateTableQuery', () => {
   it('should reject queries referencing excluded PII columns', () => {
     const result = validateTableQuery('SELECT email FROM "user"');
     expect(result.valid).toBe(false);
+  });
+
+  it('should accept graph queries over entity_relationships', () => {
+    // The canonical mutual-connections / anti-join shapes that reactions,
+    // query_sql, and drain Behaviors need. The scoping CTE branches for these
+    // tables have existed in buildScopedQuery all along; only the schema
+    // allowlist kept them unreachable.
+    const antiJoin = validateTableQuery(
+      `SELECT e.id FROM entities e
+       WHERE NOT EXISTS (
+         SELECT 1 FROM entity_relationships er
+         WHERE er.from_entity_id = e.id AND er.relationship_type_id = 42)`
+    );
+    expect(antiJoin.valid).toBe(true);
+
+    const typedJoin = validateTableQuery(
+      `SELECT er.from_entity_id, er.to_entity_id, ert.slug, er.metadata, er.confidence
+       FROM entity_relationships er
+       JOIN entity_relationship_types ert ON ert.id = er.relationship_type_id
+       WHERE ert.slug = 'works_at'`
+    );
+    expect(typedJoin.valid).toBe(true);
   });
 });
 

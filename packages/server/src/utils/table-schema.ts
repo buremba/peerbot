@@ -370,6 +370,48 @@ export const QUERYABLE_SCHEMA = {
         'supports_execute'
       ),
     },
+    // entity_relationships — the graph edge instances. Org-scoped, live rows
+    // only (the CTE filters deleted_at IS NULL). Exposing this is what makes
+    // graph queries (mutual connections, drain anti-joins) expressible from
+    // query_sql / client.query; the scoping CTE existed before this entry did.
+    {
+      name: 'entity_relationships',
+      columns: cols(
+        'id',
+        'organization_id',
+        'from_entity_id',
+        'to_entity_id',
+        'relationship_type_id',
+        'metadata',
+        'confidence',
+        'source',
+        'created_by',
+        'updated_by',
+        'deleted_at',
+        'created_at',
+        'updated_at'
+      ),
+    },
+    // entity_relationship_types — needed alongside the edges to filter by slug.
+    {
+      name: 'entity_relationship_types',
+      columns: cols(
+        'id',
+        'slug',
+        'name',
+        'description',
+        'organization_id',
+        'created_by',
+        'metadata_schema',
+        'is_symmetric',
+        'inverse_type_id',
+        'status',
+        'deleted_at',
+        'created_at',
+        'updated_at',
+        'metadata'
+      ),
+    },
   ],
 };
 

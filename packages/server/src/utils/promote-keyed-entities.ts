@@ -583,15 +583,15 @@ export async function promoteKeyedEntities(
     // applies to citations. An unverifiable id is worse than none: it reads like
     // proof of origin while pointing anywhere in the org.
     if (SOURCE_EVENT_ID_FIELD in fieldValues) {
-      const claimed = Number(fieldValues[SOURCE_EVENT_ID_FIELD]);
-      if (!Number.isFinite(claimed) || !validContentIds.has(Math.trunc(claimed))) {
+      const claimed = fieldValues[SOURCE_EVENT_ID_FIELD];
+      if (typeof claimed !== 'number' || !validContentIds.has(claimed)) {
         logger.warn(
           {
             watcherId,
             organizationId,
             windowId,
             stableKey,
-            claimedSourceEventId: fieldValues[SOURCE_EVENT_ID_FIELD],
+            claimedSourceEventId: claimed,
           },
           '[promote-keyed-entities] dropping source_event_id not present in this window'
         );

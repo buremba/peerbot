@@ -296,7 +296,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
   });
 
-  it('keeps an in-window source_event_id but drops one the window never read', async () => {
+  it('keeps an exact in-window source_event_id and drops ungranted claims', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, parentEntityId } = ctx;
 
@@ -332,6 +332,16 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
           name: 'Slow Loading',
           source_event_id: Number(outOfWindow.id),
         },
+        {
+          category: 'Stability',
+          name: 'Fractional Reference',
+          source_event_id: Number(inWindow.id) + 0.5,
+        },
+        {
+          category: 'Stability',
+          name: 'String Reference',
+          source_event_id: String(inWindow.id),
+        },
       ],
     });
 
@@ -347,11 +357,13 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       rows.map((r) => [String(r.identifier).split('::').pop(), r.source_event_id])
     );
 
-    // The verifiable claim survives; the unverifiable one is stripped rather
-    // than stored as false provenance. Both rows still promote.
+    // The verifiable claim survives; unverifiable values are stripped rather
+    // than stored as false provenance. Every row still promotes.
     expect(bySlug['app-crashes']).toBe(String(inWindow.id));
+    expect(bySlug['fractional-reference']).toBeNull();
     expect(bySlug['slow-loading']).toBeNull();
-    expect(Object.keys(bySlug)).toHaveLength(2);
+    expect(bySlug['string-reference']).toBeNull();
+    expect(Object.keys(bySlug)).toHaveLength(4);
   });
 
   it("a create=deny policy on the watcher's OWNING AGENT blocks its promotions", async () => {

@@ -245,63 +245,42 @@ describe("persistLoginSlackIdentity", () => {
 		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
 	});
 
-	it("FALLBACK: finds the Slack config on a later member org, not just the first", async () => {
-		// Two member orgs. resolveMemberOrgsForUser orders by organizationId ASC,
-		// so exactly one of them is "first". Only ONE has Slack login configured;
-		// the fallback must scan past a config-less org to find it, or it would
-		// call the userinfo fetch with userinfoUrl: undefined.
-		const userinfoUrl = "https://slack.test/openid/connect/userInfo";
-		const orgA = await createTestOrganization({
-			name: "OrgA",
-			visibility: "private",
-		});
-		const orgB = await createTestOrganization({
-			name: "OrgB",
-			visibility: "private",
-		});
-		const user = await createTestUser({
-			name: "Bob",
-			email: "bob@acme.test",
-		});
-		await addUserToOrganization(user.id, orgA.id, "member");
-		await addUserToOrganization(user.id, orgB.id, "member");
-		await provisionMemberAndCoreIdentities(orgA.id, {
-			userId: user.id,
-			email: "bob@acme.test",
-			name: "Bob",
-		});
-		await provisionMemberAndCoreIdentities(orgB.id, {
-			userId: user.id,
-			email: "bob@acme.test",
-			name: "Bob",
-		});
-		// Whichever org sorts first has NO Slack config; the OTHER one does.
-		const [firstOrgId, secondOrgId] =
-			orgA.id < orgB.id ? [orgA.id, orgB.id] : [orgB.id, orgA.id];
+	it("FALLBACK: reads userinfoUrl from the trusted baseline, never a tenant org's config", async () => {
+		// The fetch sends the user's real Slack access token to `userinfoUrl`, so
+		// that URL must never come from a tenant. An org can SHADOW the baseline
+		// Slack provider (mergeLoginProviderConfigs), so if the fallback read a
+		// member org's config, a malicious co-member org could exfiltrate the
+		// token. The fallback must query only the baseline (org id = null).
+		const baselineUrl = "https://slack.test/openid/connect/userInfo";
+		const attackerUrl = "https://attacker.example/steal";
+		const { orgId, userId } = await seedMember();
 
 		let seenUserinfoUrl: string | undefined = "UNSET";
+		const configOrgIds: Array<string | null | undefined> = [];
 		await persistLoginSlackIdentity(
 			{
 				providerId: "slack",
-				userId: user.id,
+				userId,
 				accessToken: "xoxp-token",
 				accountId: USER,
 			},
 			{
 				resolveMemberOrgsForUser,
-				getEnabledLoginProviderConfigs: async (orgId?: string | null) =>
-					orgId === secondOrgId
-						? [
-								{
-									connectorKey: "slack",
-									provider: "slack",
-									loginScopes: [],
-									clientIdKey: "SLACK_CLIENT_ID",
-									clientSecretKey: "SLACK_CLIENT_SECRET",
-									userinfoUrl,
-								},
-							]
-						: [],
+				getEnabledLoginProviderConfigs: async (id?: string | null) => {
+					configOrgIds.push(id);
+					// Baseline (null) → the trusted endpoint. Any tenant org → an
+					// attacker-controlled endpoint that must NOT be used.
+					return [
+						{
+							connectorKey: "slack",
+							provider: "slack",
+							loginScopes: [],
+							clientIdKey: "SLACK_CLIENT_ID",
+							clientSecretKey: "SLACK_CLIENT_SECRET",
+							userinfoUrl: id == null ? baselineUrl : attackerUrl,
+						},
+					];
+				},
 				fetchUserInfoWithRaw: async (args) => {
 					seenUserinfoUrl = args.userinfoUrl;
 					return {
@@ -312,10 +291,12 @@ describe("persistLoginSlackIdentity", () => {
 			},
 		);
 
-		// The fetch got the real endpoint from the second org, not undefined.
-		expect(seenUserinfoUrl).toBe(userinfoUrl);
-		expect(await slackIdentityCount(firstOrgId, `${TEAM}:${USER}`)).toBe(1);
-		expect(await slackIdentityCount(secondOrgId, `${TEAM}:${USER}`)).toBe(1);
+		// The config lookup was made against the baseline only, and the fetch got
+		// the baseline endpoint — the attacker URL never reached fetchUserInfo.
+		expect(configOrgIds).toEqual([null]);
+		expect(seenUserinfoUrl).toBe(baselineUrl);
+		expect(seenUserinfoUrl).not.toBe(attackerUrl);
+		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
 	});
 
 	it("is idempotent — a second call writes no duplicate", async () => {

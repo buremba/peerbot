@@ -62,6 +62,9 @@ interface DriftRow {
   visibility: string;
   email: string | null;
   name: string | null;
+  /** The member row's actual better-auth role, so a drifted non-owner is not
+   * minted as an owner when its $member entity is created fresh. */
+  role: string;
   /** True when this org is explicitly tagged as the user's personal org. */
   isPersonal: boolean;
   /** A live auth_user_id row that prevents the correct claim from being inserted. */
@@ -101,6 +104,7 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
     visibility: string;
     email: string | null;
     name: string | null;
+    role: string;
     isPersonal: boolean;
     hasBlockingClaim: boolean;
   }>`
@@ -111,6 +115,7 @@ async function findDrift(org?: string): Promise<DriftRow[]> {
       o.visibility        AS visibility,
       u.email             AS email,
       u.name              AS name,
+      m.role              AS role,
       COALESCE(
         o.metadata::jsonb->>'personal_org_for_user_id' = m."userId",
         false
@@ -243,6 +248,7 @@ async function main(): Promise<void> {
         userId: row.userId,
         email: row.email,
         name: row.name,
+        role: row.role,
       });
       if (!(await hasResolvableClaim(row.organizationId, row.userId))) {
         throw new Error("provisioning returned without a resolvable claim");

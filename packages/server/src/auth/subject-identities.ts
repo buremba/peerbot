@@ -27,6 +27,13 @@ interface PersonalSubject {
 	email: string;
 	name?: string | null;
 	image?: string | null;
+	/**
+	 * Role recorded on a NEWLY created `$member` (ignored when the entity already
+	 * exists — ensureMemberEntity never rewrites the role of an existing member).
+	 * Defaults to `owner` for the personal-org sign-up path; the backfill passes
+	 * the member row's actual role so a drifted non-owner is not minted as owner.
+	 */
+	role?: string;
 }
 
 interface IdentityRow {
@@ -194,7 +201,7 @@ export async function provisionMemberAndCoreIdentities(
 		name: subject.name?.trim() || subject.email.split("@")[0],
 		email: subject.email,
 		image: subject.image ?? undefined,
-		role: "owner",
+		role: subject.role ?? "owner",
 		status: "active",
 	});
 
@@ -340,21 +347,18 @@ export async function persistLoginSlackIdentity(
 		// injected deps seam so it stays testable.
 		if (!teamId) {
 			source = "userinfo-fallback";
-			// Any member org that has Slack login enabled can supply the config —
-			// it names the userinfo endpoint, which is identical across orgs. Don't
-			// bet on memberOrgs[0]: the first org may not have Slack configured while
-			// a later one does, which would leave userinfoUrl undefined. Scan until
-			// one yields a Slack config.
-			let slackCfg:
-				| Awaited<ReturnType<typeof deps.getEnabledLoginProviderConfigs>>[number]
-				| undefined;
-			for (const org of memberOrgs) {
-				const cfgs = await deps.getEnabledLoginProviderConfigs(
-					org.tenantOrganizationId,
-				);
-				slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
-				if (slackCfg) break;
-			}
+			// Resolve the Slack userinfo endpoint from the BASELINE catalog config
+			// only (org id = null). We are about to send the user's real Slack OAuth
+			// access token to `userinfoUrl`, so that URL must come from a trusted
+			// source. An org-specific provider definition SHADOWS the baseline
+			// (mergeLoginProviderConfigs), so reading it from any org the user
+			// belongs to would let a tenant-controlled `userinfoUrl` receive the
+			// token — an exfiltration vector, and unrelated to whichever org
+			// actually initiated the OAuth exchange. The endpoint is a fixed
+			// provider property, identical for every tenant, so the baseline is
+			// both correct and safe.
+			const cfgs = await deps.getEnabledLoginProviderConfigs(null);
+			const slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
 			const { raw } = await deps.fetchUserInfoWithRaw({
 				provider: "slack",
 				accessToken: account.accessToken,

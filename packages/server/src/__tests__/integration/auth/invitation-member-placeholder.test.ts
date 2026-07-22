@@ -112,4 +112,33 @@ describe("invitation member placeholder", () => {
     `;
 		expect(leaked).toHaveLength(0);
 	});
+
+	it("provisions a fresh $member with the caller's role, not a hardcoded owner", async () => {
+		const sql = getTestDb();
+		const memberUser = await createTestUser({
+			email: "regular-member@test.example.com",
+		});
+		await addUserToOrganization(memberUser.id, orgId, "member");
+
+		// The backfill path passes the member row's actual role. A drifted
+		// non-owner must NOT be minted as an owner.
+		await provisionMemberAndCoreIdentities(orgId, {
+			userId: memberUser.id,
+			email: memberUser.email,
+			name: "Regular Member",
+			role: "member",
+		});
+
+		const rows = await sql<{ role: string | null }>`
+      SELECT e.metadata->>'role' AS role
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.organization_id = e.organization_id
+      WHERE et.slug = '$member'
+        AND e.organization_id = ${orgId}
+        AND e.metadata->>'email' = ${memberUser.email}
+        AND e.deleted_at IS NULL
+    `;
+		expect(rows).toHaveLength(1);
+		expect(rows[0].role).toBe("member");
+	});
 });

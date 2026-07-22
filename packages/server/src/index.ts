@@ -1118,7 +1118,7 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
 		const windowResult = await sql`
       SELECT
         iw.id,
-        iw.watcher_id,
+        iw.watcher_id AS behavior_id,
         iw.granularity,
         iw.window_start,
         iw.window_end,
@@ -1130,8 +1130,8 @@ app.get("/api/:orgSlug/behaviors/windows/:windowId", mcpAuth, async (c) => {
         iw.model_used,
         iw.run_metadata,
         i.entity_ids,
-        i.slug as watcher_slug,
-        i.name as watcher_name,
+        i.slug AS behavior_slug,
+        i.name AS behavior_name,
         e.name as entity_name,
         et.slug AS entity_type,
         parent.name as parent_name,

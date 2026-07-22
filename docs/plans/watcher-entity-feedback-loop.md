@@ -45,7 +45,7 @@ correction **steers** future runs. The human always wins; the AI proposes, the h
    post-commit approval for blocked fields.
 3. **Approval apply:** new `manage_operations` action_key (`entity_field_change`) mirroring
    `tryApproveManageAgentsRun` — approve writes the field + marks owned, supersedes the event.
-4. **Prompt/reaction render:** `watcher-mode.ts` + `template-renderer.ts` render metadata +
+4. **Prompt/reaction render:** `behavior-mode.ts` + `template-renderer.ts` render metadata +
    owned markers; reaction gets the watcher's children + blocked proposals.
 5. **Follow-ups:** owletto inline field-edit + annotation UI; device-worker entity context
    (`poll.ts` ships zero entities today); two-tier relevance (post-now vs track/conditional).

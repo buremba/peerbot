@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stripServerOnlyExecutionConfig } from '../watcher-execution-config';
+import { stripServerOnlyExecutionConfig } from '../behavior-execution-config';
 
 describe('stripServerOnlyExecutionConfig', () => {
   it('removes server-only keys (finalize_nudges) but keeps device-worker fields', () => {

@@ -3,7 +3,7 @@
 // =============================================================================
 
 // TypeBox (schema authoring convenience for connector definitions / fact
-// schemas). NOTE: do NOT import these into a watcher reaction — bundling
+// schemas). NOTE: do NOT import these into a behavior reaction — bundling
 // typebox into the isolate breaks the SDK client proxy (see
 // reaction-execute-typebox.test.ts). A reaction declares its `input` as a
 // PLAIN JSON Schema object; the host validates `ctx.extracted_data` against it.

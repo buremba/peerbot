@@ -1,5 +1,5 @@
 /**
- * In-process SDK shared by the `query_sdk` / `run_sdk` MCP tools and watcher reactions.
+ * In-process SDK shared by the `query_sdk` / `run_sdk` MCP tools and behavior reactions.
  * `mode: "read"` filters namespaces against `METHOD_METADATA[*].access === "read"`;
  * `allowCrossOrg: false` makes `client.org(...)` throw `CrossOrgAccessDenied`.
  */

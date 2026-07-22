@@ -160,7 +160,7 @@ describe("normalizeWatcherSources source.context classification", () => {
 			},
 		]);
 		// kind:'entity' means its rows reach the agent but are excluded from the
-		// window's content_ids (see watcher-mode allContent), so the entity `id`
+		// window's content_ids (see behavior-mode allContent), so the entity `id`
 		// never hits the watcher_window_events → events(id) foreign key.
 		expect(normalized.kind).toBe("entity");
 	});

@@ -7,7 +7,7 @@ import { isAdminOrOwnerRole } from '../access-control';
  * (`watchers.device_worker_id`). A device-worker watcher run spawns an agent
  * CLI on the *device owner's* machine, so an unvalidated pin lets a member-write
  * actor target another user's device — privilege escalation. This mirrors the
- * shape of watcher-execution-config.ts: a pure decision function (unit-tested)
+ * shape of behavior-execution-config.ts: a pure decision function (unit-tested)
  * plus a thin DB-backed assertion wrapper, both raising ToolUserError on reject.
  */
 

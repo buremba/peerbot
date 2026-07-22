@@ -6,7 +6,7 @@
  * Omit `query` to list all content with filters.
  *
  * Implementation lives in ./get_content/ (schema, query, render, handler,
- * watcher-mode); this entry re-exports the public surface so existing
+ * behavior-mode); this entry re-exports the public surface so existing
  * import paths stay stable.
  */
 

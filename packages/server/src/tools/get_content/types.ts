@@ -29,11 +29,11 @@ export interface ClassifierConfig {
  * Result of `read_knowledge`. TypeBox-first and the SINGLE source of truth:
  * `GetContentResult` is `Static<>`-derived from this schema, which is also the
  * tool's `outputSchema`. `ContentItem` (a 90-field type in
- * `@lobu/connector-sdk`, a published package) and the watcher-mode
+ * `@lobu/connector-sdk`, a published package) and the behavior-mode
  * `ClassifierConfig`/`UnprocessedRange` payloads are modeled as `unknown`
  * inline — they're opaque over the wire, and mirroring them here would be a
  * brittle second source that drifts from the SDK. The envelope (content list,
- * total, pagination, watcher-mode flags) is precise.
+ * total, pagination, behavior-mode flags) is precise.
  */
 export const GetContentResultSchema = Type.Object({
   content: Type.Array(Type.Unknown()),

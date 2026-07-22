@@ -910,7 +910,7 @@ describe('watcher CRUD', () => {
   // Issue #1060: a device pin (watchers.device_worker_id) runs the watcher's
   // agent CLI on the device owner's machine, so create/update must verify the
   // caller may target that device. The exhaustive role × ownership matrix is in
-  // src/__tests__/unit/watcher-device-access.test.ts; this proves the gate is
+  // src/__tests__/unit/behavior-device-access.test.ts; this proves the gate is
   // wired into the handlers end-to-end (device_worker_id only reaches the
   // handler via the raw `manage()` escape hatch — the typed input omits it).
   describe('device_worker_id ownership gate', () => {

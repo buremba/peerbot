@@ -19,7 +19,7 @@ import {
 } from "../runs/queue-service";
 import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
-import { fingerprintWatcherSources } from "../tools/get_content/watcher-mode";
+import { fingerprintWatcherSources } from "../tools/get_content/behavior-mode";
 import { nextRunAt } from "../utils/cron";
 import { ensureCanvasEntity, findCanvasHead } from "../utils/canvas-events";
 import { insertEvent } from "../utils/insert-event";

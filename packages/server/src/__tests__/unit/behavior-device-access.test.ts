@@ -12,7 +12,7 @@ import {
   type DeviceWorkerAccessCaller,
   type DeviceWorkerOwnershipRow,
   evaluateDeviceWorkerAccess,
-} from '../../tools/admin/watcher-device-access';
+} from '../../tools/admin/behavior-device-access';
 
 const ORG = 'org-1';
 const OTHER_ORG = 'org-2';

@@ -20,7 +20,7 @@ import { createWatcherRun } from "../../../runs/queue-service";
 import { nextRunAt } from "../../../utils/cron";
 import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
-import { handleWatcherMode } from "../../../tools/get_content/watcher-mode";
+import { handleBehaviorMode } from "../../../tools/get_content/behavior-mode";
 import {
 	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
@@ -240,7 +240,7 @@ describe("watcher automation contract", () => {
       WHERE id = ${queued.runId}
     `;
 
-		const content = (await handleWatcherMode(
+		const content = (await handleBehaviorMode(
 			{ behavior_id: watcherId },
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
 			dbClient,

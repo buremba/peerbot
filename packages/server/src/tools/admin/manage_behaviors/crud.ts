@@ -16,8 +16,8 @@ import {
   createClassifiersForWatcher,
   enableClassifiersOnEntity,
 } from '../../../watchers/classifier-extraction';
-import { assertDeviceWorkerAccess } from '../watcher-device-access';
-import { assertValidExecutionConfig } from '../watcher-execution-config';
+import { assertDeviceWorkerAccess } from '../behavior-device-access';
+import { assertValidExecutionConfig } from '../behavior-execution-config';
 import { assertEntityIdsInOrg, getNextNumericId, requireExists } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';

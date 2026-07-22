@@ -39,7 +39,7 @@ import {
 import { buildContentItems, fetchClassificationExcerpts } from './render';
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
-import { handleWatcherMode } from './watcher-mode';
+import { handleBehaviorMode } from './behavior-mode';
 import { withValidatedArgs } from '../validate-args';
 
 /**
@@ -180,9 +180,9 @@ async function getContentImpl(
   const offset = args.offset || 0;
 
   try {
-    // If watcher_id is provided, use watcher-mode: fetch content for all sources and generate window_token
+    // If behavior_id is provided, use behavior mode: fetch content for all sources and generate window_token
     if (args.behavior_id) {
-      return await handleWatcherMode(args, env, sql, {
+      return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
         sourceConversationId: ctx.sourceContext?.conversationId ?? null,
       });

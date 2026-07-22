@@ -1,0 +1,100 @@
+/**
+ * The naming guard is only worth having if it actually fails on a regression.
+ * Three earlier revisions of it passed clean on violations they were written to
+ * catch: a key-anchored regex that could not match `watcher_source`, a scan that
+ * saw only `*Namespace` method names, and one that saw only direct members of
+ * exported types.
+ *
+ * These fixtures mutate a scratch copy of the real scanned files, run the guard
+ * as a subprocess, and assert the exit code — the same signal `make pre-pr` and
+ * CI act on.
+ */
+
+import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "bun:test";
+
+const REPO_ROOT = resolve(import.meta.dir, "..", "..");
+const GUARD = join(REPO_ROOT, "scripts/check-exposed-surface-naming.ts");
+const NAMESPACE_FILE = join(
+  REPO_ROOT,
+  "packages/server/src/sandbox/namespaces/behaviors.ts"
+);
+const CONTRACT_FILE = join(
+  REPO_ROOT,
+  "packages/core/src/contracts/tools/manage-entity.ts"
+);
+
+const touched: string[] = [];
+
+function mutate(file: string, anchor: string, insert: string): void {
+  copyFileSync(file, `${file}.guardbak`);
+  touched.push(file);
+  const source = readFileSync(file, "utf8");
+  const at = source.indexOf(anchor);
+  if (at < 0) throw new Error(`anchor not found in ${file}: ${anchor}`);
+  writeFileSync(file, source.slice(0, at) + insert + source.slice(at));
+}
+
+function runGuard(): number {
+  const result = Bun.spawnSync(["bun", GUARD], { cwd: REPO_ROOT });
+  return result.exitCode;
+}
+
+afterEach(() => {
+  for (const file of touched.splice(0)) {
+    copyFileSync(`${file}.guardbak`, file);
+    Bun.spawnSync(["rm", "-f", `${file}.guardbak`]);
+  }
+});
+
+describe("check-exposed-surface-naming", () => {
+  it("passes on the clean tree", () => {
+    expect(runGuard()).toBe(0);
+  });
+
+  it("fails on a snake_case wire key in a TypeBox tool contract", () => {
+    mutate(
+      CONTRACT_FILE,
+      "  behavior_source: Type.Optional(",
+      "  watcher_source: Type.Optional(Type.Number()),\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a camelCase key in a TypeBox tool contract", () => {
+    mutate(
+      CONTRACT_FILE,
+      "  behavior_source: Type.Optional(",
+      "  watcherId: Type.Optional(Type.String()),\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a banned key in an exported namespace input type", () => {
+    mutate(
+      NAMESPACE_FILE,
+      "export interface",
+      "export interface GuardFixtureDirect { watcher_id: number }\n\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a banned key nested inside an exported type", () => {
+    mutate(
+      NAMESPACE_FILE,
+      "export interface",
+      "export interface GuardFixtureNested { source: { watcher_id: number } }\n\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a banned key in an inline method parameter type", () => {
+    mutate(
+      NAMESPACE_FILE,
+      "export interface",
+      "export interface GuardFixtureNamespace {\n  run(input: { watcher_id: number }): Promise<void>;\n}\n\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+});

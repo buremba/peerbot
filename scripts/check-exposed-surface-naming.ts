@@ -188,54 +188,40 @@ function scanTypeBoxSchemas(file: string, violations: Violation[]): void {
   }
 }
 
-/** Public namespace interface members are the runtime-callable SDK names. */
-function scanNamespaceMethods(file: string, violations: Violation[]): void {
-  const source = parse(file);
-  for (const statement of source.statements) {
-    if (
-      !ts.isInterfaceDeclaration(statement) ||
-      !statement.name.text.endsWith("Namespace")
-    ) {
-      continue;
-    }
-    for (const member of statement.members) {
-      const name = propertyName(member);
-      const text = name && propertyNameText(name);
-      if (name && text && BANNED.test(text)) {
-        addViolation(violations, file, source, name);
-      }
-    }
-  }
-}
-
 /**
- * Exported interface / type-alias members in a namespace file. These describe
- * the arguments an agent passes to a ClientSDK method (e.g.
- * `NotificationsSendInput`), so their property names are agent-facing wire keys
- * even though scanNamespaceMethods only looks at `*Namespace` method names.
+ * ClientSDK namespace surface: `*Namespace` method names plus every property
+ * name reachable from an exported type in the file — method parameter and
+ * return types, nested type literals, and exported input/output declarations.
+ *
+ * Recursion matters: an agent-facing key is agent-facing at any depth, so
+ * `{ source: { watcher_id } }` and an inline `method(input: { watcher_id })`
+ * are violations exactly like a top-level member. Scanning only direct members
+ * is how two false negatives shipped past earlier revisions of this guard.
  */
-function scanExportedTypeMembers(file: string, violations: Violation[]): void {
+function scanNamespaceSurface(file: string, violations: Violation[]): void {
   const source = parse(file);
+
+  function walk(node: ts.Node): void {
+    const name = propertyName(node);
+    const text = name && propertyNameText(name);
+    if (name && text && BANNED.test(text)) {
+      addViolation(violations, file, source, name);
+    }
+    ts.forEachChild(node, walk);
+  }
+
   for (const statement of source.statements) {
-    const exported = statement.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
-    );
-    if (!exported) continue;
-
-    const members = ts.isInterfaceDeclaration(statement)
-      ? statement.members
-      : ts.isTypeAliasDeclaration(statement) &&
-          ts.isTypeLiteralNode(statement.type)
-        ? statement.type.members
-        : undefined;
-    if (!members) continue;
-
-    for (const member of members) {
-      const name = propertyName(member);
-      const text = name && propertyNameText(name);
-      if (name && text && BANNED.test(text)) {
-        addViolation(violations, file, source, name);
-      }
+    const isNamespaceInterface =
+      ts.isInterfaceDeclaration(statement) &&
+      statement.name.text.endsWith("Namespace");
+    const isExportedType =
+      (ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement)) &&
+      statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+      );
+    if (isNamespaceInterface || isExportedType) {
+      walk(statement);
     }
   }
 }
@@ -291,8 +277,7 @@ for (const file of [
 // method name.
 const namespacesDir = join(REPO_ROOT, "packages/server/src/sandbox/namespaces");
 for (const file of collectTsFiles(namespacesDir)) {
-  scanNamespaceMethods(file, violations);
-  scanExportedTypeMembers(file, violations);
+  scanNamespaceSurface(file, violations);
 }
 
 const seen = new Set<string>();

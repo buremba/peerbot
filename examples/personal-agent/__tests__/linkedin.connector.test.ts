@@ -181,7 +181,12 @@ describe("buildHomeFeedEvents", () => {
       new Date()
     );
     expect(ev.author_name).toBe("🦔 james hawkins");
-    expect(ev.metadata).toEqual({ author: "🦔 james hawkins" });
+    // No profile href on this row → engagement is named but not identified.
+    expect(ev.metadata).toEqual({
+      author: "🦔 james hawkins",
+      social_actor: "Deb Mukherjee",
+      social_action: "like",
+    });
   });
 
   test("strips the connection-degree marker from a DOM-selector author", () => {
@@ -212,6 +217,186 @@ describe("buildHomeFeedEvents", () => {
     );
     expect(ev.author_name).toBe("Hugo Lu");
     expect(ev.metadata).toEqual({ author: "Hugo Lu" });
+  });
+
+  test("attributes the profile href to the author on a plain card", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Maria Malykh • 1st Founder & CTO | Automating R&D Tax 3h • I'm not an early planner",
+          profile_href:
+            "https://www.linkedin.com/in/maria-malykh-ilyina/?miniProfileUrn=abc",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Maria Malykh");
+    expect(ev.metadata).toEqual({
+      author: "Maria Malykh",
+      author_linkedin_slug: "maria-malykh-ilyina",
+      author_profile_url: "https://www.linkedin.com/in/maria-malykh-ilyina",
+    });
+  });
+
+  test("attributes the profile href to the engager on a social-context card", () => {
+    // DOM order on engagement cards: the reacting member's link comes first,
+    // so the single captured href belongs to them — never to the author.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this Adam Robinson • 2nd CEO @ MoltSets 8h • Connect unlimited contact data",
+          profile_href: "https://www.linkedin.com/in/debgotwired/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Adam Robinson");
+    expect(ev.metadata).toEqual({
+      author: "Adam Robinson",
+      social_actor: "Deb Mukherjee",
+      social_action: "like",
+      social_actor_slug: "debgotwired",
+      social_actor_profile_url: "https://www.linkedin.com/in/debgotwired",
+    });
+  });
+
+  test("preserves a comma suffix in the engager's display name", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post John Smith, MBA likes this Alice Jones • 2nd Founder 2h • Follow",
+          author: "John Smith, MBA",
+          profile_href: "https://www.linkedin.com/in/john-smith/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toMatchObject({
+      author: "Alice Jones",
+      social_actor: "John Smith, MBA",
+      social_actor_slug: "john-smith",
+    });
+  });
+
+  test("does not treat an action phrase in the DOM author's name as a banner", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post We Love This Company • 2nd Community 2h • Follow",
+          author: "We Love This Company",
+          profile_href: "https://www.linkedin.com/in/we-love-this-company/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("We Love This Company");
+    expect(ev.metadata).toEqual({
+      author: "We Love This Company",
+      author_linkedin_slug: "we-love-this-company",
+      author_profile_url: "https://www.linkedin.com/in/we-love-this-company",
+    });
+  });
+
+  test("captures comment and repost engagement actions", () => {
+    const events = buildHomeFeedEvents(
+      [
+        {
+          id: "c",
+          body: "Feed post Barry McCardel commented Caroline Haynes • 2nd GTM at Hex 20h • Follow After an incredible year",
+          profile_href: "https://www.linkedin.com/in/barrymccardel/",
+        },
+        {
+          id: "r",
+          body: "Feed post Sabri Karagönen reposted this Hardal 17h • Follow Hardal is now integrated with Bruin",
+          profile_href: "https://www.linkedin.com/in/sabrikaragonen/",
+        },
+      ],
+      new Date()
+    );
+    expect(events[0].metadata).toMatchObject({
+      author: "Caroline Haynes",
+      social_actor: "Barry McCardel",
+      social_action: "comment",
+      social_actor_slug: "barrymccardel",
+    });
+    expect(events[1].metadata).toMatchObject({
+      author: "Hardal",
+      social_actor: "Sabri Karagönen",
+      social_action: "repost",
+      social_actor_slug: "sabrikaragonen",
+    });
+  });
+
+  test('keeps only the first engager name on an "and N others" banner', () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Ali Veli and 3 others like this Ayşe Yılmaz • 2nd Data engineer 4h • Connect",
+          profile_href: "https://www.linkedin.com/in/aliveli/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toMatchObject({
+      author: "Ayşe Yılmaz",
+      social_actor: "Ali Veli",
+      social_action: "like",
+      social_actor_slug: "aliveli",
+    });
+  });
+
+  test("attributes the href to the author on an actor-less banner card", () => {
+    // "Voices worth following" / "Recommended for you" have no engager link,
+    // so the first profile link is the author's.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Voices worth following Elizabeth Reid • 2nd VP, Search 13h • Follow Bonjour France!",
+          profile_href: "https://www.linkedin.com/in/elizabeth-reid-56356724/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("Elizabeth Reid");
+    expect(ev.metadata).toEqual({
+      author: "Elizabeth Reid",
+      author_linkedin_slug: "elizabeth-reid-56356724",
+      author_profile_url: "https://www.linkedin.com/in/elizabeth-reid-56356724",
+    });
+  });
+
+  test("emits no slug fields when the row has no profile href", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Hugo Lu • 1st Founder at Orchestra 4h • Yesterday Snowflake popped",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toEqual({ author: "Hugo Lu" });
+  });
+
+  test("does not attribute a later person link to a company author", () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Acme Corp • 3rd+ Company update with a tagged member",
+          author: "Acme Corp",
+          profile_href: "https://www.linkedin.com/company/acme/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.metadata).toEqual({ author: "Acme Corp" });
   });
 
   test("drops rows without id or body and dedupes by id", () => {
@@ -355,6 +540,14 @@ describe("parseHomeFeedAuthor", () => {
     ).toBe("Carol");
   });
 
+  test('strips a "Voices worth following" banner before the author', () => {
+    expect(
+      parseHomeFeedAuthor(
+        "Feed post Voices worth following Elizabeth Reid • 2nd VP, Search 13h • Follow Bonjour France!"
+      )
+    ).toBe("Elizabeth Reid");
+  });
+
   test('recovers the author from an expanded-post "Author" badge row without a degree marker', () => {
     expect(
       parseHomeFeedAuthor(
@@ -362,6 +555,11 @@ describe("parseHomeFeedAuthor", () => {
       )
     ).toBe("Daniel Kravtsov");
     expect(parseHomeFeedAuthor("Q Author Founder and CEO")).toBe("Q");
+    expect(
+      parseHomeFeedAuthor(
+        "Daniel Kravtsov Author CEO who likes this approach to marketing"
+      )
+    ).toBe("Daniel Kravtsov");
   });
 
   test('keeps only the leading name on a "Premium Profile" badge row', () => {
@@ -426,6 +624,47 @@ describe("LinkedInConnector home_feed", () => {
     expect(def.feeds.home_feed.configSchema.required).toBeUndefined();
   });
 
+  test("declares the slug/engagement fields on the post metadata schema", () => {
+    const def = new LinkedInConnector().definition;
+    const props = def.feeds.home_feed.eventKinds.post.metadataSchema.properties;
+    expect(props.author_linkedin_slug).toBeDefined();
+    expect(props.social_actor).toBeDefined();
+    expect(props.social_action).toBeDefined();
+    expect(props.social_actor_slug).toBeDefined();
+  });
+
+  test("declares author and engager attributions keyed on linkedin_slug", () => {
+    const def = new LinkedInConnector().definition;
+    const attributions = def.feeds.home_feed.eventKinds.post.attributions ?? [];
+    const authoredBy = attributions.find(
+      (rule: { role: string }) => rule.role === "authored_by"
+    );
+    const mentions = attributions.find(
+      (rule: { role: string }) => rule.role === "mentions"
+    );
+
+    expect(authoredBy).toBeDefined();
+    expect(authoredBy.autoCreate).toBe(true);
+    expect(authoredBy.target.entityType).toBe("person");
+    expect(authoredBy.target.identities).toEqual([
+      {
+        namespace: LINKEDIN_IDENTITY.SLUG,
+        eventPath: "metadata.author_linkedin_slug",
+      },
+    ]);
+
+    expect(mentions).toBeDefined();
+    expect(mentions.autoCreate).toBe(true);
+    expect(mentions.target.entityType).toBe("person");
+    expect(mentions.target.titlePath).toBe("metadata.social_actor");
+    expect(mentions.target.identities).toEqual([
+      {
+        namespace: LINKEDIN_IDENTITY.SLUG,
+        eventPath: "metadata.social_actor_slug",
+      },
+    ]);
+  });
+
   test("syncHomeFeed dispatches cs_scrape and maps rows to events", async () => {
     const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
     const dispatcher = {
@@ -472,6 +711,13 @@ describe("LinkedInConnector home_feed", () => {
     expect(
       (calls[0].input.scrape_config as { scroll: { max: number } }).scroll.max
     ).toBe(4);
+    expect(
+      (
+        calls[0].input.scrape_config as {
+          fields: { profile_href: { selector: string } };
+        }
+      ).fields.profile_href.selector
+    ).toContain("/company/");
 
     expect(res.events).toHaveLength(2);
     expect(res.events[0].origin_id).toBe("li_home_tok1");

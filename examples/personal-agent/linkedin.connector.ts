@@ -240,6 +240,54 @@ const LINKEDIN_POST_AUTHOR_ATTRIBUTIONS: EventAttributionRule[] = [
   },
 ];
 
+/**
+ * Attribute only people whose `linkedin_slug` came from the row's first
+ * profile link. The engine skips rules with no resolved identity, so an
+ * engagement card cannot create a name-only entity for its unlinked author.
+ */
+const LINKEDIN_HOME_FEED_ATTRIBUTIONS: EventAttributionRule[] = [
+  {
+    role: "authored_by",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "author_name",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.author_linkedin_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.author_profile_url",
+        behavior: "prefer_non_empty",
+      },
+    },
+  },
+  {
+    role: "mentions",
+    autoCreate: true,
+    target: {
+      entityType: "person",
+      titlePath: "metadata.social_actor",
+      identities: [
+        {
+          namespace: LINKEDIN_IDENTITY.SLUG,
+          eventPath: "metadata.social_actor_slug",
+        },
+      ],
+    },
+    traits: {
+      linkedin_url: {
+        eventPath: "metadata.social_actor_profile_url",
+        behavior: "prefer_non_empty",
+      },
+    },
+  },
+];
+
 // ── Home-feed content-script scrape contract ────────────────────
 //
 // The personalized home feed (linkedin.com/feed/) is the ONE feed that can't
@@ -255,6 +303,11 @@ interface HomeFeedRow {
   id?: string;
   body?: string;
   author?: string;
+  /**
+   * Href of the first profile or company link in the row. On engagement cards
+   * that is the reacting member's link; otherwise it is the author's link.
+   */
+  profile_href?: string;
 }
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
@@ -291,44 +344,89 @@ const HOME_FEED_SCRAPE_CONFIG = {
       take: "text",
       firstLine: true,
     },
+    profile_href: {
+      // Include company authors so a later person mention cannot be mistaken
+      // for the author. normalizeLinkedInSlug rejects company URLs.
+      selector: 'a[href*="/in/"], a[href*="/company/"]',
+      take: "attr",
+      attr: "href",
+    },
   },
 } as const;
 
 /**
  * Best-effort author extraction from a home-feed row's body text. Social
- * context such as "X likes this" appears before the post author, and stacked
- * context can contain more than one banner. The author follows the last one.
+ * context appears before the post author in two shapes: actor banners name an
+ * engaging member ("X likes this", "X commented", "X reposted this") and
+ * actor-less banners are platform labels with no member ("Recommended for
+ * you", "Voices worth following"). Stacked context can contain more than one
+ * actor banner; the author follows the last one.
  */
-const HOME_FEED_SOCIAL_CONTEXT_RE =
-  /\b(?:(?:likes?|loves?|celebrates?|supports?) this|finds? this (?:insightful|funny)|commented(?: on this)?|reposted this|recommended for you)\s*/gi;
+const HOME_FEED_ACTOR_BANNER_RE =
+  /\b(?:(?:likes?|loves?|celebrates?|supports?) this|finds? this (?:insightful|funny)|commented(?: on this)?|reposted this)\s*/gi;
+const HOME_FEED_ACTORLESS_BANNER_RE =
+  /^(?:recommended for you|voices worth following)\s+/i;
+
+/** Normalize a matched actor-banner to a stable engagement verb. */
+function normalizeSocialAction(banner: string): string {
+  const b = banner.toLowerCase();
+  if (b.includes("comment")) return "comment";
+  if (b.includes("repost")) return "repost";
+  if (b.includes("insightful")) return "insightful";
+  if (b.includes("funny")) return "funny";
+  if (b.includes("love")) return "love";
+  if (b.includes("celebrate")) return "celebrate";
+  if (b.includes("support")) return "support";
+  return "like";
+}
+
+type HomeFeedBanner =
+  | { kind: "actor"; actor: string; action: string }
+  | { kind: "actorless" };
 
 function parseHomeFeedAuthorDetails(body: string): {
   author: string;
-  hasSocialContext: boolean;
+  banner: HomeFeedBanner | null;
 } {
-  if (!body) return { author: "", hasSocialContext: false };
+  if (!body) return { author: "", banner: null };
   const text = body.replace(/^feed post\s+/i, "").trim();
 
   // Limit banner matching to the row header so post content cannot be mistaken
   // for social context.
   const sepIdx = text.indexOf(" • ");
-  let header = (sepIdx === -1 ? text : text.slice(0, sepIdx)).trim();
-
-  let lastBannerEnd = -1;
-  for (const match of header.matchAll(HOME_FEED_SOCIAL_CONTEXT_RE)) {
-    lastBannerEnd = match.index + match[0].length;
-  }
-  const hasSocialContext = lastBannerEnd !== -1;
-  if (hasSocialContext) header = header.slice(lastBannerEnd).trim();
-
   if (sepIdx === -1) {
     // Expanded-post cards can use "<Name> Author <headline>" without a degree
-    // marker; "Author" is LinkedIn's literal badge text.
-    const badge = header.match(/^(.{1,60}?)\s+Author\b/);
-    return {
-      author: badge ? badge[1].trim() : "",
-      hasSocialContext,
+    // marker. Resolve that bounded prefix before scanning for banner phrases
+    // so words in the post content cannot affect attribution.
+    const badge = text.match(/^(.{1,60}?)\s+Author\b/);
+    return { author: badge ? badge[1].trim() : "", banner: null };
+  }
+  let header = text.slice(0, sepIdx).trim();
+
+  let banner: HomeFeedBanner | null = null;
+  const actorless = header.match(HOME_FEED_ACTORLESS_BANNER_RE);
+  if (actorless) {
+    header = header.slice(actorless[0].length).trim();
+    banner = { kind: "actorless" };
+  }
+
+  const matches = [...header.matchAll(HOME_FEED_ACTOR_BANNER_RE)];
+  if (matches.length > 0) {
+    const first = matches[0];
+    const last = matches[matches.length - 1];
+    const actorGroup = header.slice(0, first.index).trim();
+    const pluralActors = actorGroup.match(/^(.*?)\s+and\s+\d+\s+others?$/i);
+    // "A and 3 others" / "A, B and 22 others" use A's profile link. Preserve
+    // commas in a single member's display name (for example, "A, MBA").
+    const actor = (
+      pluralActors ? pluralActors[1].split(",")[0] : actorGroup
+    ).trim();
+    banner = {
+      kind: "actor",
+      actor: actor.slice(0, 60),
+      action: normalizeSocialAction(first[0]),
     };
+    header = header.slice(last.index + last[0].length).trim();
   }
 
   let name = header;
@@ -340,7 +438,7 @@ function parseHomeFeedAuthorDetails(body: string): {
   // original poster's name and before the marker — strip it so we keep just
   // the name.
   name = name.replace(/\s+\d+\s*[smhdwy]o?$/i, "").trim();
-  return { author: name.slice(0, 60), hasSocialContext };
+  return { author: name.slice(0, 60), banner };
 }
 
 export function parseHomeFeedAuthor(body: string): string {
@@ -378,13 +476,42 @@ export function buildHomeFeedEvents(
     seen.add(row.id);
     const parsedAuthor = parseHomeFeedAuthorDetails(row.body);
     const domAuthor = (row.author ?? "").trim().split(" • ")[0].trim();
+    const actorBanner =
+      parsedAuthor.banner?.kind === "actor" ? parsedAuthor.banner : null;
+    // If the DOM supplied a different member name, the body phrase was part of
+    // a plain author's name rather than a social-context banner.
+    const banner =
+      actorBanner &&
+      domAuthor &&
+      actorBanner.actor.localeCompare(domAuthor, undefined, {
+        sensitivity: "accent",
+      }) !== 0
+        ? null
+        : parsedAuthor.banner;
     // The first profile link can belong to the reacting member on
     // social-context cards, so prefer the body author there. Otherwise the DOM
     // field is more reliable than the heuristic body parser.
     const author =
-      (parsedAuthor.hasSocialContext ? parsedAuthor.author : "") ||
-      domAuthor ||
-      parsedAuthor.author;
+      (banner ? parsedAuthor.author : "") || domAuthor || parsedAuthor.author;
+
+    // The row's single captured profile href belongs to the engager on actor
+    // banners and to the author everywhere else (see HomeFeedRow.profile_href).
+    const slug = normalizeLinkedInSlug(row.profile_href);
+    const profileUrl = slug ? `https://www.linkedin.com/in/${slug}` : undefined;
+    const engagement = banner?.kind === "actor" ? banner : null;
+    const metadata: Record<string, unknown> = { author };
+    if (engagement) {
+      metadata.social_actor = engagement.actor;
+      metadata.social_action = engagement.action;
+      if (slug) {
+        metadata.social_actor_slug = slug;
+        metadata.social_actor_profile_url = profileUrl;
+      }
+    } else if (slug) {
+      metadata.author_linkedin_slug = slug;
+      metadata.author_profile_url = profileUrl;
+    }
+
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,
@@ -395,7 +522,7 @@ export function buildHomeFeedEvents(
       // Token id is NOT a numeric activity id, so we cannot build a
       // urn:li:activity permalink — link to the feed itself.
       source_url: "https://www.linkedin.com/feed/",
-      metadata: { author },
+      metadata,
     });
   }
   return events;
@@ -712,10 +839,25 @@ export default class LinkedInConnector extends ConnectorRuntime<
         eventKinds: {
           post: {
             description: "A post from your personalized LinkedIn home feed",
+            attributions: LINKEDIN_HOME_FEED_ATTRIBUTIONS,
             metadataSchema: {
               type: "object",
               properties: {
                 author: { type: "string" },
+                author_linkedin_slug: { type: "string" },
+                author_profile_url: { type: "string" },
+                social_actor: {
+                  type: "string",
+                  description:
+                    "Member whose engagement surfaced this post (likes/commented/reposted banners).",
+                },
+                social_action: {
+                  type: "string",
+                  description:
+                    "Engagement verb: like, love, celebrate, support, insightful, funny, comment, repost.",
+                },
+                social_actor_slug: { type: "string" },
+                social_actor_profile_url: { type: "string" },
               },
             },
           },

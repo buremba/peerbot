@@ -1,5 +1,5 @@
 /**
- * Type declarations for behavior reaction scripts.
+ * Type declarations for Behavior reaction scripts.
  *
  * Reaction scripts run inside an isolated-vm sandbox where `client` is a
  * Proxy that dispatches calls to the host. You can't import real packages
@@ -124,7 +124,7 @@ export interface NotificationsSendInput {
  * `client.entities`      — CRUD entities and relationships
  * `client.notifications` — push a notification to the org's inbox + bot connections (Slack/Telegram)
  * `client.query`         — raw SQL (results as JSON rows)
- * `client.log`           — structured logging (appears in behavior run logs)
+ * `client.log`           — structured logging (appears in Behavior run logs)
  */
 export interface ReactionClient {
   knowledge: {
@@ -172,7 +172,7 @@ export interface ReactionClient {
 
   /**
    * Run a connection's operations (connector actions / MCP tools) on demand.
-   * Reactions run in the behavior's system context, so they may execute
+   * Reactions run in the Behavior's system context, so they may execute
    * operations the agent itself can't call in-turn — e.g. driving the paired
    * Owletto Chrome extension via a connector action. Pass `behavior_source` for
    * run attribution back to the firing window.
@@ -200,6 +200,6 @@ export interface ReactionClient {
   /** Run a read-only SQL query against the org's Postgres. */
   query(sql: string): Promise<unknown[]>;
 
-  /** Structured log — appears in the behavior run output. */
+  /** Structured log — appears in the Behavior run output. */
   log(message: string, data?: Record<string, unknown>): void;
 }

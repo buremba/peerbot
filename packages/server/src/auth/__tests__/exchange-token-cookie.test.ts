@@ -90,9 +90,19 @@ describe('deep-link token exchange', () => {
     expect(html).toContain('sessionStorage');
     expect(html).toContain('location.hash');
     expect(html).toContain('replaceState');
-    // Browser-handoff deep link (sidepanel → Memory run).
+    // Browser-handoff deep links (sidepanel → conversation or Memory run).
     expect(html).toContain('h.get("run")');
     expect(html).toContain('/#run=');
+    expect(html).toContain('h.get("agent")');
+    expect(html).toContain('h.get("thread")');
+    expect(html).toContain('/#agent=');
+    expect(html).toContain('&thread=');
+    expect(html).toContain('&message=');
+    // Conversation handoff must win over bare run when both are present.
+    const agentBranch = html.indexOf('if (agent && thread)');
+    const runBranch = html.indexOf('else if (run)');
+    expect(agentBranch).toBeGreaterThan(-1);
+    expect(runBranch).toBeGreaterThan(agentBranch);
   });
 
   // The load-bearing claim: the session token from /extension-session, sent as

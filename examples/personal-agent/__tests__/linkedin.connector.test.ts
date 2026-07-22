@@ -211,6 +211,30 @@ describe("buildHomeFeedEvents", () => {
     });
   });
 
+  test("matches emoji-prefixed DOM engager to banner actor (keeps engagement attribution)", () => {
+    // DOM text often keeps the leading emoji; banner parse strips it. Without
+    // normalizing both sides, the banner is discarded and the engager is
+    // mis-emitted as the post author with their slug.
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: "tok",
+          body: "Feed post Deb Mukherjee likes this 🦔 james hawkins • 2nd self driving 8h • Connect",
+          author: "🦔 Deb Mukherjee",
+          profile_href: "https://www.linkedin.com/in/debgotwired/",
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe("james hawkins");
+    expect(ev.metadata).toMatchObject({
+      author: "james hawkins",
+      social_actor: "Deb Mukherjee",
+      social_action: "like",
+      social_actor_slug: "debgotwired",
+    });
+  });
+
   test("strips the connection-degree marker from a DOM-selector author", () => {
     const [ev] = buildHomeFeedEvents(
       [
@@ -642,6 +666,14 @@ describe("isHomeFeedNoise", () => {
         "Feed post Try LinkedIn Ads Build your brand and drive quality leads. Spend €200 to get an extra"
       )
     ).toBe(true);
+  });
+
+  test("keeps a member post that discusses LinkedIn Ads in the body", () => {
+    expect(
+      isHomeFeedNoise(
+        "Feed post Jane Doe • 1st Growth lead 2h • Follow Why Try LinkedIn Ads still works for B2B pipelines"
+      )
+    ).toBe(false);
   });
 
   test("keeps a normal post", () => {

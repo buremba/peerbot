@@ -474,11 +474,16 @@ export function isHomeFeedNoise(body: string): boolean {
   if (!body || body.trim().length < 30) return true;
   if (/\bPromoted\b/i.test(body.slice(0, 130))) return true;
   if (/\bSuggested\b/i.test(body.slice(0, 30))) return true;
-  // Platform self-promo cards (no real member header). Bodies from production
-  // syncs: "Get more leads with boosting…", "Try LinkedIn Ads…".
-  if (/\b(?:Try )?LinkedIn Ads\b/i.test(body)) return true;
-  if (/\bGet more leads with boosting\b/i.test(body)) return true;
-  if (/\bBoost your best content on LinkedIn\b/i.test(body)) return true;
+  // Platform self-promo cards only when there is no real member header
+  // (no connection-degree " • " and no expanded "Author" badge). A genuine
+  // post that *discusses* LinkedIn Ads must not be dropped.
+  const text = body.replace(/^feed post\s+/i, "").trim();
+  const hasMemberHeader = text.includes(" • ") || /^\S.+\s+Author\b/.test(text);
+  if (!hasMemberHeader) {
+    if (/\b(?:Try )?LinkedIn Ads\b/i.test(body)) return true;
+    if (/\bGet more leads with boosting\b/i.test(body)) return true;
+    if (/\bBoost your best content on LinkedIn\b/i.test(body)) return true;
+  }
   return false;
 }
 
@@ -499,7 +504,11 @@ export function buildHomeFeedEvents(
     if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
     const parsedAuthor = parseHomeFeedAuthorDetails(row.body);
-    const domAuthor = (row.author ?? "").trim().split(" • ")[0].trim();
+    // Clean DOM author the same way as banner actors so emoji-prefixed names
+    // still match (e.g. DOM "🦔 Deb" vs banner actor "Deb").
+    const domAuthor = cleanHomeFeedDisplayName(
+      (row.author ?? "").trim().split(" • ")[0] ?? ""
+    );
     const actorBanner =
       parsedAuthor.banner?.kind === "actor" ? parsedAuthor.banner : null;
     // If the DOM supplied a different member name, the body phrase was part of
@@ -834,7 +843,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files.",
-    version: "3.1.1",
+    version: "3.1.2",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com

@@ -42,28 +42,10 @@ function normalizeCountsByKind(raw: unknown): Record<string, unknown> | null {
 	if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
 		return null;
 	}
-	const out: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-		const normalized = key === "watcher" ? "behavior" : key;
-		const existing = out[normalized];
-		if (
-			existing != null &&
-			typeof existing === "object" &&
-			!Array.isArray(existing) &&
-			value != null &&
-			typeof value === "object" &&
-			!Array.isArray(value)
-		) {
-			// Defensive merge if a row somehow holds both keys (should not happen).
-			out[normalized] = {
-				...(existing as Record<string, unknown>),
-				...(value as Record<string, unknown>),
-			};
-		} else {
-			out[normalized] = value;
-		}
-	}
-	return out;
+	const { watcher, ...counts } = raw as Record<string, unknown>;
+	return watcher === undefined
+		? counts
+		: { ...counts, behavior: counts.behavior ?? watcher };
 }
 
 routes.use("*", mcpAuth);

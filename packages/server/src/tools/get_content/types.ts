@@ -64,7 +64,7 @@ export const GetContentResultSchema = Type.Object({
    * this repo, but removing the field breaks that user-facing behavior.
    */
   view_url: Type.Optional(Type.String()),
-  // Watcher-mode fields (only present when watcher_id is provided)
+  // Behavior-mode fields (only present when behavior_id is provided)
   window_token: Type.Optional(Type.String()),
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),

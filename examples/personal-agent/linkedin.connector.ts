@@ -1135,12 +1135,15 @@ export async function prepareLinkedInComment(
   const agentId = opts.agentId?.trim() || undefined;
   const threadId = opts.threadId?.trim() || undefined;
   const messageId = opts.messageId?.trim() || undefined;
-  // Conversation-first sidepanel needs both agent + thread; message is optional.
+  const handoff =
+    agentId && threadId ? { agentId, threadId, messageId } : undefined;
   const handoffFields: Record<string, string> = {};
-  if (agentId && threadId) {
-    handoffFields.holder_agent_id = agentId;
-    handoffFields.holder_thread_id = threadId;
-    if (messageId) handoffFields.holder_message_id = messageId;
+  if (handoff) {
+    handoffFields.holder_agent_id = handoff.agentId;
+    handoffFields.holder_thread_id = handoff.threadId;
+    if (handoff.messageId) {
+      handoffFields.holder_message_id = handoff.messageId;
+    }
   }
 
   // Refuse accidental submit clicks through the chrome dispatcher.
@@ -1353,9 +1356,9 @@ export async function prepareLinkedInComment(
     method,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
-    agent_id: agentId,
-    thread_id: threadId,
-    message_id: messageId,
+    agent_id: handoff?.agentId,
+    thread_id: handoff?.threadId,
+    message_id: handoff?.messageId,
     message:
       "Comment staged in your browser. Review the draft and click Post yourself — Lobu did not submit.",
   };
@@ -1407,11 +1410,12 @@ export function commentBodiesMatch(
   const a = normalizeCommentMatchText(actual);
   if (!e || !a) return { ok: false };
   if (a === e) return { ok: true, kind: "exact" };
-  // Scraped text truncated (See more) or expected slightly longer than DOM.
-  if (a.startsWith(e) || e.startsWith(a)) return { ok: true, kind: "prefix" };
-  // Longer card text that embeds the draft (min length guards false positives).
-  if (e.length >= 12 && a.includes(e)) return { ok: true, kind: "contains" };
-  if (a.length >= 12 && e.includes(a)) return { ok: true, kind: "contains" };
+  // Partial matches must be distinctive enough not to verify common phrases.
+  if (Math.min(e.length, a.length) < 24) return { ok: false };
+  // LinkedIn may truncate the visible comment before its "See more" control.
+  if (e.startsWith(a)) return { ok: true, kind: "prefix" };
+  // Some DOM variants wrap the comment body in a longer text block.
+  if (a.includes(e)) return { ok: true, kind: "contains" };
   return { ok: false };
 }
 
@@ -1453,7 +1457,6 @@ export function buildScrapeCommentsExpression(): string {
     out.push({ author, text: text.slice(0, 2000) });
     if (out.length >= 80) break;
   }
-  // Fallback: comment-like contenteditables are composers — skip those.
   return { ok: true, comments: out, count: out.length, url: location.href };
 })()`;
 }
@@ -1467,7 +1470,7 @@ export async function verifyLinkedInStagedComment(
   opts: {
     postUrl: string;
     body: string;
-    /** Prefer matches whose author display name includes this (case-insensitive). */
+    /** Require the author's display name to include this (case-insensitive). */
     author_hint?: string;
     focus?: boolean;
   }
@@ -1521,18 +1524,18 @@ export async function verifyLinkedInStagedComment(
     await dispatcher.dispatch("evaluate", {
       tab_id: tabId,
       expression: `(() => {
-        const labels = [/load more comments/i, /most relevant/i, /^\\d+\\s+comments?$/i, /^comments$/i];
+        const labels = [/^(load|show|view) more comments/i, /^\\d+\\s+comments?$/i, /^comments$/i];
         const clickables = [
           ...document.querySelectorAll('button, [role="button"], a'),
         ];
-        for (const el of clickables) {
+        const control = clickables.find((el) => {
           const n = (el.textContent || '').replace(/\\s+/g, ' ').trim();
-          if (!n || /^(post|submit|send)$/i.test(n)) continue;
-          if (labels.some((re) => re.test(n))) {
-            try { el.click(); } catch (_) {}
-          }
+          return n && labels.some((re) => re.test(n));
+        });
+        if (control) {
+          try { control.click(); } catch (_) {}
         }
-        return true;
+        return !!control;
       })()`,
       await_promise: false,
       ...chromeOriginsInput(),
@@ -1541,10 +1544,33 @@ export async function verifyLinkedInStagedComment(
     // Expand is optional.
   }
 
+  try {
+    await dispatcher.dispatch("wait_for_selector", {
+      tab_id: tabId,
+      selector: ".comments-comment-item, .comments-comment-entity",
+      timeout_ms: 3000,
+      ...chromeOriginsInput(),
+    });
+  } catch {
+    // A post can legitimately have no comments.
+  }
+
+  if (focus) {
+    try {
+      await dispatcher.dispatch("focus_tab", {
+        tab_id: tabId,
+        draw_attention: true,
+        ...chromeOriginsInput(),
+      });
+    } catch {
+      // Focus is best-effort.
+    }
+  }
+
   let comments: ScrapedComment[] = [];
   try {
     const scrape = await dispatcher.dispatch<{
-      value?: { comments?: ScrapedComment[]; count?: number };
+      value?: { comments?: unknown; count?: number };
       exception?: string;
     }>("evaluate", {
       tab_id: tabId,
@@ -1571,7 +1597,8 @@ export async function verifyLinkedInStagedComment(
           !!c &&
           typeof c === "object" &&
           typeof c.text === "string" &&
-          c.text.trim().length > 0
+          c.text.trim().length > 0 &&
+          (c.author === undefined || typeof c.author === "string")
       );
     }
   } catch (err) {
@@ -1586,37 +1613,15 @@ export async function verifyLinkedInStagedComment(
     };
   }
 
-  if (focus) {
-    try {
-      await dispatcher.dispatch("focus_tab", {
-        tab_id: tabId,
-        draw_attention: true,
-        ...chromeOriginsInput(),
-      });
-    } catch {
-      // optional
-    }
-  }
-
-  // Prefer author-hint matches when provided.
-  const ordered = authorHint
-    ? [
-        ...comments.filter((c) =>
-          (c.author ?? "").toLowerCase().includes(authorHint)
-        ),
-        ...comments.filter(
-          (c) => !(c.author ?? "").toLowerCase().includes(authorHint)
-        ),
-      ]
+  const candidates = authorHint
+    ? comments.filter((c) =>
+        (c.author ?? "").toLowerCase().includes(authorHint)
+      )
     : comments;
 
-  for (const c of ordered) {
+  for (const c of candidates) {
     const m = commentBodiesMatch(body, c.text);
     if (!m.ok) continue;
-    // If author_hint was given, only accept that author's matches.
-    if (authorHint && !(c.author ?? "").toLowerCase().includes(authorHint)) {
-      continue;
-    }
     return {
       verified: true,
       post_url: postUrl,
@@ -2216,7 +2221,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
             author_hint: {
               type: "string",
               description:
-                "Optional author display-name substring to prefer / require when matching.",
+                "Optional author display-name substring to require when matching.",
               maxLength: 200,
             },
             focus: {
@@ -2234,7 +2239,17 @@ export default class LinkedInConnector extends ConnectorRuntime<
             body: { type: "string" },
             tab_id: { type: "integer" },
             comments_scanned: { type: "integer" },
-            match: { type: "object" },
+            match: {
+              type: "object",
+              properties: {
+                author: { type: "string" },
+                text_preview: { type: "string" },
+                match_kind: {
+                  type: "string",
+                  enum: ["exact", "prefix", "contains"],
+                },
+              },
+            },
             reason: { type: "string" },
             message: { type: "string" },
           },

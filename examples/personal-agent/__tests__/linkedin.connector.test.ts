@@ -1298,24 +1298,39 @@ describe("prepare_comment helpers", () => {
     expect(action?.kind).toBe("read");
     expect(action?.annotations?.destructiveHint).toBe(false);
     expect(action?.annotations?.idempotentHint).toBe(true);
+    expect(
+      action?.outputSchema?.properties?.match?.properties?.match_kind?.enum
+    ).toEqual(["exact", "prefix", "contains"]);
   });
 
-  test("commentBodiesMatch normalizes and tolerates truncation", () => {
+  test("commentBodiesMatch normalizes without accepting weak partial matches", () => {
     expect(normalizeCommentMatchText("  Hello\nWorld  ")).toBe("hello world");
     expect(commentBodiesMatch("Hello world", "Hello world").ok).toBe(true);
     expect(commentBodiesMatch("Hello world", "Hello world").kind).toBe("exact");
     expect(
       commentBodiesMatch(
-        "Great insight thanks",
-        "Great insight thanks for more context"
-      ).ok
-    ).toBe(true);
+        "A sufficiently distinctive draft body that continues after truncation",
+        "A sufficiently distinctive draft body"
+      ).kind
+    ).toBe("prefix");
     expect(
       commentBodiesMatch(
         "a reasonably long draft body",
         "Prefix a reasonably long draft body suffix"
       ).kind
     ).toBe("contains");
+    expect(
+      commentBodiesMatch(
+        "Great insight followed by the rest of the staged draft",
+        "Great insight"
+      ).ok
+    ).toBe(false);
+    expect(
+      commentBodiesMatch(
+        "This staged draft has an embedded generic phrase",
+        "staged draft"
+      ).ok
+    ).toBe(false);
     expect(commentBodiesMatch("hello", "goodbye").ok).toBe(false);
   });
 
@@ -1350,7 +1365,7 @@ describe("prepare_comment helpers", () => {
         throw new Error(`unexpected ${key}`);
       },
     };
-    await prepareLinkedInComment(dispatcher, {
+    const result = await prepareLinkedInComment(dispatcher, {
       postUrl: "7312345678901234567",
       body: "hi there draft",
       agentId: "agent_abc",
@@ -1363,6 +1378,19 @@ describe("prepare_comment helpers", () => {
     expect(nav?.input.holder_agent_id).toBe("agent_abc");
     expect(nav?.input.holder_thread_id).toBe("thread_xyz");
     expect(nav?.input.holder_message_id).toBe("msg_1");
+    expect(result.agent_id).toBe("agent_abc");
+
+    log.length = 0;
+    const incomplete = await prepareLinkedInComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "another draft",
+      agentId: "agent_without_thread",
+      notify: false,
+      banner: false,
+    });
+    const incompleteNav = log.find((e) => e.key === "navigate");
+    expect(incompleteNav?.input.holder_agent_id).toBeUndefined();
+    expect(incomplete.agent_id).toBeUndefined();
   });
 
   test("verifyLinkedInStagedComment matches scraped comments", async () => {
@@ -1637,5 +1665,47 @@ describe("prepare_comment helpers", () => {
     expect(result.output?.prepared).toBe(true);
     expect(result.output?.tab_id).toBe(5);
     expect(result.output?.method).toBe("evaluate");
+  });
+
+  test("execute verify_staged_comment routes through the read path", async () => {
+    const connector = new LinkedInConnector();
+    const result = await connector.execute({
+      actionKey: "verify_staged_comment",
+      input: {
+        activity_id: "7312345678901234567",
+        body: "Nice post",
+        author_hint: "Burak",
+        focus: false,
+      },
+      credentials: null,
+      config: {},
+      sessionState: {
+        chrome_dispatcher: {
+          dispatch: async (key: string, input: Record<string, unknown>) => {
+            if (key === "navigate") {
+              return {
+                tab_id: 6,
+                current_url:
+                  "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+              };
+            }
+            if (key === "wait_for_selector") return {};
+            if (key === "evaluate") {
+              const expr = String(input.expression);
+              if (expr.includes("load|show|view")) return { value: false };
+              return {
+                value: {
+                  comments: [{ author: "Burak", text: "Nice post" }],
+                },
+              };
+            }
+            throw new Error(`unexpected ${key}`);
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.output?.verified).toBe(true);
+    expect(result.output?.match?.author).toBe("Burak");
   });
 });

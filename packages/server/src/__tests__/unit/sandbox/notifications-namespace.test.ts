@@ -2,7 +2,7 @@
  * notifications SDK namespace — list/markRead parity with REST.
  *
  * Proves the SDK methods call the same service layer as REST (listNotifications /
- * markAsRead) rather than reimplementing SQL, and that list → markRead round-trips.
+ * markAsRead) rather than reimplementing SQL.
  */
 
 import { beforeAll, describe, expect, it, mock } from "bun:test";
@@ -77,7 +77,7 @@ describe("notifications namespace — list/markRead", () => {
 		});
 	});
 
-	it("list → markRead round-trip marks the listed notification as read", async () => {
+	it("markRead forwards an id returned by list", async () => {
 		listCalls.length = 0;
 		markCalls.length = 0;
 		listResult = {
@@ -116,5 +116,18 @@ describe("notifications namespace — list/markRead", () => {
 		await expect(ns.markRead({ notification_id: 404 })).rejects.toThrow(
 			/not found or already read/i,
 		);
+	});
+
+	it("rejects inbox access without an authenticated user", async () => {
+		listCalls.length = 0;
+		markCalls.length = 0;
+		const ns = buildNotificationsNamespace({ ...ctx, userId: null }, env);
+
+		await expect(ns.list()).rejects.toThrow(/authenticated user required/i);
+		await expect(ns.markRead(7)).rejects.toThrow(
+			/authenticated user required/i,
+		);
+		expect(listCalls).toEqual([]);
+		expect(markCalls).toEqual([]);
 	});
 });

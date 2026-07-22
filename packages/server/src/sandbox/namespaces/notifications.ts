@@ -3,18 +3,14 @@
  *
  * `send` wraps the `notify` tool (in-app inbox + bot fan-out). `list` /
  * `markRead` reuse the REST service layer (`listNotifications` / `markAsRead`)
- * so agents can read and ack their own inbox without duplicate SQL.
- *
- * SDK-only by design — no `manage_notifications` MCP tool; agents compose
- * through `query_sdk` / `run_sdk` like other admin namespaces.
+ * so callers can read and ack their own inbox without duplicate SQL. Reading
+ * is available through `query_sdk`; acknowledging changes state and requires
+ * `run_sdk`.
  */
 
 import type { CardElement } from "chat";
 import type { Env } from "../../index";
-import {
-	listNotifications,
-	markAsRead,
-} from "../../notifications/service";
+import { listNotifications, markAsRead } from "../../notifications/service";
 import { notify } from "../../tools/admin/notify";
 import type { ToolContext } from "../../tools/registry";
 import { ToolUserError } from "../../utils/errors";

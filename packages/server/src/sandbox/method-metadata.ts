@@ -471,24 +471,22 @@ export default async (_ctx, client) => {
 			"notifications.list(input?: { cursor?: number | null; limit?: number; unread_only?: boolean }): Promise<{ notifications: object[]; nextCursor: number | null }>",
 		example:
 			"const { notifications, nextCursor } = await client.notifications.list({ unread_only: true, limit: 20 });",
-		usageExample: `// Read unread inbox items, then ack each.
+		usageExample: `// Read unread inbox items without changing their state.
 export default async (_ctx, client) => {
-  const { notifications } = await client.notifications.list({ unread_only: true });
-  for (const n of notifications) {
-    await client.notifications.markRead({ notification_id: n.id });
-  }
-  return { acked: notifications.length };
+  const { notifications, nextCursor } = await client.notifications.list({
+    unread_only: true,
+    limit: 20,
+  });
+  return { notifications, nextCursor };
 };`,
 	},
 	"notifications.markRead": {
 		summary:
-			"Mark one of the caller's notifications as read (same store as REST POST /notifications/:id/read). Accepts a positional id or `{ notification_id }`. Returns `{ success: true }` or throws when missing/already read.",
-		access: "read",
+			"Mark one of the caller's notifications as read (same store as REST PATCH /notifications/:id/read). Accepts a positional id or `{ notification_id }`. Returns `{ success: true }` or throws when missing/already read. Use via run_sdk because it changes inbox state.",
+		access: "write",
 		signature:
 			"notifications.markRead(notification_id: number): Promise<{ success: true }> // or notifications.markRead({ notification_id })",
-		throws: ["NotFound"],
-		example:
-			"await client.notifications.markRead({ notification_id: 42 });",
+		example: "await client.notifications.markRead({ notification_id: 42 });",
 	},
 	"notifications.send": {
 		summary:

@@ -155,10 +155,7 @@ describe("sandbox runtime", () => {
     });
   });
 
-  it("read mode: notifications.send is absent while list is callable", async () => {
-    // list/markRead are read-tier; send stays write-only. Guest-side manifest
-    // strips send so calling it is a TypeError (not a host dispatch). list still
-    // dispatches when the host SDK exposes it.
+  it("read mode: notification mutations are absent while list is callable", async () => {
     const stubSdk = {
       notifications: {
         list: async () => ({ notifications: [], nextCursor: null }),
@@ -176,17 +173,21 @@ describe("sandbox runtime", () => {
     expect(listed.success).toBe(true);
     expect(listed.returnValue).toEqual({ notifications: [], nextCursor: null });
 
-    const result = await runScript({
-      source:
-        "export default async (_ctx, client) => client.notifications.send({ title: 'x' });",
-      sdk: stubSdk,
-      sdkMode: "read",
-    });
+    for (const call of [
+      "client.notifications.markRead(1)",
+      "client.notifications.send({ title: 'x' })",
+    ]) {
+      const result = await runScript({
+        source: `export default async (_ctx, client) => ${call};`,
+        sdk: stubSdk,
+        sdkMode: "read",
+      });
 
-    expect(result.success).toBe(false);
-    expect(result.error?.message ?? "").toMatch(/not a function|undefined/i);
-    // The stub must NOT dispatch to the host — it fails guest-side.
-    expect(result.sdkCalls).toBe(0);
+      expect(result.success).toBe(false);
+      expect(result.error?.message ?? "").toMatch(/not a function|undefined/i);
+      // The mutation must fail guest-side without dispatching to the host.
+      expect(result.sdkCalls).toBe(0);
+    }
   });
 
   it("read mode: a genuinely unknown namespace stays undefined (not a false stub)", async () => {

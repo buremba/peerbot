@@ -183,8 +183,7 @@ describe("sdkSearch", () => {
 		expect(result.notes ?? "").not.toContain("none are visible");
 	});
 
-	it("discovers notifications.list / markRead in read mode; send needs run_sdk", async () => {
-		// Inbox read/ack are read-tier; send remains write-only.
+	it("discovers notifications.list in read mode; mutations need run_sdk", async () => {
 		const listed = await sdkSearch(
 			{ query: "notifications", mode: "read" },
 			stubEnv,
@@ -193,16 +192,16 @@ describe("sdkSearch", () => {
 		expect(listed.match_count).toBeGreaterThan(0);
 		const joined = listed.results.join("\n");
 		expect(joined).toContain("notifications.list");
-		expect(joined).toContain("notifications.markRead");
+		expect(joined).not.toContain("notifications.markRead");
 		expect(joined).not.toContain("notifications.send");
 
-		const send = await sdkSearch(
-			{ query: "notifications.send", mode: "read" },
+		const markRead = await sdkSearch(
+			{ query: "notifications.markRead", mode: "read" },
 			stubEnv,
 			readCtx
 		);
-		expect(send.match_count).toBe(0);
-		expect(send.notes ?? "").toContain("run_sdk");
+		expect(markRead.match_count).toBe(0);
+		expect(markRead.notes ?? "").toContain("run_sdk");
 	});
 
 	it("shows admin methods to admin-tier callers", async () => {

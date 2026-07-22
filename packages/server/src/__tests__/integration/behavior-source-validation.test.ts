@@ -71,6 +71,57 @@ describe("behavior custom-SQL source validation", () => {
 		);
 	}
 
+	async function createCloneFixture(query: string) {
+		const { org, user, ctx } = await seedOwnerContext();
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const sourceEntity = await createTestEntity({
+			name: `cfv-source-${Date.now()}`,
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const targetEntity = await createTestEntity({
+			name: `cfv-target-${Date.now()}`,
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const created = await manageBehaviors(
+			{
+				action: "create",
+				slug: `cfv-src-${Date.now()}`,
+				name: "Clone source",
+				prompt: "Summarize.",
+				agent_id: agent.agentId,
+				entity_id: Number(sourceEntity.id),
+				sources: [{ name: "src", query }],
+				triggers: [
+					{
+						kind: "schedule",
+						cron: "* * * * *",
+						execution: "window",
+						active_run: "coalesce",
+					},
+				],
+			},
+			env,
+			ctx,
+		);
+		if (created.action !== "create" || !("behavior_id" in created)) {
+			throw new Error("setup: create failed");
+		}
+		const [row] = await getTestDb()<{ current_version_id: number }[]>`
+			SELECT current_version_id FROM watchers WHERE id = ${String(created.behavior_id)}
+		`;
+		return {
+			ctx,
+			organizationId: org.id,
+			targetEntityId: Number(targetEntity.id),
+			versionId: Number(row.current_version_id),
+		};
+	}
+
 	it("rejects a source that references a non-existent column", async () => {
 		// Projects `id` (so it passes the id-projection guard) but references a
 		// bogus column — must be caught by the new scoped-query validation, not
@@ -192,6 +243,54 @@ describe("behavior custom-SQL source validation", () => {
 				"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
 			),
 		).rejects.toThrow();
+	});
+
+	it("validates cloned sources on create_from_version too", async () => {
+		const { ctx, organizationId, targetEntityId, versionId } =
+			await createCloneFixture("SELECT id FROM events WHERE 1=0");
+
+		// Simulate a referenced table being dropped after the version was authored.
+		await getTestDb()`
+			UPDATE watcher_versions
+			SET version_sources = ${getTestDb().json([
+				{ name: "src", query: "SELECT id FROM evetns" },
+			])}
+			WHERE id = ${versionId}
+		`;
+
+		await expect(
+			manageBehaviors(
+				{
+					action: "create_from_version",
+					version_id: String(versionId),
+					entity_ids: [targetEntityId],
+				},
+				env,
+				ctx,
+			),
+		).rejects.toThrow(/unknown table or entity type|evetns/i);
+
+		const [{ n }] = await getTestDb()<{ n: string }[]>`
+			SELECT COUNT(*)::text AS n FROM watchers
+			WHERE organization_id = ${organizationId} AND ${targetEntityId} = ANY(entity_ids)
+		`;
+		expect(Number(n)).toBe(0);
+	});
+
+	it("clones a valid source using the target entity context", async () => {
+		const { ctx, targetEntityId, versionId } = await createCloneFixture(
+			"SELECT id FROM events WHERE {{entityId}} = ANY(entity_ids)",
+		);
+		const cloned = (await manageBehaviors(
+			{
+				action: "create_from_version",
+				version_id: String(versionId),
+				entity_ids: [targetEntityId],
+			},
+			env,
+			ctx,
+		)) as { created: Array<{ behavior_id: string }> };
+		expect(cloned.created).toHaveLength(1);
 	});
 
 	it("validates custom SQL on create_version too, not only create", async () => {

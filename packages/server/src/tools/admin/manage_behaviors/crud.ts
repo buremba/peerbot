@@ -735,6 +735,19 @@ export async function handleCreateFromVersion(
   `;
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 
+  // A once-valid version can outlive a referenced table or entity type. Resolve
+  // its sources before fan-out, passing each assignment's entity context so
+  // `{{entityId}}` is validated the same way as at runtime.
+  const clonedSources = (version.version_sources ?? version.sources ?? []) as Array<{
+    name: string;
+    query: string;
+  }>;
+  if (clonedSources.length > 0) {
+    for (const entityId of entityIds) {
+      await assertWatcherSourcesResolve(sql, organizationId, clonedSources, [entityId]);
+    }
+  }
+
   const createdBy = ctx.userId ?? 'system';
   const created: Array<{
     behavior_id: string;
@@ -775,7 +788,6 @@ export async function handleCreateFromVersion(
           .replace(/[^a-z0-9-]/g, '-');
 
         const watcherId = await getNextNumericId(tx, 'watchers');
-        const sources = version.version_sources ?? version.sources ?? [];
         // The new assignment shares the source's existing watcher_versions row
         // rather than getting its own duplicate copy. version_id (the arg) is
         // the row in watcher_versions we're cloning from; that becomes the
@@ -807,7 +819,7 @@ export async function handleCreateFromVersion(
             ${`{${entityId}}`}::bigint[],
             ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
             ${version.agent_id ?? null}, ${version.scheduler_client_id ?? null},
-            ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, sources)},
+            ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, clonedSources)},
             ${(version.version as number) ?? 1}, ${sharedVersionId}, ${toTextArrayParam(cloneTags)}::text[],
             'active', ${createdBy}, NOW(), NOW(),
             ${groupId}, ${version.watcher_id},
@@ -827,7 +839,7 @@ export async function handleCreateFromVersion(
           watcherId,
           watcherName,
           watcherSlug,
-          sources,
+          sources: clonedSources,
           sharedVersionId,
           groupId,
         });

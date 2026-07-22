@@ -188,13 +188,37 @@ function scanTypeBoxSchemas(file: string, violations: Violation[]): void {
   }
 }
 
-/** Resolve a relative import specifier to a source file on disk. */
+/**
+ * Workspace packages whose types are part of the agent-facing surface. A
+ * namespace signature reaches into these directly — `listCatalog(input?:
+ * Omit<ListCatalogArgs, "action">)` imports `ListCatalogArgs` from
+ * `@lobu/core/...` — so treating "not relative" as "not ours" would skip a
+ * live wire contract. Third-party packages stay out of scope: node_modules is
+ * not our surface to police.
+ */
+const WORKSPACE_ALIASES: ReadonlyArray<readonly [string, string]> = [
+  ["@lobu/core/", join(REPO_ROOT, "packages/core/src/")],
+  ["@lobu/connector-sdk/", join(REPO_ROOT, "packages/connector-sdk/src/")],
+  ["@lobu/plugin-api/", join(REPO_ROOT, "packages/plugin-api/src/")],
+];
+
+/** Resolve an import specifier to a source file, relative or workspace-aliased. */
 function resolveImport(
   fromFile: string,
   specifier: string
 ): string | undefined {
-  if (!specifier.startsWith(".")) return undefined;
-  const base = resolve(dirname(fromFile), specifier);
+  let base: string | undefined;
+  if (specifier.startsWith(".")) {
+    base = resolve(dirname(fromFile), specifier);
+  } else {
+    for (const [prefix, root] of WORKSPACE_ALIASES) {
+      if (specifier.startsWith(prefix)) {
+        base = join(root, specifier.slice(prefix.length));
+        break;
+      }
+    }
+  }
+  if (!base) return undefined;
   for (const candidate of [`${base}.ts`, join(base, "index.ts")]) {
     try {
       if (statSync(candidate).isFile()) return candidate;
@@ -307,9 +331,20 @@ function scanNamespaceSurface(file: string, violations: Violation[]): void {
         addViolation(violations, currentFile, source, node);
       }
 
-      // Follow `foo: SomeType` into SomeType's declaration.
-      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
-        const referenced = node.typeName.text;
+      // Follow `foo: SomeType` into SomeType's declaration, and `interface X
+      // extends Y` into Y's — an inherited member is on the wire exactly like a
+      // declared one, and `extends` is an ExpressionWithTypeArguments rather
+      // than a TypeReferenceNode, so it needs naming separately.
+      const referencedName = ts.isTypeReferenceNode(node)
+        ? ts.isIdentifier(node.typeName)
+          ? node.typeName.text
+          : undefined
+        : ts.isExpressionWithTypeArguments(node) &&
+            ts.isIdentifier(node.expression)
+          ? node.expression.text
+          : undefined;
+      if (referencedName) {
+        const referenced = referencedName;
         const local = findTypeDeclaration(source, referenced);
         if (local) {
           const key = `${currentFile}#${referenced}`;

@@ -33,8 +33,13 @@
  * This script therefore skips any row where the target org is NOT the user's
  * tagged personal org AND is private (a shared-org backfill can only change
  * targeting, never fix a personal-org symptom). Run it only on a build that
- * includes the `personal_org_for_user_id`-first `resolveTenantMember`; the
- * `--include-shared` flag lifts the skip once you've confirmed that.
+ * includes the `personal_org_for_user_id`-first `resolveTenantMember`.
+ *
+ * `--include-shared` lifts the skip ONLY when the user already has some other
+ * org explicitly tagged `personal_org_for_user_id`. Without that tag,
+ * `resolveTenantMember` falls back to `createdAt ASC` among private orgs with
+ * claims — so backfilling an older private shared org would silently redirect
+ * that user's personal identity facts into the shared org.
  *
  * ─── Safety ──────────────────────────────────────────────────────────────────
  *   - DRY-RUN by default; pass `--execute` to actually write.
@@ -46,10 +51,31 @@
  *   bun run scripts/backfill-member-claims.ts                  # dry-run
  *   bun run scripts/backfill-member-claims.ts --execute        # write
  *   bun run scripts/backfill-member-claims.ts --org <id>       # one org
- *   bun run scripts/backfill-member-claims.ts --include-shared # include private shared orgs
+ *   bun run scripts/backfill-member-claims.ts --include-shared # private shared orgs (only if user has a tagged personal org)
  *
  * DATABASE_URL must point at the target database.
  */
+
+/** Pure retarget-guard decision for a private, non-personal (shared) org row. */
+export type SharedPrivateDecision =
+  | "backfill"
+  | "skip-shared-default"
+  | "skip-no-tagged-personal";
+
+/**
+ * Decide whether a private non-personal org may be backfilled.
+ * Personal or public orgs are not gated here — callers only invoke this for
+ * `!isPersonal && visibility === "private"`.
+ */
+export function decideSharedPrivateBackfill(opts: {
+  includeShared: boolean;
+  /** True when the user has some org (any) tagged personal_org_for_user_id. */
+  hasTaggedPersonalOrg: boolean;
+}): SharedPrivateDecision {
+  if (!opts.includeShared) return "skip-shared-default";
+  if (!opts.hasTaggedPersonalOrg) return "skip-no-tagged-personal";
+  return "backfill";
+}
 
 import { parseArgs as parseNodeArgs } from "node:util";
 import { provisionMemberAndCoreIdentities } from "../packages/server/src/auth/subject-identities";
@@ -181,6 +207,19 @@ async function hasResolvableClaim(
   return rows[0]?.found ?? false;
 }
 
+/** True when any org is explicitly tagged as this user's personal org. */
+async function userHasTaggedPersonalOrg(userId: string): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ found: boolean }>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM organization o
+      WHERE o.metadata::jsonb->>'personal_org_for_user_id' = ${userId}
+    ) AS found
+  `;
+  return rows[0]?.found ?? false;
+}
+
 async function main(): Promise<void> {
   let opts: BackfillOptions;
   try {
@@ -203,8 +242,11 @@ async function main(): Promise<void> {
   let backfilled = 0;
   let skippedBlocked = 0;
   let skippedShared = 0;
+  let skippedNoTaggedPersonal = 0;
   let skippedNoEmail = 0;
   let failed = 0;
+  /** Cache so we don't re-query personal-org tags once per shared row. */
+  const taggedPersonalCache = new Map<string, boolean>();
 
   for (const row of drift) {
     if (row.hasBlockingClaim) {
@@ -216,18 +258,34 @@ async function main(): Promise<void> {
     }
 
     // Retarget guard: writing a claim into a private, NON-personal (shared) org
-    // can only change resolveTenantMember targeting, never fix a personal-org
-    // symptom. Skip unless explicitly opted in on a targeting-safe build.
-    if (
-      !row.isPersonal &&
-      row.visibility === "private" &&
-      !opts.includeShared
-    ) {
-      skippedShared++;
-      console.log(
-        `  skip (shared private org) user=${row.userId} org=${row.orgSlug}`
-      );
-      continue;
+    // can change resolveTenantMember targeting. Default skip; --include-shared
+    // only proceeds when the user already has a tagged personal org so the
+    // createdAt fallback cannot redirect personal identity facts into the
+    // shared org.
+    if (!row.isPersonal && row.visibility === "private") {
+      let hasTaggedPersonalOrg = taggedPersonalCache.get(row.userId);
+      if (hasTaggedPersonalOrg === undefined) {
+        hasTaggedPersonalOrg = await userHasTaggedPersonalOrg(row.userId);
+        taggedPersonalCache.set(row.userId, hasTaggedPersonalOrg);
+      }
+      const decision = decideSharedPrivateBackfill({
+        includeShared: opts.includeShared,
+        hasTaggedPersonalOrg,
+      });
+      if (decision === "skip-shared-default") {
+        skippedShared++;
+        console.log(
+          `  skip (shared private org) user=${row.userId} org=${row.orgSlug}`
+        );
+        continue;
+      }
+      if (decision === "skip-no-tagged-personal") {
+        skippedNoTaggedPersonal++;
+        console.error(
+          `  skip (include-shared unsafe: no tagged personal org) user=${row.userId} org=${row.orgSlug}`
+        );
+        continue;
+      }
     }
     if (!row.email) {
       skippedNoEmail++;
@@ -267,9 +325,15 @@ async function main(): Promise<void> {
   console.log(
     `\nDone. ${opts.execute ? "backfilled" : "would backfill"}=${backfilled}` +
       ` skipped-blocked=${skippedBlocked} skipped-shared=${skippedShared}` +
+      ` skipped-no-tagged-personal=${skippedNoTaggedPersonal}` +
       ` skipped-no-email=${skippedNoEmail} failed=${failed}`
   );
-  process.exit(failed > 0 || skippedBlocked > 0 ? 1 : 0);
+  process.exit(
+    failed > 0 || skippedBlocked > 0 || skippedNoTaggedPersonal > 0 ? 1 : 0
+  );
 }
 
-void main();
+// Only run when invoked as a CLI entrypoint — tests import the pure guard.
+if (import.meta.main) {
+  void main();
+}

@@ -25,6 +25,9 @@ export interface Env {
   // "block-private" (injected under cloud mode) makes a DB connector reject
   // internal/metadata hosts; anything else ⇒ trusted "allow-private".
   LOBU_DB_EGRESS_POLICY?: string;
+  // Operator-configured exact hosts exempt from the private-address block.
+  // Delivered by the gateway; tenant connection config cannot override it.
+  LOBU_DB_EGRESS_ALLOW_HOSTS?: string;
 
   // Sync intervals
   DEFAULT_SYNC_INTERVAL_MS?: string;

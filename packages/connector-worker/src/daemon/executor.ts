@@ -73,7 +73,7 @@ const DEFAULT_CONFIG: ExecutorConfig = {
 };
 
 /**
- * Fold the gateway's authoritative DB egress decision into the worker's env.
+ * Fold the gateway's authoritative DB egress config into the worker's env.
  *
  * The gateway (which knows cloud mode authoritatively) ships `db_egress_policy`
  * on the poll response. The worker's own `env.LOBU_DB_EGRESS_POLICY` is derived
@@ -87,6 +87,9 @@ const DEFAULT_CONFIG: ExecutorConfig = {
  * worker that already decided block-private. The result is re-asserted as
  * authoritative `job.env.LOBU_DB_EGRESS_POLICY` by `buildConnectorConfig` in the
  * child so tenant config can't override it either.
+ *
+ * The gateway allow-host list replaces any worker-local value. A missing list
+ * means no exemptions, so a worker cannot widen the gateway's boundary.
  */
 export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
   const workerPolicy = (env as Record<string, string | undefined>).LOBU_DB_EGRESS_POLICY;
@@ -96,11 +99,6 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
     workerPolicy === 'block-private' || gatewayPolicy === 'block-private'
       ? 'block-private'
       : (gatewayPolicy ?? workerPolicy ?? 'allow-private');
-  // The allow-host list is REPLACED by the gateway's, never unioned with the
-  // worker's own. Unioning would let a compromised/misconfigured fleet worker
-  // widen the boundary by adding entries — the exact downgrade the policy
-  // ratchet above exists to prevent. When the gateway ships no list, the worker
-  // gets none: absence must mean "no exemptions", not "keep your local ones".
   return {
     ...env,
     LOBU_DB_EGRESS_POLICY: effective,
@@ -120,9 +118,8 @@ export async function executeRun(
   config: Partial<ExecutorConfig> = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
-  // Fold the gateway's authoritative egress decision in ONCE here, so every
-  // downstream mode handler (sync/action/auth/embed) gets the same non-
-  // downgradable `LOBU_DB_EGRESS_POLICY`.
+  // Fold the gateway's authoritative egress config in once so every downstream
+  // mode handler gets the same non-downgradable policy and operator exemptions.
   const env = resolveEffectiveEnv(workerEnv, job);
   switch (job.run_type) {
     case 'action':

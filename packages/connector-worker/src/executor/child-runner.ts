@@ -25,14 +25,17 @@ interface ChildMessage {
  * Keys the trusted gateway sets on `job.env` that a tenant's connection/feed
  * `job.config` must NEVER be able to override. Normal precedence is
  * config-wins (a connector's config legitimately shadows ambient env), but a
- * security control injected by the gateway is authoritative. `job.env` is
- * built by the gateway from cloud mode, `job.config` is tenant-supplied — so
- * merge config over env, then re-assert these keys from env as last-wins.
+ * security control injected by the gateway is authoritative. `job.env` carries
+ * trusted deployment controls while `job.config` is tenant-supplied, so merge
+ * config over env and then re-assert these keys from env.
  *
  * `LOBU_DB_EGRESS_POLICY`: the DB egress boundary (private-IP block + IP pin +
  * forced TLS). The in-process paths already inject it last into `job.config`
  * (feed-sync / connector-pushdown); the out-of-process worker delivers it via
  * `job.env`, and this is where it must beat tenant config.
+ *
+ * `LOBU_DB_EGRESS_ALLOW_HOSTS`: operator-owned exceptions to that boundary,
+ * delivered through the same authoritative paths.
  */
 const GATEWAY_AUTHORITATIVE_CONFIG_KEYS = [
   'LOBU_DB_EGRESS_POLICY',

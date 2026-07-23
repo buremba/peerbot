@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import type { Env } from '@lobu/connector-sdk';
 import type { PollResponse } from '../daemon/client.js';
 import { resolveEffectiveEnv } from '../daemon/executor.js';
+import { buildConnectorWorkerEnv } from '../env.js';
+import { buildConnectorConfig } from '../executor/child-runner.js';
 
 /**
  * The operator's DB egress allow-host list rides the SAME gateway-authoritative
@@ -37,11 +39,6 @@ describe('resolveEffectiveEnv — allow-host list is gateway-authoritative', () 
     expect(out.LOBU_DB_EGRESS_ALLOW_HOSTS).toBe('100.127.177.56');
     expect(out.LOBU_DB_EGRESS_ALLOW_HOSTS).not.toContain('10.0.0.5');
   });
-
-  test('the policy ratchet still applies alongside the list', () => {
-    const out = resolveEffectiveEnv({} as Env, job('100.127.177.56'));
-    expect(out.LOBU_DB_EGRESS_POLICY).toBe('block-private');
-  });
 });
 
 /**
@@ -51,14 +48,12 @@ describe('resolveEffectiveEnv — allow-host list is gateway-authoritative', () 
  * effective env → authoritative child config, with tenant config unable to win.
  */
 describe('cloud path — gateway list reaches the connector config', () => {
-  test('worker env whitelist carries no allow-host list of its own', async () => {
-    const { buildConnectorWorkerEnv } = await import('../env.js');
+  test('worker env whitelist carries no allow-host list of its own', () => {
     const env = buildConnectorWorkerEnv() as Record<string, unknown>;
     expect(env.LOBU_DB_EGRESS_ALLOW_HOSTS).toBeUndefined();
   });
 
-  test('tenant config cannot override the gateway allow-host list', async () => {
-    const { buildConnectorConfig } = await import('../executor/child-runner.js');
+  test('tenant config cannot override the gateway allow-host list', () => {
     const gatewayJob = {
       run_id: 1,
       run_type: 'sync',

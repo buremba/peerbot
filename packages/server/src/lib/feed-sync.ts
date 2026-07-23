@@ -141,9 +141,8 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
       mode: 'sync',
       config: {
         ...mergeExecutionConfig(feed.connection_config, connectionCredentials, feed.config),
-        // Authoritative egress policy (injected last): a DB connector rejects
-        // internal/metadata hosts under cloud mode, reaches its own private DB
-        // self-hosted. process.env is passed below but doesn't carry this key.
+        // Authoritative egress config (injected last): cloud policy plus global
+        // operator host exemptions cannot be overridden by connection config.
         ...dbEgressConfig(),
       },
       checkpoint: feed.checkpoint,

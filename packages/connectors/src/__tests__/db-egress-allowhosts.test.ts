@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   assertHostAllowed,
+  buildDbEgressHardening,
   type DbEgressPolicy,
   type HostLookup,
   parseAllowedHosts,
@@ -49,6 +50,18 @@ describe('allow-hosts bypass — the Tailscale case', () => {
     );
     expect(addrs).toEqual(['100.127.177.56']);
   });
+
+  test('block-private hardening accepts an allowlisted CGNAT host and keeps TLS + pinning', async () => {
+    const hardening = await buildDbEgressHardening(
+      'postgres://u:p@mac.tailnet.ts.net:5432/db',
+      BLOCK,
+      fakeLookup(['100.127.177.56']),
+      undefined,
+      ['mac.tailnet.ts.net'],
+    );
+    expect(hardening.ssl).toBe('require');
+    expect(typeof hardening.socket).toBe('function');
+  });
 });
 
 describe('allow-hosts must NOT become a universal bypass', () => {
@@ -73,7 +86,7 @@ describe('allow-hosts must NOT become a universal bypass', () => {
   });
 });
 
-describe('parseAllowedHosts — malformed entries fail loudly at parse time', () => {
+describe('parseAllowedHosts — unsupported entry shapes fail at parse time', () => {
   test('a CIDR entry is rejected (a range is never an exact host)', () => {
     expect(() => parseAllowedHosts('100.64.0.0/10')).toThrow(/CIDR|exact host/i);
   });
@@ -96,11 +109,9 @@ describe('parseAllowedHosts — malformed entries fail loudly at parse time', ()
 });
 
 /**
- * The allowlist is matched against the RAW host string from DATABASE_URL, while
- * the range check normalizes (IPv4-mapped/NAT64/zone-id). That asymmetry is
- * DELIBERATE and fails CLOSED: an alternate spelling of an allowlisted address
- * misses the allowlist and stays blocked. Locked in so a future "normalize
- * before matching" refactor cannot silently open the NAT64/IPv4-mapped path.
+ * The allowlist is matched against the extracted host spelling before the range
+ * check normalizes IPv4-mapped/NAT64/zone-id forms. An alternate spelling of an
+ * allowlisted address therefore misses the exemption and stays blocked.
  */
 describe('raw-vs-normalized asymmetry is intentional and fails closed', () => {
   const ALLOW = ['100.127.177.56'];

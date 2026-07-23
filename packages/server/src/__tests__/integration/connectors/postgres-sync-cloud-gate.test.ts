@@ -157,13 +157,15 @@ describe('pollWorkerJob — gateway is authoritative for the egress policy', () 
   });
   afterEach(() => {
     process.env.LOBU_CLOUD_MODE = undefined;
+    delete process.env.LOBU_DB_EGRESS_ALLOW_HOSTS;
   });
 
-  it('stamps block-private on the poll response under LOBU_CLOUD_MODE (worker cannot re-derive it)', async () => {
+  it('stamps the gateway egress config on the poll response under LOBU_CLOUD_MODE', async () => {
     const { feedId, connId, orgId } = await setupPostgresFeed();
     const runId = await insertPendingPostgresRun(orgId, feedId, connId);
 
     process.env.LOBU_CLOUD_MODE = '1';
+    process.env.LOBU_DB_EGRESS_ALLOW_HOSTS = '100.127.177.56';
     try {
       const res = await post('/api/workers/poll', {
         body: { worker_id: 'cloud-policy-worker', capabilities: { db_egress_hardening: true } },
@@ -174,16 +176,19 @@ describe('pollWorkerJob — gateway is authoritative for the egress policy', () 
       const body = (await res.json()) as {
         run_id?: number;
         db_egress_policy?: string;
+        db_egress_allow_hosts?: string;
         config?: Record<string, unknown>;
       };
       expect(Number(body.run_id)).toBe(runId);
-      // The gateway decides the policy on a dedicated top-level field — the
-      // worker's own env must not. It is NOT in tenant `config` (which a tenant
-      // controls), so the worker can install it as authoritative job.env.
+      // Both controls use dedicated top-level fields, outside tenant `config`,
+      // so the worker can install them as authoritative job.env.
       expect(body.db_egress_policy).toBe('block-private');
+      expect(body.db_egress_allow_hosts).toBe('100.127.177.56');
       expect(body.config?.LOBU_DB_EGRESS_POLICY).toBeUndefined();
+      expect(body.config?.LOBU_DB_EGRESS_ALLOW_HOSTS).toBeUndefined();
     } finally {
       process.env.LOBU_CLOUD_MODE = undefined;
+      delete process.env.LOBU_DB_EGRESS_ALLOW_HOSTS;
     }
   });
 

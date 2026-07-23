@@ -265,9 +265,10 @@ const defaultLookup: HostLookup = (host) => dns.promises.lookup(host, { all: tru
  *
  * Deployment config ONLY — it rides the same gateway-authoritative path as the
  * policy itself and is never settable from tenant/connection config, so a tenant
- * cannot widen its own egress boundary. Entries are matched EXACTLY (an IP
- * literal or a DNS name as written in DATABASE_URL); no wildcards or CIDRs, so
- * approving one tailnet host never approves the whole `100.64.0.0/10` range.
+ * cannot widen its own egress boundary. Entries are matched EXACTLY against the
+ * bare host extracted from DATABASE_URL (IPv6 without URL brackets); no
+ * wildcards or CIDRs, so approving one tailnet host never approves the whole
+ * `100.64.0.0/10` range.
  */
 export function parseAllowedHosts(value: unknown): string[] {
   if (typeof value !== 'string') return [];
@@ -276,17 +277,13 @@ export function parseAllowedHosts(value: unknown): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   for (const entry of entries) {
-    // Fail LOUDLY on shapes that can never match a host from `extractDbHosts`
-    // (which yields a bare host: brackets stripped, `:port` removed). Without
-    // this an operator typo like `100.64.0.0/10` parses fine and then silently
-    // never matches — the connection just keeps failing with no hint that the
-    // allowlist entry is the problem. A range/wildcard is also NOT the intended
-    // grant: exemptions are per exact host by design.
+    // Reject shapes that cannot match `extractDbHosts`; otherwise an operator
+    // typo silently leaves the intended exemption inactive.
     const reason = malformedAllowedHostReason(entry);
     if (reason) {
       throw new Error(
         `LOBU_DB_EGRESS_ALLOW_HOSTS entry "${entry}" is invalid: ${reason}. ` +
-          'Use an exact host as it appears in DATABASE_URL (no CIDR, wildcard, port, or brackets).',
+          'Use the exact bare host from DATABASE_URL (no CIDR, wildcard, port, or IPv6 brackets).',
       );
     }
   }

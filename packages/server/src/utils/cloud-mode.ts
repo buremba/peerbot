@@ -22,10 +22,9 @@ export function isCloudMode(): boolean {
  * Both keys are OPERATOR deployment config read from the gateway's own env, and
  * both are injected LAST over tenant-supplied connection config so a tenant can
  * never widen its own egress boundary. `LOBU_DB_EGRESS_ALLOW_HOSTS` is a
- * comma-separated list of exact hosts (IP literal or DNS name as written in
- * DATABASE_URL) that stay reachable under cloud mode — e.g. a Tailscale/CGNAT
- * address — while metadata, link-local, multicast and unspecified remain blocked
- * for every host regardless.
+ * comma-separated list of exact bare hosts (IPv6 without URL brackets) that
+ * stay reachable under cloud mode — e.g. a Tailscale/CGNAT address — while
+ * metadata, link-local, multicast and unspecified remain blocked for every host.
  */
 export function dbEgressConfig(): {
   LOBU_DB_EGRESS_POLICY: 'block-private' | 'allow-private';

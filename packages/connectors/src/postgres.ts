@@ -276,13 +276,11 @@ const POOL_OPTS = {
 
 /**
  * SSRF/egress pre-flight + guarded pool, run before any socket opens on sync(),
- * query(), and search(). Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY —
- * the server injects `block-private` under cloud mode; everything else defaults
- * to the trusted `allow-private`. Under block-private the guard's option
- * overrides make the validation stick: forced TLS (sslmode=disable rejected)
- * and a `socket` factory that dials the guard-validated IP so the driver never
- * re-resolves DNS (rebind TOCTOU closed). Under allow-private the overrides are
- * empty — native driver behavior. The overrides land AFTER POOL_OPTS so nothing
+ * query(), and search(). The server injects `block-private` under cloud mode
+ * plus any operator host exemptions; everything else defaults to trusted
+ * `allow-private`. Under block-private the guard forces TLS and installs a
+ * socket factory that dials the validated IP, closing DNS-rebind TOCTOU. Under
+ * allow-private the overrides are empty. They land after POOL_OPTS so nothing
  * can shadow them. `socket` isn't in postgres.js's published Options type
  * (supported since 3.4: connection.js `options.socket`), hence the cast.
  */

@@ -206,6 +206,13 @@ describe("manage_entity merge action", () => {
 		expect((pending.action_input as Record<string, unknown>).operation).toBe(
 			"merge",
 		);
+		const [approvalEvent] = await sql`
+			SELECT title FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id} AND interaction_status = 'pending'
+		`;
+		expect(approvalEvent.title).toBe(
+			"Merge Loser into Winner — pending approval",
+		);
 
 		const approved = await manageOperations(
 			{ action: "approve", run_id: queued.approval_run_id },
@@ -816,9 +823,12 @@ describe("manage_entity merge action", () => {
 		});
 		expect(pending.idempotency_key).toMatch(/^entity-change:/);
 		const [approvalEvent] = await sql`
-      SELECT metadata FROM current_event_records
+      SELECT title, metadata FROM current_event_records
       WHERE run_id = ${queued.approval_run_id} AND interaction_status = 'pending'
     `;
+		expect(approvalEvent.title).toBe(
+			"Merge 2 person duplicates into Winner — pending approval",
+		);
 		const current = (approvalEvent.metadata as Record<string, unknown>)
 			.current as {
 			duplicates: Array<{

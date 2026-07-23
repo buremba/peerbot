@@ -582,9 +582,16 @@ export async function proposeEntityChange(
 	const mergeLosers = mergeProposal
 		? (mergeProposal.current.duplicates ?? [mergeProposal.current.loser])
 				.map((duplicate) => duplicate.name)
-				.filter((name): name is string => Boolean(name))
+				.filter(
+					(name): name is string =>
+						typeof name === "string" && name.trim().length > 0,
+				)
 		: [];
 	const mergeWinnerName = mergeProposal?.current.winner.name;
+	const mergeWinnerLabel =
+		typeof mergeWinnerName === "string" && mergeWinnerName.trim().length > 0
+			? mergeWinnerName
+			: null;
 	const mergeLoserLabel =
 		mergeLosers.length === 1
 			? mergeLosers[0]
@@ -592,10 +599,10 @@ export async function proposeEntityChange(
 				? `${mergeLosers.length} ${formatLabel(entityType ?? "entity").toLowerCase()} duplicates`
 				: null;
 	const mergeLabel =
-		mergeLoserLabel && mergeWinnerName
-			? `Merge ${mergeLoserLabel} into ${mergeWinnerName}`
-			: mergeWinnerName
-				? `Merge duplicate into ${mergeWinnerName}`
+		mergeLoserLabel && mergeWinnerLabel
+			? `Merge ${mergeLoserLabel} into ${mergeWinnerLabel}`
+			: mergeWinnerLabel
+				? `Merge duplicate into ${mergeWinnerLabel}`
 				: `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 	const actionLabel =
 		operation === "update"

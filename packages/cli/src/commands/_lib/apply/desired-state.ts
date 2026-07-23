@@ -162,12 +162,11 @@ export interface DesiredConnection {
   appAuthProfileSlug?: string;
   config?: Record<string, unknown>;
   /**
-   * Set only for a BYO chat connection (a chat connector — slack/telegram —
-   * whose credential is supplied here in `config`). Chat connections apply
-   * through the secret-aware `apply_chat_connection` path so the server
+   * Set only for an explicitly declared BYO chat connection. Chat connections
+   * apply through the secret-aware `apply_chat_connection` path so the server
    * persists a non-null `credential_mode` (the gateway only treats non-null
-   * rows as chat) and resolves the token. Absent for data connectors and
-   * hosted chat (which is filtered out of apply entirely).
+   * rows as chat) and resolves the token. Absent for data connectors and hosted
+   * chat (which is filtered out of apply entirely).
    */
   credentialMode?: "byo";
   /**
@@ -600,6 +599,25 @@ export function validateConnectionAgainstConnector(
   authProfiles: ReadonlyMap<string, DesiredAuthProfile>,
   schemas: ResolvedConnectorSchemas | null
 ): void {
+  const declaredChatPlatform = schemas?.optionsSchema?.["x-lobu-chat-platform"];
+  const isChatConnector =
+    typeof declaredChatPlatform === "string" &&
+    declaredChatPlatform === connection.connector;
+  if (schemas && connection.credentialMode === "byo" && !isChatConnector) {
+    throw new ValidationError(
+      `${connection.sourceFile}: connection "${connection.slug}" uses credentialMode "byo", but connector "${connection.connector}" does not declare the chat capability`
+    );
+  }
+  if (schemas && isChatConnector && connection.credentialMode !== "byo") {
+    if (connection.config?.managedBy) {
+      throw new ValidationError(
+        `${connection.sourceFile}: managed chat connection "${connection.slug}" is owned by the OAuth/install flow and cannot be declared in config`
+      );
+    }
+    throw new ValidationError(
+      `${connection.sourceFile}: chat connection "${connection.slug}" must declare credentialMode "byo" (hosted connections use "hosted" and are not persisted)`
+    );
+  }
   // Validate against `{}` when config is omitted too — that surfaces missing
   // required keys instead of letting an empty config slip through.
   if (schemas?.optionsSchema) {

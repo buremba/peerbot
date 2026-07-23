@@ -713,15 +713,15 @@ function diffConnection(
       },
       {
         name: "config",
-        // A BYO chat connection's config holds a resolved secret (plaintext)
-        // on the desired side, but the server stores it as a `secret://` ref —
-        // deep-equal would always report "changed" and re-apply every run. The
-        // secret-aware comparison happens server-side under an advisory lock
-        // (apply always calls the idempotent chat-upsert), so don't diff config
-        // here for chat connections.
+        // A BYO chat connection's config holds a resolved secret (plaintext) on
+        // the desired side, stored as a `secret://` ref remotely — the CLI can't
+        // compare them, so it can't detect a token rotation. Always mark it as
+        // changed so the row reaches the idempotent chat-upsert, which does the
+        // secret-aware comparison server-side under an advisory lock and no-ops
+        // when nothing actually changed. Data connectors deep-equal as before.
         changed: (d, r) =>
           d.credentialMode === "byo"
-            ? false
+            ? true
             : !deepEqual(d.config ?? {}, r.config ?? {}),
       },
       {

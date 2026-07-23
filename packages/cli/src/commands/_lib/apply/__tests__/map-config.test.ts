@@ -194,7 +194,11 @@ describe("mapProjectToDesiredState", () => {
     const slack = defineConnection({
       slug: "team-slack",
       connector: "slack",
-      config: { botToken: secret("SLACK_BOT_TOKEN") },
+      credentialMode: "byo",
+      config: {
+        botToken: secret("SLACK_BOT_TOKEN"),
+        reconnect: true,
+      },
     });
     const state = mapProjectToDesiredState(
       defineConfig({ org: "o", agents: [], connections: [slack] }),
@@ -208,7 +212,10 @@ describe("mapProjectToDesiredState", () => {
     // and its secret() config resolved to the real token (not the SecretRef).
     expect(conn).toBeDefined();
     expect(conn?.credentialMode).toBe("byo");
-    expect(conn?.config).toEqual({ botToken: "xoxb-real-token" });
+    expect(conn?.config).toEqual({
+      botToken: "xoxb-real-token",
+      reconnect: true,
+    });
     // the secret ref is collected so the apply secrets gate fails loud if unset
     expect(state.requiredSecrets).toContain("SLACK_BOT_TOKEN");
   });
@@ -228,6 +235,45 @@ describe("mapProjectToDesiredState", () => {
     expect(
       state.connectors.connections.find((c) => c.slug === "team-slack")
     ).toBeUndefined();
+  });
+
+  test("rejects hosted mode for a connector without hosted-bot support", () => {
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          org: "o",
+          agents: [],
+          connections: [
+            defineConnection({
+              slug: "hosted-github",
+              connector: "github",
+              credentialMode: "hosted",
+            }),
+          ],
+        }),
+        env
+      )
+    ).toThrow(/does not support the hosted Lobu bot/);
+  });
+
+  test("rejects contradictory chat credential modes", () => {
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({
+          org: "o",
+          agents: [],
+          connections: [
+            defineConnection({
+              slug: "managed-slack",
+              connector: "slack",
+              credentialMode: "byo",
+              managedBy: { org: "cloud" },
+            }),
+          ],
+        }),
+        env
+      )
+    ).toThrow(/cannot combine credentialMode "byo" with managedBy/);
   });
 
   test("maps a derived entity's backing ({ sql }); stored entities carry none", () => {

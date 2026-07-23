@@ -1299,7 +1299,7 @@ export class ApplyClient {
   }
 
   /**
-   * Apply a BYO chat connection (slack/telegram with a credential in `config`)
+   * Apply a BYO chat connection (a chat connector with a credential in `config`)
    * through the secret-aware `apply_chat_connection` path. Keyed by the
    * declared connection `slug` as the stable id (server stores it as
    * `agentconn-<slug>`); no owning agent — chat routing is a Behavior created
@@ -1311,8 +1311,9 @@ export class ApplyClient {
     connector: string;
     name?: string;
     config: Record<string, unknown>;
-  }): Promise<{ created: boolean; changed: boolean }> {
+  }): Promise<{ id: number; created: boolean; changed: boolean }> {
     const body = await this.connectionsTool<{
+      connection?: RemoteConnection;
       created?: boolean;
       changed?: boolean;
       error?: string;
@@ -1324,7 +1325,13 @@ export class ApplyClient {
       config: payload.config,
     });
     if (body.error) throw new ApiError(body.error);
+    if (!body.connection) {
+      throw new ApiError(
+        `apply chat connection "${payload.slug}" returned no connection payload`
+      );
+    }
     return {
+      id: body.connection.id,
       created: body.created === true,
       changed: body.changed === true,
     };

@@ -81,7 +81,10 @@ afterEach(() => {
 });
 
 /** Stubbed cloud state covering every resource family the bootstrap maps. */
-function fullOrgRoutes(): Record<string, () => unknown> {
+function fullOrgRoutes(): Record<
+  string,
+  (body: Record<string, unknown>) => unknown
+> {
   return {
     "/oauth/userinfo": () => ({
       organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
@@ -211,30 +214,46 @@ function fullOrgRoutes(): Record<string, () => unknown> {
           config: { repo_owner: "lobu-ai", repo_name: "lobu" },
           device_worker_id: null,
         },
+        {
+          id: 8,
+          slug: "agentconn-team-slack",
+          connector_key: "slack",
+          display_name: "Team Slack",
+          status: "active",
+          credential_mode: "byo",
+          config: {
+            botToken: "secret://connections%2Fteam-slack%2FbotToken",
+            mode: "socket",
+          },
+          device_worker_id: null,
+        },
       ],
     }),
-    manage_feeds: () => ({
-      feeds: [
-        {
-          id: 1,
-          connection_id: 7,
-          feed_key: "stargazers",
-          display_name: "Stars",
-          status: "active",
-          schedule: "0 */6 * * *",
-          config: { repo_owner: "lobu-ai", repo_name: "lobu" },
-        },
-        {
-          id: 2,
-          connection_id: 7,
-          feed_key: "query",
-          display_name: "Churn rollup (live)",
-          status: "active",
-          schedule: null,
-          config: { query: "SELECT 1" },
-          virtual: true,
-        },
-      ],
+    manage_feeds: (body) => ({
+      feeds:
+        body.connection_id === 7
+          ? [
+              {
+                id: 1,
+                connection_id: 7,
+                feed_key: "stargazers",
+                display_name: "Stars",
+                status: "active",
+                schedule: "0 */6 * * *",
+                config: { repo_owner: "lobu-ai", repo_name: "lobu" },
+              },
+              {
+                id: 2,
+                connection_id: 7,
+                feed_key: "query",
+                display_name: "Churn rollup (live)",
+                status: "active",
+                schedule: null,
+                config: { query: "SELECT 1" },
+                virtual: true,
+              },
+            ]
+          : [],
     }),
   };
 }
@@ -251,6 +270,9 @@ describe("lobu init --from-org", () => {
     const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
     expect(source).toContain('org: "acme"');
     expect(source).toContain('orgName: "Acme Inc"');
+    expect(source).toContain('slug: "team-slack"');
+    expect(source).toContain('credentialMode: "byo"');
+    expect(source).toContain('botToken: secret("TEAM_SLACK_BOT_TOKEN")');
 
     // The bootstrap wrote the agent-dir markdown + the reaction script.
     expect(readFileSync(join(dir, "agents", "sales", "SOUL.md"), "utf-8")).toBe(
@@ -267,7 +289,10 @@ describe("lobu init --from-org", () => {
     );
 
     // Round-trip: load the generated config back to DesiredState.
-    const env = { ANTHROPIC_API_KEY: "sk-test" } as NodeJS.ProcessEnv;
+    const env = {
+      ANTHROPIC_API_KEY: "sk-test",
+      TEAM_SLACK_BOT_TOKEN: "xoxb-test",
+    } as NodeJS.ProcessEnv;
     const { state } = await loadDesiredStateFromConfig({ cwd: dir, env });
 
     // ── agents ───────────────────────────────────────────────────────────
@@ -290,6 +315,13 @@ describe("lobu init --from-org", () => {
     expect(agent?.settings.preApprovedTools).toEqual([
       "/mcp/gmail/tools/send_email",
     ]);
+    expect(
+      state.connectors.connections.find((c) => c.slug === "team-slack")
+    ).toMatchObject({
+      connector: "slack",
+      credentialMode: "byo",
+      config: { botToken: "xoxb-test", mode: "socket" },
+    });
     expect(agent?.settings.guardrails).toEqual(["secret-scan"]);
     expect(agent?.settings.nixConfig?.packages).toEqual(["jq", "ffmpeg"]);
     expect(agent?.settings.soulMd).toBe("Be concise.");

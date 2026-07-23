@@ -241,8 +241,9 @@ export interface Connection {
   config?: Record<string, unknown>;
   /**
    * Where this connection's credential lives:
-   *   - `byo` (default): the credential is supplied here in `config`
-   *     (e.g. `{ botToken: secret("SLACK_BOT_TOKEN") }`).
+   *   - `byo`: this is a chat connection whose credential is supplied here in
+   *     `config` (e.g. `{ botToken: secret("SLACK_BOT_TOKEN") }`). Required
+   *     for declarative BYO chat; omit for ordinary data connections.
    *   - `hosted`: the **hosted Lobu bot** — no `config` needed. `lobu run`
    *     prints a `/lobu link <code>` you redeem by DMing the bot (or in a
    *     channel), which binds an agent by creating a message Behavior. Only

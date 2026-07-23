@@ -1014,13 +1014,15 @@ export async function executePlan(
       // the server persists a non-null `credential_mode` (the gateway needs it
       // to treat the row as chat) and resolves the token. Idempotent — an
       // unchanged declaration is a server-side no-op. No feeds/device pinning.
-      await ctx.client.applyChatConnection({
+      // Capture the returned id so Behaviors/feeds referencing this connection
+      // in the same apply resolve it (on a first create, `existing` is unset).
+      const result = await ctx.client.applyChatConnection({
         slug: desired.slug,
         connector: desired.connector,
         name: desired.name,
         config: desired.config ?? {},
       });
-      if (existing) connectionIdBySlug.set(desired.slug, existing.id);
+      connectionIdBySlug.set(desired.slug, result.id);
     } else if (existing && row.verb === "update") {
       const updated = await ctx.client.updateConnection(existing.id, {
         name: desired.name,

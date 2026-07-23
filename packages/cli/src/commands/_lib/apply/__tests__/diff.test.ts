@@ -1130,11 +1130,12 @@ describe("apply diff — connectors", () => {
     expect(acmeRows).toHaveLength(1);
   });
 
-  test("BYO chat connection is a noop when remote exists (no config churn)", () => {
+  test("BYO chat connection always reaches the chat upsert (rotation-safe)", () => {
     // Desired config holds a resolved token (plaintext); the server stores it as
-    // a `secret://` ref. Config must NOT be diffed for chat connections, or the
-    // connection would perpetually re-apply. The server does the secret-aware
-    // comparison under an advisory lock.
+    // a `secret://` ref, so the CLI can't compare them or detect a rotation. The
+    // row must always be an `update` (never noop) so it reaches the idempotent
+    // apply_chat_connection, which compares secrets server-side and no-ops when
+    // nothing changed. A noop here would silently drop credential rotations.
     const desired = buildState([], {
       connectors: {
         definitions: [],
@@ -1171,7 +1172,7 @@ describe("apply diff — connectors", () => {
     const conn = computeDiff(desired, remote).rows.find(
       (r) => r.kind === "connection" && r.id === "team-slack"
     );
-    expect(conn?.verb).toBe("noop");
+    expect(conn?.verb).toBe("update");
   });
 });
 

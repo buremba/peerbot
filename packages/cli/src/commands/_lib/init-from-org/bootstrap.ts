@@ -186,7 +186,11 @@ function envVarFor(slug: string, suffix: string): string {
   // non-identifier platform config key (e.g. `bot-token` → `..._BOT_TOKEN`); an
   // un-normalized hyphen would make the `.env` key invalid and fail apply's
   // required-secret check.
-  const norm = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase();
+  const norm = (s: string) =>
+    s
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[^A-Za-z0-9]+/g, "_")
+      .toUpperCase();
   return `${norm(slug)}_${norm(suffix)}`;
 }
 
@@ -675,6 +679,7 @@ function emitConnection(
     `slug: ${str(c.slug)}`,
     `connector: ${connectorRef}`,
   ];
+  if (isByoChat) fields.push(`credentialMode: "byo"`);
   if (c.display_name) fields.push(`name: ${str(c.display_name)}`);
   if (managedByOrg) {
     fields.push(`managedBy: { org: ${str(managedByOrg)} }`);
@@ -698,7 +703,7 @@ function emitConnection(
           ? `${emitKey(k)}: ${secrets.ref(envVarFor(c.slug, k))}`
           : `${emitKey(k)}: ${emitValue(v, 1)}`
       );
-      fields.push(`config: ${objectLiteral(parts, 0)}`);
+      fields.push(`config: ${objectLiteral(parts, 1)}`);
     } else {
       fields.push(`config: ${emitValue(config, 1)}`);
     }

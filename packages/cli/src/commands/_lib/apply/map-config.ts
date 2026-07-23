@@ -247,6 +247,17 @@ function resolveCredentialValue(
   return value;
 }
 
+/** Resolve top-level secret/env refs in connection config; preserve typed options. */
+function resolveConnectionConfigValue(
+  value: unknown,
+  required: Set<string>,
+  env: NodeJS.ProcessEnv
+): unknown {
+  return typeof value === "string" || isSecretRef(value)
+    ? resolveCredentialValue(value, required, env)
+    : value;
+}
+
 /** Skill entries resolved from `defineAgent({ skills })` (inline + file). */
 type LocalSkills = NonNullable<AgentSettings["skillsConfig"]>["skills"];
 
@@ -704,6 +715,16 @@ function mapConnection(
   });
   const authSlug = authProfileSlug(connection.authProfile);
   const appAuthSlug = authProfileSlug(connection.appAuthProfile);
+  if (connection.credentialMode === "managed" && !connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "managed" but does not declare managedBy`
+    );
+  }
+  if (connection.credentialMode === "byo" && connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" cannot combine credentialMode "byo" with managedBy`
+    );
+  }
   // A BYO chat connection (a chat connector whose credential is supplied in
   // `config`, not the hosted bot — hosted is filtered out before this) applies
   // through the secret-aware `apply_chat_connection` path. Resolve `secret()` /
@@ -713,16 +734,15 @@ function mapConnection(
   // placeholder would persist a broken token. Mirrors provider keys +
   // auth-profile credentials; the config row never holds cleartext at rest, and
   // the secret name is collected so the apply secrets gate fails loud if unset.
-  const isByoChat = isHostedChatPlatform(connectorKey(connection.connector));
+  // `credentialMode` is explicit so connector definitions remain the only
+  // registry of chat capability (`x-lobu-chat-platform`). Validation against
+  // that marker happens after connector definitions are installed/refetched.
+  const isByoChat = connection.credentialMode === "byo";
   const resolvedConfig = isByoChat
     ? Object.fromEntries(
         Object.entries(connection.config ?? {}).map(([k, v]) => [
           k,
-          resolveCredentialValue(
-            v as string | { readonly $secret: string },
-            required,
-            env
-          ),
+          resolveConnectionConfigValue(v, required, env),
         ])
       )
     : connection.config;
@@ -761,10 +781,24 @@ function mapConnection(
  * applied connection set (mirrors the old hosted-platform carve-out).
  */
 function isHostedConnection(connection: Connection): boolean {
-  return (
-    connection.credentialMode === "hosted" &&
-    isHostedChatPlatform(connectorKey(connection.connector))
-  );
+  if (connection.credentialMode !== "hosted") return false;
+  const connector = connectorKey(connection.connector);
+  if (!isHostedChatPlatform(connector)) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "hosted", but connector "${connector}" does not support the hosted Lobu bot (expected slack or telegram)`
+    );
+  }
+  if (connection.config && Object.keys(connection.config).length > 0) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "hosted" and must not declare config credentials`
+    );
+  }
+  if (connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" cannot combine credentialMode "hosted" with managedBy`
+    );
+  }
+  return true;
 }
 
 /**

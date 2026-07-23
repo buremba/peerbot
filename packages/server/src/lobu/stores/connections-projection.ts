@@ -231,11 +231,34 @@ export async function upsertChatConnectionProjection(
     // Same-org one-active-per-(org, platform, tenant): demote any OTHER active
     // sibling in THIS org so the partial-unique `connections_active_chat_tenant`
     // index is never contended.
+    //
+    // A Grid workspace can be recorded under EITHER its enterprise id (`E…`, an
+    // org-wide install) or its workspace id (`T…`, per-workspace). Those are
+    // different strings, so neither the unique index nor an exact-tenant demote
+    // relates them — re-installing the same workspace under the other key would
+    // leave BOTH rows active and inbound events could match either, with
+    // different connection ids. So the demote ALSO matches a sibling whose
+    // tenant is this install's enterprise id (and vice versa), scoped to rows
+    // carrying the SAME `enterpriseId` in their chat metadata. Independent
+    // sibling workspaces of one enterprise keep distinct `T…` tenants and are
+    // untouched — only the enterprise-keyed row for THIS workspace is retired.
+    const enterpriseId =
+      typeof conn.metadata?.enterpriseId === "string" &&
+      conn.metadata.enterpriseId.length > 0
+        ? conn.metadata.enterpriseId
+        : null;
     const demoted = await sql`
       UPDATE connections SET status = 'paused', updated_at = now()
       WHERE organization_id = ${orgId}
         AND connector_key = ${conn.platform}
-        AND external_tenant_id = ${externalTenantId}
+        AND (
+          external_tenant_id = ${externalTenantId}
+          OR (
+            ${enterpriseId}::text IS NOT NULL
+            AND external_tenant_id = ${enterpriseId}
+            AND config->'chatMetadata'->>'enterpriseId' = ${enterpriseId}
+          )
+        )
         AND status = 'active'
         AND deleted_at IS NULL
         AND credential_mode IS NOT NULL

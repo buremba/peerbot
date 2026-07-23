@@ -81,18 +81,30 @@ const ALLOW_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
 ];
 
 /**
- * IPv6 cloud-metadata endpoints, denied under EVERY policy and even for an
- * explicitly allowlisted host — the IPv6 twins of 169.254.169.254.
+ * Cloud-metadata endpoints that live OUTSIDE the ranges the `allow-private`
+ * floor already denies, listed individually so they stay blocked under every
+ * policy and even for an explicitly allowlisted host.
  *
- * These need naming individually because they sit inside ULA `fc00::/7`, which
- * `allow-private` deliberately permits (a self-hoster's DB legitimately lives
- * on a ULA address). Without this set, exempting a host would drop it to the
- * `allow-private` floor and expose IMDS. Kept metadata-only so ordinary ULA
- * hosts stay reachable.
+ * Each sits in a range `allow-private` deliberately permits, so without this
+ * set an exemption would drop the host to that floor and expose the endpoint:
+ * Alibaba's is in CGNAT `100.64.0.0/10` — exactly the range a Tailscale
+ * exemption targets — and AWS's IPv6 IMDS is in ULA `fc00::/7`, where a
+ * self-hoster's DB legitimately lives. Kept metadata-only so ordinary CGNAT
+ * and ULA hosts stay reachable. (169.254.169.254 and 169.254.170.2 need no
+ * entry — link-local `169.254.0.0/16` is already denied at the floor.)
  */
-const METADATA_V6: ReadonlyArray<readonly [string, number]> = [
-  ['fd00:ec2::254', 128], // AWS IMDS over IPv6
+const METADATA_V4: ReadonlyArray<readonly [string, number]> = [
+  ['100.100.100.200', 32], // Alibaba Cloud metadata (inside CGNAT)
+  ['192.0.0.192', 32], // Oracle Cloud metadata (IETF protocol assignments)
 ];
+
+const METADATA_V6: ReadonlyArray<readonly [string, number]> = [
+  ['fd00:ec2::254', 128], // AWS IMDS over IPv6 (inside ULA)
+];
+
+function isMetadataV4(address: string): boolean {
+  return METADATA_V4.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+}
 
 function isMetadataV6(address: string): boolean {
   return METADATA_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
@@ -171,7 +183,10 @@ function matchesIpv6Prefix(address: string, base: string, prefix: number): boole
 
 function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
   const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V4 : ALLOW_PRIVATE_V4;
-  return ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+  return (
+    isMetadataV4(address) ||
+    ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix))
+  );
 }
 
 function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {

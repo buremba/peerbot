@@ -111,6 +111,35 @@ describe('allow-hosts must NOT become a universal bypass', () => {
       assertHostAllowed('fd00::1', BLOCK, undefined, ['fd00::1']),
     ).resolves.toBeUndefined();
   });
+
+  /**
+   * The rest of the class: metadata endpoints sitting in ranges the
+   * `allow-private` floor permits, so an exemption would otherwise reach them.
+   * Alibaba's is the sharpest — it lives in CGNAT, the same range a Tailscale
+   * exemption targets.
+   */
+  test.each([
+    ['100.100.100.200', 'Alibaba metadata (inside CGNAT)'],
+    ['192.0.0.192', 'Oracle Cloud metadata'],
+  ])('%s stays blocked even when explicitly allowlisted (%s)', async (host) => {
+    await expect(assertHostAllowed(host, BLOCK, undefined, [host])).rejects.toThrow(
+      /blocked internal\/metadata address/,
+    );
+  });
+
+  test('an allowlisted hostname resolving to Alibaba metadata is still blocked', async () => {
+    await expect(
+      assertHostAllowed('evil.example.com', BLOCK, fakeLookup(['100.100.100.200']), [
+        'evil.example.com',
+      ]),
+    ).rejects.toThrow(/blocked internal\/metadata address/);
+  });
+
+  test('an ordinary CGNAT host is still exemptible (Tailscale must keep working)', async () => {
+    await expect(
+      assertHostAllowed('100.127.177.56', BLOCK, undefined, ['100.127.177.56']),
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe('parseAllowedHosts — unsupported entry shapes fail at parse time', () => {

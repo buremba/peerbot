@@ -8,6 +8,7 @@ import {
   ClaimMoveBlockedError,
 } from "./connection-claim.js";
 import type { SlackWebApi } from "./slack-web.js";
+import logger from "../../utils/logger.js";
 
 /**
  * The Slack adapter for the provider-agnostic claim engine (see
@@ -193,8 +194,20 @@ export function slackClaimProvider(
               lobuUserId: userId,
             });
           }
-        } catch {
+        } catch (err) {
           // Swallow — claim already committed; identity can be healed later.
+          // Log so a persistent identity-link failure is visible to on-call
+          // rather than silently degrading Builder admin tools / owner routing.
+          logger.warn(
+            {
+              err,
+              installationId,
+              userId,
+              installerUserId: pending.installerUserId,
+              teamId: pending.teamId,
+            },
+            "slackClaimProvider.bind: installer identity link failed after claim committed",
+          );
         }
         return { bindingId: installationId };
       } catch (err) {

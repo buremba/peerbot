@@ -463,11 +463,14 @@ export class MessageConsumer {
         try {
           // Scope by org + slack chat connection so a reused slug in another
           // tenant cannot supply the alternate team for this privilege grant.
+          // Require a LIVE row (status = 'active'): a paused/stopped install
+          // lingers for token refresh and must not seed an alternate team.
           const tenantRows = await getDb()<{ external_tenant_id: string | null }>`
             SELECT external_tenant_id FROM connections
             WHERE organization_id = ${data.organizationId}
               AND slug = ${connectionSlug}
               AND connector_key = 'slack'
+              AND status = 'active'
               AND deleted_at IS NULL
             LIMIT 1
           `;

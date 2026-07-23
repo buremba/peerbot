@@ -1129,6 +1129,50 @@ describe("apply diff — connectors", () => {
     // Exactly one row — the locally-declared def — never a bundled duplicate.
     expect(acmeRows).toHaveLength(1);
   });
+
+  test("BYO chat connection is a noop when remote exists (no config churn)", () => {
+    // Desired config holds a resolved token (plaintext); the server stores it as
+    // a `secret://` ref. Config must NOT be diffed for chat connections, or the
+    // connection would perpetually re-apply. The server does the secret-aware
+    // comparison under an advisory lock.
+    const desired = buildState([], {
+      connectors: {
+        definitions: [],
+        authProfiles: [],
+        connections: [
+          {
+            slug: "team-slack",
+            connector: "slack",
+            credentialMode: "byo" as const,
+            config: { botToken: "xoxb-real-token" },
+            feeds: [],
+            sourceFile: "lobu.config.ts",
+          },
+        ],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      // listConnections strips the `agentconn-` slug namespace back to the slug.
+      connections: [
+        {
+          id: 9,
+          slug: "team-slack",
+          connector_key: "slack",
+          display_name: null,
+          status: "active",
+          auth_profile_slug: null,
+          app_auth_profile_slug: null,
+          credential_mode: "byo",
+          config: { botToken: "secret://slack/team-slack/botToken" },
+        },
+      ],
+    };
+    const conn = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "connection" && r.id === "team-slack"
+    );
+    expect(conn?.verb).toBe("noop");
+  });
 });
 
 describe("apply diff — prune", () => {

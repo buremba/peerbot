@@ -946,6 +946,26 @@ async function generateLobuConfig(
   }
   configFields.push("  agents: [agent],");
 
+  // Hosted Lobu Slack bot — a project-level connection with no token. `lobu run`
+  // prints a `/lobu link <code>` you redeem by DMing the bot; redeeming binds an
+  // agent by creating a channel Behavior.
+  const connectionDecls: string[] = [];
+  if (options.enableHostedSlack) {
+    connectionDecls.push(
+      "const slack = defineConnection({",
+      '  slug: "slack",',
+      '  connector: "slack",',
+      '  credentialMode: "hosted",',
+      '  surfaces: ["dm", "channel"],',
+      "});"
+    );
+    configFields.push("  connections: [slack],");
+  }
+
+  const imports = options.enableHostedSlack
+    ? 'import { defineAgent, defineConfig, defineConnection, secret } from "@lobu/cli/config";'
+    : 'import { defineAgent, defineConfig, secret } from "@lobu/cli/config";';
+
   const lines = [
     "// lobu.config.ts — Lobu project configuration",
     "// Docs: https://lobu.ai/getting-started/",
@@ -954,11 +974,12 @@ async function generateLobuConfig(
     "// optional skills/ directory. Shared skills in the root skills/ directory",
     "// are available to every agent. Run `lobu apply` to sync this to your org.",
     "",
-    'import { defineAgent, defineConfig, secret } from "@lobu/cli/config";',
+    imports,
     "",
     "const agent = defineAgent({",
     ...agentFields,
     "});",
+    ...(connectionDecls.length > 0 ? ["", ...connectionDecls] : []),
     "",
     "export default defineConfig({",
     ...configFields,

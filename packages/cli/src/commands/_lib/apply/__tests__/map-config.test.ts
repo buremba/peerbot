@@ -190,6 +190,46 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
+  test("BYO chat connection carries credentialMode + resolves secret config", () => {
+    const slack = defineConnection({
+      slug: "team-slack",
+      connector: "slack",
+      config: { botToken: secret("SLACK_BOT_TOKEN") },
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ org: "o", agents: [], connections: [slack] }),
+      { ...env, SLACK_BOT_TOKEN: "xoxb-real-token" }
+    );
+    const conn = state.connectors.connections.find(
+      (c) => c.slug === "team-slack"
+    );
+    // BYO chat connection must be persisted as a chat connection: it needs a
+    // non-null credential_mode (the gateway only treats non-null rows as chat)
+    // and its secret() config resolved to the real token (not the SecretRef).
+    expect(conn).toBeDefined();
+    expect(conn?.credentialMode).toBe("byo");
+    expect(conn?.config).toEqual({ botToken: "xoxb-real-token" });
+    // the secret ref is collected so the apply secrets gate fails loud if unset
+    expect(state.requiredSecrets).toContain("SLACK_BOT_TOKEN");
+  });
+
+  test("hosted chat connection is filtered out of apply (never persisted)", () => {
+    const slack = defineConnection({
+      slug: "team-slack",
+      connector: "slack",
+      credentialMode: "hosted",
+      surfaces: ["dm", "channel"],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ org: "o", agents: [], connections: [slack] }),
+      env
+    );
+    // hosted bots are reached via /lobu link, never a persisted connection row
+    expect(
+      state.connectors.connections.find((c) => c.slug === "team-slack")
+    ).toBeUndefined();
+  });
+
   test("maps a derived entity's backing ({ sql }); stored entities carry none", () => {
     const subscription = defineEntityType({
       key: "subscription",

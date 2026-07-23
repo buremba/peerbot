@@ -659,7 +659,11 @@ function mapAuthProfile(
   };
 }
 
-function mapConnection(connection: Connection): DesiredConnection {
+function mapConnection(
+  connection: Connection,
+  required: Set<string>,
+  env: NodeJS.ProcessEnv
+): DesiredConnection {
   if (!CONNECTION_SLUG_PATTERN.test(connection.slug)) {
     throw new ValidationError(
       `connection slug "${connection.slug}" must match /^[a-z0-9][a-z0-9-]{0,62}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤63 chars)`
@@ -700,14 +704,36 @@ function mapConnection(connection: Connection): DesiredConnection {
   });
   const authSlug = authProfileSlug(connection.authProfile);
   const appAuthSlug = authProfileSlug(connection.appAuthProfile);
+  // A BYO chat connection (a chat connector whose credential is supplied in
+  // `config`, not the hosted bot — hosted is filtered out before this) applies
+  // through the secret-aware `apply_chat_connection` path. Resolve `secret()` /
+  // `$VAR` refs in its config to the REAL value: the chat-write path stores the
+  // incoming plaintext as the secret (server-side `normalizeConfigForStorage`
+  // swaps it for a `secret://` ref + encrypts it), so sending the `$VAR`
+  // placeholder would persist a broken token. Mirrors provider keys +
+  // auth-profile credentials; the config row never holds cleartext at rest, and
+  // the secret name is collected so the apply secrets gate fails loud if unset.
+  const isByoChat = isHostedChatPlatform(connectorKey(connection.connector));
+  const resolvedConfig = isByoChat
+    ? Object.fromEntries(
+        Object.entries(connection.config ?? {}).map(([k, v]) => [
+          k,
+          resolveCredentialValue(
+            v as string | { readonly $secret: string },
+            required,
+            env
+          ),
+        ])
+      )
+    : connection.config;
   // A managed connection's grant lives in a cloud (public) org. Fold the
   // `managedBy` descriptor into the persisted connection `config` so the server
   // resolver (execution-context.ts) can detect it and fetch the user's token
   // from the cloud at runtime — no new column or CRUD field needed. It lives in
   // the trusted connection `config` (never in `auth_data`).
   const config = connection.managedBy
-    ? { ...(connection.config ?? {}), managedBy: { ...connection.managedBy } }
-    : connection.config;
+    ? { ...(resolvedConfig ?? {}), managedBy: { ...connection.managedBy } }
+    : resolvedConfig;
   return {
     slug: connection.slug,
     connector: connectorKey(connection.connector),
@@ -717,6 +743,10 @@ function mapConnection(connection: Connection): DesiredConnection {
     ...(authSlug ? { authProfileSlug: authSlug } : {}),
     ...(appAuthSlug ? { appAuthProfileSlug: appAuthSlug } : {}),
     ...(config ? { config } : {}),
+    // Mark BYO chat so apply routes it through `apply_chat_connection` (which
+    // persists a non-null `credential_mode` the gateway needs to treat the row
+    // as chat). Data connectors leave it undefined.
+    ...(isByoChat ? { credentialMode: "byo" as const } : {}),
     ...(connection.deviceWorkerId
       ? { deviceWorkerId: connection.deviceWorkerId }
       : {}),
@@ -766,7 +796,7 @@ export function mapProjectToDesiredState(
     ? []
     : (project.connections ?? [])
         .filter((c) => !isHostedConnection(c))
-        .map(mapConnection);
+        .map((c) => mapConnection(c, required, env));
   // Org providers are skipped under `--only` (they're neither agents nor
   // memory), matching the connector-skip posture — so their secrets aren't
   // demanded on a targeted apply.

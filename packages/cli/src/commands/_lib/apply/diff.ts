@@ -713,7 +713,16 @@ function diffConnection(
       },
       {
         name: "config",
-        changed: (d, r) => !deepEqual(d.config ?? {}, r.config ?? {}),
+        // A BYO chat connection's config holds a resolved secret (plaintext)
+        // on the desired side, but the server stores it as a `secret://` ref —
+        // deep-equal would always report "changed" and re-apply every run. The
+        // secret-aware comparison happens server-side under an advisory lock
+        // (apply always calls the idempotent chat-upsert), so don't diff config
+        // here for chat connections.
+        changed: (d, r) =>
+          d.credentialMode === "byo"
+            ? false
+            : !deepEqual(d.config ?? {}, r.config ?? {}),
       },
       {
         name: "device_worker_id",

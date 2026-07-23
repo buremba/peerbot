@@ -659,10 +659,16 @@ function emitConnection(
   authHandles: Map<string, string>,
   connectorHandles: Map<string, string>,
   imports: ImportTracker,
+  secrets: SecretCollector,
   minter: IdentMinter,
   managedByOrg?: string
 ): Handle {
   imports.use("defineConnection");
+  // A BYO chat connection (credential_mode 'byo') keeps its token in `config`,
+  // stored server-side as a write-only `secret://` ref. Round-trip it as a
+  // `secret("<CONN>_<KEY>")` placeholder so the generated config is applicable
+  // (the real value goes in .env), mirroring the auth-profile credential path.
+  const isByoChat = c.credential_mode === "byo";
   const connectorRef =
     connectorHandles.get(c.connector_key) ?? str(c.connector_key);
   const fields: string[] = [
@@ -684,7 +690,18 @@ function emitConnection(
   }
   const config = managedByOrg ? stripManagedGrantConfig(c.config) : c.config;
   if (config && Object.keys(config).length > 0) {
-    fields.push(`config: ${emitValue(config, 1)}`);
+    if (isByoChat) {
+      // Replace each stored `secret://` config value with a secret() placeholder
+      // keyed by <CONN>_<KEY>; pass literals through unchanged.
+      const parts = Object.entries(config).map(([k, v]) =>
+        typeof v === "string" && v.startsWith("secret://")
+          ? `${emitKey(k)}: ${secrets.ref(envVarFor(c.slug, k))}`
+          : `${emitKey(k)}: ${emitValue(v, 1)}`
+      );
+      fields.push(`config: ${objectLiteral(parts, 0)}`);
+    } else {
+      fields.push(`config: ${emitValue(config, 1)}`);
+    }
   }
   if (c.device_worker_id) {
     fields.push(`deviceWorkerId: ${str(c.device_worker_id)}`);
@@ -980,6 +997,7 @@ function generateProject(
       authHandles,
       connectorHandles,
       imports,
+      secrets,
       minter,
       managedByOrg
     );

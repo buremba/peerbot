@@ -164,6 +164,26 @@ describe("lobu init --yes", () => {
     INIT_TIMEOUT
   );
 
+  test(
+    "--hosted-slack writes a hosted (no-token) slack connection",
+    async () => {
+      await initCommand(cwd, "hosted-on", { yes: true, hostedSlack: true });
+      const config = readFileSync(
+        join(cwd, "hosted-on", "lobu.config.ts"),
+        "utf-8"
+      );
+      // A hosted chat connection: project-level defineConnection, no token.
+      // `lobu run` scans project.connections for credentialMode: "hosted".
+      expect(config).toContain("defineConnection");
+      expect(config).toContain('credentialMode: "hosted"');
+      expect(config).toContain("connections: [slack]");
+      expect(config).not.toContain("botToken");
+      // Not the old agent-scoped platforms field.
+      expect(config).not.toContain("platforms:");
+    },
+    INIT_TIMEOUT
+  );
+
   test("--provider with bad id throws before writing files", async () => {
     await expect(
       initCommand(cwd, "bad-provider", {

@@ -162,6 +162,15 @@ export interface DesiredConnection {
   appAuthProfileSlug?: string;
   config?: Record<string, unknown>;
   /**
+   * Set only for a BYO chat connection (a chat connector — slack/telegram —
+   * whose credential is supplied here in `config`). Chat connections apply
+   * through the secret-aware `apply_chat_connection` path so the server
+   * persists a non-null `credential_mode` (the gateway only treats non-null
+   * rows as chat) and resolves the token. Absent for data connectors and
+   * hosted chat (which is filtered out of apply entirely).
+   */
+  credentialMode?: "byo";
+  /**
    * Optional UUID pinning the connection's syncs/actions to a specific device
    * worker (`device_workers.id`). Required for connectors that declare a
    * `required_capability`; omit it for serverless-on-Lobu runs.

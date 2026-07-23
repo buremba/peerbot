@@ -1278,9 +1278,56 @@ export class ApplyClient {
     const body = await this.connectionsTool<{
       connections?: RemoteConnection[];
     }>({ action: "list", limit: 500 });
-    return (body.connections ?? []).filter(
-      (connection) => connection.credential_mode == null
-    );
+    return (body.connections ?? [])
+      .filter(
+        // Data connectors (credential_mode NULL) and BYO chat connections
+        // (credential_mode 'byo') both round-trip through `connections`. Managed
+        // chat installs ('managed') are owned by the OAuth/claim flow, never the
+        // declarative config, so they are excluded from the diff.
+        (connection) =>
+          connection.credential_mode == null ||
+          connection.credential_mode === "byo"
+      )
+      .map((connection) =>
+        // A BYO chat connection is stored with the `agentconn-` slug namespace;
+        // strip it back to the declared slug so it matches the desired state.
+        connection.credential_mode === "byo" &&
+        connection.slug.startsWith("agentconn-")
+          ? { ...connection, slug: connection.slug.slice("agentconn-".length) }
+          : connection
+      );
+  }
+
+  /**
+   * Apply a BYO chat connection (slack/telegram with a credential in `config`)
+   * through the secret-aware `apply_chat_connection` path. Keyed by the
+   * declared connection `slug` as the stable id (server stores it as
+   * `agentconn-<slug>`); no owning agent — chat routing is a Behavior created
+   * when a channel is linked. The server compares resolved credentials under a
+   * PG advisory lock, so an unchanged declaration is a true no-op.
+   */
+  async applyChatConnection(payload: {
+    slug: string;
+    connector: string;
+    name?: string;
+    config: Record<string, unknown>;
+  }): Promise<{ created: boolean; changed: boolean }> {
+    const body = await this.connectionsTool<{
+      created?: boolean;
+      changed?: boolean;
+      error?: string;
+    }>({
+      action: "apply_chat_connection",
+      stable_id: payload.slug,
+      connector_key: payload.connector,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      config: payload.config,
+    });
+    if (body.error) throw new ApiError(body.error);
+    return {
+      created: body.created === true,
+      changed: body.changed === true,
+    };
   }
 
   async createConnection(payload: {

@@ -703,13 +703,23 @@ function diffConnection(
       },
       {
         name: "auth",
+        // `auth`/`app_auth`/`device_worker_id` are not part of the chat-upsert
+        // payload (`apply_chat_connection` only persists slug/connector/name/
+        // config), and a BYO chat declaration can't even set them (map-config
+        // rejects them). Never diff them for BYO, or a remote row carrying a
+        // stray value would report a perpetual "update" that apply can't clear.
         changed: (d, r) =>
-          (d.authProfileSlug ?? null) !== (r.auth_profile_slug ?? null),
+          d.credentialMode === "byo"
+            ? false
+            : (d.authProfileSlug ?? null) !== (r.auth_profile_slug ?? null),
       },
       {
         name: "app_auth",
         changed: (d, r) =>
-          (d.appAuthProfileSlug ?? null) !== (r.app_auth_profile_slug ?? null),
+          d.credentialMode === "byo"
+            ? false
+            : (d.appAuthProfileSlug ?? null) !==
+              (r.app_auth_profile_slug ?? null),
       },
       {
         name: "config",
@@ -727,7 +737,9 @@ function diffConnection(
       {
         name: "device_worker_id",
         changed: (d, r) =>
-          (d.deviceWorkerId ?? null) !== (r.device_worker_id ?? null),
+          d.credentialMode === "byo"
+            ? false
+            : (d.deviceWorkerId ?? null) !== (r.device_worker_id ?? null),
       },
     ],
   }) as ConnectionDiffRow;

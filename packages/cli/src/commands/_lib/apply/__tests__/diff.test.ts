@@ -1174,6 +1174,55 @@ describe("apply diff — connectors", () => {
     );
     expect(conn?.verb).toBe("update");
   });
+
+  test("BYO chat connection ignores auth/app_auth/device_worker drift", () => {
+    // A BYO chat row applies through `apply_chat_connection`, which only
+    // persists slug/connector/name/config. If the remote row carries a stray
+    // auth profile, app-auth profile, or device pin, the diff must NOT report
+    // those as changed — apply can't clear them, so they'd resurface as a
+    // perpetual "update" every run. Only `config` (rotation-safe) may change.
+    const desired = buildState([], {
+      connectors: {
+        definitions: [],
+        authProfiles: [],
+        connections: [
+          {
+            slug: "team-slack",
+            connector: "slack",
+            credentialMode: "byo" as const,
+            config: { botToken: "xoxb-real-token" },
+            feeds: [],
+            sourceFile: "lobu.config.ts",
+          },
+        ],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connections: [
+        {
+          id: 9,
+          slug: "team-slack",
+          connector_key: "slack",
+          display_name: null,
+          status: "active",
+          auth_profile_slug: "stray-auth",
+          app_auth_profile_slug: "stray-app-auth",
+          device_worker_id: "11111111-1111-1111-1111-111111111111",
+          credential_mode: "byo",
+          config: { botToken: "secret://slack/team-slack/botToken" },
+        },
+      ],
+    };
+    const conn = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "connection" && r.id === "team-slack"
+    );
+    expect(conn?.verb).toBe("update");
+    // Only the rotation-safe `config` field — never the unappliable ones.
+    expect(
+      conn?.kind === "connection" ? conn.changedFields : undefined
+    ).toEqual(["config"]);
+  });
 });
 
 describe("apply diff — prune", () => {

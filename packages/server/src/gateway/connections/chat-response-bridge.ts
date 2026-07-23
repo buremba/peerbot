@@ -47,6 +47,10 @@ import {
   type PlatformResponseStrategy,
   type StreamState,
 } from "./platform-strategies/index.js";
+import {
+  appendMarkdownFooter,
+  buildConversationFooterUrl,
+} from "./lobu-answer-link.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 
 const logger = createLogger("chat-response-bridge");
@@ -345,6 +349,28 @@ export class ChatResponseBridge implements ResponseRenderer {
             "Failed to post guardrail block message at completion"
           );
         }
+      }
+    }
+
+    // Completion-time enrichment is safe only for post-once strategies. Their
+    // terminal payload is the delivery contract under N>1 replicas, so the
+    // footer travels with the same authoritative finalText as the answer.
+    // Live-streaming strategies have already posted their iterator on whichever
+    // replica claimed the deltas; mutating finalText here would change history
+    // without changing the platform message, and re-posting would duplicate it.
+    if (!blockedAtCompletion && strategy.deliversAtCompletion) {
+      const footerUrl = await buildConversationFooterUrl({
+        organizationId: this.resolveOrganizationId(payload, ctx),
+        agentId: this.resolveAgentId(payload, ctx) ?? undefined,
+        conversationId: payload.conversationId,
+        publicGatewayUrl: this.manager.getPublicGatewayUrl(),
+      });
+      if (footerUrl && payload.finalText?.trim()) {
+        payload.finalText = appendMarkdownFooter(payload.finalText, footerUrl);
+      } else if (footerUrl && stream?.buffer && !payload.finalText?.trim()) {
+        // Compatibility with terminal rows produced before finalText became the
+        // cross-replica contract. Post-once delivery falls back to this buffer.
+        stream.buffer = appendMarkdownFooter(stream.buffer, footerUrl);
       }
     }
 

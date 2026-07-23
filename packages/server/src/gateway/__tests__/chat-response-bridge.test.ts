@@ -1,4 +1,5 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
+import * as workspaceModule from "../../workspace/index.js";
 import { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
@@ -35,7 +36,12 @@ function createStreamingTarget() {
 function createHarness(
   target: unknown,
   platform = "telegram",
-  slackPostMessage?: ReturnType<typeof mock>
+  slackPostMessage?: ReturnType<typeof mock>,
+  linkContext?: {
+    agentId: string;
+    organizationId: string;
+    publicGatewayUrl: string;
+  }
 ) {
   const state = new InMemoryStateAdapter();
   const conversationState = new ConversationStateStore(state);
@@ -44,7 +50,11 @@ function createHarness(
     : undefined;
   const manager = {
     getInstance: () => ({
-      connection: { platform },
+      connection: {
+        platform,
+        agentId: linkContext?.agentId,
+        organizationId: linkContext?.organizationId,
+      },
       chat: {
         channel: () => target,
         getAdapter: (name: string) =>
@@ -54,8 +64,15 @@ function createHarness(
     }),
     has: () => true,
     warmConnection: async () => true,
+    getPublicGatewayUrl: () => linkContext?.publicGatewayUrl ?? "",
   };
   return { state, conversationState, manager };
+}
+
+function stubWorkspaceOrgSlug(slug: string | null) {
+  return spyOn(workspaceModule, "getWorkspaceProvider").mockReturnValue({
+    getOrgSlug: async () => slug,
+  } as unknown as ReturnType<typeof workspaceModule.getWorkspaceProvider>);
 }
 
 const basePayload = {
@@ -486,6 +503,176 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
       thread_ts: "1700000000.123456",
       markdown_text: "full reply from the worker",
     });
+  });
+
+  test("Slack completion appends a Lobu transcript footer to authoritative finalText", async () => {
+    const providerSpy = stubWorkspaceOrgSlug("acme");
+    try {
+      const { target } = createStreamingTarget();
+      const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+      const { conversationState, manager } = createHarness(
+        target,
+        "slack",
+        slackPost,
+        {
+          agentId: "agent-1",
+          organizationId: "org-1",
+          publicGatewayUrl: "https://app.lobu.com/lobu",
+        }
+      );
+      const bridge = new ChatResponseBridge(manager as any);
+      const expectedText =
+        "full reply from the worker\n\n[View in Lobu ↗](https://app.lobu.com/acme/agents/agent-1/conversations/slack%3AC123%3A1700000000.123456)";
+
+      await bridge.handleCompletion(
+        {
+          ...slackPayload,
+          finalText: "full reply from the worker",
+          processedMessageIds: ["m1"],
+        },
+        "s"
+      );
+
+      expect(slackPost).toHaveBeenCalledTimes(1);
+      expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+        markdown_text: expectedText,
+      });
+      expect(
+        await conversationState.getHistory(
+          "conn-1",
+          "slack:C123",
+          "slack:C123:1700000000.123456"
+        )
+      ).toEqual([
+        { role: "assistant", content: expectedText, name: undefined },
+      ]);
+    } finally {
+      providerSpy.mockRestore();
+    }
+  });
+
+  test("pre-finalText Slack completion appends the footer to its local fallback buffer", async () => {
+    const providerSpy = stubWorkspaceOrgSlug("acme");
+    try {
+      const { target } = createStreamingTarget();
+      const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+      const { manager } = createHarness(target, "slack", slackPost, {
+        agentId: "agent-1",
+        organizationId: "org-1",
+        publicGatewayUrl: "https://app.lobu.com/lobu",
+      });
+      const bridge = new ChatResponseBridge(manager as any);
+
+      await bridge.handleDelta({ ...slackPayload, delta: "legacy reply" }, "s");
+      await bridge.handleCompletion(slackPayload, "s");
+
+      expect(slackPost).toHaveBeenCalledTimes(1);
+      expect(slackPost.mock.calls[0]?.[0].markdown_text).toContain(
+        "legacy reply\n\n[View in Lobu ↗]"
+      );
+    } finally {
+      providerSpy.mockRestore();
+    }
+  });
+
+  test("missing organization slug leaves the completed answer unchanged", async () => {
+    const providerSpy = stubWorkspaceOrgSlug(null);
+    try {
+      const { target } = createStreamingTarget();
+      const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+      const { manager } = createHarness(target, "slack", slackPost, {
+        agentId: "agent-1",
+        organizationId: "org-1",
+        publicGatewayUrl: "https://app.lobu.com/lobu",
+      });
+      const bridge = new ChatResponseBridge(manager as any);
+
+      await bridge.handleCompletion(
+        {
+          ...slackPayload,
+          finalText: "full reply from the worker",
+          processedMessageIds: ["m1"],
+        },
+        "s"
+      );
+
+      expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+        markdown_text: "full reply from the worker",
+      });
+    } finally {
+      providerSpy.mockRestore();
+    }
+  });
+
+  test("guardrail-blocked completion never appends or posts the footer", async () => {
+    const providerSpy = stubWorkspaceOrgSlug("acme");
+    try {
+      const { target, plainPosts } = createStreamingTarget();
+      const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+      const { manager } = createHarness(target, "slack", slackPost, {
+        agentId: "agent-1",
+        organizationId: "org-1",
+        publicGatewayUrl: "https://app.lobu.com/lobu",
+      });
+      const bridge = new ChatResponseBridge(manager as any);
+      const scanner = (bridge as any).outputGuardrail;
+      scanner.hasOutputGuardrails = async () => true;
+      scanner.scanFinal = async () => ({
+        guardrail: "test-output",
+        reason: "unsafe output",
+      });
+
+      await bridge.handleCompletion(
+        {
+          ...slackPayload,
+          finalText: "unsafe answer",
+          processedMessageIds: ["m1"],
+        },
+        "s"
+      );
+
+      expect(slackPost).not.toHaveBeenCalled();
+      expect(plainPosts).toEqual([
+        "Message blocked by guardrail: unsafe output",
+      ]);
+      expect(plainPosts.join("\n")).not.toContain("View in Lobu");
+      expect(providerSpy).not.toHaveBeenCalled();
+    } finally {
+      providerSpy.mockRestore();
+    }
+  });
+
+  test("live-streaming completion does not create a history-only footer", async () => {
+    const providerSpy = stubWorkspaceOrgSlug("acme");
+    try {
+      const { target, collected, drained } = createStreamingTarget();
+      const { conversationState, manager } = createHarness(
+        target,
+        "telegram",
+        undefined,
+        {
+          agentId: "agent-1",
+          organizationId: "org-1",
+          publicGatewayUrl: "https://app.lobu.com/lobu",
+        }
+      );
+      const bridge = new ChatResponseBridge(manager as any);
+
+      await bridge.handleDelta({ ...basePayload, delta: "streamed reply" }, "s");
+      await bridge.handleCompletion(
+        { ...basePayload, finalText: "streamed reply" },
+        "s"
+      );
+      await drained;
+
+      expect(collected).toEqual(["streamed reply"]);
+      expect(await conversationState.getHistory("conn-1", "123")).toEqual([
+        { role: "assistant", content: "streamed reply", name: undefined },
+      ]);
+      expect(providerSpy).not.toHaveBeenCalled();
+    } finally {
+      providerSpy.mockRestore();
+    }
   });
 
   test("Slack completion prefers finalText over a partial local buffer", async () => {

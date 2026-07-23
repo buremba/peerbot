@@ -107,20 +107,25 @@ export async function countEntitiesOfType(
 	ctx: ToolContext,
 ): Promise<number> {
 	if (type.backing_sql) {
-		const result = await queryDerivedEntityView(
-			type.backing_sql,
-			type.backing_source ?? undefined,
-			{ limit: 1, offset: 0 },
-			ctx,
-		);
-		if (result.error) {
+		try {
+			const result = await queryDerivedEntityView(
+				type.backing_sql,
+				type.backing_source ?? undefined,
+				{ limit: 1, offset: 0 },
+				ctx,
+			);
+			if (!result.error) return Number(result.total_count) || 0;
 			logger.warn(
 				{ err: result.error, entityType: type.slug },
 				"Failed to count derived entity type rows",
 			);
-			return 0;
+		} catch (err) {
+			logger.warn(
+				{ err, entityType: type.slug },
+				"Failed to count derived entity type rows",
+			);
 		}
-		return Number(result.total_count) || 0;
+		return 0;
 	}
 	return countStoredEntitiesOfType(type.id, ctx.organizationId);
 }

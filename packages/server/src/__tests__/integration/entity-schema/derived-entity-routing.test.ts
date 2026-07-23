@@ -4,8 +4,8 @@
  * Derived ("view") entity types have no rows in `entities` — their rows come
  * from `backing_sql`. This proves the backend abstracts that away so the
  * frontend treats derived rows like stored entities:
- *   - `manage_entity` list returns derived rows in the standard entity shape
- *     (flagged `is_derived`), org-scoped.
+ *   - `manage_entity` list returns derived rows in the standard entity shape,
+ *     org-scoped.
  *   - `resolve_path` resolves a single derived row by slug into a read-only
  *     entity (with inferred `measure_columns`), and 404s an unknown slug.
  */
@@ -122,6 +122,45 @@ describe('derived entity routing (list + resolve_path)', () => {
     };
     expect(got.entity_type?.backing_sql).toBeTruthy();
     expect(got.entity_type?.entity_count).toBe(listTotal);
+
+    const resolved = (await resolvePath({
+      path: `/${orgSlug}`,
+      include_bootstrap: true,
+    })) as {
+      bootstrap?: { entity_types?: Array<{ slug: string; entity_count: number }> };
+    };
+    const bootstrapType = resolved.bootstrap?.entity_types?.find(
+      (type) => type.slug === 'spend-vendor'
+    );
+    expect(bootstrapType?.entity_count).toBe(listTotal);
+  });
+
+  it('keeps type lists available when a connector-backed derived count fails', async () => {
+    await api.entity_schema.createType({
+      slug: 'missing-derived-source',
+      name: 'Missing derived source',
+      backing: {
+        sql: 'SELECT id, name FROM missing_table',
+        connection: 'missing-connection',
+      },
+    });
+
+    const types = (await api.entity_schema.listTypes()) as {
+      entity_types?: Array<{ slug: string; entity_count?: number }>;
+    };
+    const missing = types.entity_types?.find((type) => type.slug === 'missing-derived-source');
+    expect(missing?.entity_count).toBe(0);
+
+    const resolved = (await resolvePath({
+      path: `/${orgSlug}`,
+      include_bootstrap: true,
+    })) as {
+      bootstrap?: { entity_types?: Array<{ slug: string; entity_count: number }> };
+    };
+    const bootstrapType = resolved.bootstrap?.entity_types?.find(
+      (type) => type.slug === 'missing-derived-source'
+    );
+    expect(bootstrapType?.entity_count).toBe(0);
   });
 
   it('resolve_path resolves a derived row by slug into a read-only entity', async () => {

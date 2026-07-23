@@ -5,7 +5,6 @@ import type { ToolContext } from './tools/registry';
 import { type ResolvePathResult, resolvePath } from './tools/resolve_path';
 import {
   batchLoadRelationships,
-  countEntitiesOfType,
   listEntities,
   type RelationshipColumnSpec,
 } from './utils/entity-management';
@@ -32,6 +31,8 @@ interface PublicEntityTypeDetails {
   entity_count: number;
   metadata_schema: Record<string, unknown> | null;
 }
+
+type PublicEntityTypeDefinition = Omit<PublicEntityTypeDetails, 'entity_count'>;
 
 interface PublicEntityListItem {
   id: number;
@@ -415,21 +416,10 @@ async function getPublicOrganizationBySlug(slug: string): Promise<PublicOrganiza
 
 async function getPublicEntityType(
   organizationId: string,
-  slug: string,
-  ctx: ToolContext
-): Promise<PublicEntityTypeDetails | null> {
+  slug: string
+): Promise<PublicEntityTypeDefinition | null> {
   const sql = getDb();
-  const rows = await sql.unsafe<{
-    id: number;
-    slug: string;
-    name: string;
-    description: string | null;
-    icon: string | null;
-    color: string | null;
-    metadata_schema: Record<string, unknown> | null;
-    backing_sql: string | null;
-    backing_source: string | null;
-  }>(
+  const rows = await sql.unsafe<PublicEntityTypeDefinition>(
     `
       SELECT
         et.id,
@@ -438,9 +428,7 @@ async function getPublicEntityType(
         et.description,
         et.icon,
         et.color,
-        et.metadata_schema,
-        et.backing_sql,
-        et.backing_source
+        et.metadata_schema
       FROM entity_types et
       WHERE et.organization_id = $1
         AND et.slug = $2
@@ -453,28 +441,7 @@ async function getPublicEntityType(
     `,
     [organizationId, slug]
   );
-  const row = rows[0];
-  if (!row) return null;
-  // Same stored+derived count path as manage_entity_schema / bootstrap list.
-  const entity_count = await countEntitiesOfType(
-    {
-      id: Number(row.id),
-      slug: row.slug,
-      backing_sql: row.backing_sql,
-      backing_source: row.backing_source,
-    },
-    ctx
-  );
-  return {
-    id: Number(row.id),
-    slug: row.slug,
-    name: row.name,
-    description: row.description,
-    icon: row.icon,
-    color: row.color,
-    metadata_schema: row.metadata_schema,
-    entity_count,
-  };
+  return rows[0] ?? null;
 }
 
 async function getPublicEntityTypeList(
@@ -1056,8 +1023,8 @@ export async function buildPublicPageModel(
     }
 
     if (segments.length === 2) {
-      const entityType = await getPublicEntityType(organization.id, segments[1]!, toolCtx);
-      if (!entityType) {
+      const entityTypeDefinition = await getPublicEntityType(organization.id, segments[1]!);
+      if (!entityTypeDefinition) {
         return applyBootstrapStrip(
           buildNotFoundModel(organization, requestUrl, normalizedPath),
           subdomainOrg
@@ -1065,8 +1032,12 @@ export async function buildPublicPageModel(
       }
       const [ownerResolvedPath, entityList] = await Promise.all([
         resolvePublicPath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
-        getPublicEntityTypeList(organization.id, env, requestUrl, entityType.slug),
+        getPublicEntityTypeList(organization.id, env, requestUrl, entityTypeDefinition.slug),
       ]);
+      const entityType: PublicEntityTypeDetails = {
+        ...entityTypeDefinition,
+        entity_count: entityList.metadata.total_count,
+      };
       return applyBootstrapStrip(
         buildEntityTypeModel({
           organization,

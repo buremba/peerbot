@@ -184,12 +184,20 @@ export function slackClaimProvider(
           // accounts without an id_token resolve with an empty team; their bare
           // user proof is useful for Grid installer matching below but must not
           // create an unscoped chat identity.
+          //
+          // Keys are CANONICALIZED to uppercase. The entity-graph source yields
+          // the raw `team:user` identifier, and `resolveChatUserIdentity` is an
+          // exact SQL match with no folding — a row stored as `t-claim/u-…`
+          // could never serve an inbound Slack event carrying `T-CLAIM/U-…`,
+          // so the claimer would silently lose Builder admin tools. Writing
+          // canonical keys also keeps this loop consistent with the
+          // case-insensitive installer checks below.
           for (const id of identities) {
             if (!id.teamId) continue;
             await deps.linkChatUserIdentity({
               platform: "slack",
-              teamId: id.teamId,
-              platformUserId: id.slackUserId,
+              teamId: id.teamId.toUpperCase(),
+              platformUserId: id.slackUserId.toUpperCase(),
               lobuUserId: userId,
             });
           }
@@ -221,8 +229,8 @@ export function slackClaimProvider(
           ) {
             await deps.linkChatUserIdentity({
               platform: "slack",
-              teamId: pending.teamId,
-              platformUserId: pending.installerUserId,
+              teamId: installTeam,
+              platformUserId: installer,
               lobuUserId: userId,
             });
           }

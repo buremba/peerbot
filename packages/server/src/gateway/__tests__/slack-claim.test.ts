@@ -425,6 +425,39 @@ describe("slackClaimProvider.bind — identity linking", () => {
     });
   });
 
+  test("persists identities CANONICALIZED so uppercase inbound events resolve them", async () => {
+    // The entity-graph source yields the raw `team:user` identifier, so a
+    // lowercase pair can arrive here. `resolveChatUserIdentity` is an exact
+    // SQL match with no folding — a row stored as `t-claim/u-installer` can
+    // never serve an inbound Slack event carrying `T-CLAIM/U-INSTALLER`, and
+    // the claimed installer silently loses Builder admin tools. Worse, the
+    // case-insensitive already-linked check would suppress the canonical
+    // write, so the uppercase row never gets created either.
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: "t-claim", slackUserId: "u-installer" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER", enterpriseId: null }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    const pairs = linkedPairs(linkChatUserIdentity);
+    // The canonical uppercase key MUST exist — it's what inbound events use.
+    expect(pairs).toContainEqual({
+      teamId: TEAM,
+      platformUserId: "U-INSTALLER",
+    });
+    // And no raw-case row should be persisted alongside it.
+    expect(
+      pairs.some(
+        (p) => p.teamId === "t-claim" || p.platformUserId === "u-installer",
+      ),
+    ).toBe(false);
+  });
+
   test("a claimer with no proven identities links nothing", async () => {
     const { deps, linkChatUserIdentity } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => []),

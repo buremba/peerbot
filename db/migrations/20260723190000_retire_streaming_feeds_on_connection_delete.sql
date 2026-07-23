@@ -2,26 +2,23 @@
 --
 -- A streaming feed is keyed by the numeric `connections.id` and, until now, was
 -- soft-deleted only on an explicit Behavior unlink (`softDeleteStreamingChannelFeed`)
--- — nothing retired it when its *connection* died. So every time a connection was
--- retired (e.g. a Slack Grid workspace re-installed under a different tenant key,
--- which mints a new connection and tombstones the old one), the previous
--- generation's streaming feed stayed LIVE pointing at a dead row. One leaked per
--- retirement; `20260723160000_retire_leaked_chat_feeds.sql` mopped up the rows that
--- had already accumulated in prod, but did nothing to stop the next one.
+-- — nothing retired it when its *connection* died. When a connection was retired
+-- (for example, when a Slack Grid workspace was re-installed under a different
+-- tenant key), its streaming feeds stayed LIVE pointing at a dead row.
+-- `20260723160000_retire_leaked_chat_feeds.sql` cleaned up duplicate rows that had
+-- already accumulated, but did not prevent new orphans.
 --
 -- This closes the leak at the source: a streaming feed cannot outlive its
 -- connection. The moment a connection is tombstoned, its streaming feeds are
 -- retired in the same transaction — the exact companion to the existing
 -- `archive_chat_behaviors_for_deleted_connection` trigger, which already archives
 -- the chat-link Behaviors on the same event. A DB trigger (not the app-level
--- reconciler) is deliberate: it fires no matter how the connection was tombstoned
--- — tool call, admin SQL, or cascade — so the invariant holds without every code
--- path having to remember to reconcile.
+-- reconciler) is deliberate: it fires for every path that updates the connection
+-- tombstone, so the invariant does not depend on each caller reconciling feeds.
 --
 -- Matches `softDeleteStreamingChannelFeed` semantics exactly (deleted_at + paused)
 -- so trigger-retired and app-retired rows are indistinguishable. Only `streaming`
--- feeds are touched: collected/virtual feeds on a retired connection are handled by
--- their own lifecycles and are out of scope here.
+-- feeds are touched; collected and virtual feeds are unchanged.
 
 -- migrate:up
 
@@ -69,5 +66,5 @@ DROP TRIGGER IF EXISTS retire_streaming_feeds_for_deleted_connection
   ON connections;
 DROP FUNCTION IF EXISTS retire_streaming_feeds_for_deleted_connection();
 
--- The backfill is data cleanup: retired rows only duplicated dead connections, so
--- restoring them would only re-create the leak. Not reversed.
+-- The backfill is data cleanup. Restoring those feeds while their connections
+-- remain tombstoned would violate the invariant, so it is not reversed.

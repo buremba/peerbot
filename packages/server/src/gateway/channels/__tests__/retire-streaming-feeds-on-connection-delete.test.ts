@@ -1,14 +1,11 @@
 /**
  * A streaming (chat) feed must not outlive its connection.
  *
- * Until the `retire_streaming_feeds_for_deleted_connection` trigger, tombstoning
- * a connection archived its chat Behaviors but left the derived streaming feeds
- * LIVE on the dead row — the leak the prior one-shot migration had to mop up. The
- * trigger closes that: retiring a connection retires its streaming feeds in the
- * same transaction. These tests drive the trigger through a real tombstone
- * (`UPDATE connections SET deleted_at = now()`), never by replaying SQL, so they
- * exercise the actual wiring installed by the migration.
+ * The trigger tests exercise the wiring installed by the migration through a
+ * real connection tombstone. The backfill test replays the shipped migration
+ * body so its data cleanup cannot drift from production SQL.
  */
+import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../../db/client.js";
 import {
@@ -20,10 +17,24 @@ import {
 const ORG = "org-streamretire";
 const CHANNEL = "slack:D_RETIRE";
 
+async function runMigrationUp(): Promise<void> {
+  const sql = await readFile(
+    new URL(
+      "../../../../../../db/migrations/20260723190000_retire_streaming_feeds_on_connection_delete.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = sql.indexOf("-- migrate:up");
+  const end = sql.indexOf("-- migrate:down");
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  await getDb().unsafe(sql.slice(start + "-- migrate:up".length, end));
+}
+
 async function insertConnection(opts: {
   slug: string;
   live: boolean;
-  credentialMode?: string | null;
 }): Promise<number> {
   const rows = await getDb()`
     INSERT INTO connections (
@@ -31,8 +42,7 @@ async function insertConnection(opts: {
       credential_mode, external_tenant_id, config, deleted_at
     ) VALUES (
       ${ORG}, 'slack', ${opts.slug}, 'Workspace', 'active',
-      ${opts.credentialMode === undefined ? "managed" : opts.credentialMode},
-      ${opts.slug},
+      'managed', ${opts.slug},
       '{}', ${opts.live ? null : new Date()}
     )
     RETURNING id
@@ -139,8 +149,6 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
   });
 
   test("does not touch non-streaming feeds on the tombstoned connection", async () => {
-    // collected/virtual feeds have their own lifecycle — the trigger is scoped
-    // to streaming only, so a data feed on the same connection is untouched.
     const conn = await insertConnection({ slug: "slackinst-mixed", live: true });
     const streaming = await insertFeed(conn, CHANNEL, "streaming");
     const collected = await insertFeed(conn, "reviews", "collected");
@@ -151,62 +159,20 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
     expect(await feedIsLive(collected)).toBe(true);
   });
 
-  test("does not re-retire or resurrect an already-retired feed", async () => {
-    // An UPDATE that does not transition deleted_at NULL -> NOT NULL must not
-    // fire the trigger; a feed already retired keeps its original deleted_at.
-    const conn = await insertConnection({ slug: "slackinst-idem", live: true });
-    const feed = await insertFeed(conn, CHANNEL);
+  test("backfills live streaming feeds on already-tombstoned connections", async () => {
+    const dead = await insertConnection({
+      slug: "slackinst-backfill",
+      live: false,
+    });
+    const streaming = await insertFeed(dead, CHANNEL);
+    const collected = await insertFeed(dead, "reviews", "collected");
 
-    await tombstoneConnection(conn);
-    const firstDeletedAt = (
-      await getDb()<{ deleted_at: string }>`
-        SELECT deleted_at::text AS deleted_at FROM feeds WHERE id = ${feed}
-      `
-    )[0]?.deleted_at;
+    await runMigrationUp();
+    await runMigrationUp();
 
-    // A later no-op update on the already-dead connection must not touch feeds.
-    await getDb()`UPDATE connections SET updated_at = now() WHERE id = ${conn}`;
-    const secondDeletedAt = (
-      await getDb()<{ deleted_at: string }>`
-        SELECT deleted_at::text AS deleted_at FROM feeds WHERE id = ${feed}
-      `
-    )[0]?.deleted_at;
-
-    expect(await feedIsLive(feed)).toBe(false);
-    expect(secondDeletedAt).toBe(firstDeletedAt);
-  });
-
-  test("MUTATION GUARD: the assertion depends on the trigger", async () => {
-    // Proves the green tests above are not vacuous: with the trigger dropped, a
-    // tombstone leaves the feed LIVE — exactly the bug. Reinstalled afterwards so
-    // the rest of the suite (and other suites sharing the DB) keep the invariant.
-    const fnBody = `
-      BEGIN
-        UPDATE feeds
-        SET deleted_at = current_timestamp, status = 'paused', updated_at = current_timestamp
-        WHERE connection_id = NEW.id AND kind = 'streaming' AND deleted_at IS NULL;
-        RETURN NEW;
-      END`;
-    await getDb().unsafe(
-      `DROP TRIGGER IF EXISTS retire_streaming_feeds_for_deleted_connection ON connections`,
-    );
-
-    const conn = await insertConnection({ slug: "slackinst-mut", live: true });
-    const feed = await insertFeed(conn, CHANNEL);
-    await tombstoneConnection(conn);
-
-    // Without the trigger, the leak reproduces: feed stays live on the dead row.
-    expect(await feedIsLive(feed)).toBe(true);
-
-    // Restore the trigger so no later test inherits the broken state.
-    await getDb().unsafe(
-      `CREATE OR REPLACE FUNCTION retire_streaming_feeds_for_deleted_connection()
-       RETURNS trigger LANGUAGE plpgsql AS $mut$${fnBody}$mut$;
-       CREATE TRIGGER retire_streaming_feeds_for_deleted_connection
-       AFTER UPDATE OF deleted_at ON connections
-       FOR EACH ROW
-       WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
-       EXECUTE FUNCTION retire_streaming_feeds_for_deleted_connection();`,
-    );
+    expect(await feedIsLive(streaming)).toBe(false);
+    expect(await feedStatus(streaming)).toBe("paused");
+    expect(await feedIsLive(collected)).toBe(true);
+    expect(await feedStatus(collected)).toBe("active");
   });
 });

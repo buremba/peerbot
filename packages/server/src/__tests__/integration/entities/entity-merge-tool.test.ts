@@ -358,6 +358,49 @@ describe("manage_entity merge action", () => {
 		expect(Number(run.watcher_id)).toBe(6021);
 	});
 
+	it("does not let a caller-supplied behavior_source forge the initiator", async () => {
+		// behavior_source stays as an authz SELF-restriction channel, but it is
+		// caller input: an agent that tags a foreign behavior must still be recorded
+		// as the agent session it actually is, or provenance becomes forgeable.
+		const org = await createTestOrganization({ name: "Initiator Spoof Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6022, ${org.id}, 'other-agent', ${user.id}, 6022, 'Someone elses behavior',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+				behavior_source: { behavior_id: 6022, window_id: 1 },
+			},
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				agentId: "personal-agent",
+				clientId: "claude-ai",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		const [run] = await sql`
+			SELECT initiator_kind, initiator_ref FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(run.initiator_kind).toBe("agent_session");
+		expect((run.initiator_ref as { agent_id: string }).agent_id).toBe(
+			"personal-agent",
+		);
+	});
+
 	it("carries the proposer's rationale to the card without letting it prove the merge", async () => {
 		const org = await createTestOrganization({ name: "Rationale Org" });
 		const user = await createTestUser();

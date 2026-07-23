@@ -13,8 +13,8 @@ import {
 	type ApprovalAttribution as ApprovalAttributionType,
 } from "@lobu/core/contracts/interaction-envelope";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
-import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
+import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import {
 	formatFieldChangeAction,
@@ -38,7 +38,7 @@ import {
 	buildEntityUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
-import { resolveRunInitiator } from "../initiator";
+import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
@@ -785,13 +785,33 @@ export async function proposeEntityChange(
 	});
 	const { runId, eventId } = persisted;
 
+	const [permalinkRun] = await sql<{
+		initiator_kind: string | null;
+		initiator_ref: Record<string, unknown> | null;
+		initiator_agent_id: string | null;
+	}>`
+		SELECT r.initiator_kind, r.initiator_ref, w.agent_id AS initiator_agent_id
+		FROM runs r
+		LEFT JOIN watchers w
+			ON w.id = r.watcher_id AND w.organization_id = r.organization_id
+		WHERE r.id = ${runId} AND r.organization_id = ${ctx.organizationId}
+	`;
 	const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
 	// Run-scoped: the pending event is superseded on approve→complete; a run link
 	// stays valid across the chain. (Read-side content_ids resolution also covers
 	// the event id below, carried for the notification's resourceId.)
+	// A Behavior-initiated proposal lands on that Behavior's drill-down instead
+	// of the workspace-wide log, so the link answers where it came from.
 	const approvalUrl = buildResourcePermalink(
 		ownerSlug,
-		{ kind: "run", runId },
+		runPermalinkResource(
+			{
+				initiatorKind: permalinkRun?.initiator_kind,
+				initiatorRef: permalinkRun?.initiator_ref,
+			},
+			runId,
+			permalinkRun?.initiator_agent_id,
+		),
 		baseUrl,
 	);
 	if (persisted.reused) return { runId, eventId, approvalUrl };

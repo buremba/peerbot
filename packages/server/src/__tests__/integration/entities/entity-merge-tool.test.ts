@@ -314,8 +314,10 @@ describe("manage_entity merge action", () => {
 		expect(run.watcher_id).toBeNull();
 	});
 
-	it("records a behavior initiator consistent with the legacy watcher columns", async () => {
-		const org = await createTestOrganization({ name: "Initiator Behavior Org" });
+	it("keeps a behavior initiator's drill-down link when another caller reuses the run", async () => {
+		const org = await createTestOrganization({
+			name: "Initiator Behavior Org",
+		});
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		const { winner, loser } = await twoEntities(org.id, user.id);
@@ -336,10 +338,14 @@ describe("manage_entity merge action", () => {
 			{
 				...ctx(org.id, user.id, "owner"),
 				userId: null,
-				agentId: "personal-agent",
 				actingWatcherId: 6021,
+				baseUrl: "https://app.lobu.test",
 			} as ToolContext,
-		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+		)) as unknown as {
+			approval_queued: boolean;
+			approval_run_id: number;
+			approval_url: string;
+		};
 
 		const [run] = await sql`
 			SELECT initiator_kind, initiator_ref, watcher_id
@@ -348,6 +354,20 @@ describe("manage_entity merge action", () => {
 		expect(run.initiator_kind).toBe("behavior");
 		expect((run.initiator_ref as { watcher_id: number }).watcher_id).toBe(6021);
 		expect(Number(run.watcher_id)).toBe(6021);
+		const expectedUrl = `https://app.lobu.test/${org.slug}/memory?agent=personal-agent&behavior=6021&run_ids=${queued.approval_run_id}`;
+		expect(queued.approval_url).toBe(expectedUrl);
+
+		const replay = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				agentId: "personal-agent",
+				baseUrl: "https://app.lobu.test",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number; approval_url: string };
+		expect(replay.approval_run_id).toBe(queued.approval_run_id);
+		expect(replay.approval_url).toBe(expectedUrl);
 	});
 
 	it("does not let a caller-supplied behavior_source forge the initiator", async () => {

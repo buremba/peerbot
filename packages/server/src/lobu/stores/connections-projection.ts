@@ -201,10 +201,8 @@ export async function upsertChatConnectionProjection(
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
-  // Grid enterprise id, when the install carried one. A stale ORG-WIDE generation
-  // of the same workspace is keyed on this `E…` id (see enterprise-sibling
-  // supersede below). Only meaningful when it differs from this row's own tenant
-  // key — i.e. this is the newer PER-WORKSPACE (`T…`) generation.
+  // Grid identity lets a T… projection find the stale E…-keyed generation even
+  // though their tenant keys differ.
   const rawEnterpriseId = conn.metadata?.enterpriseId;
   const enterpriseId =
     typeof rawEnterpriseId === "string" && rawEnterpriseId.length > 0
@@ -222,7 +220,7 @@ export async function upsertChatConnectionProjection(
   };
 
   if (status === "active" && externalTenantId) {
-    // Universal order (see chatTenantAdvisoryLockKey): BOTH advisories up
+    // Universal order (see chatTenantAdvisoryLockKey): tenant advisories up
     // front, before ANY row lock — in particular the same-org demote below is
     // a row lock and must follow the managed-advisory, or a concurrent
     // cross-org write (managed-advisory, then row-locks THIS org's sibling)
@@ -234,6 +232,13 @@ export async function upsertChatConnectionProjection(
     if (managedLockKey) {
       await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
         managedLockKey,
+      ]);
+    }
+    if (credentialMode === "managed" && enterpriseId) {
+      // E… and T… installs take different tenant locks. This shared lock orders
+      // the E… projection write against a T… activation tombstoning that row.
+      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `chatconn:${orgId}:${conn.platform}:enterprise:${enterpriseId}`,
       ]);
     }
 
@@ -264,19 +269,10 @@ export async function upsertChatConnectionProjection(
       );
     }
 
-    // Enterprise-sibling supersede (Grid). An ORG-WIDE Grid install returns no
-    // `team`, so its connection was keyed on the enterprise `E…` id. When the SAME
-    // workspace is later reinstalled PER-WORKSPACE, Slack returns a `T…` and this
-    // projection runs under that `T…` key — the exact-tenant demote above cannot
-    // see the `E…` row as the same workspace, so it would be orphaned (its
-    // streaming feed stranded). Retire that stale org-wide generation here: same
-    // org, same platform, keyed on THIS install's enterprise id. Guarded so it
-    // never touches the current row and only fires when the two keys differ (the
-    // org-wide row itself is keyed on `E…`, so re-projecting it is a no-op).
-    // Soft-delete (not pause) so it leaves routing entirely and the
-    // retire_streaming_feeds_for_deleted_connection trigger reclaims its feeds.
+    // A T… activation retires an orphaned E…-keyed generation. An E… row with an
+    // active backing install remains valid: Slack allows an org-wide install to
+    // coexist with separately installed Grid workspaces.
     if (
-      managedLockKey &&
       credentialMode === "managed" &&
       enterpriseId &&
       enterpriseId !== externalTenantId
@@ -287,8 +283,16 @@ export async function upsertChatConnectionProjection(
           AND connector_key = ${conn.platform}
           AND external_tenant_id = ${enterpriseId}
           AND credential_mode = 'managed'
+          AND status = 'active'
           AND deleted_at IS NULL
           AND slug <> ${slug}
+          AND NOT EXISTS (
+            SELECT 1 FROM app_installations ai
+            WHERE ai.organization_id = ${orgId}
+              AND ai.provider = ${conn.platform}
+              AND ai.metadata->>'external_id' = connections.slug
+              AND ai.status = 'active'
+          )
         RETURNING slug
       `;
       if (supersededEnterprise.length > 0) {
@@ -301,7 +305,7 @@ export async function upsertChatConnectionProjection(
             activated: slug,
             superseded: supersededEnterprise.map((r: { slug: string }) => r.slug),
           },
-          "Retired stale org-wide Grid connection superseded by per-workspace reinstall",
+          "Retired stale enterprise-keyed Slack Grid connection projection",
         );
       }
     }

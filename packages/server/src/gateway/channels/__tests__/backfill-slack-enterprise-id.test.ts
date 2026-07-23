@@ -1,10 +1,10 @@
 /**
  * The Grid enterprise id must live on a Slack connection's projection so a later
- * per-workspace reinstall can recognize the stale org-wide (`E…`) generation as
- * the same workspace and supersede it. This replays the shipped migration body
- * so its data cleanup cannot drift from production SQL.
+ * per-workspace reinstall can recognize and retire an orphaned org-wide (`E…`)
+ * generation. This replays the migration body so its data cleanup cannot drift
+ * from production SQL.
  */
-import { readFile } from "node:fs/promises";
+
 import {
 	afterAll,
 	beforeAll,
@@ -13,6 +13,7 @@ import {
 	expect,
 	test,
 } from "bun:test";
+import { readFile } from "node:fs/promises";
 import { getDb } from "../../../db/client.js";
 import {
 	ensureDbForGatewayTests,
@@ -48,10 +49,10 @@ async function insertInstall(opts: {
       organization_id, provider, provider_app_id, external_tenant_id, status, metadata
     ) VALUES (
       ${ORG}, 'slack', 'A_TEST', ${opts.externalTenantId}, 'active',
-      ${getDb().json({
+			${getDb().json({
 				external_id: opts.externalId,
 				...(opts.enterpriseId ? { enterprise_id: opts.enterpriseId } : {}),
-				is_enterprise_install: opts.isEnterpriseInstall ? "true" : "false",
+				is_enterprise_install: opts.isEnterpriseInstall,
 			})}
     )
   `;
@@ -82,6 +83,14 @@ async function connEnterpriseId(id: number): Promise<string | null> {
     SELECT config->'chatMetadata'->>'enterpriseId' AS ent FROM connections WHERE id = ${id}
   `;
 	return rows[0]?.ent ?? null;
+}
+
+async function connIsEnterpriseInstall(id: number): Promise<boolean | null> {
+	const rows = await getDb()<{ org_wide: boolean | null }>`
+    SELECT (config->'chatMetadata'->'isEnterpriseInstall')::boolean AS org_wide
+    FROM connections WHERE id = ${id}
+  `;
+	return rows[0]?.org_wide ?? null;
 }
 
 async function connIsLive(id: number): Promise<boolean> {
@@ -128,6 +137,25 @@ describe("backfill slack enterprise id migration", () => {
 		expect(await connEnterpriseId(conn)).toBe(ENTERPRISE);
 	});
 
+	test("backfills a missing org-wide flag when enterpriseId is already present", async () => {
+		await insertInstall({
+			externalTenantId: "E_ALREADY",
+			externalId: "slackinst-existing-enterprise",
+			enterpriseId: "E_ALREADY",
+			isEnterpriseInstall: true,
+		});
+		const conn = await insertConnection({
+			slug: "slackinst-existing-enterprise",
+			externalTenantId: "E_ALREADY",
+			live: true,
+			config: { chatMetadata: { enterpriseId: "E_ALREADY" } },
+		});
+
+		expect(await connIsEnterpriseInstall(conn)).toBeNull();
+		await runMigrationUp();
+		expect(await connIsEnterpriseInstall(conn)).toBe(true);
+	});
+
 	test("retires a live org-wide (E…) connection superseded by a per-workspace sibling", async () => {
 		// Backing install for the live workspace connection carries the enterprise id.
 		await insertInstall({
@@ -142,8 +170,8 @@ describe("backfill slack enterprise id migration", () => {
 			externalTenantId: "T_WS",
 			live: true,
 		});
-		// The stale org-wide (E…) connection: still live, no per-workspace sibling yet
-		// recognized. Same enterprise id, so it must be retired.
+		// The orphaned org-wide connection has no backing install and is superseded
+		// by the active workspace projection above.
 		const orphan = await insertConnection({
 			slug: "slackinst-orgwide",
 			externalTenantId: ENTERPRISE,
@@ -169,6 +197,52 @@ describe("backfill slack enterprise id migration", () => {
 		await runMigrationUp();
 
 		expect(await connIsLive(lone)).toBe(true);
+	});
+
+	test("never retires an org-wide connection for a paused per-workspace sibling", async () => {
+		await insertConnection({
+			slug: "slackinst-paused-workspace",
+			externalTenantId: "T_PAUSED",
+			live: true,
+			config: { chatMetadata: { enterpriseId: ENTERPRISE } },
+		});
+		await getDb()`
+      UPDATE connections SET status = 'paused'
+      WHERE slug = 'slackinst-paused-workspace'
+    `;
+		const orgWide = await insertConnection({
+			slug: "slackinst-live-orgwide",
+			externalTenantId: ENTERPRISE,
+			live: true,
+		});
+
+		await runMigrationUp();
+
+		expect(await connIsLive(orgWide)).toBe(true);
+	});
+
+	test("never retires an org-wide connection with an active backing install", async () => {
+		await insertInstall({
+			externalTenantId: ENTERPRISE,
+			externalId: "slackinst-backed-orgwide",
+			enterpriseId: ENTERPRISE,
+			isEnterpriseInstall: true,
+		});
+		await insertConnection({
+			slug: "slackinst-live-workspace",
+			externalTenantId: "T_LIVE_SIBLING",
+			live: true,
+			config: { chatMetadata: { enterpriseId: ENTERPRISE } },
+		});
+		const orgWide = await insertConnection({
+			slug: "slackinst-backed-orgwide",
+			externalTenantId: ENTERPRISE,
+			live: true,
+		});
+
+		await runMigrationUp();
+
+		expect(await connIsLive(orgWide)).toBe(true);
 	});
 
 	test("never crosses orgs when superseding", async () => {

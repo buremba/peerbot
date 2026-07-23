@@ -346,11 +346,9 @@ export async function upsertSlackInstallByTeam(
         teamId,
         ...(slackRow.teamName ? { teamName: slackRow.teamName } : {}),
         ...(slackRow.botUserId ? { botUserId: slackRow.botUserId } : {}),
-        // Persist the Grid enterprise id (and the org-wide flag) onto the
-        // connection so the projection can recognize a stale ORG-WIDE (`E…`-keyed)
-        // generation as the SAME workspace when a later PER-WORKSPACE reinstall
-        // arrives under a `T…` key — otherwise the old `E…` connection is orphaned
-        // rather than superseded, stranding its streaming feed.
+        // Persist Grid identity so a later T… activation can recognize an
+        // orphaned E…-keyed projection. An E… row with an active backing install
+        // remains valid for org-wide sibling routing and is not retired.
         ...(data.enterpriseId ? { enterpriseId: data.enterpriseId } : {}),
         ...(data.isEnterpriseInstall ? { isEnterpriseInstall: true } : {}),
       },

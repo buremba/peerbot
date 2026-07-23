@@ -739,6 +739,10 @@ async function queueWatcherWriteForApproval(
       watcher_id: args.behavior_id ?? null,
       proposal,
       current: current ?? null,
+      initiator: {
+        kind: initiatorColumns.initiatorKind,
+        ...initiatorColumns.initiatorRef,
+      },
       status: 'pending_approval',
       run_id: runId,
       input_schema: inputSchema,

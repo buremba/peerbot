@@ -747,6 +747,10 @@ async function queueWriteForApproval(
       agent_id: proposal.agent_id,
       proposal,
       current: current ?? null,
+      initiator: {
+        kind: initiatorColumns.initiatorKind,
+        ...initiatorColumns.initiatorRef,
+      },
       status: 'pending_approval',
       run_id: runId,
     },

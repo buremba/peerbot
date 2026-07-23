@@ -4,15 +4,17 @@ import type { ToolContext } from "./registry";
  * Verified context fields used to derive run provenance. Tool arguments are
  * deliberately excluded because callers control them.
  */
-type InitiatorSource = Pick<
-	ToolContext,
-	| "userId"
-	| "agentId"
-	| "clientId"
-	| "sourceContext"
-	| "actingWatcherId"
-	| "actingWindowId"
-	| "actingRunId"
+type InitiatorSource = Partial<
+	Pick<
+		ToolContext,
+		| "userId"
+		| "agentId"
+		| "clientId"
+		| "sourceContext"
+		| "actingWatcherId"
+		| "actingWindowId"
+		| "actingRunId"
+	>
 >;
 
 type RunInitiatorColumns = {

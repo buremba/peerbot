@@ -191,13 +191,21 @@ describe("manage_behaviors — builder gate e2e", () => {
 		});
 
 		const eventRows = await sql`
-			SELECT interaction_type, interaction_status
+			SELECT interaction_type, interaction_status, metadata
 			FROM current_event_records
 			WHERE run_id = ${res.run_id} AND organization_id = ${orgId}
 				AND semantic_type = 'operation' AND interaction_type = 'approval'
 		`;
 		expect(eventRows.length).toBe(1);
 		expect(eventRows[0]?.interaction_status).toBe("pending");
+		expect(
+			(eventRows[0]?.metadata as { initiator?: Record<string, unknown> })
+				?.initiator
+		).toMatchObject({
+			kind: "agent_session",
+			agent_id: agentId,
+			user_id: ownerId,
+		});
 
 		expect(await watcherExists(orgId, "agent-proposed-watcher")).toBe(false);
 	});

@@ -524,7 +524,7 @@ function nameKey(name: string): string {
   return cleanHomeFeedDisplayName(name)
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\p{L}\p{N} ]/gu, "")
     .replace(/\s+/g, " ")
     .trim();

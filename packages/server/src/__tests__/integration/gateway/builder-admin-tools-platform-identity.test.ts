@@ -160,4 +160,47 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
 
     expect(granted).toBeUndefined();
   });
+
+  it('grants via alternateTeamId when the link is under the enterprise key (Grid E… vs T…)', async () => {
+    // Managed enterprise installs key chat_user_identities on E…; inbound
+    // events carry the workspace T…. Callers pass connection external_tenant_id
+    // as alternateTeamId — exact team-scoped, not a global U… collapse.
+    const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
+    await linkSlackIdentity({
+      teamId: 'E_ENTERPRISE',
+      platformUserId: SLACK_USER,
+      lobuUserId: userId,
+    });
+
+    const granted = await resolveBuilderAdminTools({
+      agentId: systemAgentId,
+      organizationId: orgId,
+      userId: SLACK_USER,
+      platform: 'slack',
+      teamId: 'T_WORKSPACE',
+      alternateTeamId: 'E_ENTERPRISE',
+    });
+
+    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+  });
+
+  it('does not grant when only an unrelated team has the link (no alternate)', async () => {
+    const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
+    await linkSlackIdentity({
+      teamId: 'E_ENTERPRISE',
+      platformUserId: SLACK_USER,
+      lobuUserId: userId,
+    });
+
+    const granted = await resolveBuilderAdminTools({
+      agentId: systemAgentId,
+      organizationId: orgId,
+      userId: SLACK_USER,
+      platform: 'slack',
+      teamId: 'T_WORKSPACE',
+      // no alternateTeamId → fail closed
+    });
+
+    expect(granted).toBeUndefined();
+  });
 });

@@ -14,7 +14,7 @@
 
 import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import { tsTime } from "../../db/client";
+import { type DbClient, tsTime } from "../../db/client";
 
 const logger = createLogger("connections-projection");
 
@@ -315,6 +315,34 @@ export async function upsertChatConnectionProjection(
       error_message = EXCLUDED.error_message,
       updated_at = now()
   `;
+}
+
+/**
+ * The provider tenant id (`external_tenant_id`) of a LIVE chat connection, or
+ * null when there is no such active row.
+ *
+ * Scoped by (org, runtime connection id, connector) and restricted to active
+ * chat rows. Callers use the result as a second exact identity key, so a wrong
+ * or stale row here would widen a privilege lookup.
+ */
+export async function resolveActiveChatConnectionTenant(
+  sql: DbClient,
+  orgId: string,
+  connectionId: string,
+  connectorKey: string,
+): Promise<string | null> {
+  const slug = runtimeConnectionIdToSlug(connectionId);
+  const rows = await sql<{ external_tenant_id: string | null }>`
+    SELECT external_tenant_id FROM connections
+    WHERE organization_id = ${orgId}
+      AND slug = ${slug}
+      AND connector_key = ${connectorKey}
+      AND credential_mode IS NOT NULL
+      AND status = 'active'
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  return rows[0]?.external_tenant_id ?? null;
 }
 
 /** Soft-delete the `connections` projection for a chat connection (by slug),

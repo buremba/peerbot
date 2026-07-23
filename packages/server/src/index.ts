@@ -58,6 +58,7 @@ import { slackClaimProvider } from "./gateway/connections/slack-claim";
 import { resolveClaimingUserSlackIdentities } from "./gateway/connections/slack-claim-identities";
 import { autoLinkBuilderAndWelcome } from "./gateway/connections/slack-claim-onboarding";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
+import { linkChatUserIdentity } from "./lobu/stores/chat-identity";
 import {
 	getMaxReservedLocks,
 	getReservedLockCount,
@@ -2519,6 +2520,7 @@ function buildSlackClaimProvider(): ClaimProvider {
 				: null;
 		},
 		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
+		linkChatUserIdentity,
 		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
 		claim: async (pending, organizationId, confirmMove) => {
 			const core = getLobuCoreServices();

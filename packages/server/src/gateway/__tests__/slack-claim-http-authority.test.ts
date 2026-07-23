@@ -51,6 +51,7 @@ function claimProvider(usersInfo: ReturnType<typeof mock>) {
     })),
     resolveActiveOrgSlug: mock(async () => null),
     resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
+    linkChatUserIdentity: mock(async () => {}),
     usersInfo,
     claim: mock(async () => ({ installationId: "unused" })),
   });

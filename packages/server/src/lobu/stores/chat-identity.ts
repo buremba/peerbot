@@ -26,6 +26,10 @@ import { getDb } from "../../db/client.js";
  * makes the lookup unambiguous. Callers use this to grant privilege (builder
  * admin tools, owner re-bind), so an unlinked id must resolve to null, never to
  * the wrong user.
+ *
+ * Callers that may hold a Grid enterprise id (`E…`) OR a workspace id (`T…`)
+ * should try both keys themselves (e.g. message team + connection
+ * external_tenant_id) rather than collapsing isolation here.
  */
 export async function resolveChatUserIdentity(
 	platform: string,

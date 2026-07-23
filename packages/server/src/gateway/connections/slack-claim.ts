@@ -7,6 +7,7 @@ import {
   ClaimMoveBlockedError,
 } from "./connection-claim.js";
 import type { SlackWebApi } from "./slack-web.js";
+import logger from "../../utils/logger.js";
 
 /**
  * The Slack adapter for the provider-agnostic claim engine (see
@@ -54,6 +55,18 @@ export interface SlackClaimProviderDeps {
   resolveClaimerSlackIdentities(
     userId: string,
   ): Promise<Array<{ teamId: string; slackUserId: string }>>;
+  /**
+   * Persist a `(platform, team_id, platform_user_id) → lobu_user_id` link. The
+   * store fails closed on re-binding an already-linked key to a DIFFERENT user
+   * (see `linkChatUserIdentity`), so a forged call cannot take over an identity.
+   * Injected so `bind`'s post-claim linking is testable without a live DB.
+   */
+  linkChatUserIdentity(opts: {
+    platform: string;
+    teamId?: string;
+    platformUserId: string;
+    lobuUserId: string;
+  }): Promise<void>;
   /** `users.info` admin/owner flags for the claimer. */
   usersInfo: SlackWebApi["usersInfo"];
   /**
@@ -107,10 +120,16 @@ async function authorizeSlackClaim(
   // STRICTLY Grid-gated (`enterpriseId` non-null): plain workspaces let ANY
   // non-admin install apps, so installer-match must NOT grant authority there
   // (the authority model is admin-not-installer).
+  // Case-normalized on both sides: the entity-graph source yields the raw
+  // `team:user` identifier (unlike the account / linked-chat sources, which
+  // uppercase) and `installerUserId` is stored verbatim from Slack's payload,
+  // so a case-sensitive compare would deny a legitimate Grid admin. `bind`
+  // normalizes the same way — the two must agree on who the installer is.
+  const installerId = pending.installerUserId?.toUpperCase() ?? null;
   if (
     pending.enterpriseId &&
-    pending.installerUserId &&
-    identities.some((i) => i.slackUserId === pending.installerUserId)
+    installerId &&
+    identities.some((i) => i.slackUserId.toUpperCase() === installerId)
   ) {
     return { status: "authorized", subjectName: pending.teamName };
   }
@@ -143,13 +162,93 @@ export function slackClaimProvider(
         targetOrganizationId,
       ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
-    bind: async (pending, organizationId, _userId, confirmMove) => {
+    bind: async (pending, organizationId, userId, confirmMove) => {
       try {
         const { installationId } = await deps.claim(
           pending,
           organizationId,
           confirmMove,
         );
+        // Link ONLY Slack identities proven to belong to the claimer (OIDC /
+        // resolveClaimerSlackIdentities). Never map pending.installerUserId to
+        // the claimer unconditionally — a different workspace admin can claim
+        // a plain-workspace install, and forging that link would hand them the
+        // installer's identity (and Builder admin tools on that U…).
+        //
+        // When the claimer IS the installer (same U… in their signed-in
+        // identities), also stamp the install's tenant key (T… or Grid E…) so
+        // later event team ids that match the install row still resolve.
+        try {
+          const identities = await deps.resolveClaimerSlackIdentities(userId);
+          // Persist only identities with a proven team scope. Older Better Auth
+          // accounts without an id_token resolve with an empty team; their bare
+          // user proof is useful for Grid installer matching below but must not
+          // create an unscoped chat identity.
+          //
+          // Keys are CANONICALIZED to uppercase. The entity-graph source yields
+          // the raw `team:user` identifier, and `resolveChatUserIdentity` is an
+          // exact SQL match with no folding — a row stored as `t-claim/u-…`
+          // could never serve an inbound Slack event carrying `T-CLAIM/U-…`,
+          // so the claimer would silently lose Builder admin tools. Writing
+          // canonical keys also keeps this loop consistent with the
+          // case-insensitive installer checks below.
+          for (const id of identities) {
+            if (!id.teamId) continue;
+            await deps.linkChatUserIdentity({
+              platform: "slack",
+              teamId: id.teamId.toUpperCase(),
+              platformUserId: id.slackUserId.toUpperCase(),
+              lobuUserId: userId,
+            });
+          }
+          // Ensure the install's tenant key (T… or Grid E…) is linked ONLY when
+          // the claimer is proven to be the installer, without rewriting the
+          // exact identity already linked above:
+          // - plain workspace: same teamId + same U… (U is workspace-local)
+          // - Grid (enterpriseId set): same U… on any team (U is enterprise-global)
+          const installer = pending.installerUserId?.toUpperCase() ?? null;
+          const installTeam = pending.teamId.toUpperCase();
+          const claimerIsInstaller =
+            installer != null &&
+            identities.some((i) => {
+              if (i.slackUserId.toUpperCase() !== installer) return false;
+              if (pending.enterpriseId) return true;
+              return i.teamId.toUpperCase() === installTeam;
+            });
+          const installIdentityAlreadyLinked =
+            installer != null &&
+            identities.some(
+              (i) =>
+                i.teamId.toUpperCase() === installTeam &&
+                i.slackUserId.toUpperCase() === installer,
+            );
+          if (
+            claimerIsInstaller &&
+            !installIdentityAlreadyLinked &&
+            pending.installerUserId
+          ) {
+            await deps.linkChatUserIdentity({
+              platform: "slack",
+              teamId: installTeam,
+              platformUserId: installer,
+              lobuUserId: userId,
+            });
+          }
+        } catch (err) {
+          // Swallow — claim already committed; identity can be healed later.
+          // Log so a persistent identity-link failure is visible to on-call
+          // rather than silently degrading Builder admin tools / owner routing.
+          logger.warn(
+            {
+              err,
+              installationId,
+              userId,
+              installerUserId: pending.installerUserId,
+              teamId: pending.teamId,
+            },
+            "Slack claim identity linking failed after claim committed",
+          );
+        }
         return { bindingId: installationId };
       } catch (err) {
         // The store's ATOMIC fence tripped on the raced path (the sequential

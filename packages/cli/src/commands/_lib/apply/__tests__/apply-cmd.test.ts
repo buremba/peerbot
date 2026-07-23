@@ -1,23 +1,21 @@
 import { describe, expect, mock, test } from "bun:test";
+import { ApiError } from "../../../memory/_lib/errors.js";
 import {
-  executePlan,
   locallyDeclaredConnectorKeys,
   pushProviderApiKeys,
   readBoundedBody,
   validateConnectorState,
 } from "../apply-cmd.js";
 import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
-import { ApiError } from "../../../memory/_lib/errors.js";
-import type { DiffPlan, RemoteSnapshot } from "../diff.js";
-import {
-  normalizeConnectionConfigScope,
-  validateConnectionAgainstConnector,
-} from "../desired-state.js";
 import type {
   DesiredAgent,
   DesiredConnection,
   DesiredState,
   ResolvedConnectorSchemas,
+} from "../desired-state.js";
+import {
+  normalizeConnectionConfigScope,
+  validateConnectionAgainstConnector,
 } from "../desired-state.js";
 
 // Minimal DesiredState with just the connectors slice populated.
@@ -220,7 +218,6 @@ describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply
     return {
       metadata: { agentId, name: agentId },
       settings: {},
-      platforms: [],
       providerKeys,
     };
   }
@@ -312,82 +309,6 @@ describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply
     await pushProviderApiKeys(client, [agentWithKeys("a1", [])]);
 
     expect(rotateInferenceProviderKey).not.toHaveBeenCalled();
-  });
-});
-
-describe("executePlan — declarative chat credential reconciliation", () => {
-  test("submits a noop platform so the server can detect an opaque secret rotation", async () => {
-    const upsertPlatform = mock(async () => ({
-      created: false,
-      updated: false,
-      noop: true,
-      willRestart: false,
-    }));
-    const client = { upsertPlatform } as unknown as ApplyClient;
-    const platform = {
-      stableId: "support-slack",
-      type: "slack",
-      config: { botToken: "rotated-token", signingSecret: "signing-secret" },
-    };
-    const agent: DesiredAgent = {
-      metadata: { agentId: "support", name: "Support" },
-      settings: {},
-      platforms: [platform],
-      providerKeys: [],
-    };
-    const state: DesiredState = {
-      agents: [agent],
-      prune: false,
-      memorySchema: { entityTypes: [], relationshipTypes: [] },
-      watchers: [],
-      connectors: { definitions: [], authProfiles: [], connections: [] },
-      providers: [],
-      requiredSecrets: [],
-    };
-    const plan: DiffPlan = {
-      rows: [
-        {
-          kind: "platform",
-          verb: "noop",
-          id: platform.stableId,
-          agentId: agent.metadata.agentId,
-          desired: platform,
-          remote: {
-            id: platform.stableId,
-            platform: "slack",
-            agentId: agent.metadata.agentId,
-            config: {
-              platform: "slack",
-              botToken: "secret://opaque",
-              signingSecret: "secret://opaque",
-            },
-            status: "active",
-          },
-        },
-      ],
-      counts: { create: 0, update: 0, noop: 1, drift: 0, delete: 0 },
-      notes: [],
-    };
-    const remote = {
-      agents: [agent.metadata],
-      agentSettings: new Map(),
-      platformsByAgent: new Map(),
-      entityTypes: [],
-      relationshipTypes: [],
-      watchers: [],
-      connectorDefinitions: [],
-      authProfiles: [],
-      connections: [],
-      feedsByConnectionId: new Map(),
-    } as unknown as RemoteSnapshot;
-
-    await executePlan({ client, state, plan, remote }, []);
-
-    expect(upsertPlatform).toHaveBeenCalledTimes(1);
-    expect(upsertPlatform).toHaveBeenCalledWith("support", "support-slack", {
-      platform: "slack",
-      config: platform.config,
-    });
   });
 });
 

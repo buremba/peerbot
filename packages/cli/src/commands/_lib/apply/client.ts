@@ -7,18 +7,18 @@ import type {
 } from "../../../config/define.js";
 import { ApiClient, type HttpMethod } from "../../../internal/api-client.js";
 import { resolveApiClient } from "../../../internal/index.js";
-import type { DeploymentSummary } from "./deployment.js";
 import { ApiError } from "../../memory/_lib/errors.js";
+import type { DeploymentSummary } from "./deployment.js";
 import type {
   DesiredAgentMetadata,
   DesiredEntityType,
   DesiredRelationshipType,
 } from "./desired-state.js";
 import {
+  type BehaviorSource,
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type BehaviorSource,
 } from "./shared.js";
 
 // ── Wire types ─────────────────────────────────────────────────────────────
@@ -53,14 +53,6 @@ export interface DeploymentPauseState {
   applyId?: string | null;
   rollbackOf?: string | null;
   pausedBy?: string | null;
-}
-
-export interface RemotePlatform {
-  id: string;
-  platform: string;
-  agentId?: string;
-  config?: Record<string, unknown>;
-  status?: string;
 }
 
 export interface RemoteEntityType {
@@ -139,16 +131,6 @@ export interface RemoteBehavior {
   keying_config?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
   // NB: reaction_script is not included in Behavior lists — push always (idempotent).
-}
-
-interface UpsertPlatformResult {
-  /** Server reports `noop: true` when the desired config matches what's stored. */
-  noop?: boolean;
-  /** When the config materially changed, the live worker is restarted. */
-  willRestart?: boolean;
-  updated?: boolean;
-  created?: boolean;
-  platform?: RemotePlatform;
 }
 
 interface UpsertEntityTypeResult {
@@ -587,81 +569,6 @@ export class ApplyClient {
       "DELETE",
       `/api/${this.orgSlug}/agents/inference-providers/${encodeURIComponent(slug)}`
     );
-  }
-
-  // ── Declarative chat connections ──────────────────────────────────────────
-
-  async listPlatforms(agentId: string): Promise<RemotePlatform[]> {
-    const body = await this.connectionsTool<{
-      connections?: RemoteConnection[];
-    }>({ action: "list", limit: 500 });
-    return (body.connections ?? [])
-      .filter(
-        (connection) =>
-          connection.credential_mode != null && connection.agent_id === agentId
-      )
-      .map((connection) => {
-        const config = { ...(connection.config ?? {}) };
-        delete config.settings;
-        delete config.chatMetadata;
-        return {
-          id: connection.slug.startsWith("agentconn-")
-            ? connection.slug.slice("agentconn-".length)
-            : connection.slug,
-          platform: connection.connector_key,
-          agentId: connection.agent_id ?? undefined,
-          config,
-          status: connection.status,
-        };
-      });
-  }
-
-  /**
-   * Apply one stable declarative chat connection through the canonical
-   * connections API. The server performs a secret-aware idempotency check.
-   */
-  async upsertPlatform(
-    agentId: string,
-    stableId: string,
-    payload: {
-      platform: string;
-      name?: string;
-      config: Record<string, string>;
-    }
-  ): Promise<UpsertPlatformResult> {
-    const body = await this.connectionsTool<{
-      connection?: RemoteConnection;
-      created?: boolean;
-      changed?: boolean;
-      error?: string;
-    }>({
-      action: "apply_chat_connection",
-      stable_id: stableId,
-      connector_key: payload.platform,
-      display_name: payload.name,
-      agent_id: agentId,
-      config: payload.config,
-    });
-    if (body.error) throw new Error(body.error);
-    const changed = body.changed === true;
-    const connection = body.connection;
-    return {
-      created: body.created === true,
-      updated: body.created !== true && changed,
-      noop: !changed,
-      willRestart: body.created !== true && changed,
-      ...(connection
-        ? {
-            platform: {
-              id: stableId,
-              platform: connection.connector_key,
-              agentId: connection.agent_id ?? undefined,
-              config: connection.config ?? undefined,
-              status: connection.status,
-            },
-          }
-        : {}),
-    };
   }
 
   // ── Memory schema ─────────────────────────────────────────────────────────

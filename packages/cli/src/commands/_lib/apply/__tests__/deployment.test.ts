@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { ApplyClient } from "../client.js";
-import type { DesiredState } from "../desired-state.js";
-import type { DiffRow } from "../diff.js";
 import {
   buildCountsByKind,
   collectGitInfo,
   computeManifestHash,
   mintApplyId,
 } from "../deployment.js";
+import type { DesiredState } from "../desired-state.js";
+import type { DiffRow } from "../diff.js";
 
 function baseState(overrides: Partial<DesiredState> = {}): DesiredState {
   return {
@@ -53,17 +53,11 @@ describe("computeManifestHash", () => {
     );
   });
 
-  test("agent providerKeys and denylisted keys are redacted before hashing", () => {
+  test("agent providerKeys are redacted before hashing (rotation is not a change)", () => {
     const agent = {
       agentId: "a1",
       name: "A1",
       settings: { networkConfig: { allowedDomains: ["github.com"] } },
-      platforms: [
-        {
-          platform: "telegram",
-          config: { botToken: "1234:real-telegram-token" },
-        },
-      ],
       providerKeys: [{ providerId: "anthropic", value: "sk-ant-real" }],
     } as unknown as DesiredState["agents"][number];
 
@@ -73,12 +67,6 @@ describe("computeManifestHash", () => {
         agents: [
           {
             ...agent,
-            platforms: [
-              {
-                platform: "telegram",
-                config: { botToken: "1234:DIFFERENT" },
-              },
-            ] as typeof agent.platforms,
             providerKeys: [{ providerId: "anthropic", value: "sk-ant-OTHER" }],
           },
         ],
@@ -87,24 +75,18 @@ describe("computeManifestHash", () => {
     expect(one).toBe(two);
   });
 
-  test("a NON-secret platform config change DOES change the hash", () => {
-    const agentWith = (chatId: string) =>
+  test("a NON-secret agent settings change DOES change the hash", () => {
+    const agentWith = (domain: string) =>
       ({
         agentId: "a1",
         name: "A1",
-        settings: {},
-        platforms: [
-          {
-            platform: "telegram",
-            config: { chatId, botToken: "1234:secret" },
-          },
-        ],
+        settings: { networkConfig: { allowedDomains: [domain] } },
         providerKeys: [],
       }) as unknown as DesiredState["agents"][number];
     expect(
-      computeManifestHash(baseState({ agents: [agentWith("chat-1")] }))
+      computeManifestHash(baseState({ agents: [agentWith("github.com")] }))
     ).not.toBe(
-      computeManifestHash(baseState({ agents: [agentWith("chat-2")] }))
+      computeManifestHash(baseState({ agents: [agentWith("pypi.org")] }))
     );
   });
 });

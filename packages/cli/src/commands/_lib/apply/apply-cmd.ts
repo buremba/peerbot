@@ -11,9 +11,16 @@ import {
   type RemoteAgent,
   type RemoteConnectorDefinition,
   type RemoteFeed,
-  type RemotePlatform,
   resolveApplyClient,
 } from "./client.js";
+import {
+  buildCountsByKind,
+  buildDeploymentManifest,
+  collectGitInfo,
+  computeManifestHash,
+  type DeploymentSummary,
+  mintApplyId,
+} from "./deployment.js";
 import {
   type DesiredConnectorDefinition,
   type DesiredState,
@@ -41,14 +48,6 @@ import {
   renderPostApplyPunchList,
   renderProgress,
 } from "./render.js";
-import {
-  buildCountsByKind,
-  buildDeploymentManifest,
-  collectGitInfo,
-  computeManifestHash,
-  type DeploymentSummary,
-  mintApplyId,
-} from "./deployment.js";
 import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
 interface ApplyOptions {
@@ -321,7 +320,6 @@ export async function fetchRemoteSnapshot(
     string,
     Awaited<ReturnType<ApplyClient["getAgentSettings"]>>
   >();
-  const platformsByAgent = new Map<string, RemotePlatform[]>();
 
   if (only !== "memory") {
     const desiredAgentIds = state.agents.map((a) => a.metadata.agentId);
@@ -331,7 +329,6 @@ export async function fetchRemoteSnapshot(
     );
     for (const agentId of targetAgentIds) {
       agentSettings.set(agentId, await client.getAgentSettings(agentId));
-      platformsByAgent.set(agentId, await client.listPlatforms(agentId));
     }
   }
 
@@ -412,7 +409,6 @@ export async function fetchRemoteSnapshot(
   return {
     agents,
     agentSettings,
-    platformsByAgent,
     entityTypes,
     relationshipTypes,
     watchers,
@@ -798,46 +794,6 @@ export async function executePlan(
         row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
       )
     );
-  }
-
-  // 3) Platforms — reconcile every declaration. Secret values cannot safely
-  // round-trip through list APIs, so the CLI cannot detect an in-place token
-  // rotation. The server compares resolved credentials under a PG advisory
-  // lock and makes unchanged declarations true no-ops (no write or restart).
-  const platformRows = new Map(
-    ctx.plan.rows
-      .filter((row) => row.kind === "platform")
-      .map((row) => [`${row.agentId}:${row.id}`, row])
-  );
-  for (const agent of ctx.state.agents) {
-    for (const desired of agent.platforms) {
-      const row = platformRows.get(
-        `${agent.metadata.agentId}:${desired.stableId}`
-      );
-      if (!row || row.kind !== "platform") continue;
-      const result = await ctx.client.upsertPlatform(
-        agent.metadata.agentId,
-        desired.stableId,
-        {
-          platform: desired.type,
-          ...(desired.name ? { name: desired.name } : {}),
-          config: desired.config,
-        }
-      );
-      const detail = result.willRestart
-        ? "(restarted)"
-        : result.noop
-          ? "(noop on server)"
-          : undefined;
-      printText(
-        renderProgress(
-          result.noop ? "noop" : row.verb,
-          "platform",
-          `${agent.metadata.agentId}/${row.id}`,
-          detail
-        )
-      );
-    }
   }
 
   // 4) Entity types

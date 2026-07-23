@@ -9,7 +9,7 @@
  */
 
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
-import { type AgentSettings, isHostedChatEntry } from "@lobu/core";
+import { type AgentSettings, isHostedChatPlatform } from "@lobu/core";
 import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
 
 /**
@@ -56,10 +56,12 @@ const AGENT_SETTINGS_FIELD_POLICY = {
   "mapped" | "post-load" | "unsupported"
 >;
 void AGENT_SETTINGS_FIELD_POLICY;
+
 import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
   AuthProfile,
+  Behavior,
   Connection,
   ConnectorRef,
   EntityType,
@@ -68,7 +70,6 @@ import type {
   Project,
   ProviderConfig,
   RelationshipType,
-  Behavior,
 } from "../../../config/index.js";
 import { isSecretRef, UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
@@ -80,7 +81,6 @@ import type {
   DesiredEntityType,
   DesiredFeed,
   DesiredOrgProvider,
-  DesiredPlatform,
   DesiredRelationshipType,
   DesiredState,
   DesiredWatcher,
@@ -220,29 +220,6 @@ function authProfileSlug(
 ): string | undefined {
   if (ref === undefined) return undefined;
   return typeof ref === "string" ? ref : ref.slug;
-}
-
-/**
- * Deterministic, human-readable stable id for a platform binding, derived from
- * `(agentId, type, name?)`. Must stay stable across applies so the same
- * platform matches (noop) instead of being recreated by
- * `manage_connections(action='apply_chat_connection')`.
- */
-function platformStableId(
-  agentId: string,
-  type: string,
-  name?: string
-): string {
-  const slug = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-  return [agentId, type, name]
-    .filter((p): p is string => !!p)
-    .map(slug)
-    .filter(Boolean)
-    .join("-");
 }
 
 /**
@@ -405,41 +382,6 @@ function mapAgent(
     });
   }
 
-  const platforms: DesiredPlatform[] = (agent.platforms ?? [])
-    // A hosted-bot entry (slack/telegram with no `config`) is reached via the
-    // hosted Lobu bot + a `/lobu link` claim, NOT a self-hosted connection. It
-    // must never become a credential-less `connections` chat row — `lobu run`
-    // reads it straight from the authored config to mint the link code.
-    .filter((p) => !isHostedChatEntry(p))
-    .map((p) => ({
-      stableId: platformStableId(agent.id, p.type, p.name),
-      type: p.type,
-      ...(p.name ? { name: p.name } : {}),
-      // Resolve `secret()`/`$VAR` to the REAL value — the platform-write path
-      // stores the incoming plaintext as the secret (server-side
-      // `normalizeConfigForStorage` swaps it for a `secret://` ref + encrypts it),
-      // so sending the `$VAR` placeholder would persist a broken token. Mirrors
-      // provider keys + auth-profile credentials. The config row never holds
-      // cleartext at rest; the secret name is collected for the secrets gate.
-      config: Object.fromEntries(
-        Object.entries(p.config ?? {}).map(([k, v]) => [
-          k,
-          resolveCredentialValue(v, required, env),
-        ])
-      ),
-    }));
-  // Distinct platforms must not collapse to the same stable id (e.g. names that
-  // slugify equal), or apply would clobber one with the other.
-  const seenStableIds = new Set<string>();
-  for (const p of platforms) {
-    if (seenStableIds.has(p.stableId)) {
-      throw new ValidationError(
-        `agent "${agent.id}" has two platforms that resolve to the same id "${p.stableId}" — give them distinct names`
-      );
-    }
-    seenStableIds.add(p.stableId);
-  }
-
   const metadata: DesiredAgentMetadata = {
     agentId: agent.id,
     name: agent.name ?? agent.id,
@@ -472,7 +414,7 @@ function mapAgent(
   };
   void _exhaustive;
 
-  return { metadata, settings, platforms, providerKeys };
+  return { metadata, settings, providerKeys };
 }
 
 function mapEntityType(entity: EntityType): DesiredEntityType {
@@ -782,6 +724,20 @@ function mapConnection(connection: Connection): DesiredConnection {
 }
 
 /**
+ * A hosted chat connection (`credentialMode: "hosted"`) is reached via the
+ * hosted Lobu bot + a `/lobu link` claim, NOT a persisted connection row. It
+ * must never become a credential-less connection: `lobu run` reads it straight
+ * from the authored config to mint the link code. So it is filtered out of the
+ * applied connection set (mirrors the old hosted-platform carve-out).
+ */
+function isHostedConnection(connection: Connection): boolean {
+  return (
+    connection.credentialMode === "hosted" &&
+    isHostedChatPlatform(connectorKey(connection.connector))
+  );
+}
+
+/**
  * Translate an authoring project into the apply `DesiredState`. When `only` is
  * set, connector definitions/connections/auth-profiles are skipped (and their
  * secrets not collected), matching the TOML loader's `--only` behavior so
@@ -808,7 +764,9 @@ export function mapProjectToDesiredState(
       );
   const connections = only
     ? []
-    : (project.connections ?? []).map(mapConnection);
+    : (project.connections ?? [])
+        .filter((c) => !isHostedConnection(c))
+        .map(mapConnection);
   // Org providers are skipped under `--only` (they're neither agents nor
   // memory), matching the connector-skip posture — so their secrets aren't
   // demanded on a targeted apply.

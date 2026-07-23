@@ -3,15 +3,14 @@
  *  - Idempotency: applying the same desired state twice produces all-noop on
  *    the second diff (after the first apply's creates have landed remotely).
  *  - `--only` flag: agents-only skips memory types; memory-only skips agents.
- *  - Platform drift with agent in desired state (coverage gap in drift logic).
  *  - Multi-agent desired state: each agent gets its own diff rows.
  *  - Object-key ordering does NOT affect diff (canonical() sorts keys).
  */
 
 import { describe, expect, test } from "bun:test";
 import type { AgentSettings } from "@lobu/core";
-import { computeDiff, type RemoteSnapshot } from "../diff.js";
 import type { DesiredAgent, DesiredState } from "../desired-state.js";
+import { computeDiff, type RemoteSnapshot } from "../diff.js";
 
 // ── Builders ─────────────────────────────────────────────────────────────────
 
@@ -22,7 +21,6 @@ function buildAgent(
   return {
     metadata: { agentId, name: agentId },
     settings: {},
-    platforms: [],
     ...overrides,
   };
 }
@@ -47,7 +45,6 @@ function emptyRemote(): RemoteSnapshot {
   return {
     agents: [],
     agentSettings: new Map(),
-    platformsByAgent: new Map(),
     entityTypes: [],
     relationshipTypes: [],
     watchers: [],
@@ -79,7 +76,6 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "Triage", description: "Bot" }],
       agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const secondPlan = computeDiff(desired, afterFirstApply);
@@ -534,47 +530,6 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
     expect(secondPlan.counts.create).toBe(0);
     expect(secondPlan.counts.update).toBe(0);
   });
-
-  test("platform: same desired config is noop even if remote has extra `platform` key in config", () => {
-    // The server stores `platform` inside `config` for stable-id matching.
-    // The diff must strip it before comparing.
-    const desired = buildState([
-      buildAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: { botToken: "abc123" },
-          },
-        ],
-      }),
-    ]);
-
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-telegram",
-              platform: "telegram",
-              // Server added `platform` key inside `config` — must be ignored.
-              config: { botToken: "abc123", platform: "telegram" },
-            },
-          ],
-        ],
-      ]),
-    };
-
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    // Should be noop, NOT update
-    expect(platformRow?.verb).toBe("noop");
-  });
 });
 
 // ── --only flag ───────────────────────────────────────────────────────────────
@@ -689,7 +644,6 @@ describe("computeDiff — multiple agents", () => {
         { agentId: "orphan", name: "Orphan" },
       ],
       agentSettings: new Map<string, AgentSettings | null>([["alpha", null]]),
-      platformsByAgent: new Map([["alpha", []]]),
     };
 
     const plan = computeDiff(desired, remote);
@@ -733,7 +687,6 @@ describe("computeDiff — deepEqual is key-order agnostic", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const plan = computeDiff(desired, remote);
@@ -770,7 +723,6 @@ describe("computeDiff — deepEqual is key-order agnostic", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const plan = computeDiff(desired, remote);
@@ -817,7 +769,6 @@ describe("computeDiff — counts", () => {
           { networkConfig: { allowedDomains: ["old.com"] }, updatedAt: 0 },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const plan = computeDiff(desired, remote);
@@ -845,7 +796,6 @@ describe("computeDiff — settings noop edge cases", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "Triage" }],
       agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const plan = computeDiff(desired, remote);
@@ -870,7 +820,6 @@ describe("computeDiff — settings noop edge cases", () => {
       agentSettings: new Map<string, AgentSettings | null>([
         ["triage", { soulMd: "Old soul content.", updatedAt: 0 }],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
 
     const plan = computeDiff(desired, remote);

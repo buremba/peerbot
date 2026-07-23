@@ -30,12 +30,6 @@ const crm = defineAgent({
       key: secret("Z_AI_API_KEY"),
     },
   ],
-  // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a
-  // `/lobu link <code>` you redeem by DMing the bot to create a message
-  // Behavior for that DM/channel.
-  platforms: [
-    { type: "slack", surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
-  ],
   network: {
     allowed: [
       "github.com",
@@ -412,6 +406,16 @@ export default defineConfig({
     npm_downloadsConn,
     x_mentionsConn,
     lobu_dbConn,
+    // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a
+    // `/lobu link <code>` you redeem by DMing the bot; redeeming binds an
+    // agent by creating a message Behavior for that DM/channel.
+    defineConnection({
+      slug: "crm-slack",
+      connector: "slack",
+      credentialMode: "hosted",
+      surfaces: ["dm", "channel"],
+      codeTtlMinutes: 15,
+    }),
   ],
   authProfiles: [
     github_accountAuth,

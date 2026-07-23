@@ -9,11 +9,11 @@ import type {
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import { createAjv } from "@lobu/core/ajv";
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
-import { createAjv } from "@lobu/core/ajv";
 import type Ajv from "ajv";
 import type {
   ConnectorSource,
@@ -29,10 +29,10 @@ import {
   mergeAgentDirArtifacts,
 } from "./map-config.js";
 import {
+  type BehaviorSource,
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type BehaviorSource,
 } from "./shared.js";
 
 // ── Desired state types ────────────────────────────────────────────────────
@@ -41,15 +41,6 @@ export interface DesiredAgentMetadata {
   agentId: string;
   name: string;
   description?: string;
-}
-
-export interface DesiredPlatform {
-  /** Stable, content-addressed ID derived from `(agentId, type, name?)`. */
-  stableId: string;
-  type: string;
-  name?: string;
-  /** Platform config — values may still contain `$VAR` references. */
-  config: Record<string, string>;
 }
 
 export interface DesiredEntityType {
@@ -237,7 +228,6 @@ export interface DesiredAgent {
    * identityMd/soulMd/userMd.
    */
   settings: Partial<AgentSettings>;
-  platforms: DesiredPlatform[];
   /**
    * Provider API keys resolved from `secret()` / `$VAR` provider keys, pushed
    * into `agent_secrets` after the settings PATCH. Empty when no provider

@@ -36,11 +36,11 @@ import { fileURLToPath } from "node:url";
 
 import chalk from "chalk";
 import { Command } from "commander";
+import type { CloudCommandOptions } from "./commands/_lib/cloud-options.js";
 // Type-only imports of command option shapes. These are erased at compile time
 // (no runtime module load), so they do NOT defeat the lazy-import hot path —
 // the handler modules are still pulled in only inside each `.action`.
 import type { AgentCommandOptions } from "./commands/agent.js";
-import type { CloudCommandOptions } from "./commands/_lib/cloud-options.js";
 import type { InitOptions } from "./commands/init.js";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
@@ -157,10 +157,6 @@ Memory:
     )
     .option("--provider <id>", "Provider id from `config/providers.json`")
     .option("--provider-key <key>", "Provider API key (else read from env)")
-    .option(
-      "--platform <type>",
-      "Chat platform: telegram | slack | discord | whatsapp | teams | gchat"
-    )
     .option(
       "--memory <choice>",
       "Memory backend: none | lobu-cloud | lobu-custom"

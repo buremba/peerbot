@@ -13,7 +13,7 @@
  *    with a plan preview and confirm, exactly like an apply;
  *  - secrets: the snapshot carries structural redaction sentinels, which
  *    sanitization converts to "keep current" (credentials undeclared, provider
- *    keys unpushed, sentinel-bearing platform configs pinned to their current
+ *    keys unpushed, sentinel-bearing connection configs pinned to their current
  *    remote values) — rollback restores INTENT, never rotates a secret.
  *
  * Completing a rollback pauses deployments for the org (Vercel-style paused
@@ -21,22 +21,10 @@
  * can't silently re-promote the config that was just rolled back.
  */
 
-import chalk from "chalk";
 import { REDACTED_SENTINEL } from "@lobu/core";
+import chalk from "chalk";
 import { printError, printText } from "../../../internal/output.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
-import { resolveApplyClient } from "./client.js";
-import type { DesiredState } from "./desired-state.js";
-import { computeDiff } from "./diff.js";
-import { confirmPlan } from "./prompt.js";
-import { renderPlan, renderProgress } from "./render.js";
-import {
-  buildCountsByKind,
-  buildDeploymentManifest,
-  collectGitInfo,
-  computeManifestHash,
-  mintApplyId,
-} from "./deployment.js";
 import {
   connectorVersionPins,
   executePlan,
@@ -44,6 +32,18 @@ import {
   type PendingAuthEntry,
   resolveBehaviorConnectionRefs,
 } from "./apply-cmd.js";
+import { resolveApplyClient } from "./client.js";
+import {
+  buildCountsByKind,
+  buildDeploymentManifest,
+  collectGitInfo,
+  computeManifestHash,
+  mintApplyId,
+} from "./deployment.js";
+import type { DesiredState } from "./desired-state.js";
+import { computeDiff } from "./diff.js";
+import { confirmPlan } from "./prompt.js";
+import { renderPlan, renderProgress } from "./render.js";
 
 interface RollbackOptions {
   applyId: string;
@@ -71,7 +71,6 @@ function containsSentinel(value: unknown): boolean {
  */
 export function sanitizeSnapshotState(
   raw: Record<string, unknown>,
-  remotePlatformConfigs: Map<string, Record<string, unknown>>,
   remoteConnectionConfigs: Map<string, Record<string, unknown>> = new Map()
 ): { state: DesiredState; notes: string[] } {
   const notes: string[] = [];
@@ -118,29 +117,6 @@ export function sanitizeSnapshotState(
   for (const agent of state.agents) {
     // Provider keys are write-only pushes; a snapshot has no values to push.
     agent.providerKeys = [];
-    agent.platforms = agent.platforms.filter((platform) => {
-      const p = platform as unknown as {
-        platform?: string;
-        config?: Record<string, unknown>;
-      };
-      if (!containsSentinel(p.config)) return true;
-      // A sentinel inside platform config would be PUSHED verbatim by the
-      // idempotent platform upsert, clobbering the live secret. Pin the whole
-      // platform to its current remote config instead (diff → noop).
-      const key = `${agent.metadata.agentId}:${p.platform ?? "?"}`;
-      const remote = remotePlatformConfigs.get(key);
-      if (remote) {
-        p.config = remote;
-        notes.push(
-          `platform ${key}: secret-bearing config left at current values (rollback never rotates secrets)`
-        );
-        return true;
-      }
-      notes.push(
-        `platform ${key}: secret-bearing config and no live platform to pin to — skipped (re-declare it via lobu apply)`
-      );
-      return false;
-    });
   }
 
   state.providers = (state.providers ?? []).map((provider) => ({
@@ -208,25 +184,14 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   // ── Config resources: snapshot state through the standard diff ───────────
   // Two-pass sanitize: the first pass (no remote configs yet) yields a state
   // shaped well enough to fetch the remote snapshot; the second pins
-  // sentinel-bearing platform configs to the live remote values it found.
-  const prelim = sanitizeSnapshotState(manifest.state, new Map());
+  // sentinel-bearing connection configs to the live remote values it found.
+  const prelim = sanitizeSnapshotState(manifest.state);
   const remote = await fetchRemoteSnapshot(
     client,
     prelim.state,
     undefined,
     false
   );
-  const remotePlatformConfigs = new Map<string, Record<string, unknown>>();
-  for (const [agentId, platforms] of remote.platformsByAgent) {
-    for (const platform of platforms) {
-      if (platform.config) {
-        remotePlatformConfigs.set(
-          `${agentId}:${platform.platform}`,
-          platform.config
-        );
-      }
-    }
-  }
   const remoteConnectionConfigs = new Map<string, Record<string, unknown>>();
   for (const connection of remote.connections) {
     if (connection.config) {
@@ -235,7 +200,6 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   }
   const sanitized = sanitizeSnapshotState(
     manifest.state,
-    remotePlatformConfigs,
     remoteConnectionConfigs
   );
   // Behaviors declare event triggers by connection SLUG; the API contract

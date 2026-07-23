@@ -2,20 +2,20 @@ import { describe, expect, test } from "bun:test";
 import {
   defineAgent,
   defineAuthProfile,
+  defineBehavior,
   defineConfig,
   defineConnection,
   defineConnector,
   defineEntityType,
   defineRelationshipType,
-  defineBehavior,
   secret,
 } from "@lobu/cli/config";
+import type { AgentSettings } from "@lobu/core";
+import { resolveBehaviorConnectionRefs } from "../apply-cmd.js";
 import {
   mapProjectToDesiredState,
   mergeAgentDirArtifacts,
 } from "../map-config.js";
-import { resolveBehaviorConnectionRefs } from "../apply-cmd.js";
-import type { AgentSettings } from "@lobu/core";
 
 const env: NodeJS.ProcessEnv = {
   ANTHROPIC_API_KEY: "sk-test",
@@ -127,60 +127,6 @@ describe("mapProjectToDesiredState", () => {
     expect(() =>
       mapProjectToDesiredState(defineConfig({ org: "o", agents: [bad] }), env)
     ).toThrow(/provider with no "id"/);
-  });
-
-  test("maps agent platforms: stable id + RESOLVED secret values + literals + collected secrets", () => {
-    const bot = defineAgent({
-      id: "support-bot",
-      platforms: [
-        {
-          type: "telegram",
-          config: { botToken: secret("TELEGRAM_BOT_TOKEN") },
-        },
-        {
-          type: "slack",
-          name: "ops",
-          config: { botToken: "$SLACK_BOT_TOKEN", appType: "MultiTenant" },
-        },
-      ],
-    });
-    // The server stores the incoming plaintext as the secret, so the mapper
-    // must send the RESOLVED env value (not the `$VAR` placeholder).
-    const platformEnv: NodeJS.ProcessEnv = {
-      ...env,
-      TELEGRAM_BOT_TOKEN: "tg-real-token",
-      SLACK_BOT_TOKEN: "sk-real-token",
-    };
-    const state = mapProjectToDesiredState(
-      defineConfig({ org: "o", agents: [bot] }),
-      platformEnv
-    );
-    const platforms = state.agents[0]?.platforms ?? [];
-    expect(platforms).toHaveLength(2);
-    // Stable id is deterministic from (agentId, type, name?).
-    expect(platforms[0]?.stableId).toBe("support-bot-telegram");
-    expect(platforms[1]?.stableId).toBe("support-bot-slack-ops");
-    // secret()/$VAR resolve to the real value; literals pass through.
-    expect(platforms[0]?.config).toEqual({ botToken: "tg-real-token" });
-    expect(platforms[1]?.config).toEqual({
-      botToken: "sk-real-token",
-      appType: "MultiTenant",
-    });
-    expect(state.requiredSecrets).toContain("TELEGRAM_BOT_TOKEN");
-    expect(state.requiredSecrets).toContain("SLACK_BOT_TOKEN");
-  });
-
-  test("rejects two platforms whose names collapse to the same stable id", () => {
-    const bot = defineAgent({
-      id: "bot",
-      platforms: [
-        { type: "slack", name: "ops", config: { botToken: secret("T") } },
-        { type: "slack", name: "ops!", config: { botToken: secret("T") } },
-      ],
-    });
-    expect(() =>
-      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bot] }), env)
-    ).toThrow(/same id|distinct names/i);
   });
 
   test("rejects duplicate slugs across declarative collections (config parity)", () => {
@@ -940,57 +886,6 @@ describe("mapProjectToDesiredState", () => {
       description: "Office-ops agents",
       organizationId: "org_123",
     });
-  });
-
-  test("hosted chat entry (slack, no config) is not mapped into a connection", () => {
-    const agent = defineAgent({
-      id: "a",
-      platforms: [{ type: "slack", surfaces: ["dm", "channel"] }],
-    });
-    const mapped = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    ).agents[0];
-    // The hosted bot is reached via a `/lobu link` claim, not a self-hosted
-    // connection — it must NOT become a credential-less platform row.
-    expect(mapped?.platforms).toEqual([]);
-  });
-
-  test("hosted telegram entry (no config) is not mapped into a connection", () => {
-    const agent = defineAgent({ id: "a", platforms: [{ type: "telegram" }] });
-    const mapped = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    ).agents[0];
-    expect(mapped?.platforms).toEqual([]);
-  });
-
-  test("self-hosted chat entry (slack with botToken) IS mapped into a connection", () => {
-    const agent = defineAgent({
-      id: "a",
-      platforms: [
-        { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } },
-      ],
-    });
-    const mapped = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    ).agents[0];
-    expect(mapped?.platforms).toHaveLength(1);
-    expect(mapped?.platforms?.[0]?.type).toBe("slack");
-  });
-
-  test("rest platform (empty config, not hosted) IS mapped into a connection", () => {
-    const agent = defineAgent({
-      id: "a",
-      platforms: [{ type: "rest", config: {} }],
-    });
-    const mapped = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    ).agents[0];
-    expect(mapped?.platforms).toHaveLength(1);
-    expect(mapped?.platforms?.[0]?.type).toBe("rest");
   });
 
   test("omits absent agent settings (no empty config objects)", () => {

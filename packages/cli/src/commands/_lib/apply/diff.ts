@@ -1,4 +1,4 @@
-import { isSystemEntityType, type AgentSettings } from "@lobu/core";
+import { type AgentSettings, isSystemEntityType } from "@lobu/core";
 import type {
   InferenceCapabilityBlock,
   InferenceModality,
@@ -7,14 +7,13 @@ import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   RemoteAgent,
   RemoteAuthProfile,
+  RemoteBehavior,
   RemoteConnection,
   RemoteConnectorDefinition,
   RemoteEntityType,
   RemoteFeed,
   RemoteInferenceProvider,
-  RemotePlatform,
   RemoteRelationshipType,
-  RemoteBehavior,
 } from "./client.js";
 import type {
   DesiredAgent,
@@ -24,7 +23,6 @@ import type {
   DesiredEntityType,
   DesiredFeed,
   DesiredOrgProvider,
-  DesiredPlatform,
   DesiredRelationshipType,
   DesiredState,
   DesiredWatcher,
@@ -60,14 +58,6 @@ export interface SettingsDiffRow extends BaseRow {
   kind: "settings";
   desired?: Partial<AgentSettings>;
   changedFields?: string[];
-}
-
-export interface PlatformDiffRow
-  extends ResourceRow<DesiredPlatform, RemotePlatform> {
-  kind: "platform";
-  agentId: string;
-  /** True when an update will restart the live worker — surfaced in the plan. */
-  willRestart?: boolean;
 }
 
 export interface EntityTypeDiffRow
@@ -146,7 +136,6 @@ export interface InferenceProviderDiffRow
 export type DiffRow =
   | AgentDiffRow
   | SettingsDiffRow
-  | PlatformDiffRow
   | EntityTypeDiffRow
   | RelationshipTypeDiffRow
   | WatcherDiffRow
@@ -375,89 +364,6 @@ function diffSettings(
     desired,
     changedFields: changed,
   };
-}
-
-/**
- * A platform-config value the CLI can't read back, so it must not drive a diff:
- *   - the server redacts secrets in the GET response (`***`-suffixed), and
- *   - it rewrites a `$VAR` placeholder into an internal `secret://…` reference.
- * Either form is opaque — the cleartext never round-trips.
- */
-function isOpaqueRemoteConfigValue(value: unknown): boolean {
-  return (
-    typeof value === "string" &&
-    (value.startsWith("***") || value.startsWith("secret://"))
-  );
-}
-
-/**
- * Compare a desired platform config against the remote one for drift.
- *
- * Two adjustments keep an unchanged platform a noop instead of restarting it on
- * every apply:
- *   - the route handler stores `platform` inside `config` for stable-id
- *     matching, so the GET round-trip carries an extra `platform` key the CLI
- *     never wrote — strip it before diffing;
- *   - secret-bearing keys (`botToken`, app secrets, …) come back redacted or as
- *     a `secret://` reference, never the cleartext the CLI sent as `$VAR`. When
- *     the desired value is a `$VAR` placeholder and the remote value is opaque,
- *     treat them as equal (the credential write path is idempotent and re-pushes
- *     rotated secrets on its own, mirroring the auth-profile credentials rule).
- */
-function platformConfigChanged(
-  desired: Record<string, unknown>,
-  remote: Record<string, unknown> | undefined
-): boolean {
-  const remoteConfig: Record<string, unknown> = { ...(remote ?? {}) };
-  delete remoteConfig.platform;
-  const desiredConfig: Record<string, unknown> = { ...desired };
-  delete desiredConfig.platform;
-
-  const keys = new Set([
-    ...Object.keys(desiredConfig),
-    ...Object.keys(remoteConfig),
-  ]);
-  for (const key of keys) {
-    const d = desiredConfig[key];
-    const r = remoteConfig[key];
-    if (isOpaqueRemoteConfigValue(r)) {
-      // Opaque remote (redacted `***` or a `secret://` ref): the resolved
-      // cleartext the CLI sent can never round-trip-match, so we can't tell a
-      // rotation from a no-op here. Treat as unchanged ONLY while the key is
-      // still declared — apply re-pushes every desired platform idempotently
-      // (like provider keys), so a rotated secret still reaches the server
-      // without a false "config changed" plan row. A key ABSENT from desired
-      // is a real removal → changed.
-      if (!(key in desiredConfig)) return true;
-      continue;
-    }
-    if (!deepEqual(d, r)) return true;
-  }
-  return false;
-}
-
-function diffPlatform(
-  agentId: string,
-  desired: DesiredPlatform,
-  remote: RemotePlatform | undefined
-): PlatformDiffRow {
-  return buildDiffRow({
-    kind: "platform",
-    id: desired.stableId,
-    desired,
-    remote,
-    extras: remote ? { agentId } : { agentId, willRestart: false },
-    fields: [
-      { name: "type", changed: (d, r) => d.type !== r.platform },
-      {
-        name: "config",
-        changed: (d, r) => platformConfigChanged(d.config, r.config),
-      },
-    ],
-    updateExtras: (changed) => ({
-      willRestart: changed.includes("config") || changed.includes("type"),
-    }),
-  }) as unknown as PlatformDiffRow;
 }
 
 function diffEntityType(
@@ -934,8 +840,6 @@ export interface RemoteSnapshot {
   agents: RemoteAgent[];
   /** keyed by agentId */
   agentSettings: Map<string, AgentSettings | null>;
-  /** keyed by agentId */
-  platformsByAgent: Map<string, RemotePlatform[]>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
   watchers: RemoteBehavior[];
@@ -966,7 +870,7 @@ interface ComputeDiffOptions {
    * watcher, connector definition) absent from desired is emitted as a `delete`
    * row instead of an ignored `drift` — INCLUDING definitions created via the
    * dashboard/API. Data (entity/relationship instances), connections, auth
-   * profiles, feeds, agents, and platforms are never pruned. Default (false)
+   * profiles, feeds, and agents are never pruned. Default (false)
    * reports those remote-only definitions as `drift`.
    */
   prune?: boolean;
@@ -1024,32 +928,6 @@ export function computeDiff(
         rows.push({ ...settingsRow, verb: "create" });
       } else {
         rows.push(settingsRow);
-      }
-
-      const remotePlatforms =
-        remote.platformsByAgent.get(agent.metadata.agentId) ?? [];
-      const remoteByStableId = new Map(remotePlatforms.map((p) => [p.id, p]));
-      const desiredStableIds = new Set(agent.platforms.map((p) => p.stableId));
-
-      for (const platform of agent.platforms) {
-        rows.push(
-          diffPlatform(
-            agent.metadata.agentId,
-            platform,
-            remoteByStableId.get(platform.stableId)
-          )
-        );
-      }
-      for (const remotePlatform of remotePlatforms) {
-        if (!desiredStableIds.has(remotePlatform.id)) {
-          rows.push({
-            kind: "platform",
-            verb: "drift",
-            id: remotePlatform.id,
-            agentId: agent.metadata.agentId,
-            remote: remotePlatform,
-          });
-        }
       }
     }
 

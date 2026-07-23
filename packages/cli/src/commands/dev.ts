@@ -6,10 +6,10 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isHostedChatEntry } from "@lobu/core";
+import { isHostedChatPlatform } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
-import { loadProjectConfig } from "./_lib/apply/desired-state.js";
+import { connectorRefKey } from "../config/index.js";
 import { resolveApiClient } from "../internal/api-client.js";
 import {
   addContext,
@@ -21,6 +21,7 @@ import {
 import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
 import { loadProjectLink } from "../internal/project-link.js";
+import { loadProjectConfig } from "./_lib/apply/desired-state.js";
 
 interface DevOptions {
   port?: string;
@@ -713,31 +714,36 @@ export function isPortFree(port: number): Promise<boolean> {
 }
 
 async function printPreviewInstructions(cwd: string): Promise<void> {
-  let agents: Awaited<
-    ReturnType<typeof loadProjectConfig>
-  >["project"]["agents"];
+  let project: Awaited<ReturnType<typeof loadProjectConfig>>["project"];
   try {
-    agents = (await loadProjectConfig(cwd)).project.agents;
+    project = (await loadProjectConfig(cwd)).project;
   } catch {
     return;
   }
 
-  // Hosted-bot platform entries (slack/telegram with no `config`) are reached
-  // via the hosted Lobu bot; `lobu run` mints a `/lobu link <code>` for each.
+  // Hosted chat connections (`credentialMode: "hosted"`) are reached via the
+  // hosted Lobu bot. The connection carries no owning agent — binding happens at
+  // redeem time via a Behavior — so `lobu run` mints one `/lobu link <code>` per
+  // (agent, hosted connection): the code's agent is the default `/lobu link`
+  // binds to, which the redeemer can still override.
+  const hostedConnections = (project.connections ?? []).filter(
+    (c) =>
+      c.credentialMode === "hosted" &&
+      isHostedChatPlatform(connectorRefKey(c.connector))
+  );
   const enabled: Array<{
     agentId: string;
     platform: string;
     cfg: { surfaces?: Array<"dm" | "channel">; codeTtlMinutes?: number };
   }> = [];
-  for (const agent of agents) {
-    for (const p of agent.platforms ?? []) {
-      if (isHostedChatEntry(p)) {
-        enabled.push({
-          agentId: agent.id,
-          platform: p.type,
-          cfg: { surfaces: p.surfaces, codeTtlMinutes: p.codeTtlMinutes },
-        });
-      }
+  for (const conn of hostedConnections) {
+    const platform = connectorRefKey(conn.connector);
+    for (const agent of project.agents) {
+      enabled.push({
+        agentId: agent.id,
+        platform,
+        cfg: { surfaces: conn.surfaces, codeTtlMinutes: conn.codeTtlMinutes },
+      });
     }
   }
   if (enabled.length === 0) return;

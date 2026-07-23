@@ -242,7 +242,7 @@ export const WebhookConfigSchema = Type.Object({
 	),
 	searchable: Type.Optional(
 		boolOrString(
-			"Index ingested payloads into semantic memory (search_memory). Default false: store-only, reachable by watcher SQL.",
+			"Index ingested payloads into semantic memory (search_memory). Default false: store-only, reachable by behavior SQL.",
 		),
 	),
 });

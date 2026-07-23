@@ -36,7 +36,7 @@ it in plaintext — copy it then.
 | `dedupeHeader` | — | Header carrying the provider's delivery id (e.g. `x-github-delivery`). Without it, the idempotency key is `sha256(raw body)`. |
 | `semanticType` | `content` | `events.semantic_type` stamped on ingested rows. |
 | `titlePath` | — | JSON pointer extracted into `events.title` (e.g. `/event/title`). |
-| `searchable` | `false` | Index payloads into semantic memory (`search_memory`). Off = store-only, reachable by watcher SQL; leave off for high-volume/low-value sources to keep recall clean. |
+| `searchable` | `false` | Index payloads into semantic memory (`search_memory`). Off = store-only, reachable by behavior SQL; leave off for high-volume/low-value sources to keep recall clean. |
 
 Bodies must be JSON. A non-JSON body (form-encoded, XML, plain text) is
 rejected with `400`; content-type-aware ingest is not implemented.
@@ -65,7 +65,7 @@ The raw parsed payload is preserved verbatim in `payload_data` (wrapped as
 text projection in `payload_text` (capped at 8 KB) so the row is embedded by
 the backfill and surfaced by semantic recall / `search_memory`; with
 `searchable` off (the default) `payload_text` stays null and the row is
-reachable only by watcher SQL / `query_sql`. Rows carry
+reachable only by behavior SQL / `query_sql`. Rows carry
 `connector_key = 'webhook:<connectionId>'`; redelivery dedupe is enforced by
 a partial unique index on `(organization_id, connector_key, origin_id)`.
 

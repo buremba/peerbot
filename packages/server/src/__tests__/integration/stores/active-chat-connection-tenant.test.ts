@@ -18,6 +18,7 @@ import {
 } from '../../setup/test-fixtures';
 
 const SLUG = 'slackinst-tenant-probe';
+const BYO_ID = 'tenant-probe-byo';
 const ENTERPRISE = 'E_GRID_TENANT';
 
 describe('resolveActiveChatConnectionTenant', () => {
@@ -39,6 +40,26 @@ describe('resolveActiveChatConnectionTenant', () => {
       getTestDb(),
       org.id,
       SLUG,
+      'slack'
+    );
+
+    expect(tenant).toBe(ENTERPRISE);
+  });
+
+  it('maps a BYO runtime connection id to its agentconn- slug', async () => {
+    const org = await createTestOrganization();
+    await insertChatConnectionRow({
+      id: BYO_ID,
+      organizationId: org.id,
+      platform: 'slack',
+      status: 'active',
+      metadata: { teamId: ENTERPRISE },
+    });
+
+    const tenant = await resolveActiveChatConnectionTenant(
+      getTestDb(),
+      org.id,
+      BYO_ID,
       'slack'
     );
 
@@ -102,6 +123,30 @@ describe('resolveActiveChatConnectionTenant', () => {
       getTestDb(),
       org.id,
       SLUG,
+      'slack'
+    );
+
+    expect(tenant).toBeNull();
+  });
+
+  it('does not accept a data-connector row with the same connector and slug', async () => {
+    const org = await createTestOrganization();
+    await insertChatConnectionRow({
+      id: BYO_ID,
+      organizationId: org.id,
+      platform: 'slack',
+      status: 'active',
+      metadata: { teamId: ENTERPRISE },
+    });
+    await getTestDb()`
+      UPDATE connections SET credential_mode = NULL
+      WHERE organization_id = ${org.id} AND slug = ${`agentconn-${BYO_ID}`}
+    `;
+
+    const tenant = await resolveActiveChatConnectionTenant(
+      getTestDb(),
+      org.id,
+      BYO_ID,
       'slack'
     );
 

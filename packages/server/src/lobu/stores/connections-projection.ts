@@ -14,7 +14,7 @@
 
 import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import { tsTime } from "../../db/client";
+import { type DbClient, tsTime } from "../../db/client";
 
 const logger = createLogger("connections-projection");
 
@@ -317,38 +317,36 @@ export async function upsertChatConnectionProjection(
   `;
 }
 
-/** Soft-delete the `connections` projection for a chat connection (by slug),
- *  inside the caller's transaction. Mirrors the legacy hard delete. */
 /**
  * The provider tenant id (`external_tenant_id`) of a LIVE chat connection, or
  * null when there is no such active row.
  *
- * Scoped by (org, slug, connector) so a slug reused in another tenant can never
- * supply this org's tenant, and restricted to `status = 'active'`: a paused or
- * stopped install lingers for token refresh and must not be treated as a live
- * tenant. Callers use the result as a SECOND exact identity key (Slack Grid
- * keys `chat_user_identities` on the enterprise `E…` while inbound events carry
- * the workspace `T…`), so a wrong or stale row here would widen a privilege
- * lookup — hence the narrow, fail-closed predicate.
+ * Scoped by (org, runtime connection id, connector) and restricted to active
+ * chat rows. Callers use the result as a second exact identity key, so a wrong
+ * or stale row here would widen a privilege lookup.
  */
 export async function resolveActiveChatConnectionTenant(
-  sql: any,
+  sql: DbClient,
   orgId: string,
-  slug: string,
+  connectionId: string,
   connectorKey: string,
 ): Promise<string | null> {
-  const rows = (await sql`
+  const slug = runtimeConnectionIdToSlug(connectionId);
+  const rows = await sql<{ external_tenant_id: string | null }>`
     SELECT external_tenant_id FROM connections
     WHERE organization_id = ${orgId}
       AND slug = ${slug}
       AND connector_key = ${connectorKey}
+      AND credential_mode IS NOT NULL
       AND status = 'active'
       AND deleted_at IS NULL
     LIMIT 1
-  `) as Array<{ external_tenant_id: string | null }>;
+  `;
   return rows[0]?.external_tenant_id ?? null;
 }
 
+/** Soft-delete the `connections` projection for a chat connection (by slug),
+ *  inside the caller's transaction. Mirrors the legacy hard delete. */
 export async function softDeleteChatConnectionProjection(
   sql: any,
   orgId: string | null | undefined,

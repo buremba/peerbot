@@ -451,30 +451,32 @@ export class MessageConsumer {
       // while events carry the workspace T…. Offer that tenant as an
       // alternate exact key only (still team-scoped — not a global U… collapse).
       let alternateTeamId: string | undefined;
-      const connectionSlug = platformMetadataString(
+      const connectionId = platformMetadataString(
         data.platformMetadata,
         "connectionId",
       );
       if (
         data.platform === "slack" &&
         data.organizationId &&
-        connectionSlug &&
-        connectionSlug !== workspaceTeamId
+        connectionId
       ) {
         try {
           // Scoped + fail-closed in the store (see
-          // `resolveActiveChatConnectionTenant`): org + slug + connector, and
-          // active rows only, so a reused slug or a paused install can never
-          // supply the alternate team for this privilege grant.
+          // `resolveActiveChatConnectionTenant`): org + runtime connection id +
+          // connector, and active chat rows only, so a reused slug or a paused
+          // install can never supply the alternate team for this privilege grant.
           const tenant = await resolveActiveChatConnectionTenant(
             getDb(),
             data.organizationId,
-            connectionSlug,
+            connectionId,
             "slack",
           );
           if (tenant && tenant !== workspaceTeamId) alternateTeamId = tenant;
-        } catch {
-          // Best-effort — grant still tries workspaceTeamId alone.
+        } catch (err) {
+          logger.warn(
+            { err, organizationId: data.organizationId, connectionId },
+            "Failed to resolve alternate Slack tenant for Builder admin grant",
+          );
         }
       }
       const adminTools = await resolveBuilderAdminTools({

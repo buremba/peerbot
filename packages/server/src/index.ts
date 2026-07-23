@@ -2520,7 +2520,7 @@ function buildSlackClaimProvider(): ClaimProvider {
 				: null;
 		},
 		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
-		linkChatUserIdentity: (opts) => linkChatUserIdentity(opts),
+		linkChatUserIdentity,
 		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
 		claim: async (pending, organizationId, confirmMove) => {
 			const core = getLobuCoreServices();

@@ -120,10 +120,16 @@ async function authorizeSlackClaim(
   // STRICTLY Grid-gated (`enterpriseId` non-null): plain workspaces let ANY
   // non-admin install apps, so installer-match must NOT grant authority there
   // (the authority model is admin-not-installer).
+  // Case-normalized on both sides: the entity-graph source yields the raw
+  // `team:user` identifier (unlike the account / linked-chat sources, which
+  // uppercase) and `installerUserId` is stored verbatim from Slack's payload,
+  // so a case-sensitive compare would deny a legitimate Grid admin. `bind`
+  // normalizes the same way — the two must agree on who the installer is.
+  const installerId = pending.installerUserId?.toUpperCase() ?? null;
   if (
     pending.enterpriseId &&
-    pending.installerUserId &&
-    identities.some((i) => i.slackUserId === pending.installerUserId)
+    installerId &&
+    identities.some((i) => i.slackUserId.toUpperCase() === installerId)
   ) {
     return { status: "authorized", subjectName: pending.teamName };
   }
@@ -174,9 +180,12 @@ export function slackClaimProvider(
         // later event team ids that match the install row still resolve.
         try {
           const identities = await deps.resolveClaimerSlackIdentities(userId);
-          // Always persist every identity the claimer has already proven via
-          // Slack OIDC (team-scoped keys they actually signed in under).
+          // Persist only identities with a proven team scope. Older Better Auth
+          // accounts without an id_token resolve with an empty team; their bare
+          // user proof is useful for Grid installer matching below but must not
+          // create an unscoped chat identity.
           for (const id of identities) {
+            if (!id.teamId) continue;
             await deps.linkChatUserIdentity({
               platform: "slack",
               teamId: id.teamId,
@@ -184,8 +193,9 @@ export function slackClaimProvider(
               lobuUserId: userId,
             });
           }
-          // Extra stamp of the install's tenant key (T… or Grid E…) ONLY when
-          // the claimer is proven to be the installer:
+          // Ensure the install's tenant key (T… or Grid E…) is linked ONLY when
+          // the claimer is proven to be the installer, without rewriting the
+          // exact identity already linked above:
           // - plain workspace: same teamId + same U… (U is workspace-local)
           // - Grid (enterpriseId set): same U… on any team (U is enterprise-global)
           const installer = pending.installerUserId?.toUpperCase() ?? null;
@@ -197,7 +207,18 @@ export function slackClaimProvider(
               if (pending.enterpriseId) return true;
               return i.teamId.toUpperCase() === installTeam;
             });
-          if (claimerIsInstaller && pending.installerUserId) {
+          const installIdentityAlreadyLinked =
+            installer != null &&
+            identities.some(
+              (i) =>
+                i.teamId.toUpperCase() === installTeam &&
+                i.slackUserId.toUpperCase() === installer,
+            );
+          if (
+            claimerIsInstaller &&
+            !installIdentityAlreadyLinked &&
+            pending.installerUserId
+          ) {
             await deps.linkChatUserIdentity({
               platform: "slack",
               teamId: pending.teamId,
@@ -217,7 +238,7 @@ export function slackClaimProvider(
               installerUserId: pending.installerUserId,
               teamId: pending.teamId,
             },
-            "slackClaimProvider.bind: installer identity link failed after claim committed",
+            "Slack claim identity linking failed after claim committed",
           );
         }
         return { bindingId: installationId };

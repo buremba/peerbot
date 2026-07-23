@@ -131,6 +131,24 @@ describe("slackClaimProvider.authorize", () => {
     expect(usersInfo).not.toHaveBeenCalled();
   });
 
+  test("Grid installer match is case-insensitive on both sides", async () => {
+    // The entity-graph identity source yields the raw `team:user` identifier
+    // (the account / linked-chat sources uppercase; that one does not) and
+    // `installerUserId` is stored verbatim from Slack. A case-sensitive
+    // compare here denies a legitimate Grid admin — and disagrees with `bind`,
+    // which normalizes. Fail-closed, but still wrong.
+    const { deps } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: "t-other", slackUserId: "u-installer" },
+      ]),
+    });
+    const verdict = await slackClaimProvider(deps).authorize(
+      "user-1",
+      pendingInstall({ installerUserId: "U-INSTALLER", enterpriseId: "E-GRID" }),
+    );
+    expect(verdict.status).toBe("authorized");
+  });
+
   test("installer-id match on a PLAIN workspace (no enterpriseId) is NOT enough", async () => {
     const { deps } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
@@ -280,7 +298,7 @@ describe("slackClaimProvider.bind", () => {
  * installer — never on `pending.installerUserId` alone.
  */
 describe("slackClaimProvider.bind — identity linking", () => {
-  test("links every proven identity the claimer signed in with", async () => {
+  test("links every team-scoped identity the claimer signed in with", async () => {
     const { deps, linkChatUserIdentity } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: TEAM, slackUserId: "U-ADMIN" },
@@ -301,6 +319,21 @@ describe("slackClaimProvider.bind — identity linking", () => {
     for (const call of linkChatUserIdentity.mock.calls) {
       expect((call[0] as { lobuUserId: string }).lobuUserId).toBe("user-1");
     }
+  });
+
+  test("does not persist an unscoped identity from an account without an id_token", async () => {
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: "", slackUserId: "U-ADMIN" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER" }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkChatUserIdentity).not.toHaveBeenCalled();
   });
 
   test("does NOT link the installer's U… when a different admin claims a plain workspace", async () => {
@@ -344,6 +377,7 @@ describe("slackClaimProvider.bind — identity linking", () => {
       teamId: TEAM,
       platformUserId: "U-INSTALLER",
     });
+    expect(linkChatUserIdentity).toHaveBeenCalledTimes(1);
   });
 
   test("plain workspace: matching U… on a DIFFERENT team does not stamp the install key", async () => {

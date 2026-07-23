@@ -174,7 +174,8 @@ describe("manage_behaviors — builder gate e2e", () => {
 
 		const sql = getTestDb();
 		const runRows = await sql`
-			SELECT run_type, action_key, approval_status, status, action_input, created_by_user_id
+			SELECT run_type, action_key, approval_status, status, action_input,
+			       created_by_user_id, initiator_kind, initiator_ref
 			FROM runs WHERE id = ${res.run_id} AND organization_id = ${orgId}
 		`;
 		expect(runRows.length).toBe(1);
@@ -183,15 +184,28 @@ describe("manage_behaviors — builder gate e2e", () => {
 		expect(runRows[0]?.approval_status).toBe("pending");
 		expect(runRows[0]?.status).toBe("pending");
 		expect(runRows[0]?.created_by_user_id).toBe(ownerId);
+		expect(runRows[0]?.initiator_kind).toBe("agent_session");
+		expect(runRows[0]?.initiator_ref).toMatchObject({
+			agent_id: agentId,
+			user_id: ownerId,
+		});
 
 		const eventRows = await sql`
-			SELECT interaction_type, interaction_status
+			SELECT interaction_type, interaction_status, metadata
 			FROM current_event_records
 			WHERE run_id = ${res.run_id} AND organization_id = ${orgId}
 				AND semantic_type = 'operation' AND interaction_type = 'approval'
 		`;
 		expect(eventRows.length).toBe(1);
 		expect(eventRows[0]?.interaction_status).toBe("pending");
+		expect(
+			(eventRows[0]?.metadata as { initiator?: Record<string, unknown> })
+				?.initiator
+		).toMatchObject({
+			kind: "agent_session",
+			agent_id: agentId,
+			user_id: ownerId,
+		});
 
 		expect(await watcherExists(orgId, "agent-proposed-watcher")).toBe(false);
 	});

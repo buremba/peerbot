@@ -38,6 +38,7 @@ import {
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
+import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
 import { assessEntityResolution } from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
@@ -109,6 +110,12 @@ function actingPrincipalFor(
 		explicitWatcherId: args?.behavior_source?.behavior_id ?? null,
 		sessionWatcherId: ctx.actingWatcherId ?? null,
 	});
+}
+
+function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
+	return actor.kind === "watcher"
+		? ApprovalAttribution.Behavior
+		: ApprovalAttribution.Agent;
 }
 
 /**
@@ -306,10 +313,7 @@ async function handleCreate(
 		metadata: entityData.metadata ?? {},
 	};
 	const actor = await actingPrincipalFor(args, ctx);
-	const attribution: ApprovalAttributionType =
-		actor.kind === "watcher"
-			? ApprovalAttribution.Behavior
-			: ApprovalAttribution.Agent;
+	const attribution = attributionFor(actor);
 	const createDecision = await runMutationGate({
 		action: "create",
 		organizationId: ctx.organizationId,
@@ -472,10 +476,7 @@ async function handleUpdate(
 	const updateActor = await actingPrincipalFor(args, ctx);
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
-		attribution:
-			updateActor.kind === "watcher"
-				? ApprovalAttribution.Behavior
-				: ApprovalAttribution.Agent,
+		attribution: attributionFor(updateActor),
 		principalId: updateActor.id,
 		// Trusted reaction-session window WINS — see the create path.
 		windowId: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
@@ -708,22 +709,28 @@ async function handleMerge(
 				404,
 			);
 		}
+		const identities = await loadLiveEntityIdentities(sql, {
+			organizationId: ctx.organizationId,
+			entityIds: [...loserIds, winnerId],
+		});
 		resolution = assessEntityResolution({
 			metadataSchema: winner.metadata_schema,
 			entityTypeSlug: winner.entity_type_slug,
-			winner: { id: winnerId, metadata: winner.metadata ?? {} },
+			winner: {
+				id: winnerId,
+				metadata: winner.metadata ?? {},
+				identities: identities.get(winnerId) ?? [],
+			},
 			losers: loserIds.map((loserId) => ({
 				id: loserId,
 				metadata: byId.get(loserId)?.metadata ?? {},
+				identities: identities.get(loserId) ?? [],
 			})),
 		});
 	}
 
 	if (actor.kind !== "user" && resolution?.decision === "review") {
-		const attribution: ApprovalAttributionType =
-			actor.kind === "watcher"
-				? ApprovalAttribution.Behavior
-				: ApprovalAttribution.Agent;
+		const attribution = attributionFor(actor);
 		if (
 			await wasResolutionRejected(sql, {
 				organizationId: ctx.organizationId,
@@ -1320,10 +1327,7 @@ async function handleDelete(
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
-	const attribution: ApprovalAttributionType =
-		deleteActor.kind === "watcher"
-			? ApprovalAttribution.Behavior
-			: ApprovalAttribution.Agent;
+	const attribution = attributionFor(deleteActor);
 	const current = {
 		id: entity.id,
 		entity_type: entity.entity_type,

@@ -7,9 +7,16 @@ export interface ResolutionEvidence {
 	identifier: string;
 }
 
+export interface ResolutionIdentity {
+	namespace: string;
+	identifier: string;
+}
+
 interface ResolutionEntity {
 	id: number;
 	metadata: Record<string, unknown>;
+	/** Live identity claims that may not also exist in entity metadata. */
+	identities?: ResolutionIdentity[];
 }
 
 interface EntityResolutionAssessment {
@@ -170,8 +177,15 @@ export function normalizedResolutionRuleKeys(
 ): string[] {
 	let combinations: string[][] = [[]];
 	for (const field of rule.fields) {
+		// Identity-backed connector data follows the same field policy and
+		// normalization as metadata when its namespace names that field.
+		const raw = readPath(entity.metadata, field);
+		const fromMetadata = Array.isArray(raw) ? raw : [raw];
+		const fromIdentities = (entity.identities ?? [])
+			.filter((identity) => identity.namespace === field)
+			.map((identity) => identity.identifier);
 		const values = normalizeValues(
-			readPath(entity.metadata, field),
+			[...fromMetadata, ...fromIdentities],
 			rule.normalizer,
 		);
 		if (values.length === 0) return [];

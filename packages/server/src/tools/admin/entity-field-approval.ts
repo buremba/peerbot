@@ -38,6 +38,7 @@ import {
 	buildEntityUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
+import { resolveRunInitiator } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
@@ -496,6 +497,7 @@ export async function proposeEntityChange(
 		windowId ?? null,
 		proposal,
 	);
+	const initiatorColumns = resolveRunInitiator(ctx);
 
 	// Idempotency: complete_window is replay-safe (retries + concurrent replicas),
 	// so the same blocked change can be proposed more than once. Collapse to one
@@ -703,6 +705,10 @@ export async function proposeEntityChange(
 						? null
 						: (entity?.parent_entity_type ?? null),
 					attribution,
+					initiator: {
+						kind: initiatorColumns.initiatorKind,
+						...initiatorColumns.initiatorRef,
+					},
 					reason: proposal.reason ?? null,
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
@@ -751,12 +757,15 @@ export async function proposeEntityChange(
 		const inserted = await tx<{ id: number }>`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, window_id,
-				watcher_id, created_by_user_id, approval_status, status,
-				idempotency_key, created_at
+				watcher_id, created_by_user_id, initiator_kind, initiator_ref,
+				approval_status, status, idempotency_key, created_at
 			) VALUES (
 				${ctx.organizationId}, 'internal', ${actionKey},
 				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
-				${windowId ?? null}, ${proposal.watcher_id ?? null}, null,
+				${windowId ?? null}, ${proposal.watcher_id ?? null},
+				${initiatorColumns.createdByUserId},
+				${initiatorColumns.initiatorKind},
+				${tx.json(initiatorColumns.initiatorRef)},
 				'pending', 'pending', ${idempotencyKey}, current_timestamp
 			)
 			ON CONFLICT DO NOTHING

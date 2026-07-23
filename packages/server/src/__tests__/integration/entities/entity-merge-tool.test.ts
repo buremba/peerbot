@@ -5,7 +5,11 @@
  * The fusion mechanics themselves are proven in events/entity-merge.test.ts.
  */
 
+import postgres from "postgres";
 import { beforeEach, describe, expect, it } from "vitest";
+import { PROD_PG_VALUE_OPTIONS } from "../../../db/client";
+import { assessEntityResolution } from "../../../entity-resolution/policy";
+import { assertResolutionFingerprintCurrent } from "../../../entity-resolution/staleness";
 import type { Env } from "../../../index";
 import { manageEntity } from "../../../tools/admin/manage_entity";
 import { manageOperations } from "../../../tools/admin/manage_operations";
@@ -237,6 +241,153 @@ describe("manage_entity merge action", () => {
 			WHERE run_id = ${queued.approval_run_id}
 		`;
 		expect(completedEvent.interaction_status).toBe("completed");
+	});
+
+	it("queues review evidence for a phone shared only through entity_identities", async () => {
+		const org = await createTestOrganization({ name: "Identity Evidence Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES
+        (${org.id}, ${winner.id}, 'phone', '+44 7700 900 123'),
+        (${org.id}, ${loser.id}, 'phone', '447700900123'),
+        (${org.id}, ${loser.id}, 'wa_jid', '447700900123@s.whatsapp.net')
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as {
+			approval_queued: boolean;
+			resolution: {
+				decision: string;
+				evidence: Array<{ kind: string; identifier: string }>;
+			};
+		};
+
+		expect(queued.approval_queued).toBe(true);
+		expect(queued.resolution.decision).toBe("review");
+		expect(queued.resolution.evidence).toContainEqual({
+			kind: "phone",
+			identifier: "447700900123",
+		});
+	});
+
+	it("records the agent session that proposed the merge, not an orphan run", async () => {
+		const org = await createTestOrganization({ name: "Initiator Agent Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				agentId: "personal-agent",
+				clientId: "claude-ai",
+				sourceContext: { platform: "mcp", conversationId: "conv-abc" },
+			} as ToolContext,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+
+		expect(queued.approval_queued).toBe(true);
+		const [run] = await sql`
+			SELECT initiator_kind, initiator_ref, created_by_user_id, watcher_id
+			FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(run.initiator_kind).toBe("agent_session");
+		expect(run.initiator_ref).toMatchObject({
+			agent_id: "personal-agent",
+			client_id: "claude-ai",
+			conversation_id: "conv-abc",
+		});
+		expect(run.created_by_user_id).toBe(user.id);
+		expect(run.watcher_id).toBeNull();
+	});
+
+	it("records a behavior initiator consistent with the legacy watcher columns", async () => {
+		const org = await createTestOrganization({ name: "Initiator Behavior Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6021, ${org.id}, 'personal-agent', ${user.id}, 6021, 'Initiator behavior',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6021,
+			} as ToolContext,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+
+		const [run] = await sql`
+			SELECT initiator_kind, initiator_ref, watcher_id
+			FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(run.initiator_kind).toBe("behavior");
+		expect((run.initiator_ref as { watcher_id: number }).watcher_id).toBe(6021);
+		expect(Number(run.watcher_id)).toBe(6021);
+	});
+
+	it("does not let a caller-supplied behavior_source forge the initiator", async () => {
+		const org = await createTestOrganization({ name: "Initiator Spoof Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6022, ${org.id}, 'other-agent', ${user.id}, 6022, 'Someone elses behavior',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+				behavior_source: { behavior_id: 6022, window_id: 1 },
+			},
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				agentId: "personal-agent",
+				clientId: "claude-ai",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		const [run] = await sql`
+			SELECT initiator_kind, initiator_ref FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(run.initiator_kind).toBe("agent_session");
+		expect((run.initiator_ref as { agent_id: string }).agent_id).toBe(
+			"personal-agent",
+		);
 	});
 
 	it("carries the proposer's rationale to the card without letting it prove the merge", async () => {
@@ -976,6 +1127,105 @@ describe("manage_entity merge action", () => {
 			WHERE run_id = ${queued.approval_run_id}
 		`;
 		expect(approvalEvent.interaction_status).toBe("pending");
+	});
+
+	it("does not apply an approved merge when an identity row appeared after proposal", async () => {
+		const org = await createTestOrganization({ name: "Identity Staleness Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6015, ${org.id}, 'personal-agent', ${user.id}, 6015, 'Identity staleness',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6015,
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES (${org.id}, ${loser.id}, 'phone', '447700900123')
+    `;
+		const approved = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+
+		expect("approved" in approved && approved.approved).toBe(false);
+		const [after] = await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+	});
+
+	it("locks identity evidence until the staleness-checked transaction finishes", async () => {
+		const org = await createTestOrganization({ name: "Identity Lock Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities
+			  (organization_id, entity_id, namespace, identifier)
+			VALUES (${org.id}, ${loser.id}, 'phone', '447700900123')
+		`;
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: winner.id, metadata: {} },
+			losers: [
+				{
+					id: loser.id,
+					metadata: {},
+					identities: [{ namespace: "phone", identifier: "447700900123" }],
+				},
+			],
+		});
+		const writer = postgres(process.env.DATABASE_URL as string, {
+			max: 1,
+			onnotice: () => {},
+			...PROD_PG_VALUE_OPTIONS,
+		});
+		try {
+			await sql.begin(async (tx) => {
+				await assertResolutionFingerprintCurrent(tx, {
+					organizationId: org.id,
+					winnerId: winner.id,
+					loserIds: [loser.id],
+					expectedFingerprint: assessment.fingerprint,
+				});
+				await expect(
+					writer.begin(async (writerTx) => {
+						await writerTx`SET LOCAL lock_timeout = '100ms'`;
+						await writerTx`
+							UPDATE entity_identities
+							SET identifier = '447700900124'
+							WHERE organization_id = ${org.id}
+							  AND entity_id = ${loser.id}
+							  AND deleted_at IS NULL
+						`;
+					}),
+				).rejects.toMatchObject({ code: "55P03" });
+			});
+		} finally {
+			await writer.end();
+		}
 	});
 
 	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {

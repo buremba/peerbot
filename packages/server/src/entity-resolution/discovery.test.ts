@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { discoverEntityResolutionGroups } from "./discovery";
-import { assessEntityResolution } from "./policy";
+import {
+	assessEntityResolution,
+	normalizedResolutionRuleKeys,
+} from "./policy";
 
 const schema = {
 	type: "object",
@@ -299,6 +302,178 @@ describe("entity resolution module", () => {
 			});
 
 		expect(assess("two").fingerprint).not.toBe(assess("three").fingerprint);
+	});
+
+	it("reads rule-field values from entity_identities rows, not just metadata", () => {
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: {
+				id: 1,
+				metadata: {},
+				identities: [{ namespace: "phone", identifier: "+44 7700 900 123" }],
+			},
+			losers: [
+				{
+					id: 2,
+					metadata: {},
+					identities: [{ namespace: "phone", identifier: "447700900123" }],
+				},
+			],
+		});
+		expect(assessment.decision).toBe("review");
+		expect(assessment.evidence).toContainEqual({
+			kind: "phone",
+			identifier: "447700900123",
+		});
+	});
+
+	it("reads a JID-shell's phone identity but does not match a corrupted metadata phone", () => {
+		// The run-702088 prod shape (numbers sanitized): the WhatsApp shell has
+		// its phone only in entity_identities; the named contact's metadata phone
+		// was double-split on import, losing the country code. The shell's
+		// identity must be read; the corrupted number still must NOT match —
+		// repairing import-mangled phones is a separate bug, and inventing a
+		// match here would paper over it.
+		const phoneRule: Parameters<typeof normalizedResolutionRuleKeys>[1] = {
+			fields: ["phone"],
+			normalizer: "phone",
+			onMatch: "review",
+		};
+		const jidShell = {
+			id: 519,
+			metadata: {},
+			identities: [
+				{ namespace: "wa_jid", identifier: "447700900123@s.whatsapp.net" },
+				{ namespace: "phone", identifier: "447700900123" },
+			],
+		};
+		expect(normalizedResolutionRuleKeys(jidShell, phoneRule)).toEqual([
+			"447700900123",
+		]);
+
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: {
+				id: 24002,
+				metadata: { phone: "070-090-0123", email: "" },
+			},
+			losers: [jidShell],
+		});
+		expect(assessment.decision).toBe("review");
+		expect(assessment.evidence).toEqual([]);
+	});
+
+	it("never treats an identity from another namespace as a rule-field value", () => {
+		const jidOnly = {
+			id: 1,
+			metadata: {},
+			identities: [
+				{ namespace: "wa_jid", identifier: "447700900123@s.whatsapp.net" },
+			],
+		};
+		expect(
+			normalizedResolutionRuleKeys(jidOnly, {
+				fields: ["phone"],
+				normalizer: "phone",
+				onMatch: "review",
+			}),
+		).toEqual([]);
+		expect(
+			normalizedResolutionRuleKeys(jidOnly, {
+				fields: ["wa_jid"],
+				normalizer: "phone",
+				onMatch: "review",
+			}),
+		).toEqual([]);
+	});
+
+	it("folds identities into the fingerprint deterministically", () => {
+		const assess = (
+			identities: Array<{ namespace: string; identifier: string }>,
+		) =>
+			assessEntityResolution({
+				metadataSchema: { type: "object" },
+				entityTypeSlug: "person",
+				winner: { id: 1, metadata: { email: "same@example.com" } },
+				losers: [{ id: 2, metadata: {}, identities }],
+			});
+
+		const without = assess([]);
+		const withPhone = assess([
+			{ namespace: "phone", identifier: "447700900123" },
+			{ namespace: "email", identifier: "same@example.com" },
+		]);
+		expect(withPhone.fingerprint).not.toBe(without.fingerprint);
+		const reordered = assess([
+			{ namespace: "email", identifier: "same@example.com" },
+			{ namespace: "phone", identifier: "447700900123" },
+		]);
+		expect(reordered.fingerprint).toBe(withPhone.fingerprint);
+	});
+
+	it("keeps discovery grouping and assessment in agreement on identity-only matches", () => {
+		const namedContact = {
+			id: 1,
+			metadata: { title: "Engineer" },
+			identities: [{ namespace: "phone", identifier: "+44 7700 900 123" }],
+		};
+		const shell = {
+			id: 2,
+			metadata: {},
+			identities: [{ namespace: "phone", identifier: "447700900123" }],
+		};
+		const discovered = discoverEntityResolutionGroups({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			candidates: [namedContact, shell],
+		});
+		expect(discovered.groups).toEqual([{ winnerId: 1, loserIds: [2] }]);
+
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: namedContact,
+			losers: [shell],
+		});
+		expect(assessment.evidence).toContainEqual({
+			kind: "phone",
+			identifier: "447700900123",
+		});
+	});
+
+	it("draws each field of a combination rule from metadata and identities alike", () => {
+		const comboSchema = {
+			"x-lobu-resolution": {
+				rules: [
+					{
+						fields: ["email", "phone"],
+						normalizer: "exact",
+						onMatch: "review",
+					},
+				],
+			},
+		};
+		const assessment = assessEntityResolution({
+			metadataSchema: comboSchema,
+			winner: {
+				id: 1,
+				metadata: { email: "same@example.com" },
+				identities: [{ namespace: "phone", identifier: "447700900123" }],
+			},
+			losers: [
+				{
+					id: 2,
+					metadata: { phone: "447700900123" },
+					identities: [{ namespace: "email", identifier: "same@example.com" }],
+				},
+			],
+		});
+		expect(assessment.evidence).toContainEqual({
+			kind: "email + phone",
+			identifier: "same@example.com · 447700900123",
+		});
 	});
 
 	it("rejects oversized decision batches before returning partial work", () => {

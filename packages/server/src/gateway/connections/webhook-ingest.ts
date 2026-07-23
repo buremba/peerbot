@@ -244,7 +244,7 @@ export const WEBHOOK_PAYLOAD_TEXT_MAX_CHARS = 8 * 1024;
  * Render the parsed payload into a flat text document for `events.payload_text`.
  * Without this the column is null, so the embed-backfill (which skips rows with
  * empty payload_text) never embeds the row and it stays invisible to semantic
- * recall / `search_memory` — reachable only by watcher SQL. Leaf scalars become
+ * recall / `search_memory` — reachable only by behavior SQL. Leaf scalars become
  * `dotted.path: value` lines, so the JSON structure doubles as searchable
  * context (e.g. `event.title: ZeroDivisionError`). Bounded by
  * WEBHOOK_PAYLOAD_TEXT_MAX_CHARS.

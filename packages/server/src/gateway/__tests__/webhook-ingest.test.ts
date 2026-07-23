@@ -504,7 +504,7 @@ describe("handleWebhookIngest body handling", () => {
 		);
 		const rows = await eventRows();
 		// No payload_text → embed-backfill skips it → never enters semantic
-		// memory; the row is still reachable by watcher SQL on connector_key.
+		// memory; the row is still reachable by behavior SQL on connector_key.
 		expect(rows[0].payload_text).toBeNull();
 	});
 });

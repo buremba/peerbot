@@ -80,6 +80,24 @@ const ALLOW_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
   ['ff00::', 8],
 ];
 
+/**
+ * IPv6 cloud-metadata endpoints, denied under EVERY policy and even for an
+ * explicitly allowlisted host — the IPv6 twins of 169.254.169.254.
+ *
+ * These need naming individually because they sit inside ULA `fc00::/7`, which
+ * `allow-private` deliberately permits (a self-hoster's DB legitimately lives
+ * on a ULA address). Without this set, exempting a host would drop it to the
+ * `allow-private` floor and expose IMDS. Kept metadata-only so ordinary ULA
+ * hosts stay reachable.
+ */
+const METADATA_V6: ReadonlyArray<readonly [string, number]> = [
+  ['fd00:ec2::254', 128], // AWS IMDS over IPv6
+];
+
+function isMetadataV6(address: string): boolean {
+  return METADATA_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
+}
+
 type NormalizedHost =
   | { kind: 'ipv4'; value: string }
   | { kind: 'ipv6'; value: string }
@@ -159,6 +177,7 @@ function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
 function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {
   const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V6 : ALLOW_PRIVATE_V6;
   return (
+    isMetadataV6(address) ||
     matchesIpv6Prefix(address, '::', 128) ||
     (policy === 'block-private' && matchesIpv6Prefix(address, '::1', 128)) ||
     ranges.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))
@@ -342,7 +361,7 @@ export async function assertHostAllowed(
  * multicast and reserved are rejected under every policy, for allowlisted and
  * ordinary hosts alike. That floor is what makes this a destination exemption
  * rather than an SSRF off-switch, so allowlisting a name whose DNS answer is
- * `169.254.169.254` still fails.
+ * `169.254.169.254` — or its IPv6 twin `fd00:ec2::254` — still fails.
  */
 export async function resolveAllowedHostAddresses(
   host: string,

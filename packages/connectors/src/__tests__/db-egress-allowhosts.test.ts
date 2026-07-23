@@ -84,6 +84,33 @@ describe('allow-hosts must NOT become a universal bypass', () => {
       ]),
     ).rejects.toThrow();
   });
+
+  /**
+   * AWS serves IMDS over IPv6 at `fd00:ec2::254`, which sits in ULA `fc00::/7`.
+   * ULA is deliberately absent from the `allow-private` floor (a self-hoster's DB
+   * legitimately lives there), so dropping an exempted host to that floor would
+   * otherwise expose the metadata endpoint — the IPv6 twin of 169.254.169.254,
+   * which is blocked. Both spellings must fail for exempted hosts too.
+   */
+  test('IPv6 cloud metadata stays blocked even when explicitly allowlisted', async () => {
+    await expect(
+      assertHostAllowed('fd00:ec2::254', BLOCK, undefined, ['fd00:ec2::254']),
+    ).rejects.toThrow(/blocked internal\/metadata address/);
+  });
+
+  test('an allowlisted hostname resolving to IPv6 metadata is still blocked', async () => {
+    await expect(
+      assertHostAllowed('evil.example.com', BLOCK, fakeLookup(['fd00:ec2::254']), [
+        'evil.example.com',
+      ]),
+    ).rejects.toThrow(/blocked internal\/metadata address/);
+  });
+
+  test('an ordinary ULA host is still exemptible (the deny set is metadata-only)', async () => {
+    await expect(
+      assertHostAllowed('fd00::1', BLOCK, undefined, ['fd00::1']),
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe('parseAllowedHosts — unsupported entry shapes fail at parse time', () => {

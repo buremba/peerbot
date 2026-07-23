@@ -84,7 +84,14 @@ export async function joinPublicOrganization({
       status: 'active',
     });
   } catch (err) {
-    logger.error({ err }, '[joinPublicOrganization] Failed to create $member entity');
+    // Drift risk: the member row is already committed above, so a failure here
+    // leaves them without a resolvable $member claim and the authz gate hides
+    // every enforced channel from them. Structured to correlate with the drift
+    // detector; non-fatal so the join still succeeds.
+    logger.error(
+      { err, event: 'member_claim_drift', hook: 'joinPublicOrganization', organizationId, userId },
+      '[joinPublicOrganization] Failed to create $member entity',
+    );
   }
 
   invalidateMembershipRoleCache(organizationId, userId);

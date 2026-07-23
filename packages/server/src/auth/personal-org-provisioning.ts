@@ -13,6 +13,7 @@ import { RESERVED_PATHS_SET } from "../utils/reserved";
 import { ensureBuilderAgent } from "./builder-provisioning";
 import { generateSecureToken } from "./oauth/utils";
 import { provisionMemberAndCoreIdentities } from "./subject-identities";
+import logger from "../utils/logger";
 
 interface UserLike {
 	id: string;
@@ -201,13 +202,20 @@ export async function ensurePersonalOrganization(
 				name: user.name,
 			});
 		} catch (error) {
-			console.error(
-				"[Auth] Failed to provision $member entity for personal org:",
+			// Drift risk: the personal org + member row exist, but without the
+			// $member + auth:signup claim the user resolves to nothing in the authz
+			// gate. Structured to correlate with the drift detector; non-fatal so a
+			// failed identity write can't break org creation (it's retried on the
+			// next call — the helper is idempotent).
+			logger.error(
 				{
-					orgId: finalResult.organizationId,
+					err: error,
+					event: "member_claim_drift",
+					hook: "personalOrgProvisioning",
+					organizationId: finalResult.organizationId,
 					userId: user.id,
-					error: String(error),
 				},
+				"[Auth] Failed to provision $member entity for personal org",
 			);
 		}
 	}

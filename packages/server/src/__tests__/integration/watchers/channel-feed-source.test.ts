@@ -244,12 +244,15 @@ describe("streaming feed as a watcher @feed source", () => {
     // Provision the reader's $member (writes the auth_user_id/auth:signup identity
     // the gate resolves), then give it a member_of edge to the channel entity —
     // the same shape the live ACL sync would produce for a channel member.
+    // ensureMemberEntity enforces userId-owns-email: the claim the gate resolves
+    // on is only written when the userId owns the email. Seed with the real user
+    // email — a constructed reader-<id>@example.com would be refused.
     const readerUserId = workspace.users.owner.id;
     await ensureMemberEntity({
       organizationId: orgId,
       userId: readerUserId,
       name: "Reader",
-      email: `reader-${readerUserId}@example.com`,
+      email: workspace.users.owner.email,
     });
     const sql = getTestDb();
     const [member] = await sql`

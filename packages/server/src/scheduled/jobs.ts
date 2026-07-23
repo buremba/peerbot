@@ -25,6 +25,7 @@ import {
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
+import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
 import { getDb, pgTextArray } from '../db/client';
@@ -218,6 +219,22 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '*/15 * * * *' }
+  );
+
+  // Read-only detector for members whose trusted $member claim is missing or
+  // blocked by another live claim. Cron dispatch is single-claimant per tick.
+  scheduler.register(
+    'member-claim-drift',
+    async () => {
+      const result = await runMemberClaimDriftCheck();
+      if (result.missingClaim > 0 || result.poisonClaim > 0) {
+        logger.error(
+          { ...result },
+          '[task] member-claim-drift found members without a resolvable $member claim',
+        );
+      }
+    },
+    { cron: '0 * * * *' },
   );
 
   scheduler.register(

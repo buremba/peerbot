@@ -6,7 +6,14 @@
  * body so its data cleanup cannot drift from production SQL.
  */
 import { readFile } from "node:fs/promises";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { getDb } from "../../../db/client.js";
 import {
   ensureDbForGatewayTests,
@@ -90,6 +97,23 @@ async function feedStatus(feedId: number): Promise<string | null> {
   return rows[0]?.status ?? null;
 }
 
+/** Seed the pre-migration orphan shape without leaking disabled schema state. */
+async function reviveFeedWithoutGuard(feedId: number): Promise<void> {
+  await getDb().begin(async (tx) => {
+    await tx.unsafe(
+      "ALTER TABLE feeds DISABLE TRIGGER guard_streaming_feed_connection",
+    );
+    await tx`
+      UPDATE feeds
+      SET deleted_at = NULL, status = 'active', updated_at = now()
+      WHERE id = ${feedId}
+    `;
+    await tx.unsafe(
+      "ALTER TABLE feeds ENABLE TRIGGER guard_streaming_feed_connection",
+    );
+  });
+}
+
 describe("retiring streaming feeds when a connection is tombstoned", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
@@ -113,12 +137,14 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
     await tombstoneConnection(conn);
 
     expect(await feedIsLive(feed)).toBe(false);
-    // A retired feed must not read back as active (scheduler/UI depend on this).
     expect(await feedStatus(feed)).toBe("paused");
   });
 
   test("retires every streaming feed on the connection, not just one", async () => {
-    const conn = await insertConnection({ slug: "slackinst-multi", live: true });
+    const conn = await insertConnection({
+      slug: "slackinst-multi",
+      live: true,
+    });
     const feeds = [
       await insertFeed(conn, "slack:D_ONE"),
       await insertFeed(conn, "slack:D_TWO"),
@@ -133,7 +159,10 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
   });
 
   test("leaves feeds on OTHER connections untouched", async () => {
-    const dying = await insertConnection({ slug: "slackinst-dying", live: true });
+    const dying = await insertConnection({
+      slug: "slackinst-dying",
+      live: true,
+    });
     const survivor = await insertConnection({
       slug: "slackinst-survivor",
       live: true,
@@ -149,13 +178,30 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
   });
 
   test("does not touch non-streaming feeds on the tombstoned connection", async () => {
-    const conn = await insertConnection({ slug: "slackinst-mixed", live: true });
+    const conn = await insertConnection({
+      slug: "slackinst-mixed",
+      live: true,
+    });
     const streaming = await insertFeed(conn, CHANNEL, "streaming");
     const collected = await insertFeed(conn, "reviews", "collected");
 
     await tombstoneConnection(conn);
 
     expect(await feedIsLive(streaming)).toBe(false);
+    expect(await feedIsLive(collected)).toBe(true);
+  });
+
+  test("retires a streaming feed written after its connection is tombstoned", async () => {
+    const dead = await insertConnection({
+      slug: "slackinst-late-feed",
+      live: false,
+    });
+
+    const streaming = await insertFeed(dead, CHANNEL);
+    const collected = await insertFeed(dead, "reviews", "collected");
+
+    expect(await feedIsLive(streaming)).toBe(false);
+    expect(await feedStatus(streaming)).toBe("paused");
     expect(await feedIsLive(collected)).toBe(true);
   });
 
@@ -166,6 +212,8 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
     });
     const streaming = await insertFeed(dead, CHANNEL);
     const collected = await insertFeed(dead, "reviews", "collected");
+    await reviveFeedWithoutGuard(streaming);
+    expect(await feedIsLive(streaming)).toBe(true);
 
     await runMigrationUp();
     await runMigrationUp();

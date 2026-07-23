@@ -9,12 +9,12 @@
 -- already accumulated, but did not prevent new orphans.
 --
 -- This closes the leak at the source: a streaming feed cannot outlive its
--- connection. The moment a connection is tombstoned, its streaming feeds are
--- retired in the same transaction — the exact companion to the existing
+-- connection. Existing feeds are retired in the tombstone transaction, and a
+-- feed-side guard retires a streaming feed written after its connection is
+-- already dead. The connection trigger is the companion to the existing
 -- `archive_chat_behaviors_for_deleted_connection` trigger, which already archives
--- the chat-link Behaviors on the same event. A DB trigger (not the app-level
--- reconciler) is deliberate: it fires for every path that updates the connection
--- tombstone, so the invariant does not depend on each caller reconciling feeds.
+-- the chat-link Behaviors on the same event. DB triggers are deliberate: every
+-- writer gets the same invariant without app-level reconciliation.
 --
 -- Matches `softDeleteStreamingChannelFeed` semantics exactly (deleted_at + paused)
 -- so trigger-retired and app-retired rows are indistinguishable. Only `streaming`
@@ -46,6 +46,42 @@ FOR EACH ROW
 WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
 EXECUTE FUNCTION retire_streaming_feeds_for_deleted_connection();
 
+-- Serialize live streaming-feed writes with connection tombstones. Without the
+-- row lock, a concurrent INSERT could be invisible to the connection trigger
+-- and commit after it, recreating the orphan on another replica.
+CREATE OR REPLACE FUNCTION guard_streaming_feed_connection()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $guard$
+DECLARE
+  connection_deleted_at timestamptz;
+BEGIN
+  IF NEW.kind <> 'streaming' OR NEW.deleted_at IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT deleted_at
+  INTO connection_deleted_at
+  FROM connections
+  WHERE id = NEW.connection_id
+  FOR SHARE;
+
+  IF FOUND AND connection_deleted_at IS NOT NULL THEN
+    NEW.deleted_at = current_timestamp;
+    NEW.status = 'paused';
+    NEW.updated_at = current_timestamp;
+  END IF;
+  RETURN NEW;
+END
+$guard$;
+
+DROP TRIGGER IF EXISTS guard_streaming_feed_connection
+  ON feeds;
+CREATE TRIGGER guard_streaming_feed_connection
+BEFORE INSERT OR UPDATE OF connection_id, kind, deleted_at ON feeds
+FOR EACH ROW
+EXECUTE FUNCTION guard_streaming_feed_connection();
+
 -- Backfill: retire streaming feeds still live on already-tombstoned connections.
 -- The prior one-shot only retired rows that had a live in-org duplicate; this
 -- retires the rest, since none of them can route (their connection is dead). Runs
@@ -61,6 +97,10 @@ WHERE f.deleted_at IS NULL
   AND dead.deleted_at IS NOT NULL;
 
 -- migrate:down
+
+DROP TRIGGER IF EXISTS guard_streaming_feed_connection
+  ON feeds;
+DROP FUNCTION IF EXISTS guard_streaming_feed_connection();
 
 DROP TRIGGER IF EXISTS retire_streaming_feeds_for_deleted_connection
   ON connections;

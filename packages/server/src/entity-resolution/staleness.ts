@@ -46,6 +46,7 @@ export async function assertResolutionFingerprintCurrent(
 	const identities = await loadLiveEntityIdentities(db, {
 		organizationId: input.organizationId,
 		entityIds: ids,
+		forUpdate: true,
 	});
 	const assessment = assessEntityResolution({
 		metadataSchema: winner.metadata_schema,

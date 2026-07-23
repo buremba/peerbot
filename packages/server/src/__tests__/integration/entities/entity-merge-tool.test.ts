@@ -5,7 +5,11 @@
  * The fusion mechanics themselves are proven in events/entity-merge.test.ts.
  */
 
+import postgres from "postgres";
 import { beforeEach, describe, expect, it } from "vitest";
+import { PROD_PG_VALUE_OPTIONS } from "../../../db/client";
+import { assessEntityResolution } from "../../../entity-resolution/policy";
+import { assertResolutionFingerprintCurrent } from "../../../entity-resolution/staleness";
 import type { Env } from "../../../index";
 import { manageEntity } from "../../../tools/admin/manage_entity";
 import { manageOperations } from "../../../tools/admin/manage_operations";
@@ -240,8 +244,6 @@ describe("manage_entity merge action", () => {
 	});
 
 	it("queues review evidence for a phone shared only through entity_identities", async () => {
-		// The prod-shaped gap: connectors write phones to entity_identities, not
-		// metadata, so the matcher must read identity rows to see the match.
 		const org = await createTestOrganization({ name: "Identity Evidence Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
@@ -250,9 +252,9 @@ describe("manage_entity merge action", () => {
 		await sql`
       INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
       VALUES
-        (${org.id}, ${winner.id}, 'phone', '+90 506 788 88 45'),
-        (${org.id}, ${loser.id}, 'phone', '905067888845'),
-        (${org.id}, ${loser.id}, 'wa_jid', '905067888845@s.whatsapp.net')
+        (${org.id}, ${winner.id}, 'phone', '+44 7700 900 123'),
+        (${org.id}, ${loser.id}, 'phone', '447700900123'),
+        (${org.id}, ${loser.id}, 'wa_jid', '447700900123@s.whatsapp.net')
     `;
 
 		const queued = (await manageEntity(
@@ -275,7 +277,7 @@ describe("manage_entity merge action", () => {
 		expect(queued.resolution.decision).toBe("review");
 		expect(queued.resolution.evidence).toContainEqual({
 			kind: "phone",
-			identifier: "905067888845",
+			identifier: "447700900123",
 		});
 	});
 
@@ -1019,9 +1021,6 @@ describe("manage_entity merge action", () => {
 	});
 
 	it("does not apply an approved merge when an identity row appeared after proposal", async () => {
-		// Identities are evidence inputs, so a new entity_identities row must
-		// change the resolution fingerprint and fail the staleness gate — the
-		// candidate has to be re-proposed with the wider evidence.
 		const org = await createTestOrganization({ name: "Identity Staleness Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
@@ -1050,7 +1049,7 @@ describe("manage_entity merge action", () => {
 
 		await sql`
       INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
-      VALUES (${org.id}, ${loser.id}, 'phone', '905067888845')
+      VALUES (${org.id}, ${loser.id}, 'phone', '447700900123')
     `;
 		const approved = await manageOperations(
 			{ action: "approve", run_id: queued.approval_run_id },
@@ -1064,6 +1063,60 @@ describe("manage_entity merge action", () => {
     `;
 		expect(after.merged_into).toBeNull();
 		expect(after.deleted_at).toBeNull();
+	});
+
+	it("locks identity evidence until the staleness-checked transaction finishes", async () => {
+		const org = await createTestOrganization({ name: "Identity Lock Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities
+			  (organization_id, entity_id, namespace, identifier)
+			VALUES (${org.id}, ${loser.id}, 'phone', '447700900123')
+		`;
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: winner.id, metadata: {} },
+			losers: [
+				{
+					id: loser.id,
+					metadata: {},
+					identities: [{ namespace: "phone", identifier: "447700900123" }],
+				},
+			],
+		});
+		const writer = postgres(process.env.DATABASE_URL as string, {
+			max: 1,
+			onnotice: () => {},
+			...PROD_PG_VALUE_OPTIONS,
+		});
+		try {
+			await sql.begin(async (tx) => {
+				await assertResolutionFingerprintCurrent(tx, {
+					organizationId: org.id,
+					winnerId: winner.id,
+					loserIds: [loser.id],
+					expectedFingerprint: assessment.fingerprint,
+				});
+				await expect(
+					writer.begin(async (writerTx) => {
+						await writerTx`SET LOCAL lock_timeout = '100ms'`;
+						await writerTx`
+							UPDATE entity_identities
+							SET identifier = '447700900124'
+							WHERE organization_id = ${org.id}
+							  AND entity_id = ${loser.id}
+							  AND deleted_at IS NULL
+						`;
+					}),
+				).rejects.toMatchObject({ code: "55P03" });
+			});
+		} finally {
+			await writer.end();
+		}
 	});
 
 	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {

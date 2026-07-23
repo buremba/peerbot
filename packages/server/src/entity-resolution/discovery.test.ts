@@ -305,39 +305,36 @@ describe("entity resolution module", () => {
 	});
 
 	it("reads rule-field values from entity_identities rows, not just metadata", () => {
-		// Connectors write phones/emails to entity_identities; metadata is often
-		// empty. Two persons sharing a phone only through identity rows must still
-		// produce that phone as evidence.
 		const assessment = assessEntityResolution({
 			metadataSchema: { type: "object" },
 			entityTypeSlug: "person",
 			winner: {
 				id: 1,
 				metadata: {},
-				identities: [{ namespace: "phone", identifier: "+90 506 788 88 45" }],
+				identities: [{ namespace: "phone", identifier: "+44 7700 900 123" }],
 			},
 			losers: [
 				{
 					id: 2,
 					metadata: {},
-					identities: [{ namespace: "phone", identifier: "905067888845" }],
+					identities: [{ namespace: "phone", identifier: "447700900123" }],
 				},
 			],
 		});
 		expect(assessment.decision).toBe("review");
 		expect(assessment.evidence).toContainEqual({
 			kind: "phone",
-			identifier: "905067888845",
+			identifier: "447700900123",
 		});
 	});
 
 	it("reads a JID-shell's phone identity but does not match a corrupted metadata phone", () => {
-		// Real prod pair (run 702088): the WhatsApp shell has its phone only in
-		// entity_identities; the named contact's metadata phone was double-split
-		// on import ("050-678-88845" → 05067888845, missing the 90 country code).
-		// The shell's identity must be read; the corrupted number still must NOT
-		// match — repairing import-mangled phones is a separate bug, and inventing
-		// a match here would paper over it.
+		// The run-702088 prod shape (numbers sanitized): the WhatsApp shell has
+		// its phone only in entity_identities; the named contact's metadata phone
+		// was double-split on import, losing the country code. The shell's
+		// identity must be read; the corrupted number still must NOT match —
+		// repairing import-mangled phones is a separate bug, and inventing a
+		// match here would paper over it.
 		const phoneRule: Parameters<typeof normalizedResolutionRuleKeys>[1] = {
 			fields: ["phone"],
 			normalizer: "phone",
@@ -347,12 +344,12 @@ describe("entity resolution module", () => {
 			id: 519,
 			metadata: {},
 			identities: [
-				{ namespace: "wa_jid", identifier: "905067888845@s.whatsapp.net" },
-				{ namespace: "phone", identifier: "905067888845" },
+				{ namespace: "wa_jid", identifier: "447700900123@s.whatsapp.net" },
+				{ namespace: "phone", identifier: "447700900123" },
 			],
 		};
 		expect(normalizedResolutionRuleKeys(jidShell, phoneRule)).toEqual([
-			"905067888845",
+			"447700900123",
 		]);
 
 		const assessment = assessEntityResolution({
@@ -360,7 +357,7 @@ describe("entity resolution module", () => {
 			entityTypeSlug: "person",
 			winner: {
 				id: 24002,
-				metadata: { phone: "050-678-88845", email: "" },
+				metadata: { phone: "070-090-0123", email: "" },
 			},
 			losers: [jidShell],
 		});
@@ -369,14 +366,11 @@ describe("entity resolution module", () => {
 	});
 
 	it("never treats an identity from another namespace as a rule-field value", () => {
-		// wa_jid rows must not feed the phone field: the namespace filter drops
-		// them, and even a rule field literally named wa_jid with a phone
-		// normalizer rejects the JID shape itself.
 		const jidOnly = {
 			id: 1,
 			metadata: {},
 			identities: [
-				{ namespace: "wa_jid", identifier: "905067888845@s.whatsapp.net" },
+				{ namespace: "wa_jid", identifier: "447700900123@s.whatsapp.net" },
 			],
 		};
 		expect(
@@ -408,18 +402,13 @@ describe("entity resolution module", () => {
 
 		const without = assess([]);
 		const withPhone = assess([
-			{ namespace: "phone", identifier: "905067888845" },
+			{ namespace: "phone", identifier: "447700900123" },
 			{ namespace: "email", identifier: "same@example.com" },
 		]);
-		// Identities are evidence inputs, so adding one must change the
-		// fingerprint — a pending review proposed before the identity existed
-		// fails the staleness check and is re-proposed with the wider evidence.
 		expect(withPhone.fingerprint).not.toBe(without.fingerprint);
-		// …but row order is not evidence: normalization sorts, so a reshuffled
-		// load produces the identical fingerprint.
 		const reordered = assess([
 			{ namespace: "email", identifier: "same@example.com" },
-			{ namespace: "phone", identifier: "905067888845" },
+			{ namespace: "phone", identifier: "447700900123" },
 		]);
 		expect(reordered.fingerprint).toBe(withPhone.fingerprint);
 	});
@@ -428,12 +417,12 @@ describe("entity resolution module", () => {
 		const namedContact = {
 			id: 1,
 			metadata: { title: "Engineer" },
-			identities: [{ namespace: "phone", identifier: "+90 506 788 88 45" }],
+			identities: [{ namespace: "phone", identifier: "+44 7700 900 123" }],
 		};
 		const shell = {
 			id: 2,
 			metadata: {},
-			identities: [{ namespace: "phone", identifier: "905067888845" }],
+			identities: [{ namespace: "phone", identifier: "447700900123" }],
 		};
 		const discovered = discoverEntityResolutionGroups({
 			metadataSchema: { type: "object" },
@@ -450,7 +439,7 @@ describe("entity resolution module", () => {
 		});
 		expect(assessment.evidence).toContainEqual({
 			kind: "phone",
-			identifier: "905067888845",
+			identifier: "447700900123",
 		});
 	});
 
@@ -466,25 +455,24 @@ describe("entity resolution module", () => {
 				],
 			},
 		};
-		// Winner: email in metadata, phone in identities. Loser: the reverse.
 		const assessment = assessEntityResolution({
 			metadataSchema: comboSchema,
 			winner: {
 				id: 1,
 				metadata: { email: "same@example.com" },
-				identities: [{ namespace: "phone", identifier: "905067888845" }],
+				identities: [{ namespace: "phone", identifier: "447700900123" }],
 			},
 			losers: [
 				{
 					id: 2,
-					metadata: { phone: "905067888845" },
+					metadata: { phone: "447700900123" },
 					identities: [{ namespace: "email", identifier: "same@example.com" }],
 				},
 			],
 		});
 		expect(assessment.evidence).toContainEqual({
 			kind: "email + phone",
-			identifier: "same@example.com · 905067888845",
+			identifier: "same@example.com · 447700900123",
 		});
 	});
 

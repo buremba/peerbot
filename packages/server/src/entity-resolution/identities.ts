@@ -5,7 +5,8 @@ import type { ResolutionIdentity } from "./policy";
  * Load the live `entity_identities` rows the resolution policy resolves rule
  * fields against, keyed by entity id. All namespaces are loaded — custom
  * `exact` rules may key on custom namespaces, and the per-field namespace
- * filter lives in the policy itself.
+ * filter lives in the policy itself. Rows stay locked through the caller's
+ * transaction so a staleness check and the following merge see the same claims.
  */
 export async function loadLiveEntityIdentities(
 	db: DbClient,
@@ -23,6 +24,8 @@ export async function loadLiveEntityIdentities(
 		WHERE organization_id = ${input.organizationId}
 		  AND entity_id = ANY(${pgBigintArray(input.entityIds)}::bigint[])
 		  AND deleted_at IS NULL
+		ORDER BY entity_id, namespace, identifier
+		FOR UPDATE
 	`;
 	for (const row of rows) {
 		const entityId = Number(row.entity_id);

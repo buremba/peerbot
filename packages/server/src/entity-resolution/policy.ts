@@ -15,7 +15,7 @@ export interface ResolutionIdentity {
 interface ResolutionEntity {
 	id: number;
 	metadata: Record<string, unknown>;
-	/** Live `entity_identities` rows; connectors write phones/emails here, not metadata. */
+	/** Live identity claims that may not also exist in entity metadata. */
 	identities?: ResolutionIdentity[];
 }
 
@@ -177,12 +177,8 @@ export function normalizedResolutionRuleKeys(
 ): string[] {
 	let combinations: string[][] = [[]];
 	for (const field of rule.fields) {
-		// A rule field draws from both stores: entity.metadata plus live
-		// entity_identities rows whose namespace equals the field name (the
-		// standard namespaces — phone, email, … — share the rule-field
-		// vocabulary). The normalizer is the format guard either way, so a
-		// same-named namespace can never smuggle in a value the rule would
-		// have rejected from metadata.
+		// Identity-backed connector data follows the same field policy and
+		// normalization as metadata when its namespace names that field.
 		const raw = readPath(entity.metadata, field);
 		const fromMetadata = Array.isArray(raw) ? raw : [raw];
 		const fromIdentities = (entity.identities ?? [])

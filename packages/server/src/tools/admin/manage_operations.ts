@@ -1450,6 +1450,7 @@ async function handleListRuns(
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
+           r.initiator_kind, r.initiator_ref, r.created_by_user_id,
            f.feed_key, f.display_name AS feed_display_name,
            c.display_name AS connection_display_name, c.device_worker_id
     FROM runs r
@@ -1489,7 +1490,8 @@ async function handleGetRun(
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
-           r.created_at, r.completed_at
+           r.created_at, r.completed_at,
+           r.initiator_kind, r.initiator_ref, r.created_by_user_id
     FROM runs r
     WHERE r.id = ${args.run_id}
       AND r.organization_id = ${ctx.organizationId}

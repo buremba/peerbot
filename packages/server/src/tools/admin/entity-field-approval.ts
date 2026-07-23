@@ -576,13 +576,34 @@ export async function proposeEntityChange(
 	const entityName = createProposal
 		? createProposal.entity_data.name
 		: entity?.name;
+	// Merge titles name both sides — this string is the event title that shows up
+	// in timelines and notifications, where "Merge duplicate person" alone gives a
+	// reviewer nothing to judge.
+	const mergeLosers = mergeProposal
+		? (mergeProposal.current.duplicates ?? [mergeProposal.current.loser])
+				.map((duplicate) => duplicate.name)
+				.filter((name): name is string => Boolean(name))
+		: [];
+	const mergeWinnerName = mergeProposal?.current.winner.name;
+	const mergeLoserLabel =
+		mergeLosers.length === 1
+			? mergeLosers[0]
+			: mergeLosers.length > 1
+				? `${mergeLosers.length} ${formatLabel(entityType ?? "entity").toLowerCase()} duplicates`
+				: null;
+	const mergeLabel =
+		mergeLoserLabel && mergeWinnerName
+			? `Merge ${mergeLoserLabel} into ${mergeWinnerName}`
+			: mergeWinnerName
+				? `Merge duplicate into ${mergeWinnerName}`
+				: `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 	const actionLabel =
 		operation === "update"
 			? formatFieldChangeAction(entityType, fieldKeys)
 			: operation === "delete"
 				? `Delete ${entityType ? formatLabel(entityType).toLowerCase() : "entity"}`
 				: operation === "merge"
-					? `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`
+					? mergeLabel
 					: `Create ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 
 	const insertApprovalEvent = (runId: number, db: DbClient) =>

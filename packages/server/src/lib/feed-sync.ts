@@ -6,7 +6,7 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
-import { isCloudMode } from '../utils/cloud-mode';
+import { dbEgressConfig } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
@@ -144,7 +144,7 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
         // Authoritative egress policy (injected last): a DB connector rejects
         // internal/metadata hosts under cloud mode, reaches its own private DB
         // self-hosted. process.env is passed below but doesn't carry this key.
-        LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
+        ...dbEgressConfig(),
       },
       checkpoint: feed.checkpoint,
       env: process.env as Record<string, string | undefined>,

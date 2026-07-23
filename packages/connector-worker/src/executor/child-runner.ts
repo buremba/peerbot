@@ -34,7 +34,10 @@ interface ChildMessage {
  * (feed-sync / connector-pushdown); the out-of-process worker delivers it via
  * `job.env`, and this is where it must beat tenant config.
  */
-const GATEWAY_AUTHORITATIVE_CONFIG_KEYS = ['LOBU_DB_EGRESS_POLICY'] as const;
+const GATEWAY_AUTHORITATIVE_CONFIG_KEYS = [
+  'LOBU_DB_EGRESS_POLICY',
+  'LOBU_DB_EGRESS_ALLOW_HOSTS',
+] as const;
 
 /**
  * Merge the connector's runtime config with config-wins precedence for normal

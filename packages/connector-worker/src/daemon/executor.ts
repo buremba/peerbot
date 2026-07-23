@@ -96,7 +96,16 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
     workerPolicy === 'block-private' || gatewayPolicy === 'block-private'
       ? 'block-private'
       : (gatewayPolicy ?? workerPolicy ?? 'allow-private');
-  return { ...env, LOBU_DB_EGRESS_POLICY: effective };
+  // The allow-host list is REPLACED by the gateway's, never unioned with the
+  // worker's own. Unioning would let a compromised/misconfigured fleet worker
+  // widen the boundary by adding entries — the exact downgrade the policy
+  // ratchet above exists to prevent. When the gateway ships no list, the worker
+  // gets none: absence must mean "no exemptions", not "keep your local ones".
+  return {
+    ...env,
+    LOBU_DB_EGRESS_POLICY: effective,
+    LOBU_DB_EGRESS_ALLOW_HOSTS: job.db_egress_allow_hosts ?? '',
+  };
 }
 
 /**

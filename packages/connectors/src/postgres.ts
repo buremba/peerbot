@@ -43,7 +43,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import postgres from 'postgres';
-import { buildDbEgressHardening, readEgressPolicy } from './db-egress-guard.js';
+import { buildDbEgressHardening, parseAllowedHosts, readEgressPolicy } from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -293,6 +293,9 @@ async function openGuardedPool(
   const hardening = await buildDbEgressHardening(
     connectionString,
     readEgressPolicy(config.LOBU_DB_EGRESS_POLICY),
+    undefined,
+    undefined,
+    parseAllowedHosts(config.LOBU_DB_EGRESS_ALLOW_HOSTS),
   );
   return postgres(connectionString, {
     ...POOL_OPTS,

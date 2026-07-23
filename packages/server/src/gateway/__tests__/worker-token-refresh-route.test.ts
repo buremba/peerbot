@@ -113,6 +113,7 @@ function mintToken(opts: { runId?: number; messageId?: string }): string {
     agentId: "agent-1",
     organizationId: "org-1",
     connectionId: "connection-1",
+    responseThreadId: "slack:chan-1:thread-1",
     source: "watcher-run",
     runId: opts.runId,
     messageId: opts.messageId,
@@ -144,15 +145,15 @@ describe("POST /worker/token/refresh", () => {
     expect(typeof body.token).toBe("string");
     expect(body.token).not.toBe(original);
 
-    // Fresh token verifies and preserves the claims (incl. runId, messageId,
-    // connectionId, source — the superset the per-run token carries). The
-    // messageId MUST be preserved or the refreshed token couldn't itself be
+    // Fresh token verifies and preserves the per-run routing claims. The
+    // messageId MUST survive or the refreshed token couldn't itself be
     // refreshed again (its own turn-liveness gate would have nothing to match).
     const data = verifyWorkerToken(body.token);
     expect(data).not.toBeNull();
     expect(data!.runId).toBe(42);
     expect(data!.messageId).toBe("m1");
     expect(data!.connectionId).toBe("connection-1");
+    expect(data!.responseThreadId).toBe("slack:chan-1:thread-1");
     expect(data!.source).toBe("watcher-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");

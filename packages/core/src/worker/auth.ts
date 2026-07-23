@@ -24,6 +24,11 @@ export interface WorkerTokenData {
    */
   organizationId?: string;
   connectionId?: string;
+  /**
+   * Full Chat SDK thread id selected by the gateway when the turn is queued.
+   * Signed because worker response bodies are untrusted routing input.
+   */
+  responseThreadId?: string;
   deploymentName: string;
   timestamp: number;
   platform?: string;
@@ -113,6 +118,8 @@ export function generateWorkerToken(
     agentId?: string;
     organizationId?: string;
     connectionId?: string;
+    /** Full trusted Chat SDK thread id. See WorkerTokenData.responseThreadId. */
+    responseThreadId?: string;
     platform?: string;
     /** Headless run origin — see WorkerTokenData.source. */
     source?: string;
@@ -158,6 +165,7 @@ export function generateWorkerToken(
     agentId: options.agentId,
     organizationId: options.organizationId,
     connectionId: options.connectionId,
+    responseThreadId: options.responseThreadId,
     deploymentName,
     timestamp: Date.now(),
     platform: options.platform,

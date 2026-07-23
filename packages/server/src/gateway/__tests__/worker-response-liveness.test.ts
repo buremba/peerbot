@@ -84,6 +84,7 @@ function makeGateway(): WorkerGateway {
 function mintToken(opts?: {
   omitOrganizationId?: boolean;
   omitConnectionId?: boolean;
+  omitResponseThreadId?: boolean;
 }): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
@@ -93,6 +94,9 @@ function mintToken(opts?: {
     ...(opts?.omitConnectionId ? {} : { connectionId: "connection-1" }),
     platform: "slack",
     source: "watcher-run",
+    ...(opts?.omitResponseThreadId
+      ? {}
+      : { responseThreadId: "slack:chan-1:conv-1" }),
     runId: 1,
     messageId: "m1",
   });
@@ -118,6 +122,7 @@ async function postWorkerResponse(
     tracker?: { updateDeploymentActivity: (d: string) => Promise<void> };
     omitTokenOrganizationId?: boolean;
     omitTokenConnectionId?: boolean;
+    omitTokenResponseThreadId?: boolean;
   }
 ): Promise<Response> {
   const gateway = makeGateway();
@@ -129,6 +134,7 @@ async function postWorkerResponse(
         authorization: `Bearer ${mintToken({
           omitOrganizationId: opts?.omitTokenOrganizationId,
           omitConnectionId: opts?.omitTokenConnectionId,
+          omitResponseThreadId: opts?.omitTokenResponseThreadId,
         })}`,
         host: "gateway.example.com",
         "content-type": "application/json",
@@ -251,7 +257,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       organizationId: "org-1",
       chatId: "chan-1",
       responseChannel: "chan-1",
-      responseThreadId: "conv-1",
+      responseThreadId: "slack:chan-1:conv-1",
       teamId: "team-1",
       source: "watcher-run",
       senderId: "user-1",
@@ -299,6 +305,7 @@ describe("POST /worker/response — authoritative tenant", () => {
           agentId: "agent-spoofed",
           organizationId: "org-spoofed",
           chatId: "C-SPOOFED",
+          responseThreadId: "thread-spoofed",
           senderId: "sender-spoofed",
         },
         customEvent: {
@@ -315,7 +322,7 @@ describe("POST /worker/response — authoritative tenant", () => {
           },
         },
       },
-      { omitTokenConnectionId: true }
+      { omitTokenConnectionId: true, omitTokenResponseThreadId: true }
     );
     expect(res.status).toBe(200);
 
@@ -325,7 +332,6 @@ describe("POST /worker/response — authoritative tenant", () => {
       organizationId: "org-1",
       chatId: "chan-1",
       responseChannel: "chan-1",
-      responseThreadId: "conv-1",
       teamId: "team-1",
       source: "watcher-run",
       senderId: "user-1",

@@ -8,9 +8,10 @@
  *
  * Keeping the common bag here makes that parity invariant structural: any
  * routing claim a downstream consumer reads off the verified token
- * (channelId, teamId, platform, agentId, organizationId, connectionId, source)
- * is set in ONE place for both mints. Mint-specific claims (runId+messageId for
- * the per-run token, traceId for the deployment token) stay with each caller.
+ * (channelId, teamId, platform, agentId, organizationId, connectionId,
+ * responseThreadId, source) is set in ONE place for both mints. Mint-specific
+ * claims (runId+messageId for the per-run token, traceId for the deployment
+ * token) stay with each caller.
  */
 export interface WorkerTokenClaimsArgs {
   channelId: string;
@@ -43,13 +44,17 @@ export interface WorkerTokenClaimsArgs {
 
 /**
  * The routing claims common to both worker-token mints, in the exact shape the
- * `generateWorkerToken` options object expects. `connectionId` and `source` are
- * lifted off `platformMetadata` (string-guarded — both default to `undefined`
- * when absent or non-string).
+ * `generateWorkerToken` options object expects. `connectionId`,
+ * `responseThreadId`, and `source` are lifted off `platformMetadata`
+ * (string-guarded — all default to `undefined` when absent or non-string).
  *
  * `connectionId`: PRIMARY/fallback auth must carry it or interaction posts
  * (ask_user / tool approval / link button) hit `assertRoutableInteraction`,
  * which rejects a chat-platform interaction with no connectionId (#1274).
+ *
+ * `responseThreadId`: full Chat SDK thread id selected by the gateway. Worker
+ * response bodies are untrusted, so outbound routing may consume only this
+ * signed copy.
  *
  * `source`: headless run origin — interaction cards from this turn are stamped
  * headless and skip the SSE-owner gate (no browser SSE exists on any pod for a
@@ -62,6 +67,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   organizationId?: string;
   platform?: string;
   connectionId?: string;
+  responseThreadId?: string;
   source?: string;
   runtimeProviderId?: string;
   environmentId?: string;
@@ -80,6 +86,10 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
     connectionId:
       typeof args.platformMetadata?.connectionId === "string"
         ? args.platformMetadata.connectionId
+        : undefined,
+    responseThreadId:
+      typeof args.platformMetadata?.responseThreadId === "string"
+        ? args.platformMetadata.responseThreadId
         : undefined,
     source:
       typeof args.platformMetadata?.source === "string"

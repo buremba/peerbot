@@ -307,7 +307,8 @@ describe("manage_agents — builder gate e2e", () => {
 
 		// Pending run, run_type='internal', held proposal in action_input.
 		const runRows = await sql`
-			SELECT run_type, action_key, approval_status, status, action_input, created_by_user_id
+			SELECT run_type, action_key, approval_status, status, action_input,
+			       created_by_user_id, initiator_kind, initiator_ref
 			FROM runs WHERE id = ${res.run_id} AND organization_id = ${orgId}
 		`;
 		expect(runRows.length).toBe(1);
@@ -316,6 +317,11 @@ describe("manage_agents — builder gate e2e", () => {
 		expect(runRows[0]?.approval_status).toBe("pending");
 		expect(runRows[0]?.status).toBe("pending");
 		expect(runRows[0]?.created_by_user_id).toBe(ownerId);
+		expect(runRows[0]?.initiator_kind).toBe("agent_session");
+		expect(runRows[0]?.initiator_ref).toMatchObject({
+			agent_id: "builder-agent",
+			user_id: ownerId,
+		});
 		const proposal = runRows[0]?.action_input as {
 			action: string;
 			agent_id: string;

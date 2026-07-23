@@ -45,7 +45,7 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../utils/organization-access';
-import { initiatorRunColumns, resolveInitiator } from '../initiator';
+import { resolveRunInitiator } from '../initiator';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
@@ -695,9 +695,7 @@ async function queueWatcherWriteForApproval(
   }
 
   const sql = getDb();
-  // Same provenance the entity-change proposals record — an approval card that
-  // cannot name who asked for it is an orphan whichever tool minted it.
-  const initiatorColumns = initiatorRunColumns(resolveInitiator(ctx));
+  const initiatorColumns = resolveRunInitiator(ctx);
   const inserted = await sql`
     INSERT INTO runs (
       organization_id, run_type, action_key, action_input,

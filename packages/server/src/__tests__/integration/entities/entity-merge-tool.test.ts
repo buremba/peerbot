@@ -282,10 +282,6 @@ describe("manage_entity merge action", () => {
 	});
 
 	it("records the agent session that proposed the merge, not an orphan run", async () => {
-		// Prod regression: 18 of 24 pending proposals (runs 702088–702105) were
-		// orphans — watcher_id null, created_by_user_id null, no initiator — because
-		// an MCP session populates none of actingWatcherId/actingRunId, and the
-		// writers only ever read those. The identity was on the context all along.
 		const org = await createTestOrganization({ name: "Initiator Agent Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
@@ -314,8 +310,6 @@ describe("manage_entity merge action", () => {
 			client_id: "claude-ai",
 			conversation_id: "conv-abc",
 		});
-		// The human whose session authorized the agent is recoverable, and this is
-		// NOT a behavior — watcher_id must stay null rather than borrow one.
 		expect(run.created_by_user_id).toBe(user.id);
 		expect(run.watcher_id).toBeNull();
 	});
@@ -352,16 +346,11 @@ describe("manage_entity merge action", () => {
 			FROM runs WHERE id = ${queued.approval_run_id}
 		`;
 		expect(run.initiator_kind).toBe("behavior");
-		// The new ref and the legacy column describe the same behavior — pinned so
-		// the two provenance channels can never drift apart.
 		expect((run.initiator_ref as { watcher_id: number }).watcher_id).toBe(6021);
 		expect(Number(run.watcher_id)).toBe(6021);
 	});
 
 	it("does not let a caller-supplied behavior_source forge the initiator", async () => {
-		// behavior_source stays as an authz SELF-restriction channel, but it is
-		// caller input: an agent that tags a foreign behavior must still be recorded
-		// as the agent session it actually is, or provenance becomes forgeable.
 		const org = await createTestOrganization({ name: "Initiator Spoof Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");

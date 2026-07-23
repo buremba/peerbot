@@ -112,11 +112,6 @@ function actingPrincipalFor(
 	});
 }
 
-/**
- * How an approval card labels its proposer. Derived from the resolved principal
- * in ONE place — the same ternary used to sit at four call sites, and any of
- * them could have drifted from the others.
- */
 function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
 	return actor.kind === "watcher"
 		? ApprovalAttribution.Behavior

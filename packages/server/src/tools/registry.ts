@@ -71,35 +71,6 @@ export interface ToolSourceContext {
 }
 
 /**
- * WHO caused this turn. Built ONLY at entry points (the REST/MCP funnel in
- * `toToolContext`, the reaction executor, the schedule executor) from identity
- * the server itself verified — never from tool arguments, and never by a tool
- * handler. Handlers read it; that asymmetry is what makes it trustworthy.
- *
- * It exists because provenance used to be reassembled per writer out of
- * `ctx.actingWatcherId ?? args.behavior_source?.behavior_id`, an expression that
- * can only describe a behavior. Anything else — an MCP session, a human, a
- * schedule — resolved to null and the run became an orphan.
- *
- * This is provenance, NOT authorization. Authz keeps resolving through
- * `resolveActingPrincipal`, which folds a watcher's owning agent and refuses
- * caller-supplied tags; recording who asked must never widen what they may do.
- */
-export type ToolInitiator =
-  | { kind: 'user'; userId: string }
-  | { kind: 'behavior'; watcherId: number; windowId: number | null; runId: number | null }
-  | {
-      kind: 'agent_session';
-      agentId: string | null;
-      /** The human whose session the agent is acting under, when there is one. */
-      userId: string | null;
-      clientId: string | null;
-      conversationId: string | null;
-    }
-  | { kind: 'schedule'; scheduleId: number; runId: number | null }
-  | { kind: 'system' };
-
-/**
  * Tool execution context from authentication
  * Passed to all tool handlers for organization scoping
  */
@@ -131,12 +102,6 @@ export interface ToolContext {
   actingWindowId?: number | null;
   /** Durable watcher run driving this reaction. Used only for provenance. */
   actingRunId?: number | null;
-  /**
-   * Who caused this turn — see {@link ToolInitiator}. Stamped at entry points.
-   * Optional because internal/system call sites build a context by hand; those
-   * fall back to `{ kind: 'system' }` at the point of use.
-   */
-  initiator?: ToolInitiator | null;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
   /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */

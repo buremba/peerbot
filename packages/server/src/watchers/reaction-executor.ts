@@ -68,15 +68,6 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // windows even when the script omits `behavior_source` (see ToolContext).
     actingWindowId: context.window.id,
     actingRunId: context.window.run_id ?? null,
-    // Provenance: this turn IS the behavior acting. Stamped explicitly rather
-    // than left to inference so a reaction is never misfiled as an agent
-    // session on account of its owning agent's id.
-    initiator: {
-      kind: 'behavior' as const,
-      watcherId: context.window.behavior_id,
-      windowId: context.window.id,
-      runId: context.window.run_id ?? null,
-    },
     sourceContext: { source: 'watcher-run' as const },
   };
 

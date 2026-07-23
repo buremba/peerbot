@@ -38,7 +38,7 @@ import {
 	buildEntityUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
-import { initiatorRunColumns, resolveInitiator } from "../initiator";
+import { resolveRunInitiator } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
@@ -497,10 +497,7 @@ export async function proposeEntityChange(
 		windowId ?? null,
 		proposal,
 	);
-	// Who asked for this change. Derived from verified context, never from the
-	// proposal args — so a caller cannot dress its proposal up as someone else's.
-	const initiator = resolveInitiator(ctx);
-	const initiatorColumns = initiatorRunColumns(initiator);
+	const initiatorColumns = resolveRunInitiator(ctx);
 
 	// Idempotency: complete_window is replay-safe (retries + concurrent replicas),
 	// so the same blocked change can be proposed more than once. Collapse to one
@@ -708,8 +705,6 @@ export async function proposeEntityChange(
 						? null
 						: (entity?.parent_entity_type ?? null),
 					attribution,
-					// Who proposed this, for the card's origin chip. `attribution` says
-					// only behavior-vs-agent; this names the actual session/behavior.
 					initiator: {
 						kind: initiatorColumns.initiatorKind,
 						...initiatorColumns.initiatorRef,

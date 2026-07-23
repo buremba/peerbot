@@ -23,17 +23,35 @@ export interface ExtensionScrapeConfig {
   };
   id?: { source: string; name?: string; regex?: string; group?: number };
   requireFields?: readonly string[];
-  fields?: Record<
-    string,
-    {
-      selector?: string;
-      take?: string;
-      attr?: string;
-      firstLine?: boolean;
-      const?: unknown;
-    }
-  >;
+  fields?: Record<string, ExtensionScrapeField>;
   [k: string]: unknown;
+}
+
+/** One part read off a single element inside an `objectAll` match. */
+interface ExtensionScrapePart {
+  /**
+   * `attr` reads `attr`; `text` the innerText; `aria` the element's own or a
+   * descendant's aria-label; `alt` a descendant img[alt]. These labels can
+   * remain useful when class names are obfuscated.
+   */
+  take?: 'attr' | 'text' | 'aria' | 'alt' | (string & {});
+  attr?: string;
+}
+
+interface ExtensionScrapeField {
+  selector?: string;
+  /**
+   * `attr` / `text` / `html` read the FIRST match. `objectAll` reads EVERY match
+   * and emits one object per element, built from `parts` — letting a connector
+   * capture a row's repeated structures (e.g. every profile link as
+   * {href, name}) and disambiguate them by content rather than DOM position.
+   */
+  take?: 'attr' | 'text' | 'html' | 'objectAll' | (string & {});
+  attr?: string;
+  firstLine?: boolean;
+  const?: unknown;
+  /** Sub-spec for `objectAll`: the named parts to read off each matched element. */
+  parts?: Record<string, ExtensionScrapePart>;
 }
 
 /** The `.result` payload of a `cs_scrape` dispatch. */

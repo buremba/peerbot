@@ -134,6 +134,13 @@ export interface EntityMergeProposal {
 	resolution_fingerprint?: string | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
+	/**
+	 * The proposer's own justification, in their words. Deliberately separate
+	 * from `reason` (the server-recomputed policy verdict): an agent can claim
+	 * anything here, so it is rendered as an attributed claim and never treated
+	 * as evidence or allowed to influence the auto-merge decision.
+	 */
+	proposer_rationale?: string | null;
 }
 
 export type EntityChangeProposal =
@@ -697,6 +704,7 @@ export async function proposeEntityChange(
 						: (entity?.parent_entity_type ?? null),
 					attribution,
 					reason: proposal.reason ?? null,
+					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
 					run_id: runId,
 				},

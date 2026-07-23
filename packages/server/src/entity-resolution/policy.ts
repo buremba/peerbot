@@ -229,6 +229,17 @@ export function assessEntityResolution(input: {
 	const evidenceKinds = [
 		...new Set(deduplicatedEvidence.map((item) => item.kind)),
 	];
+	// Name the fields this entity type actually resolves on ("email or phone"
+	// for person) rather than assuming — another type may key on something else,
+	// and a type with no rules at all resolves on nothing. Singular/plural
+	// variants of the same field (email/emails) are one field to a reader.
+	const ruleFieldLabel = [
+		...new Set(
+			rules.flatMap((rule) =>
+				rule.fields.map((field) => field.replace(/s$/, "")),
+			),
+		),
+	].join(" or ");
 	const decision =
 		allLosersHaveAutoMatch && !conflictingAutoIdentity
 			? "auto_merge"
@@ -245,13 +256,18 @@ export function assessEntityResolution(input: {
 		evidence: deduplicatedEvidence,
 		policyHash,
 		fingerprint,
+		// Addressed to the human deciding the approval, so each branch says what
+		// the workspace could verify and what it now needs from them — not what
+		// the rules engine did internally.
 		reason:
 			decision === "auto_merge"
 				? "The entity type declares this normalized identity unique."
 				: conflictingAutoIdentity
-					? "Configured strict identities conflict, so a person must review the merge."
+					? "These records carry conflicting identities that are configured as unique, so merging them needs your judgement."
 					: deduplicatedEvidence.length > 0
-						? `Matching ${evidenceKinds.join(" and ")} is evidence, but the proposal does not satisfy this entity type's automatic merge policy.`
-						: "No configured deterministic identity rule proves this merge.",
+						? `Matching ${evidenceKinds.join(" and ")} points to the same thing, but that is not enough to merge automatically under this entity type's policy, so it needs your judgement.`
+						: ruleFieldLabel
+							? `No matching ${ruleFieldLabel} could be verified automatically, so this merge needs your judgement.`
+							: "This entity type has no automatic matching rules, so every merge needs your judgement.",
 	};
 }

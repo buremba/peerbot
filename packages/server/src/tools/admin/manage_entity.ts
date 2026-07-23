@@ -754,6 +754,11 @@ async function handleMerge(
 			resolution_fingerprint: resolution.fingerprint,
 			attribution,
 			reason: resolution.reason,
+			// The proposer's own words, kept strictly separate from `reason` (the
+			// machine-computed policy verdict). Displayed as a claim attributed to
+			// whoever proposed the merge — it is never evidence and never affects
+			// the auto-merge decision, which is recomputed server-side above.
+			proposer_rationale: args.merge_rationale?.trim() || null,
 		});
 		return {
 			action: "merge",

@@ -99,7 +99,7 @@ describe("entity resolution module", () => {
 		});
 		expect(assessment.decision).toBe("review");
 		expect(assessment.reason).toBe(
-			"Matching email is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+			"Matching email points to the same thing, but that is not enough to merge automatically under this entity type's policy, so it needs your judgement.",
 		);
 	});
 
@@ -181,7 +181,7 @@ describe("entity resolution module", () => {
 		});
 		expect(mixedMatch.decision).toBe("review");
 		expect(mixedMatch.reason).toBe(
-			"Matching email and phone is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+			"Matching email and phone points to the same thing, but that is not enough to merge automatically under this entity type's policy, so it needs your judgement.",
 		);
 	});
 

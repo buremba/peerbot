@@ -239,6 +239,52 @@ describe("manage_entity merge action", () => {
 		expect(completedEvent.interaction_status).toBe("completed");
 	});
 
+	it("carries the proposer's rationale to the card without letting it prove the merge", async () => {
+		const org = await createTestOrganization({ name: "Rationale Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+
+		const agentCtx = {
+			...ctx(org.id, user.id, "owner"),
+			userId: null,
+			agentId: "personal-agent",
+		} as ToolContext;
+		const queued = (await manageEntity(
+			{
+				action: "merge",
+				entity_id: loser.id,
+				winner_entity_id: winner.id,
+				merge_rationale: "  Same phone digits; shell is their WhatsApp handle.  ",
+			},
+			env,
+			agentCtx,
+		)) as unknown as {
+			approval_queued: boolean;
+			approval_run_id: number;
+			resolution: { decision: string; evidence: unknown[] };
+		};
+
+		// The rationale must not make the merge look proven: no shared email or
+		// phone exists, so the decision stays review and the evidence stays empty.
+		expect(queued.approval_queued).toBe(true);
+		expect(queued.resolution.decision).toBe("review");
+		expect(queued.resolution.evidence).toEqual([]);
+
+		const [approvalEvent] = await sql`
+			SELECT metadata FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id} AND interaction_status = 'pending'
+		`;
+		const metadata = approvalEvent.metadata as Record<string, unknown>;
+		expect(metadata.proposer_rationale).toBe(
+			"Same phone digits; shell is their WhatsApp handle.",
+		);
+		// The policy verdict is stored separately and is not the proposer's text.
+		expect(metadata.reason).not.toBe(metadata.proposer_rationale);
+		expect(String(metadata.reason)).toContain("needs your judgement");
+	});
+
 	it("auto-merges an exact configured email match without human approval", async () => {
 		const org = await createTestOrganization({
 			name: "Strict Email Merge Org",

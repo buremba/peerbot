@@ -81,13 +81,22 @@ function makeGateway(): WorkerGateway {
   );
 }
 
-function mintToken(): string {
+function mintToken(opts?: {
+  omitOrganizationId?: boolean;
+  omitConnectionId?: boolean;
+  omitResponseThreadId?: boolean;
+}): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
+    teamId: "team-1",
     agentId: "agent-1",
-    organizationId: "org-1",
-    connectionId: "connection-1",
+    ...(opts?.omitOrganizationId ? {} : { organizationId: "org-1" }),
+    ...(opts?.omitConnectionId ? {} : { connectionId: "connection-1" }),
+    platform: "slack",
     source: "watcher-run",
+    ...(opts?.omitResponseThreadId
+      ? {}
+      : { responseThreadId: "slack:chan-1:conv-1" }),
     runId: 1,
     messageId: "m1",
   });
@@ -109,7 +118,12 @@ function armLiveTurn(messageId = "m1"): Promise<void> {
  *  is shut down in a finally so its timers/intervals don't leak across tests. */
 async function postWorkerResponse(
   body: unknown,
-  opts?: { tracker?: { updateDeploymentActivity: (d: string) => Promise<void> } }
+  opts?: {
+    tracker?: { updateDeploymentActivity: (d: string) => Promise<void> };
+    omitTokenOrganizationId?: boolean;
+    omitTokenConnectionId?: boolean;
+    omitTokenResponseThreadId?: boolean;
+  }
 ): Promise<Response> {
   const gateway = makeGateway();
   if (opts?.tracker) gateway.setDeploymentActivityTracker(opts.tracker);
@@ -117,7 +131,11 @@ async function postWorkerResponse(
     return await gateway.getApp().request("/response", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${mintToken()}`,
+        authorization: `Bearer ${mintToken({
+          omitOrganizationId: opts?.omitTokenOrganizationId,
+          omitConnectionId: opts?.omitTokenConnectionId,
+          omitResponseThreadId: opts?.omitTokenResponseThreadId,
+        })}`,
         host: "gateway.example.com",
         "content-type": "application/json",
       },
@@ -126,6 +144,36 @@ async function postWorkerResponse(
   } finally {
     gateway.shutdown();
   }
+}
+
+interface StoredThreadResponse {
+  conversationId?: string;
+  userId?: string;
+  channelId?: string;
+  teamId?: string;
+  platform?: string;
+  organizationId?: string;
+  platformMetadata?: Record<string, unknown>;
+  customEvent?: { data?: { event?: Record<string, unknown> } };
+}
+
+async function latestThreadResponse(): Promise<{
+  input: StoredThreadResponse;
+  organizationId: string | null;
+}> {
+  const rows = await getDb()<{
+    action_input: StoredThreadResponse;
+    organization_id: string | null;
+  }>`
+    SELECT action_input, organization_id
+    FROM public.runs
+    WHERE queue_name = 'thread_response'
+    ORDER BY id DESC
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("thread_response row not found");
+  return { input: row.action_input, organizationId: row.organization_id };
 }
 
 /** Read the marker's `run_at` (epoch ms) for the live turn, or null if gone. */
@@ -149,6 +197,161 @@ async function expireMarker(): Promise<number> {
   if (at === null) throw new Error("marker missing after expire");
   return at;
 }
+
+describe("POST /worker/response — authoritative tenant", () => {
+  test("the authenticated worker token overrides spoofed body routing identity", async () => {
+    const res = await postWorkerResponse({
+      messageId: "m1",
+      conversationId: "conv-spoofed",
+      userId: "user-spoofed",
+      channelId: "chan-spoofed",
+      teamId: "team-spoofed",
+      platform: "telegram",
+      delta: "hello",
+      organizationId: "org-spoofed",
+      platformMetadata: {
+        connectionId: "connection-spoofed",
+        agentId: "agent-spoofed",
+        organizationId: "org-spoofed",
+        chatId: "chat-spoofed",
+        responseChannel: "response-spoofed",
+        responseThreadId: "thread-spoofed",
+        teamId: "team-spoofed",
+        source: "interactive-spoofed",
+        senderId: "sender-spoofed",
+      },
+      customEvent: {
+        name: "chat-interaction",
+        data: {
+          eventName: "question:created",
+          event: {
+            id: "q-1",
+            userId: "user-spoofed",
+            conversationId: "conv-spoofed",
+            channelId: "chan-spoofed",
+            teamId: "team-spoofed",
+            platform: "telegram",
+            connectionId: "connection-spoofed",
+            agentId: "agent-spoofed",
+            organizationId: "org-spoofed",
+            source: "interactive-spoofed",
+            question: "Proceed?",
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const { input } = await latestThreadResponse();
+    expect(input.organizationId).toBe("org-1");
+    expect(input).toMatchObject({
+      conversationId: "conv-1",
+      userId: "user-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+    });
+    expect(input.platformMetadata).toMatchObject({
+      connectionId: "connection-1",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      chatId: "chan-1",
+      responseChannel: "chan-1",
+      responseThreadId: "slack:chan-1:conv-1",
+      teamId: "team-1",
+      source: "watcher-run",
+      senderId: "user-1",
+    });
+    expect(input.customEvent?.data?.event).toMatchObject({
+      id: "q-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+      connectionId: "connection-1",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      source: "watcher-run",
+      question: "Proceed?",
+    });
+  });
+
+  test("an orgless worker token cannot inject a body organization id", async () => {
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-1",
+        delta: "hello",
+        organizationId: "org-spoofed",
+      },
+      { omitTokenOrganizationId: true }
+    );
+    expect(res.status).toBe(200);
+
+    const row = await latestThreadResponse();
+    expect(row.input.organizationId).toBeUndefined();
+    expect(row.organizationId).toBeNull();
+  });
+
+  test("a token without a connection cannot inject chat routing metadata", async () => {
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-1",
+        delta: "hello",
+        platformMetadata: {
+          connectionId: "connection-spoofed",
+          agentId: "agent-spoofed",
+          organizationId: "org-spoofed",
+          chatId: "C-SPOOFED",
+          responseThreadId: "thread-spoofed",
+          senderId: "sender-spoofed",
+        },
+        customEvent: {
+          name: "chat-interaction",
+          data: {
+            eventName: "question:created",
+            event: {
+              id: "q-2",
+              connectionId: "connection-spoofed",
+              channelId: "chan-spoofed",
+              conversationId: "conv-spoofed",
+              userId: "user-spoofed",
+            },
+          },
+        },
+      },
+      { omitTokenConnectionId: true, omitTokenResponseThreadId: true }
+    );
+    expect(res.status).toBe(200);
+
+    const { input } = await latestThreadResponse();
+    expect(input.platformMetadata).toEqual({
+      agentId: "agent-1",
+      organizationId: "org-1",
+      chatId: "chan-1",
+      responseChannel: "chan-1",
+      teamId: "team-1",
+      source: "watcher-run",
+      senderId: "user-1",
+    });
+    expect(
+      input.customEvent?.data?.event?.connectionId
+    ).toBeUndefined();
+    expect(input.customEvent?.data?.event).toMatchObject({
+      id: "q-2",
+      userId: "user-1",
+      conversationId: "conv-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      source: "watcher-run",
+    });
+  });
+});
 
 describe("POST /worker/response — turn-liveness deadline (#14)", () => {
   test("a 20s status_update (no `received`) extends the deadline", async () => {

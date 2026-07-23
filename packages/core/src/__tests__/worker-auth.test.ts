@@ -81,6 +81,7 @@ describe("worker auth token", () => {
       teamId: "T2",
       agentId: "agent-x",
       connectionId: "conn-9",
+      responseThreadId: "slack:C2:thread-9",
       platform: "slack",
       sessionKey: "sess-abc",
       traceId: "trace-zzz",
@@ -90,6 +91,7 @@ describe("worker auth token", () => {
     expect(d.teamId).toBe("T2");
     expect(d.agentId).toBe("agent-x");
     expect(d.connectionId).toBe("conn-9");
+    expect(d.responseThreadId).toBe("slack:C2:thread-9");
     expect(d.platform).toBe("slack");
     expect(d.sessionKey).toBe("sess-abc");
     expect(d.traceId).toBe("trace-zzz");

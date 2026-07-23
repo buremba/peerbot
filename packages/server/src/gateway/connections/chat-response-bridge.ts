@@ -47,6 +47,10 @@ import {
   type PlatformResponseStrategy,
   type StreamState,
 } from "./platform-strategies/index.js";
+import {
+  appendMarkdownFooter,
+  buildConversationFooterUrl,
+} from "./lobu-answer-link.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 
 const logger = createLogger("chat-response-bridge");
@@ -137,14 +141,17 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Resolve the organization id for audit attribution: payload metadata
-   * first, then the connection record. Undefined only when neither is
-   * available — the audit module logs that gap loudly.
+   * Resolve the turn's owning organization for tenant-scoped output. The
+   * authenticated worker gateway stamps it directly on the payload; for a
+   * hosted-preview turn this is the Behavior org and intentionally differs
+   * from the shared chat connection's org. Gateway-generated responses may not
+   * carry that field, so metadata and connection values remain fallbacks.
    */
   private resolveOrganizationId(
     payload: ThreadResponsePayload,
     ctx: ResponseContext
   ): string | undefined {
+    if (payload.organizationId) return payload.organizationId;
     const md = readPlatformMetadata(payload.platformMetadata);
     if (md.organizationId) return md.organizationId;
     const fromConnection = ctx.instance?.connection?.organizationId;
@@ -348,8 +355,38 @@ export class ChatResponseBridge implements ResponseRenderer {
       }
     }
 
+    // Completion-time enrichment is safe only for post-once strategies. Their
+    // terminal payload is the delivery contract under N>1 replicas, so the
+    // footer travels with the same authoritative finalText as the answer.
+    // Live-streaming strategies have already posted their iterator on whichever
+    // replica claimed the deltas; enriching the terminal payload would not
+    // change the platform message, and re-posting would duplicate it.
+    let deliveryPayload = payload;
+    if (
+      !blockedAtCompletion &&
+      strategy.deliversAtCompletion &&
+      payload.finalText?.trim()
+    ) {
+      const footerUrl = await buildConversationFooterUrl({
+        organizationId: this.resolveOrganizationId(payload, ctx),
+        agentId: this.resolveAgentId(payload, ctx) ?? undefined,
+        conversationId: payload.conversationId,
+        publicGatewayUrl: this.manager.getPublicGatewayUrl(),
+      });
+      if (footerUrl) {
+        deliveryPayload = {
+          ...payload,
+          finalText: appendMarkdownFooter(payload.finalText, footerUrl),
+        };
+      }
+    }
+
     if (!blockedAtCompletion && (stream || canDeliverFromFinalText)) {
-      await strategy.handleCompletion({ ctx, payload, stream: stream ?? null });
+      await strategy.handleCompletion({
+        ctx,
+        payload: deliveryPayload,
+        stream: stream ?? null,
+      });
     } else if (!blockedAtCompletion && deliverWithheldFinalText) {
       // Post the scanned finalText directly — the live-streaming strategy can't
       // deliver it stream-less, and nothing was streamed (deltas withheld).

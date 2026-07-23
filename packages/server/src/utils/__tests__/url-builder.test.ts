@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildAgentConversationUrl,
   buildAgentSettingsUrl,
   buildBehaviorSettingsUrl,
   buildBehaviorUrl,
@@ -197,6 +198,21 @@ describe('buildBehaviorUrl', () => {
   it('builds the canonical Behavior detail route and strips embedded /lobu', () => {
     expect(buildBehaviorUrl('acme/team', 'agent one', 7, 'https://app.lobu.com/lobu')).toBe(
       'https://app.lobu.com/acme%2Fteam/agents/agent%20one/behaviors/7'
+    );
+  });
+});
+
+describe('buildAgentConversationUrl', () => {
+  it('builds the canonical transcript route and encodes the conversation id whole', () => {
+    expect(
+      buildAgentConversationUrl(
+        'acme/team',
+        'agent one',
+        'slack:C1:169.1',
+        'https://app.lobu.com/lobu/'
+      )
+    ).toBe(
+      'https://app.lobu.com/acme%2Fteam/agents/agent%20one/conversations/slack%3AC1%3A169.1'
     );
   });
 });

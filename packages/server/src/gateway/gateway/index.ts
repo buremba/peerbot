@@ -363,27 +363,69 @@ export class WorkerGateway {
     try {
       const body = await c.req.json();
       const { jobId, ...responseData } = body;
-      // Stamp the worker token's owning org onto the response so the row
-      // landed in `thread_response` carries organization_id — the snapshot
-      // ownership verifier in transcript-routes.ts denies POSTs to NULL-org
-      // rows. The worker doesn't know its org (token-scoped, not payload-
-      // scoped) so it relies on the gateway to inject it from the auth.
-      const orgEnriched =
-        auth.tokenData.organizationId && !responseData.organizationId
-          ? { ...responseData, organizationId: auth.tokenData.organizationId }
-          : responseData;
-      const enrichedResponse =
-        auth.tokenData.connectionId &&
-        (!orgEnriched.platformMetadata ||
-          typeof orgEnriched.platformMetadata === "object")
+      // A worker may be compromised, so the response body is never authoritative
+      // for routing. Rebuild every destination-bearing field from the signed
+      // token and retain only non-routing metadata from the body. In particular,
+      // an absent connectionId must remove a body-supplied value rather than
+      // turning a non-chat run into a cross-tenant Chat delivery.
+      const tokenRouting = {
+        userId: auth.tokenData.userId,
+        conversationId: auth.tokenData.conversationId,
+        channelId: auth.tokenData.channelId,
+        teamId: auth.tokenData.teamId,
+        platform: auth.tokenData.platform,
+        organizationId: auth.tokenData.organizationId,
+      };
+      const tokenMetadata = {
+        connectionId: auth.tokenData.connectionId,
+        agentId: auth.tokenData.agentId,
+        organizationId: tokenRouting.organizationId,
+        chatId: tokenRouting.channelId,
+        responseChannel: tokenRouting.channelId,
+        responseThreadId: auth.tokenData.responseThreadId,
+        teamId: tokenRouting.teamId,
+        source: auth.tokenData.source,
+        senderId: tokenRouting.userId,
+      };
+      const platformMetadata =
+        responseData.platformMetadata &&
+        typeof responseData.platformMetadata === "object" &&
+        !Array.isArray(responseData.platformMetadata)
+          ? { ...responseData.platformMetadata }
+          : {};
+      const bodyCustomEvent = responseData.customEvent;
+      const bodyCustomEventData = bodyCustomEvent?.data;
+      const bodyInteractionEvent = bodyCustomEventData?.event;
+      const customEvent =
+        bodyCustomEvent?.name === "chat-interaction" &&
+        bodyCustomEventData &&
+        typeof bodyCustomEventData === "object" &&
+        bodyInteractionEvent &&
+        typeof bodyInteractionEvent === "object" &&
+        !Array.isArray(bodyInteractionEvent)
           ? {
-              ...orgEnriched,
-              platformMetadata: {
-                ...(orgEnriched.platformMetadata || {}),
-                connectionId: auth.tokenData.connectionId,
+              ...bodyCustomEvent,
+              data: {
+                ...bodyCustomEventData,
+                event: {
+                  ...bodyInteractionEvent,
+                  ...tokenRouting,
+                  connectionId: tokenMetadata.connectionId,
+                  agentId: tokenMetadata.agentId,
+                  source: tokenMetadata.source,
+                },
               },
             }
-          : orgEnriched;
+          : bodyCustomEvent;
+      const enrichedResponse = {
+        ...responseData,
+        ...tokenRouting,
+        customEvent,
+        platformMetadata: {
+          ...platformMetadata,
+          ...tokenMetadata,
+        },
+      };
 
       // Deployment idle clock (`EmbeddedWorkerEntry.lastActivity`) feeds the
       // idle reaper (WORKER_IDLE_CLEANUP_MINUTES). Mid-turn liveness still
@@ -799,6 +841,7 @@ export class WorkerGateway {
         agentId: tokenData.agentId,
         organizationId: tokenData.organizationId,
         connectionId: tokenData.connectionId,
+        responseThreadId: tokenData.responseThreadId,
         platform: tokenData.platform,
         source: tokenData.source,
         sessionKey: tokenData.sessionKey,

@@ -164,6 +164,7 @@ async function durableInput(
         agentId: "agent-1",
         organizationId,
         platform: "api",
+        responseThreadId: "api:chan:thread-1",
         runId,
         messageId,
         allowedDomains: ["api.example.com"],
@@ -215,6 +216,7 @@ describe("turn-liveness", () => {
     const replayedToken = verifyWorkerToken(replayed.runJobToken!);
     expect(replayedToken!.allowedDomains).toEqual(["api.example.com"]);
     expect(replayedToken!.deniedDomains).toEqual(["evil.example.com"]);
+    expect(replayedToken!.responseThreadId).toBe("api:chan:thread-1");
 
     await commitTerminalReply(
       "dep-durable",

@@ -254,6 +254,23 @@ export function buildBehaviorUrl(
 }
 
 /**
+ * Canonical web URL for a chat conversation's read-only transcript view:
+ * `<webOrigin>/<ownerSlug>/agents/<agentId>/conversations/<conversationId>`.
+ * `conversationId` is a platform id like `slack:C0123:169…` — encode it whole.
+ * Mirrors {@link buildBehaviorUrl}, including the `/lobu` gateway-suffix strip.
+ */
+export function buildAgentConversationUrl(
+  ownerSlug: string,
+  agentId: string,
+  conversationId: string,
+  baseUrl?: string
+): string {
+  const webOrigin = normalizeBaseUrl(baseUrl)?.replace(/\/lobu$/, '');
+  const path = `/${encodeURIComponent(ownerSlug)}/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(conversationId)}`;
+  return withBaseUrl(webOrigin, path);
+}
+
+/**
  * Build URL to view connections (data sources) for a workspace.
  *
  * - No connectorKey → list page: `/{ownerSlug}/connectors`

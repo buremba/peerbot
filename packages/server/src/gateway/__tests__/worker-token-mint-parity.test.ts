@@ -48,6 +48,7 @@ const SHARED_REQUIRED: Array<keyof WorkerTokenData> = [
   "organizationId",
   "platform",
   "connectionId",
+  "responseThreadId",
   // Headless run origin — interaction cards stamped headless skip the
   // SSE-owner gate; absent → owner-gated card dead-letters on a headless run.
   "source",
@@ -63,7 +64,11 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     agentId: "crm",
     organizationId: "org_lobucrm",
     platform: "slack",
-    platformMetadata: { connectionId: CONN, source: "watcher-run" },
+    platformMetadata: {
+      connectionId: CONN,
+      source: "watcher-run",
+      responseThreadId: "slack:DM:123.456",
+    },
   };
 
   test("buildRunJobToken carries EVERY consumer-required claim", () => {
@@ -82,6 +87,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     expect(decoded?.runId).toBe(42);
     expect(decoded?.connectionId).toBe(CONN);
     expect(decoded?.source).toBe("watcher-run");
+    expect(decoded?.responseThreadId).toBe("slack:DM:123.456");
 
     // The route does exactly this with the decoded context — must not throw.
     expect(() =>
@@ -101,6 +107,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
       ).toBeDefined();
     }
     expect(decoded?.connectionId).toBe(CONN);
+    expect(decoded?.responseThreadId).toBe("slack:DM:123.456");
     // The omitted-claim divergence this audit fixed: WORKER_TOKEN now carries
     // `source` so headless cards aren't dead-lettered on the fallback path.
     expect(decoded?.source).toBe("watcher-run");

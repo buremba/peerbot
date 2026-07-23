@@ -260,6 +260,12 @@ export interface ThreadResponsePayload {
   conversationId: string;
   userId: string;
   teamId: string;
+  /**
+   * Owning organization for this turn, stamped by the authenticated worker
+   * gateway. This can differ from the chat connection's organization for a
+   * hosted-preview turn, so tenant-scoped renderers must prefer this value.
+   */
+  organizationId?: string;
   platform?: string; // Platform identifier (slack, whatsapp, api, etc.) for routing
   content?: string; // Used only for ephemeral messages (OAuth/auth flows)
   delta?: string;

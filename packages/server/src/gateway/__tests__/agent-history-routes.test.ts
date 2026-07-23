@@ -6,7 +6,20 @@ import {
 	expect,
 	test,
 } from "bun:test";
+import {
+	normalizeSlackUserId,
+	slackAclSource,
+	slackChannelsToResources,
+} from "@lobu/connectors/slack-identity";
 import { Hono } from "hono";
+import { createTestBehaviorSubscription } from "../../__tests__/setup/behavior-subscriptions.js";
+import {
+	addUserToOrganization,
+	createTestEntity,
+	createTestUser,
+	insertChatConnectionRow,
+} from "../../__tests__/setup/test-fixtures.js";
+import { buildAccessGraph } from "../../authz/access-graph.js";
 import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
@@ -25,6 +38,9 @@ import {
 
 const ORG_ID = "test-org-agent-history";
 const USER_ID = "user-history-1";
+const SLACK_TEAM_ID = "T01HISTORY";
+const SLACK_CONNECTION_ID = "history-slack";
+const SLACK_CHANNEL_ID = "C01HISTORY";
 
 async function insertRun(opts: {
 	organizationId: string;
@@ -104,6 +120,105 @@ describe("agent history routes", () => {
 			}),
 		);
 		return app;
+	}
+
+	async function seedFederatedMember(
+		userId: string,
+		name: string,
+		slackUserId: string,
+	) {
+		const sql = getDb();
+		const memberEntity = await createTestEntity({
+			name,
+			entity_type: "$member",
+			organization_id: ORG_ID,
+			created_by: userId,
+		});
+		const slackIdentity = normalizeSlackUserId(SLACK_TEAM_ID, slackUserId);
+		if (!slackIdentity) throw new Error("Invalid Slack test identity");
+		await sql`
+			INSERT INTO entity_identities (
+				organization_id, entity_id, namespace, identifier, source_connector
+			) VALUES
+				(${ORG_ID}, ${memberEntity.id}, 'auth_user_id', ${userId}, 'auth:signup'),
+				(${ORG_ID}, ${memberEntity.id}, 'slack_user_id', ${slackIdentity}, 'connector:slack')
+		`;
+	}
+
+	async function seedPlatformConversationAcl(opts?: { buildAcl?: boolean }) {
+		const sql = getDb();
+		await sql`
+			INSERT INTO "user" (
+				id, email, name, username, "emailVerified", "createdAt", "updatedAt"
+			) VALUES (
+				${USER_ID}, 'history-owner@test.example.com', 'History Owner',
+				'history-owner', true, NOW(), NOW()
+			)
+			ON CONFLICT (id) DO NOTHING
+		`;
+		await addUserToOrganization(USER_ID, ORG_ID, "owner");
+
+		const channelMember = await createTestUser({ name: "Channel Member" });
+		await addUserToOrganization(channelMember.id, ORG_ID, "member");
+		await seedFederatedMember(
+			channelMember.id,
+			"Channel Member",
+			"U01MEMBER",
+		);
+
+		await insertChatConnectionRow({
+			id: SLACK_CONNECTION_ID,
+			organizationId: ORG_ID,
+			agentId: "agent-1",
+			platform: "slack",
+			status: "active",
+			metadata: { teamId: SLACK_TEAM_ID },
+		});
+		await createTestBehaviorSubscription({
+			organizationId: ORG_ID,
+			agentId: "agent-1",
+			connectionSlug: `agentconn-${SLACK_CONNECTION_ID}`,
+			platform: "slack",
+			channelId: SLACK_CHANNEL_ID,
+			teamId: SLACK_TEAM_ID,
+			configuredBy: USER_ID,
+		});
+		if (opts?.buildAcl !== false) {
+			await buildAccessGraph({
+				organizationId: ORG_ID,
+				connectionId: SLACK_CONNECTION_ID,
+				connectorKey: slackAclSource.key,
+				resourceNamespace: slackAclSource.resourceNamespace,
+				memberIdentities: slackAclSource.memberIdentities,
+				resources: slackChannelsToResources(SLACK_TEAM_ID, [
+					{
+						channelId: SLACK_CHANNEL_ID,
+						name: "history",
+						memberSlackUserIds: ["U01MEMBER"],
+					},
+				]),
+			});
+		}
+
+		const conversationId = `slack:${SLACK_CHANNEL_ID}:1700000000.123456`;
+		const jsonl =
+			`{"type":"session","version":3,"id":"s-platform","timestamp":"2026-07-23T10:00:00Z","cwd":"/w"}\n` +
+			`{"type":"message","id":"u-platform","parentId":null,"timestamp":"2026-07-23T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Visible through federated ACL"}]}}\n`;
+		const runId = await insertRun({
+			organizationId: ORG_ID,
+			agentId: "agent-1",
+			conversationId,
+		});
+		await sql`
+			INSERT INTO public.agent_transcript_snapshot
+				(organization_id, agent_id, conversation_id, run_id,
+				 snapshot_jsonl, byte_size, terminal_status)
+			VALUES
+				(${ORG_ID}, 'agent-1', ${conversationId}, ${runId},
+				 ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
+		`;
+
+		return { channelMember, conversationId };
 	}
 
 	test("replays pending manage_agents approvals as interactions on reload", async () => {
@@ -438,6 +553,157 @@ describe("agent history routes", () => {
 				},
 				method: "GET",
 			}),
+		);
+
+		expect(response.status).toBe(401);
+	});
+
+	test("allows a non-owner org member to read a bound platform transcript through federated ACL", async () => {
+		const { channelMember, conversationId } =
+			await seedPlatformConversationAcl();
+		setAuthProvider(() => ({
+			userId: channelMember.id,
+			platform: "external",
+			agentId: "agent-1",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			messages: Array<{
+				id: string;
+				content: Array<{ type: string; text: string }>;
+			}>;
+		};
+		expect(body.messages).toEqual([
+			expect.objectContaining({
+				id: "u-platform",
+				content: [
+					{ type: "text", text: "Visible through federated ACL" },
+				],
+			}),
+		]);
+	});
+
+	test("requires an enforced channel ACL for a non-owner org member", async () => {
+		const { channelMember, conversationId } =
+			await seedPlatformConversationAcl({ buildAcl: false });
+		setAuthProvider(() => ({
+			userId: channelMember.id,
+			platform: "external",
+			agentId: "agent-1",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	test("keeps bound platform transcripts readable by the agent owner before ACL onboarding", async () => {
+		const { conversationId } = await seedPlatformConversationAcl({
+			buildAcl: false,
+		});
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(200);
+	});
+
+	test("fails closed when an org member has no federated member projection", async () => {
+		const { conversationId } = await seedPlatformConversationAcl();
+		const unresolvedMember = await createTestUser({ name: "Unresolved Member" });
+		await addUserToOrganization(unresolvedMember.id, ORG_ID, "member");
+		setAuthProvider(() => ({
+			userId: unresolvedMember.id,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	test("fails closed when a resolved federated member lacks the channel edge", async () => {
+		const { conversationId } = await seedPlatformConversationAcl();
+		const deniedMember = await createTestUser({ name: "Denied Member" });
+		await addUserToOrganization(deniedMember.id, ORG_ID, "member");
+		await seedFederatedMember(deniedMember.id, "Denied Member", "U01DENIED");
+		setAuthProvider(() => ({
+			userId: deniedMember.id,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	test("fails closed when a platform conversation channel is not bound to the agent", async () => {
+		const { channelMember } = await seedPlatformConversationAcl();
+		setAuthProvider(() => ({
+			userId: channelMember.id,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const unboundConversationId = "slack:C01UNBOUND:1700000000.123456";
+		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(unboundConversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+
+		expect(response.status).toBe(404);
+	});
+
+	test("fails closed when the platform transcript route has no trusted org context", async () => {
+		const { channelMember, conversationId } =
+			await seedPlatformConversationAcl();
+		setAuthProvider(() => ({
+			userId: channelMember.id,
+			platform: "external",
+			exp: Date.now() + 60_000,
+		}));
+
+		const response = await createApp().request(
+			`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+			{ method: "GET", headers: { host: "localhost" } },
 		);
 
 		expect(response.status).toBe(401);

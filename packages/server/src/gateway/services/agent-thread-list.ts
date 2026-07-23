@@ -70,7 +70,12 @@ export interface ChannelVisibility {
  */
 export async function resolveChannelVisibility(
 	sql: DbClient,
-	args: { organizationId: string; agentId: string; userId: string | null },
+	args: {
+		organizationId: string;
+		agentId: string;
+		userId: string | null;
+		allowNotGraphed?: boolean;
+	},
 ): Promise<ChannelVisibility> {
 	const bound = await resolveBoundChannelRows(sql, {
 		organizationId: args.organizationId,
@@ -88,6 +93,7 @@ export async function resolveChannelVisibility(
 		organizationId: args.organizationId,
 		userId: args.userId,
 		rows: bound,
+		allowNotGraphed: args.allowNotGraphed,
 	});
 	const visibleKeys = new Set(
 		visible.map((c) =>

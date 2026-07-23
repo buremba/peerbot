@@ -81,12 +81,17 @@ function makeGateway(): WorkerGateway {
   );
 }
 
-function mintToken(): string {
+function mintToken(opts?: {
+  omitOrganizationId?: boolean;
+  omitConnectionId?: boolean;
+}): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
+    teamId: "team-1",
     agentId: "agent-1",
-    organizationId: "org-1",
-    connectionId: "connection-1",
+    ...(opts?.omitOrganizationId ? {} : { organizationId: "org-1" }),
+    ...(opts?.omitConnectionId ? {} : { connectionId: "connection-1" }),
+    platform: "slack",
     source: "watcher-run",
     runId: 1,
     messageId: "m1",
@@ -109,7 +114,11 @@ function armLiveTurn(messageId = "m1"): Promise<void> {
  *  is shut down in a finally so its timers/intervals don't leak across tests. */
 async function postWorkerResponse(
   body: unknown,
-  opts?: { tracker?: { updateDeploymentActivity: (d: string) => Promise<void> } }
+  opts?: {
+    tracker?: { updateDeploymentActivity: (d: string) => Promise<void> };
+    omitTokenOrganizationId?: boolean;
+    omitTokenConnectionId?: boolean;
+  }
 ): Promise<Response> {
   const gateway = makeGateway();
   if (opts?.tracker) gateway.setDeploymentActivityTracker(opts.tracker);
@@ -117,7 +126,10 @@ async function postWorkerResponse(
     return await gateway.getApp().request("/response", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${mintToken()}`,
+        authorization: `Bearer ${mintToken({
+          omitOrganizationId: opts?.omitTokenOrganizationId,
+          omitConnectionId: opts?.omitTokenConnectionId,
+        })}`,
         host: "gateway.example.com",
         "content-type": "application/json",
       },
@@ -149,6 +161,217 @@ async function expireMarker(): Promise<number> {
   if (at === null) throw new Error("marker missing after expire");
   return at;
 }
+
+describe("POST /worker/response — authoritative tenant", () => {
+  test("the authenticated worker token overrides spoofed body routing identity", async () => {
+    const res = await postWorkerResponse({
+      messageId: "m1",
+      conversationId: "conv-spoofed",
+      userId: "user-spoofed",
+      channelId: "chan-spoofed",
+      teamId: "team-spoofed",
+      platform: "telegram",
+      delta: "hello",
+      organizationId: "org-spoofed",
+      platformMetadata: {
+        connectionId: "connection-spoofed",
+        agentId: "agent-spoofed",
+        organizationId: "org-spoofed",
+        chatId: "chat-spoofed",
+        responseChannel: "response-spoofed",
+        responseThreadId: "thread-spoofed",
+        teamId: "team-spoofed",
+        source: "interactive-spoofed",
+        senderId: "sender-spoofed",
+      },
+      customEvent: {
+        name: "chat-interaction",
+        data: {
+          eventName: "question:created",
+          event: {
+            id: "q-1",
+            userId: "user-spoofed",
+            conversationId: "conv-spoofed",
+            channelId: "chan-spoofed",
+            teamId: "team-spoofed",
+            platform: "telegram",
+            connectionId: "connection-spoofed",
+            agentId: "agent-spoofed",
+            organizationId: "org-spoofed",
+            source: "interactive-spoofed",
+            question: "Proceed?",
+          },
+        },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const rows = await getDb()<{
+      action_input: {
+        conversationId?: string;
+        userId?: string;
+        channelId?: string;
+        teamId?: string;
+        platform?: string;
+        organizationId?: string;
+        platformMetadata?: {
+          connectionId?: string;
+          agentId?: string;
+          organizationId?: string;
+          chatId?: string;
+          responseChannel?: string;
+          responseThreadId?: string;
+          teamId?: string;
+          source?: string;
+          senderId?: string;
+        };
+        customEvent?: {
+          data?: { event?: Record<string, unknown> };
+        };
+      };
+    }>`
+      SELECT action_input
+      FROM public.runs
+      WHERE queue_name = 'thread_response'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows[0]?.action_input.organizationId).toBe("org-1");
+    expect(rows[0]?.action_input).toMatchObject({
+      conversationId: "conv-1",
+      userId: "user-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+    });
+    expect(rows[0]?.action_input.platformMetadata).toMatchObject({
+      connectionId: "connection-1",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      chatId: "chan-1",
+      responseChannel: "chan-1",
+      responseThreadId: "conv-1",
+      teamId: "team-1",
+      source: "watcher-run",
+      senderId: "user-1",
+    });
+    expect(rows[0]?.action_input.customEvent?.data?.event).toMatchObject({
+      id: "q-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+      connectionId: "connection-1",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      source: "watcher-run",
+      question: "Proceed?",
+    });
+  });
+
+  test("an orgless worker token cannot inject a body organization id", async () => {
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-1",
+        delta: "hello",
+        organizationId: "org-spoofed",
+      },
+      { omitTokenOrganizationId: true }
+    );
+    expect(res.status).toBe(200);
+
+    const rows = await getDb()<{
+      action_input: { organizationId?: string };
+      organization_id: string | null;
+    }>`
+      SELECT action_input, organization_id
+      FROM public.runs
+      WHERE queue_name = 'thread_response'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows[0]?.action_input.organizationId).toBeUndefined();
+    expect(rows[0]?.organization_id).toBeNull();
+  });
+
+  test("a token without a connection cannot inject chat routing metadata", async () => {
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-1",
+        delta: "hello",
+        platformMetadata: {
+          connectionId: "connection-spoofed",
+          agentId: "agent-spoofed",
+          organizationId: "org-spoofed",
+          chatId: "C-SPOOFED",
+          senderId: "sender-spoofed",
+        },
+        customEvent: {
+          name: "chat-interaction",
+          data: {
+            eventName: "question:created",
+            event: {
+              id: "q-2",
+              connectionId: "connection-spoofed",
+              channelId: "chan-spoofed",
+              conversationId: "conv-spoofed",
+              userId: "user-spoofed",
+            },
+          },
+        },
+      },
+      { omitTokenConnectionId: true }
+    );
+    expect(res.status).toBe(200);
+
+    const rows = await getDb()<{
+      action_input: {
+        platformMetadata?: {
+          connectionId?: string;
+          agentId?: string;
+          organizationId?: string;
+          chatId?: string;
+        };
+        customEvent?: {
+          data?: { event?: Record<string, unknown> };
+        };
+      };
+    }>`
+      SELECT action_input
+      FROM public.runs
+      WHERE queue_name = 'thread_response'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows[0]?.action_input.platformMetadata).toEqual({
+      agentId: "agent-1",
+      organizationId: "org-1",
+      chatId: "chan-1",
+      responseChannel: "chan-1",
+      responseThreadId: "conv-1",
+      teamId: "team-1",
+      source: "watcher-run",
+      senderId: "user-1",
+    });
+    expect(
+      rows[0]?.action_input.customEvent?.data?.event?.connectionId
+    ).toBeUndefined();
+    expect(rows[0]?.action_input.customEvent?.data?.event).toMatchObject({
+      id: "q-2",
+      userId: "user-1",
+      conversationId: "conv-1",
+      channelId: "chan-1",
+      teamId: "team-1",
+      platform: "slack",
+      agentId: "agent-1",
+      organizationId: "org-1",
+      source: "watcher-run",
+    });
+  });
+});
 
 describe("POST /worker/response — turn-liveness deadline (#14)", () => {
   test("a 20s status_update (no `received`) extends the deadline", async () => {

@@ -201,20 +201,26 @@ export async function getVisibleChannelKeysForMember(
 }
 
 /**
- * Filter bound channels down to what the requester may actually read. Channels
- * on NON-enforced connections pass through unchanged; channels on enforced
- * connections survive only when the requester is provably `member_of` them.
- * Fail-closed throughout: an enforced channel with no team id, or an
- * unresolvable requester, is dropped.
+ * Filter bound channels down to what the requester may actually read. By
+ * default, channels on never-graphed connections preserve legacy access;
+ * callers granting access to non-owners can disable that fallback. Channels on
+ * enforced connections survive only when the requester is provably `member_of`
+ * them. An enforced channel with no team id, or an unresolvable requester, is
+ * dropped.
  *
  * Returns the surviving rows (same objects, filtered) — the caller keeps its
  * existing per-channel query shape, just over a possibly-smaller set.
  */
 export async function filterChannelsForRequester<T extends GatedChannelRow>(
   sql: DbClient,
-  params: { organizationId: string; userId: string | null; rows: T[] },
+  params: {
+    organizationId: string;
+    userId: string | null;
+    rows: T[];
+    allowNotGraphed?: boolean;
+  },
 ): Promise<T[]> {
-  const { organizationId, userId, rows } = params;
+  const { organizationId, userId, rows, allowNotGraphed = true } = params;
   if (rows.length === 0) return rows;
 
   const states = await getConnectionEnforcement(
@@ -224,7 +230,7 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   );
   // No connection onboarded into authz → no per-user gating to apply; preserve
   // legacy behavior without paying for member resolution.
-  if (states.size === 0) return rows;
+  if (states.size === 0) return allowNotGraphed ? rows : [];
 
   // Only resolve the requester's membership when at least one connection is
   // actively enforcing (full+fresh). Onboarded-but-stale connections fail closed
@@ -249,7 +255,7 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
 
   return rows.filter((r) => {
     const state = states.get(r.id);
-    if (!state) return true; // never graphed → legacy fence still applies
+    if (!state) return allowNotGraphed; // never graphed → optional legacy fence
     if (state.status !== "enforced") return false; // stale/unsupported → fail closed
     const key = rowToChannelKey(r);
     if (key === null) return false; // no team id → can't form the key → fail closed

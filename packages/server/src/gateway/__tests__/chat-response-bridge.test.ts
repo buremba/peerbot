@@ -551,25 +551,41 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
     }
   });
 
-  test("pre-finalText Slack completion appends the footer to its local fallback buffer", async () => {
-    const providerSpy = stubWorkspaceOrgSlug("acme");
+  test("cross-org preview footer uses the Behavior org from the worker payload", async () => {
+    const getOrgSlug = mock(async (organizationId: string) =>
+      organizationId === "org-behavior" ? "behavior-org" : "connection-org"
+    );
+    const providerSpy = spyOn(
+      workspaceModule,
+      "getWorkspaceProvider"
+    ).mockReturnValue({
+      getOrgSlug,
+    } as unknown as ReturnType<typeof workspaceModule.getWorkspaceProvider>);
     try {
       const { target } = createStreamingTarget();
       const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
       const { manager } = createHarness(target, "slack", slackPost, {
         agentId: "agent-1",
-        organizationId: "org-1",
+        organizationId: "org-connection",
         publicGatewayUrl: "https://app.lobu.com/lobu",
       });
       const bridge = new ChatResponseBridge(manager as any);
 
-      await bridge.handleDelta({ ...slackPayload, delta: "legacy reply" }, "s");
-      await bridge.handleCompletion(slackPayload, "s");
-
-      expect(slackPost).toHaveBeenCalledTimes(1);
-      expect(slackPost.mock.calls[0]?.[0].markdown_text).toContain(
-        "legacy reply\n\n[View in Lobu ↗]"
+      await bridge.handleCompletion(
+        {
+          ...slackPayload,
+          organizationId: "org-behavior",
+          finalText: "cross-org reply",
+          processedMessageIds: ["m1"],
+        },
+        "s"
       );
+
+      expect(getOrgSlug).toHaveBeenCalledWith("org-behavior");
+      expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+        markdown_text:
+          "cross-org reply\n\n[View in Lobu ↗](https://app.lobu.com/behavior-org/agents/agent-1/conversations/slack%3AC123%3A1700000000.123456)",
+      });
     } finally {
       providerSpy.mockRestore();
     }

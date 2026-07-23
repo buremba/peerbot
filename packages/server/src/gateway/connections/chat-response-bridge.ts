@@ -141,14 +141,17 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Resolve the organization id for audit attribution: payload metadata
-   * first, then the connection record. Undefined only when neither is
-   * available — the audit module logs that gap loudly.
+   * Resolve the turn's owning organization for tenant-scoped output. The
+   * authenticated worker gateway stamps it directly on the payload; for a
+   * hosted-preview turn this is the Behavior org and intentionally differs
+   * from the shared chat connection's org. Gateway-generated responses may not
+   * carry that field, so metadata and connection values remain fallbacks.
    */
   private resolveOrganizationId(
     payload: ThreadResponsePayload,
     ctx: ResponseContext
   ): string | undefined {
+    if (payload.organizationId) return payload.organizationId;
     const md = readPlatformMetadata(payload.platformMetadata);
     if (md.organizationId) return md.organizationId;
     const fromConnection = ctx.instance?.connection?.organizationId;
@@ -367,10 +370,6 @@ export class ChatResponseBridge implements ResponseRenderer {
       });
       if (footerUrl && payload.finalText?.trim()) {
         payload.finalText = appendMarkdownFooter(payload.finalText, footerUrl);
-      } else if (footerUrl && stream?.buffer && !payload.finalText?.trim()) {
-        // Compatibility with terminal rows produced before finalText became the
-        // cross-replica contract. Post-once delivery falls back to this buffer.
-        stream.buffer = appendMarkdownFooter(stream.buffer, footerUrl);
       }
     }
 

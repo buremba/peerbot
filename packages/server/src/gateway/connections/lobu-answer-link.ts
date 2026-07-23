@@ -18,7 +18,8 @@ const LOBU_FOOTER_LABEL = "View in Lobu ↗";
 
 /**
  * Resolve the conversation-page URL for the footer, or `undefined` when any
- * required piece is missing. Never throws.
+ * required piece is missing. Organization lookup failures also return
+ * `undefined` so transcript enrichment cannot block answer delivery.
  */
 export async function buildConversationFooterUrl(args: {
   organizationId: string | undefined;

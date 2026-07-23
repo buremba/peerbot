@@ -408,6 +408,55 @@ export function createAgentHistoryRoutes(deps: {
 		};
 	}
 
+	/**
+	 * Platform transcripts belong to an org/channel audience, not only to the
+	 * user who owns the agent. The outer Lobu middleware establishes this
+	 * ambient org only after verifying Better Auth membership (and pins PATs),
+	 * then the route intersects the agent's channel bindings with the source ACL.
+	 * Agent owners retain the legacy bound-channel behavior; everyone else needs
+	 * a fresh enforced ACL that proves channel membership.
+	 * Keep the owner resolver above for every other history surface.
+	 */
+	async function getAuthorizedPlatformConversationScope(
+		c: Context,
+	): Promise<{
+		agentId: string;
+		organizationId: string;
+		userId: string;
+		allowNotGraphed: boolean;
+	} | null> {
+		const session = await verifySettingsSession(c);
+		if (!session) return null;
+		const agentId = c.req.param("agentId") || session.agentId || null;
+		if (!agentId || !isSafeAgentId(agentId)) return null;
+		if (session.agentId && session.agentId !== agentId) return null;
+		// A chat-issued settings claim carries agentId so it can be limited to one
+		// agent, but that binding is not ownership proof. Re-run the ownership
+		// resolver without the binding before granting the legacy owner path.
+		const ownership = await resolveOwnership(
+			{ ...session, agentId: undefined },
+			agentId,
+		);
+		if (ownership.authorized) {
+			const organizationId = resolveOrgId(ownership.organizationId);
+			if (!organizationId) return null;
+			return {
+				agentId,
+				organizationId,
+				userId: resolveSettingsLookupUserId(session),
+				allowNotGraphed: true,
+			};
+		}
+		const organizationId = resolveOrgId();
+		if (!organizationId) return null;
+		return {
+			agentId,
+			organizationId,
+			userId: resolveSettingsLookupUserId(session),
+			allowNotGraphed: false,
+		};
+	}
+
 	async function resolveActiveAgent(
 		agentId: string
 	): Promise<{ connected: boolean; resolvedAgentId: string }> {
@@ -602,9 +651,8 @@ export function createAgentHistoryRoutes(deps: {
 	// Read a PLATFORM conversation (e.g. `slack:{channel}:{ts}`) read-only by its
 	// raw conversation id. The id carries colons, so it's URL-encoded in the path.
 	app.get("/conversations/:conversationId/messages", async (c) => {
-		const scope = await getAuthorizedAgentScope(c);
+		const scope = await getAuthorizedPlatformConversationScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
-		if (!scope.organizationId) return c.json({ messages: [] });
 
 		const conversationId = decodeURIComponent(
 			c.req.param("conversationId") || ""
@@ -622,6 +670,7 @@ export function createAgentHistoryRoutes(deps: {
 			organizationId: scope.organizationId,
 			agentId: scope.agentId,
 			userId: scope.userId,
+			allowNotGraphed: scope.allowNotGraphed,
 		});
 		if (!isConversationVisible(conversationId, channelVis)) {
 			return errorResponse(c, "Conversation not found", 404);

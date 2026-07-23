@@ -363,27 +363,87 @@ export class WorkerGateway {
     try {
       const body = await c.req.json();
       const { jobId, ...responseData } = body;
-      // Stamp the worker token's owning org onto the response so the row
-      // landed in `thread_response` carries organization_id — the snapshot
-      // ownership verifier in transcript-routes.ts denies POSTs to NULL-org
-      // rows. The worker doesn't know its org (token-scoped, not payload-
-      // scoped) so it relies on the gateway to inject it from the auth.
-      const orgEnriched =
-        auth.tokenData.organizationId && !responseData.organizationId
-          ? { ...responseData, organizationId: auth.tokenData.organizationId }
-          : responseData;
-      const enrichedResponse =
-        auth.tokenData.connectionId &&
-        (!orgEnriched.platformMetadata ||
-          typeof orgEnriched.platformMetadata === "object")
+      // A worker may be compromised, so the response body is never authoritative
+      // for routing. Rebuild every destination-bearing field from the signed
+      // token and retain only non-routing metadata from the body. In particular,
+      // an absent connectionId must remove a body-supplied value rather than
+      // turning a non-chat run into a cross-tenant Chat delivery.
+      const platformMetadata =
+        responseData.platformMetadata &&
+        typeof responseData.platformMetadata === "object" &&
+        !Array.isArray(responseData.platformMetadata)
+          ? { ...responseData.platformMetadata }
+          : {};
+      for (const key of [
+        "connectionId",
+        "agentId",
+        "organizationId",
+        "chatId",
+        "responseChannel",
+        "responseThreadId",
+        "teamId",
+        "source",
+        "senderId",
+      ]) {
+        delete platformMetadata[key];
+      }
+      const bodyCustomEvent = responseData.customEvent;
+      const bodyCustomEventData = bodyCustomEvent?.data;
+      const bodyInteractionEvent = bodyCustomEventData?.event;
+      const customEvent =
+        bodyCustomEvent?.name === "chat-interaction" &&
+        bodyCustomEventData &&
+        typeof bodyCustomEventData === "object" &&
+        bodyInteractionEvent &&
+        typeof bodyInteractionEvent === "object" &&
+        !Array.isArray(bodyInteractionEvent)
           ? {
-              ...orgEnriched,
-              platformMetadata: {
-                ...(orgEnriched.platformMetadata || {}),
-                connectionId: auth.tokenData.connectionId,
+              ...bodyCustomEvent,
+              data: {
+                ...bodyCustomEventData,
+                event: {
+                  ...bodyInteractionEvent,
+                  userId: auth.tokenData.userId,
+                  conversationId: auth.tokenData.conversationId,
+                  channelId: auth.tokenData.channelId,
+                  teamId: auth.tokenData.teamId,
+                  platform: auth.tokenData.platform,
+                  connectionId: auth.tokenData.connectionId,
+                  agentId: auth.tokenData.agentId,
+                  organizationId: auth.tokenData.organizationId,
+                  source: auth.tokenData.source,
+                },
               },
             }
-          : orgEnriched;
+          : bodyCustomEvent;
+      const enrichedResponse = {
+        ...responseData,
+        userId: auth.tokenData.userId,
+        conversationId: auth.tokenData.conversationId,
+        channelId: auth.tokenData.channelId,
+        teamId: auth.tokenData.teamId,
+        platform: auth.tokenData.platform,
+        organizationId: auth.tokenData.organizationId,
+        customEvent,
+        platformMetadata: {
+          ...platformMetadata,
+          ...(auth.tokenData.connectionId
+            ? { connectionId: auth.tokenData.connectionId }
+            : {}),
+          ...(auth.tokenData.agentId
+            ? { agentId: auth.tokenData.agentId }
+            : {}),
+          ...(auth.tokenData.organizationId
+            ? { organizationId: auth.tokenData.organizationId }
+            : {}),
+          chatId: auth.tokenData.channelId,
+          responseChannel: auth.tokenData.channelId,
+          responseThreadId: auth.tokenData.conversationId,
+          senderId: auth.tokenData.userId,
+          ...(auth.tokenData.teamId ? { teamId: auth.tokenData.teamId } : {}),
+          ...(auth.tokenData.source ? { source: auth.tokenData.source } : {}),
+        },
+      };
 
       // Deployment idle clock (`EmbeddedWorkerEntry.lastActivity`) feeds the
       // idle reaper (WORKER_IDLE_CLEANUP_MINUTES). Mid-turn liveness still

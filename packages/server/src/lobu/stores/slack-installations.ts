@@ -346,6 +346,15 @@ export async function upsertSlackInstallByTeam(
         teamId,
         ...(slackRow.teamName ? { teamName: slackRow.teamName } : {}),
         ...(slackRow.botUserId ? { botUserId: slackRow.botUserId } : {}),
+        // Grid identity travels with the projection: a workspace can be
+        // recorded under EITHER its enterprise id (`E…`, org-wide install) or
+        // its workspace id (`T…`). `upsertChatConnectionProjection` needs both
+        // to retire the other-keyed row for the SAME workspace on reinstall —
+        // without these it cannot tell an enterprise sibling from an unrelated
+        // tenant, and the duplicate survives (one workspace, two live routing
+        // rows carrying different connection ids).
+        ...(data.enterpriseId ? { enterpriseId: data.enterpriseId } : {}),
+        ...(data.isEnterpriseInstall ? { isEnterpriseInstall: true } : {}),
       },
       status: "active",
       createdAt: slackRow.createdAt,

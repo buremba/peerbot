@@ -20,6 +20,7 @@ import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
 import { recordToolInvocationAudit } from './audit';
+import { resolveInitiator } from './initiator';
 import { listOrganizations } from './organizations';
 import { getTool, type TokenType, type ToolContext, type ToolSourceContext } from './registry';
 
@@ -293,6 +294,17 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     userId: authCtx.userId,
     memberRole: authCtx.memberRole,
     agentId: authCtx.agentId,
+    // Provenance for anything this turn writes. Stamped HERE, at the one funnel
+    // every HTTP/MCP tool call passes through, from identity the token already
+    // proved — so a run started by an agent session is traceable back to the
+    // session, the client, and the human behind it instead of landing as an
+    // orphan. `resolveInitiator` reads only verified context fields.
+    initiator: resolveInitiator({
+      userId: authCtx.userId,
+      agentId: authCtx.agentId,
+      clientId: authCtx.clientId,
+      sourceContext: authCtx.sourceContext ?? null,
+    }),
     sourceContext: authCtx.sourceContext ?? null,
     isAuthenticated: authCtx.isAuthenticated,
     clientId: authCtx.clientId,

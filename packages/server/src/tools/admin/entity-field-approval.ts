@@ -38,6 +38,7 @@ import {
 	buildEntityUrl,
 	buildResourcePermalink,
 } from "../../utils/url-builder";
+import { initiatorRunColumns, resolveInitiator } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
@@ -496,6 +497,10 @@ export async function proposeEntityChange(
 		windowId ?? null,
 		proposal,
 	);
+	// Who asked for this change. Derived from verified context, never from the
+	// proposal args — so a caller cannot dress its proposal up as someone else's.
+	const initiator = resolveInitiator(ctx);
+	const initiatorColumns = initiatorRunColumns(initiator);
 
 	// Idempotency: complete_window is replay-safe (retries + concurrent replicas),
 	// so the same blocked change can be proposed more than once. Collapse to one
@@ -703,6 +708,12 @@ export async function proposeEntityChange(
 						? null
 						: (entity?.parent_entity_type ?? null),
 					attribution,
+					// Who proposed this, for the card's origin chip. `attribution` says
+					// only behavior-vs-agent; this names the actual session/behavior.
+					initiator: {
+						kind: initiatorColumns.initiatorKind,
+						...initiatorColumns.initiatorRef,
+					},
 					reason: proposal.reason ?? null,
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
@@ -751,12 +762,15 @@ export async function proposeEntityChange(
 		const inserted = await tx<{ id: number }>`
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, window_id,
-				watcher_id, created_by_user_id, approval_status, status,
-				idempotency_key, created_at
+				watcher_id, created_by_user_id, initiator_kind, initiator_ref,
+				approval_status, status, idempotency_key, created_at
 			) VALUES (
 				${ctx.organizationId}, 'internal', ${actionKey},
 				${tx.json(actionInputProposal as unknown as Record<string, unknown>)},
-				${windowId ?? null}, ${proposal.watcher_id ?? null}, null,
+				${windowId ?? null}, ${proposal.watcher_id ?? null},
+				${initiatorColumns.createdByUserId},
+				${initiatorColumns.initiatorKind},
+				${tx.json(initiatorColumns.initiatorRef)},
 				'pending', 'pending', ${idempotencyKey}, current_timestamp
 			)
 			ON CONFLICT DO NOTHING

@@ -134,6 +134,13 @@ export interface EntityMergeProposal {
 	resolution_fingerprint?: string | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
+	/**
+	 * The proposer's own justification, in their words. Deliberately separate
+	 * from `reason` (the server-recomputed policy verdict): an agent can claim
+	 * anything here, so it is rendered as an attributed claim and never treated
+	 * as evidence or allowed to influence the auto-merge decision.
+	 */
+	proposer_rationale?: string | null;
 }
 
 export type EntityChangeProposal =
@@ -576,13 +583,41 @@ export async function proposeEntityChange(
 	const entityName = createProposal
 		? createProposal.entity_data.name
 		: entity?.name;
+	// Merge titles name both sides — this string is the event title that shows up
+	// in timelines and notifications, where "Merge duplicate person" alone gives a
+	// reviewer nothing to judge.
+	const mergeLosers = mergeProposal
+		? (mergeProposal.current.duplicates ?? [mergeProposal.current.loser])
+				.map((duplicate) => duplicate.name)
+				.filter(
+					(name): name is string =>
+						typeof name === "string" && name.trim().length > 0,
+				)
+		: [];
+	const mergeWinnerName = mergeProposal?.current.winner.name;
+	const mergeWinnerLabel =
+		typeof mergeWinnerName === "string" && mergeWinnerName.trim().length > 0
+			? mergeWinnerName
+			: null;
+	const mergeLoserLabel =
+		mergeLosers.length === 1
+			? mergeLosers[0]
+			: mergeLosers.length > 1
+				? `${mergeLosers.length} ${formatLabel(entityType ?? "entity").toLowerCase()} duplicates`
+				: null;
+	const mergeLabel =
+		mergeLoserLabel && mergeWinnerLabel
+			? `Merge ${mergeLoserLabel} into ${mergeWinnerLabel}`
+			: mergeWinnerLabel
+				? `Merge duplicate into ${mergeWinnerLabel}`
+				: `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 	const actionLabel =
 		operation === "update"
 			? formatFieldChangeAction(entityType, fieldKeys)
 			: operation === "delete"
 				? `Delete ${entityType ? formatLabel(entityType).toLowerCase() : "entity"}`
 				: operation === "merge"
-					? `Merge duplicate ${formatLabel(entityType ?? "entity").toLowerCase()}`
+					? mergeLabel
 					: `Create ${formatLabel(entityType ?? "entity").toLowerCase()}`;
 
 	const insertApprovalEvent = (runId: number, db: DbClient) =>
@@ -669,6 +704,7 @@ export async function proposeEntityChange(
 						: (entity?.parent_entity_type ?? null),
 					attribution,
 					reason: proposal.reason ?? null,
+					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
 					run_id: runId,
 				},

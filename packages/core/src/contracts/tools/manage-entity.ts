@@ -99,6 +99,14 @@ export const ManageEntitySchema = Type.Object({
     )
   ),
 
+  merge_rationale: Type.Optional(
+    Type.String({
+      maxLength: 500,
+      description:
+        "[merge] Why you believe these are the same thing, in one sentence, for the human reviewing the approval card (e.g. 'Same phone digits; the shell is a WhatsApp handle for this contact.'). Shown as your claim, clearly separated from the workspace's own policy verdict — it never counts as proof and never affects whether the merge auto-applies.",
+    })
+  ),
+
   // Entity type (required for create, list)
   entity_type: Type.Optional(
     Type.String({

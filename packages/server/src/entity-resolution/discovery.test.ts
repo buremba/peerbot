@@ -99,7 +99,41 @@ describe("entity resolution module", () => {
 		});
 		expect(assessment.decision).toBe("review");
 		expect(assessment.reason).toBe(
-			"Matching email is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+			"Matching email points to the same thing, but that is not enough to merge automatically under this entity type's policy, so it needs your judgement.",
+		);
+	});
+
+	it("names the entity type's own resolution fields verbatim in the reason", () => {
+		// A custom field must survive intact — naive singularization turned
+		// "status" into "statu".
+		const customSchema = {
+			type: "object",
+			"x-lobu-resolution": {
+				rules: [
+					{ fields: ["status"], normalizer: "exact", onMatch: "review" },
+				],
+			},
+		};
+		const assessment = assessEntityResolution({
+			metadataSchema: customSchema,
+			winner: { id: 1, metadata: {} },
+			losers: [{ id: 2, metadata: {} }],
+		});
+		expect(assessment.reason).toBe(
+			"No matching status could be verified automatically, so this merge needs your judgement.",
+		);
+	});
+
+	it("coalesces only the known singular/plural field aliases", () => {
+		// person defaults are email/emails/phone/phones — a reader wants two names.
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: 1, metadata: {} },
+			losers: [{ id: 2, metadata: {} }],
+		});
+		expect(assessment.reason).toBe(
+			"No matching email or phone could be verified automatically, so this merge needs your judgement.",
 		);
 	});
 
@@ -181,7 +215,7 @@ describe("entity resolution module", () => {
 		});
 		expect(mixedMatch.decision).toBe("review");
 		expect(mixedMatch.reason).toBe(
-			"Matching email and phone is evidence, but the proposal does not satisfy this entity type's automatic merge policy.",
+			"Matching email and phone points to the same thing, but that is not enough to merge automatically under this entity type's policy, so it needs your judgement.",
 		);
 	});
 

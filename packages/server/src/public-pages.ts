@@ -32,6 +32,8 @@ interface PublicEntityTypeDetails {
   metadata_schema: Record<string, unknown> | null;
 }
 
+type PublicEntityTypeDefinition = Omit<PublicEntityTypeDetails, 'entity_count'>;
+
 interface PublicEntityListItem {
   id: number;
   entity_type: string;
@@ -415,9 +417,9 @@ async function getPublicOrganizationBySlug(slug: string): Promise<PublicOrganiza
 async function getPublicEntityType(
   organizationId: string,
   slug: string
-): Promise<PublicEntityTypeDetails | null> {
+): Promise<PublicEntityTypeDefinition | null> {
   const sql = getDb();
-  const rows = await sql.unsafe<PublicEntityTypeDetails>(
+  const rows = await sql.unsafe<PublicEntityTypeDefinition>(
     `
       SELECT
         et.id,
@@ -426,14 +428,7 @@ async function getPublicEntityType(
         et.description,
         et.icon,
         et.color,
-        et.metadata_schema,
-        (
-          SELECT COUNT(*)::int
-          FROM entities e
-          WHERE e.organization_id = et.organization_id
-            AND e.entity_type_id = et.id
-            AND e.deleted_at IS NULL
-        ) AS entity_count
+        et.metadata_schema
       FROM entity_types et
       WHERE et.organization_id = $1
         AND et.slug = $2
@@ -1028,8 +1023,8 @@ export async function buildPublicPageModel(
     }
 
     if (segments.length === 2) {
-      const entityType = await getPublicEntityType(organization.id, segments[1]!);
-      if (!entityType) {
+      const entityTypeDefinition = await getPublicEntityType(organization.id, segments[1]!);
+      if (!entityTypeDefinition) {
         return applyBootstrapStrip(
           buildNotFoundModel(organization, requestUrl, normalizedPath),
           subdomainOrg
@@ -1037,8 +1032,12 @@ export async function buildPublicPageModel(
       }
       const [ownerResolvedPath, entityList] = await Promise.all([
         resolvePublicPath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
-        getPublicEntityTypeList(organization.id, env, requestUrl, entityType.slug),
+        getPublicEntityTypeList(organization.id, env, requestUrl, entityTypeDefinition.slug),
       ]);
+      const entityType: PublicEntityTypeDetails = {
+        ...entityTypeDefinition,
+        entity_count: entityList.metadata.total_count,
+      };
       return applyBootstrapStrip(
         buildEntityTypeModel({
           organization,

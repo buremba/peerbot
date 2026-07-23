@@ -61,6 +61,27 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
         (${publicOrg.id}, 'brand', 'Brand', 'Tracked public brands', '🏢', NOW(), NOW()),
         (${publicOrg.id}, 'product', 'Product', 'Tracked public products', '📦', NOW(), NOW())
     `;
+    const [brandType] = await sql`
+      SELECT id FROM entity_types
+      WHERE organization_id = ${publicOrg.id} AND slug = 'brand'
+    `;
+    const brandTypeId = Number(brandType?.id);
+    expect(brandTypeId).toBeGreaterThan(0);
+    await sql`
+      INSERT INTO entity_types (
+        organization_id, slug, name, description, icon, backing_sql, created_at, updated_at
+      )
+      VALUES (
+        ${publicOrg.id},
+        'brand-directory',
+        'Brand Directory',
+        'Derived public brand directory',
+        'list',
+        ${`SELECT id, slug, name FROM entities WHERE entity_type_id = ${brandTypeId}`},
+        NOW(),
+        NOW()
+      )
+    `;
 
     const brand = await createTestEntity({
       name: 'Acme Brand',
@@ -192,6 +213,18 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     expect(missing.status).toBe(404);
     expect(missingBody).toContain('Page Not Found');
     expect(missingBody).toContain('noindex,nofollow');
+  });
+
+  it('uses the derived list total on public entity-type pages', async () => {
+    const response = await get('/public-contract-org/brand-directory', {
+      headers: { Accept: 'text/html' },
+      env: { PUBLIC_GATEWAY_URL: publicGatewayUrl },
+    });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('>1 entity</dd>');
+    expect(body).toContain('"entity_count":1');
   });
 
   it('sitemap includes public routes and excludes private workspaces', async () => {

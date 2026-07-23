@@ -34,6 +34,11 @@ import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import {
+  countEntitiesOfType,
+  countStoredEntitiesOfType,
+  getEntityCountsByTypes,
+} from '../../utils/entity-management';
+import {
   isReservedEntityTypeSlug,
   RESERVED_ENTITY_TYPE_SLUGS,
 } from '../../utils/reserved';
@@ -196,34 +201,6 @@ function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
   }
 }
 
-async function getEntityCountsByType(organizationId: string): Promise<Map<number, number>> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT e.entity_type_id AS entity_type_id, COUNT(*)::int as entity_count
-    FROM entities e
-    WHERE e.organization_id = ${organizationId}
-      AND e.deleted_at IS NULL
-    GROUP BY e.entity_type_id
-  `;
-  const counts = new Map<number, number>();
-  for (const row of rows) {
-    counts.set(Number(row.entity_type_id), Number(row.entity_count));
-  }
-  return counts;
-}
-
-async function getEntityCountForType(typeId: number, organizationId: string): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT COUNT(*)::int as count
-    FROM entities e
-    WHERE e.entity_type_id = ${typeId}
-      AND e.organization_id = ${organizationId}
-      AND e.deleted_at IS NULL
-  `;
-  return Number(rows[0]?.count || 0);
-}
-
 async function getRelationshipCountForType(
   typeId: number,
   organizationId: string
@@ -281,15 +258,25 @@ async function etHandleList(
     [ctx.organizationId]
   );
 
-  const counts = await getEntityCountsByType(ctx.organizationId);
   const resolved = await resolveUsernames(
     rows as unknown as Record<string, unknown>[],
     'created_by'
   );
 
-  const entityTypes = resolved.map((row) => {
-    const mapped = mapRowToEntityType(row);
-    mapped.entity_count = counts.get(mapped.id) || 0;
+  const mappedTypes = resolved.map((row) => mapRowToEntityType(row));
+  // Stored + derived counts share one path with list/detail (entity-management).
+  const counts = await getEntityCountsByTypes(
+    mappedTypes.map((t) => ({
+      id: Number(t.id),
+      slug: t.slug,
+      backing_sql: t.backing_sql,
+      backing_source: t.backing_source,
+    })),
+    ctx
+  );
+
+  const entityTypes = mappedTypes.map((mapped) => {
+    mapped.entity_count = counts.get(Number(mapped.id)) || 0;
     return mapped;
   });
 
@@ -414,7 +401,15 @@ async function etHandleGet(
 
   const [resolved] = await resolveUsernames([rows[0] as Record<string, unknown>], 'created_by');
   const mapped = mapRowToEntityType(resolved);
-  mapped.entity_count = await getEntityCountForType(Number(mapped.id), ctx.organizationId);
+  mapped.entity_count = await countEntitiesOfType(
+    {
+      id: Number(mapped.id),
+      slug: mapped.slug,
+      backing_sql: mapped.backing_sql,
+      backing_source: mapped.backing_source,
+    },
+    ctx
+  );
   // Classify the view's measure columns on read (never persisted).
   if (mapped.backing_sql) mapped.measure_columns = measureColumns(mapped.backing_sql);
   // Authored type-level list-view templates, with their data_sources run live.
@@ -568,7 +563,10 @@ async function etHandleUpdate(
   // Converting a populated stored type to a derived (view-backed) type would
   // orphan its existing rows (the view ignores them). Reject it.
   if (args.backing?.sql) {
-    const existingCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
+    const existingCount = await countStoredEntitiesOfType(
+      Number(current.id),
+      ctx.organizationId
+    );
     if (existingCount > 0) {
       throw new ToolUserError(
         `Cannot make entity type '${args.slug}' derived: ${existingCount} stored ${existingCount === 1 ? 'entity exists' : 'entities exist'}. Delete them first.`,
@@ -629,7 +627,15 @@ async function etHandleUpdate(
   if (updated.length === 0) throw new Error(`Entity type '${args.slug}' not found after update`);
 
   const result = mapRowToEntityType(updated[0] as Record<string, unknown>);
-  result.entity_count = await getEntityCountForType(Number(result.id), ctx.organizationId);
+  result.entity_count = await countEntitiesOfType(
+    {
+      id: Number(result.id),
+      slug: result.slug,
+      backing_sql: result.backing_sql,
+      backing_source: result.backing_source,
+    },
+    ctx
+  );
 
   await recordAudit(
     sql,
@@ -681,7 +687,8 @@ async function etHandleDelete(
   if (existing.length === 0) throw new ToolUserError(`Entity type '${slug}' not found`, 404);
 
   const current = existing[0];
-  const entityCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
+  // Only stored rows block delete — derived views have no `entities` rows.
+  const entityCount = await countStoredEntitiesOfType(Number(current.id), ctx.organizationId);
   if (entityCount > 0) {
     throw new ToolUserError(
       `Cannot delete entity type '${slug}': ${entityCount} entities of this type exist. Remove or reassign them first.`,

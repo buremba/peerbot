@@ -21,12 +21,16 @@ import {
 import { ToolUserError } from '../utils/errors';
 import { resolveMemberSchemaFieldsFromSchema } from '../utils/member-entity-type';
 import { stripMemberEmailsFromRows } from '../utils/member-redaction';
-import { derivedRowName, derivedRowSlug } from '../utils/entity-management';
+import {
+  derivedRowName,
+  derivedRowSlug,
+  getEntityCountsByTypes,
+  queryDerivedEntityView,
+} from '../utils/entity-management';
 import { buildDefaultEntityTemplate } from '../utils/default-entity-template';
 import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
 import { RESERVED_PATHS_SET } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
-import { querySqlImpl } from './admin/query_sql';
 import { isAdminOrOwnerRole } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
@@ -833,13 +837,12 @@ async function resolveMergedEntityRedirect(
  * falls back to the normal 404.
  *
  * Derived rows aren't stored in `entities`; the type's `backing_sql` produces
- * them with stable `id`/`slug` columns. We run that SQL through the same
- * executor the list view uses (`querySqlImpl` — internal org-scoping or
- * connection pushdown, both already validated for this view), then match the
- * requested slug in memory. We page through the view (not just the first page)
- * so a row past the first page still resolves; matching in memory — rather than
- * interpolating the slug into the view SQL — keeps the SQL injection-free for
- * both the internal and connection-backed paths.
+ * them with stable `id`/`slug` columns. We run that SQL through
+ * {@link queryDerivedEntityView} (same executor as list + type counts), then
+ * match the requested slug in memory. We page through the view (not just the
+ * first page) so a row past the first page still resolves; matching in memory —
+ * rather than interpolating the slug into the view SQL — keeps the SQL
+ * injection-free for both the internal and connection-backed paths.
  */
 async function resolveDerivedLeaf(
   sql: DbClient,
@@ -870,9 +873,10 @@ async function resolveDerivedLeaf(
   const MAX_PAGES = 40;
   let match: Record<string, unknown> | undefined;
   for (let pageNum = 0; pageNum < MAX_PAGES; pageNum += 1) {
-    const result = await querySqlImpl(
-      { sql: backingSql, connection: backingSource, limit: PAGE, offset: pageNum * PAGE },
-      undefined,
+    const result = await queryDerivedEntityView(
+      backingSql,
+      backingSource,
+      { limit: PAGE, offset: pageNum * PAGE },
       ctx
     );
     if (result.error) return null;
@@ -947,7 +951,7 @@ async function fetchBootstrap(
   }
 
   const [entityTypes, summary, recentContent, recentFeeds] = await Promise.all([
-    listEntityTypes(sql, workspace.id),
+    listEntityTypes(sql, ctx),
     fetchScopeSummary(sql, workspace.id, entity, ctx.userId),
     fetchRecentContent(sql, workspace.id, entity?.id ?? null),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
@@ -968,7 +972,7 @@ async function fetchBootstrap(
 
 async function listEntityTypes(
   sql: DbClient,
-  organizationId: string
+  ctx: ToolContext
 ): Promise<BootstrapEntityTypeSummary[]> {
   const rows = await sql`
     SELECT
@@ -978,15 +982,24 @@ async function listEntityTypes(
       et.description,
       et.icon,
       et.color,
-      COUNT(e.id)::int AS entity_count
+      et.backing_sql,
+      et.backing_source
     FROM entity_types et
-    LEFT JOIN entities e
-      ON e.entity_type_id = et.id
     WHERE et.deleted_at IS NULL
-      AND et.organization_id = ${organizationId}
-    GROUP BY et.id, et.slug, et.name, et.description, et.icon, et.color
+      AND et.organization_id = ${ctx.organizationId}
     ORDER BY et.name ASC
   `;
+
+  // Same stored+derived count path as manage_entity_schema list / entity list.
+  const counts = await getEntityCountsByTypes(
+    rows.map((row) => ({
+      id: Number(row.id),
+      slug: String(row.slug),
+      backing_sql: (row.backing_sql as string | null) ?? null,
+      backing_source: (row.backing_source as string | null) ?? null,
+    })),
+    ctx
+  );
 
   return rows.map((row) => ({
     id: Number(row.id),
@@ -995,7 +1008,7 @@ async function listEntityTypes(
     description: row.description ? String(row.description) : null,
     icon: row.icon ? String(row.icon) : null,
     color: row.color ? String(row.color) : null,
-    entity_count: Number(row.entity_count) || 0,
+    entity_count: counts.get(Number(row.id)) || 0,
   }));
 }
 

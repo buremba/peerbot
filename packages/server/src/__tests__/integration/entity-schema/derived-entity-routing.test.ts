@@ -4,8 +4,8 @@
  * Derived ("view") entity types have no rows in `entities` — their rows come
  * from `backing_sql`. This proves the backend abstracts that away so the
  * frontend treats derived rows like stored entities:
- *   - `manage_entity` list returns derived rows in the standard entity shape
- *     (flagged `is_derived`), org-scoped.
+ *   - `manage_entity` list returns derived rows in the standard entity shape,
+ *     org-scoped.
  *   - `resolve_path` resolves a single derived row by slug into a read-only
  *     entity (with inferred `measure_columns`), and 404s an unknown slug.
  */
@@ -91,6 +91,7 @@ describe('derived entity routing (list + resolve_path)', () => {
         slug: string;
         metadata: Record<string, unknown>;
       }>;
+      metadata?: { total_count?: number };
     };
     const byName = Object.fromEntries(res.entities.map((e) => [e.name, e]));
     expect(Object.keys(byName).sort()).toEqual(['acme', 'globex']);
@@ -98,6 +99,68 @@ describe('derived entity routing (list + resolve_path)', () => {
     // Org B's $99 acme event must NOT leak into org A's aggregate.
     expect(Number(byName.acme.metadata.total_spend)).toBe(15);
     expect(Number(byName.acme.metadata.purchases)).toBe(2);
+  });
+
+  it('entity_type list/get entity_count matches derived list total (not stored-row COUNT)', async () => {
+    // Regression: Memory rail + schema list used COUNT(entities) only, so
+    // derived types always showed 0 even when list rows existed.
+    const list = (await api.entities.list({ entity_type: 'spend-vendor' })) as {
+      entities: unknown[];
+      metadata?: { total_count?: number };
+    };
+    const listTotal = list.metadata?.total_count ?? list.entities.length;
+    expect(listTotal).toBe(2);
+
+    const types = (await api.entity_schema.listTypes()) as {
+      entity_types?: Array<{ slug: string; entity_count?: number }>;
+    };
+    const spend = types.entity_types?.find((t) => t.slug === 'spend-vendor');
+    expect(spend?.entity_count).toBe(listTotal);
+
+    const got = (await api.entity_schema.getType('spend-vendor')) as {
+      entity_type?: { entity_count?: number; backing_sql?: string | null };
+    };
+    expect(got.entity_type?.backing_sql).toBeTruthy();
+    expect(got.entity_type?.entity_count).toBe(listTotal);
+
+    const resolved = (await resolvePath({
+      path: `/${orgSlug}`,
+      include_bootstrap: true,
+    })) as {
+      bootstrap?: { entity_types?: Array<{ slug: string; entity_count: number }> };
+    };
+    const bootstrapType = resolved.bootstrap?.entity_types?.find(
+      (type) => type.slug === 'spend-vendor'
+    );
+    expect(bootstrapType?.entity_count).toBe(listTotal);
+  });
+
+  it('keeps type lists available when a connector-backed derived count fails', async () => {
+    await api.entity_schema.createType({
+      slug: 'missing-derived-source',
+      name: 'Missing derived source',
+      backing: {
+        sql: 'SELECT id, name FROM missing_table',
+        connection: 'missing-connection',
+      },
+    });
+
+    const types = (await api.entity_schema.listTypes()) as {
+      entity_types?: Array<{ slug: string; entity_count?: number }>;
+    };
+    const missing = types.entity_types?.find((type) => type.slug === 'missing-derived-source');
+    expect(missing?.entity_count).toBe(0);
+
+    const resolved = (await resolvePath({
+      path: `/${orgSlug}`,
+      include_bootstrap: true,
+    })) as {
+      bootstrap?: { entity_types?: Array<{ slug: string; entity_count: number }> };
+    };
+    const bootstrapType = resolved.bootstrap?.entity_types?.find(
+      (type) => type.slug === 'missing-derived-source'
+    );
+    expect(bootstrapType?.entity_count).toBe(0);
   });
 
   it('resolve_path resolves a derived row by slug into a read-only entity', async () => {

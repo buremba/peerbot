@@ -33,8 +33,137 @@ import { entityLinkMatchSql } from "./content-search";
 import { computeFieldMerge, type FieldControl } from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
+import logger from "./logger";
 import { requireWriteAccess } from "./organization-access";
 import { RESERVED_ENTITY_TYPE_SLUGS } from "./reserved";
+
+/** Minimal type shape needed to count stored vs derived entity rows. */
+export type EntityTypeCountInput = {
+	id: number;
+	slug: string;
+	backing_sql?: string | null;
+	backing_source?: string | null;
+};
+
+/**
+ * Count stored rows in `entities` for a type. Used where only physical rows
+ * matter (e.g. blocking conversion of a populated type to a derived view).
+ * Prefer {@link countEntitiesOfType} for display counts — that path also
+ * counts derived views via the same executor as list/detail.
+ */
+export async function countStoredEntitiesOfType(
+	typeId: number,
+	organizationId: string,
+): Promise<number> {
+	const sql = getDb();
+	const rows = await sql`
+    SELECT COUNT(*)::int as count
+    FROM entities e
+    WHERE e.entity_type_id = ${typeId}
+      AND e.organization_id = ${organizationId}
+      AND e.deleted_at IS NULL
+  `;
+	return Number(rows[0]?.count || 0);
+}
+
+/**
+ * Run a derived entity type's `backing_sql` through the shared `querySqlImpl`
+ * executor (org-scoped internal tables or connection pushdown). List, detail
+ * resolve, and type-level counts all go through this so pagination/total_count
+ * stay consistent.
+ */
+export async function queryDerivedEntityView(
+	backingSql: string,
+	backingSource: string | undefined,
+	page: { limit: number; offset: number; search?: string },
+	ctx: ToolContext,
+): Promise<Awaited<ReturnType<typeof querySqlImpl>>> {
+	// Search pushes down only on the internal path (the connection path rejects
+	// search_term); external derived views simply ignore the search box.
+	const search =
+		page.search && !backingSource
+			? { search_term: page.search, search_columns: ["name"] as string[] }
+			: {};
+	return querySqlImpl(
+		{
+			sql: backingSql,
+			connection: backingSource,
+			limit: page.limit,
+			offset: page.offset,
+			...search,
+		},
+		undefined,
+		ctx,
+	);
+}
+
+/**
+ * Display count for one entity type: stored `entities` rows, or the derived
+ * view's `total_count` from {@link queryDerivedEntityView} (same path as list).
+ * A failed derived query returns 0 so a broken view cannot poison type lists.
+ */
+export async function countEntitiesOfType(
+	type: EntityTypeCountInput,
+	ctx: ToolContext,
+): Promise<number> {
+	if (type.backing_sql) {
+		const result = await queryDerivedEntityView(
+			type.backing_sql,
+			type.backing_source ?? undefined,
+			{ limit: 1, offset: 0 },
+			ctx,
+		);
+		if (result.error) {
+			logger.warn(
+				{ err: result.error, entityType: type.slug },
+				"Failed to count derived entity type rows",
+			);
+			return 0;
+		}
+		return Number(result.total_count) || 0;
+	}
+	return countStoredEntitiesOfType(type.id, ctx.organizationId);
+}
+
+/**
+ * Batch display counts for entity-type list / bootstrap. One GROUP BY for all
+ * stored types, plus parallel derived view counts via
+ * {@link countEntitiesOfType}.
+ */
+export async function getEntityCountsByTypes(
+	types: EntityTypeCountInput[],
+	ctx: ToolContext,
+): Promise<Map<number, number>> {
+	const counts = new Map<number, number>();
+	if (types.length === 0) return counts;
+
+	const stored = types.filter((t) => !t.backing_sql);
+	const derived = types.filter((t) => !!t.backing_sql);
+
+	if (stored.length > 0) {
+		const sql = getDb();
+		const rows = await sql`
+      SELECT e.entity_type_id AS entity_type_id, COUNT(*)::int as entity_count
+      FROM entities e
+      WHERE e.organization_id = ${ctx.organizationId}
+        AND e.deleted_at IS NULL
+      GROUP BY e.entity_type_id
+    `;
+		for (const row of rows) {
+			counts.set(Number(row.entity_type_id), Number(row.entity_count));
+		}
+	}
+
+	if (derived.length > 0) {
+		await Promise.all(
+			derived.map(async (t) => {
+				counts.set(t.id, await countEntitiesOfType(t, ctx));
+			}),
+		);
+	}
+
+	return counts;
+}
 
 interface EntityCreateOptions {
 	skipHooks?: boolean;
@@ -1262,13 +1391,12 @@ export function derivedRowName(row: Record<string, unknown>, slug: string): stri
 
 /**
  * List rows of a derived ("view") entity type by running its `backing_sql`
- * through the same executor the detail/query paths use (`querySqlImpl` —
- * internal org-scoping or connection pushdown, both already validated for this
- * view). Maps each row to the standard `CreatedEntity` shape so the frontend
- * treats derived rows like any other entity. Rows have no stored numeric id;
- * the projected `slug` (or `id`) is the routing key, so the synthetic `id` is
- * page-local and used only for table keys. Rows that project no slug/id are
- * unroutable and dropped (they can't link to a detail page).
+ * through {@link queryDerivedEntityView} (same executor as detail resolve and
+ * type-level counts). Maps each row to the standard `CreatedEntity` shape so
+ * the frontend treats derived rows like any other entity. Rows have no stored
+ * numeric id; the projected `slug` (or `id`) is the routing key, so the
+ * synthetic `id` is page-local and used only for table keys. Rows that project
+ * no slug/id are unroutable and dropped (they can't link to a detail page).
  */
 async function listDerivedEntities(
 	entityType: string,
@@ -1285,21 +1413,10 @@ async function listDerivedEntities(
   sortBy: string;
   sortOrder: 'asc' | 'desc';
 }> {
-	// Search pushes down only on the internal path (the connection path rejects
-	// search_term); external derived views simply ignore the search box.
-	const search =
-		page.search && !backingSource
-			? { search_term: page.search, search_columns: ["name"] }
-			: {};
-	const result = await querySqlImpl(
-		{
-			sql: backingSql,
-			connection: backingSource,
-			limit: page.limit,
-			offset: page.offset,
-			...search,
-		},
-		undefined,
+	const result = await queryDerivedEntityView(
+		backingSql,
+		backingSource,
+		page,
 		ctx,
 	);
 	if (result.error) {

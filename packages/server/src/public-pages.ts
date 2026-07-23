@@ -361,7 +361,7 @@ function renderPublicShell(
       ${breadcrumbHtml}
       <header class="mb-8">
         <p class="mb-3 text-xs font-bold uppercase tracking-wider text-primary">${escapeHtml(eyebrow)}</p>
-        <h1 class="text-3xl font-semibold text-foreground">${escapeHtml(heading)}</h1>
+        <h1 class="font-display text-3xl font-semibold text-foreground">${escapeHtml(heading)}</h1>
         <p class="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground">${escapeHtml(description)}</p>
       </header>
       ${sections

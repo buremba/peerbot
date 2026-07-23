@@ -44,6 +44,12 @@ function stateWithSecrets(): DesiredState {
           connector: "postgres",
           config: { api_key: "conn-secret", database: "prod" },
         },
+        {
+          slug: "team-slack",
+          connector: "slack",
+          credentialMode: "byo",
+          config: { botToken: "xoxb-real", mode: "socket" },
+        },
         { slug: "hn-main", connector: "hackernews", config: { top: 10 } },
       ],
     },
@@ -98,6 +104,13 @@ describe("sanitizeSnapshotState", () => {
   test("pins a sentinel-bearing connection config to remote, drops it when none", () => {
     const remoteConnections = new Map([
       ["pg-main", { api_key: "***live", database: "prod" }],
+      [
+        "team-slack",
+        {
+          botToken: "secret://connections%2Fteam-slack%2FbotToken",
+          mode: "socket",
+        },
+      ],
     ]);
     const pinned = sanitizeSnapshotState(snapshotState(), remoteConnections);
     const connections = pinned.state.connectors.connections as Array<{
@@ -113,6 +126,12 @@ describe("sanitizeSnapshotState", () => {
     expect(connections.find((c) => c.slug === "hn-main")?.config).toEqual({
       top: 10,
     });
+    // BYO chat config is one secret-aware unit: never submit its stored
+    // secret:// ref as a fresh credential during rollback.
+    expect(connections.find((c) => c.slug === "team-slack")).toBeUndefined();
+    expect(pinned.notes).toContain(
+      "connection team-slack: BYO chat config left at current values (rollback never rotates secrets)"
+    );
 
     // No live connection to pin to → dropped with a note.
     const dropped = sanitizeSnapshotState(snapshotState(), new Map());

@@ -1320,6 +1320,7 @@ export class ApplyClient {
   async applyChatConnection(payload: {
     slug: string;
     connector: string;
+    /** Omitted means preserve the server-derived/stored display name. */
     name?: string;
     config: Record<string, unknown>;
   }): Promise<{ id: number; created: boolean; changed: boolean }> {

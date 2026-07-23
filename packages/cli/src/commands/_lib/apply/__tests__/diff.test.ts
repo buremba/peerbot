@@ -1160,7 +1160,7 @@ describe("apply diff — connectors", () => {
           id: 9,
           slug: "team-slack",
           connector_key: "slack",
-          display_name: null,
+          display_name: "Stored workspace name",
           status: "active",
           auth_profile_slug: null,
           app_auth_profile_slug: null,
@@ -1173,6 +1173,9 @@ describe("apply diff — connectors", () => {
       (r) => r.kind === "connection" && r.id === "team-slack"
     );
     expect(conn?.verb).toBe("update");
+    // Optional names use "omitted = no opinion" semantics. The row updates
+    // only because BYO credentials are always re-pushed for rotation safety.
+    expect(conn?.changedFields).toEqual(["config"]);
   });
 
   test("BYO chat connection ignores auth/app_auth/device_worker drift", () => {

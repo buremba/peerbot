@@ -96,8 +96,19 @@ export function sanitizeSnapshotState(
     (connection) => {
       const c = connection as unknown as {
         slug?: string;
+        credentialMode?: string;
         config?: Record<string, unknown>;
       };
+      // A BYO chat connection is applied through one secret-aware upsert, so
+      // its non-secret options cannot be reconciled separately from its
+      // write-only credential. Keep the live row untouched; Behaviors still
+      // resolve its id from the independently fetched remote snapshot.
+      if (c.credentialMode === "byo") {
+        notes.push(
+          `connection ${c.slug ?? "?"}: BYO chat config left at current values (rollback never rotates secrets)`
+        );
+        return false;
+      }
       if (!containsSentinel(c.config)) return true;
       const remote = c.slug ? remoteConnectionConfigs.get(c.slug) : undefined;
       if (remote) {
@@ -182,13 +193,15 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
   }
 
   // ── Config resources: snapshot state through the standard diff ───────────
-  // Two-pass sanitize: the first pass (no remote configs yet) yields a state
-  // shaped well enough to fetch the remote snapshot; the second pins
-  // sentinel-bearing connection configs to the live remote values it found.
-  const prelim = sanitizeSnapshotState(manifest.state);
+  // Fetch against the intact target shape. Sanitization deliberately removes
+  // secret-bearing resources from mutation, but the read-only fetch still
+  // needs their declarations so it loads live connection ids/configs.
+  const targetState = structuredClone(
+    manifest.state
+  ) as unknown as DesiredState;
   const remote = await fetchRemoteSnapshot(
     client,
-    prelim.state,
+    targetState,
     undefined,
     false
   );
@@ -293,15 +306,15 @@ export async function rollbackCommand(opts: RollbackOptions): Promise<void> {
           ? { "connector-version": { update: repoints.length } }
           : {}),
       },
-      manifest_hash: computeManifestHash(sanitized.state),
+      manifest_hash: computeManifestHash(targetState),
       git_sha: gitInfo.sha,
       git_dirty: gitInfo.dirty,
       cli_version: opts.cliVersion ?? null,
       rollback_of: opts.applyId,
       // Re-post the restored snapshot so rolling FORWARD to this deployment
       // works the same way. Pins reflect what the rollback set.
-      manifest: buildDeploymentManifest(sanitized.state, {
-        ...connectorVersionPins(sanitized.state, catalog),
+      manifest: buildDeploymentManifest(targetState, {
+        ...connectorVersionPins(targetState, catalog),
         ...Object.fromEntries(repoints.map((r) => [r.key, r.to])),
         ...manifest.connector_versions,
       }),

@@ -14,14 +14,46 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import { resolveBoundChannelRows } from "../../../gateway/channels/bound-channels";
+import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { upsertChatConnectionProjection } from "../../../lobu/stores/connections-projection";
+import { upsertSlackInstallByTeam } from "../../../lobu/stores/slack-installations";
 import { initWorkspaceProvider } from "../../../workspace";
+import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import {
 	createTestAgent,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
-import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
+
+function memorySecretStore() {
+	const secrets = new Map<string, string>();
+	const nameOf = (nameOrRef: string) =>
+		nameOrRef.startsWith("secret://")
+			? nameOrRef.slice("secret://".length)
+			: nameOrRef;
+	return {
+		async get(ref: string) {
+			return secrets.get(nameOf(ref)) ?? null;
+		},
+		async put(name: string, value: string) {
+			secrets.set(name, value);
+			return `secret://${name}`;
+		},
+		async delete(nameOrRef: string) {
+			secrets.delete(nameOf(nameOrRef));
+		},
+		async list(prefix = "") {
+			return [...secrets.keys()]
+				.filter((name) => name.startsWith(prefix))
+				.map((name) => ({
+					ref: `secret://${name}`,
+					backend: "memory",
+					name,
+					updatedAt: 0,
+				}));
+		},
+	} as never;
+}
 
 describe("connections-unify managed-install routing", () => {
 	let orgId: string;
@@ -40,6 +72,7 @@ describe("connections-unify managed-install routing", () => {
 		const sql = getDb();
 		await sql`DELETE FROM watchers WHERE organization_id IN (${orgId}, ${orgB})`;
 		await sql`DELETE FROM connections WHERE organization_id IN (${orgId}, ${orgB})`;
+		await sql`DELETE FROM app_installations WHERE organization_id IN (${orgId}, ${orgB})`;
 	});
 
 	it("resolves a managed install's bound channel via connection_id (agent_id NULL)", async () => {
@@ -125,5 +158,74 @@ describe("connections-unify managed-install routing", () => {
 		// Old org's managed install demoted; the new org owns the workspace.
 		expect(await status(orgId, "slackinst-xfer-a")).toBe("paused");
 		expect(await status(orgB, "slackinst-xfer-b")).toBe("active");
+	});
+
+	it("retires a stale org-wide (E…) connection when a per-workspace reinstall arrives", async () => {
+		const db = getDb();
+		const ENTERPRISE = "EGRIDSUP";
+		const WORKSPACE = "TGRIDSUP";
+		const secretStore = memorySecretStore();
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, display_name,
+				status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-orphan', 'org'
+			)
+		`;
+		const workspace = await upsertSlackInstallByTeam(
+			createPostgresAppInstallationStore(),
+			secretStore,
+			orgId,
+			WORKSPACE,
+			{
+				botToken: "xoxb-grid-test",
+				enterpriseId: ENTERPRISE,
+			},
+		);
+
+		const live = async (slug: string) => {
+			const [r] = (await db`
+				SELECT 1 FROM connections
+				WHERE organization_id = ${orgId} AND slug = ${slug} AND deleted_at IS NULL
+			`) as Array<unknown>;
+			return r != null;
+		};
+
+		expect(await live(workspace.id)).toBe(true);
+		expect(await live("slackinst-grid-orphan")).toBe(false);
+	});
+
+	it("keeps an active org-wide Grid install when a workspace sibling is installed", async () => {
+		const db = getDb();
+		const enterpriseId = "EGRIDACTIVE";
+		const secretStore = memorySecretStore();
+		const install = (teamId: string, isEnterpriseInstall = false) =>
+			upsertSlackInstallByTeam(
+				createPostgresAppInstallationStore(),
+				secretStore,
+				orgId,
+				teamId,
+				{
+					botToken: "xoxb-grid-test",
+					enterpriseId,
+					isEnterpriseInstall,
+				},
+			);
+
+		const orgWide = await install(enterpriseId, true);
+		const workspace = await install("TGRIDACTIVE");
+		const live = await db<{ slug: string }[]>`
+			SELECT slug FROM connections
+			WHERE organization_id = ${orgId}
+				AND slug IN (${orgWide.id}, ${workspace.id})
+				AND deleted_at IS NULL AND status = 'active'
+			ORDER BY slug
+		`;
+
+		expect(live.map((row) => row.slug)).toEqual(
+			[orgWide.id, workspace.id].sort(),
+		);
 	});
 });

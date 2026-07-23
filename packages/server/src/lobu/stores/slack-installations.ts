@@ -346,6 +346,11 @@ export async function upsertSlackInstallByTeam(
         teamId,
         ...(slackRow.teamName ? { teamName: slackRow.teamName } : {}),
         ...(slackRow.botUserId ? { botUserId: slackRow.botUserId } : {}),
+        // Persist Grid identity so a later T… activation can recognize an
+        // orphaned E…-keyed projection. An E… row with an active backing install
+        // remains valid for org-wide sibling routing and is not retired.
+        ...(data.enterpriseId ? { enterpriseId: data.enterpriseId } : {}),
+        ...(data.isEnterpriseInstall ? { isEnterpriseInstall: true } : {}),
       },
       status: "active",
       createdAt: slackRow.createdAt,

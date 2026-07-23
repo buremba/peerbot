@@ -201,6 +201,13 @@ export async function upsertChatConnectionProjection(
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  // Grid identity lets a T… projection find the stale E…-keyed generation even
+  // though their tenant keys differ.
+  const rawEnterpriseId = conn.metadata?.enterpriseId;
+  const enterpriseId =
+    typeof rawEnterpriseId === "string" && rawEnterpriseId.length > 0
+      ? rawEnterpriseId
+      : null;
   const tenantLockKey = chatTenantAdvisoryLockKey(conn, orgId);
   const managedLockKey = managedTenantAdvisoryLockKey(conn);
   const displayName =
@@ -213,7 +220,7 @@ export async function upsertChatConnectionProjection(
   };
 
   if (status === "active" && externalTenantId) {
-    // Universal order (see chatTenantAdvisoryLockKey): BOTH advisories up
+    // Universal order (see chatTenantAdvisoryLockKey): tenant advisories up
     // front, before ANY row lock — in particular the same-org demote below is
     // a row lock and must follow the managed-advisory, or a concurrent
     // cross-org write (managed-advisory, then row-locks THIS org's sibling)
@@ -225,6 +232,13 @@ export async function upsertChatConnectionProjection(
     if (managedLockKey) {
       await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
         managedLockKey,
+      ]);
+    }
+    if (credentialMode === "managed" && enterpriseId) {
+      // E… and T… installs take different tenant locks. This shared lock orders
+      // the E… projection write against a T… activation tombstoning that row.
+      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `chatconn:${orgId}:${conn.platform}:enterprise:${enterpriseId}`,
       ]);
     }
 
@@ -253,6 +267,47 @@ export async function upsertChatConnectionProjection(
         },
         "Demoted sibling active chat connection (one-active-per-tenant)",
       );
+    }
+
+    // A T… activation retires an orphaned E…-keyed generation. An E… row with an
+    // active backing install remains valid: Slack allows an org-wide install to
+    // coexist with separately installed Grid workspaces.
+    if (
+      credentialMode === "managed" &&
+      enterpriseId &&
+      enterpriseId !== externalTenantId
+    ) {
+      const supersededEnterprise = await sql`
+        UPDATE connections SET deleted_at = now(), status = 'paused', updated_at = now()
+        WHERE organization_id = ${orgId}
+          AND connector_key = ${conn.platform}
+          AND external_tenant_id = ${enterpriseId}
+          AND credential_mode = 'managed'
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND slug <> ${slug}
+          AND NOT EXISTS (
+            SELECT 1 FROM app_installations ai
+            WHERE ai.organization_id = ${orgId}
+              AND ai.provider = ${conn.platform}
+              AND ai.metadata->>'external_id' = connections.slug
+              AND ai.status = 'active'
+          )
+        RETURNING slug
+      `;
+      if (supersededEnterprise.length > 0) {
+        logger.info(
+          {
+            orgId,
+            platform: conn.platform,
+            teamId: externalTenantId,
+            enterpriseId,
+            activated: slug,
+            superseded: supersededEnterprise.map((r: { slug: string }) => r.slug),
+          },
+          "Retired stale enterprise-keyed Slack Grid connection projection",
+        );
+      }
     }
 
     // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED

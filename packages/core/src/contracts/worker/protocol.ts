@@ -122,6 +122,13 @@ export const PollResponseSchema = Type.Object({
   db_egress_policy: Type.Optional(
     Type.Union([Type.Literal("block-private"), Type.Literal("allow-private")])
   ),
+  /**
+   * Operator-configured exact hosts (comma-separated) exempt from the private-IP
+   * range check under `block-private` — e.g. a Tailscale/CGNAT DB. Travels the
+   * same gateway-authoritative channel as `db_egress_policy` and REPLACES any
+   * worker-local list. Never exempts metadata/link-local/multicast.
+   */
+  db_egress_allow_hosts: Type.Optional(Type.String()),
   checkpoint: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   entity_ids: Type.Optional(Type.Array(Type.Integer())),
   credentials: Type.Optional(Type.Union([OAuthCredentialsSchema, Type.Null()])),

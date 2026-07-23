@@ -80,6 +80,36 @@ const ALLOW_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
   ['ff00::', 8],
 ];
 
+/**
+ * Cloud-metadata endpoints that live OUTSIDE the ranges the `allow-private`
+ * floor already denies, listed individually so they stay blocked under every
+ * policy and even for an explicitly allowlisted host.
+ *
+ * Each sits in a range `allow-private` deliberately permits, so without this
+ * set an exemption would drop the host to that floor and expose the endpoint:
+ * Alibaba's is in CGNAT `100.64.0.0/10` — exactly the range a Tailscale
+ * exemption targets — and AWS's IPv6 IMDS is in ULA `fc00::/7`, where a
+ * self-hoster's DB legitimately lives. Kept metadata-only so ordinary CGNAT
+ * and ULA hosts stay reachable. (169.254.169.254 and 169.254.170.2 need no
+ * entry — link-local `169.254.0.0/16` is already denied at the floor.)
+ */
+const METADATA_V4: ReadonlyArray<readonly [string, number]> = [
+  ['100.100.100.200', 32], // Alibaba Cloud metadata (inside CGNAT)
+  ['192.0.0.192', 32], // Oracle Cloud metadata (IETF protocol assignments)
+];
+
+const METADATA_V6: ReadonlyArray<readonly [string, number]> = [
+  ['fd00:ec2::254', 128], // AWS IMDS over IPv6 (inside ULA)
+];
+
+function isMetadataV4(address: string): boolean {
+  return METADATA_V4.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+}
+
+function isMetadataV6(address: string): boolean {
+  return METADATA_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
+}
+
 type NormalizedHost =
   | { kind: 'ipv4'; value: string }
   | { kind: 'ipv6'; value: string }
@@ -153,12 +183,16 @@ function matchesIpv6Prefix(address: string, base: string, prefix: number): boole
 
 function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
   const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V4 : ALLOW_PRIVATE_V4;
-  return ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+  return (
+    isMetadataV4(address) ||
+    ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix))
+  );
 }
 
 function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {
   const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V6 : ALLOW_PRIVATE_V6;
   return (
+    isMetadataV6(address) ||
     matchesIpv6Prefix(address, '::', 128) ||
     (policy === 'block-private' && matchesIpv6Prefix(address, '::1', 128)) ||
     ranges.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))
@@ -261,18 +295,72 @@ export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
 const defaultLookup: HostLookup = (host) => dns.promises.lookup(host, { all: true });
 
 /**
+ * Parse an operator-supplied allow-host list (comma-separated) into entries.
+ *
+ * Deployment config ONLY — it rides the same gateway-authoritative path as the
+ * policy itself and is never settable from tenant/connection config, so a tenant
+ * cannot widen its own egress boundary. Entries are matched EXACTLY against the
+ * bare host extracted from DATABASE_URL (IPv6 without URL brackets); no
+ * wildcards or CIDRs, so approving one tailnet host never approves the whole
+ * `100.64.0.0/10` range.
+ */
+export function parseAllowedHosts(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  for (const entry of entries) {
+    // Reject shapes that cannot match `extractDbHosts`; otherwise an operator
+    // typo silently leaves the intended exemption inactive.
+    const reason = malformedAllowedHostReason(entry);
+    if (reason) {
+      throw new Error(
+        `LOBU_DB_EGRESS_ALLOW_HOSTS entry "${entry}" is invalid: ${reason}. ` +
+          'Use the exact bare host from DATABASE_URL (no CIDR, wildcard, port, or IPv6 brackets).',
+      );
+    }
+  }
+  return entries;
+}
+
+/** Why an allow-host entry can never match a parsed DATABASE_URL host, if so. */
+function malformedAllowedHostReason(entry: string): string | null {
+  if (entry.includes('/')) return 'a CIDR range is not an exact host';
+  if (entry.includes('*')) return 'a wildcard is not an exact host';
+  if (entry.startsWith('[') || entry.endsWith(']')) {
+    return 'brackets are stripped from IPv6 hosts before matching';
+  }
+  // A bare IPv6 literal legitimately contains `:` — only flag a trailing
+  // `:port`, which `extractDbHosts` would already have removed from the URL.
+  if (net.isIP(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
+  return null;
+}
+
+/** Case-insensitive exact match of a URL host against the allow list. */
+function isAllowlistedHost(host: string, allowedHosts: readonly string[]): boolean {
+  if (allowedHosts.length === 0) return false;
+  const needle = host.trim().toLowerCase();
+  return allowedHosts.some((entry) => entry.toLowerCase() === needle);
+}
+
+/**
  * Throw if `host` (an IP literal OR a DNS name) is — or resolves to — an address
  * blocked under `policy`. A hostname is resolved and rejected if ANY returned
  * address is blocked (covers multi-record / round-robin rebind tricks). The
  * error names the host but never the full connection string (credentials must
  * not leak). `lookup` is injectable for tests.
+ *
+ * `allowedHosts` (operator deployment config) exempts an exactly-matching host
+ * from the POLICY range check only — see {@link resolveAllowedHostAddresses}.
  */
 export async function assertHostAllowed(
   host: string,
   policy: DbEgressPolicy,
   lookup: HostLookup = defaultLookup,
+  allowedHosts: readonly string[] = [],
 ): Promise<void> {
-  await resolveAllowedHostAddresses(host, policy, lookup);
+  await resolveAllowedHostAddresses(host, policy, lookup, allowedHosts);
 }
 
 /**
@@ -281,15 +369,28 @@ export async function assertHostAllowed(
  * TOCTOU: the socket dials exactly what was validated, never a re-resolve).
  * An IP-literal host returns its normalized form (IPv4-mapped/NAT64 unwrapped);
  * a hostname returns every address the single guard-time lookup produced.
+ *
+ * An allowlisted host is exempted from the POLICY range check (so an operator
+ * can reach a private/CGNAT DB — e.g. over Tailscale — while cloud mode stays
+ * on) but NEVER from the always-blocked set: metadata/link-local, unspecified,
+ * multicast and reserved are rejected under every policy, for allowlisted and
+ * ordinary hosts alike. That floor is what makes this a destination exemption
+ * rather than an SSRF off-switch, so allowlisting a name whose DNS answer is
+ * `169.254.169.254` — or its IPv6 twin `fd00:ec2::254` — still fails.
  */
 export async function resolveAllowedHostAddresses(
   host: string,
   policy: DbEgressPolicy,
   lookup: HostLookup = defaultLookup,
+  allowedHosts: readonly string[] = [],
 ): Promise<string[]> {
+  // An exempted host drops to the `allow-private` floor — never below it.
+  const effectivePolicy: DbEgressPolicy = isAllowlistedHost(host, allowedHosts)
+    ? 'allow-private'
+    : policy;
   const normalized = normalizeIpLiteral(host);
   if (normalized.kind === 'ipv4' || normalized.kind === 'ipv6' || normalized.kind === 'invalid') {
-    if (isBlockedIp(host, policy)) {
+    if (isBlockedIp(host, effectivePolicy)) {
       throw new Error(
         `DATABASE_URL host "${host}" is a blocked internal/metadata address (egress policy: ${policy}).`,
       );
@@ -307,7 +408,7 @@ export async function resolveAllowedHostAddresses(
     throw new Error(`DATABASE_URL host "${host}" could not be resolved: ${msg}`);
   }
   for (const { address } of addresses) {
-    if (isBlockedIp(address, policy)) {
+    if (isBlockedIp(address, effectivePolicy)) {
       throw new Error(
         `DATABASE_URL host "${host}" resolves to a blocked internal/metadata address (${address}, egress policy: ${policy}).`,
       );
@@ -368,6 +469,7 @@ export async function assertConnectionStringAllowed(
   connectionString: string,
   policy: DbEgressPolicy,
   lookup: HostLookup = defaultLookup,
+  allowedHosts: readonly string[] = [],
 ): Promise<void> {
   const hosts = extractDbHosts(connectionString);
   if (hosts.length === 0) {
@@ -378,7 +480,7 @@ export async function assertConnectionStringAllowed(
   }
   for (const host of hosts) {
     if (policy === 'allow-private' && normalizeIpLiteral(host).kind === 'not-ip') continue;
-    await assertHostAllowed(host, policy, lookup);
+    await assertHostAllowed(host, policy, lookup, allowedHosts);
   }
 }
 
@@ -476,6 +578,7 @@ export function requiredTlsMode(connectionString: string): string {
 export async function resolvePinnedDbHosts(
   connectionString: string,
   lookup: HostLookup = defaultLookup,
+  allowedHosts: readonly string[] = [],
 ): Promise<Map<string, string>> {
   const hosts = extractDbHosts(connectionString);
   if (hosts.length === 0) {
@@ -483,7 +586,15 @@ export async function resolvePinnedDbHosts(
   }
   const pinned = new Map<string, string>();
   for (const host of hosts) {
-    const addresses = await resolveAllowedHostAddresses(host, 'block-private', lookup);
+    // An allowlisted host is still RESOLVED AND PINNED — the exemption widens
+    // which addresses are acceptable, never whether the socket is nailed to the
+    // validated one, so DNS-rebind stays closed for exempted hosts too.
+    const addresses = await resolveAllowedHostAddresses(
+      host,
+      'block-private',
+      lookup,
+      allowedHosts,
+    );
     const first = addresses[0];
     if (first === undefined) {
       throw new Error(`DATABASE_URL host "${host}" produced no usable address.`);
@@ -565,12 +676,13 @@ export async function buildDbEgressHardening(
   policy: DbEgressPolicy,
   lookup: HostLookup = defaultLookup,
   makeSocket: MakeSocket = defaultMakeSocket,
+  allowedHosts: readonly string[] = [],
 ): Promise<DbEgressHardening> {
   if (policy !== 'block-private') {
-    await assertConnectionStringAllowed(connectionString, policy, lookup);
+    await assertConnectionStringAllowed(connectionString, policy, lookup, allowedHosts);
     return {};
   }
   const ssl = requiredTlsMode(connectionString);
-  const pinned = await resolvePinnedDbHosts(connectionString, lookup);
+  const pinned = await resolvePinnedDbHosts(connectionString, lookup, allowedHosts);
   return { ssl, socket: createPinnedSocketFactory(pinned, makeSocket) };
 }

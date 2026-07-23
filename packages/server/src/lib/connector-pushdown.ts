@@ -11,7 +11,7 @@ import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtim
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
-import { isCloudMode } from '../utils/cloud-mode';
+import { dbEgressConfig } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
@@ -105,7 +105,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       config: {
         ...connectionCredentials,
         ...(p.config ?? {}),
-        LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
+        ...dbEgressConfig(),
       },
       env: {},
       sessionState,
@@ -233,7 +233,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   const config = {
     ...connectionCredentials,
     ...feedConfig,
-    LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
+    ...dbEgressConfig(),
   };
 
   const terms = (p.terms ?? []).map((t) => t.trim()).filter(Boolean);

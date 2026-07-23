@@ -923,6 +923,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     // `config`) so the worker installs it as authoritative `job.env` and takes the
     // STRICTER of gateway-vs-worker; block-private can never be downgraded.
     db_egress_policy: isCloudMode() ? 'block-private' : 'allow-private',
+    // Operator allow-host list rides the SAME authoritative channel as the
+    // policy: exact hosts that stay reachable under block-private. Never from
+    // tenant config, and it never exempts metadata/link-local.
+    db_egress_allow_hosts: process.env.LOBU_DB_EGRESS_ALLOW_HOSTS || undefined,
     checkpoint: row.checkpoint ?? undefined,
     entity_ids: row.feed_entity_ids ?? undefined,
     credentials,

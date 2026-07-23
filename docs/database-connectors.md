@@ -89,9 +89,13 @@ runs a pre-connect host check on `sync()`, `query()`, and `search()`. Policy com
 - `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
   / ULA, but still blocks link-local + cloud metadata (`169.254/16`), multicast,
   and the unspecified address (no DB lives there).
-- `block-private` (cloud) — blocks **every** non-public address. A hostname is
-  resolved and rejected if ANY returned address is blocked (multi-record rebind),
-  with IPv4-mapped / NAT64 / zone-id normalization and fail-closed on malformed
+- `block-private` (cloud) — blocks **every** non-public address unless the
+  operator explicitly lists that exact URL host in the comma-separated
+  `LOBU_DB_EGRESS_ALLOW_HOSTS` deployment variable. An exemption lowers only
+  that host to the `allow-private` floor; metadata/link-local, unspecified,
+  multicast, and reserved addresses remain blocked. Hostnames are resolved and
+  rejected if ANY returned address is blocked (multi-record rebind), with
+  IPv4-mapped / NAT64 / zone-id normalization and fail-closed on malformed
   literals. On top of classify-and-reject (`buildDbEgressHardening`):
   - **Resolve-then-pin:** each hostname is resolved once at guard time and the
     postgres.js pool gets a custom `socket` factory that dials the validated IP
@@ -107,6 +111,12 @@ runs a pre-connect host check on `sync()`, `query()`, and `search()`. Policy com
     rather than `verify-full` because tenant DBs commonly present self-signed /
     private-CA certs — upgrading the floor once per-connection CA upload exists
     is the noted follow-up.
+
+The allow-host setting is global operator deployment config, not connection or
+tenant config. Entries must match the bare host extracted from `DATABASE_URL`
+(IPv6 without URL brackets); CIDRs, wildcards, ports, and bracketed IPv6 forms
+are rejected. Allowlisted names are still resolved once, validated against the
+floor, pinned to the validated address, and connected with forced TLS.
 
 **Deferred (explicit follow-up):** a per-org destination allowlist ("this org
 may only reach these DB hosts"). block-private + pin + forced TLS protects the

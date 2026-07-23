@@ -301,6 +301,33 @@ describe("entity resolution module", () => {
 		expect(assess("two").fingerprint).not.toBe(assess("three").fingerprint);
 	});
 
+	it("reads rule-field values from entity_identities rows, not just metadata", () => {
+		// Connectors write phones/emails to entity_identities; metadata is often
+		// empty. Two persons sharing a phone only through identity rows must still
+		// produce that phone as evidence.
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: {
+				id: 1,
+				metadata: {},
+				identities: [{ namespace: "phone", identifier: "+90 506 788 88 45" }],
+			},
+			losers: [
+				{
+					id: 2,
+					metadata: {},
+					identities: [{ namespace: "phone", identifier: "905067888845" }],
+				},
+			],
+		});
+		expect(assessment.decision).toBe("review");
+		expect(assessment.evidence).toContainEqual({
+			kind: "phone",
+			identifier: "905067888845",
+		});
+	});
+
 	it("rejects oversized decision batches before returning partial work", () => {
 		const candidates = Array.from({ length: 400 }, (_, index) => ({
 			id: index + 1,

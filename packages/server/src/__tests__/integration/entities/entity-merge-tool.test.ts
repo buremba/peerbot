@@ -239,6 +239,46 @@ describe("manage_entity merge action", () => {
 		expect(completedEvent.interaction_status).toBe("completed");
 	});
 
+	it("queues review evidence for a phone shared only through entity_identities", async () => {
+		// The prod-shaped gap: connectors write phones to entity_identities, not
+		// metadata, so the matcher must read identity rows to see the match.
+		const org = await createTestOrganization({ name: "Identity Evidence Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES
+        (${org.id}, ${winner.id}, 'phone', '+90 506 788 88 45'),
+        (${org.id}, ${loser.id}, 'phone', '905067888845'),
+        (${org.id}, ${loser.id}, 'wa_jid', '905067888845@s.whatsapp.net')
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as {
+			approval_queued: boolean;
+			resolution: {
+				decision: string;
+				evidence: Array<{ kind: string; identifier: string }>;
+			};
+		};
+
+		expect(queued.approval_queued).toBe(true);
+		expect(queued.resolution.decision).toBe("review");
+		expect(queued.resolution.evidence).toContainEqual({
+			kind: "phone",
+			identifier: "905067888845",
+		});
+	});
+
 	it("carries the proposer's rationale to the card without letting it prove the merge", async () => {
 		const org = await createTestOrganization({ name: "Rationale Org" });
 		const user = await createTestUser();

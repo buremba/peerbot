@@ -45,6 +45,7 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../utils/organization-access';
+import { resolveRunInitiator } from '../initiator';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
@@ -694,14 +695,19 @@ async function queueWatcherWriteForApproval(
   }
 
   const sql = getDb();
+  const initiatorColumns = resolveRunInitiator(ctx);
   const inserted = await sql`
     INSERT INTO runs (
       organization_id, run_type, action_key, action_input,
-      created_by_user_id, approval_status, status, created_at
+      created_by_user_id, initiator_kind, initiator_ref,
+      approval_status, status, created_at
     ) VALUES (
       ${ctx.organizationId}, 'internal', ${MANAGE_BEHAVIORS_ACTION_KEY},
       ${sql.json(proposal as unknown as Record<string, unknown>)},
-      ${ctx.userId ?? null}, 'pending', 'pending', current_timestamp
+      ${initiatorColumns.createdByUserId},
+      ${initiatorColumns.initiatorKind},
+      ${sql.json(initiatorColumns.initiatorRef)},
+      'pending', 'pending', current_timestamp
     )
     RETURNING id
   `;

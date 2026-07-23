@@ -1,8 +1,8 @@
 /**
  * Declarative entity-link resolver at event ingestion.
  *
- * A connector declares `eventKinds[kind].entityLinks[]` rules. Each rule maps
- * event identifier fields (phone, email, wa_jid, ...) to a target entity type.
+ * A connector declares `eventKinds[kind].attributions[]` rules. Each attribution
+ * maps event identifier fields (phone, email, wa_jid, ...) to a target entity.
  * The ingestion pipeline:
  *   1) Extracts + normalizes identifiers from each event.
  *   2) Looks them up in the normalized `entity_identities` table

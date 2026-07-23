@@ -1,7 +1,7 @@
 /**
  * GitHub App webhook actor → person resolution. The live App-webhook path used
  * to land deliveries with empty `events.entity_ids`; this resolves the authoring
- * actor to a tenant-scoped `person` (mirroring the poll path's entityLinks keys).
+ * actor to a tenant-scoped `person` through the same attribution target as polling.
  * Org-scoped via the caller's resolved install; resolution never crosses orgs.
  */
 

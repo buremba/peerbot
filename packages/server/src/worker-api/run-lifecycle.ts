@@ -223,7 +223,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			await materializeInlineAttachments(batch.items);
 		batch.items = materializedItems as typeof batch.items;
 
-		// Auto-create dimension entities declared via eventKinds[kind].entityLinks
+		// Resolve or create entities declared via eventKinds[kind].attributions
 		// before inserting events. One query per (entityType, matchField) per
 		// batch — cheap compared to the per-event inserts that follow.
 		await applyEventAttributions({

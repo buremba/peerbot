@@ -2,9 +2,9 @@
  * Unit tests for the WhatsApp connector's `toEvent` and `jidToPhone`.
  *
  * These cover the shape-translation path between real Baileys WAMessage
- * objects and the EventEnvelope metadata the entityLinks rule reads —
+ * objects and the EventEnvelope metadata the attribution rule reads —
  * multi-device JID suffix handling, group participant attribution, and
- * from_me suppression. The integration test (whatsapp-entity-links.test.ts)
+ * from_me suppression. The integration test (entity-links-contract.test.ts)
  * only exercises applyEventAttributions with synthetic metadata, so regressions
  * in toEvent would otherwise pass undetected.
  *

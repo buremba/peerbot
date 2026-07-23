@@ -12,9 +12,8 @@ import { CONNECTOR_RECALL_NAMESPACES } from '../../identity/connector-identity-m
  * Identity namespaces backed by partial BTREE indexes on `events.metadata`.
  *
  * The canonical registry lives in connector-sdk so connectors, the identity
- * engine, and read-time recall share one vocabulary. This server-side export is
- * kept for compatibility with existing imports while the legacy entityLinks
- * path is migrated to the identity engine + event attribution pipeline.
+ * engine, and read-time recall share one vocabulary. This server-side export
+ * assembles the registry used by event-attribution recall and its index invariant.
  *
  * Non-recall namespaces are intentionally unsupported here: without a matching
  * index the identity branch seq-scans `events`, which blows up the entire

@@ -1753,7 +1753,7 @@ export default class GitHubConnector extends ConnectorRuntime {
    * Canonical author identity slot for attributions. Stamps `author_login`
    * (the mutable handle, indexed for read-time attribution) and `author_id`
    * (the immutable numeric GitHub user id, the PRIMARY match/dedupe key) into
-   * event metadata so the ingestion pipeline's `applyEntityLinks` resolves a
+   * event metadata so the ingestion pipeline's `applyEventAttributions` resolves a
    * `person` from REST payloads. Omitted keys when absent — bots/ghost authors
    * may lack an id; the login still matches.
    */

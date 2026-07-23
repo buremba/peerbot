@@ -161,9 +161,10 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
     expect(granted).toBeUndefined();
   });
 
-  it('grants when the link is under a different team key but the platform user is unique (Grid E… vs T…)', async () => {
+  it('grants via alternateTeamId when the link is under the enterprise key (Grid E… vs T…)', async () => {
     // Managed enterprise installs key chat_user_identities on E…; inbound
-    // events carry the workspace T…. Unique platform_user_id still maps.
+    // events carry the workspace T…. Callers pass connection external_tenant_id
+    // as alternateTeamId — exact team-scoped, not a global U… collapse.
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await linkSlackIdentity({
       teamId: 'E_ENTERPRISE',
@@ -176,24 +177,19 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       organizationId: orgId,
       userId: SLACK_USER,
       platform: 'slack',
-      teamId: 'T_WORKSPACE', // not the linked key
+      teamId: 'T_WORKSPACE',
+      alternateTeamId: 'E_ENTERPRISE',
     });
 
     expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
   });
 
-  it('withholds the unique-user fallback when the same Slack id maps to two Lobu users', async () => {
-    const { orgId, systemAgentId } = await seedOwnerBuilder();
-    const other = await createTestUser();
+  it('does not grant when only an unrelated team has the link (no alternate)', async () => {
+    const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await linkSlackIdentity({
-      teamId: 'T_A',
+      teamId: 'E_ENTERPRISE',
       platformUserId: SLACK_USER,
-      lobuUserId: (await createTestUser()).id,
-    });
-    await linkSlackIdentity({
-      teamId: 'T_B',
-      platformUserId: SLACK_USER,
-      lobuUserId: other.id,
+      lobuUserId: userId,
     });
 
     const granted = await resolveBuilderAdminTools({
@@ -201,7 +197,8 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       organizationId: orgId,
       userId: SLACK_USER,
       platform: 'slack',
-      teamId: 'T_MISSING',
+      teamId: 'T_WORKSPACE',
+      // no alternateTeamId → fail closed
     });
 
     expect(granted).toBeUndefined();

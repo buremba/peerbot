@@ -101,7 +101,18 @@ export async function resolveBuilderAdminTools(args: {
    * the session's Lobu user id and is used directly.
    */
   platform?: string;
+  /**
+   * Workspace team id for identity lookup (Slack `T…` from the event). Prefer
+   * this over routing keys; see call site for platformMetadata.teamId.
+   */
   teamId?: string;
+  /**
+   * Optional second team key to try when the first miss (e.g. Slack connection
+   * `external_tenant_id` = Grid enterprise `E…` while the event carries a
+   * workspace `T…`). Only an exact row under that key counts — never a
+   * cross-team unique-user collapse.
+   */
+  alternateTeamId?: string;
 }): Promise<string[] | undefined> {
   if (!args.agentId || !args.organizationId || !args.userId) return undefined;
   try {
@@ -112,9 +123,21 @@ export async function resolveBuilderAdminTools(args: {
     const platform = args.platform;
     const isChatPlatform =
       platform != null && platform !== "api" && platform !== "";
-    const lobuUserId = isChatPlatform
+    let lobuUserId: string | null | undefined = isChatPlatform
       ? await resolveChatUserIdentity(platform, args.teamId, args.userId)
       : args.userId;
+    if (
+      !lobuUserId &&
+      isChatPlatform &&
+      args.alternateTeamId &&
+      args.alternateTeamId !== args.teamId
+    ) {
+      lobuUserId = await resolveChatUserIdentity(
+        platform,
+        args.alternateTeamId,
+        args.userId,
+      );
+    }
     if (!lobuUserId) return undefined;
     const sql = getDb();
     const rows = (await sql`
@@ -423,12 +446,38 @@ export class MessageConsumer {
       // non-Slack callers working.
       const workspaceTeamId =
         platformMetadataString(data.platformMetadata, "teamId") ?? data.teamId;
+      // Grid enterprise installs key connections + some identity rows on E…,
+      // while events carry the workspace T…. Offer that tenant as an
+      // alternate exact key only (still team-scoped — not a global U… collapse).
+      let alternateTeamId: string | undefined;
+      const connectionSlug = platformMetadataString(
+        data.platformMetadata,
+        "connectionId",
+      );
+      if (
+        data.platform === "slack" &&
+        connectionSlug &&
+        connectionSlug !== workspaceTeamId
+      ) {
+        try {
+          const tenantRows = await getDb()<{ external_tenant_id: string | null }>`
+            SELECT external_tenant_id FROM connections
+            WHERE slug = ${connectionSlug} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          const tenant = tenantRows[0]?.external_tenant_id ?? undefined;
+          if (tenant && tenant !== workspaceTeamId) alternateTeamId = tenant;
+        } catch {
+          // Best-effort — grant still tries workspaceTeamId alone.
+        }
+      }
       const adminTools = await resolveBuilderAdminTools({
         agentId: data.agentId,
         organizationId: data.organizationId,
         userId: data.userId,
         platform: data.platform,
         teamId: workspaceTeamId,
+        alternateTeamId,
       });
 
       // Resolve THIS CONVERSATION's pinned runtime provider from its Environment.

@@ -151,37 +151,39 @@ export function slackClaimProvider(
           organizationId,
           confirmMove,
         );
-        // Link installer Slack id → claimer Lobu user so Builder admin tools
-        // (resolveBuilderAdminTools) and owner-routed delivery work without a
-        // separate /lobu preview claim. Best-effort: never fail the claim.
-        if (pending.installerUserId) {
-          try {
+        // Link ONLY Slack identities proven to belong to the claimer (OIDC /
+        // resolveClaimerSlackIdentities). Never map pending.installerUserId to
+        // the claimer unconditionally — a different workspace admin can claim
+        // a plain-workspace install, and forging that link would hand them the
+        // installer's identity (and Builder admin tools on that U…).
+        //
+        // When the claimer IS the installer (same U… in their signed-in
+        // identities), also stamp the install's tenant key (T… or Grid E…) so
+        // later event team ids that match the install row still resolve.
+        try {
+          const identities = await deps.resolveClaimerSlackIdentities(userId);
+          const installer = pending.installerUserId?.toUpperCase() ?? null;
+          const claimerIsInstaller =
+            installer != null &&
+            identities.some((i) => i.slackUserId.toUpperCase() === installer);
+          for (const id of identities) {
+            await linkChatUserIdentity({
+              platform: "slack",
+              teamId: id.teamId,
+              platformUserId: id.slackUserId,
+              lobuUserId: userId,
+            });
+          }
+          if (claimerIsInstaller && pending.installerUserId) {
             await linkChatUserIdentity({
               platform: "slack",
               teamId: pending.teamId,
               platformUserId: pending.installerUserId,
               lobuUserId: userId,
             });
-            // Also cover workspace T… rows the claimer already signed in as
-            // (Grid keeps the same U… across workspaces; plain workspaces may
-            // have signed in under a different team key than the install).
-            const identities = await deps.resolveClaimerSlackIdentities(userId);
-            const installer = pending.installerUserId.toUpperCase();
-            for (const id of identities) {
-              if (id.slackUserId.toUpperCase() !== installer) continue;
-              if (id.teamId.toUpperCase() === pending.teamId.toUpperCase()) {
-                continue; // already linked above
-              }
-              await linkChatUserIdentity({
-                platform: "slack",
-                teamId: id.teamId,
-                platformUserId: id.slackUserId,
-                lobuUserId: userId,
-              });
-            }
-          } catch {
-            // Swallow — claim already committed; identity can be healed later.
           }
+        } catch {
+          // Swallow — claim already committed; identity can be healed later.
         }
         return { bindingId: installationId };
       } catch (err) {

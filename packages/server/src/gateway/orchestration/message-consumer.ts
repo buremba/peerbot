@@ -456,13 +456,19 @@ export class MessageConsumer {
       );
       if (
         data.platform === "slack" &&
+        data.organizationId &&
         connectionSlug &&
         connectionSlug !== workspaceTeamId
       ) {
         try {
+          // Scope by org + slack chat connection so a reused slug in another
+          // tenant cannot supply the alternate team for this privilege grant.
           const tenantRows = await getDb()<{ external_tenant_id: string | null }>`
             SELECT external_tenant_id FROM connections
-            WHERE slug = ${connectionSlug} AND deleted_at IS NULL
+            WHERE organization_id = ${data.organizationId}
+              AND slug = ${connectionSlug}
+              AND connector_key = 'slack'
+              AND deleted_at IS NULL
             LIMIT 1
           `;
           const tenant = tenantRows[0]?.external_tenant_id ?? undefined;

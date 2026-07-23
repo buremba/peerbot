@@ -194,6 +194,8 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
   }
   const platforms = runtime.platforms.filter((v): v is string => typeof v === 'string');
   if (platforms.length === 0) throw new Error('runtime.platforms cannot be empty');
+  const feedsSchema = optionalRecord(raw, 'feeds_schema') ?? {};
+  rejectRemovedEntityLinks(feedsSchema);
   return {
     key,
     version,
@@ -206,11 +208,24 @@ function normalizeManifest(raw: unknown): DeviceConnectorManifest {
       platforms,
     } as DeviceConnectorManifest['runtime'],
     auth_schema: optionalRecord(raw, 'auth_schema'),
-    feeds_schema: optionalRecord(raw, 'feeds_schema') ?? {},
+    feeds_schema: feedsSchema,
     actions_schema: optionalRecord(raw, 'actions_schema'),
     options_schema: optionalRecord(raw, 'options_schema'),
     manifest_hash: optionalStringField(raw, 'manifest_hash'),
   };
+}
+
+function rejectRemovedEntityLinks(feedsSchema: Record<string, unknown>): void {
+  for (const [feedKey, feedDefinition] of Object.entries(feedsSchema)) {
+    if (!isRecord(feedDefinition) || !isRecord(feedDefinition.eventKinds)) continue;
+    for (const [eventKind, eventDefinition] of Object.entries(feedDefinition.eventKinds)) {
+      if (isRecord(eventDefinition) && Object.hasOwn(eventDefinition, 'entityLinks')) {
+        throw new Error(
+          `feeds_schema.${feedKey}.eventKinds.${eventKind}.entityLinks was removed; use attributions`
+        );
+      }
+    }
+  }
 }
 
 function parseStoredManifest(raw: unknown): StoredDeviceManifest | null {

@@ -273,6 +273,42 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
   });
 
+  it('drops a manifest that still declares removed entityLinks rules', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const legacyManifest = manifest({
+      feeds_schema: {
+        snapshots: {
+          key: 'snapshots',
+          name: 'Snapshots',
+          eventKinds: {
+            snapshot: {
+              entityLinks: [
+                {
+                  entityType: 'person',
+                  identities: [{ namespace: 'email', eventPath: 'metadata.email' }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    const res = await poll(workerId, [legacyManifest]);
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId)).toBeNull();
+
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT connector_manifests
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+      LIMIT 1
+    `) as unknown as Array<{ connector_manifests: Record<string, unknown> }>;
+    expect(rows[0]?.connector_manifests).toEqual({});
+  });
+
   it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const connectorManifest = manifest();
@@ -297,6 +333,26 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'apple.computer_use')).not.toBeNull();
     expect(await readDefinition(orgId, 'local.directory')).not.toBeNull();
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
+
+    const whatsapp = await readDefinition(orgId, 'whatsapp.local');
+    const feedsSchema = whatsapp?.feeds_schema as
+      | {
+          messages?: {
+            eventKinds?: {
+              message?: { entityLinks?: unknown; attributions?: unknown };
+            };
+          };
+        }
+      | undefined;
+    const messageKind = feedsSchema?.messages?.eventKinds?.message;
+    expect(messageKind?.entityLinks).toBeUndefined();
+    expect(messageKind?.attributions).toEqual([
+      expect.objectContaining({
+        role: 'authored_by',
+        autoCreate: true,
+        target: expect.objectContaining({ entityType: 'person' }),
+      }),
+    ]);
   });
 
   itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {

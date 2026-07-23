@@ -8,7 +8,7 @@
  *    (see config-isolation.test.ts) — it must NOT import `@lobu/core`'s heavy graph;
  *  - the server compiles/validates the stored metric JSON and must NOT import the CLI.
  * `connector-sdk` is the one shared package both can import, and it already
- * carries entity contract types (EntityIdentitySpec, EntityLinkRule, …).
+ * carries entity contract types (EntityIdentitySpec, EventAttributionRule, …).
  *
  * Plain interfaces for now. A runtime validator (zod, in the layer that
  * validates stored config) lands with the persistence path that uses it. The

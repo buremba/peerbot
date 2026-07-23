@@ -7,7 +7,7 @@
  * Proves:
  *   - a linked-account commit → stable per-sha origin_id, origin_type 'commit',
  *     author date as occurred_at, and author_login/author_id stamped for person
- *     attribution (entityLinks resolves these to a member),
+ *     attribution (the authored_by rule resolves these to a person),
  *   - an unlinked-email commit (author === null) → falls back to the git author
  *     name and carries no author_login/author_id (no false person link).
  */
@@ -102,7 +102,7 @@ describe("GitHub commits feed", () => {
 		const unlinked = result.events[1];
 		expect(unlinked.origin_id).toBe("commit_lobu-ai_lobu_def456");
 		expect(unlinked.author_name).toBe("dependabot"); // git author name fallback
-		// No GitHub account → no author_login/author_id so entityLinks can't
+		// No GitHub account → no author_login/author_id so attribution can't
 		// mis-attribute the commit to a person.
 		expect(unlinked.metadata.author_login).toBeUndefined();
 		expect(unlinked.metadata.author_id).toBeUndefined();

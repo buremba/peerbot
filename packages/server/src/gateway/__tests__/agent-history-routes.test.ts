@@ -221,6 +221,27 @@ describe("agent history routes", () => {
 		return { channelMember, conversationId };
 	}
 
+	async function readPlatformTranscript(
+		userId: string,
+		conversationId: string,
+		opts?: { agentBound?: boolean; withOrgContext?: boolean },
+	): Promise<Response> {
+		setAuthProvider(() => ({
+			userId,
+			platform: "external",
+			...(opts?.agentBound ? { agentId: "agent-1" } : {}),
+			exp: Date.now() + 60_000,
+		}));
+		const request = () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			);
+		return opts?.withOrgContext === false
+			? request()
+			: orgContext.run({ organizationId: ORG_ID }, request);
+	}
+
 	test("replays pending manage_agents approvals as interactions on reload", async () => {
 		setAuthProvider(() => ({
 			userId: USER_ID,
@@ -561,18 +582,10 @@ describe("agent history routes", () => {
 	test("allows a non-owner org member to read a bound platform transcript through federated ACL", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl();
-		setAuthProvider(() => ({
-			userId: channelMember.id,
-			platform: "external",
-			agentId: "agent-1",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
+		const response = await readPlatformTranscript(
+			channelMember.id,
+			conversationId,
+			{ agentBound: true },
 		);
 
 		expect(response.status).toBe(200);
@@ -595,18 +608,10 @@ describe("agent history routes", () => {
 	test("requires an enforced channel ACL for a non-owner org member", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl({ buildAcl: false });
-		setAuthProvider(() => ({
-			userId: channelMember.id,
-			platform: "external",
-			agentId: "agent-1",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
+		const response = await readPlatformTranscript(
+			channelMember.id,
+			conversationId,
+			{ agentBound: true },
 		);
 
 		expect(response.status).toBe(404);
@@ -616,18 +621,7 @@ describe("agent history routes", () => {
 		const { conversationId } = await seedPlatformConversationAcl({
 			buildAcl: false,
 		});
-		setAuthProvider(() => ({
-			userId: USER_ID,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
-		);
+		const response = await readPlatformTranscript(USER_ID, conversationId);
 
 		expect(response.status).toBe(200);
 	});
@@ -636,17 +630,9 @@ describe("agent history routes", () => {
 		const { conversationId } = await seedPlatformConversationAcl();
 		const unresolvedMember = await createTestUser({ name: "Unresolved Member" });
 		await addUserToOrganization(unresolvedMember.id, ORG_ID, "member");
-		setAuthProvider(() => ({
-			userId: unresolvedMember.id,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
+		const response = await readPlatformTranscript(
+			unresolvedMember.id,
+			conversationId,
 		);
 
 		expect(response.status).toBe(404);
@@ -657,17 +643,9 @@ describe("agent history routes", () => {
 		const deniedMember = await createTestUser({ name: "Denied Member" });
 		await addUserToOrganization(deniedMember.id, ORG_ID, "member");
 		await seedFederatedMember(deniedMember.id, "Denied Member", "U01DENIED");
-		setAuthProvider(() => ({
-			userId: deniedMember.id,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
+		const response = await readPlatformTranscript(
+			deniedMember.id,
+			conversationId,
 		);
 
 		expect(response.status).toBe(404);
@@ -675,18 +653,10 @@ describe("agent history routes", () => {
 
 	test("fails closed when a platform conversation channel is not bound to the agent", async () => {
 		const { channelMember } = await seedPlatformConversationAcl();
-		setAuthProvider(() => ({
-			userId: channelMember.id,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
 		const unboundConversationId = "slack:C01UNBOUND:1700000000.123456";
-		const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-			createApp().request(
-				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(unboundConversationId)}/messages`,
-				{ method: "GET", headers: { host: "localhost" } },
-			),
+		const response = await readPlatformTranscript(
+			channelMember.id,
+			unboundConversationId,
 		);
 
 		expect(response.status).toBe(404);
@@ -695,15 +665,10 @@ describe("agent history routes", () => {
 	test("fails closed when the platform transcript route has no trusted org context", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl();
-		setAuthProvider(() => ({
-			userId: channelMember.id,
-			platform: "external",
-			exp: Date.now() + 60_000,
-		}));
-
-		const response = await createApp().request(
-			`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
-			{ method: "GET", headers: { host: "localhost" } },
+		const response = await readPlatformTranscript(
+			channelMember.id,
+			conversationId,
+			{ withOrgContext: false },
 		);
 
 		expect(response.status).toBe(401);

@@ -359,22 +359,34 @@ export class ChatResponseBridge implements ResponseRenderer {
     // terminal payload is the delivery contract under N>1 replicas, so the
     // footer travels with the same authoritative finalText as the answer.
     // Live-streaming strategies have already posted their iterator on whichever
-    // replica claimed the deltas; mutating finalText here would change history
-    // without changing the platform message, and re-posting would duplicate it.
-    if (!blockedAtCompletion && strategy.deliversAtCompletion) {
+    // replica claimed the deltas; enriching the terminal payload would not
+    // change the platform message, and re-posting would duplicate it.
+    let deliveryPayload = payload;
+    if (
+      !blockedAtCompletion &&
+      strategy.deliversAtCompletion &&
+      payload.finalText?.trim()
+    ) {
       const footerUrl = await buildConversationFooterUrl({
         organizationId: this.resolveOrganizationId(payload, ctx),
         agentId: this.resolveAgentId(payload, ctx) ?? undefined,
         conversationId: payload.conversationId,
         publicGatewayUrl: this.manager.getPublicGatewayUrl(),
       });
-      if (footerUrl && payload.finalText?.trim()) {
-        payload.finalText = appendMarkdownFooter(payload.finalText, footerUrl);
+      if (footerUrl) {
+        deliveryPayload = {
+          ...payload,
+          finalText: appendMarkdownFooter(payload.finalText, footerUrl),
+        };
       }
     }
 
     if (!blockedAtCompletion && (stream || canDeliverFromFinalText)) {
-      await strategy.handleCompletion({ ctx, payload, stream: stream ?? null });
+      await strategy.handleCompletion({
+        ctx,
+        payload: deliveryPayload,
+        stream: stream ?? null,
+      });
     } else if (!blockedAtCompletion && deliverWithheldFinalText) {
       // Post the scanned finalText directly — the live-streaming strategy can't
       // deliver it stream-less, and nothing was streamed (deltas withheld).

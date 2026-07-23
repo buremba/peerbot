@@ -368,25 +368,31 @@ export class WorkerGateway {
       // token and retain only non-routing metadata from the body. In particular,
       // an absent connectionId must remove a body-supplied value rather than
       // turning a non-chat run into a cross-tenant Chat delivery.
+      const tokenRouting = {
+        userId: auth.tokenData.userId,
+        conversationId: auth.tokenData.conversationId,
+        channelId: auth.tokenData.channelId,
+        teamId: auth.tokenData.teamId,
+        platform: auth.tokenData.platform,
+        organizationId: auth.tokenData.organizationId,
+      };
+      const tokenMetadata = {
+        connectionId: auth.tokenData.connectionId,
+        agentId: auth.tokenData.agentId,
+        organizationId: tokenRouting.organizationId,
+        chatId: tokenRouting.channelId,
+        responseChannel: tokenRouting.channelId,
+        responseThreadId: tokenRouting.conversationId,
+        teamId: tokenRouting.teamId,
+        source: auth.tokenData.source,
+        senderId: tokenRouting.userId,
+      };
       const platformMetadata =
         responseData.platformMetadata &&
         typeof responseData.platformMetadata === "object" &&
         !Array.isArray(responseData.platformMetadata)
           ? { ...responseData.platformMetadata }
           : {};
-      for (const key of [
-        "connectionId",
-        "agentId",
-        "organizationId",
-        "chatId",
-        "responseChannel",
-        "responseThreadId",
-        "teamId",
-        "source",
-        "senderId",
-      ]) {
-        delete platformMetadata[key];
-      }
       const bodyCustomEvent = responseData.customEvent;
       const bodyCustomEventData = bodyCustomEvent?.data;
       const bodyInteractionEvent = bodyCustomEventData?.event;
@@ -403,45 +409,21 @@ export class WorkerGateway {
                 ...bodyCustomEventData,
                 event: {
                   ...bodyInteractionEvent,
-                  userId: auth.tokenData.userId,
-                  conversationId: auth.tokenData.conversationId,
-                  channelId: auth.tokenData.channelId,
-                  teamId: auth.tokenData.teamId,
-                  platform: auth.tokenData.platform,
-                  connectionId: auth.tokenData.connectionId,
-                  agentId: auth.tokenData.agentId,
-                  organizationId: auth.tokenData.organizationId,
-                  source: auth.tokenData.source,
+                  ...tokenRouting,
+                  connectionId: tokenMetadata.connectionId,
+                  agentId: tokenMetadata.agentId,
+                  source: tokenMetadata.source,
                 },
               },
             }
           : bodyCustomEvent;
       const enrichedResponse = {
         ...responseData,
-        userId: auth.tokenData.userId,
-        conversationId: auth.tokenData.conversationId,
-        channelId: auth.tokenData.channelId,
-        teamId: auth.tokenData.teamId,
-        platform: auth.tokenData.platform,
-        organizationId: auth.tokenData.organizationId,
+        ...tokenRouting,
         customEvent,
         platformMetadata: {
           ...platformMetadata,
-          ...(auth.tokenData.connectionId
-            ? { connectionId: auth.tokenData.connectionId }
-            : {}),
-          ...(auth.tokenData.agentId
-            ? { agentId: auth.tokenData.agentId }
-            : {}),
-          ...(auth.tokenData.organizationId
-            ? { organizationId: auth.tokenData.organizationId }
-            : {}),
-          chatId: auth.tokenData.channelId,
-          responseChannel: auth.tokenData.channelId,
-          responseThreadId: auth.tokenData.conversationId,
-          senderId: auth.tokenData.userId,
-          ...(auth.tokenData.teamId ? { teamId: auth.tokenData.teamId } : {}),
-          ...(auth.tokenData.source ? { source: auth.tokenData.source } : {}),
+          ...tokenMetadata,
         },
       };
 

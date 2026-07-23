@@ -140,6 +140,36 @@ async function postWorkerResponse(
   }
 }
 
+interface StoredThreadResponse {
+  conversationId?: string;
+  userId?: string;
+  channelId?: string;
+  teamId?: string;
+  platform?: string;
+  organizationId?: string;
+  platformMetadata?: Record<string, unknown>;
+  customEvent?: { data?: { event?: Record<string, unknown> } };
+}
+
+async function latestThreadResponse(): Promise<{
+  input: StoredThreadResponse;
+  organizationId: string | null;
+}> {
+  const rows = await getDb()<{
+    action_input: StoredThreadResponse;
+    organization_id: string | null;
+  }>`
+    SELECT action_input, organization_id
+    FROM public.runs
+    WHERE queue_name = 'thread_response'
+    ORDER BY id DESC
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("thread_response row not found");
+  return { input: row.action_input, organizationId: row.organization_id };
+}
+
 /** Read the marker's `run_at` (epoch ms) for the live turn, or null if gone. */
 async function markerRunAtMs(): Promise<number | null> {
   const rows = await getDb()<{ run_at: Date }>`
@@ -206,45 +236,16 @@ describe("POST /worker/response — authoritative tenant", () => {
     });
     expect(res.status).toBe(200);
 
-    const rows = await getDb()<{
-      action_input: {
-        conversationId?: string;
-        userId?: string;
-        channelId?: string;
-        teamId?: string;
-        platform?: string;
-        organizationId?: string;
-        platformMetadata?: {
-          connectionId?: string;
-          agentId?: string;
-          organizationId?: string;
-          chatId?: string;
-          responseChannel?: string;
-          responseThreadId?: string;
-          teamId?: string;
-          source?: string;
-          senderId?: string;
-        };
-        customEvent?: {
-          data?: { event?: Record<string, unknown> };
-        };
-      };
-    }>`
-      SELECT action_input
-      FROM public.runs
-      WHERE queue_name = 'thread_response'
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    expect(rows[0]?.action_input.organizationId).toBe("org-1");
-    expect(rows[0]?.action_input).toMatchObject({
+    const { input } = await latestThreadResponse();
+    expect(input.organizationId).toBe("org-1");
+    expect(input).toMatchObject({
       conversationId: "conv-1",
       userId: "user-1",
       channelId: "chan-1",
       teamId: "team-1",
       platform: "slack",
     });
-    expect(rows[0]?.action_input.platformMetadata).toMatchObject({
+    expect(input.platformMetadata).toMatchObject({
       connectionId: "connection-1",
       agentId: "agent-1",
       organizationId: "org-1",
@@ -255,7 +256,7 @@ describe("POST /worker/response — authoritative tenant", () => {
       source: "watcher-run",
       senderId: "user-1",
     });
-    expect(rows[0]?.action_input.customEvent?.data?.event).toMatchObject({
+    expect(input.customEvent?.data?.event).toMatchObject({
       id: "q-1",
       userId: "user-1",
       conversationId: "conv-1",
@@ -282,18 +283,9 @@ describe("POST /worker/response — authoritative tenant", () => {
     );
     expect(res.status).toBe(200);
 
-    const rows = await getDb()<{
-      action_input: { organizationId?: string };
-      organization_id: string | null;
-    }>`
-      SELECT action_input, organization_id
-      FROM public.runs
-      WHERE queue_name = 'thread_response'
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    expect(rows[0]?.action_input.organizationId).toBeUndefined();
-    expect(rows[0]?.organization_id).toBeNull();
+    const row = await latestThreadResponse();
+    expect(row.input.organizationId).toBeUndefined();
+    expect(row.organizationId).toBeNull();
   });
 
   test("a token without a connection cannot inject chat routing metadata", async () => {
@@ -327,26 +319,8 @@ describe("POST /worker/response — authoritative tenant", () => {
     );
     expect(res.status).toBe(200);
 
-    const rows = await getDb()<{
-      action_input: {
-        platformMetadata?: {
-          connectionId?: string;
-          agentId?: string;
-          organizationId?: string;
-          chatId?: string;
-        };
-        customEvent?: {
-          data?: { event?: Record<string, unknown> };
-        };
-      };
-    }>`
-      SELECT action_input
-      FROM public.runs
-      WHERE queue_name = 'thread_response'
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    expect(rows[0]?.action_input.platformMetadata).toEqual({
+    const { input } = await latestThreadResponse();
+    expect(input.platformMetadata).toEqual({
       agentId: "agent-1",
       organizationId: "org-1",
       chatId: "chan-1",
@@ -357,9 +331,9 @@ describe("POST /worker/response — authoritative tenant", () => {
       senderId: "user-1",
     });
     expect(
-      rows[0]?.action_input.customEvent?.data?.event?.connectionId
+      input.customEvent?.data?.event?.connectionId
     ).toBeUndefined();
-    expect(rows[0]?.action_input.customEvent?.data?.event).toMatchObject({
+    expect(input.customEvent?.data?.event).toMatchObject({
       id: "q-2",
       userId: "user-1",
       conversationId: "conv-1",

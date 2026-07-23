@@ -19,25 +19,33 @@ import { getDb } from "../../db/client.js";
 /**
  * The Lobu user id a chat-platform user has linked to, or null.
  *
- * Scoped by workspace: `platform_user_id` is only unique WITHIN a workspace, so
- * the same id can map to different Lobu users across workspaces. This query
- * filters on all three columns of the `(platform, team_id, platform_user_id)`
- * primary key, so it returns at most one row — the workspace scoping is what
- * makes the lookup unambiguous. Callers use this to grant privilege (builder
- * admin tools, owner re-bind), so an unlinked id must resolve to null, never to
- * the wrong user.
+ * Prefer a workspace-scoped match on `(platform, team_id, platform_user_id)`.
+ * When that misses, fall back to a UNIQUE match on `(platform, platform_user_id)`
+ * alone — Slack Grid keeps the same `U…` id across workspaces in an enterprise,
+ * and managed installs may link under the enterprise id (`E…`) while inbound
+ * events carry a workspace id (`T…`). Ambiguous multi-user matches still fail
+ * closed (null): privilege callers must never guess.
  */
 export async function resolveChatUserIdentity(
 	platform: string,
 	teamId: string | undefined,
 	platformUserId: string,
 ): Promise<string | null> {
-	const rows = await getDb()<{ lobu_user_id: string }>`
+	const sql = getDb();
+	const rows = await sql<{ lobu_user_id: string }>`
     SELECT lobu_user_id FROM chat_user_identities
     WHERE platform = ${platform} AND team_id = ${teamId ?? ""} AND platform_user_id = ${platformUserId}
     LIMIT 1
   `;
-	return rows[0]?.lobu_user_id ?? null;
+	if (rows[0]?.lobu_user_id) return rows[0].lobu_user_id;
+
+	// Unique-by-platform-user fallback (Grid enterprise id vs workspace team id).
+	const any = await sql<{ lobu_user_id: string }>`
+    SELECT DISTINCT lobu_user_id FROM chat_user_identities
+    WHERE platform = ${platform} AND platform_user_id = ${platformUserId}
+  `;
+	if (any.length === 1) return any[0]!.lobu_user_id;
+	return null;
 }
 
 /**

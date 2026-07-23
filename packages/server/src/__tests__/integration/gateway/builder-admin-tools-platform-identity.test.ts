@@ -160,4 +160,50 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
 
     expect(granted).toBeUndefined();
   });
+
+  it('grants when the link is under a different team key but the platform user is unique (Grid E… vs T…)', async () => {
+    // Managed enterprise installs key chat_user_identities on E…; inbound
+    // events carry the workspace T…. Unique platform_user_id still maps.
+    const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
+    await linkSlackIdentity({
+      teamId: 'E_ENTERPRISE',
+      platformUserId: SLACK_USER,
+      lobuUserId: userId,
+    });
+
+    const granted = await resolveBuilderAdminTools({
+      agentId: systemAgentId,
+      organizationId: orgId,
+      userId: SLACK_USER,
+      platform: 'slack',
+      teamId: 'T_WORKSPACE', // not the linked key
+    });
+
+    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+  });
+
+  it('withholds the unique-user fallback when the same Slack id maps to two Lobu users', async () => {
+    const { orgId, systemAgentId } = await seedOwnerBuilder();
+    const other = await createTestUser();
+    await linkSlackIdentity({
+      teamId: 'T_A',
+      platformUserId: SLACK_USER,
+      lobuUserId: (await createTestUser()).id,
+    });
+    await linkSlackIdentity({
+      teamId: 'T_B',
+      platformUserId: SLACK_USER,
+      lobuUserId: other.id,
+    });
+
+    const granted = await resolveBuilderAdminTools({
+      agentId: systemAgentId,
+      organizationId: orgId,
+      userId: SLACK_USER,
+      platform: 'slack',
+      teamId: 'T_MISSING',
+    });
+
+    expect(granted).toBeUndefined();
+  });
 });

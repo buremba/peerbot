@@ -415,12 +415,20 @@ export class MessageConsumer {
       // A on PR #865. Every dispatch is bound to its claimed runs.id.
       // Builder admin-tool grant: only the org's system agent, only when the
       // human driving this turn is an owner/admin. Fails closed.
+      //
+      // `data.teamId` is a ROUTING key (platform name for DMs, channel id for
+      // groups — see message-handler-bridge `payloadTeamId`), NOT the Slack
+      // workspace id. Privilege lookups need the real workspace/enterprise id
+      // from platformMetadata (T… / E…); falling back to data.teamId keeps
+      // non-Slack callers working.
+      const workspaceTeamId =
+        platformMetadataString(data.platformMetadata, "teamId") ?? data.teamId;
       const adminTools = await resolveBuilderAdminTools({
         agentId: data.agentId,
         organizationId: data.organizationId,
         userId: data.userId,
         platform: data.platform,
-        teamId: data.teamId,
+        teamId: workspaceTeamId,
       });
 
       // Resolve THIS CONVERSATION's pinned runtime provider from its Environment.

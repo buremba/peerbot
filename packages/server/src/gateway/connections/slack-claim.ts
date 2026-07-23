@@ -1,4 +1,5 @@
 import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
+import { linkChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
 import {
   type ClaimAuthorization,
@@ -143,13 +144,45 @@ export function slackClaimProvider(
         targetOrganizationId,
       ),
     authorize: (userId, pending) => authorizeSlackClaim(deps, userId, pending),
-    bind: async (pending, organizationId, _userId, confirmMove) => {
+    bind: async (pending, organizationId, userId, confirmMove) => {
       try {
         const { installationId } = await deps.claim(
           pending,
           organizationId,
           confirmMove,
         );
+        // Link installer Slack id → claimer Lobu user so Builder admin tools
+        // (resolveBuilderAdminTools) and owner-routed delivery work without a
+        // separate /lobu preview claim. Best-effort: never fail the claim.
+        if (pending.installerUserId) {
+          try {
+            await linkChatUserIdentity({
+              platform: "slack",
+              teamId: pending.teamId,
+              platformUserId: pending.installerUserId,
+              lobuUserId: userId,
+            });
+            // Also cover workspace T… rows the claimer already signed in as
+            // (Grid keeps the same U… across workspaces; plain workspaces may
+            // have signed in under a different team key than the install).
+            const identities = await deps.resolveClaimerSlackIdentities(userId);
+            const installer = pending.installerUserId.toUpperCase();
+            for (const id of identities) {
+              if (id.slackUserId.toUpperCase() !== installer) continue;
+              if (id.teamId.toUpperCase() === pending.teamId.toUpperCase()) {
+                continue; // already linked above
+              }
+              await linkChatUserIdentity({
+                platform: "slack",
+                teamId: id.teamId,
+                platformUserId: id.slackUserId,
+                lobuUserId: userId,
+              });
+            }
+          } catch {
+            // Swallow — claim already committed; identity can be healed later.
+          }
+        }
         return { bindingId: installationId };
       } catch (err) {
         // The store's ATOMIC fence tripped on the raced path (the sequential

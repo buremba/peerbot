@@ -1,5 +1,4 @@
 import { CrossOrgTransferBlockedError } from "../../lobu/stores/app-installation-store.js";
-import { linkChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
 import {
   type ClaimAuthorization,
@@ -56,6 +55,18 @@ export interface SlackClaimProviderDeps {
   resolveClaimerSlackIdentities(
     userId: string,
   ): Promise<Array<{ teamId: string; slackUserId: string }>>;
+  /**
+   * Persist a `(platform, team_id, platform_user_id) → lobu_user_id` link. The
+   * store fails closed on re-binding an already-linked key to a DIFFERENT user
+   * (see `linkChatUserIdentity`), so a forged call cannot take over an identity.
+   * Injected so `bind`'s post-claim linking is testable without a live DB.
+   */
+  linkChatUserIdentity(opts: {
+    platform: string;
+    teamId?: string;
+    platformUserId: string;
+    lobuUserId: string;
+  }): Promise<void>;
   /** `users.info` admin/owner flags for the claimer. */
   usersInfo: SlackWebApi["usersInfo"];
   /**
@@ -166,7 +177,7 @@ export function slackClaimProvider(
           // Always persist every identity the claimer has already proven via
           // Slack OIDC (team-scoped keys they actually signed in under).
           for (const id of identities) {
-            await linkChatUserIdentity({
+            await deps.linkChatUserIdentity({
               platform: "slack",
               teamId: id.teamId,
               platformUserId: id.slackUserId,
@@ -187,7 +198,7 @@ export function slackClaimProvider(
               return i.teamId.toUpperCase() === installTeam;
             });
           if (claimerIsInstaller && pending.installerUserId) {
-            await linkChatUserIdentity({
+            await deps.linkChatUserIdentity({
               platform: "slack",
               teamId: pending.teamId,
               platformUserId: pending.installerUserId,

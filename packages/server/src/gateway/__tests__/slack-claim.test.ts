@@ -38,8 +38,10 @@ function pendingInstall(
 function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
   deps: SlackClaimProviderDeps;
   claim: ReturnType<typeof mock>;
+  linkChatUserIdentity: ReturnType<typeof mock>;
 } {
   const claim = mock(async () => ({ installationId: "slackinst-bound" }));
+  const linkChatUserIdentity = mock(async () => {});
   const deps: SlackClaimProviderDeps = {
     resolvePending: mock(async () => pendingInstall()),
     resolveActiveOrgSlug: mock(async () => null),
@@ -47,11 +49,22 @@ function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
     resolveClaimerSlackIdentities: mock(async () => [
       { teamId: TEAM, slackUserId: "U-ADMIN" },
     ]),
+    linkChatUserIdentity,
     usersInfo: mock(async () => ({ isAdmin: true, isOwner: false })),
     claim,
     ...overrides,
   };
-  return { deps, claim };
+  return { deps, claim, linkChatUserIdentity };
+}
+
+/** The `{teamId, platformUserId}` pairs a bind linked, for order-free asserts. */
+function linkedPairs(
+  linkMock: ReturnType<typeof mock>,
+): Array<{ teamId: string | undefined; platformUserId: string }> {
+  return linkMock.mock.calls.map((c) => {
+    const opts = c[0] as { teamId?: string; platformUserId: string };
+    return { teamId: opts.teamId, platformUserId: opts.platformUserId };
+  });
 }
 
 describe("slackClaimProvider.authorize", () => {
@@ -255,5 +268,156 @@ describe("slackClaimProvider.bind", () => {
       true,
       "org-target",
     );
+  });
+});
+
+/**
+ * Post-claim identity linking. This is a PRIVILEGE-GRANTING write: the rows it
+ * writes are what `resolveBuilderAdminTools` later reads to hand a Slack `U…`
+ * the org's Builder admin tools. The invariant under test is that `bind` links
+ * ONLY identities the claimer has already proven (via Slack OIDC / `/lobu link`),
+ * and stamps the install's tenant key ONLY when the claimer is provably the
+ * installer — never on `pending.installerUserId` alone.
+ */
+describe("slackClaimProvider.bind — identity linking", () => {
+  test("links every proven identity the claimer signed in with", async () => {
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: TEAM, slackUserId: "U-ADMIN" },
+        { teamId: "T-OTHER", slackUserId: "U-ELSEWHERE" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER" }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+      { teamId: TEAM, platformUserId: "U-ADMIN" },
+      { teamId: "T-OTHER", platformUserId: "U-ELSEWHERE" },
+    ]);
+    // Every link is written for the CLAIMING user, never a third party.
+    for (const call of linkChatUserIdentity.mock.calls) {
+      expect((call[0] as { lobuUserId: string }).lobuUserId).toBe("user-1");
+    }
+  });
+
+  test("does NOT link the installer's U… when a different admin claims a plain workspace", async () => {
+    // The takeover case: U-ADMIN claims an install performed by U-INSTALLER on
+    // a plain workspace. Linking the installer id here would hand U-ADMIN the
+    // installer's identity — and Builder admin tools on that U….
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: TEAM, slackUserId: "U-ADMIN" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER", enterpriseId: null }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+      { teamId: TEAM, platformUserId: "U-ADMIN" },
+    ]);
+    expect(
+      linkedPairs(linkChatUserIdentity).some(
+        (p) => p.platformUserId === "U-INSTALLER",
+      ),
+    ).toBe(false);
+  });
+
+  test("stamps the install team key when the claimer IS the installer (plain: same team + same U…)", async () => {
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: TEAM, slackUserId: "U-INSTALLER" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER", enterpriseId: null }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkedPairs(linkChatUserIdentity)).toContainEqual({
+      teamId: TEAM,
+      platformUserId: "U-INSTALLER",
+    });
+  });
+
+  test("plain workspace: matching U… on a DIFFERENT team does not stamp the install key", async () => {
+    // Plain-workspace `U…` ids are workspace-LOCAL, so the same U… on another
+    // team is a different human. Only same-team + same-U counts.
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: "T-OTHER", slackUserId: "U-INSTALLER" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER", enterpriseId: null }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+      { teamId: "T-OTHER", platformUserId: "U-INSTALLER" },
+    ]);
+    // No row under the INSTALL's team — that would be the collision takeover.
+    expect(
+      linkedPairs(linkChatUserIdentity).some((p) => p.teamId === TEAM),
+    ).toBe(false);
+  });
+
+  test("Grid: matching U… on any team DOES stamp the install key (U is enterprise-global)", async () => {
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => [
+        { teamId: "T-OTHER", slackUserId: "U-INSTALLER" },
+      ]),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({
+        installerUserId: "U-INSTALLER",
+        enterpriseId: "E-GRID",
+        isEnterpriseInstall: true,
+      }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkedPairs(linkChatUserIdentity)).toContainEqual({
+      teamId: TEAM,
+      platformUserId: "U-INSTALLER",
+    });
+  });
+
+  test("a claimer with no proven identities links nothing", async () => {
+    const { deps, linkChatUserIdentity } = makeDeps({
+      resolveClaimerSlackIdentities: mock(async () => []),
+    });
+    await slackClaimProvider(deps).bind(
+      pendingInstall({ installerUserId: "U-INSTALLER" }),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(linkChatUserIdentity).not.toHaveBeenCalled();
+  });
+
+  test("a link failure is swallowed — the claim still returns its bindingId", async () => {
+    // The claim is already committed when linking runs; a link error must not
+    // fail the bind the user is waiting on. Identity can be healed later.
+    const { deps } = makeDeps({
+      linkChatUserIdentity: mock(async () => {
+        throw new Error("db down");
+      }),
+    });
+    const result = await slackClaimProvider(deps).bind(
+      pendingInstall(),
+      "org-1",
+      "user-1",
+      false,
+    );
+    expect(result).toEqual({ bindingId: "slackinst-bound" });
   });
 });

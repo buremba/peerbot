@@ -43,6 +43,7 @@ import {
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolvePinnedSelection } from "../../lobu/stores/environment-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
+import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections-projection.js";
 import { getDb } from "../../db/client.js";
 import {
   classifyConversation,
@@ -461,20 +462,16 @@ export class MessageConsumer {
         connectionSlug !== workspaceTeamId
       ) {
         try {
-          // Scope by org + slack chat connection so a reused slug in another
-          // tenant cannot supply the alternate team for this privilege grant.
-          // Require a LIVE row (status = 'active'): a paused/stopped install
-          // lingers for token refresh and must not seed an alternate team.
-          const tenantRows = await getDb()<{ external_tenant_id: string | null }>`
-            SELECT external_tenant_id FROM connections
-            WHERE organization_id = ${data.organizationId}
-              AND slug = ${connectionSlug}
-              AND connector_key = 'slack'
-              AND status = 'active'
-              AND deleted_at IS NULL
-            LIMIT 1
-          `;
-          const tenant = tenantRows[0]?.external_tenant_id ?? undefined;
+          // Scoped + fail-closed in the store (see
+          // `resolveActiveChatConnectionTenant`): org + slug + connector, and
+          // active rows only, so a reused slug or a paused install can never
+          // supply the alternate team for this privilege grant.
+          const tenant = await resolveActiveChatConnectionTenant(
+            getDb(),
+            data.organizationId,
+            connectionSlug,
+            "slack",
+          );
           if (tenant && tenant !== workspaceTeamId) alternateTeamId = tenant;
         } catch {
           // Best-effort — grant still tries workspaceTeamId alone.

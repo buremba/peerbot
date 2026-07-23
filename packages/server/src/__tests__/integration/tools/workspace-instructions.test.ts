@@ -161,6 +161,25 @@ describe('buildWorkspaceInstructions render fixes', () => {
       '- shop.disconnected (Available before setup): create_order'
     );
   });
+
+  it('renders workspace-data query guidance without org-specific setup', async () => {
+    const emptyOrg = await createTestOrganization({ name: 'Empty Render Org' });
+    const out = await buildWorkspaceInstructions(emptyOrg.id);
+    expect(out).toContain(
+      "When asked about the workspace's data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering"
+    );
+    expect(out).toContain(
+      'Use `search_memory` for semantic recall and `query_sdk` or `query_sql` for structured lookups and counts'
+    );
+    expect(out).toContain(
+      'Do not claim you can see only chat/Slack messages or channel members without querying workspace data first'
+    );
+    const directiveIdx =
+      out?.indexOf("When asked about the workspace's data") ?? -1;
+    const toolSurfaceIdx = out?.indexOf('### Tool surface') ?? -1;
+    expect(directiveIdx).toBeGreaterThan(-1);
+    expect(directiveIdx).toBeLessThan(toolSurfaceIdx);
+  });
 });
 
 describe('org-wide guidance context', () => {

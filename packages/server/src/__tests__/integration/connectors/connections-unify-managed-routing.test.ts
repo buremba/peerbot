@@ -126,4 +126,58 @@ describe("connections-unify managed-install routing", () => {
 		expect(await status(orgId, "slackinst-xfer-a")).toBe("paused");
 		expect(await status(orgB, "slackinst-xfer-b")).toBe("active");
 	});
+
+	it("retires a stale org-wide (E…) connection when a per-workspace reinstall arrives", async () => {
+		const db = getDb();
+		const ENTERPRISE = "EGRIDSUP";
+		const WORKSPACE = "TGRIDSUP";
+		const project = (
+			id: string,
+			teamId: string,
+			metadata: Record<string, unknown>,
+		) =>
+			db.begin(async (tx: typeof db) =>
+				upsertChatConnectionProjection(
+					tx,
+					(v) => db.json(v),
+					{
+						id,
+						platform: "slack",
+						organizationId: orgId,
+						config: { platform: "slack", botToken: `secret://${id}` },
+						settings: {},
+						metadata: { teamId, ...metadata },
+						status: "active",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					},
+					orgId,
+					"managed",
+				),
+			);
+
+		// 1) An ORG-WIDE Grid install: no `team`, keyed on the enterprise E… id.
+		await project("slackinst-grid-orgwide", ENTERPRISE, {
+			enterpriseId: ENTERPRISE,
+			isEnterpriseInstall: true,
+		});
+		// 2) The SAME workspace reinstalled PER-WORKSPACE: Slack returns a T… id,
+		//    and the install carries the enterprise id in metadata.
+		await project("slackinst-grid-workspace", WORKSPACE, {
+			enterpriseId: ENTERPRISE,
+		});
+
+		const live = async (slug: string) => {
+			const [r] = (await db`
+				SELECT 1 FROM connections
+				WHERE organization_id = ${orgId} AND slug = ${slug} AND deleted_at IS NULL
+			`) as Array<unknown>;
+			return r != null;
+		};
+
+		// The per-workspace connection is live; the stale org-wide E… connection is
+		// retired (soft-deleted), not left orphaned.
+		expect(await live("slackinst-grid-workspace")).toBe(true);
+		expect(await live("slackinst-grid-orgwide")).toBe(false);
+	});
 });

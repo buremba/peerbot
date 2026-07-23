@@ -201,6 +201,15 @@ export async function upsertChatConnectionProjection(
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
     typeof rawTeamId === "string" && rawTeamId.length > 0 ? rawTeamId : null;
+  // Grid enterprise id, when the install carried one. A stale ORG-WIDE generation
+  // of the same workspace is keyed on this `E…` id (see enterprise-sibling
+  // supersede below). Only meaningful when it differs from this row's own tenant
+  // key — i.e. this is the newer PER-WORKSPACE (`T…`) generation.
+  const rawEnterpriseId = conn.metadata?.enterpriseId;
+  const enterpriseId =
+    typeof rawEnterpriseId === "string" && rawEnterpriseId.length > 0
+      ? rawEnterpriseId
+      : null;
   const tenantLockKey = chatTenantAdvisoryLockKey(conn, orgId);
   const managedLockKey = managedTenantAdvisoryLockKey(conn);
   const displayName =
@@ -253,6 +262,48 @@ export async function upsertChatConnectionProjection(
         },
         "Demoted sibling active chat connection (one-active-per-tenant)",
       );
+    }
+
+    // Enterprise-sibling supersede (Grid). An ORG-WIDE Grid install returns no
+    // `team`, so its connection was keyed on the enterprise `E…` id. When the SAME
+    // workspace is later reinstalled PER-WORKSPACE, Slack returns a `T…` and this
+    // projection runs under that `T…` key — the exact-tenant demote above cannot
+    // see the `E…` row as the same workspace, so it would be orphaned (its
+    // streaming feed stranded). Retire that stale org-wide generation here: same
+    // org, same platform, keyed on THIS install's enterprise id. Guarded so it
+    // never touches the current row and only fires when the two keys differ (the
+    // org-wide row itself is keyed on `E…`, so re-projecting it is a no-op).
+    // Soft-delete (not pause) so it leaves routing entirely and the
+    // retire_streaming_feeds_for_deleted_connection trigger reclaims its feeds.
+    if (
+      managedLockKey &&
+      credentialMode === "managed" &&
+      enterpriseId &&
+      enterpriseId !== externalTenantId
+    ) {
+      const supersededEnterprise = await sql`
+        UPDATE connections SET deleted_at = now(), status = 'paused', updated_at = now()
+        WHERE organization_id = ${orgId}
+          AND connector_key = ${conn.platform}
+          AND external_tenant_id = ${enterpriseId}
+          AND credential_mode = 'managed'
+          AND deleted_at IS NULL
+          AND slug <> ${slug}
+        RETURNING slug
+      `;
+      if (supersededEnterprise.length > 0) {
+        logger.info(
+          {
+            orgId,
+            platform: conn.platform,
+            teamId: externalTenantId,
+            enterpriseId,
+            activated: slug,
+            superseded: supersededEnterprise.map((r: { slug: string }) => r.slug),
+          },
+          "Retired stale org-wide Grid connection superseded by per-workspace reinstall",
+        );
+      }
     }
 
     // Cross-org managed transfer/demote — managed writes ONLY. A MANAGED

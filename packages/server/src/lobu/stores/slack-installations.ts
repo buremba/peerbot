@@ -346,6 +346,13 @@ export async function upsertSlackInstallByTeam(
         teamId,
         ...(slackRow.teamName ? { teamName: slackRow.teamName } : {}),
         ...(slackRow.botUserId ? { botUserId: slackRow.botUserId } : {}),
+        // Persist the Grid enterprise id (and the org-wide flag) onto the
+        // connection so the projection can recognize a stale ORG-WIDE (`E…`-keyed)
+        // generation as the SAME workspace when a later PER-WORKSPACE reinstall
+        // arrives under a `T…` key — otherwise the old `E…` connection is orphaned
+        // rather than superseded, stranding its streaming feed.
+        ...(data.enterpriseId ? { enterpriseId: data.enterpriseId } : {}),
+        ...(data.isEnterpriseInstall ? { isEnterpriseInstall: true } : {}),
       },
       status: "active",
       createdAt: slackRow.createdAt,

@@ -13,7 +13,7 @@ import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { createTestOrganization } from "../setup/test-fixtures";
+import { createTestOrganization, createTestUser } from "../setup/test-fixtures";
 
 const env = {} as Env;
 
@@ -96,5 +96,45 @@ describe("manage_operations get_run — internal runs", () => {
 		const id = await insertRun("chat_message", "thread_response");
 		const result = await getRun(id);
 		expect(result.error).toBe("Run not found");
+	});
+
+	it("surfaces the recorded initiator through get_run and list_runs", async () => {
+		const db = getTestDb();
+		const proposer = await createTestUser();
+		const initiatorRef = {
+			agent_id: "personal-agent",
+			client_id: "claude-ai",
+			user_id: proposer.id,
+		};
+		const [row] = (await db`
+      INSERT INTO runs (organization_id, run_type, action_key, status,
+        approval_status, created_by_user_id, initiator_kind, initiator_ref,
+        created_at, run_at)
+      VALUES (${orgId}, 'internal', 'entity_change', 'pending', 'pending',
+        ${proposer.id}, 'agent_session',
+        ${db.json(initiatorRef)},
+        now(), now())
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+		const id = Number(row.id);
+
+		const got = (await getRun(id)).run as Record<string, unknown>;
+		expect(got.initiator_kind).toBe("agent_session");
+		expect(got.created_by_user_id).toBe(proposer.id);
+		expect(got.initiator_ref).toEqual(initiatorRef);
+
+		const listed = (await manageOperations(
+			{
+				action: "list_runs",
+				run_types: ["internal"],
+				approval_status: "pending",
+			},
+			env,
+			ctx(),
+		)) as { runs: Array<Record<string, unknown>> };
+		const found = listed.runs.find((r) => Number(r.id) === id);
+		expect(found?.initiator_kind).toBe("agent_session");
+		expect(found?.created_by_user_id).toBe(proposer.id);
+		expect(found?.initiator_ref).toEqual(initiatorRef);
 	});
 });

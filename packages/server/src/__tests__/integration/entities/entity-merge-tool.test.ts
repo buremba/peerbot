@@ -1018,6 +1018,54 @@ describe("manage_entity merge action", () => {
 		expect(approvalEvent.interaction_status).toBe("pending");
 	});
 
+	it("does not apply an approved merge when an identity row appeared after proposal", async () => {
+		// Identities are evidence inputs, so a new entity_identities row must
+		// change the resolution fingerprint and fail the staleness gate — the
+		// candidate has to be re-proposed with the wider evidence.
+		const org = await createTestOrganization({ name: "Identity Staleness Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name,
+         status, notification_channel, notification_priority, min_cooldown_seconds,
+         created_at, updated_at)
+      VALUES
+        (6015, ${org.id}, 'personal-agent', ${user.id}, 6015, 'Identity staleness',
+         'active', 'canvas', 'normal', 0, now(), now())
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+				actingWatcherId: 6015,
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES (${org.id}, ${loser.id}, 'phone', '905067888845')
+    `;
+		const approved = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+
+		expect("approved" in approved && approved.approved).toBe(false);
+		const [after] = await sql`
+      SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}
+    `;
+		expect(after.merged_into).toBeNull();
+		expect(after.deleted_at).toBeNull();
+	});
+
 	it("does not apply an approved watcher merge when the loser was deleted after proposal", async () => {
 		const org = await createTestOrganization({ name: "Stale Merge Org" });
 		const user = await createTestUser();

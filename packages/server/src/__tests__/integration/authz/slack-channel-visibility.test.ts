@@ -653,7 +653,15 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     // resolves to nothing and the gate fails closed → this test goes red. That
     // is the production gap the hand-seeded tests masked.
     const { org, agent } = await setupWorkspace();
-		const carol = await createTestUser({ name: "Carol" });
+		// Carol's user row must own the email her $member is provisioned under —
+		// exactly as the real path does, where ensureMemberEntity is always called
+		// with the signed-in user's own email. ensureMemberEntity now enforces this
+		// (a mismatched userId/email is refused), so a bare createTestUser (which
+		// auto-generates an email) would make the guard fail closed here.
+		const carol = await createTestUser({
+			name: "Carol",
+			email: "carol@acme.test",
+		});
 		await addUserToOrganization(carol.id, org.id, "member");
 
     // Real provisioning — writes the $member entity AND its auth_user_id identity.

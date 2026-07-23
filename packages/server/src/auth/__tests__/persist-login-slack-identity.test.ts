@@ -6,7 +6,8 @@
  * PRIMARY (decode the stored OIDC id_token — no network) with a userinfo-fetch
  * FALLBACK. These cases pin: the id_token path (and that it makes NO fetch),
  * a clean fallback write, idempotency, the missing-team guard (never write a
- * bare id), malformed-id_token → fallback, and the non-Slack no-op.
+ * bare id), multi-org fanout, malformed-id_token → fallback, and the non-Slack
+ * no-op.
  *
  * The network reads (userinfo fetch + provider config) are injected stubs; the
  * DB write path is REAL against the embedded test database — the `isolate:false`
@@ -21,7 +22,7 @@ import {
 	createTestOrganization,
 	createTestUser,
 } from "../../__tests__/setup/test-fixtures";
-import { resolveTenantMember } from "../../identity/auth-hook";
+import { resolveMemberOrgsForUser } from "../../identity/auth-hook";
 import type { PersistLoginSlackIdentityDeps } from "../subject-identities";
 import {
 	persistLoginSlackIdentity,
@@ -65,7 +66,7 @@ function depsWith(
 	raw: Record<string, unknown> | null,
 ): PersistLoginSlackIdentityDeps {
 	return {
-		resolveTenantMember,
+		resolveMemberOrgsForUser,
 		getEnabledLoginProviderConfigs: async () => [
 			{
 				connectorKey: "slack",
@@ -92,7 +93,7 @@ function trackingDeps(raw: Record<string, unknown> | null): {
 	return {
 		calls,
 		deps: {
-			resolveTenantMember,
+			resolveMemberOrgsForUser,
 			getEnabledLoginProviderConfigs: async () => {
 				calls.configs = true;
 				return [];
@@ -167,6 +168,37 @@ describe("persistLoginSlackIdentity", () => {
 		expect(Number(rows[0].entity_id)).toBe(memberEntityId);
 	});
 
+	it("writes the team-scoped identity to every org where the user has a trusted $member claim", async () => {
+		const first = await seedMember();
+		const secondOrg = await createTestOrganization({
+			name: "Second Acme",
+			visibility: "private",
+		});
+		await addUserToOrganization(first.userId, secondOrg.id, "member");
+		await provisionMemberAndCoreIdentities(secondOrg.id, {
+			userId: first.userId,
+			email: "alice@acme.test",
+			name: "Alice",
+		});
+
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId: first.userId,
+				accessToken: "xoxp-token",
+				accountId: USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": USER,
+				}),
+			},
+			trackingDeps(null).deps,
+		);
+
+		expect(await slackIdentityCount(first.orgId, `${TEAM}:${USER}`)).toBe(1);
+		expect(await slackIdentityCount(secondOrg.id, `${TEAM}:${USER}`)).toBe(1);
+	});
+
 	it("FALLBACK: no id_token → fetches userinfo and writes the team-scoped slack_user_id", async () => {
 		const { orgId, userId, memberEntityId } = await seedMember();
 
@@ -210,6 +242,60 @@ describe("persistLoginSlackIdentity", () => {
 
 		// Malformed token decoded to nothing → fell through to the fetch path.
 		expect(calls.fetched).toBe(true);
+		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
+	});
+
+	it("FALLBACK: reads userinfoUrl from the trusted baseline, never a tenant org's config", async () => {
+		// The fetch sends the user's real Slack access token to `userinfoUrl`, so
+		// that URL must never come from a tenant. An org can SHADOW the baseline
+		// Slack provider (mergeLoginProviderConfigs), so if the fallback read a
+		// member org's config, a malicious co-member org could exfiltrate the
+		// token. The fallback must query only the baseline (org id = null).
+		const baselineUrl = "https://slack.test/openid/connect/userInfo";
+		const attackerUrl = "https://attacker.example/steal";
+		const { orgId, userId } = await seedMember();
+
+		let seenUserinfoUrl: string | undefined = "UNSET";
+		const configOrgIds: Array<string | null | undefined> = [];
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId,
+				accessToken: "xoxp-token",
+				accountId: USER,
+			},
+			{
+				resolveMemberOrgsForUser,
+				getEnabledLoginProviderConfigs: async (id?: string | null) => {
+					configOrgIds.push(id);
+					// Baseline (null) → the trusted endpoint. Any tenant org → an
+					// attacker-controlled endpoint that must NOT be used.
+					return [
+						{
+							connectorKey: "slack",
+							provider: "slack",
+							loginScopes: [],
+							clientIdKey: "SLACK_CLIENT_ID",
+							clientSecretKey: "SLACK_CLIENT_SECRET",
+							userinfoUrl: id == null ? baselineUrl : attackerUrl,
+						},
+					];
+				},
+				fetchUserInfoWithRaw: async (args) => {
+					seenUserinfoUrl = args.userinfoUrl;
+					return {
+						raw: { "https://slack.com/team_id": TEAM },
+						normalized: null,
+					};
+				},
+			},
+		);
+
+		// The config lookup was made against the baseline only, and the fetch got
+		// the baseline endpoint — the attacker URL never reached fetchUserInfo.
+		expect(configOrgIds).toEqual([null]);
+		expect(seenUserinfoUrl).toBe(baselineUrl);
+		expect(seenUserinfoUrl).not.toBe(attackerUrl);
 		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
 	});
 
@@ -264,7 +350,7 @@ describe("persistLoginSlackIdentity", () => {
 				accountId: USER,
 			},
 			{
-				resolveTenantMember,
+				resolveMemberOrgsForUser,
 				getEnabledLoginProviderConfigs: async () => [],
 				fetchUserInfoWithRaw: async () => {
 					fetched = true;

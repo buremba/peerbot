@@ -14,9 +14,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { deepRedactSecrets, REDACTED_SENTINEL } from "@lobu/core";
+import type { DesiredState } from "./desired-state.js";
 import type { DiffPlan, DiffRow } from "./diff.js";
 import { canonical } from "./diff.js";
-import type { DesiredState } from "./desired-state.js";
 
 export function mintApplyId(): string {
   return `apl_${randomUUID()}`;
@@ -50,11 +50,11 @@ export function collectGitInfo(cwd: string): GitInfo {
 
 /**
  * Structurally redact the fields that hold RESOLVED secret values in process
- * memory — agent `providerKeys[].value`, org provider `apiKey`, auth-profile
- * `credentials`, and platform `config` values (resolved from `$VAR`/`secret()`
- * at map time) — then deep-redact by key-name denylist. Shared by the
- * manifest hash and the stored deployment snapshot: a snapshot NEVER carries
- * a secret value, so `lobu rollback` structurally cannot re-apply one.
+ * memory — agent `providerKeys[].value`, org provider `apiKey`, and auth-profile
+ * `credentials` (resolved from `$VAR`/`secret()` at map time) — then deep-redact
+ * by key-name denylist. Shared by the manifest hash and the stored deployment
+ * snapshot: a snapshot NEVER carries a secret value, so `lobu rollback`
+ * structurally cannot re-apply one.
  */
 export function redactDesiredState(
   state: DesiredState
@@ -66,17 +66,6 @@ export function redactDesiredState(
       providerKeys: agent.providerKeys.map((k) => ({
         providerId: k.providerId,
         value: REDACTED_SENTINEL,
-      })),
-      // Platform config values are resolved plaintext at this point; deep-
-      // redact (not wholesale) so a NON-secret config change (e.g. a channel
-      // id) still changes the manifest hash. A secret under a key the
-      // denylist misses only perturbs the hash input — sha256 doesn't reveal
-      // it, so the cost is hash-changes-on-rotation for that field, not a leak.
-      platforms: agent.platforms.map((p) => ({
-        ...(p as unknown as Record<string, unknown>),
-        config: deepRedactSecrets(
-          (p as unknown as { config?: unknown }).config ?? null
-        ),
       })),
     })),
     providers: (state.providers ?? []).map((p) => ({

@@ -12,7 +12,6 @@ const VERB_PREFIX = {
 const KIND_LABEL: Record<DiffRow["kind"], string> = {
   agent: "agent",
   settings: "settings",
-  platform: "platform",
   "entity-type": "entity-type",
   "relationship-type": "relationship-type",
   watcher: "behavior",
@@ -26,7 +25,6 @@ const KIND_LABEL: Record<DiffRow["kind"], string> = {
 const KIND_HEADING: Record<DiffRow["kind"], string> = {
   agent: "agents",
   settings: "settings",
-  platform: "platforms",
   "entity-type": "entity-types",
   "relationship-type": "relationship-types",
   watcher: "behaviors",
@@ -43,7 +41,6 @@ function fieldsList(fields: string[] | undefined): string {
 }
 
 function rowId(row: DiffRow): string {
-  if (row.kind === "platform") return `${row.agentId}/${row.id}`;
   if (
     row.kind === "connector-definition" &&
     row.desired?.key &&
@@ -87,11 +84,6 @@ function renderRow(row: DiffRow): string[] {
       lines.push(
         `  ${prefix} ${label} ${id}${fieldsList("changedFields" in row ? row.changedFields : undefined)}`
       );
-      if (row.kind === "platform" && row.willRestart) {
-        lines.push(
-          `      ${chalk.yellow("⚠")} will restart platform — in-flight messages may drop`
-        );
-      }
       if (row.kind === "auth-profile" && row.needsAuth) {
         lines.push(
           `      ${chalk.yellow("⚠")} interactive auth — complete it via the connect URL printed after apply`
@@ -130,7 +122,6 @@ export function renderPlan(plan: DiffPlan): string {
   const order: DiffRow["kind"][] = [
     "agent",
     "settings",
-    "platform",
     "entity-type",
     "relationship-type",
     "watcher",

@@ -17,10 +17,10 @@ import {
 } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyCommand } from "../apply-cmd.js";
 import * as context from "../../../../internal/context.js";
 import * as credentials from "../../../../internal/credentials.js";
 import { ValidationError } from "../../../memory/_lib/errors.js";
+import { applyCommand } from "../apply-cmd.js";
 
 // Silence printText / printError during tests.
 const silentWrite = (): boolean => true;
@@ -115,9 +115,6 @@ function makeAuthFetch(
       if (urlStr.includes("/agents")) {
         return new Response(JSON.stringify({ agents: [] }), { status: 200 });
       }
-      if (urlStr.includes("/platforms")) {
-        return new Response(JSON.stringify({ platforms: [] }), { status: 200 });
-      }
     }
     if (method === "POST") {
       if (urlStr.includes("/manage_connections")) {
@@ -177,15 +174,14 @@ describe("applyCommand --dry-run", () => {
 
     // The snapshot phase uses POST for manage_entity_schema (list), manage_behaviors,
     // manage_connections (list) — these are read-only POSTs. The key invariant is:
-    // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no platform
-    // upsert (PUT .../platforms/by-stable-id/...), no settings patch, no watcher
-    // create, and no connection/feed creates.
+    // no agent-create (POST /agents), no agent-patch (PATCH /agents/*), no settings
+    // patch, no watcher create, and no connection/feed creates.
     const writingCalls = mutateCalls.filter((c) => {
       // PATCH always writes
       if (c.method === "PATCH") return true;
       // PUT always writes
       if (c.method === "PUT") return true;
-      // POST to agent-creation or platform-upsert or entity-schema action=create/update
+      // POST to agent-creation or entity-schema action=create/update
       if (c.method === "POST") {
         // List-action POSTs are OK (snapshot)
         if (c.url.includes("manage_entity_schema")) return false;

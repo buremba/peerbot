@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { ApiError } from "../../../memory/_lib/errors.js";
 import {
   executePlan,
   locallyDeclaredConnectorKeys,
@@ -7,17 +8,16 @@ import {
   validateConnectorState,
 } from "../apply-cmd.js";
 import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
-import { ApiError } from "../../../memory/_lib/errors.js";
 import type { DiffPlan, RemoteSnapshot } from "../diff.js";
-import {
-  normalizeConnectionConfigScope,
-  validateConnectionAgainstConnector,
-} from "../desired-state.js";
 import type {
   DesiredAgent,
   DesiredConnection,
   DesiredState,
   ResolvedConnectorSchemas,
+} from "../desired-state.js";
+import {
+  normalizeConnectionConfigScope,
+  validateConnectionAgainstConnector,
 } from "../desired-state.js";
 
 // Minimal DesiredState with just the connectors slice populated.
@@ -76,6 +76,189 @@ describe("validateConnectionAgainstConnector — managedBy is not a connector op
     expect(() =>
       validateConnectionAgainstConnector(connection, new Map(), strictSchemas)
     ).toThrow();
+  });
+});
+
+describe("validateConnectionAgainstConnector — chat capability", () => {
+  const chatSchemas: ResolvedConnectorSchemas = {
+    optionsSchema: {
+      type: "object",
+      "x-lobu-chat-platform": "slack",
+      properties: { botToken: { type: "string" } },
+      required: ["botToken"],
+    },
+    feedKeys: new Set<string>(),
+    feedConfigSchemas: new Map(),
+    authKinds: new Set<string>(["none"]),
+  };
+
+  function chatConnection(
+    overrides: Partial<DesiredConnection> = {}
+  ): DesiredConnection {
+    return {
+      slug: "team-slack",
+      connector: "slack",
+      config: { botToken: "xoxb-test" },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+      ...overrides,
+    };
+  }
+
+  test("accepts an explicitly declared BYO chat connection", () => {
+    expect(() =>
+      validateConnectionAgainstConnector(
+        chatConnection({ credentialMode: "byo" }),
+        new Map(),
+        chatSchemas
+      )
+    ).not.toThrow();
+  });
+
+  test("rejects a chat connection that omits credentialMode", () => {
+    expect(() =>
+      validateConnectionAgainstConnector(
+        chatConnection(),
+        new Map(),
+        chatSchemas
+      )
+    ).toThrow(/must declare credentialMode "byo"/);
+  });
+
+  test("rejects a declarative managed chat connection", () => {
+    expect(() =>
+      validateConnectionAgainstConnector(
+        chatConnection({
+          config: {
+            botToken: "xoxb-test",
+            managedBy: { org: "cloud" },
+          },
+        }),
+        new Map(),
+        chatSchemas
+      )
+    ).toThrow(/owned by the OAuth\/install flow/);
+  });
+
+  test("rejects BYO mode on a non-chat connector", () => {
+    expect(() =>
+      validateConnectionAgainstConnector(
+        chatConnection({
+          connector: "github",
+          credentialMode: "byo",
+        }),
+        new Map(),
+        {
+          ...chatSchemas,
+          optionsSchema: {
+            type: "object",
+            properties: { botToken: { type: "string" } },
+          },
+        }
+      )
+    ).toThrow(/does not declare the chat capability/);
+  });
+});
+
+describe("executePlan — BYO chat connection dependencies", () => {
+  test("uses the newly created chat connection id for a Behavior in the same apply", async () => {
+    const connection: DesiredConnection = {
+      slug: "team-slack",
+      connector: "slack",
+      credentialMode: "byo",
+      config: { botToken: "xoxb-test" },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    };
+    const watcher: DesiredState["watchers"][number] = {
+      slug: "reply-in-support",
+      agent: "triage",
+      prompt: "Reply helpfully.",
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "slack",
+          connectionSlug: "team-slack",
+          event_types: ["message.created"],
+          execution: "turn",
+          active_run: "queue",
+          output: "reply_to_source",
+        },
+      ],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [connection],
+    });
+    state.watchers = [watcher];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "connection",
+          verb: "create",
+          id: connection.slug,
+          desired: connection,
+        },
+        {
+          kind: "watcher",
+          verb: "create",
+          id: watcher.slug,
+          desired: watcher,
+        },
+      ],
+      counts: { create: 2, update: 0, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [],
+      connectorDefinitions: [
+        {
+          key: "slack",
+          installed: true,
+          options_schema: {
+            type: "object",
+            "x-lobu-chat-platform": "slack",
+            properties: { botToken: { type: "string" } },
+            required: ["botToken"],
+          },
+        },
+      ],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const applyChatConnection = mock(async () => ({
+      id: 91,
+      created: true,
+      changed: true,
+    }));
+    const createBehavior = mock(async () => ({ behavior_id: "b-1" }));
+    const client = {
+      applyChatConnection,
+      createBehavior,
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(applyChatConnection).toHaveBeenCalledTimes(1);
+    expect(createBehavior).toHaveBeenCalledTimes(1);
+    expect(createBehavior.mock.calls[0]?.[0].triggers).toEqual([
+      {
+        kind: "event",
+        connector_key: "slack",
+        connection_id: 91,
+        event_types: ["message.created"],
+        execution: "turn",
+        active_run: "queue",
+        output: "reply_to_source",
+      },
+    ]);
   });
 });
 
@@ -220,7 +403,6 @@ describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply
     return {
       metadata: { agentId, name: agentId },
       settings: {},
-      platforms: [],
       providerKeys,
     };
   }
@@ -312,82 +494,6 @@ describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply
     await pushProviderApiKeys(client, [agentWithKeys("a1", [])]);
 
     expect(rotateInferenceProviderKey).not.toHaveBeenCalled();
-  });
-});
-
-describe("executePlan — declarative chat credential reconciliation", () => {
-  test("submits a noop platform so the server can detect an opaque secret rotation", async () => {
-    const upsertPlatform = mock(async () => ({
-      created: false,
-      updated: false,
-      noop: true,
-      willRestart: false,
-    }));
-    const client = { upsertPlatform } as unknown as ApplyClient;
-    const platform = {
-      stableId: "support-slack",
-      type: "slack",
-      config: { botToken: "rotated-token", signingSecret: "signing-secret" },
-    };
-    const agent: DesiredAgent = {
-      metadata: { agentId: "support", name: "Support" },
-      settings: {},
-      platforms: [platform],
-      providerKeys: [],
-    };
-    const state: DesiredState = {
-      agents: [agent],
-      prune: false,
-      memorySchema: { entityTypes: [], relationshipTypes: [] },
-      watchers: [],
-      connectors: { definitions: [], authProfiles: [], connections: [] },
-      providers: [],
-      requiredSecrets: [],
-    };
-    const plan: DiffPlan = {
-      rows: [
-        {
-          kind: "platform",
-          verb: "noop",
-          id: platform.stableId,
-          agentId: agent.metadata.agentId,
-          desired: platform,
-          remote: {
-            id: platform.stableId,
-            platform: "slack",
-            agentId: agent.metadata.agentId,
-            config: {
-              platform: "slack",
-              botToken: "secret://opaque",
-              signingSecret: "secret://opaque",
-            },
-            status: "active",
-          },
-        },
-      ],
-      counts: { create: 0, update: 0, noop: 1, drift: 0, delete: 0 },
-      notes: [],
-    };
-    const remote = {
-      agents: [agent.metadata],
-      agentSettings: new Map(),
-      platformsByAgent: new Map(),
-      entityTypes: [],
-      relationshipTypes: [],
-      watchers: [],
-      connectorDefinitions: [],
-      authProfiles: [],
-      connections: [],
-      feedsByConnectionId: new Map(),
-    } as unknown as RemoteSnapshot;
-
-    await executePlan({ client, state, plan, remote }, []);
-
-    expect(upsertPlatform).toHaveBeenCalledTimes(1);
-    expect(upsertPlatform).toHaveBeenCalledWith("support", "support-slack", {
-      platform: "slack",
-      config: platform.config,
-    });
   });
 });
 

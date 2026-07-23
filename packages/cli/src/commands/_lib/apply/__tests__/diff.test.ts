@@ -18,7 +18,6 @@ function buildDesiredAgent(
   return {
     metadata: { agentId, name: agentId, description: undefined },
     settings: {},
-    platforms: [],
     ...overrides,
   };
 }
@@ -43,7 +42,6 @@ function emptyRemote(): RemoteSnapshot {
   return {
     agents: [],
     agentSettings: new Map(),
-    platformsByAgent: new Map(),
     entityTypes: [],
     relationshipTypes: [],
     watchers: [],
@@ -88,7 +86,6 @@ describe("apply diff — agents", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "Triage" }],
       agentSettings: new Map([["triage", null]]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desired, remote);
     expect(plan.counts.noop).toBeGreaterThan(0);
@@ -107,7 +104,6 @@ describe("apply diff — agents", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "Original" }],
       agentSettings: new Map([["triage", null]]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desired, remote);
     expect(plan.counts.update).toBeGreaterThan(0);
@@ -148,7 +144,6 @@ describe("apply diff — settings", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desired, remote);
     const settingsRow = plan.rows.find((r) => r.kind === "settings");
@@ -174,7 +169,6 @@ describe("apply diff — settings", () => {
       agentSettings: new Map<string, AgentSettings | null>([
         ["triage", { models: ["anthropic/claude-sonnet-5"], updatedAt: 0 }],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desired, remote);
     const settingsRow = plan.rows.find((r) => r.kind === "settings");
@@ -221,7 +215,6 @@ describe("apply diff — settings", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const settingsRow = computeDiff(desired, remote).rows.find(
       (r) => r.kind === "settings"
@@ -230,192 +223,6 @@ describe("apply diff — settings", () => {
     if (settingsRow?.kind === "settings") {
       expect(settingsRow.changedFields).toContain("models");
     }
-  });
-});
-
-describe("apply diff — platforms", () => {
-  test("create on empty remote", () => {
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: { botToken: "abc" },
-          },
-        ],
-      }),
-    ]);
-    const plan = computeDiff(desired, emptyRemote());
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("create");
-    expect(renderPlan(plan)).toMatchSnapshot();
-  });
-
-  test("update with willRestart when config changes", () => {
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: { botToken: "new" },
-          },
-        ],
-      }),
-    ]);
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-telegram",
-              platform: "telegram",
-              config: { botToken: "old" },
-            },
-          ],
-        ],
-      ]),
-    };
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("update");
-    if (platformRow?.kind === "platform") {
-      expect(platformRow.willRestart).toBe(true);
-    }
-    expect(renderPlan(plan)).toMatchSnapshot();
-  });
-
-  // A `$VAR` secret placeholder never round-trips: the server returns the secret
-  // redacted (`***`) or as an internal `secret://…` reference. Either form must
-  // be treated as unchanged so the platform isn't needlessly restarted.
-  test.each([
-    ["redacted (***)", "***oken"],
-    [
-      "secret:// reference",
-      "secret://connections%2Ftriage-telegram%2FbotToken",
-    ],
-  ])("noop when desired $VAR matches remote %s", (_label, remoteValue) => {
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: { botToken: "$TELEGRAM_BOT_TOKEN" },
-          },
-        ],
-      }),
-    ]);
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-telegram",
-              platform: "telegram",
-              // GET round-trip carries the `platform` key + the opaque secret.
-              config: { platform: "telegram", botToken: remoteValue },
-            },
-          ],
-        ],
-      ]),
-    };
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("noop");
-  });
-
-  test("update when a non-secret config field changes (secret still opaque)", () => {
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: { botToken: "$TELEGRAM_BOT_TOKEN", mode: "webhook" },
-          },
-        ],
-      }),
-    ]);
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-telegram",
-              platform: "telegram",
-              config: {
-                platform: "telegram",
-                botToken: "***oken",
-                mode: "polling",
-              },
-            },
-          ],
-        ],
-      ]),
-    };
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("update");
-  });
-
-  test("update when a secret-bearing config key is removed (opaque remote, absent in desired)", () => {
-    // The remote still carries `signingSecret` as an opaque value, but the
-    // desired config dropped it. A removal must surface as `update`, not be
-    // swallowed by the opaque-secret = unchanged rule.
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-slack",
-            type: "slack",
-            config: { botToken: "$SLACK_BOT_TOKEN" },
-          },
-        ],
-      }),
-    ]);
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-slack",
-              platform: "slack",
-              config: {
-                platform: "slack",
-                botToken: "***oken",
-                signingSecret: "***cret",
-              },
-            },
-          ],
-        ],
-      ]),
-    };
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("update");
   });
 });
 
@@ -545,7 +352,6 @@ describe("apply diff — empty container preservation", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desired, remote);
     const settingsRow = plan.rows.find((r) => r.kind === "settings");
@@ -580,46 +386,9 @@ describe("apply diff — empty container preservation", () => {
           },
         ],
       ]),
-      platformsByAgent: new Map([["triage", []]]),
     };
     const plan = computeDiff(desiredEmpty, remoteWithItems);
     expect(plan.counts.update).toBeGreaterThan(0);
-  });
-
-  test("{} is not equal to populated object", () => {
-    // empty config object vs populated config object must show as drift/update
-    const desired = buildState([
-      buildDesiredAgent("triage", {
-        metadata: { agentId: "triage", name: "Triage" },
-        platforms: [
-          {
-            stableId: "triage-telegram",
-            type: "telegram",
-            config: {},
-          },
-        ],
-      }),
-    ]);
-    const remote: RemoteSnapshot = {
-      ...emptyRemote(),
-      agents: [{ agentId: "triage", name: "Triage" }],
-      agentSettings: new Map<string, AgentSettings | null>([["triage", null]]),
-      platformsByAgent: new Map([
-        [
-          "triage",
-          [
-            {
-              id: "triage-telegram",
-              platform: "telegram",
-              config: { botToken: "abc" },
-            },
-          ],
-        ],
-      ]),
-    };
-    const plan = computeDiff(desired, remote);
-    const platformRow = plan.rows.find((r) => r.kind === "platform");
-    expect(platformRow?.verb).toBe("update");
   });
 });
 
@@ -679,7 +448,6 @@ describe("apply diff — watchers", () => {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "triage" }],
       agentSettings: new Map([["triage", null]]),
-      platformsByAgent: new Map([["triage", []]]),
       watchers: [
         {
           slug: "minimal-schedule",
@@ -1361,6 +1129,103 @@ describe("apply diff — connectors", () => {
     // Exactly one row — the locally-declared def — never a bundled duplicate.
     expect(acmeRows).toHaveLength(1);
   });
+
+  test("BYO chat connection always reaches the chat upsert (rotation-safe)", () => {
+    // Desired config holds a resolved token (plaintext); the server stores it as
+    // a `secret://` ref, so the CLI can't compare them or detect a rotation. The
+    // row must always be an `update` (never noop) so it reaches the idempotent
+    // apply_chat_connection, which compares secrets server-side and no-ops when
+    // nothing changed. A noop here would silently drop credential rotations.
+    const desired = buildState([], {
+      connectors: {
+        definitions: [],
+        authProfiles: [],
+        connections: [
+          {
+            slug: "team-slack",
+            connector: "slack",
+            credentialMode: "byo" as const,
+            config: { botToken: "xoxb-real-token" },
+            feeds: [],
+            sourceFile: "lobu.config.ts",
+          },
+        ],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      // listConnections strips the `agentconn-` slug namespace back to the slug.
+      connections: [
+        {
+          id: 9,
+          slug: "team-slack",
+          connector_key: "slack",
+          display_name: "Stored workspace name",
+          status: "active",
+          auth_profile_slug: null,
+          app_auth_profile_slug: null,
+          credential_mode: "byo",
+          config: { botToken: "secret://slack/team-slack/botToken" },
+        },
+      ],
+    };
+    const conn = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "connection" && r.id === "team-slack"
+    );
+    expect(conn?.verb).toBe("update");
+    // Optional names use "omitted = no opinion" semantics. The row updates
+    // only because BYO credentials are always re-pushed for rotation safety.
+    expect(conn?.changedFields).toEqual(["config"]);
+  });
+
+  test("BYO chat connection ignores auth/app_auth/device_worker drift", () => {
+    // A BYO chat row applies through `apply_chat_connection`, which only
+    // persists slug/connector/name/config. If the remote row carries a stray
+    // auth profile, app-auth profile, or device pin, the diff must NOT report
+    // those as changed — apply can't clear them, so they'd resurface as a
+    // perpetual "update" every run. Only `config` (rotation-safe) may change.
+    const desired = buildState([], {
+      connectors: {
+        definitions: [],
+        authProfiles: [],
+        connections: [
+          {
+            slug: "team-slack",
+            connector: "slack",
+            credentialMode: "byo" as const,
+            config: { botToken: "xoxb-real-token" },
+            feeds: [],
+            sourceFile: "lobu.config.ts",
+          },
+        ],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connections: [
+        {
+          id: 9,
+          slug: "team-slack",
+          connector_key: "slack",
+          display_name: null,
+          status: "active",
+          auth_profile_slug: "stray-auth",
+          app_auth_profile_slug: "stray-app-auth",
+          device_worker_id: "11111111-1111-1111-1111-111111111111",
+          credential_mode: "byo",
+          config: { botToken: "secret://slack/team-slack/botToken" },
+        },
+      ],
+    };
+    const conn = computeDiff(desired, remote).rows.find(
+      (r) => r.kind === "connection" && r.id === "team-slack"
+    );
+    expect(conn?.verb).toBe("update");
+    // Only the rotation-safe `config` field — never the unappliable ones.
+    expect(
+      conn?.kind === "connection" ? conn.changedFields : undefined
+    ).toEqual(["config"]);
+  });
 });
 
 describe("apply diff — prune", () => {
@@ -1436,7 +1301,6 @@ describe("apply diff — prune", () => {
       ...remoteWithExtras(),
       agents: [{ agentId: "gone-agent", name: "Gone" }],
       agentSettings: new Map([["kept", null]]),
-      platformsByAgent: new Map([["kept", []]]),
     };
     const plan = computeDiff(desired, remote, { prune: true });
     // Connection removed from config is drift (exempt), not delete.

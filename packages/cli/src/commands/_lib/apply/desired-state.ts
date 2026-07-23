@@ -9,11 +9,11 @@ import type {
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import { createAjv } from "@lobu/core/ajv";
 import type {
   BehaviorEventTrigger,
   BehaviorScheduleTrigger,
 } from "@lobu/core/contracts/tools/manage-behaviors";
-import { createAjv } from "@lobu/core/ajv";
 import type Ajv from "ajv";
 import type {
   ConnectorSource,
@@ -29,10 +29,10 @@ import {
   mergeAgentDirArtifacts,
 } from "./map-config.js";
 import {
+  type BehaviorSource,
   type EntityBacking,
   isRecord,
   type RelationshipRule,
-  type BehaviorSource,
 } from "./shared.js";
 
 // ── Desired state types ────────────────────────────────────────────────────
@@ -41,15 +41,6 @@ export interface DesiredAgentMetadata {
   agentId: string;
   name: string;
   description?: string;
-}
-
-export interface DesiredPlatform {
-  /** Stable, content-addressed ID derived from `(agentId, type, name?)`. */
-  stableId: string;
-  type: string;
-  name?: string;
-  /** Platform config — values may still contain `$VAR` references. */
-  config: Record<string, string>;
 }
 
 export interface DesiredEntityType {
@@ -171,6 +162,14 @@ export interface DesiredConnection {
   appAuthProfileSlug?: string;
   config?: Record<string, unknown>;
   /**
+   * Set only for an explicitly declared BYO chat connection. Chat connections
+   * apply through the secret-aware `apply_chat_connection` path so the server
+   * persists a non-null `credential_mode` (the gateway only treats non-null
+   * rows as chat) and resolves the token. Absent for data connectors and hosted
+   * chat (which is filtered out of apply entirely).
+   */
+  credentialMode?: "byo";
+  /**
    * Optional UUID pinning the connection's syncs/actions to a specific device
    * worker (`device_workers.id`). Required for connectors that declare a
    * `required_capability`; omit it for serverless-on-Lobu runs.
@@ -237,7 +236,6 @@ export interface DesiredAgent {
    * identityMd/soulMd/userMd.
    */
   settings: Partial<AgentSettings>;
-  platforms: DesiredPlatform[];
   /**
    * Provider API keys resolved from `secret()` / `$VAR` provider keys, pushed
    * into `agent_secrets` after the settings PATCH. Empty when no provider
@@ -601,6 +599,25 @@ export function validateConnectionAgainstConnector(
   authProfiles: ReadonlyMap<string, DesiredAuthProfile>,
   schemas: ResolvedConnectorSchemas | null
 ): void {
+  const declaredChatPlatform = schemas?.optionsSchema?.["x-lobu-chat-platform"];
+  const isChatConnector =
+    typeof declaredChatPlatform === "string" &&
+    declaredChatPlatform === connection.connector;
+  if (schemas && connection.credentialMode === "byo" && !isChatConnector) {
+    throw new ValidationError(
+      `${connection.sourceFile}: connection "${connection.slug}" uses credentialMode "byo", but connector "${connection.connector}" does not declare the chat capability`
+    );
+  }
+  if (schemas && isChatConnector && connection.credentialMode !== "byo") {
+    if (connection.config?.managedBy) {
+      throw new ValidationError(
+        `${connection.sourceFile}: managed chat connection "${connection.slug}" is owned by the OAuth/install flow and cannot be declared in config`
+      );
+    }
+    throw new ValidationError(
+      `${connection.sourceFile}: chat connection "${connection.slug}" must declare credentialMode "byo" (hosted connections use "hosted" and are not persisted)`
+    );
+  }
   // Validate against `{}` when config is omitted too — that surfaces missing
   // required keys instead of letting an empty config slip through.
   if (schemas?.optionsSchema) {

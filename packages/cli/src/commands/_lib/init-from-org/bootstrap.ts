@@ -23,13 +23,12 @@ import type {
   ApplyClient,
   RemoteAgent,
   RemoteAuthProfile,
+  RemoteBehavior,
   RemoteConnection,
   RemoteConnectorDefinition,
   RemoteEntityType,
   RemoteFeed,
-  RemotePlatform,
   RemoteRelationshipType,
-  RemoteBehavior,
 } from "../apply/client.js";
 import { resolveApplyClient } from "../apply/client.js";
 
@@ -187,7 +186,11 @@ function envVarFor(slug: string, suffix: string): string {
   // non-identifier platform config key (e.g. `bot-token` → `..._BOT_TOKEN`); an
   // un-normalized hyphen would make the `.env` key invalid and fail apply's
   // required-secret check.
-  const norm = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase();
+  const norm = (s: string) =>
+    s
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[^A-Za-z0-9]+/g, "_")
+      .toUpperCase();
   return `${norm(slug)}_${norm(suffix)}`;
 }
 
@@ -278,7 +281,6 @@ interface EmittedAgent {
 function emitAgent(
   agent: RemoteAgent,
   settings: AgentSettings | null,
-  platforms: RemotePlatform[],
   imports: ImportTracker,
   secrets: SecretCollector,
   minter: IdentMinter
@@ -406,54 +408,6 @@ function emitAgent(
   if (skillRefs.length > 0) {
     imports.use("skillFromFile");
     fields.push(`skills: [\n    ${skillRefs.join(",\n    ")},\n  ]`);
-  }
-
-  // platforms ← live platform bindings. The route stores `platform` inside
-  // `config` for stable-id matching; strip it. Secret-bearing config values
-  // never round-trip in the clear: the server rewrites a `$VAR` into a
-  // `secret://…` reference and the GET masks it (`***`-suffixed). Both forms,
-  // plus a bare `$VAR`, become `secret("<ENV>")` placeholders the operator
-  // fills in `.env` before re-applying — emitting the redacted/ref literal
-  // would push a broken token on the next apply.
-  if (platforms.length > 0) {
-    const items = platforms.map((p) => {
-      const cfg: Record<string, unknown> = { ...(p.config ?? {}) };
-      delete cfg.platform;
-      const cfgLines = Object.entries(cfg).map(([k, v]) => {
-        // emitKey quotes keys that aren't valid TS identifiers (e.g. hyphenated
-        // platform config keys) so the generated config always parses.
-        const key = emitKey(k);
-        if (typeof v === "string") {
-          const explicitVar = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
-          if (explicitVar?.[1]) {
-            return `${key}: ${secrets.ref(explicitVar[1])}`;
-          }
-          // Opaque secret (redacted `***…` or internal `secret://…`): derive a
-          // deterministic env-var name from the agent + config key.
-          if (v.startsWith("***") || v.startsWith("secret://")) {
-            return `${key}: ${secrets.ref(envVarFor(agent.agentId, `${p.platform}_${k}`.toUpperCase()))}`;
-          }
-          return `${key}: ${str(v)}`;
-        }
-        return `${key}: ${emitValue(v, 3)}`;
-      });
-      // Recover the name from the stable id (`<agentId>-<type>[-<name>]`) so a
-      // NAMED platform re-derives the same id on apply (no drift/duplicate).
-      const slug = (s: string) =>
-        s
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-+|-+$/g, "");
-      const prefix = `${slug(agent.agentId)}-${slug(p.platform)}`;
-      const nameSlug = p.id?.startsWith(`${prefix}-`)
-        ? p.id.slice(prefix.length + 1)
-        : undefined;
-      const platformFields = [`type: ${str(p.platform)}`];
-      if (nameSlug) platformFields.push(`name: ${str(nameSlug)}`);
-      platformFields.push(`config: ${objectLiteral(cfgLines, 3)}`);
-      return objectLiteral(platformFields, 2);
-    });
-    fields.push(`platforms: [\n    ${items.join(",\n    ")},\n  ]`);
   }
 
   const handleName = minter.mint(agent.agentId, "Agent");
@@ -709,16 +663,23 @@ function emitConnection(
   authHandles: Map<string, string>,
   connectorHandles: Map<string, string>,
   imports: ImportTracker,
+  secrets: SecretCollector,
   minter: IdentMinter,
   managedByOrg?: string
 ): Handle {
   imports.use("defineConnection");
+  // A BYO chat connection (credential_mode 'byo') keeps its token in `config`,
+  // stored server-side as a write-only `secret://` ref. Round-trip it as a
+  // `secret("<CONN>_<KEY>")` placeholder so the generated config is applicable
+  // (the real value goes in .env), mirroring the auth-profile credential path.
+  const isByoChat = c.credential_mode === "byo";
   const connectorRef =
     connectorHandles.get(c.connector_key) ?? str(c.connector_key);
   const fields: string[] = [
     `slug: ${str(c.slug)}`,
     `connector: ${connectorRef}`,
   ];
+  if (isByoChat) fields.push(`credentialMode: "byo"`);
   if (c.display_name) fields.push(`name: ${str(c.display_name)}`);
   if (managedByOrg) {
     fields.push(`managedBy: { org: ${str(managedByOrg)} }`);
@@ -734,7 +695,18 @@ function emitConnection(
   }
   const config = managedByOrg ? stripManagedGrantConfig(c.config) : c.config;
   if (config && Object.keys(config).length > 0) {
-    fields.push(`config: ${emitValue(config, 1)}`);
+    if (isByoChat) {
+      // Replace each stored `secret://` config value with a secret() placeholder
+      // keyed by <CONN>_<KEY>; pass literals through unchanged.
+      const parts = Object.entries(config).map(([k, v]) =>
+        typeof v === "string" && v.startsWith("secret://")
+          ? `${emitKey(k)}: ${secrets.ref(envVarFor(c.slug, k))}`
+          : `${emitKey(k)}: ${emitValue(v, 1)}`
+      );
+      fields.push(`config: ${objectLiteral(parts, 1)}`);
+    } else {
+      fields.push(`config: ${emitValue(config, 1)}`);
+    }
   }
   if (c.device_worker_id) {
     fields.push(`deviceWorkerId: ${str(c.device_worker_id)}`);
@@ -810,7 +782,6 @@ interface FetchedState {
   agents: Array<{
     agent: RemoteAgent;
     settings: AgentSettings | null;
-    platforms: RemotePlatform[];
   }>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
@@ -868,7 +839,6 @@ async function fetchOrgState(
       .map(async (agent) => ({
         agent,
         settings: await client.getAgentSettings(agent.agentId),
-        platforms: await client.listPlatforms(agent.agentId),
       }))
   );
 
@@ -960,15 +930,8 @@ function generateProject(
   // Agents first (watchers reference their handles).
   const agentHandles = new Map<string, string>();
   const agentDecls: string[] = [];
-  for (const { agent, settings, platforms } of state.agents) {
-    const emitted = emitAgent(
-      agent,
-      settings,
-      platforms,
-      imports,
-      secrets,
-      minter
-    );
+  for (const { agent, settings } of state.agents) {
+    const emitted = emitAgent(agent, settings, imports, secrets, minter);
     agentHandles.set(agent.agentId, emitted.handle.name);
     agentDecls.push(emitted.handle.decl);
     files.push(...emitted.files);
@@ -1039,6 +1002,7 @@ function generateProject(
       authHandles,
       connectorHandles,
       imports,
+      secrets,
       minter,
       managedByOrg
     );

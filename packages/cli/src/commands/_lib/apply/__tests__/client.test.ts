@@ -3,6 +3,66 @@ import { ApiError } from "../../../memory/_lib/errors.js";
 import { ApplyClient, isDuplicateError } from "../client.js";
 
 describe("ApplyClient", () => {
+  test("applyChatConnection returns the persisted connection id", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(
+          JSON.stringify({
+            action: "apply_chat_connection",
+            connection: {
+              id: 91,
+              slug: "agentconn-team-slack",
+              connector_key: "slack",
+            },
+            created: true,
+            changed: true,
+          }),
+          { status: 200 }
+        );
+      }) as typeof fetch
+    );
+
+    await expect(
+      client.applyChatConnection({
+        slug: "team-slack",
+        connector: "slack",
+        config: { botToken: "xoxb-test" },
+      })
+    ).resolves.toEqual({ id: 91, created: true, changed: true });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      action: "apply_chat_connection",
+      stable_id: "team-slack",
+      connector_key: "slack",
+      config: { botToken: "xoxb-test" },
+    });
+  });
+
+  test("applyChatConnection rejects a malformed success response", async () => {
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            action: "apply_chat_connection",
+            created: true,
+            changed: true,
+          }),
+          { status: 200 }
+        )) as typeof fetch
+    );
+
+    await expect(
+      client.applyChatConnection({
+        slug: "team-slack",
+        connector: "slack",
+        config: { botToken: "xoxb-test" },
+      })
+    ).rejects.toThrow(/returned no connection payload/);
+  });
+
   test("patchAgentMetadata uses PATCH /agents/:agentId", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

@@ -62,39 +62,6 @@ Plan:
 Summary: 0 create, 1 update, 1 noop, 0 drift"
 `;
 
-exports[`apply diff — platforms create on empty remote 1`] = `
-"
-Plan:
-
-  agents:
-  + agent triage
-
-  settings:
-  + settings triage
-
-  platforms:
-  + platform triage/triage-telegram
-
-Summary: 3 create, 0 update, 0 noop, 0 drift"
-`;
-
-exports[`apply diff — platforms update with willRestart when config changes 1`] = `
-"
-Plan:
-
-  agents:
-  = agent triage
-
-  settings:
-  = settings triage
-
-  platforms:
-  ~ platform triage/triage-telegram (config)
-      ⚠ will restart platform — in-flight messages may drop
-
-Summary: 0 create, 1 update, 2 noop, 0 drift"
-`;
-
 exports[`apply diff — memory schema creates entity + relationship types 1`] = `
 "
 Plan:

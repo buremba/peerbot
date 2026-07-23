@@ -165,39 +165,21 @@ describe("lobu init --yes", () => {
   );
 
   test(
-    "--hosted-slack writes a hosted (no-token) slack platform entry",
+    "--hosted-slack writes a hosted (no-token) slack connection",
     async () => {
-      await initCommand(cwd, "preview-on", { yes: true, hostedSlack: true });
+      await initCommand(cwd, "hosted-on", { yes: true, hostedSlack: true });
       const config = readFileSync(
-        join(cwd, "preview-on", "lobu.config.ts"),
+        join(cwd, "hosted-on", "lobu.config.ts"),
         "utf-8"
       );
-      expect(config).toContain("platforms:");
-      expect(config).toContain('{ type: "slack" }');
-      // The hosted bot needs no bot token — no preview block, no botToken.
-      expect(config).not.toContain("preview:");
+      // A hosted chat connection: project-level defineConnection, no token.
+      // `lobu run` scans project.connections for credentialMode: "hosted".
+      expect(config).toContain("defineConnection");
+      expect(config).toContain('credentialMode: "hosted"');
+      expect(config).toContain("connections: [slack]");
       expect(config).not.toContain("botToken");
-    },
-    INIT_TIMEOUT
-  );
-
-  test(
-    "--platform slack --hosted-slack emits only the own slack entry (no duplicate)",
-    async () => {
-      await initCommand(cwd, "slack-both", {
-        yes: true,
-        platform: "slack",
-        hostedSlack: true,
-      });
-      const config = readFileSync(
-        join(cwd, "slack-both", "lobu.config.ts"),
-        "utf-8"
-      );
-      // An explicit --platform slack owns the agent's single slack entry, so the
-      // hosted bot is skipped — one slack entry, with a token, no bare hosted one.
-      expect(config).toContain("botToken");
-      expect(config).not.toContain('{ type: "slack" },');
-      expect(config.match(/type: "slack"/g)?.length ?? 0).toBe(1);
+      // Not the old agent-scoped platforms field.
+      expect(config).not.toContain("platforms:");
     },
     INIT_TIMEOUT
   );

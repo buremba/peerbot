@@ -9,7 +9,7 @@
  */
 
 import { validateEntityMetrics } from "@lobu/connector-sdk/metrics";
-import { type AgentSettings, isHostedChatEntry } from "@lobu/core";
+import { type AgentSettings, isHostedChatPlatform } from "@lobu/core";
 import type { AgentSettingsStored } from "@lobu/core/contracts/agent-settings";
 
 /**
@@ -56,10 +56,12 @@ const AGENT_SETTINGS_FIELD_POLICY = {
   "mapped" | "post-load" | "unsupported"
 >;
 void AGENT_SETTINGS_FIELD_POLICY;
+
 import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
   AuthProfile,
+  Behavior,
   Connection,
   ConnectorRef,
   EntityType,
@@ -68,7 +70,6 @@ import type {
   Project,
   ProviderConfig,
   RelationshipType,
-  Behavior,
 } from "../../../config/index.js";
 import { isSecretRef, UNRESOLVED_MODEL_SUFFIX } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
@@ -80,7 +81,6 @@ import type {
   DesiredEntityType,
   DesiredFeed,
   DesiredOrgProvider,
-  DesiredPlatform,
   DesiredRelationshipType,
   DesiredState,
   DesiredWatcher,
@@ -223,29 +223,6 @@ function authProfileSlug(
 }
 
 /**
- * Deterministic, human-readable stable id for a platform binding, derived from
- * `(agentId, type, name?)`. Must stay stable across applies so the same
- * platform matches (noop) instead of being recreated by
- * `manage_connections(action='apply_chat_connection')`.
- */
-function platformStableId(
-  agentId: string,
-  type: string,
-  name?: string
-): string {
-  const slug = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-  return [agentId, type, name]
-    .filter((p): p is string => !!p)
-    .map(slug)
-    .filter(Boolean)
-    .join("-");
-}
-
-/**
  * Resolve a credential to its actual secret value, mirroring the TOML loader's
  * connector-credential handling (`loadConnectors` in desired-state.ts): a
  * `secret()` / `$VAR` ref resolves to its env value — apply pushes the REAL
@@ -268,6 +245,17 @@ function resolveCredentialValue(
     return env[ref] ?? value;
   }
   return value;
+}
+
+/** Resolve top-level secret/env refs in connection config; preserve typed options. */
+function resolveConnectionConfigValue(
+  value: unknown,
+  required: Set<string>,
+  env: NodeJS.ProcessEnv
+): unknown {
+  return typeof value === "string" || isSecretRef(value)
+    ? resolveCredentialValue(value, required, env)
+    : value;
 }
 
 /** Skill entries resolved from `defineAgent({ skills })` (inline + file). */
@@ -405,41 +393,6 @@ function mapAgent(
     });
   }
 
-  const platforms: DesiredPlatform[] = (agent.platforms ?? [])
-    // A hosted-bot entry (slack/telegram with no `config`) is reached via the
-    // hosted Lobu bot + a `/lobu link` claim, NOT a self-hosted connection. It
-    // must never become a credential-less `connections` chat row — `lobu run`
-    // reads it straight from the authored config to mint the link code.
-    .filter((p) => !isHostedChatEntry(p))
-    .map((p) => ({
-      stableId: platformStableId(agent.id, p.type, p.name),
-      type: p.type,
-      ...(p.name ? { name: p.name } : {}),
-      // Resolve `secret()`/`$VAR` to the REAL value — the platform-write path
-      // stores the incoming plaintext as the secret (server-side
-      // `normalizeConfigForStorage` swaps it for a `secret://` ref + encrypts it),
-      // so sending the `$VAR` placeholder would persist a broken token. Mirrors
-      // provider keys + auth-profile credentials. The config row never holds
-      // cleartext at rest; the secret name is collected for the secrets gate.
-      config: Object.fromEntries(
-        Object.entries(p.config ?? {}).map(([k, v]) => [
-          k,
-          resolveCredentialValue(v, required, env),
-        ])
-      ),
-    }));
-  // Distinct platforms must not collapse to the same stable id (e.g. names that
-  // slugify equal), or apply would clobber one with the other.
-  const seenStableIds = new Set<string>();
-  for (const p of platforms) {
-    if (seenStableIds.has(p.stableId)) {
-      throw new ValidationError(
-        `agent "${agent.id}" has two platforms that resolve to the same id "${p.stableId}" — give them distinct names`
-      );
-    }
-    seenStableIds.add(p.stableId);
-  }
-
   const metadata: DesiredAgentMetadata = {
     agentId: agent.id,
     name: agent.name ?? agent.id,
@@ -472,7 +425,7 @@ function mapAgent(
   };
   void _exhaustive;
 
-  return { metadata, settings, platforms, providerKeys };
+  return { metadata, settings, providerKeys };
 }
 
 function mapEntityType(entity: EntityType): DesiredEntityType {
@@ -717,11 +670,32 @@ function mapAuthProfile(
   };
 }
 
-function mapConnection(connection: Connection): DesiredConnection {
+function unsupportedChatConnectionFields(connection: Connection): string[] {
+  return [
+    connection.authProfile !== undefined ? "authProfile" : null,
+    connection.appAuthProfile !== undefined ? "appAuthProfile" : null,
+    connection.deviceWorkerId !== undefined ? "deviceWorkerId" : null,
+    connection.feeds?.length ? "feeds" : null,
+  ].filter((field): field is string => field !== null);
+}
+
+function mapConnection(
+  connection: Connection,
+  required: Set<string>,
+  env: NodeJS.ProcessEnv
+): DesiredConnection {
   if (!CONNECTION_SLUG_PATTERN.test(connection.slug)) {
     throw new ValidationError(
       `connection slug "${connection.slug}" must match /^[a-z0-9][a-z0-9-]{0,62}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤63 chars)`
     );
+  }
+  if (connection.credentialMode === "byo") {
+    const unsupported = unsupportedChatConnectionFields(connection);
+    if (unsupported.length > 0) {
+      throw new ValidationError(
+        `BYO chat connection "${connection.slug}" cannot declare ${unsupported.join(", ")} — chat credentials come from config and the chat upsert does not apply auth profiles, device pinning, or declarative feeds`
+      );
+    }
   }
   const seenFeeds = new Set<string>();
   const feeds: DesiredFeed[] = (connection.feeds ?? []).map((feed) => {
@@ -758,14 +732,45 @@ function mapConnection(connection: Connection): DesiredConnection {
   });
   const authSlug = authProfileSlug(connection.authProfile);
   const appAuthSlug = authProfileSlug(connection.appAuthProfile);
+  if (connection.credentialMode === "managed" && !connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "managed" but does not declare managedBy`
+    );
+  }
+  if (connection.credentialMode === "byo" && connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" cannot combine credentialMode "byo" with managedBy`
+    );
+  }
+  // A BYO chat connection (a chat connector whose credential is supplied in
+  // `config`, not the hosted bot — hosted is filtered out before this) applies
+  // through the secret-aware `apply_chat_connection` path. Resolve `secret()` /
+  // `$VAR` refs in its config to the REAL value: the chat-write path stores the
+  // incoming plaintext as the secret (server-side `normalizeConfigForStorage`
+  // swaps it for a `secret://` ref + encrypts it), so sending the `$VAR`
+  // placeholder would persist a broken token. Mirrors provider keys +
+  // auth-profile credentials; the config row never holds cleartext at rest, and
+  // the secret name is collected so the apply secrets gate fails loud if unset.
+  // `credentialMode` is explicit so connector definitions remain the only
+  // registry of chat capability (`x-lobu-chat-platform`). Validation against
+  // that marker happens after connector definitions are installed/refetched.
+  const isByoChat = connection.credentialMode === "byo";
+  const resolvedConfig = isByoChat
+    ? Object.fromEntries(
+        Object.entries(connection.config ?? {}).map(([k, v]) => [
+          k,
+          resolveConnectionConfigValue(v, required, env),
+        ])
+      )
+    : connection.config;
   // A managed connection's grant lives in a cloud (public) org. Fold the
   // `managedBy` descriptor into the persisted connection `config` so the server
   // resolver (execution-context.ts) can detect it and fetch the user's token
   // from the cloud at runtime — no new column or CRUD field needed. It lives in
   // the trusted connection `config` (never in `auth_data`).
   const config = connection.managedBy
-    ? { ...(connection.config ?? {}), managedBy: { ...connection.managedBy } }
-    : connection.config;
+    ? { ...(resolvedConfig ?? {}), managedBy: { ...connection.managedBy } }
+    : resolvedConfig;
   return {
     slug: connection.slug,
     connector: connectorKey(connection.connector),
@@ -775,10 +780,48 @@ function mapConnection(connection: Connection): DesiredConnection {
     ...(authSlug ? { authProfileSlug: authSlug } : {}),
     ...(appAuthSlug ? { appAuthProfileSlug: appAuthSlug } : {}),
     ...(config ? { config } : {}),
+    // Mark BYO chat so apply routes it through `apply_chat_connection` (which
+    // persists a non-null `credential_mode` the gateway needs to treat the row
+    // as chat). Data connectors leave it undefined.
+    ...(isByoChat ? { credentialMode: "byo" as const } : {}),
     ...(connection.deviceWorkerId
       ? { deviceWorkerId: connection.deviceWorkerId }
       : {}),
   };
+}
+
+/**
+ * A hosted chat connection (`credentialMode: "hosted"`) is reached via the
+ * hosted Lobu bot + a `/lobu link` claim, NOT a persisted connection row. It
+ * must never become a credential-less connection: `lobu run` reads it straight
+ * from the authored config to mint the link code. So it is filtered out of the
+ * applied connection set (mirrors the old hosted-platform carve-out).
+ */
+function isHostedConnection(connection: Connection): boolean {
+  if (connection.credentialMode !== "hosted") return false;
+  const connector = connectorKey(connection.connector);
+  if (!isHostedChatPlatform(connector)) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "hosted", but connector "${connector}" does not support the hosted Lobu bot (expected slack or telegram)`
+    );
+  }
+  if (connection.config && Object.keys(connection.config).length > 0) {
+    throw new ValidationError(
+      `connection "${connection.slug}" uses credentialMode "hosted" and must not declare config credentials`
+    );
+  }
+  if (connection.managedBy) {
+    throw new ValidationError(
+      `connection "${connection.slug}" cannot combine credentialMode "hosted" with managedBy`
+    );
+  }
+  const unsupported = unsupportedChatConnectionFields(connection);
+  if (unsupported.length > 0) {
+    throw new ValidationError(
+      `hosted chat connection "${connection.slug}" cannot declare ${unsupported.join(", ")} — hosted connections are link-code declarations, not persisted connection rows`
+    );
+  }
+  return true;
 }
 
 /**
@@ -808,7 +851,9 @@ export function mapProjectToDesiredState(
       );
   const connections = only
     ? []
-    : (project.connections ?? []).map(mapConnection);
+    : (project.connections ?? [])
+        .filter((c) => !isHostedConnection(c))
+        .map((c) => mapConnection(c, required, env));
   // Org providers are skipped under `--only` (they're neither agents nor
   // memory), matching the connector-skip posture — so their secrets aren't
   // demanded on a targeted apply.

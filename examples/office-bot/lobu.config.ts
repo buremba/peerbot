@@ -26,10 +26,6 @@ const foodOrdering = defineAgent({
       key: secret("Z_AI_API_KEY"),
     },
   ],
-  // Hosted Lobu Slack bot — no bot token needed (`/lobu link <code>`).
-  platforms: [
-    { type: "slack", surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
-  ],
   network: {
     // Deliveroo is a flat allow rather than LLM-judged: the egress judge needs
     // an ANTHROPIC_API_KEY (OAuth tokens are rejected for direct API use), and
@@ -170,6 +166,16 @@ export default defineConfig({
   organizationId: "UdNAH1bb3csC842vhOgxAHVcfX4tYU5A",
   agents: [foodOrdering],
   entities: [lunchRun],
-  connections: [deliverooConn],
+  connections: [
+    deliverooConn,
+    // Hosted Lobu Slack bot — no bot token needed (`/lobu link <code>`).
+    defineConnection({
+      slug: "office-slack",
+      connector: "slack",
+      credentialMode: "hosted",
+      surfaces: ["dm", "channel"],
+      codeTtlMinutes: 15,
+    }),
+  ],
   behaviors: [lunchOpen, lunchFinalize],
 });

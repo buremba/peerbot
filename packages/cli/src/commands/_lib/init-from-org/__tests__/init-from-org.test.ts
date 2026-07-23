@@ -81,7 +81,10 @@ afterEach(() => {
 });
 
 /** Stubbed cloud state covering every resource family the bootstrap maps. */
-function fullOrgRoutes(): Record<string, () => unknown> {
+function fullOrgRoutes(): Record<
+  string,
+  (body: Record<string, unknown>) => unknown
+> {
   return {
     "/oauth/userinfo": () => ({
       organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
@@ -211,30 +214,49 @@ function fullOrgRoutes(): Record<string, () => unknown> {
           config: { repo_owner: "lobu-ai", repo_name: "lobu" },
           device_worker_id: null,
         },
+        {
+          id: 8,
+          slug: "agentconn-team-slack",
+          connector_key: "slack",
+          display_name: "Team Slack",
+          status: "active",
+          credential_mode: "byo",
+          config: {
+            botToken: "secret://connections%2Fteam-slack%2FbotToken",
+            mode: "socket",
+            platform: "slack",
+            settings: { allowGroups: true },
+            chatMetadata: { teamId: "T123" },
+          },
+          device_worker_id: null,
+        },
       ],
     }),
-    manage_feeds: () => ({
-      feeds: [
-        {
-          id: 1,
-          connection_id: 7,
-          feed_key: "stargazers",
-          display_name: "Stars",
-          status: "active",
-          schedule: "0 */6 * * *",
-          config: { repo_owner: "lobu-ai", repo_name: "lobu" },
-        },
-        {
-          id: 2,
-          connection_id: 7,
-          feed_key: "query",
-          display_name: "Churn rollup (live)",
-          status: "active",
-          schedule: null,
-          config: { query: "SELECT 1" },
-          virtual: true,
-        },
-      ],
+    manage_feeds: (body) => ({
+      feeds:
+        body.connection_id === 7
+          ? [
+              {
+                id: 1,
+                connection_id: 7,
+                feed_key: "stargazers",
+                display_name: "Stars",
+                status: "active",
+                schedule: "0 */6 * * *",
+                config: { repo_owner: "lobu-ai", repo_name: "lobu" },
+              },
+              {
+                id: 2,
+                connection_id: 7,
+                feed_key: "query",
+                display_name: "Churn rollup (live)",
+                status: "active",
+                schedule: null,
+                config: { query: "SELECT 1" },
+                virtual: true,
+              },
+            ]
+          : [],
     }),
   };
 }
@@ -251,6 +273,12 @@ describe("lobu init --from-org", () => {
     const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
     expect(source).toContain('org: "acme"');
     expect(source).toContain('orgName: "Acme Inc"');
+    expect(source).toContain('slug: "team-slack"');
+    expect(source).toContain('credentialMode: "byo"');
+    expect(source).toContain('botToken: secret("TEAM_SLACK_BOT_TOKEN")');
+    expect(source).not.toContain("chatMetadata");
+    expect(source).not.toContain("allowGroups");
+    expect(source).not.toContain('platform: "slack"');
 
     // The bootstrap wrote the agent-dir markdown + the reaction script.
     expect(readFileSync(join(dir, "agents", "sales", "SOUL.md"), "utf-8")).toBe(
@@ -267,7 +295,10 @@ describe("lobu init --from-org", () => {
     );
 
     // Round-trip: load the generated config back to DesiredState.
-    const env = { ANTHROPIC_API_KEY: "sk-test" } as NodeJS.ProcessEnv;
+    const env = {
+      ANTHROPIC_API_KEY: "sk-test",
+      TEAM_SLACK_BOT_TOKEN: "xoxb-test",
+    } as NodeJS.ProcessEnv;
     const { state } = await loadDesiredStateFromConfig({ cwd: dir, env });
 
     // ── agents ───────────────────────────────────────────────────────────
@@ -290,6 +321,13 @@ describe("lobu init --from-org", () => {
     expect(agent?.settings.preApprovedTools).toEqual([
       "/mcp/gmail/tools/send_email",
     ]);
+    expect(
+      state.connectors.connections.find((c) => c.slug === "team-slack")
+    ).toMatchObject({
+      connector: "slack",
+      credentialMode: "byo",
+      config: { botToken: "xoxb-test", mode: "socket" },
+    });
     expect(agent?.settings.guardrails).toEqual(["secret-scan"]);
     expect(agent?.settings.nixConfig?.packages).toEqual(["jq", "ffmpeg"]);
     expect(agent?.settings.soulMd).toBe("Be concise.");
@@ -544,117 +582,6 @@ describe("lobu init --from-org", () => {
     );
     expect(Object.keys(profile?.credentials ?? {})).toEqual(["api_key"]);
     expect(profile?.credentials?.api_key).toBe("sk_live_x");
-  });
-
-  test("platform secret config → secret() placeholder, never the redacted literal", async () => {
-    const dir = mkFixtureDir();
-    await initFromOrg({
-      targetDir: dir,
-      fetchImpl: buildFetch({
-        "/oauth/userinfo": () => ({
-          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
-        }),
-        manage_connections: () => ({
-          connections: [
-            {
-              id: 1,
-              slug: "agentconn-bot-telegram",
-              connector_key: "telegram",
-              agent_id: "bot",
-              credential_mode: "byo",
-              status: "active",
-              // GET round-trip: `platform` key + redacted secret + a literal.
-              config: {
-                platform: "telegram",
-                botToken: "***oken",
-                mode: "webhook",
-              },
-            },
-          ],
-        }),
-        "/agents/bot/config": () => ({ updatedAt: 0 }),
-        "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
-        manage_entity_schema: () => ({
-          entity_types: [],
-          relationship_types: [],
-        }),
-        manage_auth_profiles: () => ({ auth_profiles: [] }),
-      }),
-    });
-
-    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
-    // The secret is emitted as a secret() ref (env name derived from agent+key),
-    // never the opaque `***oken` literal; the non-secret `mode` stays a literal.
-    expect(source).toContain('botToken: secret("BOT_TELEGRAM_BOTTOKEN")');
-    expect(source).not.toContain("***oken");
-    expect(source).toContain('mode: "webhook"');
-
-    // Round-trips: the regenerated config loads back into DesiredState.
-    process.env.BOT_TELEGRAM_BOTTOKEN = "dummy-token-value";
-    try {
-      const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-      const platform = state.agents[0]?.platforms[0];
-      expect(platform?.type).toBe("telegram");
-      // The secret() ref resolves to the real env value (the server stores the
-      // incoming plaintext as the secret), not the `$VAR` placeholder.
-      expect(platform?.config.botToken).toBe("dummy-token-value");
-      expect(platform?.config.mode).toBe("webhook");
-    } finally {
-      process.env.BOT_TELEGRAM_BOTTOKEN = undefined;
-    }
-  });
-
-  test("non-identifier platform config key → quoted key + valid POSIX env var", async () => {
-    const dir = mkFixtureDir();
-    await initFromOrg({
-      targetDir: dir,
-      fetchImpl: buildFetch({
-        "/oauth/userinfo": () => ({
-          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
-        }),
-        manage_connections: () => ({
-          connections: [
-            {
-              id: 1,
-              slug: "agentconn-bot-telegram",
-              connector_key: "telegram",
-              agent_id: "bot",
-              credential_mode: "byo",
-              status: "active",
-              // A hyphenated config key: the emitted TS key must be quoted, and
-              // the derived secret env var must be a valid POSIX name (no `-`).
-              config: { platform: "telegram", "bot-token": "***oken" },
-            },
-          ],
-        }),
-        "/agents/bot/config": () => ({ updatedAt: 0 }),
-        "/agents": () => ({ agents: [{ agentId: "bot", name: "Bot" }] }),
-        "behaviors?include_details": () => ({ behaviors: [] }),
-        manage_entity_schema: () => ({
-          entity_types: [],
-          relationship_types: [],
-        }),
-        manage_auth_profiles: () => ({ auth_profiles: [] }),
-      }),
-    });
-
-    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
-    const envExample = readFileSync(join(dir, ".env.example"), "utf-8");
-    // Key quoted, env var sanitized (hyphen → underscore), no invalid POSIX key.
-    expect(source).toContain('"bot-token": secret("BOT_TELEGRAM_BOT_TOKEN")');
-    expect(source).not.toContain("BOT-TOKEN");
-    expect(envExample).toContain("BOT_TELEGRAM_BOT_TOKEN=");
-    expect(envExample).not.toMatch(/^[A-Z0-9_]*-/m);
-
-    // Round-trips: the regenerated config loads (proves the .env key is valid).
-    process.env.BOT_TELEGRAM_BOT_TOKEN = "dummy";
-    try {
-      const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-      expect(state.agents[0]?.platforms[0]?.config["bot-token"]).toBe("dummy");
-    } finally {
-      process.env.BOT_TELEGRAM_BOT_TOKEN = undefined;
-    }
   });
 
   test("oauth_app profile → credentials keyed by the connector's oauth method (clientIdKey/clientSecretKey)", async () => {

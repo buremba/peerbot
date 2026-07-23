@@ -37,9 +37,9 @@ Edit `.env` to configure:
 - `PUBLIC_GATEWAY_URL` — Public URL for OAuth callbacks
 - `WORKER_ALLOWED_DOMAINS` — Allowed domains for worker network access
 
-### Platform Connections
+### Chat Connections
 
-If you selected a chat platform during `lobu init`, declare its credentials in your Lobu config and run `lobu apply`. Interactive setup and credential rotation are also available from Connections in the web app.
+Declare chat integrations as project-level `defineConnection(...)` entries in `lobu.config.ts`, then run `lobu apply`. Interactive setup and credential rotation are also available from Connections in the web app.
 
 ### Worker Customization
 

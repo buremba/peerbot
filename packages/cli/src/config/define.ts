@@ -235,6 +235,32 @@ export interface Connection {
   appAuthProfile?: AuthProfile | string;
   config?: Record<string, unknown>;
   /**
+   * Where this connection's credential lives:
+   *   - `byo`: this is a chat connection whose credential is supplied here in
+   *     `config` (e.g. `{ botToken: secret("SLACK_BOT_TOKEN") }`). Required
+   *     for declarative BYO chat; omit for ordinary data connections. BYO chat
+   *     does not support auth profiles, device pinning, or declarative feeds.
+   *   - `hosted`: the **hosted Lobu bot** — no `config` needed. `lobu run`
+   *     prints a `/lobu link <code>` you redeem by DMing the bot (or in a
+   *     channel), which binds an agent by creating a message Behavior. Only
+   *     valid for slack/telegram. Hosted declarations do not support auth
+   *     profiles, device pinning, or declarative feeds.
+   *   - `managed`: an OAuth grant owned by a cloud (public) org; see
+   *     {@link ManagedBy}. Set via `managedBy`, not usually by hand.
+   */
+  credentialMode?: "byo" | "hosted" | "managed";
+  /**
+   * Hosted chat only (`credentialMode: "hosted"`): which surfaces a
+   * `/lobu link` code may bind — a DM with the bot, or a channel. Defaults to
+   * `["dm"]`. Ignored for `byo`/`managed` connections.
+   */
+  surfaces?: Array<"dm" | "channel">;
+  /**
+   * Hosted chat only: short-lived claim-code TTL in minutes (capped by the
+   * hosted API). Defaults to 15. Ignored for `byo`/`managed` connections.
+   */
+  codeTtlMinutes?: number;
+  /**
    * Mark this connection as managed by a cloud (public) org — the grant lives
    * in the cloud and the local instance fetches its token at runtime. See
    * {@link ManagedBy}.
@@ -515,39 +541,6 @@ export interface ToolsConfig {
   strict?: boolean;
 }
 
-/** A chat-platform binding for an agent (Telegram/Slack/Discord/…). */
-export interface Platform {
-  /** Platform type: `telegram`, `slack`, `discord`, `whatsapp`, `teams`, `google_chat`, `rest`, … */
-  type: string;
-  /**
-   * Optional display name. Also disambiguates multiple platforms of the same
-   * type on one agent (it feeds the stable id `apply` matches on).
-   */
-  name?: string;
-  /**
-   * Platform config (e.g. `{ botToken: secret("TELEGRAM_BOT_TOKEN") }`). Values
-   * are `secret(...)` refs or literal `$VAR` strings; `lobu apply` keeps the
-   * `$VAR` placeholder in the stored config and resolves it at egress.
-   *
-   * Omit `config` entirely on `slack`/`telegram` to use the **hosted Lobu bot**
-   * — no bot token needed: `lobu run` prints a `/lobu link <code>` you redeem by
-   * DMing the hosted bot (or in a channel after a one-time "Add to Slack"). The
-   * `rest` (HTTP API) platform needs no config either.
-   */
-  config?: Record<string, string | SecretRef>;
-  /**
-   * Hosted-bot only (a `slack`/`telegram` entry with no `config`): which
-   * surfaces a `/lobu link` code may bind — a DM with the bot, or a channel.
-   * Defaults to `["dm"]`. Ignored for self-hosted (config-bearing) entries.
-   */
-  surfaces?: Array<"dm" | "channel">;
-  /**
-   * Hosted-bot only: short-lived claim-code TTL in minutes (capped by the
-   * hosted API). Defaults to 15. Ignored for self-hosted entries.
-   */
-  codeTtlMinutes?: number;
-}
-
 export interface Agent {
   readonly kind: "agent";
   id: string;
@@ -572,17 +565,12 @@ export interface Agent {
   guardrails?: string[];
   /** Nix packages provisioned into the worker environment. */
   nixPackages?: string[];
-  /**
-   * Chat-platform bindings (`lobu apply` upserts each by a stable id). A
-   * `slack`/`telegram` entry with no `config` is the hosted Lobu bot: it is
-   * read by `lobu run` to mint a `/lobu link` code and is NOT persisted as a
-   * connection (see {@link isHostedChatEntry}).
-   */
-  platforms?: Platform[];
-  // NOTE: the memory schema (entity/relationship types) and connections are
-  // declared at the PROJECT level (`defineConfig({ entities, relationships,
-  // connections })`), matching the apply model. Chat platforms, however, ARE
-  // agent-scoped (each agent owns its bindings) and map to DesiredAgent.platforms.
+  // NOTE: the memory schema (entity/relationship types) and connections —
+  // including chat connections (slack/telegram, `credentialMode: "byo" |
+  // "hosted"`) — are declared at the PROJECT level (`defineConfig({ entities,
+  // relationships, connections })`), matching the apply model. Agent binding
+  // for a chat connection is a Behavior with a channel trigger, not an
+  // agent-scoped field here.
 }
 
 export function defineAgent(config: Omit<Agent, "kind">): Agent {

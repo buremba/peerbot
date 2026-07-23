@@ -11,9 +11,16 @@ import {
   type RemoteAgent,
   type RemoteConnectorDefinition,
   type RemoteFeed,
-  type RemotePlatform,
   resolveApplyClient,
 } from "./client.js";
+import {
+  buildCountsByKind,
+  buildDeploymentManifest,
+  collectGitInfo,
+  computeManifestHash,
+  type DeploymentSummary,
+  mintApplyId,
+} from "./deployment.js";
 import {
   type DesiredConnectorDefinition,
   type DesiredState,
@@ -41,14 +48,6 @@ import {
   renderPostApplyPunchList,
   renderProgress,
 } from "./render.js";
-import {
-  buildCountsByKind,
-  buildDeploymentManifest,
-  collectGitInfo,
-  computeManifestHash,
-  type DeploymentSummary,
-  mintApplyId,
-} from "./deployment.js";
 import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
 interface ApplyOptions {
@@ -321,7 +320,6 @@ export async function fetchRemoteSnapshot(
     string,
     Awaited<ReturnType<ApplyClient["getAgentSettings"]>>
   >();
-  const platformsByAgent = new Map<string, RemotePlatform[]>();
 
   if (only !== "memory") {
     const desiredAgentIds = state.agents.map((a) => a.metadata.agentId);
@@ -331,7 +329,6 @@ export async function fetchRemoteSnapshot(
     );
     for (const agentId of targetAgentIds) {
       agentSettings.set(agentId, await client.getAgentSettings(agentId));
-      platformsByAgent.set(agentId, await client.listPlatforms(agentId));
     }
   }
 
@@ -412,7 +409,6 @@ export async function fetchRemoteSnapshot(
   return {
     agents,
     agentSettings,
-    platformsByAgent,
     entityTypes,
     relationshipTypes,
     watchers,
@@ -800,46 +796,6 @@ export async function executePlan(
     );
   }
 
-  // 3) Platforms — reconcile every declaration. Secret values cannot safely
-  // round-trip through list APIs, so the CLI cannot detect an in-place token
-  // rotation. The server compares resolved credentials under a PG advisory
-  // lock and makes unchanged declarations true no-ops (no write or restart).
-  const platformRows = new Map(
-    ctx.plan.rows
-      .filter((row) => row.kind === "platform")
-      .map((row) => [`${row.agentId}:${row.id}`, row])
-  );
-  for (const agent of ctx.state.agents) {
-    for (const desired of agent.platforms) {
-      const row = platformRows.get(
-        `${agent.metadata.agentId}:${desired.stableId}`
-      );
-      if (!row || row.kind !== "platform") continue;
-      const result = await ctx.client.upsertPlatform(
-        agent.metadata.agentId,
-        desired.stableId,
-        {
-          platform: desired.type,
-          ...(desired.name ? { name: desired.name } : {}),
-          config: desired.config,
-        }
-      );
-      const detail = result.willRestart
-        ? "(restarted)"
-        : result.noop
-          ? "(noop on server)"
-          : undefined;
-      printText(
-        renderProgress(
-          result.noop ? "noop" : row.verb,
-          "platform",
-          `${agent.metadata.agentId}/${row.id}`,
-          detail
-        )
-      );
-    }
-  }
-
   // 4) Entity types
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;
@@ -1053,7 +1009,21 @@ export async function executePlan(
     );
     if (!desired) continue;
     const existing = remoteConnBySlug.get(desired.slug);
-    if (existing && row.verb === "update") {
+    if (desired.credentialMode === "byo") {
+      // BYO chat connection: apply through the secret-aware chat-upsert path so
+      // the server persists a non-null `credential_mode` (the gateway needs it
+      // to treat the row as chat) and resolves the token. Idempotent — an
+      // unchanged declaration is a server-side no-op. No feeds/device pinning.
+      // Capture the returned id so Behaviors referencing this connection in the
+      // same apply resolve it (on a first create, `existing` is unset).
+      const result = await ctx.client.applyChatConnection({
+        slug: desired.slug,
+        connector: desired.connector,
+        name: desired.name,
+        config: desired.config ?? {},
+      });
+      connectionIdBySlug.set(desired.slug, result.id);
+    } else if (existing && row.verb === "update") {
       const updated = await ctx.client.updateConnection(existing.id, {
         name: desired.name,
         authProfileSlug: desired.authProfileSlug ?? null,

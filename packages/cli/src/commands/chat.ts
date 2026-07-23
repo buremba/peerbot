@@ -14,7 +14,19 @@ import {
 } from "../internal/index.js";
 import { renderMarkdown } from "../utils/markdown.js";
 import { loadProjectConfig } from "./_lib/apply/desired-state.js";
-import { getPlatformDefinition } from "./platforms/registry.js";
+/**
+ * How `lobu chat --user <platform>:<id>` addresses a recipient: the request
+ * body gets `{ [platform]: { [key]: id } }` (plus `thread` when supported).
+ * Only platforms with direct-send support appear here.
+ */
+const CHAT_TARGETS: Record<
+  string,
+  { key: string; includeThread?: boolean } | undefined
+> = {
+  telegram: { key: "chatId" },
+  slack: { key: "channel", includeThread: true },
+  discord: { key: "channelId" },
+};
 
 const THREADS_FILE = join(LOBU_CONFIG_DIR, "threads.json");
 
@@ -213,7 +225,7 @@ async function sendViaPlatform(
     content: opts.message,
   };
 
-  const chatTarget = getPlatformDefinition(opts.platform)?.chatTarget;
+  const chatTarget = CHAT_TARGETS[opts.platform];
   if (chatTarget) {
     body[opts.platform] = {
       [chatTarget.key]: opts.userId,

@@ -13,11 +13,6 @@ import { confirm, input, password, select } from "@inquirer/prompts";
 import { slugify } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
-import { promptPlatformConfig } from "../commands/platforms/platform-prompts.js";
-import {
-  getPlatformPlaceholders,
-  PLATFORM_REGISTRY,
-} from "../commands/platforms/registry.js";
 import {
   getProviderById,
   loadProviderRegistry,
@@ -31,7 +26,6 @@ import { initFromOrg } from "./_lib/init-from-org/bootstrap.js";
 import { isPortFree } from "./dev.js";
 
 const PROJECT_NAME_PATTERN = /^[a-z0-9-]+$/;
-const PLATFORM_CHOICES = PLATFORM_REGISTRY.map((p) => p.id);
 const NETWORK_CHOICES = ["restricted", "open", "isolated"] as const;
 type NetworkChoice = (typeof NETWORK_CHOICES)[number];
 const MEMORY_CHOICES = ["none", "lobu-cloud", "lobu-custom"] as const;
@@ -45,7 +39,6 @@ export interface InitOptions {
   network?: string;
   provider?: string;
   providerKey?: string;
-  platform?: string;
   memory?: string;
   memoryUrl?: string;
   otelEndpoint?: string;
@@ -522,40 +515,6 @@ export async function initCommand(
     }
   }
 
-  const platformChoices = [
-    { name: "Skip — I'll connect a platform later", value: "" },
-    ...PLATFORM_REGISTRY.map((p) => ({ name: p.displayName, value: p.id })),
-  ];
-
-  const platformType = await promptOrDefault({
-    flag: options.platform,
-    useDefaults,
-    defaultValue: "",
-    validate: (v: string) =>
-      v === "" || PLATFORM_CHOICES.includes(v)
-        ? true
-        : `Unknown platform "${v}". Available: ${PLATFORM_CHOICES.join(", ")}`,
-    prompt: () =>
-      select<string>({
-        message: "Connect a chat platform?",
-        choices: platformChoices,
-        default: "",
-      }),
-  });
-
-  // Interactive: prompt for real secrets. --yes: collect placeholder env-var
-  // refs so we seed empty .env entries; the user fills them in afterwards.
-  let platformConfig: Record<string, string> = {};
-  let platformSecrets: Array<{ envVar: string; value: string }> = [];
-  if (platformType) {
-    if (useDefaults) {
-      platformConfig = getPlatformPlaceholders(platformType);
-    } else {
-      ({ platformConfig, platformSecrets } =
-        await promptPlatformConfig(platformType));
-    }
-  }
-
   const enableHostedSlack = await promptBooleanOrDefault({
     flag: options.hostedSlack,
     useDefaults,
@@ -695,7 +654,6 @@ export async function initCommand(
       includeLobuMemory,
       lobuOrg: includeLobuMemory ? projectName : undefined,
       lobuName: includeLobuMemory ? humanizeSlug(projectName) : undefined,
-      ...(platformType ? { platformType, platformConfig } : {}),
     });
 
     const variables = {
@@ -725,10 +683,6 @@ export async function initCommand(
     if (selectedProvider?.providers?.[0]?.envVarName) {
       envVarsToFill.add(selectedProvider.providers[0].envVarName);
     }
-    for (const value of Object.values(platformConfig)) {
-      const envVar = extractEnvVarRef(value);
-      if (envVar) envVarsToFill.add(envVar);
-    }
     for (const envVar of envVarsToFill) {
       await setLocalEnvValue(projectDir, envVar, "");
     }
@@ -747,10 +701,6 @@ export async function initCommand(
         selectedProvider.providers[0].envVarName,
         providerApiKey
       );
-    }
-
-    for (const secret of platformSecrets) {
-      await setLocalEnvValue(projectDir, secret.envVar, secret.value);
     }
 
     for (const secret of envSecrets) {
@@ -843,10 +793,7 @@ export async function initCommand(
         chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
       );
     }
-    // Mirror the scaffold's emission condition: a `--platform slack` already
-    // owns the agent's single Slack entry, so the hosted bot is skipped and
-    // there is no link code to print.
-    if (enableHostedSlack && platformType !== "slack") {
+    if (enableHostedSlack) {
       console.log(
         chalk.cyan(
           `  ${n++}. Link the project to Lobu Cloud and register it: lobu login && lobu org set <slug> && lobu apply`
@@ -912,11 +859,6 @@ async function promptBooleanOrDefault(opts: {
   return opts.prompt();
 }
 
-function extractEnvVarRef(value: string): string | null {
-  const match = value.match(/^\$([A-Z_][A-Z0-9_]*)$/);
-  return match?.[1] ?? null;
-}
-
 function humanizeSlug(slug: string): string {
   return slug
     .split("-")
@@ -928,10 +870,10 @@ function humanizeSlug(slug: string): string {
 /**
  * Scaffold the project's `lobu.config.ts` — the single TypeScript entrypoint
  * `lobu apply` (and `lobu run`) read. Emits a `defineAgent` (providers,
- * network, the chosen chat platform, optional hosted Slack bot) and a
- * `defineConfig` default export with the org metadata. Memory-schema types
- * (entity / relationship) are added later with `defineEntityType` etc.; chat
- * platforms can also still be wired up in the `/agents` UI after apply.
+ * network) and a `defineConfig` default export with the org metadata.
+ * Memory-schema types (entity / relationship) are added later with
+ * `defineEntityType` etc.; chat connections are wired up as project-level
+ * `defineConnection`s or through Connections in the web app.
  */
 async function generateLobuConfig(
   projectDir: string,
@@ -946,10 +888,6 @@ async function generateLobuConfig(
     lobuOrg?: string;
     lobuName?: string;
     lobuDescription?: string;
-    /** Chat platform to author (e.g. "telegram"); omit to scaffold none. */
-    platformType?: string;
-    /** Platform config; `$VAR` values are emitted as `secret("VAR")`. */
-    platformConfig?: Record<string, string>;
   }
 ): Promise<void> {
   const id = options.agentName;
@@ -994,38 +932,6 @@ async function generateLobuConfig(
     "  },"
   );
 
-  const platformEntries: string[] = [];
-  if (options.platformType && options.platformConfig) {
-    const configLines = Object.entries(options.platformConfig).map(([k, v]) => {
-      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
-      return m
-        ? `      ${k}: secret(${JSON.stringify(m[1])}),`
-        : `      ${k}: ${JSON.stringify(v)},`;
-    });
-    platformEntries.push(
-      "    {",
-      `      type: ${JSON.stringify(options.platformType)},`,
-      "      config: {",
-      ...configLines,
-      "      },",
-      "    },"
-    );
-  }
-
-  // Hosted Lobu Slack bot — no bot token needed. Skipped when the user already
-  // configured their own Slack app above (an agent gets one slack entry).
-  if (options.enableHostedSlack && options.platformType !== "slack") {
-    platformEntries.push(
-      "    // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a",
-      "    // `/lobu link <code>` you redeem by DMing the hosted bot.",
-      '    { type: "slack" },'
-    );
-  }
-
-  if (platformEntries.length > 0) {
-    agentFields.push("  platforms: [", ...platformEntries, "  ],");
-  }
-
   const configFields: string[] = [];
   if (options.includeLobuMemory) {
     const org = options.lobuOrg ?? options.agentName;
@@ -1040,6 +946,26 @@ async function generateLobuConfig(
   }
   configFields.push("  agents: [agent],");
 
+  // Hosted Lobu Slack bot — a project-level connection with no token. `lobu run`
+  // prints a `/lobu link <code>` you redeem by DMing the bot; redeeming binds an
+  // agent by creating a channel Behavior.
+  const connectionDecls: string[] = [];
+  if (options.enableHostedSlack) {
+    connectionDecls.push(
+      "const slack = defineConnection({",
+      '  slug: "slack",',
+      '  connector: "slack",',
+      '  credentialMode: "hosted",',
+      '  surfaces: ["dm", "channel"],',
+      "});"
+    );
+    configFields.push("  connections: [slack],");
+  }
+
+  const imports = options.enableHostedSlack
+    ? 'import { defineAgent, defineConfig, defineConnection, secret } from "@lobu/cli/config";'
+    : 'import { defineAgent, defineConfig, secret } from "@lobu/cli/config";';
+
   const lines = [
     "// lobu.config.ts — Lobu project configuration",
     "// Docs: https://lobu.ai/getting-started/",
@@ -1048,11 +974,12 @@ async function generateLobuConfig(
     "// optional skills/ directory. Shared skills in the root skills/ directory",
     "// are available to every agent. Run `lobu apply` to sync this to your org.",
     "",
-    'import { defineAgent, defineConfig, secret } from "@lobu/cli/config";',
+    imports,
     "",
     "const agent = defineAgent({",
     ...agentFields,
     "});",
+    ...(connectionDecls.length > 0 ? ["", ...connectionDecls] : []),
     "",
     "export default defineConfig({",
     ...configFields,

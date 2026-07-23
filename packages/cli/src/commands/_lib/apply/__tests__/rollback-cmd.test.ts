@@ -7,8 +7,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { REDACTED_SENTINEL } from "@lobu/core";
-import type { DesiredState } from "../desired-state.js";
 import { buildDeploymentManifest } from "../deployment.js";
+import type { DesiredState } from "../desired-state.js";
 import { sanitizeSnapshotState } from "../rollback-cmd.js";
 
 function stateWithSecrets(): DesiredState {
@@ -17,13 +17,6 @@ function stateWithSecrets(): DesiredState {
       {
         metadata: { agentId: "a1", name: "A1" },
         settings: null,
-        platforms: [
-          {
-            platform: "telegram",
-            config: { botToken: "1234:real-token", chatId: "42" },
-          },
-          { platform: "slack", config: { channel: "#general" } },
-        ],
         providerKeys: [{ providerId: "anthropic", value: "sk-ant-real" }],
       },
     ],
@@ -51,6 +44,12 @@ function stateWithSecrets(): DesiredState {
           connector: "postgres",
           config: { api_key: "conn-secret", database: "prod" },
         },
+        {
+          slug: "team-slack",
+          connector: "slack",
+          credentialMode: "byo",
+          config: { botToken: "xoxb-real", mode: "socket" },
+        },
         { slug: "hn-main", connector: "hackernews", config: { top: 10 } },
       ],
     },
@@ -74,12 +73,11 @@ describe("buildDeploymentManifest", () => {
     expect(raw).not.toContain("sk-ant-real");
     expect(raw).not.toContain("ghp_real");
     expect(raw).not.toContain("sk-live-1");
-    expect(raw).not.toContain("1234:real-token");
     expect(raw).not.toContain("export default class Probe");
     // The declaration shape survives for labels.
     expect(raw).toContain("probe.connector.ts");
-    // Non-secret platform config survives (rollback restores it).
-    expect(raw).toContain("#general");
+    // Non-secret connection config survives (rollback restores it).
+    expect(raw).toContain("hackernews");
   });
 });
 
@@ -103,47 +101,18 @@ describe("sanitizeSnapshotState", () => {
     expect(state.providers?.[0]?.apiKey).toBe("");
   });
 
-  test("pins a sentinel-bearing platform to its live remote config, drops it when none", () => {
-    const remote = new Map([
-      ["a1:telegram", { botToken: "secret://live", chatId: "42" }],
-    ]);
-    const pinned = sanitizeSnapshotState(snapshotState(), remote);
-    const platforms = pinned.state.agents[0]?.platforms as Array<{
-      platform: string;
-      config?: Record<string, unknown>;
-    }>;
-    // telegram (sentinel-bearing) pinned to the remote config verbatim…
-    expect(platforms.find((p) => p.platform === "telegram")?.config).toEqual({
-      botToken: "secret://live",
-      chatId: "42",
-    });
-    // …slack (no secrets) restored from the snapshot untouched.
-    expect(platforms.find((p) => p.platform === "slack")?.config).toEqual({
-      channel: "#general",
-    });
-    expect(pinned.notes.some((n) => n.includes("a1:telegram"))).toBe(true);
-
-    // No live platform to pin to → dropped with a note, never pushed.
-    const dropped = sanitizeSnapshotState(snapshotState(), new Map());
-    const droppedPlatforms = dropped.state.agents[0]?.platforms as Array<{
-      platform: string;
-    }>;
-    expect(droppedPlatforms.map((p) => p.platform)).toEqual(["slack"]);
-    expect(dropped.notes.some((n) => n.includes("skipped"))).toBe(true);
-    // The sentinel itself never survives sanitization anywhere.
-    expect(JSON.stringify(pinned.state)).not.toContain(REDACTED_SENTINEL);
-    expect(JSON.stringify(dropped.state)).not.toContain(REDACTED_SENTINEL);
-  });
-
   test("pins a sentinel-bearing connection config to remote, drops it when none", () => {
     const remoteConnections = new Map([
       ["pg-main", { api_key: "***live", database: "prod" }],
+      [
+        "team-slack",
+        {
+          botToken: "secret://connections%2Fteam-slack%2FbotToken",
+          mode: "socket",
+        },
+      ],
     ]);
-    const pinned = sanitizeSnapshotState(
-      snapshotState(),
-      new Map(),
-      remoteConnections
-    );
+    const pinned = sanitizeSnapshotState(snapshotState(), remoteConnections);
     const connections = pinned.state.connectors.connections as Array<{
       slug: string;
       config?: Record<string, unknown>;
@@ -157,6 +126,12 @@ describe("sanitizeSnapshotState", () => {
     expect(connections.find((c) => c.slug === "hn-main")?.config).toEqual({
       top: 10,
     });
+    // BYO chat config is one secret-aware unit: never submit its stored
+    // secret:// ref as a fresh credential during rollback.
+    expect(connections.find((c) => c.slug === "team-slack")).toBeUndefined();
+    expect(pinned.notes).toContain(
+      "connection team-slack: BYO chat config left at current values (rollback never rotates secrets)"
+    );
 
     // No live connection to pin to → dropped with a note.
     const dropped = sanitizeSnapshotState(snapshotState(), new Map());

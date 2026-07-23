@@ -26,6 +26,16 @@ interface ResolutionRule {
 	onMatch: ResolutionDecision;
 }
 
+/**
+ * Plural rule fields that name the same thing as their singular form, so the
+ * human-facing reason says "email or phone" rather than listing all four.
+ * Deliberately an explicit map: any field not listed here is printed verbatim.
+ */
+const RULE_FIELD_ALIASES: Record<string, string> = {
+	emails: "email",
+	phones: "phone",
+};
+
 const DEFAULT_PERSON_RESOLUTION_RULES: ResolutionRule[] = [
 	{ fields: ["email"], normalizer: "email", onMatch: "review" },
 	{ fields: ["emails"], normalizer: "email", onMatch: "review" },
@@ -231,12 +241,13 @@ export function assessEntityResolution(input: {
 	];
 	// Name the fields this entity type actually resolves on ("email or phone"
 	// for person) rather than assuming — another type may key on something else,
-	// and a type with no rules at all resolves on nothing. Singular/plural
-	// variants of the same field (email/emails) are one field to a reader.
+	// and a type with no rules at all resolves on nothing. Only the known
+	// singular/plural aliases are coalesced: stripping a trailing "s" from
+	// arbitrary configured paths would mangle custom names like `status`.
 	const ruleFieldLabel = [
 		...new Set(
 			rules.flatMap((rule) =>
-				rule.fields.map((field) => field.replace(/s$/, "")),
+				rule.fields.map((field) => RULE_FIELD_ALIASES[field] ?? field),
 			),
 		),
 	].join(" or ");

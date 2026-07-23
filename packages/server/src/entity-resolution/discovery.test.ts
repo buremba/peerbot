@@ -103,6 +103,40 @@ describe("entity resolution module", () => {
 		);
 	});
 
+	it("names the entity type's own resolution fields verbatim in the reason", () => {
+		// A custom field must survive intact — naive singularization turned
+		// "status" into "statu".
+		const customSchema = {
+			type: "object",
+			"x-lobu-resolution": {
+				rules: [
+					{ fields: ["status"], normalizer: "exact", onMatch: "review" },
+				],
+			},
+		};
+		const assessment = assessEntityResolution({
+			metadataSchema: customSchema,
+			winner: { id: 1, metadata: {} },
+			losers: [{ id: 2, metadata: {} }],
+		});
+		expect(assessment.reason).toBe(
+			"No matching status could be verified automatically, so this merge needs your judgement.",
+		);
+	});
+
+	it("coalesces only the known singular/plural field aliases", () => {
+		// person defaults are email/emails/phone/phones — a reader wants two names.
+		const assessment = assessEntityResolution({
+			metadataSchema: { type: "object" },
+			entityTypeSlug: "person",
+			winner: { id: 1, metadata: {} },
+			losers: [{ id: 2, metadata: {} }],
+		});
+		expect(assessment.reason).toBe(
+			"No matching email or phone could be verified automatically, so this merge needs your judgement.",
+		);
+	});
+
 	it("auto-merges a configured unique identity but reviews conflicting strict identities", () => {
 		const base = {
 			metadataSchema: schema,

@@ -38,8 +38,14 @@
 
 -- migrate:up
 
+-- `status` is set alongside `deleted_at` only so a retired row does not read
+-- back as 'active'. Scheduling already filters on `deleted_at IS NULL` (and
+-- skips streaming feeds entirely, see `check-due-feeds`), so `deleted_at` alone
+-- is what actually retires the feed.
 UPDATE feeds f
-SET deleted_at = current_timestamp, updated_at = current_timestamp
+SET deleted_at = current_timestamp,
+    status = 'paused',
+    updated_at = current_timestamp
 FROM connections dead
 WHERE f.deleted_at IS NULL
   AND f.kind = 'streaming'

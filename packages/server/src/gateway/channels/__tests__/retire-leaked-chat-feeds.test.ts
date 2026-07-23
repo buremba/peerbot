@@ -96,6 +96,13 @@ async function feedIsLive(feedId: number): Promise<boolean> {
   return rows.length > 0;
 }
 
+async function feedStatus(feedId: number): Promise<string | null> {
+  const rows = await getDb()<{ status: string }>`
+    SELECT status FROM feeds WHERE id = ${feedId}
+  `;
+  return rows[0]?.status ?? null;
+}
+
 describe("retiring leaked chat feeds", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
@@ -126,11 +133,17 @@ describe("retiring leaked chat feeds", () => {
     const orphan = await insertFeed(dead, CHANNEL);
     const serving = await insertFeed(live, CHANNEL);
 
+    // Run twice: a migration re-applied against already-cleaned data must not
+    // retire the surviving feed on the second pass.
+    await runCleanup();
     await runCleanup();
 
     expect(await feedIsLive(orphan)).toBe(false);
+    // A retired row must not read back as active.
+    expect(await feedStatus(orphan)).toBe("paused");
     // The feed that actually routes must survive.
     expect(await feedIsLive(serving)).toBe(true);
+    expect(await feedStatus(serving)).toBe("active");
   });
 
   test("retires every generation's orphan, not just the newest", async () => {

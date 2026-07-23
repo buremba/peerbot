@@ -42,7 +42,10 @@ async function insertInstall(opts: {
 	externalTenantId: string;
 	externalId: string;
 	enterpriseId: string | null;
-	isEnterpriseInstall: boolean;
+	// Omit to reproduce the real per-workspace Grid shape: `buildMetadata` only
+	// writes `is_enterprise_install` when truthy, so the key is absent (not
+	// `false`) on the backing install — the null-vs-false gap the COALESCE guards.
+	isEnterpriseInstall?: boolean;
 }): Promise<void> {
 	await getDb()`
     INSERT INTO app_installations (
@@ -52,7 +55,9 @@ async function insertInstall(opts: {
 			${getDb().json({
 				external_id: opts.externalId,
 				...(opts.enterpriseId ? { enterprise_id: opts.enterpriseId } : {}),
-				is_enterprise_install: opts.isEnterpriseInstall,
+				...(opts.isEnterpriseInstall === undefined
+					? {}
+					: { is_enterprise_install: opts.isEnterpriseInstall }),
 			})}
     )
   `;
@@ -154,6 +159,29 @@ describe("backfill slack enterprise id migration", () => {
 		expect(await connIsEnterpriseInstall(conn)).toBeNull();
 		await runMigrationUp();
 		expect(await connIsEnterpriseInstall(conn)).toBe(true);
+	});
+
+	test("backfills isEnterpriseInstall as false when the install omits the key", async () => {
+		// Real per-workspace Grid shape: `enterprise_id` is set but the
+		// `is_enterprise_install` key is absent on the backing install. The
+		// COALESCE must land JSON boolean `false`, never JSON `null`.
+		await insertInstall({
+			externalTenantId: "T_NOKEY",
+			externalId: "slackinst-nokey",
+			enterpriseId: ENTERPRISE,
+			// isEnterpriseInstall omitted on purpose.
+		});
+		const conn = await insertConnection({
+			slug: "slackinst-nokey",
+			externalTenantId: "T_NOKEY",
+			live: true,
+		});
+
+		await runMigrationUp();
+
+		expect(await connEnterpriseId(conn)).toBe(ENTERPRISE);
+		// `false`, not `null`: a JSON null would fail this assertion, catching the gap.
+		expect(await connIsEnterpriseInstall(conn)).toBe(false);
 	});
 
 	test("retires a live org-wide (E…) connection superseded by a per-workspace sibling", async () => {

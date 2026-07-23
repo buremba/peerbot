@@ -271,10 +271,39 @@ const defaultLookup: HostLookup = (host) => dns.promises.lookup(host, { all: tru
  */
 export function parseAllowedHosts(value: unknown): string[] {
   if (typeof value !== 'string') return [];
-  return value
+  const entries = value
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+  for (const entry of entries) {
+    // Fail LOUDLY on shapes that can never match a host from `extractDbHosts`
+    // (which yields a bare host: brackets stripped, `:port` removed). Without
+    // this an operator typo like `100.64.0.0/10` parses fine and then silently
+    // never matches — the connection just keeps failing with no hint that the
+    // allowlist entry is the problem. A range/wildcard is also NOT the intended
+    // grant: exemptions are per exact host by design.
+    const reason = malformedAllowedHostReason(entry);
+    if (reason) {
+      throw new Error(
+        `LOBU_DB_EGRESS_ALLOW_HOSTS entry "${entry}" is invalid: ${reason}. ` +
+          'Use an exact host as it appears in DATABASE_URL (no CIDR, wildcard, port, or brackets).',
+      );
+    }
+  }
+  return entries;
+}
+
+/** Why an allow-host entry can never match a parsed DATABASE_URL host, if so. */
+function malformedAllowedHostReason(entry: string): string | null {
+  if (entry.includes('/')) return 'a CIDR range is not an exact host';
+  if (entry.includes('*')) return 'a wildcard is not an exact host';
+  if (entry.startsWith('[') || entry.endsWith(']')) {
+    return 'brackets are stripped from IPv6 hosts before matching';
+  }
+  // A bare IPv6 literal legitimately contains `:` — only flag a trailing
+  // `:port`, which `extractDbHosts` would already have removed from the URL.
+  if (net.isIP(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
+  return null;
 }
 
 /** Case-insensitive exact match of a URL host against the allow list. */

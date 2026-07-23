@@ -114,7 +114,7 @@ async function reviveFeedWithoutGuard(feedId: number): Promise<void> {
   });
 }
 
-describe("retiring streaming feeds when a connection is tombstoned", () => {
+describe("retiring streaming feeds with dead connections", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
   });
@@ -128,37 +128,7 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
     await resetTestDatabase();
   });
 
-  test("retires a live connection's streaming feed on tombstone", async () => {
-    const conn = await insertConnection({ slug: "slackinst-a", live: true });
-    const feed = await insertFeed(conn, CHANNEL);
-
-    expect(await feedIsLive(feed)).toBe(true);
-
-    await tombstoneConnection(conn);
-
-    expect(await feedIsLive(feed)).toBe(false);
-    expect(await feedStatus(feed)).toBe("paused");
-  });
-
-  test("retires every streaming feed on the connection, not just one", async () => {
-    const conn = await insertConnection({
-      slug: "slackinst-multi",
-      live: true,
-    });
-    const feeds = [
-      await insertFeed(conn, "slack:D_ONE"),
-      await insertFeed(conn, "slack:D_TWO"),
-      await insertFeed(conn, "slack:C_THREE"),
-    ];
-
-    await tombstoneConnection(conn);
-
-    for (const feed of feeds) {
-      expect(await feedIsLive(feed)).toBe(false);
-    }
-  });
-
-  test("leaves feeds on OTHER connections untouched", async () => {
+  test("tombstoning a connection retires only its streaming feeds", async () => {
     const dying = await insertConnection({
       slug: "slackinst-dying",
       live: true,
@@ -167,28 +137,21 @@ describe("retiring streaming feeds when a connection is tombstoned", () => {
       slug: "slackinst-survivor",
       live: true,
     });
-    const orphan = await insertFeed(dying, CHANNEL);
+    const retired = [
+      await insertFeed(dying, CHANNEL),
+      await insertFeed(dying, "slack:C_OTHER"),
+    ];
+    const collected = await insertFeed(dying, "reviews", "collected");
     const kept = await insertFeed(survivor, CHANNEL);
 
     await tombstoneConnection(dying);
 
-    expect(await feedIsLive(orphan)).toBe(false);
-    // The survivor's feed shares the channel key but sits on a live connection.
-    expect(await feedIsLive(kept)).toBe(true);
-  });
-
-  test("does not touch non-streaming feeds on the tombstoned connection", async () => {
-    const conn = await insertConnection({
-      slug: "slackinst-mixed",
-      live: true,
-    });
-    const streaming = await insertFeed(conn, CHANNEL, "streaming");
-    const collected = await insertFeed(conn, "reviews", "collected");
-
-    await tombstoneConnection(conn);
-
-    expect(await feedIsLive(streaming)).toBe(false);
+    for (const feed of retired) {
+      expect(await feedIsLive(feed)).toBe(false);
+      expect(await feedStatus(feed)).toBe("paused");
+    }
     expect(await feedIsLive(collected)).toBe(true);
+    expect(await feedIsLive(kept)).toBe(true);
   });
 
   test("retires a streaming feed written after its connection is tombstoned", async () => {

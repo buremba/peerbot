@@ -1,10 +1,10 @@
 /**
  * Streaming chat feeds leaked onto retired connections.
  *
- * A streaming feed is keyed by the numeric `connections.id` and is soft-deleted
- * only on an explicit unlink — nothing retires feeds when a connection is. So a
- * workspace re-installed under a different tenant key leaves the previous
- * generation's feed LIVE on a dead connection, one per install.
+ * Before the connection-retirement trigger, a streaming feed was keyed by the
+ * numeric `connections.id` but soft-deleted only on an explicit unlink. A
+ * workspace re-installed under a different tenant key could therefore leave the
+ * previous generation's feeds LIVE on a dead connection.
  *
  * Prod 2026-07-23 (org_lobucrm): feeds 434 and 437 sit live on dead connections
  * for one DM channel while feed 450 serves that channel on the live connection.
@@ -76,17 +76,31 @@ async function insertFeed(
   organizationId = ORG,
   kind = "streaming",
 ): Promise<number> {
-  const rows = await getDb()`
-    INSERT INTO feeds (
-      organization_id, connection_id, feed_key, display_name,
-      status, kind, virtual, config
-    ) VALUES (
-      ${organizationId}, ${connectionId}, ${feedKey}, ${feedKey},
-      'active', ${kind}, false, '{"store":"channel_messages"}'
-    )
-    RETURNING id
-  `;
-  return Number(rows[0].id);
+  return getDb().begin(async (tx) => {
+    if (kind === "streaming") {
+      // This suite replays the earlier cleanup against its historical input.
+      // Disable the later invariant only inside this seed transaction.
+      await tx.unsafe(
+        "ALTER TABLE feeds DISABLE TRIGGER guard_streaming_feed_connection",
+      );
+    }
+    const rows = await tx`
+      INSERT INTO feeds (
+        organization_id, connection_id, feed_key, display_name,
+        status, kind, virtual, config
+      ) VALUES (
+        ${organizationId}, ${connectionId}, ${feedKey}, ${feedKey},
+        'active', ${kind}, false, '{"store":"channel_messages"}'
+      )
+      RETURNING id
+    `;
+    if (kind === "streaming") {
+      await tx.unsafe(
+        "ALTER TABLE feeds ENABLE TRIGGER guard_streaming_feed_connection",
+      );
+    }
+    return Number(rows[0].id);
+  });
 }
 
 async function feedIsLive(feedId: number): Promise<boolean> {
@@ -147,7 +161,7 @@ describe("retiring leaked chat feeds", () => {
   });
 
   test("retires every generation's orphan, not just the newest", async () => {
-    // Prod accumulated one orphan per install; all of them must go.
+    // Seed several retired generations; all duplicates must go.
     const live = await insertConnection({
       slug: "slackinst-live-multi",
       tenantId: "T_WORKSPACE",
@@ -173,8 +187,7 @@ describe("retiring leaked chat feeds", () => {
   });
 
   test("keeps an orphan that is the org's only feed for the channel", async () => {
-    // Retiring this would remove the last feed for the channel rather than a
-    // duplicate — prod has exactly this case in a second organization.
+    // Without a live duplicate, the earlier cleanup deliberately leaves it.
     const dead = await insertConnection({
       slug: "slackinst-only",
       tenantId: "E_ONLY",

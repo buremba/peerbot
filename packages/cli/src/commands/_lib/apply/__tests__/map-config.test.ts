@@ -220,6 +220,42 @@ describe("mapProjectToDesiredState", () => {
     expect(state.requiredSecrets).toContain("SLACK_BOT_TOKEN");
   });
 
+  test("rejects BYO chat fields the chat upsert cannot apply", () => {
+    const auth = defineAuthProfile({
+      slug: "slack-auth",
+      connector: "slack",
+      authKind: "env",
+    });
+    const cases = [
+      { authProfile: auth },
+      { appAuthProfile: auth },
+      { deviceWorkerId: "00000000-0000-0000-0000-000000000001" },
+      { feeds: [{ feed: "channels" }] },
+    ];
+
+    for (const unsupported of cases) {
+      expect(() =>
+        mapProjectToDesiredState(
+          defineConfig({
+            org: "o",
+            agents: [],
+            authProfiles: [auth],
+            connections: [
+              defineConnection({
+                slug: "team-slack",
+                connector: "slack",
+                credentialMode: "byo",
+                config: { botToken: "xoxb-test" },
+                ...unsupported,
+              }),
+            ],
+          }),
+          env
+        )
+      ).toThrow(/BYO chat connection.*cannot declare/);
+    }
+  });
+
   test("hosted chat connection is filtered out of apply (never persisted)", () => {
     const slack = defineConnection({
       slug: "team-slack",
@@ -235,6 +271,35 @@ describe("mapProjectToDesiredState", () => {
     expect(
       state.connectors.connections.find((c) => c.slug === "team-slack")
     ).toBeUndefined();
+  });
+
+  test("rejects hosted chat fields that would be silently ignored", () => {
+    const cases = [
+      { authProfile: "slack-auth" },
+      { appAuthProfile: "slack-app" },
+      { deviceWorkerId: "00000000-0000-0000-0000-000000000001" },
+      { feeds: [{ feed: "channels" }] },
+    ];
+
+    for (const unsupported of cases) {
+      expect(() =>
+        mapProjectToDesiredState(
+          defineConfig({
+            org: "o",
+            agents: [],
+            connections: [
+              defineConnection({
+                slug: "team-slack",
+                connector: "slack",
+                credentialMode: "hosted",
+                ...unsupported,
+              }),
+            ],
+          }),
+          env
+        )
+      ).toThrow(/hosted chat connection.*cannot declare/);
+    }
   });
 
   test("rejects hosted mode for a connector without hosted-bot support", () => {

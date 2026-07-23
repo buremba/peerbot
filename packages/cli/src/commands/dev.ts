@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { isHostedChatPlatform } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
-import { connectorRefKey } from "../config/index.js";
+import type { ConnectorRef } from "../config/index.js";
 import { resolveApiClient } from "../internal/api-client.js";
 import {
   addContext,
@@ -35,6 +35,10 @@ interface DevOptions {
    * "local dev" against a teammate's tailnet DB or, worse, prod.
    */
   unsafeSharedDb?: boolean;
+}
+
+function connectorRefKey(ref: ConnectorRef): string {
+  return typeof ref === "string" ? ref : new ref().definition.key;
 }
 
 /**

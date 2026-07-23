@@ -224,6 +224,9 @@ function fullOrgRoutes(): Record<
           config: {
             botToken: "secret://connections%2Fteam-slack%2FbotToken",
             mode: "socket",
+            platform: "slack",
+            settings: { allowGroups: true },
+            chatMetadata: { teamId: "T123" },
           },
           device_worker_id: null,
         },
@@ -273,6 +276,9 @@ describe("lobu init --from-org", () => {
     expect(source).toContain('slug: "team-slack"');
     expect(source).toContain('credentialMode: "byo"');
     expect(source).toContain('botToken: secret("TEAM_SLACK_BOT_TOKEN")');
+    expect(source).not.toContain("chatMetadata");
+    expect(source).not.toContain("allowGroups");
+    expect(source).not.toContain('platform: "slack"');
 
     // The bootstrap wrote the agent-dir markdown + the reaction script.
     expect(readFileSync(join(dir, "agents", "sales", "SOUL.md"), "utf-8")).toBe(

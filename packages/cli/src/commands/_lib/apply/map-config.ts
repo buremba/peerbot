@@ -670,6 +670,15 @@ function mapAuthProfile(
   };
 }
 
+function unsupportedChatConnectionFields(connection: Connection): string[] {
+  return [
+    connection.authProfile !== undefined ? "authProfile" : null,
+    connection.appAuthProfile !== undefined ? "appAuthProfile" : null,
+    connection.deviceWorkerId !== undefined ? "deviceWorkerId" : null,
+    connection.feeds?.length ? "feeds" : null,
+  ].filter((field): field is string => field !== null);
+}
+
 function mapConnection(
   connection: Connection,
   required: Set<string>,
@@ -679,6 +688,14 @@ function mapConnection(
     throw new ValidationError(
       `connection slug "${connection.slug}" must match /^[a-z0-9][a-z0-9-]{0,62}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤63 chars)`
     );
+  }
+  if (connection.credentialMode === "byo") {
+    const unsupported = unsupportedChatConnectionFields(connection);
+    if (unsupported.length > 0) {
+      throw new ValidationError(
+        `BYO chat connection "${connection.slug}" cannot declare ${unsupported.join(", ")} — chat credentials come from config and the chat upsert does not apply auth profiles, device pinning, or declarative feeds`
+      );
+    }
   }
   const seenFeeds = new Set<string>();
   const feeds: DesiredFeed[] = (connection.feeds ?? []).map((feed) => {
@@ -796,6 +813,12 @@ function isHostedConnection(connection: Connection): boolean {
   if (connection.managedBy) {
     throw new ValidationError(
       `connection "${connection.slug}" cannot combine credentialMode "hosted" with managedBy`
+    );
+  }
+  const unsupported = unsupportedChatConnectionFields(connection);
+  if (unsupported.length > 0) {
+    throw new ValidationError(
+      `hosted chat connection "${connection.slug}" cannot declare ${unsupported.join(", ")} — hosted connections are link-code declarations, not persisted connection rows`
     );
   }
   return true;

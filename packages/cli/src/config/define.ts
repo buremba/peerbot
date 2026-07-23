@@ -27,11 +27,6 @@ import type { SecretRef } from "./secret.js";
 /** A connector referenced by its key, or by the class produced by `defineConnector`. */
 export type ConnectorRef = string | ConnectorClass;
 
-/** Resolve a {@link ConnectorRef} (key string, or a `defineConnector` class) to its key. */
-export function connectorRefKey(ref: ConnectorRef): string {
-  return typeof ref === "string" ? ref : new ref().definition.key;
-}
-
 // ---------------------------------------------------------------------------
 // Memory schema
 // ---------------------------------------------------------------------------
@@ -243,11 +238,13 @@ export interface Connection {
    * Where this connection's credential lives:
    *   - `byo`: this is a chat connection whose credential is supplied here in
    *     `config` (e.g. `{ botToken: secret("SLACK_BOT_TOKEN") }`). Required
-   *     for declarative BYO chat; omit for ordinary data connections.
+   *     for declarative BYO chat; omit for ordinary data connections. BYO chat
+   *     does not support auth profiles, device pinning, or declarative feeds.
    *   - `hosted`: the **hosted Lobu bot** — no `config` needed. `lobu run`
    *     prints a `/lobu link <code>` you redeem by DMing the bot (or in a
    *     channel), which binds an agent by creating a message Behavior. Only
-   *     valid for chat connectors (slack/telegram).
+   *     valid for slack/telegram. Hosted declarations do not support auth
+   *     profiles, device pinning, or declarative feeds.
    *   - `managed`: an OAuth grant owned by a cloud (public) org; see
    *     {@link ManagedBy}. Set via `managedBy`, not usually by hand.
    */

@@ -873,7 +873,7 @@ function humanizeSlug(slug: string): string {
  * network) and a `defineConfig` default export with the org metadata.
  * Memory-schema types (entity / relationship) are added later with
  * `defineEntityType` etc.; chat connections are wired up as project-level
- * `defineConnection`s or in the `/agents` UI after apply.
+ * `defineConnection`s or through Connections in the web app.
  */
 async function generateLobuConfig(
   projectDir: string,

@@ -1288,14 +1288,25 @@ export class ApplyClient {
           connection.credential_mode == null ||
           connection.credential_mode === "byo"
       )
-      .map((connection) =>
-        // A BYO chat connection is stored with the `agentconn-` slug namespace;
-        // strip it back to the declared slug so it matches the desired state.
-        connection.credential_mode === "byo" &&
-        connection.slug.startsWith("agentconn-")
-          ? { ...connection, slug: connection.slug.slice("agentconn-".length) }
-          : connection
-      );
+      .map((connection) => {
+        if (connection.credential_mode !== "byo") return connection;
+        // The chat runtime folds its own adapter discriminator, settings, and
+        // metadata into `config`. They are storage details, not declarative
+        // connector options, so do not expose them to diff/bootstrap callers.
+        const config = { ...(connection.config ?? {}) };
+        delete config.platform;
+        delete config.settings;
+        delete config.chatMetadata;
+        return {
+          ...connection,
+          // BYO chat rows use the `agentconn-` storage namespace. Restore the
+          // authored slug so desired and remote state match.
+          slug: connection.slug.startsWith("agentconn-")
+            ? connection.slug.slice("agentconn-".length)
+            : connection.slug,
+          config,
+        };
+      });
   }
 
   /**

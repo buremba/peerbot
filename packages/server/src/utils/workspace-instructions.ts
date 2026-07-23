@@ -97,6 +97,8 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       '## Lobu — Your Persistent Memory',
       '',
       "You have persistent memory. Use it proactively — don't wait to be asked.",
+      '',
+      "When asked about the workspace's data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering. Use `search_memory` for semantic recall and `query_sdk` or `query_sql` for structured lookups and counts; these tools default to the current organization. Do not claim you can see only chat/Slack messages or channel members without querying workspace data first.",
     ];
 
     // Org-wide admin-authored context goes near the top: it is the governed

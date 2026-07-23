@@ -162,10 +162,8 @@ export function slackClaimProvider(
         // later event team ids that match the install row still resolve.
         try {
           const identities = await deps.resolveClaimerSlackIdentities(userId);
-          const installer = pending.installerUserId?.toUpperCase() ?? null;
-          const claimerIsInstaller =
-            installer != null &&
-            identities.some((i) => i.slackUserId.toUpperCase() === installer);
+          // Always persist every identity the claimer has already proven via
+          // Slack OIDC (team-scoped keys they actually signed in under).
           for (const id of identities) {
             await linkChatUserIdentity({
               platform: "slack",
@@ -174,6 +172,19 @@ export function slackClaimProvider(
               lobuUserId: userId,
             });
           }
+          // Extra stamp of the install's tenant key (T… or Grid E…) ONLY when
+          // the claimer is proven to be the installer:
+          // - plain workspace: same teamId + same U… (U is workspace-local)
+          // - Grid (enterpriseId set): same U… on any team (U is enterprise-global)
+          const installer = pending.installerUserId?.toUpperCase() ?? null;
+          const installTeam = pending.teamId.toUpperCase();
+          const claimerIsInstaller =
+            installer != null &&
+            identities.some((i) => {
+              if (i.slackUserId.toUpperCase() !== installer) return false;
+              if (pending.enterpriseId) return true;
+              return i.teamId.toUpperCase() === installTeam;
+            });
           if (claimerIsInstaller && pending.installerUserId) {
             await linkChatUserIdentity({
               platform: "slack",

@@ -38,6 +38,7 @@ import {
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
+import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
 import { assessEntityResolution } from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
@@ -708,13 +709,22 @@ async function handleMerge(
 				404,
 			);
 		}
+		const identities = await loadLiveEntityIdentities(sql, {
+			organizationId: ctx.organizationId,
+			entityIds: [...loserIds, winnerId],
+		});
 		resolution = assessEntityResolution({
 			metadataSchema: winner.metadata_schema,
 			entityTypeSlug: winner.entity_type_slug,
-			winner: { id: winnerId, metadata: winner.metadata ?? {} },
+			winner: {
+				id: winnerId,
+				metadata: winner.metadata ?? {},
+				identities: identities.get(winnerId) ?? [],
+			},
 			losers: loserIds.map((loserId) => ({
 				id: loserId,
 				metadata: byId.get(loserId)?.metadata ?? {},
+				identities: identities.get(loserId) ?? [],
 			})),
 		});
 	}

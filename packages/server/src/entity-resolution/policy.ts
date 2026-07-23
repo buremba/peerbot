@@ -7,9 +7,16 @@ export interface ResolutionEvidence {
 	identifier: string;
 }
 
+export interface ResolutionIdentity {
+	namespace: string;
+	identifier: string;
+}
+
 interface ResolutionEntity {
 	id: number;
 	metadata: Record<string, unknown>;
+	/** Live `entity_identities` rows; connectors write phones/emails here, not metadata. */
+	identities?: ResolutionIdentity[];
 }
 
 interface EntityResolutionAssessment {
@@ -170,8 +177,19 @@ export function normalizedResolutionRuleKeys(
 ): string[] {
 	let combinations: string[][] = [[]];
 	for (const field of rule.fields) {
+		// A rule field draws from both stores: entity.metadata plus live
+		// entity_identities rows whose namespace equals the field name (the
+		// standard namespaces — phone, email, … — share the rule-field
+		// vocabulary). The normalizer is the format guard either way, so a
+		// same-named namespace can never smuggle in a value the rule would
+		// have rejected from metadata.
+		const raw = readPath(entity.metadata, field);
+		const fromMetadata = Array.isArray(raw) ? raw : [raw];
+		const fromIdentities = (entity.identities ?? [])
+			.filter((identity) => identity.namespace === field)
+			.map((identity) => identity.identifier);
 		const values = normalizeValues(
-			readPath(entity.metadata, field),
+			[...fromMetadata, ...fromIdentities],
 			rule.normalizer,
 		);
 		if (values.length === 0) return [];

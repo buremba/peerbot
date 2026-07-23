@@ -1,4 +1,5 @@
 import { type DbClient, pgBigintArray } from "../db/client";
+import { loadLiveEntityIdentities } from "./identities";
 import { assessEntityResolution } from "./policy";
 
 /** Lock and re-evaluate a reviewed merge immediately before applying it. */
@@ -42,13 +43,22 @@ export async function assertResolutionFingerprintCurrent(
 	const winner = byId.get(input.winnerId);
 	if (!winner)
 		throw new Error("Merge evidence is stale because the winner changed");
+	const identities = await loadLiveEntityIdentities(db, {
+		organizationId: input.organizationId,
+		entityIds: ids,
+	});
 	const assessment = assessEntityResolution({
 		metadataSchema: winner.metadata_schema,
 		entityTypeSlug: winner.entity_type_slug,
-		winner: { id: input.winnerId, metadata: winner.metadata ?? {} },
+		winner: {
+			id: input.winnerId,
+			metadata: winner.metadata ?? {},
+			identities: identities.get(input.winnerId) ?? [],
+		},
 		losers: input.loserIds.map((loserId) => ({
 			id: loserId,
 			metadata: byId.get(loserId)?.metadata ?? {},
+			identities: identities.get(loserId) ?? [],
 		})),
 	});
 	if (assessment.fingerprint !== input.expectedFingerprint) {

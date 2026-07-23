@@ -1,12 +1,15 @@
 import { type DbClient, pgBigintArray } from "../db/client";
+import { loadLiveEntityIdentities } from "./identities";
 import {
 	normalizedResolutionRuleKeys,
 	readEntityResolutionRules,
+	type ResolutionIdentity,
 } from "./policy";
 
 interface ResolutionCandidate {
 	id: number;
 	metadata: Record<string, unknown>;
+	identities?: ResolutionIdentity[];
 }
 
 interface ResolutionGroup {
@@ -189,6 +192,10 @@ export async function discoverWorkspaceResolutionGroups(
 		  AND entity.id = ANY(${pgBigintArray(input.candidateIds)}::bigint[])
 		  AND entity.deleted_at IS NULL
 	`;
+	const identities = await loadLiveEntityIdentities(db, {
+		organizationId: input.organizationId,
+		entityIds: rows.map((row) => Number(row.id)),
+	});
 	type ResolutionRow = (typeof rows)[number];
 	const byType = new Map<number, ResolutionRow[]>();
 	for (const row of rows) {
@@ -208,6 +215,7 @@ export async function discoverWorkspaceResolutionGroups(
 			candidates: typeRows.map((row) => ({
 				id: Number(row.id),
 				metadata: row.metadata ?? {},
+				identities: identities.get(Number(row.id)) ?? [],
 			})),
 			maxGroups: input.maxGroups ?? 199,
 			maxOperations: input.maxOperations ?? 199,

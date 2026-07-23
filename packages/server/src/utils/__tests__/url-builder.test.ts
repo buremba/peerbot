@@ -299,6 +299,18 @@ describe('buildResourcePermalink', () => {
     ).toBe('https://app.lobu.com/acme/memory?run_ids=536620');
   });
 
+  it('behavior run kind → agent and behavior drill-down scoped to the run', () => {
+    expect(
+      buildResourcePermalink(
+        'acme',
+        { kind: 'behavior_run', runId: 536620, agentId: 'agent/one', behaviorId: 42 },
+        'https://app.lobu.com'
+      )
+    ).toBe(
+      'https://app.lobu.com/acme/memory?agent=agent%2Fone&behavior=42&run_ids=536620'
+    );
+  });
+
   it('event kind → ?content_ids (chain-resolved on read)', () => {
     expect(
       buildResourcePermalink('acme', { kind: 'event', eventId: 4309390 }, 'https://app.lobu.com')

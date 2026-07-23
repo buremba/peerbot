@@ -1,3 +1,4 @@
+import type { MemoryResource } from "../utils/url-builder";
 import type { ToolContext } from "./registry";
 
 /**
@@ -61,5 +62,35 @@ export function resolveRunInitiator(ctx: InitiatorSource): RunInitiatorColumns {
 		initiatorKind: "system",
 		initiatorRef: {},
 		createdByUserId: null,
+	};
+}
+
+/** Map persisted provenance to a run link, falling back if the route is incomplete. */
+export function runPermalinkResource(
+	initiator: {
+		initiatorKind?: string | null;
+		initiatorRef?: Record<string, unknown> | null;
+	},
+	runId: number,
+	ownerAgentId: string | null | undefined,
+): MemoryResource {
+	if (initiator.initiatorKind !== "behavior" || !ownerAgentId) {
+		return { kind: "run", runId };
+	}
+	// Reject the empty cases before coercing: Number(null) and Number("") are
+	// both 0, a valid-looking id that would build a link to "Behavior 0".
+	const rawBehaviorId = initiator.initiatorRef?.watcher_id;
+	if (rawBehaviorId == null || rawBehaviorId === "") {
+		return { kind: "run", runId };
+	}
+	const behaviorId = Number(rawBehaviorId);
+	if (!Number.isSafeInteger(behaviorId) || behaviorId <= 0) {
+		return { kind: "run", runId };
+	}
+	return {
+		kind: "behavior_run",
+		runId,
+		agentId: ownerAgentId,
+		behaviorId,
 	};
 }

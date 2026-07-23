@@ -322,9 +322,12 @@ export function buildConnectionUrl(
  *    (get_content) resolves a superseded id to its full lineage, so a frozen
  *    event permalink still lands even after it's superseded.
  *  - `feed`  — a channel / conversational stream (all activity in #leads).
+ *  - `behavior_run` — one execution scoped to its Behavior drill-down. Requires
+ *    both route identifiers: the owning agent and the Behavior.
  */
 export type MemoryResource =
   | { kind: 'run'; runId: number }
+  | { kind: 'behavior_run'; runId: number; agentId: string; behaviorId: number }
   | { kind: 'event'; eventId: number }
   | { kind: 'feed'; feedId: number };
 
@@ -333,6 +336,8 @@ function memoryResourceQuery(resource: MemoryResource): string {
   switch (resource.kind) {
     case 'run':
       return `run_ids=${resource.runId}`;
+    case 'behavior_run':
+      return `agent=${encodeURIComponent(resource.agentId)}&behavior=${resource.behaviorId}&run_ids=${resource.runId}`;
     case 'event':
       return `content_ids=${resource.eventId}`;
     case 'feed':
@@ -342,7 +347,7 @@ function memoryResourceQuery(resource: MemoryResource): string {
 
 /**
  * Build a permalink into the memory/events log for a {@link MemoryResource}.
- * Pattern: /{ownerSlug}/memory?{run_ids|content_ids|feed_ids}={id}
+ * Pattern: /{ownerSlug}/memory?<resource query>
  *
  * This is the ONE place a memory permalink is assembled. `ownerSlug` empty →
  * returns undefined (no org context, can't build a usable link).

@@ -373,9 +373,13 @@ export async function upsertChatConnectionProjection(
     ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
       connector_key = EXCLUDED.connector_key,
       external_tenant_id = EXCLUDED.external_tenant_id,
+      -- No inheritance on the CONFLICT path: the row already exists, so a NULL
+      -- agent_id is an admin's explicit CLEAR, not an unfilled gap. Adopting
+      -- there would undo that clear on every later reinstall. Inheritance
+      -- applies only to the fresh INSERT above, where NULL means "new row".
       agent_id = ${
         opts?.preserveAgentId
-          ? sql`COALESCE(connections.agent_id, ${inheritedAgentId})`
+          ? sql`connections.agent_id`
           : sql`EXCLUDED.agent_id`
       },
       display_name = EXCLUDED.display_name,

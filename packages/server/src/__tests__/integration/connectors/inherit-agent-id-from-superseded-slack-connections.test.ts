@@ -164,6 +164,46 @@ describe("inherit agent_id from superseded Slack connection migration", () => {
 		expect(await agentIdOf(successor)).toBe(agent.agentId);
 	});
 
+	it("does not donate from an install deleted long before the successor existed", async () => {
+		// Causal provenance: a deliberately deleted old install must NOT hand its
+		// routing to an unrelated workspace installed later. Only a donor retired
+		// BY this successor's arrival is a real supersede.
+		const org = await createTestOrganization();
+		const agent = await createTestAgent({ organizationId: org.id });
+		const enterpriseId = "E_MIGRATION_STALE_DONOR";
+		const donor = await insertConnection({
+			organizationId: org.id,
+			slug: "slackinst-stale-donor",
+			tenantId: enterpriseId,
+			agentId: agent.agentId,
+			deleted: true,
+		});
+		const successor = await insertConnection({
+			organizationId: org.id,
+			slug: "slackinst-much-later-live",
+			tenantId: "T_MIGRATION_STALE_DONOR",
+			enterpriseId,
+		});
+		await insertActiveInstall({
+			organizationId: org.id,
+			slug: "slackinst-much-later-live",
+			tenantId: "T_MIGRATION_STALE_DONOR",
+			enterpriseId,
+		});
+		// The donor died months BEFORE this workspace was ever created.
+		await getDb()`
+			UPDATE connections SET deleted_at = now() - interval '90 days'
+			WHERE id = ${donor}
+		`;
+		await getDb()`
+			UPDATE connections SET created_at = now() WHERE id = ${successor}
+		`;
+
+		await runMigrationUp();
+
+		expect(await agentIdOf(successor)).toBeNull();
+	});
+
 	it("does not overwrite existing routing or use a donor with an active install", async () => {
 		const org = await createTestOrganization();
 		const donorAgent = await createTestAgent({ organizationId: org.id });

@@ -271,6 +271,54 @@ describe("connections-unify managed-install routing", () => {
 		expect(successor?.agent_id).toBe(agentId);
 	});
 
+	it("a managed reinstall does not resurrect a retired agent onto an intentionally-cleared successor", async () => {
+		// On the CONFLICT path the successor row already exists, so
+		// `agent_id IS NULL` means an admin CLEARED it — not that it is an
+		// unfilled gap. Inheriting there would silently undo a deliberate clear
+		// on every subsequent reinstall. Inheritance belongs only to the fresh
+		// INSERT, where NULL really does mean "brand new row".
+		const db = getDb();
+		const ENTERPRISE = "EGRIDCLEARPRESERVE";
+		const WORKSPACE = "TGRIDCLEARPRESERVE";
+		const secretStore = memorySecretStore();
+		const install = () =>
+			upsertSlackInstallByTeam(
+				createPostgresAppInstallationStore(),
+				secretStore,
+				orgId,
+				WORKSPACE,
+				{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+			);
+
+		// The workspace exists with routing an admin then deliberately clears.
+		const workspace = await install();
+		await db`
+			UPDATE connections SET agent_id = NULL
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`;
+		// A stale org-wide generation still carries a binding.
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentId}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-clearpreserve', 'org'
+			)
+		`;
+		// The reinstall carries NO agent intent (preserveAgentId) and supersedes
+		// the enterprise row — the cleared fallback must STAY cleared.
+		await install();
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBeNull();
+	});
+
 	it("honors an explicit fallback clear while superseding", async () => {
 		const db = getDb();
 		const ENTERPRISE = "EGRIDCLEAR";

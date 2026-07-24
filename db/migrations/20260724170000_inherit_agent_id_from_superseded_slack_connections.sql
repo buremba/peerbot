@@ -12,7 +12,8 @@
 -- migrate:up
 
 WITH donor_candidates AS (
-  SELECT dead.id, dead.organization_id, dead.external_tenant_id, dead.agent_id
+  SELECT dead.id, dead.organization_id, dead.external_tenant_id, dead.agent_id,
+         dead.deleted_at
   FROM connections dead
   WHERE dead.connector_key = 'slack'
     AND dead.credential_mode = 'managed'
@@ -78,7 +79,24 @@ JOIN successors successor
   ON successor.organization_id = donor.organization_id
  AND successor.enterprise_id = donor.external_tenant_id
 WHERE live.id = successor.id
-  AND live.agent_id IS NULL;
+  AND live.agent_id IS NULL
+  -- Causal provenance: only adopt when the donor was retired AROUND this
+  -- successor's arrival, i.e. by the same reinstall.
+  --
+  -- Deliberately NOT `donor.deleted_at = live.created_at`: the supersede is not
+  -- necessarily the same statement as the insert. Prod conn 448 was created
+  -- 02:32:29 and donor 430 tombstoned 02:35:50 — the same reinstall, three
+  -- minutes apart. An equality check would skip the row this migration exists
+  -- to repair.
+  --
+  -- The window is symmetric because the retire can also be recorded marginally
+  -- BEFORE the successor's `created_at` (different clocks / statement order
+  -- within the reinstall). What matters is proximity, not strict ordering.
+  --
+  -- Without this window, an old install deleted deliberately months earlier
+  -- could donate stale routing to an unrelated later workspace install.
+  AND donor.deleted_at BETWEEN live.created_at - interval '1 hour'
+                          AND live.created_at + interval '1 hour';
 
 -- migrate:down
 

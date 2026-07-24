@@ -12,10 +12,8 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
-import {
-	persistStarterSuggestion,
-	persistSuggestion,
-} from "../../suggestions/persist-suggestion.js";
+import { writeCachedStarters } from "../../starters/starter-store.js";
+import { persistSuggestion } from "../../suggestions/persist-suggestion.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -205,10 +203,9 @@ export function createInteractionRoutes(
 			}
 
 			// A hidden "starters" turn (source signed onto the worker token) emits the
-			// conversation-independent starter set for its agent+org — keyed on the
-			// agent, cached across turns, shown before any conversation begins. It
-			// routes to a DIFFERENT origin (`starter:<agentId>`), NOT the per-
-			// conversation `suggestion:<conversationId>` origin.
+			// conversation-independent starter set for its agent+org — cached per
+			// agent and shown before any conversation begins. It writes to the
+			// starter CACHE, not the per-conversation suggestion event.
 			if (source === "starters") {
 				if (!worker.agentId) {
 					return c.json(
@@ -216,12 +213,10 @@ export function createInteractionRoutes(
 						400,
         );
       }
-				await persistStarterSuggestion({
+				await writeCachedStarters({
 					organizationId,
 					agentId: worker.agentId,
 					prompts,
-					turnMessageId: messageId,
-					runId: worker.runId ?? null,
 				});
 				logger.info(
 					`Persisted ${prompts.length} starter prompt(s) for agent ${worker.agentId}`,

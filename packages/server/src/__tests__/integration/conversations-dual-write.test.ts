@@ -17,6 +17,7 @@ import { buildApiConversationId } from "../../gateway/services/api-conversation-
 import {
 	classifyConversation,
 	isWatcherConversationId,
+	shouldMaterializeListingRow,
 	listConversations,
 	upsertConversation,
 } from "../../gateway/services/conversations-store";
@@ -63,6 +64,36 @@ describe("conversations dual-write", () => {
 		expect(classifyConversation("Slack").storedPlatform).toBe("slack");
 		expect(isWatcherConversationId(`${AGENT}_watcher_5_run_9`)).toBe(true);
 		expect(isWatcherConversationId("ag_u_o_thread")).toBe(false);
+	});
+
+	it("excludes the hidden starters turn from the listing", () => {
+		// A starters turn is dispatched on the normal api path, so its
+		// conversationId looks like any owned thread — only `source` distinguishes
+		// it. Without this guard the sidebar shows a ghost conversation titled
+		// with the internal generation prompt.
+		expect(
+			shouldMaterializeListingRow({
+				conversationId: "ag_u_o_thread",
+				source: "starters",
+			}),
+		).toBe(false);
+		// Other headless sources are real work and MUST stay listed.
+		for (const source of ["scheduled-job", "connector-repair", "internal"]) {
+			expect(
+				shouldMaterializeListingRow({ conversationId: "ag_u_o_thread", source }),
+			).toBe(true);
+		}
+		// A normal user turn (no source) is listed.
+		expect(
+			shouldMaterializeListingRow({ conversationId: "ag_u_o_thread" }),
+		).toBe(true);
+		// Watcher exclusion still applies regardless of source.
+		expect(
+			shouldMaterializeListingRow({
+				conversationId: `${AGENT}_watcher_5_run_9`,
+				source: "watcher-run",
+			}),
+		).toBe(false);
 	});
 
 	it("INSERTs on first turn and refreshes on later turns without losing title", async () => {

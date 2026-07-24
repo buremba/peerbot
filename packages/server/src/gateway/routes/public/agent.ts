@@ -25,10 +25,9 @@ import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import { ensureStarters } from "../../starters/generate-starters.js";
 import {
-  currentOrgEventsMarker,
-  isStarterStale,
-  readCurrentStarter,
-} from "../../suggestions/persist-suggestion.js";
+  readCachedStarters,
+  shouldRegenerate,
+} from "../../starters/starter-store.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
@@ -1741,12 +1740,11 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       }
     }
 
-    let cached: Awaited<ReturnType<typeof readCurrentStarter>> = null;
-    let stale = true;
+    let cached: Awaited<ReturnType<typeof readCachedStarters>> = null;
+    let regenerate = true;
     try {
-      cached = await readCurrentStarter(organizationId, agentId);
-      const marker = await currentOrgEventsMarker(organizationId);
-      stale = isStarterStale(cached, marker);
+      cached = await readCachedStarters(organizationId, agentId);
+      regenerate = shouldRegenerate(cached);
     } catch (err) {
       // Never let cache resolution break the landing — return empty + generating.
       logger.warn(
@@ -1756,7 +1754,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       );
     }
 
-    if (stale) {
+    if (regenerate) {
       // Fire-and-forget the (debounced) hidden generator; do NOT await the LLM.
       void ensureStarters(
         { sessionManager: sessMgr, queueProducer },
@@ -1770,13 +1768,16 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       });
     }
 
+    const prompts = cached?.prompts ?? [];
     return c.json({
-      prompts: cached?.prompts ?? [],
+      prompts,
       source: "agent",
-      stale,
-      // Keep polling until the regenerated set lands, including when stale
-      // chips are being shown in the meantime.
-      generating: stale,
+      stale: regenerate,
+      // Only poll while there is nothing to show. When a refresh runs behind
+      // already-displayed chips the client must NOT poll — the new set is for
+      // the next visit, and polling a perpetually-refreshing workspace would
+      // never terminate.
+      generating: regenerate && prompts.length === 0,
     });
   });
 

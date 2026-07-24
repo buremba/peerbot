@@ -1,0 +1,105 @@
+/**
+ * Starter-chip cache (`agent_starters`) — one live row per agent+org.
+ *
+ * Starters are a derived, disposable cache, not conversation history, so they
+ * do NOT live on the append-only `events` substrate that backs per-conversation
+ * suggestion chips: there is exactly one current value per (org, agent), it is
+ * read by a single lookup, and every regeneration replaces the previous one. An
+ * upsert expresses that directly and is race-free across replicas without an
+ * advisory lock or a supersede chain.
+ */
+import { type SuggestedPrompt, sanitizeSuggestionPrompts } from "@lobu/core";
+import type { DbClient } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
+
+export interface CachedStarters {
+  prompts: SuggestedPrompt[];
+  generatedAt: Date;
+  failedAt: Date | null;
+}
+
+/**
+ * Minimum age before an otherwise-stale cache is regenerated.
+ *
+ * Workspace activity is the invalidation signal, but in an org with a live
+ * connector the event stream never stops advancing, so "any newer event" alone
+ * would mark the cache stale permanently and burn an LLM turn on every landing.
+ * The dampener bounds regeneration to at most once per window per agent.
+ */
+export const STARTERS_MIN_AGE_MS = 6 * 60 * 60 * 1000; // 6h
+
+/** Back-off after a generation that produced no usable chips. */
+export const STARTERS_FAILURE_BACKOFF_MS = 60 * 60 * 1000; // 1h
+
+/** Read the cached starter set for an agent+org, or null when never generated. */
+export async function readCachedStarters(
+  organizationId: string,
+  agentId: string,
+  sql: DbClient = getDb(),
+): Promise<CachedStarters | null> {
+  const rows = (await sql`
+    SELECT prompts, generated_at, failed_at
+    FROM public.agent_starters
+    WHERE organization_id = ${organizationId}
+      AND agent_id = ${agentId}
+  `) as Array<{
+    prompts: unknown;
+    generated_at: Date;
+    failed_at: Date | null;
+  }>;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    prompts: sanitizeSuggestionPrompts(row.prompts),
+    generatedAt: row.generated_at,
+    failedAt: row.failed_at,
+  };
+}
+
+/**
+ * Replace the agent+org starter set. `prompts` is stored as given (already
+ * sanitized by the caller); an empty array records a failed generation so the
+ * next landing backs off instead of redispatching immediately.
+ */
+export async function writeCachedStarters(args: {
+  organizationId: string;
+  agentId: string;
+  prompts: SuggestedPrompt[];
+  sql?: DbClient;
+}): Promise<void> {
+  const { organizationId, agentId, prompts } = args;
+  const sql = args.sql ?? getDb();
+  const failed = prompts.length === 0;
+  await sql`
+    INSERT INTO public.agent_starters (
+      organization_id, agent_id, prompts, generated_at, failed_at
+    ) VALUES (
+      ${organizationId}, ${agentId}, ${sql.json(prompts)}, now(),
+      ${failed ? sql`now()` : null}
+    )
+    ON CONFLICT (organization_id, agent_id) DO UPDATE
+      SET prompts = EXCLUDED.prompts,
+          generated_at = EXCLUDED.generated_at,
+          failed_at = EXCLUDED.failed_at
+  `;
+}
+
+/**
+ * Should a fresh generation be dispatched?
+ *
+ * Never generated → yes. Otherwise regenerate only once the cache has aged past
+ * the dampener (workspace activity is assumed — it is what makes chips go
+ * out of date — but it must not trigger a turn per landing), and only once a
+ * failed generation has served its back-off.
+ */
+export function shouldRegenerate(
+  cached: CachedStarters | null,
+  now: number = Date.now(),
+): boolean {
+  if (!cached) return true;
+  if (cached.failedAt) {
+    return now - cached.failedAt.getTime() >= STARTERS_FAILURE_BACKOFF_MS;
+  }
+  if (cached.prompts.length === 0) return true;
+  return now - cached.generatedAt.getTime() >= STARTERS_MIN_AGE_MS;
+}

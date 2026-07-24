@@ -16,6 +16,27 @@ export function isWatcherConversationId(conversationId: string): boolean {
 }
 
 /**
+ * Should this turn materialize a `conversations` listing row?
+ *
+ * Two classes never do. Watcher runs are derived from transcript snapshots (one
+ * entry per watcher, not per run). The hidden "starters" turn has no user and
+ * no transcript — it exists only to generate starter chips — so a listing row
+ * would surface a ghost conversation titled with its internal prompt text.
+ *
+ * Note this is NOT the same set as HEADLESS_SOURCES: watcher-run and
+ * scheduled-job are also headless (no SSE client) but ARE real work a user
+ * should see listed. Only starters must leave no trace.
+ */
+export function shouldMaterializeListingRow(args: {
+	conversationId: string;
+	source?: unknown;
+}): boolean {
+	if (isWatcherConversationId(args.conversationId)) return false;
+	if (args.source === "starters") return false;
+	return true;
+}
+
+/**
  * Derive a conversation's stored (kind, platform) from the EXPLICIT dispatch
  * platform — never by parsing the id string. The app's own threads dispatch with
  * `platform: "api"` (the marker the whole gateway already gates on, e.g.

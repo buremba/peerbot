@@ -47,7 +47,7 @@ import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections
 import { getDb } from "../../db/client.js";
 import {
   classifyConversation,
-  isWatcherConversationId,
+  shouldMaterializeListingRow,
   upsertConversation,
 } from "../services/conversations-store.js";
 
@@ -456,11 +456,16 @@ export class MessageConsumer {
       }
 
       // Materialize the `conversations` listing row for this turn (the single
-      // sidebar source). Watcher runs stay derived from transcript snapshots
-      // (one entry per watcher, not per run), so they're excluded here. Best-
-      // effort: upsertConversation swallows its own errors so a listing hiccup
-      // never fails a live turn.
-      if (!isWatcherConversationId(effectiveConversationId)) {
+      // sidebar source). Watcher runs and hidden starter-generation turns are
+      // excluded (see shouldMaterializeListingRow). Best-effort:
+      // upsertConversation swallows its own errors so a listing hiccup never
+      // fails a live turn.
+      if (
+        shouldMaterializeListingRow({
+          conversationId: effectiveConversationId,
+          source: data.platformMetadata?.source,
+        })
+      ) {
         const { kind, storedPlatform } = classifyConversation(data.platform);
         await upsertConversation({
           organizationId: data.organizationId,

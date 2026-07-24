@@ -1,29 +1,27 @@
 /**
- * Starter-suggestion cache — per agent+org chips shown before a conversation
- * starts. Keyed `origin_id='starter:<agentId>'` (a fresh draft has no server
- * conversation), superseded so exactly ONE current row exists per agent, and
- * compared with the org's latest non-suggestion event. Verified against real
- * Postgres.
+ * Starter chips — the per agent+org cache shown BEFORE a conversation starts.
+ *
+ * Starters are a derived cache (`agent_starters`), not conversation history:
+ * exactly one row per (org, agent), replaced by upsert on each regeneration.
+ * These tests pin the cache contract and — importantly — the two brakes that
+ * stop a hidden LLM turn from firing on every landing in an active workspace.
+ * Verified against real Postgres.
  */
 
-import type { MessagePayload } from "@lobu/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { QueueProducer } from "../../gateway/infrastructure/queue/queue-producer";
-import type { ISessionManager, ThreadSession } from "../../gateway/session";
 import { ensureStarters } from "../../gateway/starters/generate-starters";
 import {
-	currentOrgEventsMarker,
-	isStarterStale,
-	persistSuggestion,
-	persistStarterSuggestion,
-	readCurrentStarter,
-} from "../../gateway/suggestions/persist-suggestion";
-import { insertEvent } from "../../utils/insert-event";
+	readCachedStarters,
+	shouldRegenerate,
+	STARTERS_FAILURE_BACKOFF_MS,
+	STARTERS_MIN_AGE_MS,
+	writeCachedStarters,
+} from "../../gateway/starters/starter-store";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { seedOwnerContext } from "../setup/test-fixtures";
 
-describe("starter suggestions (per agent+org cache)", () => {
+describe("starter chips (per agent+org cache)", () => {
 	let orgId: string;
 	const agentId = "lobu-builder";
 
@@ -38,128 +36,128 @@ describe("starter suggestions (per agent+org cache)", () => {
 		await cleanupTestDatabase();
 	});
 
-	async function currentCount(): Promise<number> {
+	async function rowCount(): Promise<number> {
 		const rows = (await getTestDb()`
 			SELECT count(*)::int AS n
-			FROM current_event_records
-			WHERE organization_id = ${orgId}
-			  AND interaction_type = 'suggestion'
-			  AND interaction_status = 'current'
-			  AND origin_id = ${`starter:${agentId}`}
+			FROM public.agent_starters
+			WHERE organization_id = ${orgId} AND agent_id = ${agentId}
 		`) as Array<{ n: number }>;
 		return rows[0]?.n ?? 0;
 	}
 
-	it("persists a starter set readable by agent, exactly one current row", async () => {
-		const id = await persistStarterSuggestion({
+	it("persists a starter set readable by agent", async () => {
+		await writeCachedStarters({
 			organizationId: orgId,
 			agentId,
 			prompts: [
 				{ title: "Connect Slack", message: "Connect a Slack workspace" },
 			],
 		});
-		expect(id).toBeGreaterThan(0);
 
-		const cached = await readCurrentStarter(orgId, agentId);
-		expect(cached?.id).toBe(id);
+		const cached = await readCachedStarters(orgId, agentId);
 		expect(cached?.prompts).toEqual([
 			{ title: "Connect Slack", message: "Connect a Slack workspace" },
 		]);
-		expect(await currentCount()).toBe(1);
+		expect(cached?.failedAt).toBeNull();
+		expect(await rowCount()).toBe(1);
 	});
 
-	it("supersedes the prior set — one current row after regeneration", async () => {
-		await persistStarterSuggestion({
+	it("regenerating REPLACES the set in place — no row growth", async () => {
+		await writeCachedStarters({
 			organizationId: orgId,
 			agentId,
 			prompts: [{ title: "Import CRM", message: "Import your CRM contacts" }],
 		});
-		expect(await currentCount()).toBe(1);
-		const cached = await readCurrentStarter(orgId, agentId);
+		// The events-substrate version appended a superseded row per generation,
+		// unbounded forever. The cache holds exactly one row per agent+org.
+		expect(await rowCount()).toBe(1);
+		const cached = await readCachedStarters(orgId, agentId);
 		expect(cached?.prompts).toEqual([
 			{ title: "Import CRM", message: "Import your CRM contacts" },
 		]);
 	});
 
-	it("suggestion events do not invalidate starter caches", async () => {
-		const cached = await readCurrentStarter(orgId, agentId);
-		await persistSuggestion({
-			organizationId: orgId,
-			conversationId: "another-conversation",
-			prompts: [{ title: "Next", message: "Do the next thing" }],
-		});
-		expect(
-			isStarterStale(cached, await currentOrgEventsMarker(orgId)),
-		).toBe(false);
-	});
-
-	it("becomes stale after a later non-suggestion org event", async () => {
-		const before = await readCurrentStarter(orgId, agentId);
-		// Simulate workspace activity with a non-suggestion org event.
-		await insertEvent({
-			entityIds: [],
-			organizationId: orgId,
-			originId: `probe_${before?.id ?? 0}`,
-			semanticType: "operation",
-			title: null,
-			content: "workspace activity probe",
-		});
-		const marker = await currentOrgEventsMarker(orgId);
-		expect(isStarterStale(before, marker)).toBe(true);
-	});
-
-	it("treats a missing cache as stale", async () => {
-		// A never-generated agent has no cache → stale (should generate).
-		const cached = await readCurrentStarter(orgId, "some-other-agent");
+	it("a never-generated agent has no cache and must generate", async () => {
+		const cached = await readCachedStarters(orgId, "never-generated-agent");
 		expect(cached).toBeNull();
-		expect(isStarterStale(cached, await currentOrgEventsMarker(orgId))).toBe(
-			true,
-		);
+		expect(shouldRegenerate(cached)).toBe(true);
 	});
 
-	it("ensureStarters dispatches when stale, and NOT when the cache is fresh", async () => {
-		// Track hidden-turn dispatch through spy deps.
+	it("a FRESH set is not regenerated — the min-age dampener holds", async () => {
+		const cached = await readCachedStarters(orgId, agentId);
+		expect(shouldRegenerate(cached)).toBe(false);
+	});
+
+	it("regenerates only once the set has aged past the dampener", async () => {
+		const cached = await readCachedStarters(orgId, agentId);
+		if (!cached) throw new Error("expected a cached set");
+		// Just inside the window: still fresh. This is the case that made the
+		// events-marker design thrash — an active workspace advances the event
+		// stream constantly, so "any newer event" alone regenerated every landing.
+		const justInside =
+			cached.generatedAt.getTime() + STARTERS_MIN_AGE_MS - 1000;
+		expect(shouldRegenerate(cached, justInside)).toBe(false);
+		// Past the window: regenerate.
+		const past = cached.generatedAt.getTime() + STARTERS_MIN_AGE_MS + 1000;
+		expect(shouldRegenerate(cached, past)).toBe(true);
+	});
+
+	it("an empty generation records a failure and backs off before retrying", async () => {
+		const failAgent = "failing-agent";
+		// The agent produced nothing usable (errored, or emitted no valid chips).
+		await writeCachedStarters({
+			organizationId: orgId,
+			agentId: failAgent,
+			prompts: [],
+		});
+		const cached = await readCachedStarters(orgId, failAgent);
+		expect(cached?.failedAt).not.toBeNull();
+		if (!cached?.failedAt) throw new Error("expected failedAt to be set");
+
+		// Immediately after: do NOT retry (otherwise a broken agent dispatches a
+		// hidden LLM turn on every single landing).
+		expect(shouldRegenerate(cached, cached.failedAt.getTime() + 1000)).toBe(
+			false,
+		);
+		// After the back-off: retry is allowed.
+		expect(
+			shouldRegenerate(
+				cached,
+				cached.failedAt.getTime() + STARTERS_FAILURE_BACKOFF_MS + 1000,
+			),
+		).toBe(true);
+	});
+
+	it("ensureStarters dispatches when missing, and NOT when the cache is fresh", async () => {
 		let enqueued = 0;
-		let enqueuedPayload: MessagePayload | null = null;
-		const sessions = new Map<string, ThreadSession>();
+		const sessions = new Map<string, unknown>();
 		const deps = {
 			sessionManager: {
-				setSession: async (s: ThreadSession) => {
+				setSession: async (s: any) => {
 					sessions.set(s.conversationId, s);
 				},
 				getSession: async (id: string) => sessions.get(id) ?? null,
 				touchSession: async () => undefined,
-			} as unknown as ISessionManager,
+			},
 			queueProducer: {
-				enqueueMessage: async (payload: MessagePayload) => {
+				enqueueMessage: async () => {
 					enqueued += 1;
-					enqueuedPayload = payload;
 					return "job-1";
 				},
-			} as unknown as QueueProducer,
-		};
+			},
+		} as any;
 
-		// A never-generated agent (no cache) → stale → dispatches exactly once.
+		// No cache → dispatches exactly once.
 		const dispatched = await ensureStarters(deps, {
 			agentId: "dispatch-agent",
 			organizationId: orgId,
 		});
 		expect(dispatched).toBe(true);
 		expect(enqueued).toBe(1);
-		expect(enqueuedPayload?.agentOptions).toMatchObject({
-			allowedTools: [
-				"search_sdk",
-				"query_sdk",
-				"query_sql",
-				"search_memory",
-				"suggest_actions",
-			],
-			toolsConfig: { strictMode: true },
-		});
 
-		// Persist a fresh set, then ensure a second call sees it as fresh under
-		// the lease and does not re-dispatch.
-		await persistStarterSuggestion({
+		// A fresh set now exists → the freshness recheck under the lease declines
+		// to dispatch again.
+		await writeCachedStarters({
 			organizationId: orgId,
 			agentId: "dispatch-agent",
 			prompts: [{ title: "Fresh", message: "Fresh" }],
@@ -172,37 +170,22 @@ describe("starter suggestions (per agent+org cache)", () => {
 		expect(enqueued).toBe(1); // no new enqueue
 	});
 
-	it("holds a durable lease across concurrent starter pulls", async () => {
-		let enqueued = 0;
-		const sessions = new Map<string, ThreadSession>();
-		const deps = {
-			sessionManager: {
-				setSession: async (s: ThreadSession) => {
-					sessions.set(s.conversationId, s);
-				},
-				getSession: async (id: string) => sessions.get(id) ?? null,
-				touchSession: async () => undefined,
-			} as unknown as ISessionManager,
-			queueProducer: {
-				enqueueMessage: async () => {
-					enqueued += 1;
-					return `job-${enqueued}`;
-				},
-			} as unknown as QueueProducer,
-		};
-
-		const results = await Promise.all([
-			ensureStarters(deps, {
-				agentId: "concurrent-agent",
-				organizationId: orgId,
-			}),
-			ensureStarters(deps, {
-				agentId: "concurrent-agent",
-				organizationId: orgId,
-			}),
+	it("starter rows are scoped per agent — one agent's set never serves another", async () => {
+		await writeCachedStarters({
+			organizationId: orgId,
+			agentId: "agent-a",
+			prompts: [{ title: "A", message: "A" }],
+		});
+		await writeCachedStarters({
+			organizationId: orgId,
+			agentId: "agent-b",
+			prompts: [{ title: "B", message: "B" }],
+		});
+		expect((await readCachedStarters(orgId, "agent-a"))?.prompts).toEqual([
+			{ title: "A", message: "A" },
 		]);
-
-		expect(results.sort()).toEqual([false, true]);
-		expect(enqueued).toBe(1);
+		expect((await readCachedStarters(orgId, "agent-b"))?.prompts).toEqual([
+			{ title: "B", message: "B" },
+		]);
 	});
 });

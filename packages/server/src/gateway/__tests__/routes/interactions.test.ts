@@ -2,21 +2,20 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import type { InteractionService } from "../../interactions.js";
 import { createInteractionRoutes } from "../../routes/internal/interactions.js";
-import type {
-	PersistStarterArgs,
-	PersistSuggestionArgs,
-} from "../../suggestions/persist-suggestion.js";
+import type { PersistSuggestionArgs } from "../../suggestions/persist-suggestion.js";
 
 // Persistence is exercised end-to-end against real Postgres in the integration
 // suites (suggestion-persist.test.ts, starter-suggestions.test.ts). Here we mock
 // it to unit-test the route's GATING/VALIDATION + SCOPE ROUTING: API-only
 // platform check, server-side sanitize, missing-organization guard, and the
-// starters-source → starter-origin branch — none of which should touch the DB.
+// starters-source → starter-cache branch — none of which should touch the DB.
 const persistSuggestion = mock(() => Promise.resolve(42));
-const persistStarterSuggestion = mock(() => Promise.resolve(43));
+const writeCachedStarters = mock(() => Promise.resolve(undefined));
 mock.module("../../suggestions/persist-suggestion.js", () => ({
   persistSuggestion,
-	persistStarterSuggestion,
+}));
+mock.module("../../starters/starter-store.js", () => ({
+	writeCachedStarters,
 }));
 
 describe("interaction routes", () => {
@@ -27,7 +26,7 @@ describe("interaction routes", () => {
 
   beforeEach(() => {
     persistSuggestion.mockClear();
-		persistStarterSuggestion.mockClear();
+		writeCachedStarters.mockClear();
     originalKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -255,13 +254,14 @@ describe("interaction routes", () => {
 			expect(res.status).toBe(200);
 			const body = await res.json();
 			expect(body.scope).toBe("starter");
-			// starter origin, NOT the per-conversation suggestion origin.
-			expect(persistStarterSuggestion).toHaveBeenCalledTimes(1);
+			// starter CACHE, NOT the per-conversation suggestion event.
+			expect(writeCachedStarters).toHaveBeenCalledTimes(1);
 			expect(persistSuggestion).not.toHaveBeenCalled();
-			const args = persistStarterSuggestion.mock.calls.at(-1)?.[0] as
-				| PersistStarterArgs
+			const args = writeCachedStarters.mock.calls.at(-1)?.[0] as
+				| { agentId?: string; organizationId?: string }
 				| undefined;
 			expect(args?.agentId).toBe("lobu-builder");
+			expect(args?.organizationId).toBe("org-1");
 		});
 
 		test("a starters turn without agentId is rejected without persisting", async () => {
@@ -281,7 +281,7 @@ describe("interaction routes", () => {
 				body: JSON.stringify({ prompts: [{ title: "T", message: "M" }] }),
 			});
 			expect(res.status).toBe(400);
-			expect(persistStarterSuggestion).not.toHaveBeenCalled();
+			expect(writeCachedStarters).not.toHaveBeenCalled();
 		});
 
     test("returns 401 without auth", async () => {

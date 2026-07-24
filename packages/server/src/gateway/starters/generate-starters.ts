@@ -14,7 +14,9 @@
  * Dispatch is debounced with a durable Postgres lease per agent+org across all
  * replicas. The lease outlives this request (unlike a transaction-scoped
  * advisory lock) and expires after a bounded cooldown if the worker never
- * posts suggestions.
+ * posts suggestions. The cache's own min-age/back-off (see starter-store)
+ * is the second brake: the lease only bounds CONCURRENT dispatch, so without
+ * it an active workspace would regenerate every time the lease expired.
  */
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
@@ -25,11 +27,7 @@ import {
 	enqueueAgentMessage,
 } from "../services/agent-threads.js";
 import type { ISessionManager } from "../session.js";
-import {
-	currentOrgEventsMarker,
-	isStarterStale,
-	readCurrentStarter,
-} from "../suggestions/persist-suggestion.js";
+import { readCachedStarters, shouldRegenerate } from "./starter-store.js";
 
 const logger = createLogger("generate-starters");
 
@@ -103,9 +101,8 @@ export async function ensureStarters(
 		// A concurrent generation may have landed between the endpoint's stale
 		// read and this lease claim. Release immediately instead of suppressing the
 		// next legitimate regeneration for the full cooldown.
-		const cached = await readCurrentStarter(organizationId, agentId);
-		const marker = await currentOrgEventsMarker(organizationId);
-		if (!isStarterStale(cached, marker)) {
+		const cached = await readCachedStarters(organizationId, agentId);
+		if (!shouldRegenerate(cached)) {
 			await releaseLease();
 			return false;
 		}

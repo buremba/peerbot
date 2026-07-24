@@ -34,6 +34,7 @@ import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
 import {
 	createOwnershipResolver,
 	resolveSettingsLookupUserId,
+	sessionMatchesMetadataOwner,
 } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import { verifySettingsSession } from "./settings-auth.js";
@@ -480,30 +481,78 @@ export function createAgentHistoryRoutes(deps: {
 		if (!session) return null;
 		const agentId = c.req.param("agentId") || session.agentId || null;
 		if (!agentId || !isSafeAgentId(agentId)) return null;
-		if (session.agentId && session.agentId !== agentId) return null;
-		// A chat-issued settings claim carries agentId so it can be limited to one
-		// agent, but that binding is not ownership proof. Re-run the ownership
-		// resolver without the binding before granting the legacy owner path.
-		const ownership = await resolveOwnership(
-			{ ...session, agentId: undefined },
-			agentId,
-		);
-		if (ownership.authorized) {
-			const organizationId = resolveOrgId(ownership.organizationId);
-			if (!organizationId) return null;
+		const userId = resolveSettingsLookupUserId(session);
+
+		// A shared system-agent id can resolve to an ownership row in another org.
+		// Keep both the transcript lookup and owner check in the ambient org.
+		const ambientOrgId = resolveOrgId();
+		if (!ambientOrgId) return null;
+
+		// Preserve the ownership resolver's platform-admin bypass, scoped to the
+		// ambient org. Runs before the agent-binding check so an admin's request
+		// isn't rejected by a session bound to another agent.
+		if (session.isAdmin) {
 			return {
 				agentId,
-				organizationId,
-				userId: resolveSettingsLookupUserId(session),
+				organizationId: ambientOrgId,
+				userId,
 				allowNotGraphed: true,
 			};
 		}
-		const organizationId = resolveOrgId();
-		if (!organizationId) return null;
+		if (session.agentId && session.agentId !== agentId) return null;
+
+		const ownsHere =
+			(await deps.userAgentsStore?.ownsAgent(
+				session.platform,
+				userId,
+				agentId,
+				ambientOrgId,
+			)) ?? false;
+		if (ownsHere) {
+			return {
+				agentId,
+				organizationId: ambientOrgId,
+				userId,
+				allowNotGraphed: true,
+			};
+		}
+
+		// `ownsAgent` reads `agent_users`, but legacy ownership can survive only
+		// in agent metadata (`agents.owner_*`) that was never reconciled into the
+		// mapping. Mirror the ownership resolver's metadata fallback so those
+		// owners keep the legacy bound-channel path. `getMetadata` is ALS-scoped to
+		// the ambient org, so a match proves ambient-org ownership: a per-org
+		// SYSTEM agent (the Builder) has no per-user owner in a shared org (owner
+		// column is NULL), so system-agent admins still fall through to the
+		// enforced ACL below, unchanged. Reconcile into `agent_users` so the next
+		// read hits the fast path.
+		const metadata = await deps.agentConfigStore?.getMetadata(agentId);
+		if (
+			metadata?.owner &&
+			metadata.organizationId === ambientOrgId &&
+			sessionMatchesMetadataOwner(
+				session,
+				metadata.owner.platform,
+				metadata.owner.userId,
+			)
+		) {
+			deps.userAgentsStore
+				?.addAgent(session.platform, userId, agentId, ambientOrgId)
+				.catch(() => {
+					/* best-effort reconciliation */
+				});
+			return {
+				agentId,
+				organizationId: ambientOrgId,
+				userId,
+				allowNotGraphed: true,
+			};
+		}
+
 		return {
 			agentId,
-			organizationId,
-			userId: resolveSettingsLookupUserId(session),
+			organizationId: ambientOrgId,
+			userId,
 			allowNotGraphed: false,
 		};
 	}

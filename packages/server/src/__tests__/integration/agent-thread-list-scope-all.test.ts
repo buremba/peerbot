@@ -11,6 +11,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { BehaviorSubscriptionService } from "../../gateway/channels/behavior-subscription-service";
 import {
 	listAgentThreads,
 	readConversationMessages,
@@ -30,6 +31,7 @@ import {
 const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
+const CSECRET_CONN_RUNTIME_ID = "conn_csecret"; // managed connection owning CSECRET, initially no chat-link
 const WATCHER_ID = 990001;
 const OTHER_AGENT = "thread-list-other-agent";
 const OTHER_WATCHER_ID = 990002;
@@ -137,6 +139,19 @@ describe("listAgentThreads scope=all", () => {
 			platform: "slack",
 			channelId: "slack:C123",
 			teamId: "T1",
+		});
+
+		// A managed connection owns the UNBOUND channel CSECRET but has NO chat-link
+		// Behavior — the exact "connection-owner fallback ran here, no subscription
+		// row" state. materializeConnectionFallbackLink repairs it in the test below.
+		await insertChatConnectionRow({
+			id: CSECRET_CONN_RUNTIME_ID,
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			status: "active",
+			credentialMode: "managed",
+			metadata: { teamId: "T1" },
 		});
 
 		// A bound Slack conversation (newest) + an UNBOUND one. Both get a
@@ -275,6 +290,73 @@ describe("listAgentThreads scope=all", () => {
 		expect(threads.some((t) => t.conversationId === SLACK_UNBOUND_CONV)).toBe(
 			false,
 		);
+	});
+
+	it("materializeConnectionFallbackLink makes a previously-unbound channel visible", async () => {
+		// Precondition: CSECRET is fenced out (the connection-owner-fallback bug —
+		// a turn ran here but no chat-link subscription exists).
+		const before = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+		expect(before.some((t) => t.id === SLACK_UNBOUND_CONV)).toBe(false);
+
+		// Materialize the chat-link the fallback path would have written on the
+		// first inbound group message (idempotent upsert on org+connection+channel).
+		const created = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			CSECRET_CONN_RUNTIME_ID,
+			org,
+			AGENT,
+			"slack",
+			"slack:CSECRET",
+			"T1",
+		);
+		expect(created).toBe(true);
+
+		// Now the channel is bound → its transcript is visible in history.
+		const after = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+		const surfaced = after.find((t) => t.id === SLACK_UNBOUND_CONV);
+		expect(surfaced).toBeDefined();
+		expect(surfaced?.platform).toBe("slack");
+
+		// Idempotent: a second materialize doesn't duplicate the binding or error.
+		const again = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			CSECRET_CONN_RUNTIME_ID,
+			org,
+			AGENT,
+			"slack",
+			"slack:CSECRET",
+			"T1",
+		);
+		expect(again).toBe(true);
+		const afterAgain = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+		expect(
+			afterAgain.filter((t) => t.id === SLACK_UNBOUND_CONV),
+		).toHaveLength(1);
+	});
+
+	it("declines (returns false) when the connection slug can't be resolved", async () => {
+		const created = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+			"conn_does_not_exist",
+			org,
+			AGENT,
+			"slack",
+			"slack:CGHOST",
+			"T1",
+		);
+		expect(created).toBe(false);
 	});
 
 	it("scope=user (default) excludes platform + watcher conversations", async () => {

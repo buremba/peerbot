@@ -586,6 +586,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     };
     providerCatalog?: unknown;
     behaviors?: MatchingBehaviorActivation[];
+    provideSubscriptionService?: boolean;
   }) {
     const state = new InMemoryStateAdapter();
     const conversationState = new ConversationStateStore(state);
@@ -646,13 +647,19 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const channelHasMessageSubscription = mock(
       async () => plannedBehaviors.length > 0,
     );
+    const materializeConnectionFallbackLink = mock(async () => true);
+    // `provideSubscriptionService` forces the service to be present even with no
+    // planned Behaviors — needed to assert the connection-fallback materializer.
     const behaviorSubscriptionService =
-      plannedBehaviors.length === 0 && opts.fallbackSubscription === undefined
+      plannedBehaviors.length === 0 &&
+      opts.fallbackSubscription === undefined &&
+      !opts.provideSubscriptionService
         ? undefined
 				: {
 						resolveForConnection,
 						healSubscriptionTeam,
 						channelHasMessageSubscription,
+						materializeConnectionFallbackLink,
 					};
     const services = {
       getArtifactStore: () => null,
@@ -696,6 +703,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       conversationState,
       healSubscriptionTeam,
       resolveForConnection,
+      materializeConnectionFallbackLink,
     };
   }
 
@@ -1258,5 +1266,93 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     expect(tryHandle).not.toHaveBeenCalled();
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test("connection-owner fallback in a group channel materializes the chat-link Behavior", async () => {
+    // No Behavior matches; the connection owns an agent, so routing falls back
+    // to `source:"connection"`. The channel has no subscription row, so it would
+    // be invisible to history/ACL/search — the materializer writes the row.
+    const {
+      bridge,
+      enqueueMessage,
+      materializeConnectionFallbackLink,
+    } = makePreviewHarness({
+      previewMode: false,
+      metadata: { teamId: "T_WS", botUserId: "U_BOT" },
+      provideSubscriptionService: true,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "mention",
+    );
+
+    // The turn still runs.
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    // …and the missing chat-link is materialized with the real workspace team.
+    expect(materializeConnectionFallbackLink).toHaveBeenCalledTimes(1);
+    const call = materializeConnectionFallbackLink.mock.calls[0] as unknown[];
+    expect(call[1]).toBe("org-connection"); // organizationId
+    expect(call[2]).toBe(TEMPLATE_AGENT_ID); // agentId
+    expect(call[3]).toBe("slack"); // platform
+    expect(call[5]).toBe("TREAL"); // real T-team passed through
+  });
+
+  test("connection fallback passes no team when Slack sends only an enterprise id", async () => {
+    const { bridge, materializeConnectionFallbackLink } = makePreviewHarness({
+      previewMode: false,
+      metadata: { teamId: "T_WS", botUserId: "U_BOT" },
+      provideSubscriptionService: true,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "E0ENTERPRISE" } }),
+      "mention",
+    );
+
+    expect(materializeConnectionFallbackLink).toHaveBeenCalledTimes(1);
+    const call = materializeConnectionFallbackLink.mock.calls[0] as unknown[];
+    expect(call[5]).toBeUndefined(); // enterprise E… id is never used as a team
+  });
+
+  test("connection fallback does NOT materialize for a DM", async () => {
+    // DMs stay out of the bound-channel set — only group channels materialize.
+    const { bridge, enqueueMessage, materializeConnectionFallbackLink } =
+      makePreviewHarness({
+        previewMode: false,
+        metadata: { teamId: "T_WS", botUserId: "U_BOT" },
+        provideSubscriptionService: true,
+      });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "dm",
+    );
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    expect(materializeConnectionFallbackLink).not.toHaveBeenCalled();
+  });
+
+  test("a matched Behavior does NOT trigger connection-fallback materialization", async () => {
+    // source:"behavior" already owns a subscription row; no materialization.
+    const { bridge, materializeConnectionFallbackLink } = makePreviewHarness({
+      linkedBehavior: { agentId: "linked-agent" },
+      provideSubscriptionService: true,
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "mention",
+    );
+
+    expect(materializeConnectionFallbackLink).not.toHaveBeenCalled();
   });
 });

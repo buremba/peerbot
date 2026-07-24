@@ -1319,7 +1319,12 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(call[5]).toBeUndefined(); // enterprise E… id is never used as a team
   });
 
-  test("connection fallback does NOT materialize when an existing subscription rejected the message", async () => {
+  test("connection fallback materialization is create-only so it cannot clobber an existing link", async () => {
+    // A mention-only Behavior exists but rejected this non-mention message, so
+    // routing falls to the connection owner. The bridge still calls the
+    // materializer — but it's create-only (see the DB-level preserve test in
+    // agent-thread-list-scope-all), so an existing explicit link is never
+    // relinked to the connection owner even under a check-then-write race.
     const behavior: MatchingBehaviorActivation = {
       behaviorId: 71,
       organizationId: "org-connection",
@@ -1354,7 +1359,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     );
 
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
-    expect(materializeConnectionFallbackLink).not.toHaveBeenCalled();
+    expect(materializeConnectionFallbackLink).toHaveBeenCalledTimes(1);
   });
 
   test("hosted-preview fallback does NOT materialize its placeholder agent", async () => {

@@ -365,6 +365,43 @@ describe("listAgentThreads scope=all", () => {
 		);
 	});
 
+	it("is create-only: never relinks an existing explicit chat-link to the connection owner", async () => {
+		const sql = getTestDb();
+		const svc = new BehaviorSubscriptionService();
+		const [conn] = await sql<{ id: number }[]>`
+			SELECT id FROM connections WHERE slug = ${CSECRET_CONN_RUNTIME_ID} LIMIT 1`;
+		// An explicit /lobu link bound this channel to a DIFFERENT agent first.
+		await svc.createChatBehavior(OTHER_AGENT, "slack", "slack:CEXPLICIT", "T1", {
+			organizationId: org,
+			connectionId: conn!.id,
+		});
+		const ownerOf = async () =>
+			(
+				await sql<{ agent_id: string }[]>`
+					SELECT w.agent_id
+					FROM watchers w
+					CROSS JOIN LATERAL jsonb_array_elements(w.triggers) t
+					WHERE w.organization_id = ${org}
+					  AND w.status = 'active'
+					  AND t->'match'->>'channel_id' = 'CEXPLICIT'
+					LIMIT 1`
+			)[0]?.agent_id;
+		expect(await ownerOf()).toBe(OTHER_AGENT);
+
+		// The connection-owner fallback fires for the same channel with AGENT.
+		// Create-only must preserve the explicit binding, not relink it.
+		const created = await svc.materializeConnectionFallbackLink(
+			CSECRET_CONN_RUNTIME_ID,
+			org,
+			AGENT,
+			"slack",
+			"slack:CEXPLICIT",
+			"T1",
+		);
+		expect(created).toBe(true);
+		expect(await ownerOf()).toBe(OTHER_AGENT); // NOT relinked to AGENT
+	});
+
 	it("declines (returns false) when the connection slug can't be resolved", async () => {
 		const created =
 			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(

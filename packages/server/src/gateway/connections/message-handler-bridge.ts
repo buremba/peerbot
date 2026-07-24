@@ -751,9 +751,17 @@ export class MessageHandlerBridge {
       }
     }
 
-    // An unbound connection-owner fallback is absent from Behavior-backed
-    // visibility. Do not replace an existing filtered subscription or bind DMs
-    // and hosted-preview placeholder agents.
+    // A group message routed via the connection-owner fallback has no chat-link
+    // Behavior, so its channel is absent from Behavior-backed visibility
+    // (history / ACL graph / search / notifications). Materialize the missing
+    // link so routing and visibility share one source of truth; later messages
+    // then route via the planner as `source:"subscription"`. Create-only, so it
+    // can never overwrite an explicit `/lobu link` that races it (decided under
+    // the advisory lock inside createChatBehavior — race-safe across replicas).
+    // Group channels only (DMs stay out of the bound set); hosted-preview
+    // placeholder agents are excluded. Slack passes only a real workspace `T…`
+    // (never enterprise `E…`); an unknown team is filled later by
+    // healSubscriptionTeam. Best-effort — a failure must never block the turn.
     if (
       resolved.source === "connection" &&
       isGroup &&
@@ -766,22 +774,14 @@ export class MessageHandlerBridge {
           ? teamId
           : undefined;
       try {
-        const alreadyBound =
-          await behaviorSubscriptionService.channelHasMessageSubscription(
-            this.connection.id,
-            channelId,
-            this.connection.organizationId
-          );
-        if (!alreadyBound) {
-          await behaviorSubscriptionService.materializeConnectionFallbackLink(
-            this.connection.id,
-            this.connection.organizationId,
-            agentId,
-            platform,
-            channelId,
-            bindingTeamId
-          );
-        }
+        await behaviorSubscriptionService.materializeConnectionFallbackLink(
+          this.connection.id,
+          this.connection.organizationId,
+          agentId,
+          platform,
+          channelId,
+          bindingTeamId
+        );
       } catch (err) {
         logger.debug(
           { channelId, teamId, agentId, error: String(err) },

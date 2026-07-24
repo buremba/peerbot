@@ -12,6 +12,7 @@
 - **`events` is append-only.** Never `DELETE FROM events`; tombstone/supersede instead.
 - **Workers never receive real credentials.** They may receive only placeholders/proxied access.
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
+  - Node-version gate exceptions: `packages/cli/bin/lobu.js` defers the existing CLI graph without duplicating it, and `packages/server/src/server-entry.ts` adds an 842-byte gate in front of the 4.34 MB server graph (measured 2026-07-24). Both call sites must stay dependency-free until their checks pass.
 - Bug fixes require red→fix→green evidence. If you cannot reproduce, bail and report the dead end.
 - Run `make pre-pr` (fast no-DB CI gates: typecheck + knip + lint) AND `make review` (LLM verdict) before PR/merge. `make review` does NOT run typecheck/knip/tests — it is not proof CI will pass. If you touch server/runtime code, also run the relevant `bun test`/`make test-integration` suite.
 - **Run `make review-fix` on the settled diff BEFORE the first `make review`.** It runs the reviewer with write access to fix review-grade findings (bugs, slop, stale claims) without posting a status; verify its diff, commit, then post one review. Never iterate `make review` as a find-fix loop — each posted round costs a review + CI cycle. If a posted review still fails, fix the finding AND its whole class before re-running.

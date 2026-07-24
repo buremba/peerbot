@@ -266,6 +266,9 @@ describe("lobu run backend bundle resolution", () => {
     );
     expect(buildScript).toContain('copyDirIfExists("../../db/migrations"');
     expect(buildScript).toContain('"server.bundle.mjs"');
+    // The gate bundle dynamically imports server-main.bundle.mjs at runtime;
+    // both must ship or `lobu run` breaks after the Node-version check passes.
+    expect(buildScript).toContain('"server-main.bundle.mjs"');
   });
 });
 

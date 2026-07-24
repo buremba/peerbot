@@ -69,7 +69,11 @@ copyDirIfExists("../owletto/dist", "dist/owletto/dist");
 // what ships inside the CLI tarball. CI's publish flow builds the bundles
 // (`build:server`) before this script runs; if they're missing locally, run
 // `bun run --filter '@lobu/server' build:server` first.
-for (const bundleName of ["server.bundle.mjs"]) {
+// server.bundle.mjs is the tiny Node-version gate; it dynamically imports its
+// sibling server-main.bundle.mjs (the real server graph) at runtime — so both
+// must ship together. Missing server-main.bundle.mjs
+// would make `lobu run` fail with a module-not-found after the gate passes.
+for (const bundleName of ["server.bundle.mjs", "server-main.bundle.mjs"]) {
   const bundleSrc = `../server/dist/${bundleName}`;
   const bundleDest = `dist/${bundleName}`;
   if (fs.existsSync(bundleSrc)) {
@@ -77,7 +81,7 @@ for (const bundleName of ["server.bundle.mjs"]) {
   } else {
     console.warn(
       `[cli build] server bundle missing at ${bundleSrc}; ` +
-        "`lobu run` may fall back to monorepo-relative lookup. Run " +
+        "`lobu run` requires both server bundles. Run " +
         "`bun run --filter '@lobu/server' build:server` to bundle it."
     );
   }

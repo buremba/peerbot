@@ -1,0 +1,54 @@
+/**
+ * Bundle entry wrapper — Node-version gate FIRST, then the real server.
+ *
+ * The server graph statically imports `@sentry/node`, which pulls `undici`.
+ * On Node 18 undici references the absent `File` global and throws
+ * `ReferenceError: File is not defined` at load — a cryptic crash that
+ * fires before `./server`'s own `assert-node-version` guard can run, because
+ * ES `import` statements are hoisted and evaluated before any sibling module
+ * body (verified: a top-level import's side effects run before an IIFE placed
+ * textually above it).
+ *
+ * So the gate lives HERE, in an entry with zero static imports of the server
+ * graph. The synchronous check runs first; only if it passes do we DYNAMICALLY
+ * import the server graph — which the build emits as a SEPARATE bundle
+ * (server-main.bundle.mjs). Its URL is constructed at runtime so esbuild cannot
+ * inline and re-hoist it.
+ * That is where Sentry/undici finally load. Result: an old Node gets an
+ * explicit, actionable message and a clean exit(1) instead of the undici
+ * ReferenceError.
+ *
+ * Keep the threshold in sync with ./utils/assert-node-version.ts and the CLI's
+ * internal/node-version.ts + bin/lobu.js.
+ */
+
+const MIN_NODE_MAJOR = 22;
+
+function assertNodeOrExit(): void {
+  const current = process.versions.node;
+  const major = Number.parseInt((current ?? "").split(".")[0] ?? "", 10);
+  if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
+    process.stderr.write(
+      `\n  Lobu needs Node.js ${MIN_NODE_MAJOR} or newer — you're on Node ${current}.\n` +
+        `  (The isolated-vm sandbox only has native builds for Node ${MIN_NODE_MAJOR}–24 and 26+.)\n` +
+        `  Install Node ${MIN_NODE_MAJOR}+ (nvm/fnm/brew) and re-run.\n\n`,
+    );
+    process.exit(1);
+  }
+}
+
+assertNodeOrExit();
+
+// Dynamic import of the SEPARATE server-main bundle is REQUIRED: a static
+// import — or a dynamic import esbuild can resolve and inline — would hoist the
+// server graph's @sentry/node → undici above assertNodeOrExit(), defeating the
+// gate. Constructing the URL at runtime leaves the import for Node and defers
+// undici until after the check passes. server-main self-executes its main() on
+// load, so importing it boots the server.
+//
+// The specifier is resolved relative to this file's URL so it works from the
+// bundle's dist dir regardless of cwd. In the TS source (dev/tsx) the sibling
+// bundle doesn't exist; that path is bundle-only, which is why this entry is
+// the build's entrypoint, not something imported by the TS server at runtime.
+const serverMainUrl = new URL("./server-main.bundle.mjs", import.meta.url).href;
+await import(serverMainUrl);

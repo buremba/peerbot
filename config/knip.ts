@@ -71,8 +71,10 @@ const config: KnipConfig = {
     },
     "packages/server": {
       entry: [
-        // Main server boot (package main points at compiled dist/, so knip
-        // can't map it back to source).
+        // Bundle entry (esbuild). server-entry.ts is the Node-version gate that
+        // dynamically imports the server-main bundle; server.ts is the graph it
+        // loads. Both are esbuild entrypoints, so knip can't see them via imports.
+        "src/server-entry.ts",
         "src/server.ts",
         // Sentry preload (node --import) and embedded-Postgres boot.
         "src/instrument.ts",

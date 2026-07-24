@@ -390,6 +390,24 @@ export function createAgentHistoryRoutes(deps: {
 		agentMetadataStore: deps.agentConfigStore,
 	});
 
+	async function canUseSystemAgent(
+		agentId: string,
+		organizationId: string,
+		userId: string,
+	): Promise<boolean> {
+		const rows = await getDb()`
+			SELECT 1
+			FROM "organization" o
+			JOIN "member" m ON m."organizationId" = o.id
+			WHERE o.id = ${organizationId}
+				AND o.system_agent_id = ${agentId}
+				AND m."userId" = ${userId}
+				AND m.role IN ('owner', 'admin')
+			LIMIT 1
+		`;
+		return rows.length > 0;
+	}
+
 	async function getAuthorizedAgentScope(c: Context): Promise<{
 		agentId: string;
 		organizationId: string | undefined;
@@ -399,12 +417,45 @@ export function createAgentHistoryRoutes(deps: {
 		if (!session) return null;
 		const agentId = c.req.param("agentId") || session.agentId || null;
 		if (!agentId || !isSafeAgentId(agentId)) return null;
+		const userId = resolveSettingsLookupUserId(session);
+		const ambientOrgId = resolveOrgId();
+
+		// Apply the resolver's admin bypass and agent-binding restriction before
+		// selecting a tenant from the ambient request.
+		if (session.isAdmin) {
+			return {
+				agentId,
+				organizationId: ambientOrgId ?? undefined,
+				userId,
+			};
+		}
+		if (session.agentId && session.agentId !== agentId) return null;
+
+		// The SPA sends x-lobu-org for the workspace being viewed. Its
+		// membership-verified ambient org must win over ownership-first resolution
+		// because the same system-agent id exists in every organization.
+		if (ambientOrgId) {
+			const ownsHere =
+				(await deps.userAgentsStore?.ownsAgent(
+					session.platform,
+					userId,
+					agentId,
+					ambientOrgId,
+				)) ?? false;
+			const authorized =
+				ownsHere || (await canUseSystemAgent(agentId, ambientOrgId, userId));
+			if (authorized) {
+				return { agentId, organizationId: ambientOrgId, userId };
+			}
+			return null;
+		}
+
 		const result = await resolveOwnership(session, agentId);
 		if (!result.authorized) return null;
 		return {
 			agentId,
 			organizationId: resolveOrgId(result.organizationId) ?? undefined,
-			userId: resolveSettingsLookupUserId(session),
+			userId,
 		};
 	}
 

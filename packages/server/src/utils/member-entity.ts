@@ -8,7 +8,6 @@
 
 import { getDb } from '../db/client';
 import { createEntity, type EntityData } from './entity-management';
-import logger from './logger';
 import { ensureMemberEntityType, resolveMemberSchemaFieldsFromSchema } from './member-entity-type';
 
 /**
@@ -68,6 +67,20 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   await ensureMemberEntityType(params.organizationId);
   const { emailField, imageField } = await resolveMemberSchemaFields(params.organizationId);
 
+  // Validate before creating the $member: checking after creation leaves a
+  // claimless entity when userId does not own the email used for lookup.
+  if (params.userId) {
+    const owner = await sql<{ email: string | null }>`
+      SELECT email FROM "user" WHERE id = ${params.userId} LIMIT 1
+    `;
+    const ownerEmail = owner[0]?.email?.trim().toLowerCase();
+    if (ownerEmail !== params.email.trim().toLowerCase()) {
+      throw new Error(
+        `Refusing to provision $member for user ${params.userId}: user does not own the member email`
+      );
+    }
+  }
+
   const findIdByEmail = async (): Promise<number | null> => {
     const rows = await sql.unsafe<{ id: number }>(
       `SELECT e.id
@@ -118,32 +131,7 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   // to existing members too so ones created before this gets backfilled. The
   // 'auth:signup' source is the gate's anti-hijack guard — only written here from
   // trusted server-side provisioning with a verified user id.
-  //
-  // RUNTIME INVARIANT: `userId` must be the id of the user who OWNS `email`. The
-  // entity is resolved by email but the claim is keyed on the user id, so a
-  // mismatched pair hands `userId` the channel visibility of whoever owns
-  // `email` — the authz gate resolves a signed-in user to their $member via
-  // exactly this claim. That is not hypothetical: it shipped once, when the
-  // invitation hook passed the INVITER's id alongside the INVITEE's email
-  // (fixed in #2126). The doc comment on `userId` said not to, which is a
-  // convention; this check is the enforcement. Fail closed — skip the claim and
-  // keep the entity rather than write a hijackable identity.
   if (params.userId && memberEntityId !== null) {
-    const owner = await sql<{ email: string | null }>`
-      SELECT email FROM "user" WHERE id = ${params.userId} LIMIT 1
-    `;
-    const ownerEmail = owner[0]?.email?.trim().toLowerCase();
-    if (ownerEmail !== params.email.trim().toLowerCase()) {
-      logger.error(
-        {
-          organizationId: params.organizationId,
-          userId: params.userId,
-          memberEntityId,
-        },
-        '[ensureMemberEntity] refusing to write auth_user_id claim: userId does not own the email this $member was resolved by'
-      );
-      return;
-    }
     await sql`
       INSERT INTO entity_identities (
         organization_id, entity_id, namespace, identifier, source_connector

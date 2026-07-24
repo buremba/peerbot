@@ -31,19 +31,28 @@
 -- referenced by agents.sandbox_id + the agent_secrets name segment; rewriting
 -- them would cascade across three places for zero user benefit. New rows mint
 -- `sbx-` ids (see createSandbox); both prefixes coexist harmlessly.
+--
+-- RENAME TABLE/COLUMN has no IF EXISTS form that also renames constraints
+-- atomically; prefer-robust-stmts can't be satisfied for bare renames. The
+-- rollout break is accepted in the header above (same class as
+-- 20260709130000 write-policy rename).
 
+-- squawk-ignore renaming-table,prefer-robust-stmts
 ALTER TABLE public.environments RENAME TO sandboxes;
 
+-- RENAME CONSTRAINT has no IF EXISTS form.
+-- squawk-ignore prefer-robust-stmts
 ALTER TABLE public.sandboxes RENAME CONSTRAINT environments_pkey TO sandboxes_pkey;
-ALTER TABLE public.sandboxes
-  RENAME CONSTRAINT environments_provider_kind_check TO sandboxes_provider_kind_check;
-ALTER TABLE public.sandboxes
-  RENAME CONSTRAINT environments_org_name_key TO sandboxes_org_name_key;
+-- squawk-ignore prefer-robust-stmts
+ALTER TABLE public.sandboxes RENAME CONSTRAINT environments_provider_kind_check TO sandboxes_provider_kind_check;
+-- squawk-ignore prefer-robust-stmts
+ALTER TABLE public.sandboxes RENAME CONSTRAINT environments_org_name_key TO sandboxes_org_name_key;
 
+-- squawk-ignore renaming-column,prefer-robust-stmts
 ALTER TABLE public.agents RENAME COLUMN environment_id TO sandbox_id;
 
-ALTER TABLE public.conversations
-  RENAME COLUMN sandbox_environment_id TO sandbox_id;
+-- squawk-ignore renaming-column,prefer-robust-stmts
+ALTER TABLE public.conversations RENAME COLUMN sandbox_environment_id TO sandbox_id;
 
 -- Re-key the vault rows: environment:<id>:<field> -> sandbox:<id>:<field>.
 -- agent_secrets is NOT the append-only events table, so a name UPDATE is the
@@ -91,15 +100,18 @@ SET name = 'environment:' || substring(name FROM length('sandbox:') + 1)
 WHERE name LIKE 'sandbox:%'
   AND split_part(name, ':', 2) IN (SELECT id FROM public.sandboxes);
 
-ALTER TABLE public.conversations
-  RENAME COLUMN sandbox_id TO sandbox_environment_id;
+-- squawk-ignore renaming-column,prefer-robust-stmts
+ALTER TABLE public.conversations RENAME COLUMN sandbox_id TO sandbox_environment_id;
 
+-- squawk-ignore renaming-column,prefer-robust-stmts
 ALTER TABLE public.agents RENAME COLUMN sandbox_id TO environment_id;
 
-ALTER TABLE public.sandboxes
-  RENAME CONSTRAINT sandboxes_org_name_key TO environments_org_name_key;
-ALTER TABLE public.sandboxes
-  RENAME CONSTRAINT sandboxes_provider_kind_check TO environments_provider_kind_check;
+-- squawk-ignore prefer-robust-stmts
+ALTER TABLE public.sandboxes RENAME CONSTRAINT sandboxes_org_name_key TO environments_org_name_key;
+-- squawk-ignore prefer-robust-stmts
+ALTER TABLE public.sandboxes RENAME CONSTRAINT sandboxes_provider_kind_check TO environments_provider_kind_check;
+-- squawk-ignore prefer-robust-stmts
 ALTER TABLE public.sandboxes RENAME CONSTRAINT sandboxes_pkey TO environments_pkey;
 
+-- squawk-ignore renaming-table,prefer-robust-stmts
 ALTER TABLE public.sandboxes RENAME TO environments;

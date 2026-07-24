@@ -346,7 +346,7 @@ function renderPublicShell(
       ? `<nav class="mb-5 flex flex-wrap gap-2 text-sm text-muted-foreground" aria-label="Breadcrumb">${breadcrumbs
           .map((crumb, index) =>
             crumb.href
-              ? `<a class="text-primary no-underline hover:underline" href="${escapeAttribute(crumb.href)}">${escapeHtml(crumb.label)}</a>${
+              ? `<a class="text-foreground no-underline hover:underline" href="${escapeAttribute(crumb.href)}">${escapeHtml(crumb.label)}</a>${
                   index < breadcrumbs.length - 1
                     ? '<span class="text-muted-foreground/60">/</span>'
                     : ''
@@ -360,7 +360,7 @@ function renderPublicShell(
     <div class="mx-auto max-w-6xl px-4 pb-16 pt-8 text-foreground sm:px-5 sm:pb-20 sm:pt-12">
       ${breadcrumbHtml}
       <header class="mb-8">
-        <p class="mb-3 text-xs font-bold uppercase tracking-wider text-primary">${escapeHtml(eyebrow)}</p>
+        <p class="mb-3 text-xs font-bold uppercase tracking-wider text-foreground">${escapeHtml(eyebrow)}</p>
         <h1 class="font-display text-3xl font-semibold text-foreground">${escapeHtml(heading)}</h1>
         <p class="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground">${escapeHtml(description)}</p>
       </header>

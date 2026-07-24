@@ -268,6 +268,20 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       logger.error("Worker token rejected: sandboxId must be a string");
       return null;
     }
+    // Reject legacy tokens carrying the pre-rename `environmentId` claim (the
+    // field was renamed to `sandboxId`). A token minted just before the
+    // environments→sandboxes rename deploy still verifies structurally (the
+    // extra JSON key would otherwise be ignored) but would mint/refresh with NO
+    // sandbox binding — the runtime route then resolves system-env / OIDC creds
+    // and a provider-pinned turn silently executes in the HOST realm. Fail
+    // closed instead: rejection → queue retry re-resolves the pin fresh under
+    // the new claim. Tokens have a ≤2h TTL, so this window is self-clearing.
+    if ((data as { environmentId?: unknown }).environmentId !== undefined) {
+      logger.error(
+        "Worker token rejected: legacy `environmentId` claim (superseded by `sandboxId`) — re-resolve"
+      );
+      return null;
+    }
 
     // Default TTL 2h (was 24h — a leaked token had no revocation path for a
     // full day). Override via WORKER_TOKEN_TTL_MS. Clock-skew tolerance via

@@ -17,6 +17,7 @@
 --  2. agents.environment_id      -> agents.sandbox_id
 --  3. conversations.sandbox_environment_id -> conversations.sandbox_id
 --  4. agent_secrets vault names  environment:<id>:<field> -> sandbox:<id>:<field>
+--  5. agent_run_input.token_claims JSONB  environmentId -> sandboxId (pending rows)
 --
 -- NOT renamed: existing id VALUES keep their `env-` prefix. Ids are opaque and
 -- referenced by agents.sandbox_id + the agent_secrets name segment; rewriting
@@ -38,19 +39,49 @@ ALTER TABLE public.conversations
 
 -- Re-key the vault rows: environment:<id>:<field> -> sandbox:<id>:<field>.
 -- agent_secrets is NOT the append-only events table, so a name UPDATE is the
--- correct in-place re-key. Every touched row is a live sandbox credential whose
--- name segment (the id between the colons) is preserved; only the prefix flips.
--- The name LIKE 'environment:%' predicate is served by the agent_secrets name
--- prefix index (text_pattern_ops), so only sandbox-prefixed rows are scanned.
+-- correct in-place re-key. Every touched row is a sandbox credential whose name
+-- segment (the id between the colons) is preserved; only the prefix flips. The
+-- `environment:` prefix has only ever been minted by sandboxSecretName (née
+-- environmentSecretName) — org-shared provider keys use `<slug>-<id>`, so no
+-- other feature collides — hence the whole prefix is re-keyed rather than scoped
+-- to live rows: that also carries any orphaned credential (a delete that never
+-- purged) forward to the new prefix instead of stranding a decryptable token
+-- under the old one. The predicate is served by the agent_secrets name prefix
+-- index (text_pattern_ops).
 UPDATE public.agent_secrets
 SET name = 'sandbox:' || substring(name FROM length('environment:') + 1)
 WHERE name LIKE 'environment:%';
 
+-- Re-key the persisted worker-run claims that straddle this deploy. A pending
+-- agent_run_input replays its FROZEN token_claims after a restart (Recreate
+-- interrupts in-flight turns), minting a fresh worker token from them. Old rows
+-- stored the sandbox binding under `environmentId`; new code reads `sandboxId`,
+-- so without this re-key a provider-pinned turn pending across the deploy would
+-- mint a sandbox-LESS token and silently execute in the host realm (system-env /
+-- OIDC creds) instead of its pinned sandbox — the exact downgrade the runtime
+-- route's fail-closed path exists to prevent. Only 'pending' rows can replay;
+-- 'completed' ones never do, so leave them. Guard on the key's presence so the
+-- statement is idempotent and skips already-migrated / builtin rows.
+UPDATE public.agent_run_input
+SET token_claims =
+  (token_claims - 'environmentId')
+  || jsonb_build_object('sandboxId', token_claims -> 'environmentId')
+WHERE status = 'pending'
+  AND token_claims ? 'environmentId';
+
 -- migrate:down
+
+UPDATE public.agent_run_input
+SET token_claims =
+  (token_claims - 'sandboxId')
+  || jsonb_build_object('environmentId', token_claims -> 'sandboxId')
+WHERE status = 'pending'
+  AND token_claims ? 'sandboxId';
 
 UPDATE public.agent_secrets
 SET name = 'environment:' || substring(name FROM length('sandbox:') + 1)
-WHERE name LIKE 'sandbox:%';
+WHERE name LIKE 'sandbox:%'
+  AND split_part(name, ':', 2) IN (SELECT id FROM public.sandboxes);
 
 ALTER TABLE public.conversations
   RENAME COLUMN sandbox_id TO sandbox_environment_id;

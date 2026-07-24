@@ -319,4 +319,35 @@ describe("worker auth token: explicit expiry", () => {
     const fresh = generateWorkerToken("u", "c", "d", { channelId: "ch" });
     expect(verifyWorkerToken(fresh)).not.toBeNull();
   });
+
+  test("verifyWorkerToken round-trips a sandboxId claim", () => {
+    const token = generateWorkerToken("u", "c", "d", {
+      channelId: "ch",
+      runtimeProviderId: "vercel",
+      sandboxId: "env-abc",
+    });
+    const d = verifyWorkerToken(token) as WorkerTokenData;
+    expect(d).not.toBeNull();
+    expect(d.runtimeProviderId).toBe("vercel");
+    expect(d.sandboxId).toBe("env-abc");
+  });
+
+  test("verifyWorkerToken rejects a legacy `environmentId` claim (superseded by sandboxId)", () => {
+    // A token minted just before the environments→sandboxes rename carries
+    // `environmentId` instead of `sandboxId`. It must FAIL CLOSED (→ queue
+    // retry re-resolves the pin fresh) rather than verify with no sandbox
+    // binding — otherwise a provider-pinned turn would silently run in the
+    // host realm under system-env / OIDC creds.
+    const legacy = {
+      userId: "u",
+      conversationId: "c",
+      channelId: "ch",
+      deploymentName: "d",
+      timestamp: Date.now(),
+      runtimeProviderId: "vercel",
+      environmentId: "env-abc",
+    };
+    const token = encrypt(JSON.stringify(legacy));
+    expect(verifyWorkerToken(token)).toBeNull();
+  });
 });

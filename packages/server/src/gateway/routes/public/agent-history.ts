@@ -483,16 +483,8 @@ export function createAgentHistoryRoutes(deps: {
 		if (session.agentId && session.agentId !== agentId) return null;
 		const userId = resolveSettingsLookupUserId(session);
 
-		// Scope to the AMBIENT org (the membership-verified `x-lobu-org` the SPA
-		// sends for the workspace being viewed), NOT the ownership-first org — the
-		// same fix `getAuthorizedAgentScope` applies. A per-org SYSTEM agent (the
-		// Builder) exists in every org, so ownership resolution returns the user's
-		// personal org and platform transcripts (Slack DMs/channels) in the viewed
-		// org would 404 as "not in the personal org". The owner path keeps
-		// `allowNotGraphed: true` (legacy bound-channel behavior), but only when the
-		// caller owns the agent IN THE AMBIENT org; anyone else — system-agent
-		// admins and plain members — needs a fresh enforced ACL proving channel
-		// membership (`allowNotGraphed: false`).
+		// A shared system-agent id can resolve to an ownership row in another org.
+		// Keep both the transcript lookup and owner check in the ambient org.
 		const ambientOrgId = resolveOrgId();
 		if (!ambientOrgId) return null;
 
@@ -511,8 +503,6 @@ export function createAgentHistoryRoutes(deps: {
 				allowNotGraphed: true,
 			};
 		}
-		// Non-owner (system-agent admin or plain org member): scoped to the ambient
-		// org, but must prove channel membership via a fresh enforced ACL.
 		return {
 			agentId,
 			organizationId: ambientOrgId,

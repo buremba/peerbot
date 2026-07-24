@@ -665,22 +665,13 @@ describe("agent history routes", () => {
 	});
 
 	test("reads a per-org system agent's platform conversation in the ambient org, not the ownership-first org", async () => {
-		// The prod bug, for the conversation-READ route. USER_ID owns `agent-1` in
-		// ORG_ID (their personal org). A DIFFERENT org (SHARED_ORG) has `agent-1` as
-		// its system agent, USER_ID is an owner there, and the bound Slack channel's
-		// conversation lives in SHARED_ORG. On origin/main
-		// getAuthorizedPlatformConversationScope took the ownership-first branch and
-		// resolved ORG_ID, so isConversationVisible checked ORG_ID's bindings and
-		// 404'd. The fix scopes to the ambient org (SHARED_ORG).
 		const sql = getDb();
 		const SHARED_ORG = "test-org-shared-system-read";
-		await orgContext.run({ organizationId: SHARED_ORG }, async () => {
-			await seedAgentRow("agent-1", {
-				organizationId: SHARED_ORG,
-				name: "Builder",
-				ownerPlatform: "external",
-				ownerUserId: USER_ID,
-			});
+		await seedAgentRow("agent-1", {
+			organizationId: SHARED_ORG,
+			name: "Builder",
+			ownerPlatform: "external",
+			ownerUserId: USER_ID,
 		});
 		await sql`
 			INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
@@ -692,8 +683,6 @@ describe("agent history routes", () => {
 		// USER_ID must NOT own agent-1 via agent_users in SHARED_ORG — access is via
 		// org-owner + system_agent_id, so they take the non-owner (enforced-ACL) path.
 
-		// Bind a channel + build the enforced ACL + a $member with the member_of
-		// edge, all in SHARED_ORG. Seed a platform conversation there.
 		const CHANNEL = "C0SHARED";
 		const TEAM = "T0SHARED";
 		const SLACK_USER = "U0SHAREDU";
@@ -733,7 +722,11 @@ describe("agent history routes", () => {
 			resourceNamespace: slackAclSource.resourceNamespace,
 			memberIdentities: slackAclSource.memberIdentities,
 			resources: slackChannelsToResources(TEAM, [
-				{ channelId: CHANNEL, name: "shared", memberSlackUserIds: [SLACK_USER] },
+				{
+					channelId: CHANNEL,
+					name: "shared",
+					memberSlackUserIds: [SLACK_USER],
+				},
 			]),
 		});
 		const conversationId = `slack:${CHANNEL}:1700000000.123456`;
@@ -758,7 +751,6 @@ describe("agent history routes", () => {
 			agentId: "agent-1",
 			exp: Date.now() + 60_000,
 		}));
-		// Ambient org = SHARED_ORG (what x-lobu-org sets, membership-verified).
 		const response = await orgContext.run({ organizationId: SHARED_ORG }, () =>
 			createApp().request(
 				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,

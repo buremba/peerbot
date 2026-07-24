@@ -185,8 +185,9 @@ export function managedTenantAdvisoryLockKey(
  * intent, and `StoredConnection.agentId === undefined` cannot distinguish
  * "no intent" from an explicit clear (the manager deletes the key on clear).
  * So the caller declares intent: with `preserveAgentId` the conflict UPDATE
- * keeps the existing row's `agent_id` (a fresh insert still starts NULL);
- * without it, `agent_id` is written from `conn.agentId` (set or clear).
+ * keeps the existing row's `agent_id`, or adopts one from an enterprise
+ * generation retired by the same write; without it, `agent_id` is written from
+ * `conn.agentId` (set or clear).
  */
 export async function upsertChatConnectionProjection(
   sql: any,
@@ -218,7 +219,6 @@ export async function upsertChatConnectionProjection(
     settings: conn.settings ?? {},
     chatMetadata: conn.metadata ?? {},
   };
-  /** Fallback routing adopted from an enterprise generation retired below. */
   let inheritedAgentId: string | null = null;
 
   if (status === "active" && externalTenantId) {
@@ -298,16 +298,13 @@ export async function upsertChatConnectionProjection(
         RETURNING slug, agent_id
       `;
       if (supersededEnterprise.length > 0) {
-        // The retired generation's fallback `agent_id` is admin-configured
-        // ROUTING state, not connection state. The successor is a NEW slug, so
-        // it takes the INSERT path below and starts NULL — inherit the binding
-        // or the workspace comes up ownerless (no connection owner to fall back
-        // to, so inbound messages hit the unclaimed-workspace responder and any
-        // channel bound only by that fallback goes dark).
-        inheritedAgentId =
-          supersededEnterprise
-            .map((r: { agent_id: string | null }) => r.agent_id)
-            .find((id: string | null) => id != null) ?? null;
+        if (opts?.preserveAgentId) {
+          // A managed install has no routing intent. Carry the retired generation's
+          // admin-configured fallback onto its new-slug successor.
+          inheritedAgentId =
+            (supersededEnterprise[0] as { agent_id: string | null }).agent_id ??
+            null;
+        }
         logger.info(
           {
             orgId,
@@ -365,21 +362,22 @@ export async function upsertChatConnectionProjection(
       error_message, created_at, updated_at
     ) VALUES (
       ${orgId}, ${conn.platform}, ${externalTenantId},
-      ${conn.agentId ?? inheritedAgentId},
+      ${
+        opts?.preserveAgentId
+          ? (conn.agentId ?? inheritedAgentId)
+          : (conn.agentId ?? null)
+      },
       ${displayName}, ${status}, ${jsonOf(foldedConfig)}, ${credentialMode},
       ${slug}, 'org', ${conn.errorMessage ?? null}, now(), now()
     )
     ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
       connector_key = EXCLUDED.connector_key,
       external_tenant_id = EXCLUDED.external_tenant_id,
-      -- COALESCE, not overwrite: inheritance fills a GAP left by a retired
-      -- enterprise generation. An existing binding on this row always wins, so
-      -- a stale E… agent can never displace live routing.
-      agent_id = COALESCE(${
+      agent_id = ${
         opts?.preserveAgentId
-          ? sql`connections.agent_id`
+          ? sql`COALESCE(connections.agent_id, ${inheritedAgentId})`
           : sql`EXCLUDED.agent_id`
-      }, ${inheritedAgentId}),
+      },
       display_name = EXCLUDED.display_name,
       status = EXCLUDED.status,
       config = EXCLUDED.config,

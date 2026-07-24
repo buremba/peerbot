@@ -5,11 +5,17 @@
  * Broadcasts worker responses to SSE connections for direct API clients
  */
 
-import { AGENT_ERRORS, createLogger, toAgentErrorCode } from "@lobu/core";
+import {
+  AGENT_ERRORS,
+  createLogger,
+  type SuggestedPrompt,
+  toAgentErrorCode,
+} from "@lobu/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
 import { resolveWatcherRunsByMessageIds } from "../../watchers/run-completion.js";
+import { readCurrentSuggestion } from "../suggestions/persist-suggestion.js";
 
 const logger = createLogger("api-response-renderer");
 
@@ -74,6 +80,15 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
+    // Resolve the current suggestion set for this conversation and decide
+    // whether to attach it to `complete` (this turn produced it), clear it
+    // (this turn produced none — stale chips must not linger), or leave it
+    // untouched (turn errored — keep the last good chips so the user can
+    // retry). This runs on the SSE-owning pod (terminal rows are owner-gated),
+    // so embedding on `complete` — rather than a separate post-complete card
+    // the SPA would miss after it closes the socket — is the only live path.
+    const suggestions = await this.resolveTerminalSuggestions(payload);
+
     // Broadcast completion to SSE clients.
     //
     // Carry the worker's authoritative `finalText` (the full assistant reply,
@@ -89,12 +104,53 @@ export class ApiResponseRenderer implements ResponseRenderer {
       messageId: payload.messageId,
       processedMessageIds: payload.processedMessageIds,
       finalText: payload.finalText,
+      suggestions,
       timestamp: payload.timestamp || Date.now(),
     });
 
     logger.info(`Broadcast completion to session ${sessionId}`);
 
     await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+  }
+
+  /**
+   * READ-ONLY: resolve the chips to embed on this turn's `complete` payload.
+   * The durable set is already finalized before this runs — the consumer calls
+   * `finalizeTurnSuggestions` at the terminal boundary (BEFORE the SSE
+   * owner-gate), which supersedes a stale prior set or keeps this turn's own.
+   * So the current row here is the authoritative post-turn state; this method
+   * never mutates it, it only decides what the SPA renders:
+   *  - errored turn → undefined ("no change"): keep the last good chips.
+   *  - a current set exists → return it (embed).
+   *  - none current → [] ("clear"): finalize already superseded it.
+   */
+  private async resolveTerminalSuggestions(
+    payload: ThreadResponsePayload
+  ): Promise<SuggestedPrompt[] | undefined> {
+    // Keep prior chips on an errored turn (decided product behavior).
+    if (payload.error) return undefined;
+    const organizationId =
+      payload.organizationId ??
+      (typeof payload.platformMetadata?.organizationId === "string"
+        ? payload.platformMetadata.organizationId
+        : undefined);
+    if (!organizationId) return undefined;
+
+    try {
+      const current = await readCurrentSuggestion(
+        organizationId,
+        payload.conversationId
+      );
+      return current ? current.prompts : [];
+    } catch (err) {
+      // Never let suggestion resolution break completion delivery.
+      logger.warn(
+        `Failed to resolve terminal suggestions for ${payload.conversationId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return undefined;
+    }
   }
 
   /**

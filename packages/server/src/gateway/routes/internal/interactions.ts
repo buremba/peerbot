@@ -3,6 +3,7 @@
 import {
 	createLogger,
 	getErrorMessage,
+	sanitizeSuggestionPrompts,
 } from "@lobu/core";
 import {
 	isApprovalAttribution,
@@ -11,6 +12,7 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
+import { persistSuggestion } from "../../suggestions/persist-suggestion.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -156,22 +158,60 @@ export function createInteractionRoutes(
   router.post("/internal/suggestions/create", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
-      const { userId, conversationId, channelId, teamId } = worker;
-      const { prompts } = await c.req.json();
+      const { conversationId, platform, organizationId, messageId } = worker;
+
+      // Suggestions render on the web (API) surface only: the SPA embeds the
+      // conversation's current set on the terminal `complete` SSE payload. Chat
+      // adapters (Slack/Telegram) have no delivery path yet — returning success
+      // there would silently render nothing. Fail loudly so the agent doesn't
+      // believe it posted chips. Chat fan-out (native setSuggestedPrompts /
+      // generic action buttons) is a follow-up.
+      if (platform !== "api") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "suggest_actions is only supported in web (API) conversations for now",
+          },
+          400
+        );
+      }
+
+      const body = await c.req.json();
+      // The authenticated worker is NOT trusted (it ingests untrusted connector
+      // content). Validate/normalize server-side — never dereference an unshaped
+      // `prompts` (a non-array body would crash on `.length`).
+      const prompts = sanitizeSuggestionPrompts(body?.prompts);
+      if (prompts.length === 0) {
+        return c.json({ success: true, prompts: 0 });
+      }
+
+      // Durable state is tenant-scoped — without an organizationId the current
+      // set can't be persisted, and the web path has nothing to embed on
+      // `complete`. Fail rather than accept-and-drop.
+      if (!organizationId) {
+        logger.warn(
+          `Suggestion for ${conversationId} has no organizationId — cannot persist`
+        );
+        return c.json(
+          { success: false, error: "missing organization context" },
+          400
+        );
+      }
 
       logger.info(
         `Sending suggestions to conversation ${conversationId} (${prompts.length} prompts)`
       );
 
-      await interactionService.createSuggestion(
-        userId,
+      await persistSuggestion({
+        organizationId,
         conversationId,
-        channelId,
-        teamId,
-        prompts
-      );
+        prompts,
+        turnMessageId: messageId,
+        runId: worker.runId ?? null,
+      });
 
-      return c.json({ success: true });
+      return c.json({ success: true, prompts: prompts.length });
     } catch (error) {
       logger.error("Failed to send suggestions", {
         error: getErrorMessage(error),

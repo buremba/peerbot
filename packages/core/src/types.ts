@@ -326,6 +326,41 @@ export interface SuggestedPrompt {
   message: string; // Full message sent when clicked
 }
 
+/** Limits enforced wherever suggestions enter or leave durable storage. */
+export const SUGGESTION_LIMITS = {
+  maxPrompts: 4,
+  maxTitleChars: 80,
+  maxMessageChars: 2000,
+} as const;
+
+/**
+ * Normalize an untrusted `prompts` value into at most {@link SUGGESTION_LIMITS}
+ * valid `{title,message}` entries. Trims BEFORE capping length (so leading
+ * whitespace can't yield an empty displayed title), drops malformed/empty
+ * entries, and returns `[]` for any non-array input. Shared by the agent tool
+ * and the gateway route so the worker (untrusted) and the server enforce one
+ * identical contract.
+ */
+export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
+  if (!Array.isArray(value)) return [];
+  const out: SuggestedPrompt[] = [];
+  for (const p of value) {
+    if (!p || typeof p !== "object") continue;
+    const { title, message } = p as { title?: unknown; message?: unknown };
+    if (typeof title !== "string" || typeof message !== "string") continue;
+    const t = Array.from(title.trim())
+      .slice(0, SUGGESTION_LIMITS.maxTitleChars)
+      .join("");
+    const m = Array.from(message.trim())
+      .slice(0, SUGGESTION_LIMITS.maxMessageChars)
+      .join("");
+    if (t.length === 0 || m.length === 0) continue;
+    out.push({ title: t, message: m });
+    if (out.length >= SUGGESTION_LIMITS.maxPrompts) break;
+  }
+  return out;
+}
+
 /**
  * Skill registry entry (global or per-agent).
  */
@@ -333,22 +368,6 @@ export interface RegistryEntry {
   id: string;
   type: string;
   apiUrl: string;
-}
-
-/**
- * Non-blocking suggestions - agent continues immediately
- * Used for optional next steps
- */
-export interface UserSuggestion {
-  id: string;
-  userId: string;
-  conversationId: string;
-  channelId: string;
-  teamId?: string;
-
-  blocking: false; // Always false - distinguishes from interactions
-
-  prompts: SuggestedPrompt[];
 }
 
 // Re-export the agent-settings nested types from the single TypeBox-schema

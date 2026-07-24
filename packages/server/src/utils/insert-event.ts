@@ -79,8 +79,17 @@ interface InsertEventParams {
   embedding?: number[] | null;
   /** Model/version stamp that produced `embedding`; persisted so vector spaces never mix. */
   embeddingModel?: string | null;
-  interactionType?: 'none' | 'approval';
-  interactionStatus?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed' | null;
+  interactionType?: 'none' | 'approval' | 'suggestion';
+  interactionStatus?:
+    | 'pending'
+    | 'approved'
+    | 'rejected'
+    | 'completed'
+    | 'failed'
+    // Non-blocking suggested actions: 'current' while shown, superseded (never
+    // resolved by a click) by the next turn's suggestions for the conversation.
+    | 'current'
+    | null;
   interactionInputSchema?: Record<string, unknown> | null;
   interactionInput?: Record<string, unknown> | null;
   interactionOutput?: Record<string, unknown> | null;

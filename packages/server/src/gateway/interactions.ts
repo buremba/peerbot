@@ -2,11 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  type BaseMessage,
-  createLogger,
-  type UserSuggestion,
-} from "@lobu/core";
+import { type BaseMessage, createLogger } from "@lobu/core";
 import type {
   ApprovalAttribution,
   InteractionResourceKind,
@@ -350,33 +346,5 @@ export class InteractionService extends EventEmitter {
 
     this.emit("link-button:created", posted);
     return posted;
-  }
-
-  /**
-   * Create non-blocking suggestions.
-   * Emits event immediately, no state tracking needed.
-   */
-  async createSuggestion(
-    userId: string,
-    conversationId: string,
-    channelId: string,
-    teamId: string | undefined,
-    prompts: Array<{ title: string; message: string }>
-  ): Promise<void> {
-    const suggestion: UserSuggestion = {
-      id: `sug_${randomUUID()}`,
-      userId,
-      conversationId,
-      channelId,
-      teamId,
-      blocking: false,
-      prompts,
-    };
-
-    logger.info(
-      `Created suggestion ${suggestion.id} for conversation ${conversationId}`
-    );
-
-    this.emit("suggestion:created", suggestion);
   }
 }

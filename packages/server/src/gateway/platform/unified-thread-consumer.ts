@@ -18,6 +18,7 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
+import { finalizeTurnSuggestions } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
 const logger = createLogger("unified-thread-consumer");
@@ -390,6 +391,42 @@ export class UnifiedThreadResponseConsumer {
     const isApiRow =
       (data.platform || data.teamId) === "api" &&
       !data.platformMetadata?.connectionId;
+
+    // Finalize the conversation's suggestion set at the terminal boundary,
+    // BEFORE the SSE owner-gate below. This must run whether or not any pod
+    // holds the client's socket (a disconnected client leaves no owner, and the
+    // owner-gate would otherwise re-queue → dead-letter, dropping the clear and
+    // replaying stale chips on reload forever). It supersedes a prior turn's
+    // set when this turn emitted none, and keeps this turn's own for the
+    // renderer to embed. Idempotent under the re-queue-to-owner retry. Skipped
+    // on error turns (keep the last good chips — decided product behavior).
+    if (isApiRow && !data.error && data.processedMessageIds?.length) {
+      const organizationId =
+        data.organizationId ??
+        (typeof data.platformMetadata?.organizationId === "string"
+          ? data.platformMetadata.organizationId
+          : undefined);
+      if (organizationId) {
+        try {
+          await finalizeTurnSuggestions({
+            organizationId,
+            conversationId: data.conversationId,
+            turnMessageIds: [
+              ...(data.messageId ? [data.messageId] : []),
+              ...(data.processedMessageIds ?? []),
+            ],
+          });
+        } catch (err) {
+          // Never let suggestion finalization break terminal delivery.
+          logger.warn(
+            `Failed to finalize suggestions for ${data.conversationId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+    }
+
     if (isApiRow) {
       const isTerminal = !!(
         data.error ||

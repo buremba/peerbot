@@ -1,3 +1,4 @@
+import { sanitizeSuggestionPrompts } from "@lobu/core";
 import { defineLobuPlugin } from "@lobu/plugin-api";
 import {
   defineGatewayTool,
@@ -37,6 +38,44 @@ export async function askUserQuestion(
     hooks?.onPosted?.();
     return textResult(
       "Question posted with buttons. Your turn is now ending — the user's click will arrive as a new inbound message that resumes this session. Do not call ask_user again."
+    );
+  });
+}
+
+/**
+ * Non-blocking suggested next actions. Unlike `ask_user`, this does NOT end
+ * the turn — the model posts chips the user MAY tap and continues/finishes
+ * normally. Each prompt is `{ title, message }`: `title` is the chip label,
+ * `message` is sent verbatim as a new user turn if tapped. The server persists
+ * these as a superseded interaction event so they survive reload and clear on
+ * the next turn.
+ */
+export async function suggestActions(
+  gateway: GatewayParams,
+  args: { prompts: Array<{ title: string; message: string }> }
+): Promise<TextResult> {
+  return withErrorHandling("suggest_actions", async () => {
+    // The agent ingests untrusted connector content, so normalize/cap here for a
+    // fast local reject. The gateway route re-runs the SAME sanitizer (the worker
+    // is not trusted) — this is defense-in-depth, not the authority.
+    const clean = sanitizeSuggestionPrompts(args.prompts);
+    if (clean.length === 0) {
+      return textResult(
+        "No valid suggestions to post — each prompt needs a non-empty title and message."
+      );
+    }
+    const { error } = await gatewayFetch<{ success: boolean }>(
+      gateway,
+      "/internal/suggestions/create",
+      {
+        method: "POST",
+        body: JSON.stringify({ prompts: clean }),
+      },
+      "Failed to post suggestions"
+    );
+    if (error) return error;
+    return textResult(
+      `Posted ${clean.length} suggested action(s). These are non-blocking — do not wait for a response; finish your turn normally.`
     );
   });
 }
@@ -301,6 +340,27 @@ export function createConversationTools(params: ConversationPluginParams) {
         askUserQuestion(gateway, args, {
           onPosted: params.onAskUserPosted,
         }),
+    }),
+    defineGatewayTool({
+      name: "suggest_actions",
+      parameters: Type.Object({
+        prompts: Type.Array(
+          Type.Object({
+            title: Type.String({
+              description: "Short chip label shown to the user (≤80 chars)",
+            }),
+            message: Type.String({
+              description:
+                "The full message sent verbatim as the user if the chip is tapped",
+            }),
+          }),
+          {
+            description:
+              "Up to 4 suggested next actions. Non-blocking — the turn continues.",
+          }
+        ),
+      }),
+      run: (args) => suggestActions(gateway, args),
     }),
   ];
 }

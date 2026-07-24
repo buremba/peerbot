@@ -18,6 +18,7 @@ describe("conversation plugin", () => {
       "edit_message",
       "delete_message",
       "ask_user",
+      "suggest_actions",
     ]);
   });
 });

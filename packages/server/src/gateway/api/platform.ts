@@ -128,13 +128,12 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    interactionService.on("suggestion:created", (event: any) => {
-      if (event.platform !== "api") return;
-      this.enqueueInteractionCard(queue, event, "suggestion", {
-        type: "suggestion",
-        prompts: event.prompts,
-      });
-    });
+    // NOTE: suggestions are NOT delivered as a separate post-turn card. Such a
+    // card would race the terminal `complete` row and, if it lost, arrive after
+    // the SPA closed its EventSource on `complete` — undeliverable. The web path
+    // instead EMBEDS the conversation's current suggestion set on the `complete`
+    // payload in ApiResponseRenderer.handleCompletion (owner-gated, ordered,
+    // replay-safe). suggest_actions persists the set; the completion reads it.
 
     logger.debug("✅ API platform initialized");
   }

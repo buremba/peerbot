@@ -27,6 +27,8 @@ export const OWNER_ROUTE_SEGMENTS = [
   "agents",
   "connectors",
   "devices",
+  // Legacy redirect path /$owner/environments → infrastructure/sandboxes.
+  // Keep reserved so an org/entity slug never collides with the redirect.
   "environments",
   "infrastructure",
   "memory",

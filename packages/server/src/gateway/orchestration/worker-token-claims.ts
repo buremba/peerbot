@@ -14,32 +14,32 @@
  * token) stay with each caller.
  */
 export interface WorkerTokenClaimsArgs {
-  channelId: string;
-  teamId?: string;
-  agentId?: string;
-  organizationId?: string;
-  platform?: string;
-  platformMetadata?: Record<string, unknown>;
-  /**
-   * Selected runtime provider for this conversation, resolved from the agent's
-   * Environment by the caller (which has the agent settings + environments
-   * store). Undefined → local just-bash. The generic runtime route reads this
-   * claim to pick a provider — see WorkerTokenData.runtimeProviderId.
-   */
-  runtimeProviderId?: string;
-  /** The `environments.id` whose vault credential backs the provider above. */
-  environmentId?: string;
-  /**
-   * The agent's resolved egress allowlist (`networkConfig.allowedDomains`). Set
-   * here so the runtime route can read it off the SIGNED token instead of
-   * trusting a worker-supplied body — see WorkerTokenData.allowedDomains.
-   */
-  allowedDomains?: string[];
-  /**
-   * The agent's resolved egress denylist (`networkConfig.deniedDomains`),
-   * signed for the same reason — see WorkerTokenData.deniedDomains.
-   */
-  deniedDomains?: string[];
+	channelId: string;
+	teamId?: string;
+	agentId?: string;
+	organizationId?: string;
+	platform?: string;
+	platformMetadata?: Record<string, unknown>;
+	/**
+	 * Selected runtime provider for this conversation, resolved from the agent's
+	 * sandbox by the caller (which has the agent settings + sandbox store).
+	 * Undefined → local just-bash. The generic runtime route reads this claim to
+	 * pick a provider — see WorkerTokenData.runtimeProviderId.
+	 */
+	runtimeProviderId?: string;
+	/** The `sandboxes.id` whose vault credential backs the provider above. */
+	sandboxId?: string;
+	/**
+	 * The agent's resolved egress allowlist (`networkConfig.allowedDomains`). Set
+	 * here so the runtime route can read it off the SIGNED token instead of
+	 * trusting a worker-supplied body — see WorkerTokenData.allowedDomains.
+	 */
+	allowedDomains?: string[];
+	/**
+	 * The agent's resolved egress denylist (`networkConfig.deniedDomains`),
+	 * signed for the same reason — see WorkerTokenData.deniedDomains.
+	 */
+	deniedDomains?: string[];
 }
 
 /**
@@ -61,47 +61,51 @@ export interface WorkerTokenClaimsArgs {
  * headless run, so an owner-gated card would dead-letter).
  */
 export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
-  channelId: string;
-  teamId?: string;
-  agentId?: string;
-  organizationId?: string;
-  platform?: string;
-  connectionId?: string;
-  responseThreadId?: string;
-  source?: string;
-  runtimeProviderId?: string;
-  environmentId?: string;
-  allowedDomains?: string[];
-  deniedDomains?: string[];
+	channelId: string;
+	teamId?: string;
+	agentId?: string;
+	organizationId?: string;
+	platform?: string;
+	connectionId?: string;
+	responseThreadId?: string;
+	source?: string;
+	runtimeProviderId?: string;
+	sandboxId?: string;
+	allowedDomains?: string[];
+	deniedDomains?: string[];
 } {
-  // Provider comes solely from the conversation's pinned Environment; there is
-  // no deployment-wide env-var fallback. Undefined → local just-bash.
-  const runtimeProviderId = args.runtimeProviderId;
-  return {
-    channelId: args.channelId,
-    teamId: args.teamId,
-    agentId: args.agentId,
-    organizationId: args.organizationId,
-    platform: args.platform,
-    connectionId:
-      typeof args.platformMetadata?.connectionId === "string"
-        ? args.platformMetadata.connectionId
-        : undefined,
-    responseThreadId:
-      typeof args.platformMetadata?.responseThreadId === "string"
-        ? args.platformMetadata.responseThreadId
-        : undefined,
-    source:
-      typeof args.platformMetadata?.source === "string"
-        ? args.platformMetadata.source
-        : undefined,
-    runtimeProviderId,
-    environmentId: runtimeProviderId ? args.environmentId : undefined,
-    // Non-empty only; an empty list is equivalent to absent (deny-all) and
-    // keeps the token payload minimal.
-    allowedDomains:
-      args.allowedDomains && args.allowedDomains.length > 0 ? args.allowedDomains : undefined,
-    deniedDomains:
-      args.deniedDomains && args.deniedDomains.length > 0 ? args.deniedDomains : undefined,
-  };
+	// Provider comes solely from the conversation's pinned sandbox; there is
+	// no deployment-wide env-var fallback. Undefined → local just-bash.
+	const runtimeProviderId = args.runtimeProviderId;
+	return {
+		channelId: args.channelId,
+		teamId: args.teamId,
+		agentId: args.agentId,
+		organizationId: args.organizationId,
+		platform: args.platform,
+		connectionId:
+			typeof args.platformMetadata?.connectionId === "string"
+				? args.platformMetadata.connectionId
+				: undefined,
+		responseThreadId:
+			typeof args.platformMetadata?.responseThreadId === "string"
+				? args.platformMetadata.responseThreadId
+				: undefined,
+		source:
+			typeof args.platformMetadata?.source === "string"
+				? args.platformMetadata.source
+				: undefined,
+		runtimeProviderId,
+		sandboxId: runtimeProviderId ? args.sandboxId : undefined,
+		// Non-empty only; an empty list is equivalent to absent (deny-all) and
+		// keeps the token payload minimal.
+		allowedDomains:
+			args.allowedDomains && args.allowedDomains.length > 0
+				? args.allowedDomains
+				: undefined,
+		deniedDomains:
+			args.deniedDomains && args.deniedDomains.length > 0
+				? args.deniedDomains
+				: undefined,
+	};
 }

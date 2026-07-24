@@ -16,11 +16,11 @@ import {
 import * as internal from "../../internal/index.js";
 import { clientsListCommand, clientsRevokeCommand } from "../clients.js";
 import {
-  environmentCreateCommand,
-  environmentDeleteCommand,
-  environmentListCommand,
-  environmentSetCredentialCommand,
-} from "../environment.js";
+  sandboxCreateCommand,
+  sandboxDeleteCommand,
+  sandboxListCommand,
+  sandboxSetCredentialCommand,
+} from "../sandbox.js";
 import {
   providersCatalogCommand,
   providersCreateCommand,
@@ -271,20 +271,18 @@ describe("providers", () => {
   });
 });
 
-describe("environment", () => {
-  test("list hits the environments route", async () => {
+describe("sandbox", () => {
+  test("list hits the sandboxes route", async () => {
     responses = [
-      { builtin: { id: "builtin" }, environments: [], availableProviders: [] },
+      { builtin: { id: "builtin" }, sandboxes: [], availableProviders: [] },
     ];
-    await environmentListCommand({ json: true });
-    expect(calls).toEqual([
-      { method: "GET", path: "/api/testorg/environments" },
-    ]);
+    await sandboxListCommand({ json: true });
+    expect(calls).toEqual([{ method: "GET", path: "/api/testorg/sandboxes" }]);
   });
 
   test("create sends snake-case provider_kind and parsed credential", async () => {
-    responses = [{ environment: { id: "env_1", name: "prod" } }];
-    await environmentCreateCommand("prod", {
+    responses = [{ sandbox: { id: "sbx_1", name: "prod" } }];
+    await sandboxCreateCommand("prod", {
       provider: "vercel",
       credential: ["token=tok-1", "teamId=team_1"],
       json: true,
@@ -292,7 +290,7 @@ describe("environment", () => {
     expect(calls).toEqual([
       {
         method: "POST",
-        path: "/api/testorg/environments",
+        path: "/api/testorg/sandboxes",
         body: {
           name: "prod",
           provider_kind: "vercel",
@@ -303,23 +301,23 @@ describe("environment", () => {
   });
 
   test("set-credential PUTs to the credential route", async () => {
-    await environmentSetCredentialCommand("env_1", {
+    await sandboxSetCredentialCommand("sbx_1", {
       credential: ["token=tok-2"],
     });
     expect(calls).toEqual([
       {
         method: "PUT",
-        path: "/api/testorg/environments/env_1/credential",
+        path: "/api/testorg/sandboxes/sbx_1/credential",
         body: { credential: { token: "tok-2" } },
       },
     ]);
   });
 
   test("delete requires --yes, then DELETEs", async () => {
-    await expectYesGuard(() => environmentDeleteCommand("env_1", {}));
-    await environmentDeleteCommand("env_1", { yes: true });
+    await expectYesGuard(() => sandboxDeleteCommand("sbx_1", {}));
+    await sandboxDeleteCommand("sbx_1", { yes: true });
     expect(calls).toEqual([
-      { method: "DELETE", path: "/api/testorg/environments/env_1" },
+      { method: "DELETE", path: "/api/testorg/sandboxes/sbx_1" },
     ]);
   });
 });

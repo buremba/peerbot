@@ -855,7 +855,7 @@ export class WorkerGateway {
         // bash starts failing (the generic route 404s with no provider claim)
         // after the token rotates mid-turn.
         runtimeProviderId: tokenData.runtimeProviderId,
-        environmentId: tokenData.environmentId,
+        sandboxId: tokenData.sandboxId,
         // Preserve the egress allow/deny lists too — otherwise a refreshed
         // token would fall to deny-all (allow) or, worse, drop its exclusions
         // (deny) and re-open denied hosts mid-turn.

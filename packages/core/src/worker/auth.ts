@@ -85,11 +85,11 @@ export interface WorkerTokenData {
    */
   runtimeProviderId?: string;
   /**
-   * The `environments.id` whose vault credential backs {@link runtimeProviderId}
-   * (rows `environment:<id>:<field>`). Absent → gateway resolves the provider
+   * The `sandboxes.id` whose vault credential backs {@link runtimeProviderId}
+   * (rows `sandbox:<id>:<field>`). Absent → gateway resolves the provider
    * credential from system env only. Set together with `runtimeProviderId`.
    */
-  environmentId?: string;
+  sandboxId?: string;
   /**
    * Egress allowlist (the agent's resolved `networkConfig.allowedDomains`) for a
    * remote runtime sandbox. Carried as a SIGNED claim — set gateway-side at mint
@@ -145,8 +145,8 @@ export function generateWorkerToken(
     adminTools?: string[];
     /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
     runtimeProviderId?: string;
-    /** Selected environment id backing the runtime credential. See WorkerTokenData.environmentId. */
-    environmentId?: string;
+    /** Selected sandbox id backing the runtime credential. See WorkerTokenData.sandboxId. */
+    sandboxId?: string;
     /** Resolved egress allowlist for a remote runtime sandbox. See WorkerTokenData.allowedDomains. */
     allowedDomains?: string[];
     /** Resolved egress denylist for a remote runtime sandbox. See WorkerTokenData.deniedDomains. */
@@ -177,7 +177,7 @@ export function generateWorkerToken(
     messageId: options.messageId,
     adminTools: options.adminTools,
     runtimeProviderId: options.runtimeProviderId,
-    environmentId: options.environmentId,
+    sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
     deniedDomains: options.deniedDomains,
   };
@@ -254,7 +254,7 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
         return null;
       }
     }
-    // `runtimeProviderId` / `environmentId` are optional but, when present, the
+    // `runtimeProviderId` / `sandboxId` are optional but, when present, the
     // runtime route trusts them to pick a provider + vault credential. A forged
     // token with a non-string here must be rejected, not coerced.
     if (
@@ -264,11 +264,22 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       logger.error("Worker token rejected: runtimeProviderId must be a string");
       return null;
     }
-    if (
-      data.environmentId !== undefined &&
-      typeof data.environmentId !== "string"
-    ) {
-      logger.error("Worker token rejected: environmentId must be a string");
+    if (data.sandboxId !== undefined && typeof data.sandboxId !== "string") {
+      logger.error("Worker token rejected: sandboxId must be a string");
+      return null;
+    }
+    // Reject legacy tokens carrying the pre-rename `environmentId` claim (the
+    // field was renamed to `sandboxId`). A token minted just before the
+    // environments→sandboxes rename deploy still verifies structurally (the
+    // extra JSON key would otherwise be ignored) but would mint/refresh with NO
+    // sandbox binding — the runtime route then resolves system-env / OIDC creds
+    // and a provider-pinned turn silently executes in the HOST realm. Fail
+    // closed instead: rejection → queue retry re-resolves the pin fresh under
+    // the new claim. Tokens have a ≤2h TTL, so this window is self-clearing.
+    if ((data as { environmentId?: unknown }).environmentId !== undefined) {
+      logger.error(
+        "Worker token rejected: legacy `environmentId` claim (superseded by `sandboxId`) — re-resolve"
+      );
       return null;
     }
 

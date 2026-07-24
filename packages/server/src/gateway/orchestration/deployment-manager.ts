@@ -41,7 +41,7 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import { resolvePinnedSelection } from "../../lobu/stores/environment-store.js";
+import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { getInternalGatewayUrl } from "../config/index.js";
 
 const logger = createLogger("orchestrator");
@@ -641,10 +641,10 @@ export function buildDeploymentWorkerToken(args: {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   traceId?: string;
-  /** Resolved runtime provider + environment, so the deployment-lifetime token
+  /** Resolved runtime provider + sandbox, so the deployment-lifetime token
    *  also carries the claim the runtime route reads (parity with the per-run mint). */
   runtimeProviderId?: string;
-  environmentId?: string;
+  sandboxId?: string;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
@@ -1549,7 +1549,7 @@ export class DeploymentManager {
       platformMetadata,
       traceId,
       runtimeProviderId: runtimeSelection.runtimeProviderId,
-      environmentId: runtimeSelection.environmentId,
+      sandboxId: runtimeSelection.sandboxId,
       // Same allowlist synced to the grant store / JUST_BASH_ALLOWED_DOMAINS — so
       // the runtime route reads it off the signed token, not the worker's body.
       allowedDomains: messageData?.networkConfig?.allowedDomains,

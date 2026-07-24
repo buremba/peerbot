@@ -81,11 +81,11 @@ mock.module("@vercel/sandbox", () => ({
 }));
 
 // Env-bound credential resolution reads the vault. Mock it to a MISS (null) so
-// the "environment pinned but deleted" case is deterministic and DB-free: the
-// scoped key is gone, so an env-bound resolution must fail closed.
-const readEnvironmentSecretSpy = spyOn(
+// the "sandbox pinned but deleted" case is deterministic and DB-free: the
+// scoped key is gone, so a sandbox-bound resolution must fail closed.
+const readSandboxSecretSpy = spyOn(
   providerSecrets,
-  "readEnvironmentSecret"
+  "readSandboxSecret"
 ).mockResolvedValue(null);
 
 // Importing the route pulls in the gateway runtime registry barrel, which
@@ -117,7 +117,7 @@ function token(
   options: {
     agentId?: string;
     runtimeProviderId?: string;
-    environmentId?: string;
+    sandboxId?: string;
     allowedDomains?: string[];
   } = {}
 ): string {
@@ -128,7 +128,7 @@ function token(
     organizationId: "org-1",
     agentId: options.agentId,
     runtimeProviderId: options.runtimeProviderId,
-    environmentId: options.environmentId,
+    sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
   });
 }
@@ -172,7 +172,7 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  readEnvironmentSecretSpy.mockRestore();
+  readSandboxSecretSpy.mockRestore();
 });
 
 describe("createRuntimeRoutes", () => {
@@ -282,12 +282,12 @@ describe("createRuntimeRoutes", () => {
     expect(getOrCreateMock.mock.calls[0]?.[0]).not.toHaveProperty("token");
   });
 
-  test("424s for an ENVIRONMENT-BOUND vault miss even when VERCEL_OIDC_TOKEN is present (no host-realm self-auth)", async () => {
-    // The token names a specific environmentId (a pinned Environment), but the
-    // vault read misses (mocked null → the environment was deleted). OIDC is
-    // present, so the env-LESS path would self-auth into the host realm. An
-    // env-bound miss must fail closed instead — a conversation pinned to a
-    // deleted Environment must NOT execute in the host realm.
+  test("424s for a sandbox-bound vault miss even when VERCEL_OIDC_TOKEN is present (no host-realm self-auth)", async () => {
+    // The token names a specific sandboxId (a pinned sandbox), but the
+    // vault read misses (mocked null → the sandbox was deleted). OIDC is
+    // present, so the sandbox-less path would self-auth into the host realm. A
+    // sandbox-bound miss must fail closed instead — a conversation pinned to a
+    // deleted sandbox must NOT execute in the host realm.
     delete process.env.VERCEL_TOKEN;
     delete process.env.VERCEL_TEAM_ID;
     delete process.env.VERCEL_PROJECT_ID;
@@ -301,7 +301,7 @@ describe("createRuntimeRoutes", () => {
         authorization: `Bearer ${token({
           agentId: "verceltestagent",
           runtimeProviderId: "vercel",
-          environmentId: "env-deleted",
+          sandboxId: "env-deleted",
         })}`,
         "content-type": "application/json",
       },

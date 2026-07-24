@@ -2,7 +2,7 @@
  * resolvePinnedSelection fail-closed path — Vitest unit test (no DB). When the
  * pin read AND the guarded upsert/reread throw (a DB outage) for an existing
  * conversation, the resolver must NOT return ANY guessed realm — not the agent's
- * current (possibly repointed) Environment, and not builtin either (builtin is
+ * current (possibly repointed) sandbox, and not builtin either (builtin is
  * still "not the pinned realm"). The only correct action is to THROW, which the
  * dispatch caller turns into a queue retry; the turn re-runs once the DB recovers
  * and reads/pins the real realm. Reproduces codex round-5/6's finding.
@@ -25,14 +25,14 @@ afterEach(() => {
 describe("resolvePinnedSelection — fail closed on total DB failure", () => {
   it("THROWS (→ queue retry) — never returns a guessed realm — when the pin read and upsert both fail", async () => {
     vi.resetModules();
-    // The agents/environments lookup RESOLVES (env-b, a repointed provider env),
+    // The agents/sandboxes lookup RESOLVES (sbx-b, a repointed provider sandbox),
     // but every conversations query THROWS — codex's exact repro.
     vi.doMock("../../../db/client.js", () => ({
       getDb: () => (strings: TemplateStringsArray, ..._v: unknown[]) => {
         const q = strings.join(" ");
         if (q.includes("FROM agents")) {
           return Promise.resolve([
-            { environment_id: "env-b", provider_kind: "vercel" },
+            { sandbox_id: "sbx-b", provider_kind: "vercel" },
           ]);
         }
         return Promise.reject(new Error("db down"));
@@ -43,9 +43,9 @@ describe("resolvePinnedSelection — fail closed on total DB failure", () => {
       isWatcherConversationId: () => false,
     }));
 
-    const { resolvePinnedSelection } = await import("../environment-store.js");
+    const { resolvePinnedSelection } = await import("../sandbox-store.js");
 
-    // Must throw (not return env-b, not return builtin) so the turn is retried.
+    // Must throw (not return sbx-b, not return builtin) so the turn is retried.
     await expect(
       resolvePinnedSelection({
         organizationId: "org-1",

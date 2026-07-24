@@ -138,7 +138,7 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
     toolsConfig: settings.toolsConfig,
     guardrails: settings.guardrails,
     guardrailsInline: settings.guardrailsInline,
-    environmentId: settings.environmentId,
+    sandboxId: settings.sandboxId,
     verboseLogging: settings.verboseLogging,
     showToolCalls: settings.showToolCalls,
     preApprovedTools: settings.preApprovedTools,

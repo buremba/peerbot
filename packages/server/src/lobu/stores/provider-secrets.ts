@@ -758,27 +758,23 @@ export async function softDeleteInferenceProvider(
 }
 
 /**
- * Vault row name for one credential field of a runtime environment. Keyed by
- * `environments.id` (not provider kind) so two environments of the same
- * provider in one org keep distinct credentials — e.g.
- * `environment:env-abc:token`. Org-scoping is still enforced by the
- * `(organization_id, name)` PK on `agent_secrets`.
+ * Vault row name for one credential field of a sandbox provider. Keyed by
+ * `sandboxes.id` (not provider kind) so two sandboxes of the same provider in
+ * one org keep distinct credentials — e.g. `sandbox:env-abc:token`. Org-scoping
+ * is still enforced by the `(organization_id, name)` PK on `agent_secrets`.
  */
-export function environmentSecretName(
-	environmentId: string,
-	field: string,
-): string {
-	return `environment:${environmentId}:${field}`;
+export function sandboxSecretName(sandboxId: string, field: string): string {
+	return `sandbox:${sandboxId}:${field}`;
 }
 
 /**
- * Encrypt + upsert one credential field for a runtime environment into the
- * org vault (`environment:<id>:<field>`). Used by the environments API; the
- * plaintext is never persisted and the gateway resolves it back via
- * {@link readEnvironmentSecret} at exec time.
+ * Encrypt + upsert one credential field for a sandbox provider into the org
+ * vault (`sandbox:<id>:<field>`). Used by the sandboxes API; the plaintext is
+ * never persisted and the gateway resolves it back via {@link readSandboxSecret}
+ * at exec time.
  */
-export async function writeEnvironmentSecret(
-	environmentId: string,
+export async function writeSandboxSecret(
+	sandboxId: string,
 	field: string,
 	organizationId: string,
 	value: string,
@@ -787,19 +783,20 @@ export async function writeEnvironmentSecret(
 	const ciphertext = encrypt(value);
 	await sql`
     INSERT INTO agent_secrets (organization_id, name, ciphertext, updated_at)
-    VALUES (${organizationId}, ${environmentSecretName(environmentId, field)}, ${ciphertext}, now())
+    VALUES (${organizationId}, ${sandboxSecretName(sandboxId, field)}, ${ciphertext}, now())
     ON CONFLICT (organization_id, name)
     DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = now()
   `;
 }
 
 /**
- * Read + decrypt one credential field for a runtime environment. Returns null
- * on miss/expiry/decrypt-failure so the caller can fall back to system env.
- * Mirrors {@link readOrgSharedProviderApiKey} but keyed per-environment.
+ * Read + decrypt one credential field for a sandbox provider. Returns null on
+ * miss/expiry/decrypt-failure. Callers that are sandbox-bound MUST fail closed
+ * on null (no system-env fallback) — see resolveRuntimeCredentials. Mirrors
+ * {@link readOrgSharedProviderApiKey} but keyed per-sandbox.
  */
-export async function readEnvironmentSecret(
-	environmentId: string,
+export async function readSandboxSecret(
+	sandboxId: string,
 	field: string,
 	organizationId: string,
 ): Promise<string | null> {
@@ -808,7 +805,7 @@ export async function readEnvironmentSecret(
     SELECT ciphertext
     FROM agent_secrets
     WHERE organization_id = ${organizationId}
-      AND name = ${environmentSecretName(environmentId, field)}
+      AND name = ${sandboxSecretName(sandboxId, field)}
       AND (expires_at IS NULL OR expires_at > now())
     LIMIT 1
   `) as Array<{ ciphertext: string }>;
@@ -818,8 +815,8 @@ export async function readEnvironmentSecret(
 		return decrypt(ciphertext);
 	} catch (error) {
 		logger.warn(
-			`Failed to decrypt environment secret ${environmentSecretName(
-				environmentId,
+			`Failed to decrypt sandbox secret ${sandboxSecretName(
+				sandboxId,
 				field,
 			)}: ${getErrorMessage(error)}`,
 		);

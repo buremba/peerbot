@@ -134,7 +134,7 @@ describe('migration invariants', () => {
       const rows = await sql<{ column_name: string }[]>`
         SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public'
-          AND table_name = 'environments'
+          AND table_name = 'sandboxes'
           AND column_name IN ('scope', 'owner_user_id')
       `;
       expect(rows).toHaveLength(0);

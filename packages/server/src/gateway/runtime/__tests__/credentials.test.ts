@@ -2,13 +2,13 @@ import { afterAll, afterEach, describe, expect, mock, spyOn, test } from "bun:te
 import * as providerSecrets from "../../../lobu/stores/provider-secrets.js";
 
 // Mock the vault read so resolveRuntimeCredentials can be unit-tested without a DB.
-const readEnvironmentSecretMock = mock(
+const readSandboxSecretMock = mock(
   async (): Promise<string | null> => null
 );
-const readEnvironmentSecretSpy = spyOn(
+const readSandboxSecretSpy = spyOn(
   providerSecrets,
-  "readEnvironmentSecret"
-).mockImplementation(readEnvironmentSecretMock);
+  "readSandboxSecret"
+).mockImplementation(readSandboxSecretMock);
 
 const { resolveRuntimeCredentials } = await import("../credentials.js");
 import type { GatewayRuntimeProvider } from "../types.js";
@@ -36,12 +36,12 @@ afterEach(() => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  readEnvironmentSecretMock.mockClear();
-  readEnvironmentSecretMock.mockImplementation(async () => null);
+  readSandboxSecretMock.mockClear();
+  readSandboxSecretMock.mockImplementation(async () => null);
 });
 
 afterAll(() => {
-  readEnvironmentSecretSpy.mockRestore();
+  readSandboxSecretSpy.mockRestore();
 });
 
 describe("resolveRuntimeCredentials", () => {
@@ -49,7 +49,7 @@ describe("resolveRuntimeCredentials", () => {
     process.env.VERCEL_TOKEN = "env-token";
     process.env.VERCEL_TEAM_ID = "env-team";
     process.env.VERCEL_PROJECT_ID = "env-project";
-    readEnvironmentSecretMock.mockImplementation(
+    readSandboxSecretMock.mockImplementation(
       async (_e: string, field: string) => `vault-${field}`
     );
 
@@ -64,7 +64,7 @@ describe("resolveRuntimeCredentials", () => {
     });
   });
 
-  test("falls back to system env when no environment is pinned (source=system)", async () => {
+  test("falls back to system env when no sandbox is pinned (source=system)", async () => {
     process.env.VERCEL_TOKEN = "env-token";
     process.env.VERCEL_TEAM_ID = "env-team";
     process.env.VERCEL_PROJECT_ID = "env-project";
@@ -76,8 +76,8 @@ describe("resolveRuntimeCredentials", () => {
       teamId: "env-team",
       projectId: "env-project",
     });
-    // No environmentId → vault is never consulted.
-    expect(readEnvironmentSecretMock).not.toHaveBeenCalled();
+    // No sandboxId → vault is never consulted.
+    expect(readSandboxSecretMock).not.toHaveBeenCalled();
   });
 
   test("fails closed (null) when a required field is unresolved", async () => {
@@ -89,19 +89,19 @@ describe("resolveRuntimeCredentials", () => {
     expect(result).toBeNull();
   });
 
-  test("env-bound with a vault MISS fails closed — never leaks system env", async () => {
-    // The pinned environment was deleted (its vault keys purged), so the scoped
-    // read returns null. System env is fully populated, but an environment-bound
+  test("sandbox-bound with a vault MISS fails closed — never leaks system env", async () => {
+    // The pinned sandbox was deleted (its vault keys purged), so the scoped
+    // read returns null. System env is fully populated, but a sandbox-bound
     // resolution must NOT splice it in — it fails closed so the route 424s,
     // rather than running the pinned conversation under the host's ambient creds.
     process.env.VERCEL_TOKEN = "env-token";
     process.env.VERCEL_TEAM_ID = "env-team";
     process.env.VERCEL_PROJECT_ID = "env-project";
-    readEnvironmentSecretMock.mockImplementation(async () => null);
+    readSandboxSecretMock.mockImplementation(async () => null);
 
     const result = await resolveRuntimeCredentials(provider, "org-1", "env-deleted");
     expect(result).toBeNull();
-    // The vault was consulted (env-bound path), not the system env.
-    expect(readEnvironmentSecretMock).toHaveBeenCalled();
+    // The vault was consulted (sandbox-bound path), not the system env.
+    expect(readSandboxSecretMock).toHaveBeenCalled();
   });
 });

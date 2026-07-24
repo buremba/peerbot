@@ -36,6 +36,7 @@ import {
 } from "../gateway/proxy/proxy-manager";
 import { SecretStoreRegistry } from "../gateway/secrets/index";
 import type { Env } from "../index";
+import { BootConfigError } from "../utils/errors";
 import logger from "../utils/logger";
 
 import {
@@ -134,8 +135,21 @@ function ensureEmbeddedGatewaySecrets(): void {
 				"[Lobu] Generated ephemeral ENCRYPTION_KEY because LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1",
 			);
 		} else {
-			throw new Error(
-				"ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.",
+			throw new BootConfigError(
+				[
+					"",
+					"  Lobu needs an encryption key to store secrets (provider keys, tokens).",
+					"",
+					"  The easiest fix — scaffold the project, which generates the key for you:",
+					"    lobu init",
+					"",
+					"  Or generate a key, then add `ENCRYPTION_KEY=<output>` to your .env:",
+					"    openssl rand -base64 32",
+					"",
+					"  Or, for a throwaway local run (stored secrets become unreadable after restart):",
+					"    LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1 lobu run",
+					"",
+				].join("\n"),
 			);
 		}
 	}

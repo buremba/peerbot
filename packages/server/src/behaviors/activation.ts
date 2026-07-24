@@ -116,6 +116,9 @@ export async function findMatchingBehaviorActivations(
     const triggers = Array.isArray(row.triggers)
       ? (row.triggers as BehaviorEventTrigger[])
       : [];
+    // Multi-trigger Behaviors OR activations: any matching event trigger is
+    // enough to run once. When several match the same signal, the first in
+    // array order supplies execution/output/active_run (UI documents this).
     const [trigger] = matchingBehaviorTriggers(
       triggers.filter(
         (candidate): candidate is BehaviorEventTrigger =>

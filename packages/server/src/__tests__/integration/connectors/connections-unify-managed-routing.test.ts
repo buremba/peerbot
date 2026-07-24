@@ -197,6 +197,88 @@ describe("connections-unify managed-install routing", () => {
 		expect(await live("slackinst-grid-orphan")).toBe(false);
 	});
 
+	it("carries the retired org-wide connection's fallback agent_id onto its per-workspace successor", async () => {
+		// The E… generation owns the routing state an admin configured
+		// (`manage_connections update agent_id`). Superseding it must not drop
+		// that state on the floor: the T… row is a NEW slug, so it takes the
+		// INSERT path and starts agent_id NULL. Without inheritance the workspace
+		// comes up ownerless — resolveAgentId finds no connection owner, inbound
+		// messages fall through to the unclaimed-workspace responder, and every
+		// channel bound only by that fallback goes dark.
+		const db = getDb();
+		const ENTERPRISE = "EGRIDINHERIT";
+		const WORKSPACE = "TGRIDINHERIT";
+		const secretStore = memorySecretStore();
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentId}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-inherit', 'org'
+			)
+		`;
+		const workspace = await upsertSlackInstallByTeam(
+			createPostgresAppInstallationStore(),
+			secretStore,
+			orgId,
+			WORKSPACE,
+			{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+		);
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBe(agentId);
+	});
+
+	it("does not overwrite a successor's own fallback agent_id when superseding", async () => {
+		// Inheritance fills a GAP; it never clobbers an explicit binding. If the
+		// T… row already routes somewhere, the retiring E… row's stale agent
+		// must not displace it.
+		const db = getDb();
+		const ENTERPRISE = "EGRIDNOCLOBBER";
+		const WORKSPACE = "TGRIDNOCLOBBER";
+		const secretStore = memorySecretStore();
+		const install = () =>
+			upsertSlackInstallByTeam(
+				createPostgresAppInstallationStore(),
+				secretStore,
+				orgId,
+				WORKSPACE,
+				{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+			);
+
+		// The workspace connection exists first and carries its own routing.
+		const workspace = await install();
+		await db`
+			UPDATE connections SET agent_id = ${agentId}
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`;
+		// A stale org-wide generation pointing at a DIFFERENT agent shows up.
+		const agentB = (await createTestAgent({ organizationId: orgId })).agentId;
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentB}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-noclobber', 'org'
+			)
+		`;
+		await install();
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBe(agentId);
+	});
+
 	it("keeps an active org-wide Grid install when a workspace sibling is installed", async () => {
 		const db = getDb();
 		const enterpriseId = "EGRIDACTIVE";

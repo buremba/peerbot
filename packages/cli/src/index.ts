@@ -935,6 +935,20 @@ Memory:
     .command("sandbox")
     .description("Manage sandboxes (runtime providers)");
 
+  // Hard break on the pre-rename command name — no dual path, just a clear
+  // pointer so an old script fails with the new verb instead of "unknown command".
+  program
+    .command("environment")
+    .description("(renamed) Use `lobu sandbox` instead")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(() => {
+      console.error(
+        "lobu environment was renamed to lobu sandbox. Use `lobu sandbox …`."
+      );
+      process.exitCode = 1;
+    });
+
   withCommonOpts(sandbox.command("list").description("List sandboxes"), {
     org: true,
     json: true,

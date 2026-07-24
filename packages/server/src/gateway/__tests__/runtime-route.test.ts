@@ -282,10 +282,10 @@ describe("createRuntimeRoutes", () => {
     expect(getOrCreateMock.mock.calls[0]?.[0]).not.toHaveProperty("token");
   });
 
-  test("424s for an ENVIRONMENT-BOUND vault miss even when VERCEL_OIDC_TOKEN is present (no host-realm self-auth)", async () => {
+  test("424s for a sandbox-bound vault miss even when VERCEL_OIDC_TOKEN is present (no host-realm self-auth)", async () => {
     // The token names a specific sandboxId (a pinned sandbox), but the
     // vault read misses (mocked null → the sandbox was deleted). OIDC is
-    // present, so the env-LESS path would self-auth into the host realm. An
+    // present, so the sandbox-less path would self-auth into the host realm. A
     // sandbox-bound miss must fail closed instead — a conversation pinned to a
     // deleted sandbox must NOT execute in the host realm.
     delete process.env.VERCEL_TOKEN;

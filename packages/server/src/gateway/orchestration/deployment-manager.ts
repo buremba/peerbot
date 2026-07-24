@@ -641,7 +641,7 @@ export function buildDeploymentWorkerToken(args: {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   traceId?: string;
-  /** Resolved runtime provider + environment, so the deployment-lifetime token
+  /** Resolved runtime provider + sandbox, so the deployment-lifetime token
    *  also carries the claim the runtime route reads (parity with the per-run mint). */
   runtimeProviderId?: string;
   sandboxId?: string;

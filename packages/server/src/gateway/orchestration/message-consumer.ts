@@ -245,8 +245,8 @@ export function buildRunJobToken(args: {
    */
   adminTools?: string[];
   /**
-   * Resolved runtime provider + environment for this conversation (from its
-   * pinned Environment). Stamped into the token so the generic runtime route
+   * Resolved runtime provider + sandbox for this conversation (from its
+   * pinned sandbox). Stamped into the token so the generic runtime route
    * picks the provider + vault credential. Undefined → local just-bash.
    */
   runtimeProviderId?: string;
@@ -515,7 +515,7 @@ export class MessageConsumer {
         alternateTeamId,
       });
 
-      // Resolve THIS CONVERSATION's pinned runtime provider from its Environment.
+      // Resolve THIS CONVERSATION's pinned runtime provider from its sandbox.
       // The pin is frozen on the first turn and read thereafter, so an agent
       // repoint never moves an existing conversation's sandbox. Undefined →
       // local just-bash.

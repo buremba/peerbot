@@ -6,11 +6,19 @@
 -- `environments`; this collapses that last naming drift. The table only ever
 -- held org-level sandbox-provider config, so "sandbox" is what it actually is.
 --
--- This is an atomic RENAME, not expand/contract: the chart deploys with
--- strategy Recreate + replicaCount 1 (charts/lobu/values.yaml), so the old pod
--- is fully gone before the pre-upgrade migration hook runs the new one — there
--- is no window where old code (SELECT … FROM environments) meets the renamed
--- schema. Same rollout guarantee #1914's column drop relied on.
+-- This is an atomic RENAME, not expand/contract. ROLLING-DEPLOY NOTE (accepted
+-- risk, same class as 20260720140000 watcher→behavior hard cutover): the Helm
+-- pre-upgrade hook runs this BEFORE the Deployment updates, so for the brief
+-- pre-upgrade→Recreate gap the still-running old pod can hit the renamed
+-- schema (SELECT … FROM environments → 42P01). Recreate + replicaCount 1
+-- (charts/lobu/values.yaml) then terminates that pod and starts the new one —
+-- it prevents two serving versions, NOT old-code-against-new-schema (see also
+-- 20260714120000_drop_environments_scope_owner). We ACCEPT the brief fail
+-- window: sandboxes is a low-traffic admin surface (config CRUD + rare pin
+-- resolution), not the hot path of every chat turn, and the window is bounded
+-- by migrate job duration + Recreate. Expand/contract (legacy view + dual
+-- columns + dual vault prefix for one deploy) is the right follow-up only if
+-- this table becomes high-frequency.
 --
 -- Scope:
 --  1. environments               -> sandboxes            (+ its constraints)

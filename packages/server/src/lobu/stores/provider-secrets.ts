@@ -791,8 +791,9 @@ export async function writeSandboxSecret(
 
 /**
  * Read + decrypt one credential field for a sandbox provider. Returns null on
- * miss/expiry/decrypt-failure so the caller can fall back to system env.
- * Mirrors {@link readOrgSharedProviderApiKey} but keyed per-sandbox.
+ * miss/expiry/decrypt-failure. Callers that are sandbox-bound MUST fail closed
+ * on null (no system-env fallback) — see resolveRuntimeCredentials. Mirrors
+ * {@link readOrgSharedProviderApiKey} but keyed per-sandbox.
  */
 export async function readSandboxSecret(
 	sandboxId: string,

@@ -33,6 +33,7 @@ import { startStaleRunReaper } from "./scheduled/check-stalled-executions";
 import { startEmbeddedConnectorWorker } from "./scheduled/embedded-connector-worker";
 import { bootTaskScheduler } from "./scheduled/jobs";
 import { isSentryReported, markSentryReported } from "./sentry";
+import { BootConfigError } from "./utils/errors";
 import logger from "./utils/logger";
 import { initWorkspaceProvider } from "./workspace";
 
@@ -113,10 +114,16 @@ export function serializeBootError(err: unknown): Record<string, unknown> {
 }
 
 /**
- * Run from each entry's `main().catch(...)`. Logs structured + plain-text
- * fallback, then `process.exit(1)`. Never returns.
+ * Run from each entry's `main().catch(...)`. Prints expected configuration
+ * failures cleanly; logs unexpected failures with a plain-text fallback.
+ * Exits with status 1 and never returns.
  */
 export function reportBootFailure(err: unknown): never {
+	// Expected setup gates should not be logged or reported to Sentry as crashes.
+	if (err instanceof BootConfigError) {
+		process.stderr.write(`${err.message}\n`);
+		process.exit(1);
+	}
 	const serialized = serializeBootError(err);
 	logger.error(
 		{ err: serialized, error: serialized },

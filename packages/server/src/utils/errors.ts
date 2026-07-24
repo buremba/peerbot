@@ -47,3 +47,11 @@ export class ToolNotRegisteredError extends Error {
     this.toolName = toolName;
   }
 }
+
+/** An expected, actionable startup configuration failure. */
+export class BootConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BootConfigError';
+  }
+}

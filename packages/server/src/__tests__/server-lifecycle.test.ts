@@ -130,6 +130,59 @@ describe("serializeBootError", () => {
 	});
 });
 
+describe("reportBootFailure", () => {
+	function captureStderr(fn: () => void): string {
+		let out = "";
+		const write = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation((chunk: string | Uint8Array) => {
+				out += typeof chunk === "string" ? chunk : chunk.toString();
+				return true;
+			});
+		const exit = vi
+			.spyOn(process, "exit")
+			.mockImplementation((() => {
+				throw new Error("__exit__");
+			}) as never);
+		try {
+			fn();
+		} catch (e) {
+			if ((e as Error).message !== "__exit__") throw e;
+		} finally {
+			write.mockRestore();
+			exit.mockRestore();
+		}
+		return out;
+	}
+
+	it("prints a BootConfigError cleanly — no prefix, no stack", async () => {
+		const { reportBootFailure } = await import("../server-lifecycle");
+		const { BootConfigError } = await import("../utils/errors");
+		const { default: logger } = await import("../utils/logger");
+		const error = logger.error as ReturnType<typeof vi.fn>;
+		error.mockClear();
+		const out = captureStderr(() =>
+			reportBootFailure(new BootConfigError("run `lobu init` first")),
+		);
+		expect(out).toContain("run `lobu init` first");
+		expect(out).not.toContain("Failed to start server:");
+		expect(out).not.toMatch(/\n\s+at /);
+		expect(error).not.toHaveBeenCalled();
+	});
+
+	it("prints a plain Error with the crash prefix and stack", async () => {
+		const { reportBootFailure } = await import("../server-lifecycle");
+		const { default: logger } = await import("../utils/logger");
+		const error = logger.error as ReturnType<typeof vi.fn>;
+		error.mockClear();
+		const out = captureStderr(() => reportBootFailure(new Error("kaboom")));
+		expect(out).toContain("Failed to start server:");
+		expect(out).toContain("kaboom");
+		expect(out).toMatch(/\n\s+at /);
+		expect(error).toHaveBeenCalledOnce();
+	});
+});
+
 describe("buildWrapperApp", () => {
 	it("logs requests handled by the /lobu mounted app", async () => {
 		const { buildWrapperApp } = await import("../server-lifecycle");

@@ -34,6 +34,14 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      # Node 22 — the node-version-guard test spawns the real `node` on PATH and
+      # asserts the CLI gate lets a supported Node through. The runner's default
+      # Node major (20) is below Lobu's floor of 22, so without this the guard
+      # fires and the "real runtime, >=22" case fails. Matches every other job.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
       - name: Install bubblewrap (for embedded exec-sandbox tests)
         # The worker exec-sandbox uses bwrap on Linux; without it, the live
         # bwrap escape-matrix tests in `packages/agent-worker/src/__tests__/exec-sandbox.test.ts`

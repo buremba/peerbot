@@ -784,6 +784,26 @@ describe("agent history routes", () => {
 		expect(response.status).toBe(200);
 	});
 
+	test("keeps a metadata-only owner on the bound-channel path when agent_users is unreconciled", async () => {
+		// Ownership survives only in agent metadata (`agents.owner_*`), never
+		// mirrored into `agent_users`, so `ownsAgent` is false. Under the ambient
+		// org the owner must still reach the legacy bound-channel path via the
+		// metadata fallback rather than drop to the enforced ACL and 404.
+		const { conversationId } = await seedPlatformConversationAcl({
+			buildAcl: false,
+		});
+		await getDb()`DELETE FROM agent_users WHERE agent_id = 'agent-1'`;
+		expect(
+			await orgContext.run({ organizationId: ORG_ID }, () =>
+				userAgentsStore.ownsAgent("external", USER_ID, "agent-1", ORG_ID),
+			),
+		).toBe(false);
+
+		const response = await readPlatformTranscript(USER_ID, conversationId);
+
+		expect(response.status).toBe(200);
+	});
+
 	test("a platform admin reads bound transcripts without an ownership row or ACL", async () => {
 		// Restores the admin bypass the ownership resolver granted before this
 		// route stopped calling it. The admin has no agent_users row and only a

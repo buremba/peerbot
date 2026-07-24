@@ -71,23 +71,18 @@ describe("invitation member placeholder", () => {
 		expect(claims).toHaveLength(0);
 	});
 
-	it("refuses claims when userId does not own the member email", async () => {
+	it("creates no $member at all when userId does not own the member email", async () => {
 		const sql = getTestDb();
 		const victimEmail = "victim-invariant@test.example.com";
 
-		await ensureMemberEntity({
-			organizationId: orgId,
-			userId: inviterUserId,
-			name: victimEmail,
-			email: victimEmail,
-			role: "member",
-			status: "active",
-		});
 		await expect(
-			provisionMemberAndCoreIdentities(orgId, {
+			ensureMemberEntity({
+				organizationId: orgId,
 				userId: inviterUserId,
-				email: victimEmail,
 				name: victimEmail,
+				email: victimEmail,
+				role: "member",
+				status: "active",
 			}),
 		).rejects.toThrow("does not own");
 
@@ -100,17 +95,46 @@ describe("invitation member placeholder", () => {
         AND e.metadata->>'email' = ${victimEmail}
         AND e.deleted_at IS NULL
     `;
-		expect(victimRows).toHaveLength(1);
+		expect(victimRows).toHaveLength(0);
+	});
 
-		const leaked = await sql<{ identifier: string }>`
-      SELECT identifier
+	it("writes the auth:signup claim for a matching user", async () => {
+		const sql = getTestDb();
+		const owner = await createTestUser({
+			email: "atomic-owner@test.example.com",
+		});
+
+		await ensureMemberEntity({
+			organizationId: orgId,
+			userId: owner.id,
+			name: "Atomic Owner",
+			email: owner.email,
+			role: "member",
+			status: "active",
+		});
+
+		const rows = await sql<{ id: number }>`
+      SELECT e.id
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id AND et.organization_id = e.organization_id
+      WHERE et.slug = '$member'
+        AND e.organization_id = ${orgId}
+        AND e.metadata->>'email' = ${owner.email}
+        AND e.deleted_at IS NULL
+    `;
+		expect(rows).toHaveLength(1);
+
+		const claims = await sql<{ identifier: string; source_connector: string }>`
+      SELECT identifier, source_connector
       FROM entity_identities
       WHERE organization_id = ${orgId}
-        AND entity_id = ${Number(victimRows[0].id)}
+        AND entity_id = ${Number(rows[0].id)}
         AND namespace = 'auth_user_id'
         AND deleted_at IS NULL
     `;
-		expect(leaked).toHaveLength(0);
+		expect(claims).toHaveLength(1);
+		expect(claims[0].identifier).toBe(owner.id);
+		expect(claims[0].source_connector).toBe("auth:signup");
 	});
 
 	it("provisions a fresh $member with the caller's role, not a hardcoded owner", async () => {

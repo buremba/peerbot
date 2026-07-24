@@ -480,13 +480,26 @@ export function createAgentHistoryRoutes(deps: {
 		if (!session) return null;
 		const agentId = c.req.param("agentId") || session.agentId || null;
 		if (!agentId || !isSafeAgentId(agentId)) return null;
-		if (session.agentId && session.agentId !== agentId) return null;
 		const userId = resolveSettingsLookupUserId(session);
 
 		// A shared system-agent id can resolve to an ownership row in another org.
 		// Keep both the transcript lookup and owner check in the ambient org.
 		const ambientOrgId = resolveOrgId();
 		if (!ambientOrgId) return null;
+
+		// Admin bypass mirrors `getAuthorizedAgentScope` and the ownership
+		// resolver: admins read platform transcripts without an ownership row,
+		// scoped to the ambient org. Runs before the agent-binding check so an
+		// admin's request isn't rejected by a session bound to another agent.
+		if (session.isAdmin) {
+			return {
+				agentId,
+				organizationId: ambientOrgId,
+				userId,
+				allowNotGraphed: true,
+			};
+		}
+		if (session.agentId && session.agentId !== agentId) return null;
 
 		const ownsHere =
 			(await deps.userAgentsStore?.ownsAgent(

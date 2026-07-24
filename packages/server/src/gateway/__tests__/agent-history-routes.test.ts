@@ -224,12 +224,13 @@ describe("agent history routes", () => {
 	async function readPlatformTranscript(
 		userId: string,
 		conversationId: string,
-		opts?: { agentBound?: boolean; withOrgContext?: boolean },
+		opts?: { agentBound?: boolean; withOrgContext?: boolean; isAdmin?: boolean },
 	): Promise<Response> {
 		setAuthProvider(() => ({
 			userId,
 			platform: "external",
 			...(opts?.agentBound ? { agentId: "agent-1" } : {}),
+			...(opts?.isAdmin ? { isAdmin: true } : {}),
 			exp: Date.now() + 60_000,
 		}));
 		const request = () =>
@@ -779,6 +780,23 @@ describe("agent history routes", () => {
 			buildAcl: false,
 		});
 		const response = await readPlatformTranscript(USER_ID, conversationId);
+
+		expect(response.status).toBe(200);
+	});
+
+	test("a platform admin reads bound transcripts without an ownership row or ACL", async () => {
+		// Restores the admin bypass the ownership resolver granted before this
+		// route stopped calling it. The admin is neither an org owner nor in
+		// agent_users and no ACL is built, so every ownership/member path
+		// declines — only session.isAdmin authorizes. Without the bypass this
+		// falls to the enforced-ACL path and 404s.
+		const { conversationId } = await seedPlatformConversationAcl({
+			buildAcl: false,
+		});
+		const admin = await createTestUser({ name: "Platform Admin" });
+		const response = await readPlatformTranscript(admin.id, conversationId, {
+			isAdmin: true,
+		});
 
 		expect(response.status).toBe(200);
 	});

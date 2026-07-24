@@ -1319,6 +1319,58 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(call[5]).toBeUndefined(); // enterprise E… id is never used as a team
   });
 
+  test("connection fallback does NOT materialize when an existing subscription rejected the message", async () => {
+    const behavior: MatchingBehaviorActivation = {
+      behaviorId: 71,
+      organizationId: "org-connection",
+      agentId: "mention-only-agent",
+      deviceWorkerId: null,
+      agentKind: null,
+      model: null,
+      instructions: "Respond helpfully to the incoming message.",
+      trigger: {
+        kind: "event",
+        connector_key: "slack",
+        connection_id: 42,
+        event_types: ["message.created"],
+        match: { channel_id: CHANNEL_ID, mention_only: true },
+        execution: "turn",
+        active_run: "steer",
+        output: "reply_to_source",
+        skip_if_unchanged: false,
+      },
+    };
+    const { bridge, enqueueMessage, materializeConnectionFallbackLink } =
+      makePreviewHarness({
+        previewMode: false,
+        behaviors: [behavior],
+      });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "subscribed",
+    );
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    expect(materializeConnectionFallbackLink).not.toHaveBeenCalled();
+  });
+
+  test("hosted-preview fallback does NOT materialize its placeholder agent", async () => {
+    const { bridge, enqueueMessage, materializeConnectionFallbackLink } =
+      makePreviewHarness({
+        provideSubscriptionService: true,
+      });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(materializeConnectionFallbackLink).not.toHaveBeenCalled();
+  });
+
   test("connection fallback does NOT materialize for a DM", async () => {
     // DMs stay out of the bound-channel set — only group channels materialize.
     const { bridge, enqueueMessage, materializeConnectionFallbackLink } =

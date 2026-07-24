@@ -751,21 +751,13 @@ export class MessageHandlerBridge {
       }
     }
 
-    // Lazy chat-link materialization: this turn is routing via the connection's
-    // owning agent (the `source:"connection"` fallback) with no Behavior
-    // subscription behind it. Left as-is the agent responds but the channel
-    // never appears in history / the ACL graph / search, because all read the
-    // bound-channel set from `behavior_message_subscriptions`. Write the missing
-    // chat-link Behavior on this first fallback-routed group message so routing
-    // and visibility share one source of truth; every later message then routes
-    // via the planner (`source:"subscription"`) and this branch stops firing.
-    // Group channels only — DM fallback stays out of the bound-channel set.
-    // Slack: pass the real workspace `T…` only (never enterprise `E…`); an
-    // unknown team is filled later by healSubscriptionTeam. Best-effort — a
-    // materialization failure must never block routing.
+    // An unbound connection-owner fallback is absent from Behavior-backed
+    // visibility. Do not replace an existing filtered subscription or bind DMs
+    // and hosted-preview placeholder agents.
     if (
       resolved.source === "connection" &&
       isGroup &&
+      !isPreview &&
       behaviorSubscriptionService &&
       this.connection.organizationId
     ) {
@@ -774,14 +766,22 @@ export class MessageHandlerBridge {
           ? teamId
           : undefined;
       try {
-        await behaviorSubscriptionService.materializeConnectionFallbackLink(
-          this.connection.id,
-          this.connection.organizationId,
-          agentId,
-          platform,
-          channelId,
-          bindingTeamId
-        );
+        const alreadyBound =
+          await behaviorSubscriptionService.channelHasMessageSubscription(
+            this.connection.id,
+            channelId,
+            this.connection.organizationId
+          );
+        if (!alreadyBound) {
+          await behaviorSubscriptionService.materializeConnectionFallbackLink(
+            this.connection.id,
+            this.connection.organizationId,
+            agentId,
+            platform,
+            channelId,
+            bindingTeamId
+          );
+        }
       } catch (err) {
         logger.debug(
           { channelId, teamId, agentId, error: String(err) },

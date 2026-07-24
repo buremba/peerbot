@@ -331,22 +331,10 @@ export class BehaviorSubscriptionService {
 	}
 
 	/**
-	 * Materialize the chat-link Behavior for a channel that the inbound bridge
-	 * routed via the connection's owning agent (the `source:"connection"`
-	 * fallback) rather than a matched Behavior subscription. Without this row the
-	 * agent responds in the channel but the conversation is invisible to history,
-	 * the ACL membership graph, search, and notifications — all of which read the
-	 * bound-channel set from `behavior_message_subscriptions`. Materializing on
-	 * the first fallback-routed message converges routing and visibility onto one
-	 * source of truth: every later message then routes via the planner as
-	 * `source:"subscription"` and the fallback branch never fires again for this
-	 * channel. Idempotent via `createChatBehavior` (advisory-locked upsert on
-	 * org+connection+channel), so concurrent replicas racing the same first
-	 * message settle to one row.
-	 *
-	 * Best-effort: resolves the numeric connection id from the runtime id and
-	 * declines (returns false) when the connection can't be resolved, so a heal
-	 * failure never blocks the turn.
+	 * Materialize the chat-link Behavior after a group message routes through the
+	 * connection-owner fallback. Returns false when the active, org-scoped chat
+	 * connection cannot be resolved. createChatBehavior serializes concurrent
+	 * attempts for the same connection and channel.
 	 */
 	async materializeConnectionFallbackLink(
 		connectionId: string,
@@ -362,7 +350,10 @@ export class BehaviorSubscriptionService {
 			SELECT id
 			FROM connections
 			WHERE slug = ${slug}
+			  AND organization_id = ${organizationId}
 			  AND connector_key = ${platform}
+			  AND credential_mode IS NOT NULL
+			  AND status = 'active'
 			  AND deleted_at IS NULL
 			LIMIT 1
 		`) as Array<{ id: number | string }>;

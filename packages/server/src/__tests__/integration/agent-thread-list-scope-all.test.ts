@@ -22,6 +22,7 @@ import { insertEvent } from "../../utils/insert-event";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestBehaviorSubscription } from "../setup/behavior-subscriptions";
 import {
+	addUserToOrganization,
 	createTestAgent,
 	createTestOrganization,
 	createTestUser,
@@ -31,7 +32,7 @@ import {
 const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
-const CSECRET_CONN_RUNTIME_ID = "conn_csecret"; // managed connection owning CSECRET, initially no chat-link
+const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection owning CSECRET, initially no chat-link
 const WATCHER_ID = 990001;
 const OTHER_AGENT = "thread-list-other-agent";
 const OTHER_WATCHER_ID = 990002;
@@ -57,11 +58,14 @@ function sessionJsonl(text: string): string {
 
 describe("listAgentThreads scope=all", () => {
 	let org: string;
+	let otherOrg: string;
 	let userId: string;
 
 	beforeAll(async () => {
 		org = (await createTestOrganization()).id;
+		otherOrg = (await createTestOrganization()).id;
 		userId = (await createTestUser()).id;
+		await addUserToOrganization(userId, otherOrg);
 		await createTestAgent({
 			organizationId: org,
 			agentId: AGENT,
@@ -141,9 +145,8 @@ describe("listAgentThreads scope=all", () => {
 			teamId: "T1",
 		});
 
-		// A managed connection owns the UNBOUND channel CSECRET but has NO chat-link
-		// Behavior — the exact "connection-owner fallback ran here, no subscription
-		// row" state. materializeConnectionFallbackLink repairs it in the test below.
+		// The managed connection's fallback agent handles CSECRET, but no chat-link
+		// Behavior makes that channel visible yet.
 		await insertChatConnectionRow({
 			id: CSECRET_CONN_RUNTIME_ID,
 			organizationId: org,
@@ -292,6 +295,19 @@ describe("listAgentThreads scope=all", () => {
 		);
 	});
 
+	it("does not materialize a connection into a different organization", async () => {
+		const created =
+			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+				CSECRET_CONN_RUNTIME_ID,
+				otherOrg,
+				AGENT,
+				"slack",
+				"slack:CSECRET",
+				"T1",
+			);
+		expect(created).toBe(false);
+	});
+
 	it("materializeConnectionFallbackLink makes a previously-unbound channel visible", async () => {
 		// Precondition: CSECRET is fenced out (the connection-owner-fallback bug —
 		// a turn ran here but no chat-link subscription exists).
@@ -305,14 +321,15 @@ describe("listAgentThreads scope=all", () => {
 
 		// Materialize the chat-link the fallback path would have written on the
 		// first inbound group message (idempotent upsert on org+connection+channel).
-		const created = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
-			CSECRET_CONN_RUNTIME_ID,
-			org,
-			AGENT,
-			"slack",
-			"slack:CSECRET",
-			"T1",
-		);
+		const created =
+			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+				CSECRET_CONN_RUNTIME_ID,
+				org,
+				AGENT,
+				"slack",
+				"slack:CSECRET",
+				"T1",
+			);
 		expect(created).toBe(true);
 
 		// Now the channel is bound → its transcript is visible in history.
@@ -327,14 +344,15 @@ describe("listAgentThreads scope=all", () => {
 		expect(surfaced?.platform).toBe("slack");
 
 		// Idempotent: a second materialize doesn't duplicate the binding or error.
-		const again = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
-			CSECRET_CONN_RUNTIME_ID,
-			org,
-			AGENT,
-			"slack",
-			"slack:CSECRET",
-			"T1",
-		);
+		const again =
+			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+				CSECRET_CONN_RUNTIME_ID,
+				org,
+				AGENT,
+				"slack",
+				"slack:CSECRET",
+				"T1",
+			);
 		expect(again).toBe(true);
 		const afterAgain = await listAgentThreads({
 			agentId: AGENT,
@@ -342,20 +360,21 @@ describe("listAgentThreads scope=all", () => {
 			userId,
 			scope: "all",
 		});
-		expect(
-			afterAgain.filter((t) => t.id === SLACK_UNBOUND_CONV),
-		).toHaveLength(1);
+		expect(afterAgain.filter((t) => t.id === SLACK_UNBOUND_CONV)).toHaveLength(
+			1,
+		);
 	});
 
 	it("declines (returns false) when the connection slug can't be resolved", async () => {
-		const created = await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
-			"conn_does_not_exist",
-			org,
-			AGENT,
-			"slack",
-			"slack:CGHOST",
-			"T1",
-		);
+		const created =
+			await new BehaviorSubscriptionService().materializeConnectionFallbackLink(
+				"conn_does_not_exist",
+				org,
+				AGENT,
+				"slack",
+				"slack:CGHOST",
+				"T1",
+			);
 		expect(created).toBe(false);
 	});
 

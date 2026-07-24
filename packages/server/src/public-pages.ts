@@ -297,7 +297,7 @@ function renderStatList(stats: Array<{ label: string; value: string }>): string 
       ${stats
         .map(
           (stat) => `
-            <div class="rounded-xl border border-border bg-muted/30 p-4">
+            <div class="rounded-lg bg-card p-4">
               <dt class="text-xs uppercase tracking-wide text-muted-foreground">${escapeHtml(stat.label)}</dt>
               <dd class="mt-1.5 text-lg font-bold text-foreground">${escapeHtml(stat.value)}</dd>
             </div>
@@ -321,10 +321,10 @@ function renderLinkList(
         .map(
           (item) => `
             <li class="m-0">
-              <a class="block rounded-xl border border-border bg-card p-4 text-foreground no-underline transition-colors hover:border-muted-foreground/40 hover:bg-muted/30" href="${escapeAttribute(item.href)}">
-                <strong class="block text-base font-semibold text-foreground">${escapeHtml(item.title)}</strong>
+              <a class="block rounded-lg bg-card p-4 text-muted-foreground no-underline transition-colors hover:bg-accent/50 hover:text-foreground" href="${escapeAttribute(item.href)}">
+                <strong class="block text-base font-semibold">${escapeHtml(item.title)}</strong>
                 ${item.meta ? `<span class="mt-1.5 block text-sm text-muted-foreground">${escapeHtml(item.meta)}</span>` : ''}
-                ${item.body ? `<span class="mt-2 block leading-relaxed text-foreground/80">${escapeHtml(item.body)}</span>` : ''}
+                ${item.body ? `<span class="mt-2 block leading-relaxed text-muted-foreground">${escapeHtml(item.body)}</span>` : ''}
               </a>
             </li>
           `
@@ -346,7 +346,7 @@ function renderPublicShell(
       ? `<nav class="mb-5 flex flex-wrap gap-2 text-sm text-muted-foreground" aria-label="Breadcrumb">${breadcrumbs
           .map((crumb, index) =>
             crumb.href
-              ? `<a class="text-teal-700 no-underline hover:underline dark:text-teal-400" href="${escapeAttribute(crumb.href)}">${escapeHtml(crumb.label)}</a>${
+              ? `<a class="text-foreground no-underline hover:underline" href="${escapeAttribute(crumb.href)}">${escapeHtml(crumb.label)}</a>${
                   index < breadcrumbs.length - 1
                     ? '<span class="text-muted-foreground/60">/</span>'
                     : ''
@@ -360,8 +360,8 @@ function renderPublicShell(
     <div class="mx-auto max-w-6xl px-4 pb-16 pt-8 text-foreground sm:px-5 sm:pb-20 sm:pt-12">
       ${breadcrumbHtml}
       <header class="mb-8">
-        <p class="mb-3 text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-400">${escapeHtml(eyebrow)}</p>
-        <h1 class="text-3xl font-semibold text-foreground">${escapeHtml(heading)}</h1>
+        <p class="mb-3 text-xs font-bold uppercase tracking-wider text-foreground">${escapeHtml(eyebrow)}</p>
+        <h1 class="font-display text-3xl font-semibold text-foreground">${escapeHtml(heading)}</h1>
         <p class="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground">${escapeHtml(description)}</p>
       </header>
       ${sections
@@ -756,7 +756,7 @@ function buildEntityModel(
           ? `<dl class="grid gap-3">${metadataEntries
               .map(
                 ([key, value]) => `
-                  <div class="rounded-xl border border-border bg-card p-4">
+                  <div class="rounded-lg bg-card p-4">
                     <dt class="text-xs uppercase tracking-wide text-muted-foreground">${escapeHtml(sentenceCase(key))}</dt>
                     <dd class="mt-2 leading-relaxed text-foreground">${escapeHtml(
                       Array.isArray(value)

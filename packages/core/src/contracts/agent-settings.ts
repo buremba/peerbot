@@ -148,7 +148,7 @@ export const AgentSettingsStoredSchema = Type.Object({
   toolsConfig: Type.Optional(ToolsConfigSchema),
   guardrails: Type.Optional(Type.Array(Type.String())),
   guardrailsInline: Type.Optional(Type.Array(AgentInlineGuardrailSchema)),
-  environmentId: Type.Optional(Type.String()),
+  sandboxId: Type.Optional(Type.String()),
   verboseLogging: Type.Optional(Type.Boolean()),
   showToolCalls: Type.Optional(Type.Boolean()),
   preApprovedTools: Type.Optional(Type.Array(Type.String())),

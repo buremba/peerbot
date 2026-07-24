@@ -1,8 +1,8 @@
 /**
- * Sandbox environment commands over `/api/<org>/environments` — the only
- * surface for provider-backed runtimes (environments are not part of
- * `lobu apply`, and deletes are deliberately imperative + `--yes`-gated so a
- * config edit can never drop a credential).
+ * Sandbox commands over `/api/<org>/sandboxes` — the only surface for
+ * provider-backed runtimes (sandboxes are not part of `lobu apply`, and deletes
+ * are deliberately imperative + `--yes`-gated so a config edit can never drop a
+ * credential).
  */
 
 import chalk from "chalk";
@@ -11,7 +11,7 @@ import { printJson } from "../internal/output.js";
 import type { CloudCommandOptions } from "./_lib/cloud-options.js";
 import { parseKeyValueEntries } from "./_lib/secret-value.js";
 
-interface EnvironmentRow {
+interface SandboxRow {
   id: string;
   name: string;
   providerKind: string;
@@ -19,18 +19,18 @@ interface EnvironmentRow {
   details?: Record<string, string>;
 }
 
-interface EnvironmentListResponse {
+interface SandboxListResponse {
   builtin?: { id: string; kind: string; availableInCloud?: boolean };
-  environments: EnvironmentRow[];
+  sandboxes: SandboxRow[];
   availableProviders: string[];
 }
 
-export async function environmentListCommand(
+export async function sandboxListCommand(
   options: CloudCommandOptions = {}
 ): Promise<void> {
   const { client, orgSlug } = await resolveApiClient(options);
-  const body = await client.get<EnvironmentListResponse>(
-    `/api/${orgSlug}/environments`
+  const body = await client.get<SandboxListResponse>(
+    `/api/${orgSlug}/sandboxes`
   );
 
   if (options.json) {
@@ -38,30 +38,30 @@ export async function environmentListCommand(
     return;
   }
 
-  console.log(chalk.bold(`\n  Environments in ${orgSlug}`));
+  console.log(chalk.bold(`\n  Sandboxes in ${orgSlug}`));
   if (body.builtin) {
     console.log(
       `  ${chalk.green("●")} ${chalk.bold("builtin")} ${chalk.dim("(local runtime)")}`
     );
   }
-  for (const env of body.environments) {
-    const connected = env.connected
+  for (const sandbox of body.sandboxes) {
+    const connected = sandbox.connected
       ? chalk.green("connected")
       : chalk.yellow("no credential");
     const details =
-      env.details && Object.keys(env.details).length > 0
+      sandbox.details && Object.keys(sandbox.details).length > 0
         ? chalk.dim(
-            `  ${Object.entries(env.details)
+            `  ${Object.entries(sandbox.details)
               .map(([k, v]) => `${k}=${v}`)
               .join(" ")}`
           )
         : "";
     console.log(
-      `  ${chalk.green("●")} ${chalk.bold(env.name)} ${chalk.dim(env.providerKind)}  ${connected}${details}  ${chalk.dim(env.id)}`
+      `  ${chalk.green("●")} ${chalk.bold(sandbox.name)} ${chalk.dim(sandbox.providerKind)}  ${connected}${details}  ${chalk.dim(sandbox.id)}`
     );
   }
-  if (body.environments.length === 0) {
-    console.log(chalk.dim("  No provider-backed environments."));
+  if (body.sandboxes.length === 0) {
+    console.log(chalk.dim("  No provider-backed sandboxes."));
   }
   if (body.availableProviders.length > 0) {
     console.log(
@@ -74,7 +74,7 @@ export async function environmentListCommand(
   }
 }
 
-export async function environmentCreateCommand(
+export async function sandboxCreateCommand(
   name: string,
   options: CloudCommandOptions & {
     provider: string;
@@ -86,8 +86,8 @@ export async function environmentCreateCommand(
     : undefined;
 
   const { client, orgSlug } = await resolveApiClient(options);
-  const { environment } = await client.post<{ environment: EnvironmentRow }>(
-    `/api/${orgSlug}/environments`,
+  const { sandbox } = await client.post<{ sandbox: SandboxRow }>(
+    `/api/${orgSlug}/sandboxes`,
     {
       name,
       provider_kind: options.provider,
@@ -96,22 +96,22 @@ export async function environmentCreateCommand(
   );
 
   if (options.json) {
-    printJson(environment);
+    printJson(sandbox);
     return;
   }
   const credentialNote = credential
     ? ""
     : chalk.dim(
-        `  Add its credential with: lobu environment set-credential ${environment.id} --credential 'key=$VAR'\n`
+        `  Add its credential with: lobu sandbox set-credential ${sandbox.id} --credential 'key=$VAR'\n`
       );
   console.log(
     chalk.green(
-      `\n  Created environment ${name} (${environment.id}) in ${orgSlug}.\n`
+      `\n  Created sandbox ${name} (${sandbox.id}) in ${orgSlug}.\n`
     ) + credentialNote
   );
 }
 
-export async function environmentSetCredentialCommand(
+export async function sandboxSetCredentialCommand(
   id: string,
   options: CloudCommandOptions & { credential: string[] }
 ): Promise<void> {
@@ -124,13 +124,13 @@ export async function environmentSetCredentialCommand(
   const { client, orgSlug } = await resolveApiClient(options);
   await client.request(
     "PUT",
-    `/api/${orgSlug}/environments/${encodeURIComponent(id)}/credential`,
+    `/api/${orgSlug}/sandboxes/${encodeURIComponent(id)}/credential`,
     { credential }
   );
-  console.log(chalk.green(`\n  Updated credential for environment ${id}.\n`));
+  console.log(chalk.green(`\n  Updated credential for sandbox ${id}.\n`));
 }
 
-export async function environmentDeleteCommand(
+export async function sandboxDeleteCommand(
   id: string,
   options: CloudCommandOptions & { yes?: boolean } = {}
 ): Promise<void> {
@@ -139,6 +139,6 @@ export async function environmentDeleteCommand(
     process.exit(1);
   }
   const { client, orgSlug } = await resolveApiClient(options);
-  await client.delete(`/api/${orgSlug}/environments/${encodeURIComponent(id)}`);
-  console.log(chalk.green(`\n  Deleted environment ${id}.\n`));
+  await client.delete(`/api/${orgSlug}/sandboxes/${encodeURIComponent(id)}`);
+  console.log(chalk.green(`\n  Deleted sandbox ${id}.\n`));
 }

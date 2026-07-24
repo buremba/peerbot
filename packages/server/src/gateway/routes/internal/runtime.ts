@@ -53,7 +53,7 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
       let credentials = await resolveRuntimeCredentials(
         provider,
         worker.organizationId,
-        worker.environmentId
+        worker.sandboxId
       );
       if (!credentials) {
         // No vault/system credential resolved. Provider self-auth (e.g. Vercel
@@ -63,7 +63,7 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         // conversation pinned to a specific Environment that's been deleted or
         // misconfigured must NOT silently execute in the host realm under ambient
         // OIDC — that would break the one-conversation-one-realm pin contract.
-        if (!worker.environmentId && provider.canSelfAuth?.()) {
+        if (!worker.sandboxId && provider.canSelfAuth?.()) {
           credentials = { values: {}, source: "system" };
         } else {
           return errorResponse(

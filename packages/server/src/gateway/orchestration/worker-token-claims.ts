@@ -28,7 +28,7 @@ export interface WorkerTokenClaimsArgs {
    */
   runtimeProviderId?: string;
   /** The `environments.id` whose vault credential backs the provider above. */
-  environmentId?: string;
+  sandboxId?: string;
   /**
    * The agent's resolved egress allowlist (`networkConfig.allowedDomains`). Set
    * here so the runtime route can read it off the SIGNED token instead of
@@ -70,7 +70,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   responseThreadId?: string;
   source?: string;
   runtimeProviderId?: string;
-  environmentId?: string;
+  sandboxId?: string;
   allowedDomains?: string[];
   deniedDomains?: string[];
 } {
@@ -96,7 +96,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
         ? args.platformMetadata.source
         : undefined,
     runtimeProviderId,
-    environmentId: runtimeProviderId ? args.environmentId : undefined,
+    sandboxId: runtimeProviderId ? args.sandboxId : undefined,
     // Non-empty only; an empty list is equivalent to absent (deny-all) and
     // keeps the token payload minimal.
     allowedDomains:

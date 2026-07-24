@@ -124,7 +124,7 @@ Cloud:
   apply | deploy           Sync lobu.config.ts to cloud (idempotent)
   agent <subcmd>           CRUD agents via REST
   providers <subcmd>       Manage org model providers (create, set-key, ...)
-  environment <subcmd>     Manage sandbox environments (runtime providers)
+  sandbox <subcmd>         Manage sandboxes (runtime providers)
   clients <subcmd>         List / revoke connected clients (MCP, messaging)
   call [tool]              Invoke an admin REST tool by name (--list to discover)
   token [create]           Print or mint personal access tokens
@@ -930,25 +930,23 @@ Memory:
     }
   );
 
-  // ─── environment ────────────────────────────────────────────────────
-  const environment = program
-    .command("environment")
-    .description("Manage sandbox environments (runtime providers)");
+  // ─── sandbox ─────────────────────────────────────────────────────────
+  const sandbox = program
+    .command("sandbox")
+    .description("Manage sandboxes (runtime providers)");
 
-  withCommonOpts(environment.command("list").description("List environments"), {
+  withCommonOpts(sandbox.command("list").description("List sandboxes"), {
     org: true,
     json: true,
   }).action(async (options: CloudCommandOptions) => {
-    const { environmentListCommand } = await import(
-      "./commands/environment.js"
-    );
-    await environmentListCommand(options);
+    const { sandboxListCommand } = await import("./commands/sandbox.js");
+    await sandboxListCommand(options);
   });
 
   withCommonOpts(
-    environment
+    sandbox
       .command("create <name>")
-      .description("Create an environment")
+      .description("Create a sandbox")
       .requiredOption("--provider <kind>", "Runtime provider kind")
       .option(
         "--credential <entry>",
@@ -964,17 +962,15 @@ Memory:
         credential?: string[];
       }
     ) => {
-      const { environmentCreateCommand } = await import(
-        "./commands/environment.js"
-      );
-      await environmentCreateCommand(name, options);
+      const { sandboxCreateCommand } = await import("./commands/sandbox.js");
+      await sandboxCreateCommand(name, options);
     }
   );
 
   withCommonOpts(
-    environment
+    sandbox
       .command("set-credential <id>")
-      .description("Set or rotate an environment's credential")
+      .description("Set or rotate a sandbox's credential")
       .requiredOption(
         "--credential <entry>",
         "Credential field as 'key=value' or 'key=$ENV_VAR' (repeatable, quote it)",
@@ -986,25 +982,23 @@ Memory:
       id: string,
       options: CloudCommandOptions & { credential: string[] }
     ) => {
-      const { environmentSetCredentialCommand } = await import(
-        "./commands/environment.js"
+      const { sandboxSetCredentialCommand } = await import(
+        "./commands/sandbox.js"
       );
-      await environmentSetCredentialCommand(id, options);
+      await sandboxSetCredentialCommand(id, options);
     }
   );
 
   withCommonOpts(
-    environment
+    sandbox
       .command("delete <id>")
-      .description("Delete an environment")
+      .description("Delete a sandbox")
       .option("--yes", "Confirm deletion"),
     { org: true }
   ).action(
     async (id: string, options: CloudCommandOptions & { yes?: boolean }) => {
-      const { environmentDeleteCommand } = await import(
-        "./commands/environment.js"
-      );
-      await environmentDeleteCommand(id, options);
+      const { sandboxDeleteCommand } = await import("./commands/sandbox.js");
+      await sandboxDeleteCommand(id, options);
     }
   );
 

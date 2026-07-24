@@ -41,7 +41,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import { resolvePinnedSelection } from "../../lobu/stores/environment-store.js";
+import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections-projection.js";
 import { getDb } from "../../db/client.js";
@@ -250,7 +250,7 @@ export function buildRunJobToken(args: {
    * picks the provider + vault credential. Undefined → local just-bash.
    */
   runtimeProviderId?: string;
-  environmentId?: string;
+  sandboxId?: string;
   /** Resolved egress allowlist for a remote runtime sandbox (signed claim). */
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
@@ -566,7 +566,7 @@ export class MessageConsumer {
         messageId: data.messageId,
         adminTools,
         runtimeProviderId: runtimeSelection.runtimeProviderId,
-        environmentId: runtimeSelection.environmentId,
+        sandboxId: runtimeSelection.sandboxId,
         // Egress allow/deny lists as signed claims (kept in lockstep with the
         // deployment-token mint) — the runtime route reads them, never the body.
         allowedDomains: data.networkConfig?.allowedDomains,

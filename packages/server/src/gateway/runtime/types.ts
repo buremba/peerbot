@@ -13,7 +13,7 @@
 /** One credential field a provider needs (e.g. Vercel: token, teamId, projectId). */
 export interface RuntimeCredentialField {
   /**
-   * Logical key. The per-environment vault row is `environment:<envId>:<key>`;
+   * Logical key. The per-sandbox vault row is `sandbox:<sandboxId>:<key>`;
    * the value is surfaced to the provider as `credentials.values[key]`.
    */
   key: string;

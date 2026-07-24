@@ -481,29 +481,42 @@ export function createAgentHistoryRoutes(deps: {
 		const agentId = c.req.param("agentId") || session.agentId || null;
 		if (!agentId || !isSafeAgentId(agentId)) return null;
 		if (session.agentId && session.agentId !== agentId) return null;
-		// A chat-issued settings claim carries agentId so it can be limited to one
-		// agent, but that binding is not ownership proof. Re-run the ownership
-		// resolver without the binding before granting the legacy owner path.
-		const ownership = await resolveOwnership(
-			{ ...session, agentId: undefined },
-			agentId,
-		);
-		if (ownership.authorized) {
-			const organizationId = resolveOrgId(ownership.organizationId);
-			if (!organizationId) return null;
+		const userId = resolveSettingsLookupUserId(session);
+
+		// Scope to the AMBIENT org (the membership-verified `x-lobu-org` the SPA
+		// sends for the workspace being viewed), NOT the ownership-first org — the
+		// same fix `getAuthorizedAgentScope` applies. A per-org SYSTEM agent (the
+		// Builder) exists in every org, so ownership resolution returns the user's
+		// personal org and platform transcripts (Slack DMs/channels) in the viewed
+		// org would 404 as "not in the personal org". The owner path keeps
+		// `allowNotGraphed: true` (legacy bound-channel behavior), but only when the
+		// caller owns the agent IN THE AMBIENT org; anyone else — system-agent
+		// admins and plain members — needs a fresh enforced ACL proving channel
+		// membership (`allowNotGraphed: false`).
+		const ambientOrgId = resolveOrgId();
+		if (!ambientOrgId) return null;
+
+		const ownsHere =
+			(await deps.userAgentsStore?.ownsAgent(
+				session.platform,
+				userId,
+				agentId,
+				ambientOrgId,
+			)) ?? false;
+		if (ownsHere) {
 			return {
 				agentId,
-				organizationId,
-				userId: resolveSettingsLookupUserId(session),
+				organizationId: ambientOrgId,
+				userId,
 				allowNotGraphed: true,
 			};
 		}
-		const organizationId = resolveOrgId();
-		if (!organizationId) return null;
+		// Non-owner (system-agent admin or plain org member): scoped to the ambient
+		// org, but must prove channel membership via a fresh enforced ACL.
 		return {
 			agentId,
-			organizationId,
-			userId: resolveSettingsLookupUserId(session),
+			organizationId: ambientOrgId,
+			userId,
 			allowNotGraphed: false,
 		};
 	}

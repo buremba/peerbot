@@ -664,6 +664,112 @@ describe("agent history routes", () => {
 		]);
 	});
 
+	test("reads a per-org system agent's platform conversation in the ambient org, not the ownership-first org", async () => {
+		// The prod bug, for the conversation-READ route. USER_ID owns `agent-1` in
+		// ORG_ID (their personal org). A DIFFERENT org (SHARED_ORG) has `agent-1` as
+		// its system agent, USER_ID is an owner there, and the bound Slack channel's
+		// conversation lives in SHARED_ORG. On origin/main
+		// getAuthorizedPlatformConversationScope took the ownership-first branch and
+		// resolved ORG_ID, so isConversationVisible checked ORG_ID's bindings and
+		// 404'd. The fix scopes to the ambient org (SHARED_ORG).
+		const sql = getDb();
+		const SHARED_ORG = "test-org-shared-system-read";
+		await orgContext.run({ organizationId: SHARED_ORG }, async () => {
+			await seedAgentRow("agent-1", {
+				organizationId: SHARED_ORG,
+				name: "Builder",
+				ownerPlatform: "external",
+				ownerUserId: USER_ID,
+			});
+		});
+		await sql`
+			INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+			VALUES (${USER_ID}, 'History User', ${`${USER_ID}@test.example.com`}, true, now(), now())
+			ON CONFLICT (id) DO NOTHING
+		`;
+		await addUserToOrganization(USER_ID, SHARED_ORG, "owner");
+		await sql`UPDATE "organization" SET system_agent_id = 'agent-1' WHERE id = ${SHARED_ORG}`;
+		// USER_ID must NOT own agent-1 via agent_users in SHARED_ORG — access is via
+		// org-owner + system_agent_id, so they take the non-owner (enforced-ACL) path.
+
+		// Bind a channel + build the enforced ACL + a $member with the member_of
+		// edge, all in SHARED_ORG. Seed a platform conversation there.
+		const CHANNEL = "C0SHARED";
+		const TEAM = "T0SHARED";
+		const SLACK_USER = "U0SHAREDU";
+		await insertChatConnectionRow({
+			id: "shared-read-conn",
+			organizationId: SHARED_ORG,
+			agentId: "agent-1",
+			platform: "slack",
+			status: "active",
+			metadata: { teamId: TEAM },
+		});
+		await createTestBehaviorSubscription({
+			organizationId: SHARED_ORG,
+			agentId: "agent-1",
+			connectionSlug: `agentconn-shared-read-conn`,
+			platform: "slack",
+			channelId: CHANNEL,
+			teamId: TEAM,
+			configuredBy: USER_ID,
+		});
+		const member = await createTestEntity({
+			name: "History User",
+			entity_type: "$member",
+			organization_id: SHARED_ORG,
+			created_by: USER_ID,
+		});
+		await sql`
+			INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+			VALUES
+				(${SHARED_ORG}, ${member.id}, 'auth_user_id', ${USER_ID}, 'auth:signup'),
+				(${SHARED_ORG}, ${member.id}, 'slack_user_id', ${normalizeSlackUserId(TEAM, SLACK_USER)}, 'auth:signup')
+		`;
+		await buildAccessGraph({
+			organizationId: SHARED_ORG,
+			connectionId: "shared-read-conn",
+			connectorKey: slackAclSource.key,
+			resourceNamespace: slackAclSource.resourceNamespace,
+			memberIdentities: slackAclSource.memberIdentities,
+			resources: slackChannelsToResources(TEAM, [
+				{ channelId: CHANNEL, name: "shared", memberSlackUserIds: [SLACK_USER] },
+			]),
+		});
+		const conversationId = `slack:${CHANNEL}:1700000000.123456`;
+		const jsonl =
+			`{"type":"session","version":3,"id":"s-shared","timestamp":"2026-07-23T10:00:00Z","cwd":"/w"}\n` +
+			`{"type":"message","id":"u-shared","parentId":null,"timestamp":"2026-07-23T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Shared org DM"}]}}\n`;
+		const runId = await insertRun({
+			organizationId: SHARED_ORG,
+			agentId: "agent-1",
+			conversationId,
+		});
+		await sql`
+			INSERT INTO public.agent_transcript_snapshot
+				(organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status)
+			VALUES
+				(${SHARED_ORG}, 'agent-1', ${conversationId}, ${runId}, ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
+		`;
+
+		setAuthProvider(() => ({
+			userId: USER_ID,
+			platform: "external",
+			agentId: "agent-1",
+			exp: Date.now() + 60_000,
+		}));
+		// Ambient org = SHARED_ORG (what x-lobu-org sets, membership-verified).
+		const response = await orgContext.run({ organizationId: SHARED_ORG }, () =>
+			createApp().request(
+				`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+				{ method: "GET", headers: { host: "localhost" } },
+			),
+		);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { messages: Array<{ id: string }> };
+		expect(body.messages.map((m) => m.id)).toEqual(["u-shared"]);
+	});
+
 	test("requires an enforced channel ACL for a non-owner org member", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl({ buildAcl: false });

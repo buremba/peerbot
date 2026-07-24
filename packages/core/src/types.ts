@@ -326,7 +326,7 @@ export interface SuggestedPrompt {
   message: string; // Full message sent when clicked
 }
 
-/** Limits enforced wherever suggestions enter or leave durable storage. */
+/** Shared limits for suggestion payloads accepted by server and tool surfaces. */
 export const SUGGESTION_LIMITS = {
   maxPrompts: 4,
   maxTitleChars: 80,
@@ -339,11 +339,12 @@ export const SUGGESTION_LIMITS = {
  * whitespace can't yield an empty displayed title), drops malformed/empty
  * entries, and returns `[]` for any non-array input. Shared by the agent tool
  * and the gateway route so the worker (untrusted) and the server enforce one
- * identical contract.
+ * and server surfaces so untrusted payloads share one contract.
  */
 export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
   if (!Array.isArray(value)) return [];
   const out: SuggestedPrompt[] = [];
+  const seen = new Set<string>();
   for (const p of value) {
     if (!p || typeof p !== "object") continue;
     const { title, message } = p as { title?: unknown; message?: unknown };
@@ -355,6 +356,9 @@ export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
       .slice(0, SUGGESTION_LIMITS.maxMessageChars)
       .join("");
     if (t.length === 0 || m.length === 0) continue;
+    const key = `${t}\u0000${m}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ title: t, message: m });
     if (out.length >= SUGGESTION_LIMITS.maxPrompts) break;
   }

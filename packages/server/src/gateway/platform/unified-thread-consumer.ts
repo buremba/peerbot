@@ -65,16 +65,18 @@ interface ChatInteractionEnvelope {
  * intent), services/agent-threads.ts (internal default), connectors/
  * repair-agent.ts, scheduled/jobs.ts.
  *
- * KEEP IN LOCKSTEP with `AUTONOMOUS_SOURCES` in authz/entity-policy.ts: every
- * headless (no-human) source here must also be treated as autonomous by the
- * write-gate resolver, or a server-dispatched turn would skip an agent's
- * autonomous-only restrictions.
+ * This classification affects delivery only. Write policy independently uses
+ * the trusted agent id from the worker context (see authz/entity-policy.ts), so
+ * a headless source cannot alter the acting principal. `"starters"` is also
+ * dispatched with a strict read-only tool allowlist; it is listed here because
+ * its hidden thread opens no browser SSE on any pod.
  */
 const HEADLESS_SOURCES = new Set([
   "watcher-run",
   "connector-repair",
   "scheduled-job",
   "internal",
+  "starters",
 ]);
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeSuggestionPrompts, SUGGESTION_LIMITS } from "../types";
+import { SUGGESTION_LIMITS, sanitizeSuggestionPrompts } from "../types";
 
 describe("sanitizeSuggestionPrompts", () => {
   test("drops malformed entries and trims valid prompts", () => {
@@ -10,6 +10,7 @@ describe("sanitizeSuggestionPrompts", () => {
         { title: " ", message: "empty title" },
         { title: "Missing message" },
         { title: "  Ship  ", message: "  Ship it  " },
+        { title: "Ship", message: "Ship it" },
       ])
     ).toEqual([{ title: "Ship", message: "Ship it" }]);
     expect(sanitizeSuggestionPrompts({ prompts: [] })).toEqual([]);
@@ -27,10 +28,13 @@ describe("sanitizeSuggestionPrompts", () => {
 
     const result = sanitizeSuggestionPrompts(prompts);
     expect(result).toHaveLength(SUGGESTION_LIMITS.maxPrompts);
-    expect(Array.from(result[0]!.title)).toHaveLength(
+    const first = result[0];
+    expect(first).toBeDefined();
+    if (!first) throw new Error("expected a sanitized prompt");
+    expect(Array.from(first.title)).toHaveLength(
       SUGGESTION_LIMITS.maxTitleChars
     );
-    expect(result[0]!.title.endsWith("😀")).toBe(true);
-    expect(result[0]!.message).toHaveLength(SUGGESTION_LIMITS.maxMessageChars);
+    expect(first.title.endsWith("😀")).toBe(true);
+    expect(first.message).toHaveLength(SUGGESTION_LIMITS.maxMessageChars);
   });
 });

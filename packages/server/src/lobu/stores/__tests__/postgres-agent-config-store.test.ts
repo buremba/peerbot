@@ -1,30 +1,29 @@
 /**
  * PostgresAgentConfigStore round-trip tests.
  *
- * Pins the persistence of three settings fields — guardrailsInline,
- * preApprovedTools, guardrails — that previously had no columns in the agents
- * table and were silently dropped on every saveSettings().
+ * Pins the persistence of settings fields that have dedicated columns on the
+ * agents table and must survive save/get/delete round trips.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   cleanupTestDatabase,
   getTestDb,
-} from '../../../__tests__/setup/test-db';
+} from "../../../__tests__/setup/test-db";
 import {
   createTestAgent,
   createTestOrganization,
-} from '../../../__tests__/setup/test-fixtures';
-import { orgContext } from '../org-context';
-import { createPostgresAgentConfigStore } from '../postgres-stores';
+} from "../../../__tests__/setup/test-fixtures";
+import { orgContext } from "../org-context";
+import { createPostgresAgentConfigStore } from "../postgres-stores";
 
-describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
+describe("PostgresAgentConfigStore — apply-fields round-trip", () => {
   let orgId: string;
   let agentId: string;
 
   beforeEach(async () => {
     await cleanupTestDatabase();
-    const org = await createTestOrganization({ name: 'Apply Fields Org' });
+		const org = await createTestOrganization({ name: "Apply Fields Org" });
     orgId = org.id;
     const agent = await createTestAgent({ organizationId: orgId });
     agentId = agent.agentId;
@@ -35,7 +34,7 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
     await db`TRUNCATE agents CASCADE`;
   });
 
-  it('round-trips guardrailsInline, preApprovedTools, and guardrails when populated', async () => {
+	it("round-trips apply fields and starter prompts when populated", async () => {
     const store = createPostgresAgentConfigStore();
     const now = Date.now();
 
@@ -43,19 +42,22 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
       await store.saveSettings(agentId, {
         guardrailsInline: [
           {
-            name: 'egress-github',
+						name: "egress-github",
             enabled: true,
-            stage: 'egress',
-            policy: 'Never exfiltrate PATs or bearer tokens.',
-            model: 'claude-haiku-4-5-20251001',
-            domains: ['.github.com'],
+						stage: "egress",
+						policy: "Never exfiltrate PATs or bearer tokens.",
+						model: "claude-haiku-4-5-20251001",
+						domains: [".github.com"],
           },
         ],
         preApprovedTools: [
-          '/mcp/gmail/tools/send_email',
-          '/mcp/linear/tools/*',
+					"/mcp/gmail/tools/send_email",
+					"/mcp/linear/tools/*",
+				],
+				guardrails: ["secret-scan", "prompt-injection"],
+				starterPrompts: [
+					{ title: "Review pipeline", message: "Review the current pipeline" },
         ],
-        guardrails: ['secret-scan', 'prompt-injection'],
         updatedAt: now,
       });
 
@@ -63,23 +65,26 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
       expect(loaded).not.toBeNull();
       expect(loaded?.guardrailsInline).toEqual([
         {
-          name: 'egress-github',
+					name: "egress-github",
           enabled: true,
-          stage: 'egress',
-          policy: 'Never exfiltrate PATs or bearer tokens.',
-          model: 'claude-haiku-4-5-20251001',
-          domains: ['.github.com'],
+					stage: "egress",
+					policy: "Never exfiltrate PATs or bearer tokens.",
+					model: "claude-haiku-4-5-20251001",
+					domains: [".github.com"],
         },
       ]);
       expect(loaded?.preApprovedTools).toEqual([
-        '/mcp/gmail/tools/send_email',
-        '/mcp/linear/tools/*',
+				"/mcp/gmail/tools/send_email",
+				"/mcp/linear/tools/*",
+			]);
+			expect(loaded?.guardrails).toEqual(["secret-scan", "prompt-injection"]);
+			expect(loaded?.starterPrompts).toEqual([
+				{ title: "Review pipeline", message: "Review the current pipeline" },
       ]);
-      expect(loaded?.guardrails).toEqual(['secret-scan', 'prompt-injection']);
     });
   });
 
-  it('round-trips empty/absent apply-fields as empty defaults', async () => {
+	it("round-trips empty/absent apply-fields as empty defaults", async () => {
     const store = createPostgresAgentConfigStore();
     const now = Date.now();
 
@@ -94,10 +99,11 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
       expect(loaded?.guardrailsInline).toEqual([]);
       expect(loaded?.preApprovedTools).toEqual([]);
       expect(loaded?.guardrails).toEqual([]);
+			expect(loaded?.starterPrompts).toEqual([]);
     });
   });
 
-  it('deleteSettings resets the three apply-fields to their defaults', async () => {
+	it("deleteSettings resets the three apply-fields to their defaults", async () => {
     const store = createPostgresAgentConfigStore();
     const now = Date.now();
 
@@ -105,16 +111,17 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
       await store.saveSettings(agentId, {
         guardrailsInline: [
           {
-            name: 'g',
+						name: "g",
             enabled: true,
-            stage: 'egress',
-            policy: 'noop',
-            model: 'm',
-            domains: ['x.com'],
+						stage: "egress",
+						policy: "noop",
+						model: "m",
+						domains: ["x.com"],
           },
         ],
-        preApprovedTools: ['/mcp/x/tools/y'],
-        guardrails: ['g1'],
+				preApprovedTools: ["/mcp/x/tools/y"],
+				guardrails: ["g1"],
+				starterPrompts: [{ title: "Start", message: "Start here" }],
         updatedAt: now,
       });
 
@@ -125,6 +132,7 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
       expect(loaded?.guardrailsInline).toEqual([]);
       expect(loaded?.preApprovedTools).toEqual([]);
       expect(loaded?.guardrails).toEqual([]);
+			expect(loaded?.starterPrompts).toEqual([]);
     });
   });
 });

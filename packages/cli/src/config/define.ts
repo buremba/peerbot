@@ -563,6 +563,14 @@ export interface Agent {
   tools?: ToolsConfig;
   /** Guardrails enabled for this agent, by registered name. */
   guardrails?: string[];
+  /**
+   * Static starter-action chips shown on a fresh conversation (before any
+   * message). Each is `{ title, message }`: `title` is the chip label, `message`
+   * is sent as the first user turn when tapped. When set, these are served
+   * directly; when omitted, the agent generates starters dynamically from
+   * workspace state.
+   */
+  starterPrompts?: { title: string; message: string }[];
   /** Nix packages provisioned into the worker environment. */
   nixPackages?: string[];
   // NOTE: the memory schema (entity/relationship types) and connections —

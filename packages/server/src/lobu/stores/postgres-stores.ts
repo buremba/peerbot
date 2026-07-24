@@ -90,6 +90,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		verboseLogging: row.verbose_logging ?? undefined,
 		showToolCalls: row.show_tool_calls ?? undefined,
 		preApprovedTools: row.pre_approved_tools ?? undefined,
+		starterPrompts: row.starter_prompts ?? undefined,
 		guardrails: row.guardrails ?? undefined,
 		guardrailsInline: row.guardrails_inline ?? undefined,
 		sandboxId: row.sandbox_id ?? undefined,
@@ -139,7 +140,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config,
                    verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
+                   pre_approved_tools, starter_prompts,
+                   guardrails, guardrails_inline,
                    sandbox_id, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
@@ -150,7 +152,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config,
                    verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
+                   pre_approved_tools, starter_prompts,
+                   guardrails, guardrails_inline,
                    sandbox_id, updated_at
             FROM agents
             WHERE id = ${agentId}
@@ -175,6 +178,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           verbose_logging = ${settings.verboseLogging ?? false},
           show_tool_calls = ${settings.showToolCalls ?? false},
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
+          starter_prompts = ${sql.json(settings.starterPrompts ?? [])},
           guardrails = ${sql.json(settings.guardrails ?? [])},
           guardrails_inline = ${sql.json(settings.guardrailsInline ?? [])},
           sandbox_id = ${settings.sandboxId ?? null},
@@ -202,7 +206,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           skills_config = '{"skills": []}', tools_config = '{}',
           verbose_logging = false,
           show_tool_calls = false,
-          pre_approved_tools = '[]', guardrails = '[]', guardrails_inline = '[]',
+          pre_approved_tools = '[]', starter_prompts = '[]',
+          guardrails = '[]', guardrails_inline = '[]',
           sandbox_id = NULL,
           updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}

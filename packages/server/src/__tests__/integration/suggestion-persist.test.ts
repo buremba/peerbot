@@ -9,12 +9,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { initWorkspaceProvider } from "../../workspace";
 import {
 	finalizeTurnSuggestions,
 	persistSuggestion,
 	readCurrentSuggestion,
 } from "../../gateway/suggestions/persist-suggestion";
+import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { seedOwnerContext } from "../setup/test-fixtures";
 
@@ -56,7 +56,9 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 
 		const current = await readCurrentSuggestion(orgId, conversationId);
 		expect(current?.id).toBe(id);
-		expect(current?.prompts).toEqual([{ title: "Ship it", message: "Ship the PR" }]);
+		expect(current?.prompts).toEqual([
+			{ title: "Ship it", message: "Ship the PR" },
+		]);
 		expect(current?.turnMessageId).toBe("msg-1");
 		expect(await currentCount()).toBe(1);
 	});
@@ -71,7 +73,9 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		// The stack-forever bug would leave 2 current rows here.
 		expect(await currentCount()).toBe(1);
 		const current = await readCurrentSuggestion(orgId, conversationId);
-		expect(current?.prompts).toEqual([{ title: "Next", message: "What's next?" }]);
+		expect(current?.prompts).toEqual([
+			{ title: "Next", message: "What's next?" },
+		]);
 		expect(current?.turnMessageId).toBe("msg-2");
 	});
 

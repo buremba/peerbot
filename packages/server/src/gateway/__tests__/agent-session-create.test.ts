@@ -11,7 +11,14 @@
  * ownership is always denied. Later default-agent tests exercise DB-backed
  * org-system-agent resolution, so this file bootstraps the gateway test DB.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
@@ -99,6 +106,69 @@ describe("POST /api/v1/agents — enumeration-safe ownership denial", () => {
   });
 });
 
+describe("GET /api/v1/agents/:agentId/starters", () => {
+	test("serves sanitized configured starters without dispatching an LLM turn", async () => {
+		const queueProducer = {
+			enqueueMessage() {
+				throw new Error("configured starters must not enqueue");
+			},
+		};
+		const app = createAgentApi({
+			queueProducer: queueProducer as never,
+			sessionManager: {} as never,
+			sseManager: {} as never,
+			publicGatewayUrl: "http://localhost:8787",
+			artifactStore: {} as never,
+			agentSettingsStore: {
+				async getSettings() {
+					return {
+						starterPrompts: [
+							{
+								title: "  Review pipeline  ",
+								message: "  Review the current pipeline  ",
+							},
+							{
+								title: "Review pipeline",
+								message: "Review the current pipeline",
+							},
+						],
+					};
+				},
+			} as never,
+			agentMetadataStore: {
+				async getMetadata() {
+					return {
+						owner: { platform: "api", userId: "owner-1" },
+						organizationId: "org-1",
+					};
+				},
+			} as never,
+		});
+		const token = generateWorkerToken("owner-1", "conv-1", "deployment-1", {
+			channelId: "api_owner-1",
+			agentId: EXISTING_AGENT,
+			organizationId: "org-1",
+		});
+
+		const res = await app.request(`/api/v1/agents/${EXISTING_AGENT}/starters`, {
+			headers: { Authorization: `Bearer ${token}` },
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			prompts: [
+				{
+					title: "Review pipeline",
+					message: "Review the current pipeline",
+				},
+			],
+			source: "config",
+			stale: false,
+			generating: false,
+		});
+	});
+});
+
 /**
  * No-`agentId` (default-agent) resolution path.
  *
@@ -116,11 +186,16 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
   // `organizationId` off the decrypted token and stamps `authContext` so
   // the handler can resolve the org without a body field.
   function orgBoundToken(): string {
-    return generateWorkerToken("owletto-default", "conv-bootstrap", "deploy-1", {
+		return generateWorkerToken(
+			"owletto-default",
+			"conv-bootstrap",
+			"deploy-1",
+			{
       channelId: "api_test",
       agentId: "owletto-default",
       organizationId: ORG_ID,
-    });
+			},
+		);
   }
 
   // In-memory session store that records the last setSession call so the
@@ -144,9 +219,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     };
   }
 
-  function makeAppWithDefault(opts: {
-    defaultAgentOrg: string | null;
-  }) {
+	function makeAppWithDefault(opts: { defaultAgentOrg: string | null }) {
     const recorder = makeSessionRecorder();
     const app = createAgentApi({
       queueProducer: {} as never,
@@ -225,16 +298,26 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     // (platform, userId, agentId) check and read orgA's session row.
     const orgA = "org-A";
     const orgB = "org-B";
-    const tokenA = generateWorkerToken("owletto-default", "conv-A", "deploy-A", {
+		const tokenA = generateWorkerToken(
+			"owletto-default",
+			"conv-A",
+			"deploy-A",
+			{
       channelId: "api_test",
       agentId: "owletto-default",
       organizationId: orgA,
-    });
-    const tokenB = generateWorkerToken("owletto-default", "conv-B", "deploy-B", {
+			},
+		);
+		const tokenB = generateWorkerToken(
+			"owletto-default",
+			"conv-B",
+			"deploy-B",
+			{
       channelId: "api_test",
       agentId: "owletto-default",
       organizationId: orgB,
-    });
+			},
+		);
 
     // Shared metadata store: BOTH orgs have an `owletto-default` agent that
     // their respective workers own (the cross-tenant collision setup pi
@@ -290,7 +373,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     // owner, session.organizationId matches authContext).
     const okSelf = await app.request(
       "/api/v1/agents/owletto-default_owletto-default_org-A",
-      { headers: { Authorization: `Bearer ${tokenA}` } }
+			{ headers: { Authorization: `Bearer ${tokenA}` } },
     );
     expect(okSelf.status).toBe(200);
 
@@ -300,7 +383,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     // (orgA) ≠ caller orgId (orgB).
     const denied = await app.request(
       "/api/v1/agents/owletto-default_owletto-default_org-A",
-      { headers: { Authorization: `Bearer ${tokenB}` } }
+			{ headers: { Authorization: `Bearer ${tokenB}` } },
     );
     expect(denied.status).toBe(403);
     expect((await denied.json()) as { error?: string }).toEqual({
@@ -403,7 +486,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     // org's approval payloads (IDOR). The denial fires before the pending-tool
     // store is touched, so this needs no DB.
     const pendingDenied = await app.request(
-      `/api/v1/agents/${orgASession}/pending-approvals`
+			`/api/v1/agents/${orgASession}/pending-approvals`,
     );
     expect(pendingDenied.status).toBe(403);
   });

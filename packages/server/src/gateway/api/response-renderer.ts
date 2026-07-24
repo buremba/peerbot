@@ -121,7 +121,9 @@ export class ApiResponseRenderer implements ResponseRenderer {
    * So the current row here is the authoritative post-turn state; this method
    * never mutates it, it only decides what the SPA renders:
    *  - errored turn → undefined ("no change"): keep the last good chips.
-   *  - a current set exists → return it (embed).
+   *  - this turn owns the current set → return it (embed).
+   *  - a later turn owns the current set → undefined; a delayed terminal must
+   *    not publish the later turn's chips early.
    *  - none current → [] ("clear"): finalize already superseded it.
    */
   private async resolveTerminalSuggestions(
@@ -141,6 +143,16 @@ export class ApiResponseRenderer implements ResponseRenderer {
         organizationId,
         payload.conversationId
       );
+      const completingMessageIds = new Set([
+        payload.messageId,
+        ...(payload.processedMessageIds ?? []),
+      ]);
+      if (
+        current?.turnMessageId &&
+        !completingMessageIds.has(current.turnMessageId)
+      ) {
+        return undefined;
+      }
       return current ? current.prompts : [];
     } catch (err) {
       // Never let suggestion resolution break completion delivery.

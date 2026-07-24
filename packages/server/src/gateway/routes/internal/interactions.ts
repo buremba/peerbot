@@ -12,7 +12,10 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
-import { persistSuggestion } from "../../suggestions/persist-suggestion.js";
+import {
+	persistStarterSuggestion,
+	persistSuggestion,
+} from "../../suggestions/persist-suggestion.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -23,7 +26,7 @@ const logger = createLogger("internal-interaction-routes");
  * Create internal interaction routes (Hono)
  */
 export function createInteractionRoutes(
-  interactionService: InteractionService
+	interactionService: InteractionService,
 ): Hono<WorkerContext> {
   const router = new Hono<WorkerContext>();
 
@@ -57,7 +60,7 @@ export function createInteractionRoutes(
             : "question";
 
         logger.info(
-          `Posting ${interactionType} for conversation ${conversationId}`
+					`Posting ${interactionType} for conversation ${conversationId}`,
         );
 
         if (interactionType === "link_button") {
@@ -72,7 +75,7 @@ export function createInteractionRoutes(
             body.label,
             body.linkType || "oauth",
             typeof body.body === "string" ? body.body : undefined,
-            source
+						source,
           );
           return c.json({ id: posted.id, status: "posted" });
         }
@@ -102,7 +105,7 @@ export function createInteractionRoutes(
             isApprovalAttribution(body.attribution) ? body.attribution : null,
             isInteractionResourceKind(body.resourceKind)
               ? body.resourceKind
-              : null
+							: null,
           );
           // The live approval card is a one-shot SSE push, and the transcript
           // doesn't carry interaction parts — so on reload the card is lost.
@@ -131,7 +134,7 @@ export function createInteractionRoutes(
           platform || "unknown",
           body.question,
           body.options || [],
-          source
+					source,
         );
 
         return c.json({ id: posted.id, status: "posted" });
@@ -148,7 +151,7 @@ export function createInteractionRoutes(
         });
         return errorResponse(c, "Failed to post question", 500);
       }
-    }
+		},
   );
 
   /**
@@ -158,14 +161,16 @@ export function createInteractionRoutes(
   router.post("/internal/suggestions/create", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
-      const { conversationId, platform, organizationId, messageId } = worker;
+			const { conversationId, platform, organizationId, messageId, source } =
+				worker;
 
       // Suggestions render on the web (API) surface only: the SPA embeds the
       // conversation's current set on the terminal `complete` SSE payload. Chat
       // adapters (Slack/Telegram) have no delivery path yet — returning success
       // there would silently render nothing. Fail loudly so the agent doesn't
       // believe it posted chips. Chat fan-out (native setSuggestedPrompts /
-      // generic action buttons) is a follow-up.
+			// generic action buttons) is a follow-up. The hidden "starters" turn is
+			// dispatched platform:"api", so it passes this gate.
       if (platform !== "api") {
         return c.json(
           {
@@ -173,7 +178,7 @@ export function createInteractionRoutes(
             error:
               "suggest_actions is only supported in web (API) conversations for now",
           },
-          400
+					400,
         );
       }
 
@@ -191,16 +196,45 @@ export function createInteractionRoutes(
       // `complete`. Fail rather than accept-and-drop.
       if (!organizationId) {
         logger.warn(
-          `Suggestion for ${conversationId} has no organizationId — cannot persist`
+					`Suggestion for ${conversationId} has no organizationId — cannot persist`,
         );
         return c.json(
           { success: false, error: "missing organization context" },
-          400
+					400,
+				);
+			}
+
+			// A hidden "starters" turn (source signed onto the worker token) emits the
+			// conversation-independent starter set for its agent+org — keyed on the
+			// agent, cached across turns, shown before any conversation begins. It
+			// routes to a DIFFERENT origin (`starter:<agentId>`), NOT the per-
+			// conversation `suggestion:<conversationId>` origin.
+			if (source === "starters") {
+				if (!worker.agentId) {
+					return c.json(
+						{ success: false, error: "starters turn missing agentId" },
+						400,
         );
       }
+				await persistStarterSuggestion({
+					organizationId,
+					agentId: worker.agentId,
+					prompts,
+					turnMessageId: messageId,
+					runId: worker.runId ?? null,
+				});
+				logger.info(
+					`Persisted ${prompts.length} starter prompt(s) for agent ${worker.agentId}`,
+				);
+				return c.json({
+					success: true,
+					prompts: prompts.length,
+					scope: "starter",
+				});
+			}
 
       logger.info(
-        `Sending suggestions to conversation ${conversationId} (${prompts.length} prompts)`
+				`Sending suggestions to conversation ${conversationId} (${prompts.length} prompts)`,
       );
 
       await persistSuggestion({

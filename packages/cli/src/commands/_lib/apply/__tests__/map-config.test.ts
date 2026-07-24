@@ -1021,6 +1021,23 @@ describe("mapProjectToDesiredState", () => {
     expect(settings?.nixConfig).toEqual({ packages: ["ffmpeg", "python311"] });
   });
 
+  test("maps configured starter prompts", () => {
+    const agent = defineAgent({
+      id: "a",
+      starterPrompts: [
+        { title: "Review pipeline", message: "Review the current pipeline" },
+      ],
+    });
+    const settings = mapProjectToDesiredState(
+      defineConfig({ agents: [agent] }),
+      env
+    ).agents[0]?.settings;
+
+    expect(settings?.starterPrompts).toEqual([
+      { title: "Review pipeline", message: "Review the current pipeline" },
+    ]);
+  });
+
   test("maps org metadata into memory", () => {
     const state = mapProjectToDesiredState(
       defineConfig({
@@ -1047,6 +1064,7 @@ describe("mapProjectToDesiredState", () => {
     expect(settings).not.toHaveProperty("networkConfig");
     expect(settings).not.toHaveProperty("toolsConfig");
     expect(settings).not.toHaveProperty("preApprovedTools");
+    expect(settings).not.toHaveProperty("starterPrompts");
     expect(settings).not.toHaveProperty("guardrails");
     expect(settings).not.toHaveProperty("nixConfig");
   });

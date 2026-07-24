@@ -128,6 +128,11 @@ interface EnqueueAgentMessageArgs {
    * session's model is used (which itself resolves the agent/org fallback).
    */
   model?: string;
+  /**
+   * Optional strict per-turn tool allowlist. Intended for narrow hidden turns
+   * that must not inherit the agent's mutating tools.
+   */
+  allowedTools?: string[];
 }
 
 interface EnqueueAgentMessageResult {
@@ -191,6 +196,15 @@ export async function enqueueAgentMessage(
       provider: session.provider || "claude",
       model: args.model ?? session.model,
       ...(args.model ? { behaviorModelOverride: true } : {}),
+      ...(args.allowedTools
+        ? {
+            allowedTools: args.allowedTools,
+            toolsConfig: {
+              strictMode: true,
+              allowedTools: args.allowedTools,
+            },
+          }
+        : {}),
     },
     networkConfig: session.networkConfig,
   });

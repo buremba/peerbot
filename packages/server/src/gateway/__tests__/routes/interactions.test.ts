@@ -1,24 +1,33 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
+import type { InteractionService } from "../../interactions.js";
 import { createInteractionRoutes } from "../../routes/internal/interactions.js";
+import type {
+	PersistStarterArgs,
+	PersistSuggestionArgs,
+} from "../../suggestions/persist-suggestion.js";
 
 // Persistence is exercised end-to-end against real Postgres in the integration
-// suite (suggestion-persist.test.ts). Here we mock it to unit-test the route's
-// GATING/VALIDATION: API-only platform check, server-side sanitize, and the
-// missing-organization guard — none of which should touch the DB.
+// suites (suggestion-persist.test.ts, starter-suggestions.test.ts). Here we mock
+// it to unit-test the route's GATING/VALIDATION + SCOPE ROUTING: API-only
+// platform check, server-side sanitize, missing-organization guard, and the
+// starters-source → starter-origin branch — none of which should touch the DB.
 const persistSuggestion = mock(() => Promise.resolve(42));
+const persistStarterSuggestion = mock(() => Promise.resolve(43));
 mock.module("../../suggestions/persist-suggestion.js", () => ({
   persistSuggestion,
+	persistStarterSuggestion,
 }));
 
 describe("interaction routes", () => {
   let originalKey: string | undefined;
   let workerToken: string;
-  let mockInteractionService: any;
+	let mockInteractionService: InteractionService;
   let router: ReturnType<typeof createInteractionRoutes>;
 
   beforeEach(() => {
     persistSuggestion.mockClear();
+		persistStarterSuggestion.mockClear();
     originalKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -31,7 +40,7 @@ describe("interaction routes", () => {
     mockInteractionService = {
       postQuestion: mock(() => Promise.resolve({ id: "interaction-123" })),
       postLinkButton: mock(() => Promise.resolve({ id: "link-123" })),
-    };
+		} as unknown as InteractionService;
 
     router = createInteractionRoutes(mockInteractionService);
   });
@@ -108,7 +117,7 @@ describe("interaction routes", () => {
 
     test("returns 500 on service error", async () => {
       mockInteractionService.postQuestion = mock(() =>
-        Promise.reject(new Error("service down"))
+				Promise.reject(new Error("service down")),
       );
       const res = await router.request("/internal/interactions/create", {
         method: "POST",
@@ -154,10 +163,12 @@ describe("interaction routes", () => {
       expect(body.success).toBe(true);
       expect(body.prompts).toBe(2);
       expect(persistSuggestion).toHaveBeenCalledTimes(1);
-      const args = persistSuggestion.mock.calls.at(-1)?.[0] as any;
-      expect(args.organizationId).toBe("org-1");
-      expect(args.turnMessageId).toBe("msg-1");
-      expect(args.prompts).toHaveLength(2);
+			const args = persistSuggestion.mock.calls.at(-1)?.[0] as
+				| PersistSuggestionArgs
+				| undefined;
+			expect(args?.organizationId).toBe("org-1");
+			expect(args?.turnMessageId).toBe("msg-1");
+			expect(args?.prompts).toHaveLength(2);
     });
 
     test("server-side rejects malformed prompts (bare strings) without persisting", async () => {
@@ -215,6 +226,63 @@ describe("interaction routes", () => {
       expect(res.status).toBe(400);
       expect(persistSuggestion).not.toHaveBeenCalled();
     });
+
+		test("a starters-source turn routes to the STARTER origin, not the conversation", async () => {
+			const startersToken = generateWorkerToken(
+				"user-1",
+				"conv-1",
+				"deploy-1",
+				{
+					channelId: "chan-1",
+					teamId: "team-1",
+					platform: "api",
+					agentId: "lobu-builder",
+					organizationId: "org-1",
+					messageId: "m1",
+					source: "starters",
+				},
+			);
+			const res = await router.request("/internal/suggestions/create", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${startersToken}`,
+				},
+				body: JSON.stringify({
+					prompts: [{ title: "Connect Slack", message: "Connect Slack" }],
+				}),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.scope).toBe("starter");
+			// starter origin, NOT the per-conversation suggestion origin.
+			expect(persistStarterSuggestion).toHaveBeenCalledTimes(1);
+			expect(persistSuggestion).not.toHaveBeenCalled();
+			const args = persistStarterSuggestion.mock.calls.at(-1)?.[0] as
+				| PersistStarterArgs
+				| undefined;
+			expect(args?.agentId).toBe("lobu-builder");
+		});
+
+		test("a starters turn without agentId is rejected without persisting", async () => {
+			const badToken = generateWorkerToken("user-1", "conv-1", "deploy-1", {
+				channelId: "chan-1",
+				teamId: "team-1",
+				platform: "api",
+				organizationId: "org-1",
+				source: "starters",
+			});
+			const res = await router.request("/internal/suggestions/create", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${badToken}`,
+				},
+				body: JSON.stringify({ prompts: [{ title: "T", message: "M" }] }),
+			});
+			expect(res.status).toBe(400);
+			expect(persistStarterSuggestion).not.toHaveBeenCalled();
+		});
 
     test("returns 401 without auth", async () => {
       const res = await router.request("/internal/suggestions/create", {

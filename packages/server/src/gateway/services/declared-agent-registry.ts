@@ -142,6 +142,10 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
     verboseLogging: settings.verboseLogging,
     showToolCalls: settings.showToolCalls,
     preApprovedTools: settings.preApprovedTools,
+    // Embedded SDK agents don't declare starterPrompts (the gateway AgentConfig
+    // has no such field) — they get dynamically generated starters. DB-declared
+    // agents carry it via postgres-stores. Present here only for exhaustiveness.
+    starterPrompts: settings.starterPrompts,
   };
   void _exhaustive;
 

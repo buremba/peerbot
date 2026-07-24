@@ -9,13 +9,25 @@
  */
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import type { SuggestedPrompt } from "@lobu/core";
 import { ApiResponseRenderer } from "../response-renderer.js";
 import type { ThreadResponsePayload } from "../../infrastructure/queue/types.js";
 
+type BroadcastData = Record<string, unknown>;
+type CurrentSuggestion = {
+  id: number;
+  prompts: SuggestedPrompt[];
+  turnMessageId: string | null;
+} | null;
+
 function makeRenderer() {
-  const broadcasts: Array<{ key: string; event: string; data: any }> = [];
+  const broadcasts: Array<{
+    key: string;
+    event: string;
+    data: BroadcastData;
+  }> = [];
   const sseManager = {
-    broadcast: mock((key: string, event: string, data: any) => {
+    broadcast: mock((key: string, event: string, data: BroadcastData) => {
       broadcasts.push({ key, event, data });
     }),
   };
@@ -69,14 +81,14 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
   // consumer (finalizeTurnSuggestions), so here we only mock the READ and assert
   // what the SPA is told to render. Clearing/superseding is covered by the
   // suggestion-persist integration test.
-  const readMock = mock(async () => null as any);
+  const readMock = mock(async (): Promise<CurrentSuggestion> => null);
   mock.module("../../suggestions/persist-suggestion.js", () => ({
     readCurrentSuggestion: readMock,
   }));
 
   beforeEach(() => {
     readMock.mockReset();
-    readMock.mockResolvedValue(null as any);
+    readMock.mockResolvedValue(null);
   });
 
   test("embeds the current suggestion set on complete", async () => {
@@ -104,6 +116,26 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
       "k"
     );
     expect(broadcasts.find((b) => b.event === "complete")?.data.suggestions).toEqual([]);
+  });
+
+  test("does not publish a later turn's suggestions from a delayed completion", async () => {
+    readMock.mockResolvedValueOnce({
+      id: 8,
+      prompts: [{ title: "Later", message: "From a later turn" }],
+      turnMessageId: "m2",
+    });
+    const { renderer, broadcasts } = makeRenderer();
+    await renderer.handleCompletion(
+      basePayload({
+        organizationId: "org-1",
+        messageId: "m1",
+        processedMessageIds: ["m1"],
+      }),
+      "k"
+    );
+    expect(
+      broadcasts.find((b) => b.event === "complete")?.data.suggestions
+    ).toBeUndefined();
   });
 
   test("keeps prior chips on an errored turn (no change, no read)", async () => {

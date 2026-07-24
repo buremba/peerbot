@@ -125,6 +125,17 @@ export const SkillsConfigSchema = Type.Object({
 });
 export type SkillsConfig = Static<typeof SkillsConfigSchema>;
 
+/**
+ * A suggested prompt chip: `title` is the short chip label, `message` is the
+ * full text sent as a user turn when tapped. Mirrors the `SuggestedPrompt`
+ * interface in `../types`. Used by `starterPrompts` (static, config-authored
+ * starter chips that skip the AI generator).
+ */
+export const SuggestedPromptSchema = Type.Object({
+  title: Type.String(),
+  message: Type.String(),
+});
+
 // ── AgentSettingsStored ─────────────────────────────────────────────────────
 
 /**
@@ -152,6 +163,10 @@ export const AgentSettingsStoredSchema = Type.Object({
   verboseLogging: Type.Optional(Type.Boolean()),
   showToolCalls: Type.Optional(Type.Boolean()),
   preApprovedTools: Type.Optional(Type.Array(Type.String())),
+  // Config-authored starter chips shown on a fresh conversation. When set, they
+  // are served directly (no AI-generated starters turn). Empty/unset → the
+  // agent generates starters dynamically from workspace state.
+  starterPrompts: Type.Optional(Type.Array(SuggestedPromptSchema)),
   updatedAt: Type.Number(),
 });
 export type AgentSettingsStored = Static<typeof AgentSettingsStoredSchema>;

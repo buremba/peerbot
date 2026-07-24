@@ -352,6 +352,7 @@
       "name": "@lobu/plugin-conversations",
       "version": "0.0.0",
       "dependencies": {
+        "@lobu/core": "workspace:*",
         "@lobu/plugin-api": "workspace:*",
         "@lobu/plugin-toolkit": "workspace:*",
         "@mariozechner/pi-coding-agent": "^0.73.1",

@@ -130,4 +130,69 @@ describe("LobuAgentWorker", () => {
     expect(checkpointSuccessfulRun).not.toHaveBeenCalled();
     expect(signalDone).toHaveBeenCalledTimes(1);
   });
+
+  // Shared harness for the checkpoint-gating tests below.
+  function wireExecutableWorker(worker: LobuAgentWorker) {
+    const checkpointSuccessfulRun = mock(async () => undefined);
+    const signalDone = mock(async () => undefined);
+    const asyncNoop = async () => undefined;
+    (worker as any).workspaceManager = {
+      setupWorkspace: asyncNoop,
+      getCurrentWorkingDirectory: () => "/tmp",
+    };
+    (worker as any).setupIODirectories = asyncNoop;
+    (worker as any).downloadInputFiles = asyncNoop;
+    (worker as any).getFileIOInstructions = () => "";
+    (worker as any).runAISession = async () => ({
+      success: true,
+      exitCode: 0,
+      output: "done",
+      sessionKey: mockWorkerConfig.sessionKey,
+    });
+    (worker as any).checkpointSuccessfulRun = checkpointSuccessfulRun;
+    (worker as any).deliverFinalResult = asyncNoop;
+    worker.workerTransport = {
+      setJobId: () => undefined,
+      sendStreamDelta: asyncNoop,
+      signalDone,
+      signalCompletion: asyncNoop,
+      signalError: asyncNoop,
+      sendStatusUpdate: asyncNoop,
+      sendCustomEvent: asyncNoop,
+    } as any;
+    return { checkpointSuccessfulRun, signalDone };
+  }
+
+  test("a starters turn completes WITHOUT checkpointing a transcript snapshot", async () => {
+    const worker = new LobuAgentWorker({
+      ...mockWorkerConfig,
+      runId: 2,
+      runJobToken: "starters-run-token",
+      platformMetadata: { source: "starters" },
+    });
+    const { checkpointSuccessfulRun, signalDone } =
+      wireExecutableWorker(worker);
+
+    await worker.execute();
+
+    // The hidden starters turn's reply is discarded — no transcript snapshot.
+    expect(checkpointSuccessfulRun).not.toHaveBeenCalled();
+    expect(signalDone).toHaveBeenCalledTimes(1);
+  });
+
+  test("a normal turn DOES checkpoint its transcript snapshot", async () => {
+    const worker = new LobuAgentWorker({
+      ...mockWorkerConfig,
+      runId: 3,
+      runJobToken: "normal-run-token",
+      platformMetadata: { source: "direct-api" },
+    });
+    const { checkpointSuccessfulRun, signalDone } =
+      wireExecutableWorker(worker);
+
+    await worker.execute();
+
+    expect(checkpointSuccessfulRun).toHaveBeenCalledTimes(1);
+    expect(signalDone).toHaveBeenCalledTimes(1);
+  });
 });

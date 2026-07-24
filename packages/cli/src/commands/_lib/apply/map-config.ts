@@ -51,6 +51,7 @@ const AGENT_SETTINGS_FIELD_POLICY = {
   verboseLogging: "unsupported",
   showToolCalls: "unsupported",
   preApprovedTools: "mapped",
+  starterPrompts: "mapped",
 } as const satisfies Record<
   Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">,
   "mapped" | "post-load" | "unsupported"
@@ -347,6 +348,13 @@ function mapAgent(
     };
   }
 
+  if (agent.starterPrompts?.length) {
+    settings.starterPrompts = agent.starterPrompts.map((p) => ({
+      title: p.title,
+      message: p.message,
+    }));
+  }
+
   if (agent.tools) {
     if (agent.tools.preApproved?.length) {
       settings.preApprovedTools = [...new Set(agent.tools.preApproved)];
@@ -422,6 +430,7 @@ function mapAgent(
     verboseLogging: settings.verboseLogging,
     showToolCalls: settings.showToolCalls,
     preApprovedTools: settings.preApprovedTools,
+    starterPrompts: settings.starterPrompts,
   };
   void _exhaustive;
 

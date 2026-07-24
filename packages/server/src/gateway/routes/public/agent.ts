@@ -9,6 +9,7 @@ import {
   type NetworkConfig,
   normalizeDomainPatterns,
   parseBangBashCommand,
+  sanitizeSuggestionPrompts,
   verifyWorkerToken,
 } from "@lobu/core";
 import { type Context, Hono } from "hono";
@@ -22,6 +23,12 @@ import {
 import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
 import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
+import { ensureStarters } from "../../starters/generate-starters.js";
+import {
+  currentOrgEventsMarker,
+  isStarterStale,
+  readCurrentStarter,
+} from "../../suggestions/persist-suggestion.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
@@ -1697,6 +1704,79 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         toolName: p.toolName,
         args: p.args,
       })),
+    });
+  });
+
+  // Starter suggestion chips for a FRESH conversation (before any user message).
+  // The path param is the AGENT id (starters are per agent+org, not per
+  // conversation — a fresh draft has no server conversation yet). Stale-while-
+  // revalidate: return whatever is cached immediately and, if stale/missing,
+  // fire a debounced hidden "starters" turn to (re)generate — never block on the
+  // LLM. An agent with a `starterPrompts` config is served those directly (no
+  // LLM turn).
+  app.get("/api/v1/agents/:agentId/starters", async (c) => {
+    const agentId = c.req.param("agentId");
+    const access = await authorizeAgentAccess(c, agentId);
+    if (access instanceof Response) return access;
+    if (!access.organizationId) {
+      return c.json({ success: false, error: "Forbidden" }, 403);
+    }
+    const organizationId = access.organizationId;
+
+    // Config override: static starterPrompts win, no LLM turn, no cache.
+    if (agentSettingsStore) {
+      const settings = await agentSettingsStore.getSettings(agentId, {
+        organizationId,
+      });
+      const configured = sanitizeSuggestionPrompts(
+        (settings as { starterPrompts?: unknown } | null)?.starterPrompts
+      );
+      if (configured.length > 0) {
+        return c.json({
+          prompts: configured,
+          source: "config",
+          stale: false,
+          generating: false,
+        });
+      }
+    }
+
+    let cached: Awaited<ReturnType<typeof readCurrentStarter>> = null;
+    let stale = true;
+    try {
+      cached = await readCurrentStarter(organizationId, agentId);
+      const marker = await currentOrgEventsMarker(organizationId);
+      stale = isStarterStale(cached, marker);
+    } catch (err) {
+      // Never let cache resolution break the landing — return empty + generating.
+      logger.warn(
+        `Failed to read starters for ${agentId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
+    if (stale) {
+      // Fire-and-forget the (debounced) hidden generator; do NOT await the LLM.
+      void ensureStarters(
+        { sessionManager: sessMgr, queueProducer },
+        { agentId, organizationId }
+      ).catch((err) => {
+        logger.warn(
+          `Failed to dispatch starters for ${agentId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
+    }
+
+    return c.json({
+      prompts: cached?.prompts ?? [],
+      source: "agent",
+      stale,
+      // Keep polling until the regenerated set lands, including when stale
+      // chips are being shown in the meantime.
+      generating: stale,
     });
   });
 

@@ -47,8 +47,8 @@ export async function askUserQuestion(
  * the turn — the model posts chips the user MAY tap and continues/finishes
  * normally. Each prompt is `{ title, message }`: `title` is the chip label,
  * `message` is sent verbatim as a new user turn if tapped. The server persists
- * these as a superseded interaction event so they survive reload and clear on
- * the next turn.
+ * these as a superseded interaction event so they survive reload and are
+ * replaced or cleared by a later successful turn.
  */
 export async function suggestActions(
   gateway: GatewayParams,

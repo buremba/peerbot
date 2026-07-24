@@ -305,7 +305,16 @@ export class LobuAgentWorker implements WorkerExecutor {
         // session reset is the deliberate exception: runAISession has deleted
         // the transcript and purged its snapshots so the next turn starts
         // clean. Recreating a checkpoint here would undo that contract.
-        if (this.config.platformMetadata?.sessionReset !== true) {
+        // A "starters" turn is another exception: it is a hidden setup turn that
+        // only produces starter-chip suggestions — its assistant reply is
+        // discarded and must NOT appear in the conversation transcript, so we
+        // skip the snapshot entirely.
+        const isStartersTurn =
+          this.config.platformMetadata?.source === "starters";
+        if (
+          this.config.platformMetadata?.sessionReset !== true &&
+          !isStartersTurn
+        ) {
           await this.checkpointSuccessfulRun();
         }
         await this.deliverFinalResult(sawUploadedFileEvent);
@@ -389,7 +398,10 @@ export class LobuAgentWorker implements WorkerExecutor {
       this.terminalStatus === "completed" &&
       !this.snapshotCommitted &&
       this.sessionFilePath &&
-      this.config.platformMetadata?.sessionReset !== true
+      this.config.platformMetadata?.sessionReset !== true &&
+      // A starters turn deliberately skips its snapshot (hidden setup turn) —
+      // a missing snapshot here is expected, not an error.
+      this.config.platformMetadata?.source !== "starters"
     ) {
       logger.error(
         "Completed run reached cleanup without a committed transcript snapshot"

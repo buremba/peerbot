@@ -118,10 +118,25 @@ function assertSingleConnectorWorkerIdentity(metafile, outfile) {
   }
 }
 
-// Single entry for both backends: server.ts branches on DATABASE_URL
+// Single server graph for both backends: server.ts branches on DATABASE_URL
 // (postgres:// = external; path/file:// = embedded, lazy-loading the embedded
 // Postgres runtime so the external/prod path never resolves that binary).
-await buildBundle('src/server.ts', 'dist/server.bundle.mjs');
+//
+// Two-file split for the Node-version gate:
+//   server.bundle.mjs       — tiny gate entry (server-entry.ts). Zero app deps.
+//                             Runs a dependency-free Node-major check, then
+//                             dynamically imports ./server-main.bundle.mjs.
+//   server-main.bundle.mjs  — the real server graph (server.ts + all deps).
+//
+// The gate MUST be its own file so esbuild can't hoist the server graph's
+// @sentry/node → undici import above the check. On Node 18, undici references
+// the absent `File` global and throws `File is not defined` at load —
+// before any in-graph guard could run. Keeping the graph behind a runtime
+// dynamic import to a *separate* bundle means undici only loads after the gate
+// passes. server-entry.ts constructs the sibling URL at runtime so esbuild
+// cannot resolve and inline it.
+await buildBundle('src/server.ts', 'dist/server-main.bundle.mjs');
+await buildBundle('src/server-entry.ts', 'dist/server.bundle.mjs');
 
 const connectorsSrc = join(pkgDir, '..', 'connectors', 'src');
 const connectorsDest = join(pkgDir, 'dist', 'connectors');

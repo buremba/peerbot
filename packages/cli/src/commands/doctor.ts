@@ -11,6 +11,7 @@ import {
   resolveEmbeddedDataRoot,
 } from "./dev.js";
 import { parseEnvContent } from "../internal/env-file.js";
+import { MIN_NODE_MAJOR, checkNodeSupport } from "../internal/node-version.js";
 import { loadProviderRegistry } from "./providers/registry.js";
 import { loadProjectConfig } from "./_lib/apply/desired-state.js";
 
@@ -37,13 +38,15 @@ function checkBinaryExists(name: string): Check {
 
 function checkNodeVersion(): Check {
   const version = process.version;
-  const major = Number.parseInt(version.slice(1), 10);
-  // isolated-vm@6 → 22–24, isolated-vm@7 → 26+. Node 25 boots but has no SDK
-  // sandbox build; anything below 22 is unsupported.
-  if (major < 22) {
-    return { name: "node", status: "warn", detail: `${version} (needs >=22)` };
+  const support = checkNodeSupport();
+  if (!support.ok) {
+    return {
+      name: "node",
+      status: "fail",
+      detail: `${version} (needs >=${MIN_NODE_MAJOR})`,
+    };
   }
-  if (major === 25) {
+  if (!support.sandbox) {
     return {
       name: "node",
       status: "warn",

@@ -104,6 +104,47 @@ describe('behavior event trigger matching', () => {
     ).toEqual([]);
   });
 
+  test('returns every matching event trigger in array order (multi-trigger OR)', () => {
+    const broad: BehaviorEventTrigger = {
+      ...githubTrigger,
+      match: undefined,
+      execution: 'window',
+      output: 'silent',
+    };
+    const specific: BehaviorEventTrigger = {
+      ...githubTrigger,
+      execution: 'turn',
+      output: 'reply_to_source',
+    };
+    const signal: ConnectorTriggerSignal = {
+      connector_key: 'github',
+      connection_id: 42,
+      event_type: 'pull_request.created',
+      delivery_id: 'delivery-multi',
+      input_text: 'GitHub PR',
+      resource_type: 'pull_request',
+      resource_ref: 'github:pull_request:lobu-ai/lobu#208',
+      attributes: { resource_ref: 'github:pull_request:lobu-ai/lobu#208' },
+    };
+    // First match wins for activation policy; matching itself keeps full order.
+    expect(matchingBehaviorTriggers([broad, specific], signal)).toEqual([
+      broad,
+      specific,
+    ]);
+    expect(matchingBehaviorTriggers([specific, broad], signal)[0]).toBe(
+      specific,
+    );
+  });
+
+  test('rejects more than one schedule trigger on write', () => {
+    expect(() =>
+      normalizeBehaviorTriggers([
+        { kind: 'schedule', cron: '0 9 * * *' },
+        { kind: 'schedule', cron: '0 18 * * *' },
+      ]),
+    ).toThrow(/at most one schedule/i);
+  });
+
   test('fails closed across connections and normalized match fields', () => {
     const signal: ConnectorTriggerSignal = {
       connector_key: 'slack',

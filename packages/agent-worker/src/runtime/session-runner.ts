@@ -52,6 +52,7 @@ import {
 } from "./session-context";
 import { buildToolPolicy, isToolAllowedByPolicy } from "./tool-policy";
 import { buildToolUseEventPayload } from "./tool-use-events";
+import { buildRuntimeShellInstructions } from "./runtime-shell-instructions";
 import { checkSandboxLeak } from "./sandbox-leak";
 import { createLobuTools, enforceBashPreflight } from "./tools";
 import { clearSnapshots, hydrateFromSnapshot } from "./transcript-snapshot";
@@ -1083,6 +1084,10 @@ export async function runAISession(
 
   // Merge gateway instructions into custom instructions
   const instructionParts = [context.gatewayInstructions, customInstructions];
+
+  // Local limits when unpinned; remote sticky-sandbox note when a provider is
+  // pinned (e.g. vercel). Always a short block so the model knows capacity.
+  instructionParts.push(buildRuntimeShellInstructions(runtimeProviderId));
 
   // CLI backends are delivered via session context from the gateway.
   const cliBackends = pc.cliBackends;

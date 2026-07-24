@@ -16,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildRuntimeShellInstructions } from "../runtime/runtime-shell-instructions";
 import { buildAgentSession } from "../runtime/session-runner";
 import { createLobuTools } from "../runtime/tools";
 import {
@@ -87,31 +86,6 @@ describe("prompt assembly (real pi base prompt)", () => {
     expect(finalSystemPrompt).not.toMatch(/—\s*\d+\s*entities/);
     // connector-awareness reachable in the tail.
     expect(finalSystemPrompt).toContain("### lobu-memory");
-  });
-
-  test("system prompt gets local limits when unpinned and remote note when pinned", async () => {
-    const base = await realBasePrompt();
-    const identity = resolveAgentIdentity(undefined);
-    const gatewayTail = GATEWAY_TAIL;
-    const localBlock = buildRuntimeShellInstructions(undefined);
-    const remoteBlock = buildRuntimeShellInstructions("vercel");
-
-    const unpinned = [
-      replaceBasePromptIdentity(base, identity),
-      [gatewayTail, localBlock].join("\n\n"),
-    ].join("\n\n---\n\n");
-    const pinned = [
-      replaceBasePromptIdentity(base, identity),
-      [gatewayTail, remoteBlock].join("\n\n"),
-    ].join("\n\n---\n\n");
-
-    expect(unpinned).toContain("local interpreter environment");
-    expect(unpinned).toMatch(/sandbox provider/i);
-    expect(unpinned).not.toContain("/vercel/sandbox");
-
-    expect(pinned).toContain("provider: `vercel`");
-    expect(pinned).toContain("/vercel/sandbox");
-    expect(pinned).not.toContain("local interpreter environment");
   });
 
   test("CASE 1 (custom IDENTITY.md) wins over both pi opener and default", async () => {

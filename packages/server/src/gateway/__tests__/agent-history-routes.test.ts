@@ -786,14 +786,18 @@ describe("agent history routes", () => {
 
 	test("a platform admin reads bound transcripts without an ownership row or ACL", async () => {
 		// Restores the admin bypass the ownership resolver granted before this
-		// route stopped calling it. The admin is neither an org owner nor in
-		// agent_users and no ACL is built, so every ownership/member path
-		// declines — only session.isAdmin authorizes. Without the bypass this
-		// falls to the enforced-ACL path and 404s.
+		// route stopped calling it. The admin has no agent_users row and only a
+		// plain 'member' role (which fails canUseSystemAgent's owner/admin check),
+		// and no ACL is built — so every ownership/member path declines and only
+		// session.isAdmin authorizes. Without the bypass this falls to the
+		// enforced-ACL path and 404s (proven red->green).
 		const { conversationId } = await seedPlatformConversationAcl({
 			buildAcl: false,
 		});
 		const admin = await createTestUser({ name: "Platform Admin" });
+		// Ordinary membership mirrors production: the ambient-org middleware only
+		// sets x-lobu-org to an org the caller belongs to.
+		await addUserToOrganization(admin.id, ORG_ID, "member");
 		const response = await readPlatformTranscript(admin.id, conversationId, {
 			isAdmin: true,
 		});

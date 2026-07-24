@@ -487,10 +487,9 @@ export function createAgentHistoryRoutes(deps: {
 		const ambientOrgId = resolveOrgId();
 		if (!ambientOrgId) return null;
 
-		// Admin bypass mirrors `getAuthorizedAgentScope` and the ownership
-		// resolver: admins read platform transcripts without an ownership row,
-		// scoped to the ambient org. Runs before the agent-binding check so an
-		// admin's request isn't rejected by a session bound to another agent.
+		// Preserve the ownership resolver's platform-admin bypass, scoped to the
+		// ambient org. Runs before the agent-binding check so an admin's request
+		// isn't rejected by a session bound to another agent.
 		if (session.isAdmin) {
 			return {
 				agentId,

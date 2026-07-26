@@ -2715,6 +2715,95 @@ async function pendingRunIdsForWindow(
 	return rows.map((r) => Number(r.id));
 }
 
+/**
+ * Pending connector-operation approvals (`run_type='action'`) matching an
+ * explicit scope. This is the lane that accumulates — a queued operation nobody
+ * decided sits pending until the long-horizon expiry sweep takes it terminal
+ * (scheduled/expire-pending-approvals.ts).
+ *
+ * At least one narrowing filter is REQUIRED. Batch approve fires queued side
+ * effects en masse, so there is deliberately no "everything pending in the org"
+ * shape: the caller must name the connection, connector, operation, or Behavior
+ * they are deciding for. `older_than_days` only narrows further.
+ */
+async function pendingActionRunIdsForScope(
+	scope: NonNullable<Static<typeof ApproveBatchAction>["scope"]>,
+	organizationId: string,
+): Promise<number[] | { error: string }> {
+	const hasNarrowingFilter =
+		scope.connection_id !== undefined ||
+		scope.connector_key !== undefined ||
+		scope.action_key !== undefined ||
+		scope.behavior_id !== undefined;
+	if (!hasNarrowingFilter) {
+		return {
+			error:
+				"A batch decision must be scoped: provide at least one of connection_id, connector_key, action_key, or behavior_id. Approving every pending operation in the organization is not supported.",
+		};
+	}
+
+	const sql = getDb();
+	let where = sql`r.organization_id = ${organizationId}
+    AND r.approval_status = 'pending'
+    AND r.run_type = 'action'`;
+	if (scope.connection_id !== undefined) {
+		where = sql`${where} AND r.connection_id = ${scope.connection_id}`;
+	}
+	if (scope.connector_key !== undefined) {
+		where = sql`${where} AND r.connector_key = ${scope.connector_key}`;
+	}
+	if (scope.action_key !== undefined) {
+		where = sql`${where} AND r.action_key = ${scope.action_key}`;
+	}
+	if (scope.behavior_id !== undefined) {
+		where = sql`${where} AND r.watcher_id = ${scope.behavior_id}`;
+	}
+	if (scope.older_than_days !== undefined) {
+		where = sql`${where} AND r.created_at < NOW() - (${scope.older_than_days}::int * interval '1 day')`;
+	}
+
+	const rows = await sql<{ id: number }>`
+    SELECT r.id FROM runs r WHERE ${where} ORDER BY r.id ASC
+  `;
+	return rows.map((r) => Number(r.id));
+}
+
+/**
+ * Resolve the pending set a batch action targets, from whichever scope the
+ * caller supplied. Exactly one of `window_id` / `scope` is required — accepting
+ * neither would mean an unscoped sweep, and accepting both would leave it
+ * ambiguous which one bounded the blast radius.
+ */
+async function resolveBatchRunIds(
+	args: { window_id?: number; scope?: Static<typeof ApproveBatchAction>["scope"] },
+	organizationId: string,
+): Promise<number[] | { error: string }> {
+	if (args.window_id !== undefined && args.scope !== undefined) {
+		return {
+			error:
+				"Provide either window_id or scope, not both — the batch must have exactly one bounded target.",
+		};
+	}
+	if (args.window_id !== undefined) {
+		return pendingRunIdsForWindow(args.window_id, organizationId);
+	}
+	if (args.scope !== undefined) {
+		return pendingActionRunIdsForScope(args.scope, organizationId);
+	}
+	return {
+		error:
+			"A batch decision requires a target: pass window_id (a Behavior run's proposals) or scope (queued connector operations).",
+	};
+}
+
+/** Fail-closed message when the pending set moved under the reviewer. Named per
+ *  scope so a window batch still says "proposals" (what the reviewer saw) while
+ *  a scoped connector batch says "approvals". */
+function batchSetChangedError(isWindowScope: boolean, verb: string): string {
+	const noun = isWindowScope ? "Pending proposals" : "Pending approvals";
+	return `${noun} changed after this batch was loaded. Refresh before ${verb} the batch.`;
+}
+
 function batchRunSetChanged(
 	pendingRunIds: number[],
 	reviewedRunIds: number[] | undefined,
@@ -2728,9 +2817,17 @@ function batchRunSetChanged(
 }
 
 /**
- * Approve every pending proposal a watcher run produced, in one action. Reuses
- * the single-run approve path per proposal so each still applies through its own
- * gate/apply handler — the batch is purely the grouping, not a second code path.
+ * Approve every pending approval in one bounded target, in one action. Reuses
+ * the single-run approve path per row so each still applies through its own
+ * gate/apply handler — including {@link requireApprovalAuthority}, which THROWS
+ * on an unauthorized caller and so aborts the whole batch rather than letting a
+ * partial sweep through. The batch is purely the grouping, not a second code
+ * path, so whoever may approve one is exactly who may bulk-approve.
+ *
+ * The target is either a window (a Behavior run's proposals) or an explicit
+ * scope over queued connector operations. There is no unscoped variant: batch
+ * approve fires real side effects en masse, so the blast radius must always be
+ * named by the caller.
  */
 async function handleApproveBatch(
 	args: Static<typeof ApproveBatchAction>,
@@ -2739,24 +2836,25 @@ async function handleApproveBatch(
 ): Promise<ManageOperationsResult> {
 	const humanGate = requireHumanApprovalContext(ctx, "approve");
 	if (humanGate) return humanGate;
-	const runIds = await pendingRunIdsForWindow(
-		args.window_id,
-		ctx.organizationId,
-	);
+	const resolved = await resolveBatchRunIds(args, ctx.organizationId);
+	if (!Array.isArray(resolved)) return resolved;
+	const runIds = resolved;
 	if (batchRunSetChanged(runIds, args.run_ids)) {
 		return {
-			error:
-				"Pending proposals changed after this run was loaded. Refresh before approving the batch.",
+			error: batchSetChangedError(args.window_id !== undefined, "approving"),
 		};
 	}
 	if (runIds.length === 0) {
 		return {
 			action: "approve_batch",
-			window_id: args.window_id,
+			...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
 			approved_count: 0,
 			failed_count: 0,
 			run_ids: [],
-			message: "No pending proposals for this run.",
+			message:
+				args.window_id !== undefined
+					? "No pending proposals for this run."
+					: "No pending approvals matched this scope.",
 		};
 	}
 	let approved = 0;
@@ -2772,11 +2870,11 @@ async function handleApproveBatch(
 	}
 	return {
 		action: "approve_batch",
-		window_id: args.window_id,
+		...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
 		approved_count: approved,
 		failed_count: failed,
 		run_ids: runIds,
-		message: `Approved ${approved} of ${runIds.length} proposals${failed > 0 ? ` (${failed} failed)` : ""}.`,
+		message: `Approved ${approved} of ${runIds.length} approvals${failed > 0 ? ` (${failed} failed)` : ""}.`,
 	};
 }
 
@@ -2825,14 +2923,12 @@ async function handleRejectBatch(
 ): Promise<ManageOperationsResult> {
 	const humanGate = requireHumanApprovalContext(ctx, "reject");
 	if (humanGate) return humanGate;
-	const runIds = await pendingRunIdsForWindow(
-		args.window_id,
-		ctx.organizationId,
-	);
+	const resolved = await resolveBatchRunIds(args, ctx.organizationId);
+	if (!Array.isArray(resolved)) return resolved;
+	const runIds = resolved;
 	if (batchRunSetChanged(runIds, args.run_ids)) {
 		return {
-			error:
-				"Pending proposals changed after this run was loaded. Refresh before rejecting the batch.",
+			error: batchSetChangedError(args.window_id !== undefined, "rejecting"),
 		};
 	}
 	const reason = args.reason ?? "Rejected by user";
@@ -2844,7 +2940,12 @@ async function handleRejectBatch(
 		);
 		if (!("error" in result)) rejected += 1;
 	}
-	if (rejected > 0) {
+	// The `correction` feedback event is a WINDOW concept — it is keyed to the
+	// watcher that produced the proposals so its next turn reads the rejection
+	// and revises. A scope-targeted batch over queued connector operations has no
+	// such producing run, so it records no correction; each rejected row still
+	// supersedes its own card through the single-run reject path.
+	if (rejected > 0 && args.window_id !== undefined) {
 		const { watcherId, entityIds } = await resolveWindowRevisionContext(
 			args.window_id,
 			ctx.organizationId,
@@ -2877,12 +2978,16 @@ async function handleRejectBatch(
 	}
 	return {
 		action: "reject_batch",
-		window_id: args.window_id,
+		...(args.window_id !== undefined ? { window_id: args.window_id } : {}),
 		rejected_count: rejected,
 		run_ids: runIds,
 		message:
-			rejected > 0
-				? `Rejected ${rejected} proposals. The Behavior's next run will see this feedback and revise.`
-				: "No pending proposals for this run.",
+			rejected === 0
+				? args.window_id !== undefined
+					? "No pending proposals for this run."
+					: "No pending approvals matched this scope."
+				: args.window_id !== undefined
+					? `Rejected ${rejected} proposals. The Behavior's next run will see this feedback and revise.`
+					: `Rejected ${rejected} queued operations.`,
 	};
 }

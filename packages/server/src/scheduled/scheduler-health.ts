@@ -32,6 +32,10 @@ interface SchedulerHealthStatus {
     overdueBehaviors: number;
     behaviorsOverdueByHours: number;
     stalePendingBehaviorRuns: number;
+    /** Approvals still undecided past PENDING_APPROVAL_TTL_DAYS. */
+    stalePendingApprovals: number;
+    /** Age of the oldest undecided approval, in days. */
+    oldestPendingApprovalDays: number;
   };
 }
 
@@ -145,6 +149,31 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         ?.stale_pending || 0
     );
 
+    // Undecided approvals past the long-horizon TTL — the expire-pending-
+    // approvals sweep (scheduled/expire-pending-approvals.ts) should have taken
+    // these terminal. A non-zero count between daily ticks is expected drift; a
+    // count that persists means the sweep is wedged, so an operator sees the
+    // backlog instead of it silently growing forever (the original gap: the
+    // short-horizon reaper exempts these rows on purpose, #2044, and nothing
+    // else ever resolved them).
+    const stalePendingApprovalStats = await sql`
+      SELECT
+        CAST(COUNT(*) AS INTEGER) AS stale_pending,
+        MAX(EXTRACT(EPOCH FROM (current_timestamp - created_at)) / 86400.0)
+          AS oldest_days
+      FROM runs
+      WHERE approval_status = 'pending'
+        AND run_type IN ('action', 'internal')
+        AND created_at
+            < current_timestamp - (${intervals.pendingApprovalTtlDays}::int * interval '1 day')
+    `;
+    const stalePendingApprovals = Number(
+      stalePendingApprovalStats[0]?.stale_pending || 0
+    );
+    const oldestPendingApprovalDays = Number(
+      stalePendingApprovalStats[0]?.oldest_days || 0
+    );
+
     // Check for issues
     if (overdueByHours > OVERDUE_THRESHOLD_HOURS) {
       issues.push(`${overdueFeeds} feeds overdue by up to ${overdueByHours.toFixed(1)} hours`);
@@ -180,6 +209,12 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       );
     }
 
+    if (stalePendingApprovals > 0) {
+      issues.push(
+        `${stalePendingApprovals} approvals undecided past the ${intervals.pendingApprovalTtlDays}-day TTL (oldest ${oldestPendingApprovalDays.toFixed(1)} days)`
+      );
+    }
+
     const healthy = issues.length === 0;
 
     if (!healthy) {
@@ -202,6 +237,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueBehaviors,
         behaviorsOverdueByHours: Math.round(behaviorsOverdueByHours * 10) / 10,
         stalePendingBehaviorRuns,
+        stalePendingApprovals,
+        oldestPendingApprovalDays: Math.round(oldestPendingApprovalDays * 10) / 10,
       },
     };
   } catch (error) {
@@ -222,6 +259,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueBehaviors: 0,
         behaviorsOverdueByHours: 0,
         stalePendingBehaviorRuns: 0,
+        stalePendingApprovals: 0,
+        oldestPendingApprovalDays: 0,
       },
     };
   }

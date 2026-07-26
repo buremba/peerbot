@@ -28,6 +28,7 @@ import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
+import { runExpirePendingApprovals } from './expire-pending-approvals';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -292,6 +293,23 @@ function registerMaintenanceTasks(
       await runReapExpiredPendingSlackInstalls();
     },
     { cron: '17 3 * * *' },
+  );
+
+  // Long-horizon pending-approval expiry — transitions runs still sitting at
+  // approval_status='pending' past PENDING_APPROVAL_TTL_DAYS (default 7 DAYS)
+  // to 'expired' and supersedes their approval card. This is the deliberate
+  // counterpart to the SHORT-horizon claim reaper, which exempts
+  // approval-pending rows on purpose (#2044) so a human gets real time to
+  // decide; without a long horizon those rows never resolve. Days apart from
+  // that 120s exemption, so the two never contend for the same row.
+  // Single-claimant per tick; pure Postgres (multi-replica safe). Daily,
+  // off-peak, distinct minute from the other two reapers.
+  scheduler.register(
+    'expire-pending-approvals',
+    async () => {
+      await runExpirePendingApprovals();
+    },
+    { cron: '31 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

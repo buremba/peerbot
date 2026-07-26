@@ -114,6 +114,19 @@ export const intervals = {
     return parseEnvInt('RUNS_POLL_INTERVAL_MS', 200);
   },
 
+  /** Long-horizon TTL (days) after which a run still sitting at
+   *  `approval_status='pending'` is expired.
+   *
+   *  Deliberately measured in DAYS, not the 120s claim horizon: the
+   *  short-horizon reaper exempts approval-pending rows on purpose (#2044,
+   *  scheduled/stale-run-sweeper.ts) because a human needs real time to decide.
+   *  7 days spans a full work week plus a weekend, so a reviewer on PTO still
+   *  gets a chance; past that the proposal's inputs are stale enough that
+   *  executing it would surprise the operator more than dropping it. */
+  get pendingApprovalTtlDays(): number {
+    return parseEnvInt('PENDING_APPROVAL_TTL_DAYS', 7);
+  },
+
   /** TTL for per-agent SSE backlog entries (pruned lazily on read/write). */
   get sseBacklogTtlMs(): number {
     return parseEnvInt('SSE_BACKLOG_TTL_MS', 2 * 60 * 1000);

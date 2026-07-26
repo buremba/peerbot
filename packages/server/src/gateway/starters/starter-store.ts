@@ -5,12 +5,14 @@
  * do NOT live on the append-only `events` substrate that backs per-conversation
  * suggestion chips: there is exactly one current value per (org, agent), it is
  * read by a single lookup, and every regeneration replaces the previous one. An
- * upsert expresses that directly and is race-free across replicas without an
- * advisory lock or a supersede chain.
+ * upsert expresses that directly; the message-bound durable lease below orders
+ * competing generations across replicas.
  */
 import { type SuggestedPrompt, sanitizeSuggestionPrompts } from "@lobu/core";
 import type { DbClient } from "../../db/client.js";
 import { getDb } from "../../db/client.js";
+
+export const STARTERS_LEASE_PREFIX = "starter-generation";
 
 export interface CachedStarters {
   prompts: SuggestedPrompt[];
@@ -21,10 +23,8 @@ export interface CachedStarters {
 /**
  * Minimum age before an otherwise-stale cache is regenerated.
  *
- * Workspace activity is the invalidation signal, but in an org with a live
- * connector the event stream never stops advancing, so "any newer event" alone
- * would mark the cache stale permanently and burn an LLM turn on every landing.
- * The dampener bounds regeneration to at most once per window per agent.
+ * The endpoint is read on every fresh-chat landing. This interval keeps those
+ * reads from dispatching a hidden LLM turn more than once per agent per window.
  */
 export const STARTERS_MIN_AGE_MS = 6 * 60 * 60 * 1000; // 6h
 
@@ -85,12 +85,46 @@ export async function writeCachedStarters(args: {
 }
 
 /**
+ * Finish the hidden turn that currently owns the generation lease.
+ *
+ * The lease token is the turn's signed message id. Deleting it and writing the
+ * result in one transaction prevents a late terminal or tool call from an
+ * expired turn from overwriting a newer generation. An empty result records a
+ * failed generation so the endpoint stops polling and observes the back-off.
+ */
+export async function finalizeStarterGeneration(args: {
+  organizationId: string;
+  agentId: string;
+  messageId: string;
+  prompts: SuggestedPrompt[];
+}): Promise<boolean> {
+  const { organizationId, agentId, messageId, prompts } = args;
+  const leaseKey = `${organizationId}:${agentId}`;
+  return getDb().begin(async (tx) => {
+    const released = await tx<{ token: string }>`
+      DELETE FROM chat_state_locks
+      WHERE key_prefix = ${STARTERS_LEASE_PREFIX}
+        AND thread_id = ${leaseKey}
+        AND token = ${messageId}
+      RETURNING token
+    `;
+    if (released.length === 0) return false;
+    await writeCachedStarters({
+      organizationId,
+      agentId,
+      prompts,
+      sql: tx,
+    });
+    return true;
+  });
+}
+
+/**
  * Should a fresh generation be dispatched?
  *
- * Never generated → yes. Otherwise regenerate only once the cache has aged past
- * the dampener (workspace activity is assumed — it is what makes chips go
- * out of date — but it must not trigger a turn per landing), and only once a
- * failed generation has served its back-off.
+ * Never generated → yes. Otherwise refresh only once the cache has aged past
+ * the minimum interval, and only once a failed generation has served its
+ * back-off.
  */
 export function shouldRegenerate(
   cached: CachedStarters | null,

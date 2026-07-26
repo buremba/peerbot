@@ -5,6 +5,11 @@ import {
   UnifiedThreadResponseConsumer,
 } from "../platform/unified-thread-consumer.js";
 
+const finalizeStarterGeneration = mock(async () => true);
+mock.module("../starters/starter-store.js", () => ({
+  finalizeStarterGeneration,
+}));
+
 const basePayload = {
   messageId: "m1",
   channelId: "telegram:123",
@@ -287,6 +292,37 @@ describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
 
     expect(renderer.handleError).toHaveBeenCalledTimes(1);
     expect(renderer.handleCompletion).toHaveBeenCalledTimes(1); // error path also completes
+  });
+
+  test("a starters terminal with no posted prompts records a backed-off failure", async () => {
+    // Without this, an errored or empty generation never releases its lease:
+    // the endpoint keeps reporting `generating` and the client polls for the
+    // whole lease window.
+    finalizeStarterGeneration.mockClear();
+    const { consumer, renderer, sseManager } = makeApiConsumer(false);
+
+    await consumer.handleThreadResponse({
+      id: "job-starters",
+      data: {
+        ...watcherTerminal,
+        messageId: "starter-message",
+        processedMessageIds: ["starter-message"],
+        platformMetadata: {
+          source: "starters",
+          agentId: "lobu-builder",
+          organizationId: "org-1",
+        },
+      },
+    });
+
+    expect(finalizeStarterGeneration).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      agentId: "lobu-builder",
+      messageId: "starter-message",
+      prompts: [],
+    });
+    expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+    expect(sseManager.hasActiveConnection).not.toHaveBeenCalled();
   });
 
   for (const source of ["connector-repair", "scheduled-job", "internal"]) {

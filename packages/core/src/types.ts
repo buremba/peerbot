@@ -338,8 +338,7 @@ export const SUGGESTION_LIMITS = {
  * valid `{title,message}` entries. Trims BEFORE capping length (so leading
  * whitespace can't yield an empty displayed title), drops malformed/empty
  * entries, and returns `[]` for any non-array input. Shared by the agent tool
- * and the gateway route so the worker (untrusted) and the server enforce one
- * and server surfaces so untrusted payloads share one contract.
+ * and gateway so untrusted payloads follow one contract.
  */
 export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
   if (!Array.isArray(value)) return [];

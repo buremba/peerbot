@@ -11,6 +11,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ensureStarters } from "../../gateway/starters/generate-starters";
 import {
+	finalizeStarterGeneration,
 	readCachedStarters,
 	shouldRegenerate,
 	STARTERS_FAILURE_BACKOFF_MS,
@@ -91,9 +92,7 @@ describe("starter chips (per agent+org cache)", () => {
 	it("regenerates only once the set has aged past the dampener", async () => {
 		const cached = await readCachedStarters(orgId, agentId);
 		if (!cached) throw new Error("expected a cached set");
-		// Just inside the window: still fresh. This is the case that made the
-		// events-marker design thrash — an active workspace advances the event
-		// stream constantly, so "any newer event" alone regenerated every landing.
+		// Just inside the window: still fresh.
 		const justInside =
 			cached.generatedAt.getTime() + STARTERS_MIN_AGE_MS - 1000;
 		expect(shouldRegenerate(cached, justInside)).toBe(false);
@@ -130,6 +129,7 @@ describe("starter chips (per agent+org cache)", () => {
 
 	it("ensureStarters dispatches when missing, and NOT when the cache is fresh", async () => {
 		let enqueued = 0;
+		let enqueuedMessageId: string | undefined;
 		const sessions = new Map<string, unknown>();
 		const deps = {
 			sessionManager: {
@@ -140,8 +140,9 @@ describe("starter chips (per agent+org cache)", () => {
 				touchSession: async () => undefined,
 			},
 			queueProducer: {
-				enqueueMessage: async () => {
+				enqueueMessage: async (payload: { messageId?: string }) => {
 					enqueued += 1;
+					enqueuedMessageId = payload.messageId;
 					return "job-1";
 				},
 			},
@@ -154,14 +155,32 @@ describe("starter chips (per agent+org cache)", () => {
 		});
 		expect(dispatched).toBe(true);
 		expect(enqueued).toBe(1);
+		expect(enqueuedMessageId).toBeTruthy();
+		if (!enqueuedMessageId) throw new Error("expected an enqueued message id");
 
-		// A fresh set now exists → the freshness recheck under the lease declines
-		// to dispatch again.
-		await writeCachedStarters({
+		// The matching hidden turn consumes its lease and publishes the fresh set.
+		const finalized = await finalizeStarterGeneration({
 			organizationId: orgId,
 			agentId: "dispatch-agent",
+			messageId: enqueuedMessageId,
 			prompts: [{ title: "Fresh", message: "Fresh" }],
 		});
+		expect(finalized).toBe(true);
+
+		// A duplicate/late terminal from the same turn cannot replace its result.
+		const finalizedAgain = await finalizeStarterGeneration({
+			organizationId: orgId,
+			agentId: "dispatch-agent",
+			messageId: enqueuedMessageId,
+			prompts: [],
+		});
+		expect(finalizedAgain).toBe(false);
+		expect(
+			(await readCachedStarters(orgId, "dispatch-agent"))?.prompts,
+		).toEqual([{ title: "Fresh", message: "Fresh" }]);
+
+		// With no active lease, ensureStarters claims one, sees the fresh cache,
+		// releases it, and declines to enqueue.
 		const redispatched = await ensureStarters(deps, {
 			agentId: "dispatch-agent",
 			organizationId: orgId,

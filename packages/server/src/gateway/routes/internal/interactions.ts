@@ -12,7 +12,7 @@ import {
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import type { InteractionService } from "../../interactions.js";
-import { writeCachedStarters } from "../../starters/starter-store.js";
+import { finalizeStarterGeneration } from "../../starters/starter-store.js";
 import { persistSuggestion } from "../../suggestions/persist-suggestion.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
@@ -185,7 +185,11 @@ export function createInteractionRoutes(
       // content). Validate/normalize server-side — never dereference an unshaped
       // `prompts` (a non-array body would crash on `.length`).
       const prompts = sanitizeSuggestionPrompts(body?.prompts);
-      if (prompts.length === 0) {
+      // A starters turn that produced nothing usable must still reach
+      // finalizeStarterGeneration below: that is what records the failure and
+      // releases the lease. Returning early here would leave the endpoint
+      // reporting `generating` until the lease expired — an infinite poll.
+      if (source !== "starters" && prompts.length === 0) {
         return c.json({ success: true, prompts: 0 });
       }
 
@@ -207,17 +211,30 @@ export function createInteractionRoutes(
 			// agent and shown before any conversation begins. It writes to the
 			// starter CACHE, not the per-conversation suggestion event.
 			if (source === "starters") {
-				if (!worker.agentId) {
+				if (!worker.agentId || !messageId) {
 					return c.json(
-						{ success: false, error: "starters turn missing agentId" },
+						{
+							success: false,
+							error: "starters turn missing agentId or messageId",
+						},
 						400,
         );
       }
-				await writeCachedStarters({
+				// Bound to the turn that owns the generation lease: releasing the
+				// lease and writing the cache happen in one transaction, so a late
+				// post from an expired turn cannot clobber a newer generation.
+				const accepted = await finalizeStarterGeneration({
 					organizationId,
 					agentId: worker.agentId,
+					messageId,
 					prompts,
 				});
+				if (!accepted) {
+					return c.json(
+						{ success: false, error: "starter generation is no longer current" },
+						409,
+					);
+				}
 				logger.info(
 					`Persisted ${prompts.length} starter prompt(s) for agent ${worker.agentId}`,
 				);

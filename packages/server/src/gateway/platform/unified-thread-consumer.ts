@@ -18,6 +18,7 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
+import { finalizeStarterGeneration } from "../starters/starter-store.js";
 import { finalizeTurnSuggestions } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
@@ -394,6 +395,46 @@ export class UnifiedThreadResponseConsumer {
       (data.platform || data.teamId) === "api" &&
       !data.platformMetadata?.connectionId;
 
+    const startersSource = data.platformMetadata?.source === "starters";
+
+    // A starters turn that reaches terminal WITHOUT having published a valid
+    // set must record the failure here — that is what releases the lease and
+    // starts the back-off. Without it an errored or empty generation leaves the
+    // endpoint reporting `generating` until the lease expires, and the client
+    // polls for that whole window. If suggest_actions already published, it
+    // consumed this message-id-bound lease and this call is a no-op.
+    if (
+      isApiRow &&
+      startersSource &&
+      (data.error || data.processedMessageIds?.length)
+    ) {
+      const organizationId =
+        data.organizationId ??
+        (typeof data.platformMetadata?.organizationId === "string"
+          ? data.platformMetadata.organizationId
+          : undefined);
+      const agentId =
+        typeof data.platformMetadata?.agentId === "string"
+          ? data.platformMetadata.agentId
+          : undefined;
+      if (organizationId && agentId) {
+        try {
+          await finalizeStarterGeneration({
+            organizationId,
+            agentId,
+            messageId: data.messageId,
+            prompts: [],
+          });
+        } catch (err) {
+          logger.warn(
+            `Failed to finalize starter generation for ${agentId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+    }
+
     // Finalize the conversation's suggestion set at the terminal boundary,
     // BEFORE the SSE owner-gate below. This must run whether or not any pod
     // holds the client's socket (a disconnected client leaves no owner, and the
@@ -402,7 +443,13 @@ export class UnifiedThreadResponseConsumer {
     // set when this turn emitted none, and keeps this turn's own for the
     // renderer to embed. Idempotent under the re-queue-to-owner retry. Skipped
     // on error turns (keep the last good chips — decided product behavior).
-    if (isApiRow && !data.error && data.processedMessageIds?.length) {
+    // A starters turn has no real conversation, so it never finalizes one.
+    if (
+      isApiRow &&
+      !startersSource &&
+      !data.error &&
+      data.processedMessageIds?.length
+    ) {
       const organizationId =
         data.organizationId ??
         (typeof data.platformMetadata?.organizationId === "string"

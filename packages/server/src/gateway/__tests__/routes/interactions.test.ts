@@ -10,12 +10,12 @@ import type { PersistSuggestionArgs } from "../../suggestions/persist-suggestion
 // platform check, server-side sanitize, missing-organization guard, and the
 // starters-source → starter-cache branch — none of which should touch the DB.
 const persistSuggestion = mock(() => Promise.resolve(42));
-const writeCachedStarters = mock(() => Promise.resolve(undefined));
+const finalizeStarterGeneration = mock(() => Promise.resolve(true));
 mock.module("../../suggestions/persist-suggestion.js", () => ({
   persistSuggestion,
 }));
 mock.module("../../starters/starter-store.js", () => ({
-	writeCachedStarters,
+	finalizeStarterGeneration,
 }));
 
 describe("interaction routes", () => {
@@ -26,7 +26,7 @@ describe("interaction routes", () => {
 
   beforeEach(() => {
     persistSuggestion.mockClear();
-		writeCachedStarters.mockClear();
+		finalizeStarterGeneration.mockClear();
     originalKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -255,13 +255,42 @@ describe("interaction routes", () => {
 			const body = await res.json();
 			expect(body.scope).toBe("starter");
 			// starter CACHE, NOT the per-conversation suggestion event.
-			expect(writeCachedStarters).toHaveBeenCalledTimes(1);
+			expect(finalizeStarterGeneration).toHaveBeenCalledTimes(1);
 			expect(persistSuggestion).not.toHaveBeenCalled();
-			const args = writeCachedStarters.mock.calls.at(-1)?.[0] as
-				| { agentId?: string; organizationId?: string }
+			const args = finalizeStarterGeneration.mock.calls.at(-1)?.[0] as
+				| { agentId?: string; organizationId?: string; messageId?: string }
 				| undefined;
 			expect(args?.agentId).toBe("lobu-builder");
 			expect(args?.organizationId).toBe("org-1");
+			// The turn's own message id is the lease token it must present.
+			expect(args?.messageId).toBe("m1");
+		});
+
+		test("a late starters turn cannot overwrite a newer generation", async () => {
+			// The lease was already consumed (or expired and re-claimed), so the
+			// store declines the write and the route must not report success.
+			finalizeStarterGeneration.mockResolvedValueOnce(false);
+			const staleToken = generateWorkerToken("user-1", "conv-1", "deploy-1", {
+				channelId: "chan-1",
+				teamId: "team-1",
+				platform: "api",
+				agentId: "lobu-builder",
+				organizationId: "org-1",
+				messageId: "expired-message",
+				source: "starters",
+			});
+			const res = await router.request("/internal/suggestions/create", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${staleToken}`,
+				},
+				body: JSON.stringify({
+					prompts: [{ title: "Stale", message: "Stale" }],
+				}),
+			});
+			expect(res.status).toBe(409);
+			expect(persistSuggestion).not.toHaveBeenCalled();
 		});
 
 		test("a starters turn without agentId is rejected without persisting", async () => {
@@ -281,7 +310,7 @@ describe("interaction routes", () => {
 				body: JSON.stringify({ prompts: [{ title: "T", message: "M" }] }),
 			});
 			expect(res.status).toBe(400);
-			expect(writeCachedStarters).not.toHaveBeenCalled();
+			expect(finalizeStarterGeneration).not.toHaveBeenCalled();
 		});
 
     test("returns 401 without auth", async () => {

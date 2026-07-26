@@ -9,14 +9,12 @@
  * The turn runs with `source: "starters"`, which (a) exempts it from the SSE
  * owner-gate (HEADLESS_SOURCES), (b) makes the worker skip its transcript
  * snapshot (no visible message), and (c) routes its `suggest_actions` post to
- * the per-agent `starter:<agentId>` origin (see interactions route).
+ * the per-agent cache (see interactions route).
  *
  * Dispatch is debounced with a durable Postgres lease per agent+org across all
- * replicas. The lease outlives this request (unlike a transaction-scoped
- * advisory lock) and expires after a bounded cooldown if the worker never
- * posts suggestions. The cache's own min-age/back-off (see starter-store)
- * is the second brake: the lease only bounds CONCURRENT dispatch, so without
- * it an active workspace would regenerate every time the lease expired.
+ * replicas. The lease token is the hidden turn's message id, so only that turn
+ * can publish or fail its generation. It outlives this request and expires if
+ * the worker never reaches a terminal response.
  */
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
@@ -27,11 +25,14 @@ import {
 	enqueueAgentMessage,
 } from "../services/agent-threads.js";
 import type { ISessionManager } from "../session.js";
-import { readCachedStarters, shouldRegenerate } from "./starter-store.js";
+import {
+	readCachedStarters,
+	shouldRegenerate,
+	STARTERS_LEASE_PREFIX,
+} from "./starter-store.js";
 
 const logger = createLogger("generate-starters");
 
-const STARTERS_LEASE_PREFIX = "starter-generation";
 const STARTERS_LEASE_MS = 15 * 60 * 1000;
 const STARTERS_ALLOWED_TOOLS = [
 	"search_sdk",
@@ -71,12 +72,12 @@ export async function ensureStarters(
 	const { agentId, organizationId } = args;
 	const sql = getDb();
 	const leaseKey = `${organizationId}:${agentId}`;
-	const leaseToken = randomUUID();
+	const messageId = randomUUID();
 	const claimed = await sql<{ token: string }>`
     INSERT INTO chat_state_locks (
       key_prefix, thread_id, token, expires_at
     ) VALUES (
-      ${STARTERS_LEASE_PREFIX}, ${leaseKey}, ${leaseToken},
+      ${STARTERS_LEASE_PREFIX}, ${leaseKey}, ${messageId},
       now() + ${STARTERS_LEASE_MS} * interval '1 millisecond'
     )
     ON CONFLICT (key_prefix, thread_id) DO UPDATE
@@ -93,7 +94,7 @@ export async function ensureStarters(
       DELETE FROM chat_state_locks
       WHERE key_prefix = ${STARTERS_LEASE_PREFIX}
         AND thread_id = ${leaseKey}
-        AND token = ${leaseToken}
+        AND token = ${messageId}
     `;
 	};
 
@@ -114,6 +115,7 @@ export async function ensureStarters(
 		});
 		await enqueueAgentMessage(deps, {
 			threadId,
+			messageId,
 			messageText: STARTER_PROMPT,
 			source: "starters",
 			// This is an automatic background turn. Keep it structurally

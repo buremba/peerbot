@@ -33,6 +33,33 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		await cleanupTestDatabase();
 	});
 
+	/**
+	 * Register a turn's run so finalizeTurnSuggestions can order it. Mirrors what
+	 * the dispatch path writes; the ordering guard only reads (message_id, run_id).
+	 * Returns the real `runs.id` — run ids are assigned by the sequence, so the
+	 * ordering under test is the genuine monotonic one, not a hand-picked number.
+	 */
+	async function seedTurnRun(messageId: string): Promise<number> {
+		const sql = getTestDb();
+		const runRows = (await sql`
+			INSERT INTO public.runs (organization_id, run_type, status)
+			VALUES (${orgId}, 'chat_message', 'completed')
+			RETURNING id
+		`) as Array<{ id: number }>;
+		const runId = Number(runRows[0].id);
+		await sql`
+			INSERT INTO public.agent_run_input (
+				organization_id, message_id, agent_id, conversation_id,
+				deployment_name, run_id, payload, token_claims
+			) VALUES (
+				${orgId}, ${messageId}, 'suggest-agent', ${conversationId},
+				'test-deploy', ${runId}, '{}'::jsonb, '{}'::jsonb
+			)
+			ON CONFLICT (organization_id, deployment_name, message_id) DO NOTHING
+		`;
+		return runId;
+	}
+
 	async function currentCount(): Promise<number> {
 		const rows = (await getTestDb()`
 			SELECT count(*)::int AS n
@@ -140,17 +167,21 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		// retry made it lag a whole turn. Without an ordering guard, A does not
 		// recognize B's turnMessageId, treats it as "a prior turn's leftovers",
 		// and clears chips that are actually the newest ones.
+		const runA = await seedTurnRun("msg-A");
+		const runB = await seedTurnRun("msg-B");
 		await persistSuggestion({
 			organizationId: orgId,
 			conversationId,
 			prompts: [{ title: "A", message: "from turn A" }],
 			turnMessageId: "msg-A",
+			runId: runA,
 		});
 		const idB = await persistSuggestion({
 			organizationId: orgId,
 			conversationId,
 			prompts: [{ title: "B", message: "from turn B" }],
 			turnMessageId: "msg-B",
+			runId: runB,
 		});
 
 		await finalizeTurnSuggestions({
@@ -162,5 +193,52 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		const current = await readCurrentSuggestion(orgId, conversationId);
 		expect(current?.id).toBe(idB);
 		expect(current?.prompts).toEqual([{ title: "B", message: "from turn B" }]);
+	});
+
+	it("a delayed turn that emitted NOTHING still cannot clear a newer set", async () => {
+		// The harder case: turn C published no suggestions at all, so it has no
+		// suggestion event of its own to order against — only its run id. Turn D
+		// then published. C's terminal finally lands and must leave D's set alone.
+		await seedTurnRun("msg-C");
+		const runD = await seedTurnRun("msg-D");
+		const idD = await persistSuggestion({
+			organizationId: orgId,
+			conversationId,
+			prompts: [{ title: "D", message: "from turn D" }],
+			turnMessageId: "msg-D",
+			runId: runD,
+		});
+
+		await finalizeTurnSuggestions({
+			organizationId: orgId,
+			conversationId,
+			turnMessageIds: ["msg-C"],
+		});
+
+		const current = await readCurrentSuggestion(orgId, conversationId);
+		expect(current?.id).toBe(idD);
+		expect(current?.prompts).toEqual([{ title: "D", message: "from turn D" }]);
+	});
+
+	it("an IN-ORDER turn that emitted none still clears the prior set", async () => {
+		// The guard must not become a blanket "never clear": a later turn (higher
+		// run id) that emits nothing must still supersede the earlier chips.
+		const runE = await seedTurnRun("msg-E");
+		await persistSuggestion({
+			organizationId: orgId,
+			conversationId,
+			prompts: [{ title: "E", message: "from turn E" }],
+			turnMessageId: "msg-E",
+			runId: runE,
+		});
+		await seedTurnRun("msg-F");
+
+		await finalizeTurnSuggestions({
+			organizationId: orgId,
+			conversationId,
+			turnMessageIds: ["msg-F"],
+		});
+
+		expect(await readCurrentSuggestion(orgId, conversationId)).toBeNull();
 	});
 });

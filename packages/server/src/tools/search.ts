@@ -13,6 +13,7 @@ import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
+import { callerIsAdmin } from './admin/helpers/db-helpers';
 import type { Env } from '../index';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
 import { readVirtualFeed } from '../lib/connector-pushdown';
@@ -1312,7 +1313,14 @@ async function formatEntityResult(
   let connections: ConnectionInfo[] | undefined;
   const primaryIsCallerOrg = String(primaryRow.organization_id) === ctx.organizationId;
   if ((args.include_connections ?? true) && primaryIsCallerOrg) {
-    connections = await fetchConnectionsForEntity(primaryEntity.id);
+    connections = await fetchConnectionsForEntity(primaryEntity.id, {
+      ...authzScopeFromToolContext({
+        organizationId: ctx.organizationId,
+        userId: ctx.userId,
+        agentId: ctx.agentId,
+      }),
+      principalIsAdmin: await callerIsAdmin(getDb(), ctx),
+    });
   }
 
   // Fetch children for root entities (no parent). Children are scoped to
@@ -1401,7 +1409,20 @@ async function formatEntityResult(
   };
 }
 
-async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionInfo[]> {
+/**
+ * Connections attached to the primary entity. `connectionLinkedToBusinessEntitySql`
+ * is a PURE linkage test (entity tag / linked feed / `about` edge) — it carries no
+ * authz. `search_memory` is a PUBLIC_READ action and `include_connections` defaults
+ * to true, so without the shared gate ANY org member could enumerate another
+ * member's PRIVATE connections through it. Compile the predicate from the ONE
+ * place every other connection read seam uses (manage_connections list/get,
+ * manage_feeds read_feed, query_sql, connector pushdown) and drop soft-deleted
+ * rows, which that helper also does not filter.
+ */
+async function fetchConnectionsForEntity(
+  entityId: number,
+  scope: AuthzScope
+): Promise<ConnectionInfo[]> {
   const sql = getDb();
   const result = await sql`
     SELECT
@@ -1422,6 +1443,8 @@ async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionIn
     FROM connections c
     LEFT JOIN current_event_records f ON f.connection_id = c.id
     WHERE ${sql.unsafe(connectionLinkedToBusinessEntitySql(String(entityId), 'c', 'c.organization_id'))}
+      AND c.deleted_at IS NULL
+      ${sql.unsafe(compileConnectionRowVisibility(scope, 'c'))}
     GROUP BY c.id, c.connector_key, c.display_name, c.status, c.config, c.created_at, c.updated_at
     ORDER BY
       CASE c.status

@@ -3,7 +3,7 @@ import {
   sanitizeSuggestionPrompts,
   type SuggestedPrompt,
 } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { getDb, pgTextArray } from "../../db/client.js";
 import type { DbClient } from "../../db/client.js";
 import { insertEvent } from "../../utils/insert-event.js";
 
@@ -173,16 +173,16 @@ export async function readCurrentSuggestion(
  *
  *  - The current row is OWNED by this turn (its `turnMessageId` is one this turn
  *    processed) → leave it; the renderer embeds it on `complete`.
- *  - The current row belongs to a DIFFERENT turn → treated as a PRIOR turn's and
- *    superseded (this turn emitted none). The safety of "different ⇒ prior"
- *    rests on per-conversation turn SERIALIZATION: a turn holds the deployment
- *    advisory lock start→finish and only enqueues its terminal row before
- *    releasing it (message-consumer.ts), so a LATER turn cannot have persisted a
- *    newer set by the time THIS turn terminates in order. The residual window is
- *    a terminal row whose *processing* lags a whole subsequent turn (queue
- *    backlog/retry) — accepted: at that point clearing a newer set only drops a
- *    chip render the next turn re-establishes; no durable corruption, `events`
- *    stays append-only.
+ *  - The current row belongs to a DIFFERENT turn → superseded (this turn emitted
+ *    none), but ONLY if that turn ran EARLIER. "Different turn" does not imply
+ *    "earlier turn": per-conversation serialization orders turns as they RUN,
+ *    not as their terminal rows are PROCESSED, so a terminal delayed by a queue
+ *    backlog or a retry can arrive after a whole subsequent turn has published.
+ *    Clearing then erases chips the user is looking at, in the live payload and
+ *    in history replay alike. Ordering comes from `agent_run_input.run_id`,
+ *    which exists for EVERY turn keyed by the message ids this function already
+ *    receives — including a turn that emitted no suggestions and so has no
+ *    suggestion event of its own to compare against.
  *  - No current row → nothing to do.
  *
  * Idempotent: re-running (e.g. the row re-queued to the SSE owner after a
@@ -207,7 +207,7 @@ export async function finalizeTurnSuggestions(args: {
     // the previous clear marker and supersede it, appending a fresh 'completed'
     // row on every terminal for the rest of the conversation's life.
     const rows = (await tx`
-      SELECT id, metadata
+      SELECT id, run_id, metadata
       FROM current_event_records
       WHERE organization_id = ${organizationId}
         AND interaction_type = 'suggestion'
@@ -215,13 +215,41 @@ export async function finalizeTurnSuggestions(args: {
         AND origin_id = ${`suggestion:${conversationId}`}
       ORDER BY id DESC
       LIMIT 1
-    `) as Array<{ id: number; metadata: Record<string, unknown> | null }>;
+    `) as Array<{
+      id: number;
+      run_id: number | null;
+      metadata: Record<string, unknown> | null;
+    }>;
     const row = rows[0];
     if (!row) return; // nothing current
     const turnMessageId =
       (row.metadata?.turnMessageId as string | null) ?? null;
     // This turn (re)issued the current set → keep it for the renderer to embed.
     if (turnMessageId != null && owned.has(turnMessageId)) return;
+
+    // Ordering guard. "Belongs to a different turn" does NOT imply "belongs to
+    // an EARLIER turn": a terminal row whose processing lags a whole subsequent
+    // turn (queue backlog or retry) arrives after that later turn published.
+    // Clearing then erases chips the user is looking at, in the live payload and
+    // in history replay alike.
+    //
+    // `agent_run_input` is the ordering source because it has a row for EVERY
+    // turn, keyed by the message ids this finalizer already holds — including a
+    // turn that emitted no suggestions, which leaves no suggestion event of its
+    // own to compare against. Rows are marked 'completed', never deleted, so the
+    // run id is still readable at terminal time.
+    if (owned.size > 0 && row.run_id != null) {
+      const mine = (await tx`
+        SELECT max(run_id) AS run_id
+        FROM public.agent_run_input
+        WHERE organization_id = ${organizationId}
+          AND message_id = ANY(${pgTextArray([...owned])}::text[])
+      `) as Array<{ run_id: number | null }>;
+      const myRun = mine[0]?.run_id ?? null;
+      // Only clear a set published by an EARLIER run.
+      if (myRun != null && row.run_id > myRun) return;
+    }
+
     // A prior turn's set survived a turn that emitted none — supersede it.
     await insertEvent(
       {

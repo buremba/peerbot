@@ -1,3 +1,4 @@
+import { isSecretKey } from '@lobu/core';
 import { describe, expect, it } from 'vitest';
 import {
   REDACTED_SENTINEL,
@@ -68,5 +69,58 @@ describe('redactConfigState', () => {
     });
     expect(out?.apiKey).toBe(REDACTED_SENTINEL);
     expect(out?.baseUrl).toBe('https://api.z.ai');
+  });
+});
+
+/**
+ * The denylist is SUFFIX-anchored (`(^|_)(token|secret|…)s?$`), which by
+ * construction misses URL/DSN-shaped credential keys — `DATABASE_URL` ends in
+ * `_url`, not in any denylisted term. That gap is exactly the bug this branch
+ * started from: a `postgres://user:pass@host/db` sitting in
+ * `connections.config.DATABASE_URL` and served straight back by
+ * `connections.list()`. These cases pin the fix so it cannot silently regress.
+ */
+describe('isSecretKey > URL/DSN-shaped credential keys', () => {
+  it.each(['DATABASE_URL', 'database_url', 'databaseUrl', 'dsn', 'connection_string', 'connectionString', 'db_url'])(
+    'classifies %s as secret',
+    (key) => {
+      expect(isSecretKey(key)).toBe(true);
+    }
+  );
+
+  it.each(['authorization', 'Authorization', 'cookie', 'session_id', 'sessionId', 'bearer'])(
+    'classifies %s as secret',
+    (key) => {
+      expect(isSecretKey(key)).toBe(true);
+    }
+  );
+
+  // The suffix anchoring is load-bearing — these must stay readable.
+  it.each(['tokenizer', 'keyboard', 'secretsPolicy', 'url', 'base_url', 'webhook_url', 'authorization_mode'])(
+    'does NOT classify %s as secret',
+    (key) => {
+      expect(isSecretKey(key)).toBe(false);
+    }
+  );
+});
+
+/**
+ * Key names are not sufficient on their own: a connection string can sit under
+ * a perfectly innocuous key (`primary`, `endpoint`). The value-shaped pass
+ * strips the `user:password@` userinfo while leaving scheme + host readable.
+ */
+describe('redactConfigState > URI credential values', () => {
+  it('redacts credentials embedded in a connection string under a non-secret key', () => {
+    const out = redactConfigState('connection', {
+      config: {
+        primary: 'postgres://admin:hunter2@db.internal:5432/app',
+        endpoint: 'https://api.example.com/v1',
+      },
+    });
+    const config = out?.config as Record<string, unknown>;
+    expect(config.primary).toBe(`postgres://${REDACTED_SENTINEL}@db.internal:5432/app`);
+    expect(config.primary).not.toContain('hunter2');
+    // A URL with no userinfo is untouched.
+    expect(config.endpoint).toBe('https://api.example.com/v1');
   });
 });

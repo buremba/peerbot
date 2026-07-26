@@ -58,7 +58,37 @@ import {
   validateFeedConfig,
   type FeedDefinition,
 } from './helpers/feed-helpers';
+import { redactConnectionConfig } from '../../utils/connection-config-redaction';
 
+/**
+ * Sanitize a raw `feeds` row before it is serialized to a caller.
+ *
+ * `list_feeds` / `read_feed` / `read_feeds` select `f.*` and spread the row, so
+ * two columns need handling:
+ *
+ *  - `checkpoint` — the connector's opaque sync cursor. `table-schema.ts` names
+ *    it as a column query_sql must never emit; there is no reason these tools
+ *    should be a way around that, and cursors have historically carried tokens
+ *    and full result payloads. Dropped.
+ *  - `config` — free-form jsonb, written verbatim. No SHIPPED connector can
+ *    currently place a credential here (every `secret: true` / `format:
+ *    "password"` declaration sits in an auth/options schema, and
+ *    `splitConfigByFeedScope` only routes a key to feeds.config when a feed's
+ *    own configSchema declares it), so this is HARDENING against a future
+ *    connector rather than a live leak — but the redaction is free and the
+ *    invariant should not depend on a connector author's care. Redacted with
+ *    the same shared walk the connection serializers use.
+ *
+ * All three actions are in PUBLIC_READ_ACTIONS, i.e. the same exposure tier as
+ * the connections list/get paths this branch fixes.
+ */
+function toPublicFeed<T extends Record<string, unknown>>(
+  row: T
+): Omit<T, 'checkpoint'> {
+  const { checkpoint: _checkpoint, ...feed } = row;
+  if (!('config' in feed)) return feed;
+  return { ...feed, config: redactConnectionConfig(feed.config) };
+}
 
 // ============================================
 // Main Function (Action Router)
@@ -229,8 +259,11 @@ async function handleListFeeds(
     total = Number(countRow?.total ?? 0);
   }
   // Strip the window-count helper column from each feed row — it is metadata
-  // about the result set, not a feed field.
-  const feeds = rows.map(({ filtered_total: _filtered_total, ...feed }) => feed);
+  // about the result set, not a feed field — then sanitize the row itself
+  // (checkpoint out, config redacted).
+  const feeds = rows.map(({ filtered_total: _filtered_total, ...feed }) =>
+    toPublicFeed(feed)
+  );
   return {
     action: 'list_feeds',
     feeds,
@@ -288,7 +321,7 @@ async function handleReadFeed(
       ${visibilityFilter}
   `) as Array<Record<string, any>>;
   if (rows.length === 0) return { error: 'Feed not found' };
-  const feed = rows[0];
+  const feed = toPublicFeed(rows[0]);
 
   // A streaming (chat-channel) feed has no sync runs — its content is the live
   // transcript in `channel_messages`. Map the connection slug + feed_key to the

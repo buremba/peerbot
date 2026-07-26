@@ -1,15 +1,17 @@
 /**
- * Shared secret redaction for config audit surfaces.
+ * Shared secret redaction for config audit + serialization surfaces.
  *
- * One denylist, two consumers with one secret model between them:
+ * One denylist, three consumers with one secret model between them:
  *  - the server redacts config-change audit snapshots before persisting them
- *    (`packages/server/src/utils/config-redaction.ts`), and
+ *    (`packages/server/src/utils/config-redaction.ts`),
+ *  - the server redacts `connections.config` before it is serialized to any
+ *    caller (`packages/server/src/utils/connection-config-redaction.ts`), and
  *  - the CLI strips secret values out of the desired state before hashing it
  *    into a deployment's `manifest_hash` (`_lib/apply/deployment.ts`).
  *
- * Keeping both on this module means a key classified as secret is redacted
- * from stored snapshots AND excluded from the manifest hash in the same
- * release — they can't drift apart.
+ * Keeping all three on this module means a key classified as secret is
+ * redacted from stored snapshots, withheld from API responses, AND excluded
+ * from the manifest hash in the same release — they can't drift apart.
  */
 
 /**
@@ -23,19 +25,77 @@ export const REDACTED_SENTINEL = "__LOBU_REDACTED__";
  * Key-name denylist. Matches the whole key or a `_`-separated suffix,
  * singular or plural, any case: `token`, `apiKey`, `api_key`,
  * `refresh_tokens`, `clientSecret`, ...
+ *
+ * Anchoring on a `_`-separated SUFFIX (not a substring) is deliberate: it is
+ * what keeps `tokenizer`, `keyboard`, and `secretsPolicy` out of the denylist.
+ * Add a term here only if its suffix form is unambiguously a credential.
+ *
+ * `authorization` / `cookie` / `session_id` / `*_url`-style connection strings
+ * are NOT key-suffix matches on their own — they are covered below by
+ * {@link isSecretKey}'s exact-name set and by {@link redactUriCredentials}.
  */
 const SECRET_KEY_RE =
-  /(^|_)(token|secret|password|api_?key|credential|private_?key|refresh_?token|access_?token)s?$/i;
+  /(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
+
+/**
+ * Exact key names (case-insensitive, after camel→snake normalization) that are
+ * credentials but do not end in a denylisted suffix. Kept separate from the
+ * suffix regex so a future `cookie_policy` or `authorization_mode` key isn't
+ * swept up by accident.
+ */
+const SECRET_EXACT_KEYS = new Set([
+  "authorization",
+  "auth",
+  "bearer",
+  "cookie",
+  "cookies",
+  "set_cookie",
+  "proxy_authorization",
+  "database_url",
+  "db_url",
+  "connection_string",
+  "dsn",
+]);
 
 /** camelCase → snake_case so `apiKey`/`privateKey` hit the `_`-anchored regex. */
+function normalizeKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
 export function isSecretKey(key: string): boolean {
-  return SECRET_KEY_RE.test(key.replace(/([a-z0-9])([A-Z])/g, "$1_$2"));
+  const normalized = normalizeKey(key);
+  return SECRET_EXACT_KEYS.has(normalized) || SECRET_KEY_RE.test(normalized);
+}
+
+/**
+ * `scheme://user:password@host/...` — the credential lives in the userinfo
+ * component, so the value is secret even when the KEY name is innocuous
+ * (`host`, `endpoint`, `primary`). Only the userinfo is replaced: the scheme
+ * and host stay readable so a UI can still show which database is wired up.
+ */
+const URI_CREDENTIAL_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi;
+
+/**
+ * Replace the `user:password@` userinfo of any URI inside a string with the
+ * sentinel. Non-string input and strings with no credential-bearing URI pass
+ * through unchanged (identity), so this is safe to apply to every string.
+ */
+export function redactUriCredentials(value: string): string {
+  return value.replace(
+    URI_CREDENTIAL_RE,
+    (match, scheme: string, userinfo: string) =>
+      // A bare `host@` with no `:password` is not a credential (e.g. an email-ish
+      // path segment); only redact when a password component is present.
+      userinfo.includes(":") ? `${scheme}${REDACTED_SENTINEL}@` : match
+  );
 }
 
 /**
  * Deep-walk a JSON-ish value, replacing every non-null value under a
  * denylisted key with REDACTED_SENTINEL. Arrays and nested objects are
- * walked; primitives pass through untouched.
+ * walked; string primitives additionally have any embedded URI credential
+ * stripped, so a `postgres://u:pw@host/db` never survives under a
+ * non-denylisted key.
  */
 export function deepRedactSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(deepRedactSecrets);
@@ -49,5 +109,6 @@ export function deepRedactSecrets(value: unknown): unknown {
     }
     return out;
   }
+  if (typeof value === "string") return redactUriCredentials(value);
   return value;
 }

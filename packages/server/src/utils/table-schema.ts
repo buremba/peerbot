@@ -2,13 +2,22 @@
  * Allowlist schema for query_sql validation.
  *
  * Sensitive columns (credentials, secrets, tokens, embeddings, PII) are
- * excluded. Two layers of enforcement:
+ * excluded. Three layers of enforcement:
  *   1. validateWithSchema() rejects SQL referencing unlisted tables/columns
  *   2. SAFE_COLUMN_DEFS is used by buildScopedQuery to emit explicit column lists
  *      in CTEs, so excluded columns are never reachable even if validation
  *      is bypassed
+ *   3. columns that must stay QUERYABLE but carry secret values — the free-form
+ *      `config` jsonb on `connections` / `feeds` — carry a redacting `expr`
+ *      (see redactedConfigColumn) that the CTE emits in their place. Exclusion
+ *      is not an option for those: legitimate operational queries read them.
+ *
+ * A column is only safe here if it is EXCLUDED or REDACTED. "It's only reachable
+ * by admins" is not sufficient — `connections` and `feeds` are deliberately NOT
+ * in ADMIN_ONLY_QUERYABLE_TABLES, and query_sql is member-safe.
  */
 
+import { REDACTED_SENTINEL } from '@lobu/core';
 import { Dialect, ast, parse, validateWithSchema } from '@polyglot-sql/sdk';
 
 export interface ColumnDef {
@@ -21,6 +30,124 @@ export interface ColumnDef {
 
 function cols(...names: string[]): ColumnDef[] {
   return names.map((name) => ({ name, type: 'text' }));
+}
+
+/**
+ * SQL-side redaction for the free-form `config` jsonb on `connections` /
+ * `feeds`.
+ *
+ * `config` cannot simply be dropped from the allowlist — it carries the
+ * operational settings every legitimate query reads (host, channel, feed_key
+ * options). But it is written VERBATIM by the connection/feed write paths
+ * (split by feed SCOPE, never by secrecy), so a connector option declared
+ * `format: "password"` — a Slack/Discord bot token, a webhook bearer token —
+ * and a `secret: true` env field like postgres' DATABASE_URL land in it as
+ * plaintext. `query_sql` is a member-safe tool in every agent's tool set and
+ * `connections` is deliberately NOT in {@link ADMIN_ONLY_QUERYABLE_TABLES}, so
+ * without this a plain member could `SELECT config FROM connections` and read
+ * them.
+ *
+ * This is the CHOKEPOINT: `buildColumnList` emits this expression in the
+ * generated CTE, so the redaction applies no matter how the caller shapes the
+ * query (aliases, subselects, `->>` extraction — all read the redacted CTE).
+ *
+ * The denylist mirrors `isSecretKey` in @lobu/core (`secret-redaction`), which
+ * is the single source of truth for the TypeScript serializers. Keep the two in
+ * sync: a key added there must be added here, and
+ * `table-schema-redaction.test.ts` pins that they agree.
+ *
+ * Matching is RECURSIVE (a `jsonb_object_agg` over `jsonb_each`, applied by a
+ * SQL function so nested objects and arrays are walked). A top-level-only pass
+ * is not sufficient: a proven repro planted the secret at
+ * `config.nested.database.password`.
+ *
+ * Values are replaced with the sentinel, not deleted, so a query can still see
+ * WHICH options are set.
+ */
+const SQL_SECRET_KEY_PATTERN =
+  '(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$';
+const SQL_SECRET_EXACT_KEYS =
+  "('authorization','auth','bearer','cookie','cookies','set_cookie','proxy_authorization','database_url','db_url','connection_string','dsn')";
+
+/**
+ * Placeholder for the source column inside an {@link ColumnDef.expr}.
+ * {@link buildColumnList} substitutes it with `alias.<column>` (or the bare
+ * quoted column when there is no alias), so an expression may reference the
+ * column any number of times.
+ */
+export const COLUMN_REF = '$COL$';
+
+/** SQL test for "this jsonb key is a denylisted secret name". */
+const SQL_KEY_IS_SECRET = (keyExpr: string) =>
+  `lower(regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g')) IN ${SQL_SECRET_EXACT_KEYS} ` +
+  `OR lower(regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g')) ~ '${SQL_SECRET_KEY_PATTERN}'`;
+
+/**
+ * How many levels of nesting the generated expression walks.
+ *
+ * Config nesting in practice is shallow — the deepest real shapes are
+ * `config.headers.Authorization` and `config.database.password` (2 levels
+ * under the root). 3 covers those with a level of headroom. The expression is
+ * unrolled, so each extra level multiplies its size; this is the knob that
+ * keeps the generated CTE reasonable.
+ *
+ * BELOW this depth a still-nested object/array is emitted WHOLLY REDACTED
+ * rather than passed through. That is deliberate fail-closed behavior: an
+ * unexpectedly deep blob is rendered useless rather than leaked. It is also
+ * why raising this number is safe but lowering it is not.
+ */
+const REDACTION_DEPTH = 3;
+
+/**
+ * Build a recursive jsonb-redaction expression, unrolled to a fixed depth.
+ *
+ * Unrolled rather than a `CREATE FUNCTION` so the guarantee lives entirely in
+ * the generated CTE: no migration ordering to get wrong, and no deployment
+ * window where the schema claims "redacted" while the database has no function
+ * yet.
+ *
+ * Each level uses a DEPTH-SUFFIXED alias (`kv3`, `kv2`, …). Reusing one alias
+ * lets the inner `jsonb_each` shadow the outer one, so every level would
+ * re-test the OUTERMOST key and nested secrets would survive — that bug was
+ * caught by the nested-probe case in table-schema-redaction.test.ts.
+ */
+function buildRedactionExpr(valueExpr: string, depth: number): string {
+  // Bottom of the walk: anything still an object/array here is replaced
+  // wholesale — fail-closed rather than emitting unredacted nested content.
+  if (depth === 0) {
+    return (
+      `CASE WHEN jsonb_typeof(${valueExpr}) IN ('object','array') ` +
+      `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ELSE ${valueExpr} END`
+    );
+  }
+  const kv = `kv${depth}`;
+  const el = `el${depth}`;
+  const child = buildRedactionExpr(`${kv}.value`, depth - 1);
+  const element = buildRedactionExpr(`${el}.value`, depth - 1);
+  return (
+    `CASE ` +
+    // objects: rebuild, redacting denylisted keys and recursing into the rest
+    `WHEN jsonb_typeof(${valueExpr}) = 'object' THEN (` +
+    `SELECT COALESCE(jsonb_object_agg(${kv}.key, ` +
+    `CASE WHEN ${SQL_KEY_IS_SECRET(`${kv}.key`)} ` +
+    `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ELSE ${child} END), '{}'::jsonb) ` +
+    `FROM jsonb_each(${valueExpr}) ${kv}) ` +
+    // arrays: recurse elementwise (a list of header objects is a real shape)
+    `WHEN jsonb_typeof(${valueExpr}) = 'array' THEN (` +
+    `SELECT COALESCE(jsonb_agg(${element} ORDER BY ${el}.ordinality), '[]'::jsonb) ` +
+    `FROM jsonb_array_elements(${valueExpr}) WITH ORDINALITY ${el}(value, ordinality)) ` +
+    // scalars pass through untouched
+    `ELSE ${valueExpr} END`
+  );
+}
+
+/** The `config` column, redacted at the chokepoint. */
+function redactedConfigColumn(): ColumnDef {
+  return {
+    name: 'config',
+    type: 'jsonb',
+    expr: buildRedactionExpr(COLUMN_REF, REDACTION_DEPTH),
+  };
 }
 
 export const QUERYABLE_SCHEMA = {
@@ -90,32 +217,37 @@ export const QUERYABLE_SCHEMA = {
         'supersedes_event_id'
       ),
     },
-    // connections (excludes: credentials)
+    // connections (excludes: credentials; `config` is REDACTED, not excluded —
+    // see redactedConfigColumn)
     {
       name: 'connections',
-      columns: cols(
-        'id',
-        'organization_id',
-        'connector_key',
-        'slug',
-        'display_name',
-        'status',
-        'account_id',
-        'entity_ids',
-        'config',
-        'error_message',
-        'created_by',
-        'created_at',
-        'updated_at',
-        'auth_profile_id',
-        'app_auth_profile_id',
-        'visibility',
-        'deleted_at',
-        'agent_id',
-        'device_worker_id',
-        'external_tenant_id',
-        'credential_mode'
-      ),
+      columns: [
+        ...cols(
+          'id',
+          'organization_id',
+          'connector_key',
+          'slug',
+          'display_name',
+          'status',
+          'account_id',
+          'entity_ids'
+        ),
+        redactedConfigColumn(),
+        ...cols(
+          'error_message',
+          'created_by',
+          'created_at',
+          'updated_at',
+          'auth_profile_id',
+          'app_auth_profile_id',
+          'visibility',
+          'deleted_at',
+          'agent_id',
+          'device_worker_id',
+          'external_tenant_id',
+          'credential_mode'
+        ),
+      ],
     },
     // watchers
     {
@@ -284,39 +416,44 @@ export const QUERYABLE_SCHEMA = {
         'principal_kind'
       ),
     },
-    // feeds (excludes: checkpoint)
+    // feeds (excludes: checkpoint; `config` is REDACTED, not excluded — see
+    // redactedConfigColumn)
     {
       name: 'feeds',
-      columns: cols(
-        'id',
-        'organization_id',
-        'connection_id',
-        'feed_key',
-        'status',
-        'entity_ids',
-        'config',
-        'schedule',
-        'timezone',
-        'next_run_at',
-        'last_sync_at',
-        'last_sync_status',
-        'last_error',
-        'consecutive_failures',
-        'items_collected',
-        'created_at',
-        'updated_at',
-        'pinned_version',
-        'display_name',
-        'deleted_at',
-        'repair_agent_id',
-        'repair_thread_id',
-        'repair_attempt_count',
-        'last_repair_at',
-        'first_failure_at',
-        'last_repair_post_hash',
-        'virtual',
-        'kind'
-      ),
+      columns: [
+        ...cols(
+          'id',
+          'organization_id',
+          'connection_id',
+          'feed_key',
+          'status',
+          'entity_ids'
+        ),
+        redactedConfigColumn(),
+        ...cols(
+          'schedule',
+          'timezone',
+          'next_run_at',
+          'last_sync_at',
+          'last_sync_status',
+          'last_error',
+          'consecutive_failures',
+          'items_collected',
+          'created_at',
+          'updated_at',
+          'pinned_version',
+          'display_name',
+          'deleted_at',
+          'repair_agent_id',
+          'repair_thread_id',
+          'repair_attempt_count',
+          'last_repair_at',
+          'first_failure_at',
+          'last_repair_post_hash',
+          'virtual',
+          'kind'
+        ),
+      ],
     },
     // channel_messages — chat-channel transcripts (streaming feeds). Content is
     // membership-gated per row by the channel_messages CTE in execute-data-sources
@@ -419,8 +556,13 @@ export const QUERYABLE_TABLE_NAMES = new Set(QUERYABLE_SCHEMA.tables.map((t) => 
  * are member-accessible: the auth + identity tables. Members can read the
  * org's operational data (entities, events, connections, feeds, watchers, …) but
  * not enumerate every OAuth token/app or the full user roster. Secret columns
- * (credentials, client_secret, token_hash, email, phone) are already excluded
- * from the schema above; this is the table-level guard on top of that.
+ * (credentials, client_secret, token_hash, email, phone) are excluded from the
+ * schema above, and the secret-carrying `config` jsonb is redacted in-place;
+ * this is the table-level guard on top of that.
+ *
+ * Do NOT rely on this set to protect a column: `connections` and `feeds` are
+ * intentionally member-readable, so a secret in one of their columns must be
+ * excluded or redacted at the schema, not gated here.
  */
 export const ADMIN_ONLY_QUERYABLE_TABLES: ReadonlySet<string> = new Set([
   'oauth_tokens',
@@ -439,7 +581,16 @@ export function buildColumnList(defs: ColumnDef[], alias?: string): string {
   return defs
     .map((c) => {
       if (c.expr) {
-        const prefixed = alias ? c.expr.replace(/^(\w+)/, `${alias}.$1`) : c.expr;
+        // `$COL$` marks every reference to the source column, so an expression
+        // may use it more than once (the redaction CASE reads `config` three
+        // times). Legacy expressions with no marker keep the old behavior:
+        // alias-prefix the leading identifier.
+        const ref = alias ? `${alias}."${c.name}"` : `"${c.name}"`;
+        const prefixed = c.expr.includes(COLUMN_REF)
+          ? c.expr.split(COLUMN_REF).join(ref)
+          : alias
+            ? c.expr.replace(/^(\w+)/, `${alias}.$1`)
+            : c.expr;
         return `${prefixed} as "${c.name}"`;
       }
       return alias ? `${alias}."${c.name}"` : `"${c.name}"`;

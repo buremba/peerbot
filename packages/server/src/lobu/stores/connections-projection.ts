@@ -305,6 +305,11 @@ export async function upsertChatConnectionProjection(
             (supersededEnterprise[0] as { agent_id: string | null }).agent_id ??
             null;
         }
+        const droppedAgentId =
+          !inheritedAgentId &&
+          supersededEnterprise.some(
+            (r: { agent_id: string | null }) => r.agent_id != null,
+          );
         logger.info(
           {
             orgId,
@@ -317,6 +322,25 @@ export async function upsertChatConnectionProjection(
           },
           "Retired stale enterprise-keyed Slack Grid connection projection",
         );
+        if (droppedAgentId) {
+          // The retired generation carried fallback routing that this write is
+          // NOT carrying forward, so the successor may come up ownerless:
+          // `resolveAgentId` finds no connection owner, inbound messages hit the
+          // unclaimed-workspace responder, and channels bound only by that
+          // fallback go dark. This went unnoticed for days in prod (conn 430 →
+          // 448) because nothing surfaced it — warn instead of failing silently.
+          logger.warn(
+            {
+              orgId,
+              platform: conn.platform,
+              activated: slug,
+              superseded: supersededEnterprise
+                .filter((r: { agent_id: string | null }) => r.agent_id != null)
+                .map((r: { slug: string }) => r.slug),
+            },
+            "Superseded connection's fallback agent_id was NOT carried forward — successor may be ownerless",
+          );
+        }
       }
     }
 

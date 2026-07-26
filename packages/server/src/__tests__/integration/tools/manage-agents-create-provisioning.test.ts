@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ensureDefaultAgent } from "../../../auth/default-provisioning";
 import type { Env } from "../../../index";
 import { orgContext } from "../../../lobu/stores/org-context";
+import { createPostgresAgentConfigStore } from "../../../lobu/stores/postgres-stores";
 import { createInferenceProvider } from "../../../lobu/stores/provider-secrets";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
@@ -210,5 +211,69 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 		`;
 		expect(rows.length).toBeGreaterThan(0);
 		expect(rows[0]?.models).toContain("claude/claude-sonnet-5");
+	});
+
+	// ── The shared UPSERT (`saveMetadata`) ────────────────────────────────────
+	// Reached by `AgentMetadataStore.createAgent`, i.e. the `POST /api/v1/agents`
+	// route mounted at gateway.ts. It is a genuine sixth insert site, and it is
+	// ALSO the update path (`updateMetadata` reads-then-re-saves), so the two
+	// cases below pin both halves of the contract.
+
+	it("saveMetadata seeds provisioning defaults on a FRESH insert", async () => {
+		const store = createPostgresAgentConfigStore();
+		await orgContext.run({ organizationId: orgId }, async () => {
+			await store.saveMetadata("store-fresh-bot", {
+				agentId: "store-fresh-bot",
+				name: "Store Fresh Bot",
+				owner: { platform: "external", userId: "u-store" },
+				createdAt: Date.now(),
+			});
+		});
+
+		const sql = getTestDb();
+		const rows = await sql`
+			SELECT models, pre_approved_tools FROM agents
+			WHERE organization_id = ${orgId} AND id = 'store-fresh-bot'
+		`;
+		expect(rows[0]?.models).toContain("claude/claude-sonnet-5");
+		expect(rows[0]?.pre_approved_tools).toContain("/mcp/lobu-memory/tools/*");
+	});
+
+	it("a re-save does NOT clobber a curated models list or pre-approvals", async () => {
+		// `updateMetadata` (rename, lastUsedAt touch, …) funnels back through the
+		// same UPSERT. Seeding on INSERT must not leak into the CONFLICT path —
+		// otherwise every metadata touch would reset an admin's allow-list.
+		const store = createPostgresAgentConfigStore();
+		const sql = getTestDb();
+		await orgContext.run({ organizationId: orgId }, async () => {
+			await store.saveMetadata("store-curated-bot", {
+				agentId: "store-curated-bot",
+				name: "v1",
+				owner: { platform: "external", userId: "u-store" },
+				createdAt: Date.now(),
+			});
+		});
+		// An admin curates the allow-list and narrows the pre-approvals.
+		await sql`
+			UPDATE agents
+			SET models = ${sql.json(["myco/myco-large"])},
+			    pre_approved_tools = ${sql.json(["/mcp/lobu-memory/tools/query_sdk"])}
+			WHERE organization_id = ${orgId} AND id = 'store-curated-bot'
+		`;
+
+		// A later metadata-only edit (the rename path) must leave both alone.
+		await orgContext.run({ organizationId: orgId }, async () => {
+			await store.updateMetadata("store-curated-bot", { name: "v2" });
+		});
+
+		const rows = await sql`
+			SELECT name, models, pre_approved_tools FROM agents
+			WHERE organization_id = ${orgId} AND id = 'store-curated-bot'
+		`;
+		expect(rows[0]?.name).toBe("v2");
+		expect(rows[0]?.models).toEqual(["myco/myco-large"]);
+		expect(rows[0]?.pre_approved_tools).toEqual([
+			"/mcp/lobu-memory/tools/query_sdk",
+		]);
 	});
 });

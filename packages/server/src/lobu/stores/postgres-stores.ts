@@ -5,6 +5,7 @@ import type {
 	AgentSettings,
 } from "@lobu/core";
 import { createLogger } from "@lobu/core";
+import { resolveNewAgentProvisioningDefaults } from "../../auth/system-provider-resolution";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
@@ -234,6 +235,20 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const sql = getDb();
 			const orgId = getOrgId();
 			const now = new Date();
+			// Fresh-agent provisioning defaults, from the SAME helper every other
+			// create path uses. This is the shared UPSERT reached by
+			// `AgentMetadataStore.createAgent` (the `/api/v1/agents` POST route), so
+			// seeding here is what keeps an agent created through that route
+			// runnable — without it the row lands with `models = NULL` and, on a
+			// deployment whose only model credential is an environment API key,
+			// resolves no model at all.
+			//
+			// These two columns are deliberately ABSENT from the DO UPDATE SET
+			// clause below: `saveMetadata` is also the UPDATE path (see
+			// `updateMetadata`, which reads-then-re-saves), and a re-save must never
+			// clobber an admin's curated `models` allow-list or an agent's
+			// pre-approvals. INSERT seeds them; CONFLICT leaves them untouched.
+			const provisioning = await resolveNewAgentProvisioningDefaults();
 			// The PK is (organization_id, id) — UPSERT on the composite key. Two
 			// orgs can independently own an agent with the same id; the conflict
 			// path here only triggers for re-saves within the *same* org.
@@ -241,10 +256,12 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			// a CONFLICT UPDATE so we can emit the right lifecycle event.
 			const rows = await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
-                            created_at)
+                            models, pre_approved_tools, created_at)
         VALUES (
           ${agentId}, ${orgId}, ${metadata.name}, ${metadata.description ?? null},
           ${metadata.owner.platform}, ${metadata.owner.userId},
+          ${sql.json(provisioning.models)},
+          ${sql.json(provisioning.preApprovedTools)},
           ${metadata.createdAt ? new Date(metadata.createdAt) : now}
         )
         ON CONFLICT (organization_id, id) DO UPDATE SET

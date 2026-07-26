@@ -211,3 +211,88 @@ export async function redactConnectionRows<T extends Record<string, unknown>>(
 		),
 	);
 }
+
+// ============================================
+// Write side — undoing the redaction
+// ============================================
+
+/**
+ * Does this value carry a redaction sentinel this module could have produced?
+ *
+ * Two shapes, because the read path emits two:
+ *  - the whole value replaced (`"__LOBU_REDACTED__"`), and
+ *  - a URI whose userinfo was replaced
+ *    (`"postgres://__LOBU_REDACTED__@db.internal:5432/app"`), which
+ *    {@link redactUriCredentials} produces for connection strings under
+ *    non-secret keys.
+ *
+ * A bare equality check catches only the first, which is exactly how a naive
+ * guard silently corrupts every DATABASE_URL in the org.
+ */
+function isRedactedValue(value: unknown): boolean {
+	return typeof value === "string" && value.includes(REDACTED_SENTINEL);
+}
+
+/**
+ * Restore redacted values in an INCOMING config from what is already stored.
+ *
+ * Every real client round-trips config — the Owletto action-modes editor
+ * spreads the fetched `connection.config` and PATCHes it back with one field
+ * changed, and an agent doing `connections.update` via run_sdk does the same.
+ * Because the read path now returns `__LOBU_REDACTED__` where a secret used to
+ * be, that write would persist the SENTINEL over the live credential: the
+ * connection breaks at next use, with no error at save time and no way to
+ * recover the plaintext. That is data loss caused by the redaction, which is
+ * strictly worse than the leak it prevents.
+ *
+ * So a sentinel on the WRITE side means "unchanged": it is replaced with the
+ * value currently stored at the same path. Well-behaved clients see a no-op;
+ * a client that genuinely wants to rotate a secret sends the new plaintext,
+ * which contains no sentinel and is written normally.
+ *
+ * Walks objects and arrays so it matches the read path's depth, and handles
+ * the URI form by restoring the stored value whenever the incoming string
+ * merely CONTAINS a sentinel. A sentinel with no stored counterpart (a key that
+ * did not previously exist) is dropped rather than persisted — writing the
+ * literal placeholder is never the caller's intent.
+ *
+ * REJECTING the write instead was the alternative. Preserve wins because the
+ * API is public and already in use: an agent that reads-modifies-writes is
+ * doing the obvious thing, and a 400 would break the shipped action-modes
+ * toggle until every client is patched. Preserve is invisible to correct
+ * clients and lossless for careless ones.
+ */
+export function restoreRedactedConfig(
+	incoming: unknown,
+	stored: unknown,
+): unknown {
+	if (Array.isArray(incoming)) {
+		const storedArray = Array.isArray(stored) ? stored : [];
+		return incoming.map((item, index) =>
+			restoreRedactedConfig(item, storedArray[index]),
+		);
+	}
+
+	if (incoming && typeof incoming === "object") {
+		const storedObject =
+			stored && typeof stored === "object" && !Array.isArray(stored)
+				? (stored as Record<string, unknown>)
+				: {};
+		const out: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(
+			incoming as Record<string, unknown>,
+		)) {
+			const restored = restoreRedactedConfig(value, storedObject[key]);
+			// Drop a sentinel that has nothing to restore from, rather than
+			// persisting the placeholder text as if it were a real value.
+			if (restored === undefined) continue;
+			out[key] = restored;
+		}
+		return out;
+	}
+
+	if (isRedactedValue(incoming)) {
+		return stored === undefined ? undefined : stored;
+	}
+	return incoming;
+}

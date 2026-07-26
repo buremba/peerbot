@@ -58,7 +58,10 @@ import {
   validateFeedConfig,
   type FeedDefinition,
 } from './helpers/feed-helpers';
-import { redactConnectionConfig } from '../../utils/connection-config-redaction';
+import {
+  redactConnectionConfig,
+  restoreRedactedConfig,
+} from '../../utils/connection-config-redaction';
 
 /**
  * Sanitize a raw `feeds` row before it is serialized to a caller.
@@ -701,10 +704,20 @@ async function handleUpdateFeed(
     }
     const feedRow = existing[0] as Record<string, unknown>;
 
+    // `read_feed`/`list_feeds` redact feeds.config, so a client that reads and
+    // PATCHes back would otherwise persist `__LOBU_REDACTED__` over the stored
+    // value. Restore from the row (read under the same FOR UPDATE lock, so the
+    // restore sees exactly what the write is based on) before merge/replace.
+    const restoredConfig = hasConfigArg
+      ? (restoreRedactedConfig(args.config, parseJsonObject(feedRow.config)) as Record<
+          string,
+          unknown
+        >)
+      : undefined;
     const effectiveConfig = hasConfigArg
       ? replaceFeedConfig
-        ? (args.config as Record<string, unknown>)
-        : { ...parseJsonObject(feedRow.config), ...args.config }
+        ? (restoredConfig as Record<string, unknown>)
+        : { ...parseJsonObject(feedRow.config), ...restoredConfig }
       : null;
     // Only collected feeds sync — virtual/streaming configs are not the
     // sync-config contract.

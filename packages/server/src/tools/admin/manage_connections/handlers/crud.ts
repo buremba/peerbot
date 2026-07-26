@@ -20,6 +20,7 @@ import {
 	loadConnectorSecretKeys,
 	redactConnectionConfig,
 	redactConnectionRow,
+	restoreRedactedConfig,
 } from "../../../../utils/connection-config-redaction";
 import {
 	deleteChatConnection,
@@ -1432,7 +1433,18 @@ export async function handleUpdate(
 				organizationId,
 				connectionId: args.connection_id,
 				displayName: args.display_name,
-				config: args.config,
+				// Same un-redaction as the non-chat path below, and this branch needs
+				// it most: chat connectors are precisely the ones declaring
+				// `format: "password"` (Slack/Discord bot tokens), so a UI round-trip
+				// here would clobber the bot token and take the whole chat
+				// integration down.
+				config:
+					args.config === undefined
+						? undefined
+						: (restoreRedactedConfig(
+								args.config,
+								parseJsonObject(existing.config),
+							) as Record<string, unknown>),
 				status: args.status,
 				...(hasAgentIdArg ? { agentId: args.agent_id ?? null } : {}),
 			});
@@ -1648,8 +1660,25 @@ export async function handleUpdate(
 					? "active"
 					: "pending_auth"
       : null);
+  // Un-redact BEFORE anything reads the incoming config. Clients round-trip
+  // what the (now redacted) read path gave them — the Owletto action-modes
+  // editor spreads `connection.config` and PATCHes it straight back — so a
+  // `__LOBU_REDACTED__` here means "unchanged", not "set the literal
+  // placeholder". Without this the update would overwrite the live credential
+  // with the sentinel: silent data loss, worse than the leak it came from.
+  //
+  // Placed ahead of splitConfigByFeedScope so the feed-scope split, the
+  // consent_only computation, the merge and the replace all see real values.
+  const incomingConfigForWrite =
+    args.config === undefined
+      ? undefined
+      : (restoreRedactedConfig(
+          args.config,
+          parseJsonObject(existing.config),
+        ) as Record<string, unknown>);
+
   const splitConfig = splitConfigByFeedScope(
-    args.config ?? null,
+    incomingConfigForWrite ?? null,
 		(existing.feeds_schema as Record<string, FeedDefinition>) ?? null,
   );
 

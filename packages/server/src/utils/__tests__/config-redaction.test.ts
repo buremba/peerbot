@@ -4,6 +4,7 @@ import {
   REDACTED_SENTINEL,
   redactConfigState,
 } from '../config-redaction';
+import { restoreRedactedConfig } from '../connection-config-redaction';
 
 describe('redactConfigState', () => {
   it('redacts denylisted keys at any depth, any case style', () => {
@@ -102,6 +103,74 @@ describe('isSecretKey > URL/DSN-shaped credential keys', () => {
       expect(isSecretKey(key)).toBe(false);
     }
   );
+});
+
+/**
+ * The write-side inverse. A client that reads a redacted config and PATCHes it
+ * back must not persist the placeholder over the live credential — the sentinel
+ * means "unchanged".
+ */
+describe('restoreRedactedConfig', () => {
+  it('restores a bare sentinel from the stored value', () => {
+    const out = restoreRedactedConfig(
+      { password: REDACTED_SENTINEL, host: 'db.internal' },
+      { password: 'real-secret', host: 'old.host' }
+    ) as Record<string, unknown>;
+    expect(out.password).toBe('real-secret');
+    // A non-secret edit still lands.
+    expect(out.host).toBe('db.internal');
+  });
+
+  it('restores the URI form, which is not equal to the bare sentinel', () => {
+    // redactUriCredentials emits `postgres://__LOBU_REDACTED__@host/db`; a
+    // naive `=== REDACTED_SENTINEL` check misses this and clobbers the DSN.
+    const stored = 'postgres://u:pw@db.internal:5432/app';
+    const out = restoreRedactedConfig(
+      { DATABASE_URL: `postgres://${REDACTED_SENTINEL}@db.internal:5432/app` },
+      { DATABASE_URL: stored }
+    ) as Record<string, unknown>;
+    expect(out.DATABASE_URL).toBe(stored);
+  });
+
+  it('restores at any nesting depth and through arrays', () => {
+    const out = restoreRedactedConfig(
+      {
+        nested: { database: { password: REDACTED_SENTINEL } },
+        headers: [{ Authorization: REDACTED_SENTINEL }, { 'X-Trace': 'keep' }],
+      },
+      {
+        nested: { database: { password: 'deep-secret' } },
+        headers: [{ Authorization: 'Bearer real' }, { 'X-Trace': 'old' }],
+      }
+    ) as Record<string, any>;
+    expect(out.nested.database.password).toBe('deep-secret');
+    expect(out.headers[0].Authorization).toBe('Bearer real');
+    expect(out.headers[1]['X-Trace']).toBe('keep');
+  });
+
+  it('lets a genuinely new secret through (rotation still works)', () => {
+    const out = restoreRedactedConfig(
+      { password: 'rotated' },
+      { password: 'old-secret' }
+    ) as Record<string, unknown>;
+    expect(out.password).toBe('rotated');
+  });
+
+  it('drops a sentinel that has nothing to restore from', () => {
+    // Writing the literal placeholder is never the caller's intent, so a
+    // sentinel on a key with no stored counterpart is omitted, not persisted.
+    const out = restoreRedactedConfig(
+      { brand_new: REDACTED_SENTINEL, kept: 'value' },
+      {}
+    ) as Record<string, unknown>;
+    expect('brand_new' in out).toBe(false);
+    expect(out.kept).toBe('value');
+  });
+
+  it('is a no-op when nothing is redacted', () => {
+    const incoming = { host: 'db.internal', port: 5432, tags: ['a', 'b'] };
+    expect(restoreRedactedConfig(incoming, { host: 'old' })).toEqual(incoming);
+  });
 });
 
 /**

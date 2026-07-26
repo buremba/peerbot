@@ -6,6 +6,7 @@ import {
 	slugToRuntimeConnectionId,
 } from "../../lobu/stores/connections-projection.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { restoreRedactedConfig } from "../../utils/connection-config-redaction.js";
 import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installations.js";
 import { PlatformAdapterConfigSchema } from "../routes/schemas/platform-config.js";
 import { isAdapterlessPlatform } from "./chat-instance-manager.js";
@@ -208,10 +209,25 @@ export async function upsertByoChatConnection(
 			agent_id: string | null;
 		}>;
 
-		const config = parseConfig(input.platform, input.config);
 		const manager = requireManager();
 		const settings = { allowGroups: true, ...(input.settings ?? {}) };
 		const existing = existingRows[0];
+		// Callers round-trip config read back from the (redacted) connection read
+		// paths, so a `__LOBU_REDACTED__` here means "unchanged" — restore the
+		// stored value rather than persisting the placeholder. Chat connectors are
+		// the ones declaring `format: "password"` (Slack/Discord bot tokens), so
+		// without this an apply built from a redacted read would both fail
+		// validateProviderIdentity (authenticating with the literal sentinel) and
+		// overwrite a live bot token.
+		const config = parseConfig(
+			input.platform,
+			existing
+				? (restoreRedactedConfig(input.config, existing.config) as Record<
+						string,
+						unknown
+					>)
+				: input.config,
+		);
 		if (!existing) {
 			const providerMetadata = await validateProviderIdentity(config);
 			await orgContext.run({ organizationId: input.organizationId }, () =>

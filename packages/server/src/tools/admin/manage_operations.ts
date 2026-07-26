@@ -119,14 +119,14 @@ type InlineExecutionResult =
 	| { status: "failed"; error_message: string };
 
 type ConnectionRow = {
-  id: number;
-  connector_key: string;
-  status: string;
-  auth_profile_id: number | null;
-  app_auth_profile_id: number | null;
-  display_name: string | null;
-  config: Record<string, unknown> | null;
-  name: string;
+	id: number;
+	connector_key: string;
+	status: string;
+	auth_profile_id: number | null;
+	app_auth_profile_id: number | null;
+	display_name: string | null;
+	config: Record<string, unknown> | null;
+	name: string;
 };
 
 type ExecutionTarget = {
@@ -172,22 +172,22 @@ type OperationTargetRow = {
  * separates because operation keys themselves contain dots (`slack.send_message`).
  */
 export function qualifiedOperationKey(
-  connectorKey: string,
-  operationKey: string,
+	connectorKey: string,
+	operationKey: string,
 ): string {
-  return `${connectorKey}::${operationKey}`;
+	return `${connectorKey}::${operationKey}`;
 }
 
 const manageOperationsTool = defineActionTool("manage_operations", {
-  list_available: action(ListAvailableAction, handleListAvailable),
-  execute: action(ExecuteAction, handleExecute),
-  list_runs: action(ListRunsAction, handleListRuns),
-  get_run: action(GetRunAction, handleGetRun),
-  list_activity: action(ListActivityAction, handleListActivity),
-  approve: action(ApproveAction, handleApprove),
-  reject: action(RejectAction, handleReject),
-  approve_batch: action(ApproveBatchAction, handleApproveBatch),
-  reject_batch: action(RejectBatchAction, handleRejectBatch),
+	list_available: action(ListAvailableAction, handleListAvailable),
+	execute: action(ExecuteAction, handleExecute),
+	list_runs: action(ListRunsAction, handleListRuns),
+	get_run: action(GetRunAction, handleGetRun),
+	list_activity: action(ListActivityAction, handleListActivity),
+	approve: action(ApproveAction, handleApprove),
+	reject: action(RejectAction, handleReject),
+	approve_batch: action(ApproveBatchAction, handleApproveBatch),
+	reject_batch: action(RejectBatchAction, handleRejectBatch),
 });
 
 export { ManageOperationsResultSchema, ManageOperationsSchema };
@@ -350,32 +350,32 @@ async function executeMcpToolInline(
 			status: "failed",
 			error_message: "Invalid MCP operation backend config",
 		};
-  }
+	}
 
 	let result: Awaited<ReturnType<typeof callProxyTool>>;
 	try {
 		result = await callProxyTool(
-    connection.connector_key,
-    {
-      upstream_url: operation.backend_config.upstreamUrl,
+			connection.connector_key,
+			{
+				upstream_url: operation.backend_config.upstreamUrl,
 				tool_prefix: "",
-    },
-    organizationId,
-    operation.backend_config.toolName,
+			},
+			organizationId,
+			operation.backend_config.toolName,
 			actionInput,
 			connection.id,
-  );
+		);
 	} catch (error) {
 		return failRunInline(runId, organizationId, getErrorMessage(error));
 	}
 
-  if (result.isError) {
-    const errorText =
-      (result.content as Array<{ type: string; text?: string }>).find(
+	if (result.isError) {
+		const errorText =
+			(result.content as Array<{ type: string; text?: string }>).find(
 				(item) => item?.type === "text",
 			)?.text ?? "Upstream MCP error";
-    return failRunInline(runId, organizationId, errorText);
-  }
+		return failRunInline(runId, organizationId, errorText);
+	}
 
 	return completeRunInline(runId, organizationId, {
 		content: result.content,
@@ -392,16 +392,16 @@ async function executeOperationInline(
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
 	if (operation.backend === "local_action") {
-    return executeLocalActionInline(
-      runId,
-      organizationId,
-      connection,
-      operation,
-      actionInput,
-      env,
+		return executeLocalActionInline(
+			runId,
+			organizationId,
+			connection,
+			operation,
+			actionInput,
+			env,
 			abortSignal,
-    );
-  }
+		);
+	}
 	if (operation.backend === "mcp_tool") {
 		return executeMcpToolInline(
 			runId,
@@ -410,7 +410,7 @@ async function executeOperationInline(
 			operation,
 			actionInput,
 		);
-  }
+	}
 	return executeHttpOperation(
 		runId,
 		organizationId,
@@ -761,8 +761,7 @@ function buildAvailableOperation(args: {
 			remediationTarget,
 			remediationConfig: remediationInternalTarget?.config,
 			remediationAuthKind: remediationInternalTarget?.auth_profile_kind,
-			remediationAuthProfileSlug:
-				remediationInternalTarget?.auth_profile_slug,
+			remediationAuthProfileSlug: remediationInternalTarget?.auth_profile_slug,
 			missingScopes,
 			requestedScopes: remediationInternalTarget?.requested_scopes ?? [],
 			viewUrl,
@@ -865,23 +864,23 @@ async function handleListAvailable(
 
 	const targetsByConnector = groupExecutionTargets(targetRows);
 
-  // A `disabled` connector_action effect turns an operation OFF for this principal
-  // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
-  // which surface then gate on execute). Two levels now: the BLANKET `execute` rule
-  // (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
-  // can disable a single op while the rest stay listed.
-  const actor = await resolveActingPrincipal(getDb(), {
-    organizationId: ctx.organizationId,
-    userId: ctx.userId,
-    agentId: ctx.agentId,
-    sessionWatcherId: ctx.actingWatcherId ?? null,
-  });
-  // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
-  // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
-  // its hidden count from the global total gives an inconsistent `total` across pages
-  // and can return a short page while visible ops remain past the offset (a client
-  // treating "short page = end" would silently truncate the catalog). Pagination must
-  // run on the post-filter list.
+	// A `disabled` connector_action effect turns an operation OFF for this principal
+	// — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
+	// which surface then gate on execute). Two levels now: the BLANKET `execute` rule
+	// (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
+	// can disable a single op while the rest stay listed.
+	const actor = await resolveActingPrincipal(getDb(), {
+		organizationId: ctx.organizationId,
+		userId: ctx.userId,
+		agentId: ctx.agentId,
+		sessionWatcherId: ctx.actingWatcherId ?? null,
+	});
+	// Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
+	// ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
+	// its hidden count from the global total gives an inconsistent `total` across pages
+	// and can return a short page while visible ops remain past the offset (a client
+	// treating "short page = end" would silently truncate the catalog). Pagination must
+	// run on the post-filter list.
 	// For an explicit connection, targetRows already performed the visibility and
 	// authorization lookup. Query the connector catalog by that row's key instead
 	// of applying listOperations' legacy per-connection action-mode filter; the
@@ -891,23 +890,23 @@ async function handleListAvailable(
 		args.connection_id !== undefined
 			? targetRows[0]?.connector_key
 			: args.connector_key;
-  const full = await listOperations({
-    organizationId: ctx.organizationId,
+	const full = await listOperations({
+		organizationId: ctx.organizationId,
 		connectorKey: catalogConnectorKey,
-    entityId: args.entity_id,
-    kind: args.kind,
-    backend: args.backend,
+		entityId: args.entity_id,
+		kind: args.kind,
+		backend: args.backend,
 		// Required-input detection still needs the schema when the caller hides the
 		// descriptor copy from the public response.
 		includeInputSchema: true,
-    includeOutputSchema: args.include_output_schema ?? false,
-    // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
-    // would silently drop ops past index 100 and make them unreachable at any
-    // caller offset. We must filter per-op-disabled across the full set BEFORE
-    // slicing, so no internal cap here; the caller's limit/offset apply below.
-    limit: Number.MAX_SAFE_INTEGER,
-    offset: 0,
-  });
+		includeOutputSchema: args.include_output_schema ?? false,
+		// Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
+		// would silently drop ops past index 100 and make them unreachable at any
+		// caller offset. We must filter per-op-disabled across the full set BEFORE
+		// slicing, so no internal cap here; the caller's limit/offset apply below.
+		limit: Number.MAX_SAFE_INTEGER,
+		offset: 0,
+	});
 	const qualifiedWriteKeys = full.operations
 		.filter((operation) => operation.kind === "write")
 		.map((operation) =>
@@ -925,20 +924,20 @@ async function handleListAvailable(
 	});
 	const blanketDisabled = policyEffects.get(null) === "disabled";
 
-  // Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
-  // filtered by agent write-policy. Humans always resolve auto for policy.
+	// Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
+	// filtered by agent write-policy. Humans always resolve auto for policy.
 	const visibleFlags = full.operations.map((op) => {
-			if (op.kind === "read") return "auto" as const;
-			if (blanketDisabled) return "disabled" as const;
-			return (
-				policyEffects.get(
-					qualifiedOperationKey(op.connector_key, op.operation_key),
-				) ?? "auto"
-  );
-		});
+		if (op.kind === "read") return "auto" as const;
+		if (blanketDisabled) return "disabled" as const;
+		return (
+			policyEffects.get(
+				qualifiedOperationKey(op.connector_key, op.operation_key),
+			) ?? "auto"
+		);
+	});
 	const policyVisible = full.operations.filter(
 		(_op, i) => visibleFlags[i] !== "disabled",
-  );
+	);
 
 	const queryTokens = (args.query ?? "")
 		.toLocaleLowerCase()
@@ -965,15 +964,15 @@ async function handleListAvailable(
 			return operationMatchesQuery(operation, queryTokens);
 		});
 
-  const offset = args.offset ?? 0;
+	const offset = args.offset ?? 0;
 	const limit = args.limit ?? 100;
-  return {
+	return {
 		action: "list_available",
 		operations: publicOperations.slice(offset, offset + limit),
 		total: publicOperations.length,
-    limit,
-    offset,
-  };
+		limit,
+		offset,
+	};
 }
 
 // Poll `runs` until status flips to completed/failed/timeout or we hit
@@ -1161,37 +1160,40 @@ async function handleExecute(
 				policyPrincipalId: actor.id,
 				db: tx,
 			});
-			const event = await insertEvent({
-				entityIds,
-				organizationId: ctx.organizationId,
-				originId: `run_${createdRunId}_pending`,
-				title: `${operation.name} — pending approval`,
-				content: `Agent requested operation: ${operation.name}`,
-				semanticType: "operation",
-				connectorKey: connection.connector_key,
-				connectionId: args.connection_id,
-				runId: createdRunId,
-				interactionType: "approval",
-				interactionStatus: "pending",
-				interactionInputSchema:
-					(operation.input_schema as Record<string, unknown> | undefined) ??
-					null,
-				interactionInput: input,
-				metadata: {
-					operation_key: operation.operation_key,
-					operation_name: operation.name,
-					action_key: operation.operation_key,
-					action_name: operation.name,
-					operation_input: input,
-					action_input: input,
-					input_schema: operation.input_schema ?? null,
-					status: "pending_approval",
-					connection_name: connection.display_name ?? connection.connector_key,
-					run_id: createdRunId,
+			const event = await insertEvent(
+				{
+					entityIds,
+					organizationId: ctx.organizationId,
+					originId: `run_${createdRunId}_pending`,
+					title: `${operation.name} — pending approval`,
+					content: `Agent requested operation: ${operation.name}`,
+					semanticType: "operation",
+					connectorKey: connection.connector_key,
+					connectionId: args.connection_id,
+					runId: createdRunId,
+					interactionType: "approval",
+					interactionStatus: "pending",
+					interactionInputSchema:
+						(operation.input_schema as Record<string, unknown> | undefined) ??
+						null,
+					interactionInput: input,
+					metadata: {
+						operation_key: operation.operation_key,
+						operation_name: operation.name,
+						action_key: operation.operation_key,
+						action_name: operation.name,
+						operation_input: input,
+						action_input: input,
+						input_schema: operation.input_schema ?? null,
+						status: "pending_approval",
+						connection_name:
+							connection.display_name ?? connection.connector_key,
+						run_id: createdRunId,
+					},
+					authorName: ctx.clientId ?? "agent",
 				},
-				authorName: ctx.clientId ?? "agent",
-			},
-			{ sql: tx });
+				{ sql: tx },
+			);
 			return { runId: createdRunId, eventId: Number(event.id) };
 		});
 
@@ -1368,84 +1370,84 @@ async function handleListRuns(
 	args: Static<typeof ListRunsAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  const sql = getDb();
-  const limit = args.limit ?? 20;
-  // Keyset pagination short-circuits offset whenever a cursor is supplied.
-  const hasCursor = args.before_id != null && args.before_created_at != null;
-  const offset = hasCursor ? 0 : (args.offset ?? 0);
+	const sql = getDb();
+	const limit = args.limit ?? 20;
+	// Keyset pagination short-circuits offset whenever a cursor is supplied.
+	const hasCursor = args.before_id != null && args.before_created_at != null;
+	const offset = hasCursor ? 0 : (args.offset ?? 0);
 
-  // Date-range bounds are validated up front so a bad value is a clean caller
-  // error instead of a mid-query Postgres cast failure.
-  for (const field of ["created_after", "created_before"] as const) {
-    const value = args[field];
-    if (value != null && Number.isNaN(Date.parse(value))) {
-      throw new ToolUserError(
-        `${field} must be an ISO 8601 timestamp (got '${value}')`,
-        400,
-      );
-    }
-  }
+	// Date-range bounds are validated up front so a bad value is a clean caller
+	// error instead of a mid-query Postgres cast failure.
+	for (const field of ["created_after", "created_before"] as const) {
+		const value = args[field];
+		if (value != null && Number.isNaN(Date.parse(value))) {
+			throw new ToolUserError(
+				`${field} must be an ISO 8601 timestamp (got '${value}')`,
+				400,
+			);
+		}
+	}
 
-  // Shared WHERE fragment so the count and page queries can't drift apart.
-  let where = sql`r.organization_id = ${ctx.organizationId}`;
-  if (args.run_types && args.run_types.length > 0) {
-    // fetch_types:false means JS arrays aren't auto-serialized — use the
-    // PG array-literal helpers (see db/client.ts).
-    where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
-  } else {
-    // Default operational view: hide the chat-message transport lane (complete
-    // replies + per-delta streaming fragments) that otherwise buries real run
-    // history (#2051). Naming run_types explicitly opts back in.
-    where = sql`${where} AND r.run_type <> ALL(${pgTextArray([...LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES])}::text[])`;
-  }
-  // connection scope: scalar connection_id (REST/SDK), an explicit id list, or
-  // every connection pinned to a device.
-  if (args.connection_id != null) {
-    where = sql`${where} AND r.connection_id = ${args.connection_id}`;
-  }
-  if (args.connection_ids && args.connection_ids.length > 0) {
-    where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
-  }
-  if (args.feed_ids && args.feed_ids.length > 0) {
-    where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
-  }
-  if (args.device_worker_id) {
-    where = sql`${where} AND r.connection_id IN (
+	// Shared WHERE fragment so the count and page queries can't drift apart.
+	let where = sql`r.organization_id = ${ctx.organizationId}`;
+	if (args.run_types && args.run_types.length > 0) {
+		// fetch_types:false means JS arrays aren't auto-serialized — use the
+		// PG array-literal helpers (see db/client.ts).
+		where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
+	} else {
+		// Default operational view: hide the chat-message transport lane (complete
+		// replies + per-delta streaming fragments) that otherwise buries real run
+		// history (#2051). Naming run_types explicitly opts back in.
+		where = sql`${where} AND r.run_type <> ALL(${pgTextArray([...LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES])}::text[])`;
+	}
+	// connection scope: scalar connection_id (REST/SDK), an explicit id list, or
+	// every connection pinned to a device.
+	if (args.connection_id != null) {
+		where = sql`${where} AND r.connection_id = ${args.connection_id}`;
+	}
+	if (args.connection_ids && args.connection_ids.length > 0) {
+		where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+	}
+	if (args.feed_ids && args.feed_ids.length > 0) {
+		where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
+	}
+	if (args.device_worker_id) {
+		where = sql`${where} AND r.connection_id IN (
       SELECT id FROM connections
       WHERE device_worker_id = ${args.device_worker_id}
         AND organization_id = ${ctx.organizationId}
         AND deleted_at IS NULL
     )`;
-  }
-  if (args.connector_key) {
-    where = sql`${where} AND r.connector_key = ${args.connector_key}`;
-  }
-  if (args.operation_key) {
-    where = sql`${where} AND r.action_key = ${args.operation_key}`;
-  }
-  if (args.status) {
-    where = sql`${where} AND r.status = ${args.status}`;
-  }
-  if (args.created_after) {
-    where = sql`${where} AND r.created_at >= ${args.created_after}::timestamptz`;
-  }
-  if (args.created_before) {
-    where = sql`${where} AND r.created_at < ${args.created_before}::timestamptz`;
-  }
-  if (args.approval_status) {
-    where = sql`${where} AND r.approval_status = ${args.approval_status}`;
-  }
-  if (args.behavior_ids && args.behavior_ids.length > 0) {
-    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
-  }
+	}
+	if (args.connector_key) {
+		where = sql`${where} AND r.connector_key = ${args.connector_key}`;
+	}
+	if (args.operation_key) {
+		where = sql`${where} AND r.action_key = ${args.operation_key}`;
+	}
+	if (args.status) {
+		where = sql`${where} AND r.status = ${args.status}`;
+	}
+	if (args.created_after) {
+		where = sql`${where} AND r.created_at >= ${args.created_after}::timestamptz`;
+	}
+	if (args.created_before) {
+		where = sql`${where} AND r.created_at < ${args.created_before}::timestamptz`;
+	}
+	if (args.approval_status) {
+		where = sql`${where} AND r.approval_status = ${args.approval_status}`;
+	}
+	if (args.behavior_ids && args.behavior_ids.length > 0) {
+		where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.behavior_ids)}::bigint[])`;
+	}
 
-  const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
+	const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
 
-  let pageWhere = where;
-  if (hasCursor) {
-    pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
-  }
-  const query = sql`
+	let pageWhere = where;
+	if (hasCursor) {
+		pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
+	}
+	const query = sql`
     SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
@@ -1461,32 +1463,32 @@ async function handleListRuns(
     LIMIT ${limit} OFFSET ${offset}
   `;
 
-  const [countResult, rows] = await Promise.all([countQuery, query]);
+	const [countResult, rows] = await Promise.all([countQuery, query]);
 
-  return {
+	return {
 		action: "list_runs",
-    runs: rows,
-    total: Number(countResult[0]?.total ?? 0),
-    limit,
-    offset,
-    has_more: rows.length === limit,
-  };
+		runs: rows,
+		total: Number(countResult[0]?.total ?? 0),
+		limit,
+		offset,
+		has_more: rows.length === limit,
+	};
 }
 
 async function handleGetRun(
 	args: Static<typeof GetRunAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  const sql = getDb();
-  // Include 'internal' runs (builder / entity-change approvals), not just
-  // connector 'action' runs: list_runs surfaces them and approve/reject act on
-  // them, so a caller that can list and approve an internal run must be able to
-  // get_run it too. get_run must resolve ANY run_type that list_runs surfaces —
-  // action, internal, behavior, sync — not just action+internal. It uses the
-  // SAME excluded-types set as the list_runs default so the two can never drift:
-  // a run visible in the list is always fetchable here. Only the chat-message
-  // transport lane (the list's default exclusion) stays unfetchable.
-  const rows = await sql`
+	const sql = getDb();
+	// Include 'internal' runs (builder / entity-change approvals), not just
+	// connector 'action' runs: list_runs surfaces them and approve/reject act on
+	// them, so a caller that can list and approve an internal run must be able to
+	// get_run it too. get_run must resolve ANY run_type that list_runs surfaces —
+	// action, internal, behavior, sync — not just action+internal. It uses the
+	// SAME excluded-types set as the list_runs default so the two can never drift:
+	// a run visible in the list is always fetchable here. Only the chat-message
+	// transport lane (the list's default exclusion) stays unfetchable.
+	const rows = await sql`
     SELECT r.id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
@@ -1510,9 +1512,9 @@ async function handleGetRun(
  * (e.g. a worker completing a device action it was told to run).
  */
 export interface ApprovalReviewer {
-  userId: string;
-  /** Display name resolved at decision time; falls back to userId when unknown. */
-  name: string | null;
+	userId: string;
+	/** Display name resolved at decision time; falls back to userId when unknown. */
+	name: string | null;
 }
 
 export async function supersedeActionEvent(
@@ -1525,8 +1527,8 @@ export async function supersedeActionEvent(
 	reviewer: ApprovalReviewer | null = null,
 	db: DbClient = getDb(),
 ): Promise<number | undefined> {
-  const sql = db;
-  const originalEvent = await sql`
+	const sql = db;
+	const originalEvent = await sql`
     SELECT id, entity_ids, connection_id, connector_key, metadata, author_name, interaction_input_schema, interaction_input
     FROM current_event_records
     WHERE run_id = ${runId}
@@ -1552,66 +1554,72 @@ export async function supersedeActionEvent(
 		(priorMetadata.reviewed_by_name as string | undefined) ??
 		null;
 
-	const nextEvent = await insertEvent({
-		entityIds: Array.isArray(orig.entity_ids)
-			? orig.entity_ids.map(Number)
-			: [],
-		organizationId,
-		originId: `run_${runId}_${status}_${Date.now()}`,
-		title,
-		content,
-		semanticType: "operation",
-		connectorKey: orig.connector_key,
-		connectionId: orig.connection_id,
-		runId,
-		interactionType: "approval",
-		interactionStatus:
-			status === "confirmed"
-				? "approved"
-				: status === "rejected"
-					? "rejected"
-					: status === "completed"
-						? "completed"
-						: status === "failed"
-							? "failed"
-							: "pending",
-		interactionInputSchema:
-			(orig.interaction_input_schema as Record<string, unknown> | null) ?? null,
-		interactionInput:
-			(orig.interaction_input as Record<string, unknown> | null) ?? null,
-		interactionOutput:
-			((extraMetadata.output ?? extraMetadata.action_output) as
-				| Record<string, unknown>
-				| undefined) ?? null,
-		interactionError:
-			(extraMetadata.error_message as string | undefined) ?? null,
-		supersedesEventId: Number(orig.id),
-		// The durable identity (FK → user); set on the first decision event and
-		// preserved down the chain.
-		createdBy: reviewedById,
-		metadata: {
-			...priorMetadata,
-			status,
-			...(reviewedById ? { reviewed_by_id: reviewedById } : {}),
-			...(reviewedByName ? { reviewed_by_name: reviewedByName } : {}),
-			...(extraMetadata.output ? { action_output: extraMetadata.output } : {}),
-			...(extraMetadata.error_message
-				? { error_message: extraMetadata.error_message }
-				: {}),
-			...extraMetadata,
-			// Superseding copies the prior metadata forward, so a durable approval
-			// written before the Behaviors rename (#2034) would keep minting NEW
-			// rows carrying `resourceKind: "watcher"` every time it is resolved.
-			// Canonicalize on write: history keeps whatever it recorded, but nothing
-			// emitted from here reintroduces the pre-rename value. Must stay below
-			// both spreads so neither the prior row nor a caller can restore it.
-			...(priorMetadata.resourceKind === "watcher" ||
-			extraMetadata.resourceKind === "watcher"
-				? { resourceKind: "behavior" }
-				: {}),
+	const nextEvent = await insertEvent(
+		{
+			entityIds: Array.isArray(orig.entity_ids)
+				? orig.entity_ids.map(Number)
+				: [],
+			organizationId,
+			originId: `run_${runId}_${status}_${Date.now()}`,
+			title,
+			content,
+			semanticType: "operation",
+			connectorKey: orig.connector_key,
+			connectionId: orig.connection_id,
+			runId,
+			interactionType: "approval",
+			interactionStatus:
+				status === "confirmed"
+					? "approved"
+					: status === "rejected"
+						? "rejected"
+						: status === "completed"
+							? "completed"
+							: status === "failed"
+								? "failed"
+								: "pending",
+			interactionInputSchema:
+				(orig.interaction_input_schema as Record<string, unknown> | null) ??
+				null,
+			interactionInput:
+				(orig.interaction_input as Record<string, unknown> | null) ?? null,
+			interactionOutput:
+				((extraMetadata.output ?? extraMetadata.action_output) as
+					| Record<string, unknown>
+					| undefined) ?? null,
+			interactionError:
+				(extraMetadata.error_message as string | undefined) ?? null,
+			supersedesEventId: Number(orig.id),
+			// The durable identity (FK → user); set on the first decision event and
+			// preserved down the chain.
+			createdBy: reviewedById,
+			metadata: {
+				...priorMetadata,
+				status,
+				...(reviewedById ? { reviewed_by_id: reviewedById } : {}),
+				...(reviewedByName ? { reviewed_by_name: reviewedByName } : {}),
+				...(extraMetadata.output
+					? { action_output: extraMetadata.output }
+					: {}),
+				...(extraMetadata.error_message
+					? { error_message: extraMetadata.error_message }
+					: {}),
+				...extraMetadata,
+				// Superseding copies the prior metadata forward, so a durable approval
+				// written before the Behaviors rename (#2034) would keep minting NEW
+				// rows carrying `resourceKind: "watcher"` every time it is resolved.
+				// Canonicalize on write: history keeps whatever it recorded, but nothing
+				// emitted from here reintroduces the pre-rename value. Must stay below
+				// both spreads so neither the prior row nor a caller can restore it.
+				...(priorMetadata.resourceKind === "watcher" ||
+				extraMetadata.resourceKind === "watcher"
+					? { resourceKind: "behavior" }
+					: {}),
+			},
+			authorName: orig.author_name ?? null,
 		},
-		authorName: orig.author_name ?? null,
-	}, { sql });
+		{ sql },
+	);
 
 	return Number(nextEvent.id);
 }
@@ -1624,11 +1632,11 @@ export async function supersedeActionEvent(
 async function resolveReviewer(
 	ctx: ToolContext,
 ): Promise<ApprovalReviewer | null> {
-  if (!ctx.userId) return null;
-  const rows = await getDb()<{ name: string | null }>`
+	if (!ctx.userId) return null;
+	const rows = await getDb()<{ name: string | null }>`
     SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1
   `;
-  return { userId: ctx.userId, name: rows[0]?.name ?? null };
+	return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
 /**
@@ -1970,7 +1978,7 @@ async function claimEntityChangeRun(
             AND action_key = ANY(${actionKeys}::text[])
           RETURNING action_input
         `
-      : await sql`
+			: await sql`
           UPDATE runs
           SET approval_status = 'rejected', status = 'cancelled',
               error_message = ${rejectReason ?? "Rejected by user"}, completed_at = NOW()
@@ -2347,7 +2355,9 @@ async function tryRejectEntityChangeRun(
 	if (!pending?.action_input) return null;
 	const reason = args.reason ?? "Rejected by user";
 	const reviewer = await resolveReviewer(ctx);
-	const reject = async (db: DbClient): Promise<ManageOperationsResult | null> => {
+	const reject = async (
+		db: DbClient,
+	): Promise<ManageOperationsResult | null> => {
 		const claimed = await claimEntityChangeRun(
 			args.run_id,
 			ctx.organizationId,
@@ -2756,7 +2766,9 @@ async function pendingActionRunIdsForScope(
 		where = sql`${where} AND r.action_key = ${scope.action_key}`;
 	}
 	if (scope.behavior_id !== undefined) {
-		where = sql`${where} AND r.watcher_id = ${scope.behavior_id}`;
+		where = sql`${where}
+      AND r.policy_principal_kind = 'watcher'
+      AND r.policy_principal_id = ${`watcher:${scope.behavior_id}`}`;
 	}
 	if (scope.older_than_days !== undefined) {
 		where = sql`${where} AND r.created_at < NOW() - (${scope.older_than_days}::int * interval '1 day')`;
@@ -2775,7 +2787,10 @@ async function pendingActionRunIdsForScope(
  * ambiguous which one bounded the blast radius.
  */
 async function resolveBatchRunIds(
-	args: { window_id?: number; scope?: Static<typeof ApproveBatchAction>["scope"] },
+	args: {
+		window_id?: number;
+		scope?: Static<typeof ApproveBatchAction>["scope"];
+	},
 	organizationId: string,
 ): Promise<number[] | { error: string }> {
 	if (args.window_id !== undefined && args.scope !== undefined) {
@@ -2817,12 +2832,27 @@ function batchRunSetChanged(
 }
 
 /**
+ * Check the entire batch before deciding its first row. A member may own one
+ * entity-change proposal in a window but not its siblings; checking only inside
+ * each single-run handler would mutate the owned prefix before a later authority
+ * failure aborted the request.
+ */
+async function requireBatchApprovalAuthority(
+	action: "approve" | "reject",
+	runIds: number[],
+	ctx: ToolContext,
+): Promise<void> {
+	for (const runId of runIds) {
+		await requireApprovalAuthority(action, runId, ctx);
+	}
+}
+
+/**
  * Approve every pending approval in one bounded target, in one action. Reuses
  * the single-run approve path per row so each still applies through its own
- * gate/apply handler — including {@link requireApprovalAuthority}, which THROWS
- * on an unauthorized caller and so aborts the whole batch rather than letting a
- * partial sweep through. The batch is purely the grouping, not a second code
- * path, so whoever may approve one is exactly who may bulk-approve.
+ * gate/apply handler. Authority is preflighted across the full set before the
+ * first mutation, then enforced again by each single-run path, so whoever may
+ * approve every row individually is exactly who may bulk-approve them.
  *
  * The target is either a window (a Behavior run's proposals) or an explicit
  * scope over queued connector operations. There is no unscoped variant: batch
@@ -2844,6 +2874,7 @@ async function handleApproveBatch(
 			error: batchSetChangedError(args.window_id !== undefined, "approving"),
 		};
 	}
+	await requireBatchApprovalAuthority("approve", runIds, ctx);
 	if (runIds.length === 0) {
 		return {
 			action: "approve_batch",
@@ -2874,7 +2905,7 @@ async function handleApproveBatch(
 		approved_count: approved,
 		failed_count: failed,
 		run_ids: runIds,
-		message: `Approved ${approved} of ${runIds.length} approvals${failed > 0 ? ` (${failed} failed)` : ""}.`,
+		message: `Approved ${approved} of ${runIds.length} ${args.window_id !== undefined ? "proposals" : "approvals"}${failed > 0 ? ` (${failed} failed)` : ""}.`,
 	};
 }
 
@@ -2931,6 +2962,7 @@ async function handleRejectBatch(
 			error: batchSetChangedError(args.window_id !== undefined, "rejecting"),
 		};
 	}
+	await requireBatchApprovalAuthority("reject", runIds, ctx);
 	const reason = args.reason ?? "Rejected by user";
 	let rejected = 0;
 	for (const runId of runIds) {

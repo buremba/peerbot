@@ -11,16 +11,30 @@
  * lane that never holds a human gate — is left completely alone.
  */
 
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "bun:test";
 import { getDb } from "../../db/client";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
 } from "../../gateway/__tests__/helpers/db-setup";
+import type { Env } from "../../index";
 import { expirePendingApprovals } from "../expire-pending-approvals";
+import { getSchedulerHealth } from "../scheduler-health";
 
 const ORG_ID = "approval-expiry-org";
 const TTL_DAYS = 7;
+const DROP_FAIL_TRIGGER = `
+DROP TRIGGER IF EXISTS test_fail_expiry_supersede_trg ON events;
+DROP FUNCTION IF EXISTS test_fail_expiry_supersede();
+`;
+let failTriggerCleanupNeeded = false;
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -33,7 +47,13 @@ beforeEach(async () => {
     INSERT INTO organization (id, name, slug)
     VALUES (${ORG_ID}, ${ORG_ID}, ${ORG_ID})
     ON CONFLICT (id) DO NOTHING
-  `;
+	`;
+});
+
+afterEach(async () => {
+	if (!failTriggerCleanupNeeded) return;
+	await getDb().unsafe(DROP_FAIL_TRIGGER);
+	failTriggerCleanupNeeded = false;
 });
 
 interface SeedApprovalOpts {
@@ -161,6 +181,32 @@ describe("expirePendingApprovals", () => {
 		expect((await runStateOf(internalId)).approval_status).toBe("expired");
 	});
 
+	test("scheduler health surfaces approvals that remain pending past the TTL", async () => {
+		await seedApproval({
+			approvalStatus: "pending",
+			ageDays: TTL_DAYS + 3,
+		});
+
+		const previousTtl = process.env.PENDING_APPROVAL_TTL_DAYS;
+		process.env.PENDING_APPROVAL_TTL_DAYS = String(TTL_DAYS);
+		try {
+			const health = await getSchedulerHealth({} as Env);
+			expect(health.metrics.stalePendingApprovals).toBe(1);
+			expect(health.metrics.oldestPendingApprovalDays).toBeGreaterThan(
+				TTL_DAYS,
+			);
+			expect(
+				health.issues.some((issue) => /approvals undecided past/i.test(issue)),
+			).toBe(true);
+		} finally {
+			if (previousTtl === undefined) {
+				delete process.env.PENDING_APPROVAL_TTL_DAYS;
+			} else {
+				process.env.PENDING_APPROVAL_TTL_DAYS = previousTtl;
+			}
+		}
+	});
+
 	test("is idempotent — a second pass expires nothing new", async () => {
 		await seedApproval({
 			approvalStatus: "pending",
@@ -172,9 +218,50 @@ describe("expirePendingApprovals", () => {
 
 		// The UPDATE re-asserts `approval_status = 'pending'`, so the row it just
 		// took terminal no longer matches. This is the same predicate that makes
-		// two overlapping replicas safe: only one UPDATE can ever match a row.
+		// two overlapping replicas safe: only one expiry can commit for a row.
 		const second = await expirePendingApprovals(TTL_DAYS);
 		expect(second.expired).toBe(0);
+	});
+
+	test("an event supersede failure rolls back that run without blocking the rest", async () => {
+		const staleId = await seedApproval({
+			approvalStatus: "pending",
+			ageDays: TTL_DAYS + 3,
+		});
+		const healthyId = await seedApproval({
+			approvalStatus: "pending",
+			ageDays: TTL_DAYS + 2,
+		});
+		const sql = getDb();
+		await sql`
+      INSERT INTO events (
+        organization_id, origin_id, title, payload_text, run_id,
+        semantic_type, interaction_type, interaction_status
+      ) VALUES (
+        ${ORG_ID}, ${`run_${staleId}_pending`}, 'Pending approval',
+        'Awaiting review', ${staleId}, 'operation', 'approval', 'pending'
+      )
+    `;
+		failTriggerCleanupNeeded = true;
+		await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_expiry_supersede()
+        RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.supersedes_event_id IS NOT NULL THEN
+          RAISE EXCEPTION 'simulated expiry supersede failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+      CREATE TRIGGER test_fail_expiry_supersede_trg
+        BEFORE INSERT ON events
+        FOR EACH ROW EXECUTE FUNCTION test_fail_expiry_supersede();
+    `);
+
+		const result = await expirePendingApprovals(TTL_DAYS);
+		expect(result.expired).toBe(1);
+		expect((await runStateOf(staleId)).approval_status).toBe("pending");
+		expect((await runStateOf(healthyId)).approval_status).toBe("expired");
 	});
 
 	test("a decision landing between scan and sweep wins over the expiry", async () => {

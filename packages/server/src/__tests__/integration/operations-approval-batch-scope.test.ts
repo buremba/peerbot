@@ -19,11 +19,21 @@ import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { seedOwnerContext } from "../setup/test-fixtures";
+import {
+	addUserToOrganization,
+	createTestConnection,
+	createTestConnectorDefinition,
+	createTestUser,
+	seedOwnerContext,
+} from "../setup/test-fixtures";
+
+const APPROVAL_CONNECTOR = "demo.batch.approval";
 
 describe("manage_operations batch scope (connector-approval lane)", () => {
 	let orgId: string;
 	let ownerCtx: ToolContext;
+	let memberCtx: ToolContext;
+	let approvalConnectionId: number;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -33,6 +43,39 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		});
 		orgId = org.id;
 		ownerCtx = ctx;
+		const member = await createTestUser({ name: "Batch Scope Member" });
+		await addUserToOrganization(member.id, org.id);
+		memberCtx = {
+			...ctx,
+			userId: member.id,
+			memberRole: "member",
+			scopes: ["mcp:read", "mcp:write"],
+		};
+
+		await createTestConnectorDefinition({
+			key: APPROVAL_CONNECTOR,
+			name: "Batch approval connector",
+			organization_id: org.id,
+		});
+		const sql = getTestDb();
+		await sql`
+      UPDATE connector_definitions
+      SET actions_schema = ${sql.json({
+				needs_approval: {
+					name: "Needs approval",
+					kind: "write",
+					requiresApproval: true,
+				},
+			})}
+      WHERE organization_id = ${org.id}
+        AND key = ${APPROVAL_CONNECTOR}
+    `;
+		const connection = await createTestConnection({
+			organization_id: org.id,
+			connector_key: APPROVAL_CONNECTOR,
+			created_by: ctx.userId ?? undefined,
+		});
+		approvalConnectionId = connection.id;
 	});
 
 	beforeEach(async () => {
@@ -45,15 +88,21 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 		connectorKey: string;
 		actionKey: string;
 		ageDays?: number;
+		behaviorId?: number;
+		connectionId?: number;
 	}): Promise<number> {
 		const sql = getTestDb();
 		const rows = await sql`
       INSERT INTO runs (
         organization_id, run_type, status, approval_status,
-        connector_key, action_key, created_at
+        connection_id, connector_key, action_key, policy_principal_kind,
+        policy_principal_id, created_at
       ) VALUES (
         ${orgId}, 'action', 'pending', 'pending',
+        ${opts.connectionId ?? null},
         ${opts.connectorKey}, ${opts.actionKey},
+        ${opts.behaviorId === undefined ? null : "watcher"},
+        ${opts.behaviorId === undefined ? null : `watcher:${opts.behaviorId}`},
         NOW() - (${opts.ageDays ?? 0}::int * interval '1 day')
       )
       RETURNING id
@@ -118,6 +167,64 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 			{
 				action: "reject_batch",
 				scope: { connector_key: "github", action_key: "create_issue" },
+			},
+			{} as Env,
+			ownerCtx,
+		)) as { rejected_count: number };
+
+		expect(result.rejected_count).toBe(1);
+		expect(await approvalStatusOf(target)).toBe("rejected");
+		expect(await approvalStatusOf(sibling)).toBe("pending");
+	});
+
+	it("approve_batch applies only the connector operations selected by scope", async () => {
+		const target = await seedPendingAction({
+			connectionId: approvalConnectionId,
+			connectorKey: APPROVAL_CONNECTOR,
+			actionKey: "needs_approval",
+		});
+		const sibling = await seedPendingAction({
+			connectorKey: APPROVAL_CONNECTOR,
+			actionKey: "needs_approval",
+		});
+
+		const result = (await manageOperations(
+			{
+				action: "approve_batch",
+				scope: { connection_id: approvalConnectionId },
+				run_ids: [target],
+			},
+			{} as Env,
+			ownerCtx,
+		)) as {
+			approved_count: number;
+			failed_count: number;
+			run_ids: number[];
+		};
+
+		expect(result.approved_count).toBe(1);
+		expect(result.failed_count).toBe(0);
+		expect(result.run_ids).toEqual([target]);
+		expect(await approvalStatusOf(target)).toBe("approved");
+		expect(await approvalStatusOf(sibling)).toBe("pending");
+	});
+
+	it("behavior_id matches the trusted watcher principal stored on action runs", async () => {
+		const target = await seedPendingAction({
+			connectorKey: "github",
+			actionKey: "create_issue",
+			behaviorId: 41,
+		});
+		const sibling = await seedPendingAction({
+			connectorKey: "github",
+			actionKey: "create_issue",
+			behaviorId: 42,
+		});
+
+		const result = (await manageOperations(
+			{
+				action: "reject_batch",
+				scope: { behavior_id: 41 },
 			},
 			{} as Env,
 			ownerCtx,
@@ -274,6 +381,54 @@ describe("manage_operations batch scope (connector-approval lane)", () => {
 
 		expect(result.error).toContain("signed-in user");
 		expect(await approvalStatusOf(pending)).toBe("pending");
+	});
+
+	it("preflights every run's authority before mutating a window batch", async () => {
+		const sql = getTestDb();
+		const rows = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, status, approval_status,
+        action_key, action_input, window_id
+      ) VALUES
+        (
+          ${orgId}, 'internal', 'pending', 'pending',
+          'entity_field_change',
+          ${sql.json({
+						entity_id: 1,
+						fields: { priority: "high" },
+						owner_user_id: memberCtx.userId,
+					})},
+          91
+        ),
+        (
+          ${orgId}, 'internal', 'pending', 'pending',
+          'entity_field_change',
+          ${sql.json({
+						entity_id: 2,
+						fields: { priority: "high" },
+						owner_user_id: "another-user",
+					})},
+          91
+        )
+      RETURNING id
+    `;
+		const runIds = rows.map((row) => Number(row.id));
+
+		await expect(
+			manageOperations(
+				{
+					action: "reject_batch",
+					window_id: 91,
+					run_ids: runIds,
+				},
+				{} as Env,
+				memberCtx,
+			),
+		).rejects.toThrow("requires admin or owner access");
+
+		for (const runId of runIds) {
+			expect(await approvalStatusOf(runId)).toBe("pending");
+		}
 	});
 
 	it("never crosses the org boundary", async () => {

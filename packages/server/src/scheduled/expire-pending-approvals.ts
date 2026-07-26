@@ -26,32 +26,36 @@
  *
  * Multi-pod safety: the UPDATE re-asserts `approval_status = 'pending'`, so it
  * is the authoritative claim — a row a human approved between scan and write is
- * excluded by the predicate, and two overlapping runners can never both expire
- * the same row (only one UPDATE matches). Pure Postgres, correct under N>1
- * replicas; RETURNING drives the card supersede so each expiry is announced
- * exactly once.
+ * excluded by the predicate, and only one overlapping runner can commit an
+ * expiry for a row. Pure Postgres, correct under N>1 replicas. The run
+ * transition and card supersession share a transaction: if the event write
+ * fails, the run remains pending for the next sweep.
  */
 
-import { intervals } from '../config/intervals';
-import { getDb, pgTextArray } from '../db/client';
-import { supersedeActionEvent } from '../tools/admin/manage_operations';
-import logger from '../utils/logger';
+import { intervals } from "../config/intervals";
+import { getDb, pgTextArray } from "../db/client";
+import { supersedeActionEvent } from "../tools/admin/manage_operations";
+import logger from "../utils/logger";
 
 /** Lanes that can hold `approval_status='pending'`. */
-const APPROVAL_RUN_TYPES = ['action', 'internal'] as const;
+const APPROVAL_RUN_TYPES = ["action", "internal"] as const;
 
 /** Cap on rows expired per tick so one sweep can't hold a long write burst. */
 const EXPIRY_BATCH_LIMIT = 500;
 
 interface ExpiredApprovalRow {
-  id: string | number;
-  organization_id: string;
-  action_key: string | null;
+	id: string | number;
+	organization_id: string;
+	action_key: string | null;
 }
 
-export interface ExpirePendingApprovalsResult {
-  /** Rows transitioned pending → expired this tick. */
-  expired: number;
+interface PendingApprovalCandidate {
+	id: string | number;
+}
+
+interface ExpirePendingApprovalsResult {
+	/** Rows transitioned pending → expired this tick. */
+	expired: number;
 }
 
 /**
@@ -59,66 +63,77 @@ export interface ExpirePendingApprovalsResult {
  * expired no longer matches `approval_status = 'pending'`.
  */
 export async function expirePendingApprovals(
-  ttlDays: number = intervals.pendingApprovalTtlDays,
+	ttlDays: number = intervals.pendingApprovalTtlDays,
 ): Promise<ExpirePendingApprovalsResult> {
-  const sql = getDb();
-  const reason = `Approval expired: nobody decided within ${ttlDays} day${ttlDays === 1 ? '' : 's'}.`;
+	const sql = getDb();
+	const reason = `Approval expired: nobody decided within ${ttlDays} day${ttlDays === 1 ? "" : "s"}.`;
 
-  // Authoritative claim + transition in one statement. The inner SELECT bounds
-  // the batch oldest-first; the UPDATE re-asserts the full pending predicate so
-  // a row decided between scan and write is left to the human who decided it.
-  const expired = (await sql`
-    UPDATE runs
-    SET approval_status = 'expired',
-        status = 'cancelled',
-        error_message = ${reason},
-        completed_at = NOW()
-    WHERE id IN (
-      SELECT id FROM runs
-      WHERE approval_status = 'pending'
+	const candidates = (await sql`
+    SELECT id FROM runs
+    WHERE approval_status = 'pending'
+      AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+      AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
+    ORDER BY created_at ASC
+    LIMIT ${EXPIRY_BATCH_LIMIT}
+  `) as unknown as PendingApprovalCandidate[];
+
+	let expiredCount = 0;
+	for (const candidate of candidates) {
+		try {
+			const didExpire = await sql.begin(async (tx) => {
+				// Re-assert the full candidate predicate while claiming the row. A human
+				// decision or another replica's committed expiry wins before this write.
+				const rows = (await tx`
+      UPDATE runs
+      SET approval_status = 'expired',
+          status = 'cancelled',
+          error_message = ${reason},
+          completed_at = NOW()
+      WHERE id = ${candidate.id}
+        AND approval_status = 'pending'
         AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
         AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
-      ORDER BY created_at ASC
-      LIMIT ${EXPIRY_BATCH_LIMIT}
-    )
-      AND approval_status = 'pending'
-    RETURNING id, organization_id, action_key
-  `) as unknown as ExpiredApprovalRow[];
+      RETURNING id, organization_id, action_key
+        `) as unknown as ExpiredApprovalRow[];
+				const row = rows[0];
+				if (!row) return false;
 
-  // Supersede each approval card so the UI stops offering a dead Approve button.
-  // `events` is append-only — supersedeActionEvent appends a superseding row, it
-  // never deletes. interaction_status has no 'expired' member, so the card lands
-  // as 'rejected' (it is no longer actionable, which is what the renderer keys
-  // off); the precise reason lives on runs.approval_status + the event metadata.
-  // Best-effort per row: a card that can't be superseded must not strand the
-  // remaining rows, which are already terminal in the database.
-  for (const row of expired) {
-    const runId = Number(row.id);
-    const label = row.action_key ?? 'approval';
-    try {
-      await supersedeActionEvent(
-        runId,
-        row.organization_id,
-        'rejected',
-        `${label} — expired`,
-        reason,
-        { reason, expired: true, expired_after_days: ttlDays },
-      );
-    } catch (error) {
-      logger.warn(
-        { runId, organizationId: row.organization_id, error: String(error) },
-        '[task] expire-pending-approvals: card supersede failed (row already expired)',
-      );
-    }
-  }
+				// `events` stays append-only. interaction_status has no 'expired'
+				// member, so the card uses 'rejected' as its non-actionable UI state
+				// while run status and metadata retain the precise expiry reason.
+				const runId = Number(row.id);
+				const label = row.action_key ?? "approval";
+				await supersedeActionEvent(
+					runId,
+					row.organization_id,
+					"rejected",
+					`${label} — expired`,
+					reason,
+					{ reason, expired: true, expired_after_days: ttlDays },
+					null,
+					tx,
+				);
+				return true;
+			});
+			if (didExpire) expiredCount += 1;
+		} catch (error) {
+			logger.warn(
+				{
+					runId: Number(candidate.id),
+					error: String(error),
+				},
+				"[task] expire-pending-approvals: expiry rolled back after card supersede failure",
+			);
+		}
+	}
 
-  return { expired: expired.length };
+	return { expired: expiredCount };
 }
 
 /** Scheduled-task wrapper: run the sweep and log a summary. */
 export async function runExpirePendingApprovals(): Promise<void> {
-  const result = await expirePendingApprovals();
-  if (result.expired > 0) {
-    logger.info({ ...result }, '[task] expire-pending-approvals completed');
-  }
+	const result = await expirePendingApprovals();
+	if (result.expired > 0) {
+		logger.info({ ...result }, "[task] expire-pending-approvals completed");
+	}
 }

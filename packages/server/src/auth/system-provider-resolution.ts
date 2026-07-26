@@ -192,3 +192,44 @@ export async function resolveSystemKeyProvidersAndModel(): Promise<ResolvedSyste
 	}
 	return { models };
 }
+
+/**
+ * The `pre_approved_tools` every freshly created agent starts with. A Behavior
+ * reaches `complete_window` through `run_sdk` (and reads through `query_sdk`) on
+ * the internal `lobu-memory` MCP server; without this pre-approval those calls
+ * need an interactive approval no watcher run can satisfy, so the turn ends
+ * without completing the window.
+ *
+ * The `lobu-memory` server itself is NOT stored per-agent — it is derived at
+ * worker startup by `McpConfigService`. Only the approval pattern is persisted.
+ */
+export const DEFAULT_PRE_APPROVED_TOOLS = ["/mcp/lobu-memory/tools/*"];
+
+/**
+ * The provisioning defaults a brand-new agent row must carry to be runnable on
+ * THIS deployment. Every create path — `ensureDefaultAgent`,
+ * `ensureBuilderAgent`, the web `POST /agents` route, and the `manage_agents`
+ * create tool — resolves its fresh-agent defaults here.
+ *
+ * Why `models` must be baked in at create rather than inferred at run time: the
+ * run path's fallback is `agent.models[0] → the org's `inference_providers`
+ * `is_default` ROW → nothing`. Environment API keys (ANTHROPIC_API_KEY,
+ * CLAUDE_CODE_OAUTH_TOKEN, a providers.json `envVarName`, a module registry
+ * `hasSystemKey()`) never create that row, so on an env-key-only deployment an
+ * agent left with `models = NULL` resolves NO model at all. It then never
+ * completes a turn, and its Behavior fails with "Agent reply finished without
+ * calling completeWindow".
+ *
+ * Keeping this in ONE place is the point: the divergence between paths that
+ * baked a models list and paths that did not WAS the bug.
+ */
+export async function resolveNewAgentProvisioningDefaults(): Promise<{
+	models: string[];
+	preApprovedTools: string[];
+}> {
+	const resolved = await resolveSystemKeyProvidersAndModel();
+	return {
+		models: resolved.models,
+		preApprovedTools: [...DEFAULT_PRE_APPROVED_TOOLS],
+	};
+}

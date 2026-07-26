@@ -28,7 +28,10 @@ import { getDb } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
 import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
-import { resolveSystemKeyProvidersAndModel } from "./system-provider-resolution";
+import {
+	resolveNewAgentProvisioningDefaults,
+	resolveSystemKeyProvidersAndModel,
+} from "./system-provider-resolution";
 
 export const DEFAULT_AGENT_SENTINEL = "default_agent_provisioned";
 export const DEFAULT_WATCHER_SENTINEL = "default_watcher_provisioned";
@@ -271,8 +274,9 @@ export async function ensureDefaultAgent(
 		// into a concrete `models` list for the default agent up front. Without
 		// this, the row exists with no models and `lobu chat -c local` would
 		// immediately hit "No model configured" — even though the env keys are
-		// sitting right there in the same process.
-		const resolved = await resolveSystemKeyProvidersAndModel();
+		// sitting right there in the same process. Shared with the other create
+		// paths so every freshly provisioned agent starts runnable.
+		const resolved = await resolveNewAgentProvisioningDefaults();
 
 		// Resolve the owning user — the personal_org metadata is the canonical
 		// marker. The default agent is shown as user-owned (rather than the
@@ -295,12 +299,13 @@ export async function ensureDefaultAgent(
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id,
-        models,
+        models, pre_approved_tools,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
         'external', ${ownerUserId},
         ${client.json(resolved.models)},
+        ${client.json(resolved.preApprovedTools)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING

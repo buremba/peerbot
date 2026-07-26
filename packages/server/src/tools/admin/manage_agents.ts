@@ -39,6 +39,7 @@ import {
   resolveWritePolicyDecision,
   type ActingPrincipal,
 } from '../../authz/entity-policy';
+import { resolveNewAgentProvisioningDefaults } from '../../auth/system-provider-resolution';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import {
@@ -341,6 +342,24 @@ export async function applyCreate(
   }
   const sql = createDbClientFromEnv(env);
   const ownerUserId = ctx.userId;
+  // Fresh-agent provisioning defaults, resolved from the SAME helper the boot
+  // provisioning paths use. `models` is baked in ONLY when the caller did not
+  // pin an explicit `default_model` — an explicit choice always wins and is
+  // persisted below by the non-column field loop.
+  //
+  // Without this the row landed with `models = NULL`, and on a deployment whose
+  // only model credential is an environment API key there is no
+  // `inference_providers` is_default row to fall back to. The agent then
+  // resolved NO model, never completed a turn, and its Behavior failed with
+  // "Agent reply finished without calling completeWindow" — while an older
+  // agent from `ensureDefaultAgent` (which bakes the list) ran the same
+  // Behavior fine. That divergence was the bug.
+  const provisioning = await resolveNewAgentProvisioningDefaults();
+  const explicitModel = argValue(args, 'default_model');
+  const seedModels =
+    explicitModel !== undefined && explicitModel.trim()
+      ? null
+      : provisioning.models;
   // Mirror the provisioning pattern (ensureDefaultAgent / ensureBuilderAgent):
   // owner_platform='external' on the row AND an agent_users mapping, so the
   // per-user ownership check (SPA cookie / PAT session) can reach the new agent.
@@ -350,11 +369,15 @@ export async function applyCreate(
   const rows = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, identity_md,
-      owner_platform, owner_user_id, created_at, updated_at
+      owner_platform, owner_user_id, models, pre_approved_tools,
+      created_at, updated_at
     )
     VALUES (
       ${args.agent_id}, ${ctx.organizationId}, ${args.name}, ${args.description ?? null},
-      ${args.identity_md ?? ''}, 'external', ${ownerUserId}, NOW(), NOW()
+      ${args.identity_md ?? ''}, 'external', ${ownerUserId},
+      ${seedModels === null ? null : sql.json(seedModels)},
+      ${sql.json(provisioning.preApprovedTools)},
+      NOW(), NOW()
     )
     ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id

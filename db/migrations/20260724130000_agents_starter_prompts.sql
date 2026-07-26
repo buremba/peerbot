@@ -25,7 +25,7 @@ ALTER TABLE public.agents
 -- One row per agent+org, refreshed with INSERT .. ON CONFLICT DO UPDATE.
 -- Generation ordering is enforced by the durable, message-bound lease.
 CREATE TABLE IF NOT EXISTS public.agent_starters (
-  organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+  organization_id text NOT NULL,
   agent_id text NOT NULL,
   -- [{title, message}, ...] as sanitized by sanitizeSuggestionPrompts.
   prompts jsonb NOT NULL,
@@ -33,7 +33,13 @@ CREATE TABLE IF NOT EXISTS public.agent_starters (
   -- interval; `failed_at` backs off a generation that produced no usable chips.
   generated_at timestamptz NOT NULL DEFAULT now(),
   failed_at timestamptz,
-  PRIMARY KEY (organization_id, agent_id)
+  PRIMARY KEY (organization_id, agent_id),
+  -- Keyed to the AGENT, not just the org: deleting an agent must drop its
+  -- cached starters, or recreating one with the same id would serve the
+  -- deleted agent's chips. agents_pkey is (organization_id, id), so this
+  -- composite FK matches it exactly and subsumes the org cascade.
+  FOREIGN KEY (organization_id, agent_id)
+    REFERENCES public.agents (organization_id, id) ON DELETE CASCADE
 );
 
 -- migrate:down

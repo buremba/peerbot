@@ -133,4 +133,34 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 			{ title: "Fresh", message: "Fresh message" },
 		]);
 	});
+
+	it("a DELAYED terminal does not clear a newer turn's set", async () => {
+		// Turn A publishes, then turn B publishes (B is the live set the user
+		// sees). A's terminal row is only processed now — a queue backlog or a
+		// retry made it lag a whole turn. Without an ordering guard, A does not
+		// recognize B's turnMessageId, treats it as "a prior turn's leftovers",
+		// and clears chips that are actually the newest ones.
+		await persistSuggestion({
+			organizationId: orgId,
+			conversationId,
+			prompts: [{ title: "A", message: "from turn A" }],
+			turnMessageId: "msg-A",
+		});
+		const idB = await persistSuggestion({
+			organizationId: orgId,
+			conversationId,
+			prompts: [{ title: "B", message: "from turn B" }],
+			turnMessageId: "msg-B",
+		});
+
+		await finalizeTurnSuggestions({
+			organizationId: orgId,
+			conversationId,
+			turnMessageIds: ["msg-A"],
+		});
+
+		const current = await readCurrentSuggestion(orgId, conversationId);
+		expect(current?.id).toBe(idB);
+		expect(current?.prompts).toEqual([{ title: "B", message: "from turn B" }]);
+	});
 });

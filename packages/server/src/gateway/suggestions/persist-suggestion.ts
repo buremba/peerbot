@@ -4,7 +4,7 @@ import {
   sanitizeSuggestionPrompts,
 } from "@lobu/core";
 import type { DbClient } from "../../db/client.js";
-import { getDb } from "../../db/client.js";
+import { getDb, pgTextArray } from "../../db/client.js";
 import { insertEvent } from "../../utils/insert-event.js";
 
 const logger = createLogger("persist-suggestion");
@@ -161,16 +161,16 @@ export async function readCurrentSuggestion(
  *
  *  - The current row is OWNED by this turn (its `turnMessageId` is one this turn
  *    processed) → leave it; the renderer embeds it on `complete`.
- *  - The current row belongs to a DIFFERENT turn → treated as a PRIOR turn's and
- *    superseded (this turn emitted none). The safety of "different ⇒ prior"
- *    rests on per-conversation turn SERIALIZATION: a turn holds the deployment
- *    advisory lock start→finish and only enqueues its terminal row before
- *    releasing it (message-consumer.ts), so a LATER turn cannot have persisted a
- *    newer set by the time THIS turn terminates in order. The residual window is
- *    a terminal row whose *processing* lags a whole subsequent turn (queue
- *    backlog/retry) — accepted: at that point clearing a newer set only drops a
- *    chip render the next turn re-establishes; no durable corruption, `events`
- *    stays append-only.
+ *  - The current row belongs to a DIFFERENT turn → superseded (this turn emitted
+ *    none), but ONLY if it is not newer than what this turn itself published.
+ *    "Different turn" does not imply "earlier turn": per-conversation
+ *    serialization orders turns as they RUN, not as their terminal rows are
+ *    PROCESSED, so a terminal delayed by a queue backlog or retry can arrive
+ *    after a whole subsequent turn published. `events.id` is monotonic, so a
+ *    current row newer than this turn's own newest suggestion event belongs to a
+ *    later turn and is left alone — otherwise a lagging terminal would erase
+ *    chips the user is currently looking at, in the live payload and in history
+ *    replay alike.
  *  - No current row → nothing to do.
  *
  * Idempotent: re-running (e.g. the row re-queued to the SSE owner after a
@@ -205,6 +205,28 @@ export async function finalizeTurnSuggestions(args: {
       (row.metadata?.turnMessageId as string | null) ?? null;
     // This turn (re)issued the current set → keep it for the renderer to embed.
     if (turnMessageId != null && owned.has(turnMessageId)) return;
+
+    // Ordering guard. "Belongs to a different turn" does NOT imply "belongs to
+    // an EARLIER turn": a terminal row whose processing lags a whole subsequent
+    // turn (queue backlog or retry) arrives after that later turn already
+    // published. Clearing then deletes live chips the user can see, and history
+    // replay loses them too. `events.id` is monotonic, so a row created after
+    // anything this turn wrote belongs to a later turn — leave it alone.
+    if (owned.size > 0) {
+      const mine = (await tx`
+        SELECT max(id) AS id
+        FROM events
+        WHERE organization_id = ${organizationId}
+          AND interaction_type = 'suggestion'
+          AND origin_id = ${`suggestion:${conversationId}`}
+          AND metadata->>'turnMessageId' = ANY(${pgTextArray([
+            ...owned,
+          ])}::text[])
+      `) as Array<{ id: number | null }>;
+      const newestMine = mine[0]?.id ?? null;
+      if (newestMine != null && row.id > newestMine) return;
+    }
+
     // A prior turn's set survived a turn that emitted none — supersede it.
     await insertEvent(
       {

@@ -20,7 +20,7 @@ import {
 } from "../../gateway/starters/starter-store";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { seedOwnerContext } from "../setup/test-fixtures";
+import { createTestAgent, seedOwnerContext } from "../setup/test-fixtures";
 
 describe("starter chips (per agent+org cache)", () => {
 	let orgId: string;
@@ -31,6 +31,11 @@ describe("starter chips (per agent+org cache)", () => {
 		await initWorkspaceProvider();
 		const { org } = await seedOwnerContext({ orgName: "Starter Org" });
 		orgId = org.id;
+		// agent_starters is keyed to `agents` by a composite FK, so every agent
+		// whose cache these tests write must actually exist.
+		for (const id of [agentId, "dispatch-agent", "agent-a", "agent-b"]) {
+			await createTestAgent({ organizationId: orgId, agentId: id });
+		}
 	});
 
 	afterAll(async () => {
@@ -103,6 +108,7 @@ describe("starter chips (per agent+org cache)", () => {
 
 	it("an empty generation records a failure and backs off before retrying", async () => {
 		const failAgent = "failing-agent";
+		await createTestAgent({ organizationId: orgId, agentId: failAgent });
 		// The agent produced nothing usable (errored, or emitted no valid chips).
 		await writeCachedStarters({
 			organizationId: orgId,
@@ -187,6 +193,26 @@ describe("starter chips (per agent+org cache)", () => {
 		});
 		expect(redispatched).toBe(false);
 		expect(enqueued).toBe(1); // no new enqueue
+	});
+
+	it("deleting an agent drops its cached starters", async () => {
+		// The cache is keyed to the agent by a composite FK. Without the cascade,
+		// recreating an agent with the same id would serve the deleted agent's
+		// chips — describing a workspace that no longer exists.
+		const doomed = "doomed-agent";
+		await createTestAgent({ organizationId: orgId, agentId: doomed });
+		await writeCachedStarters({
+			organizationId: orgId,
+			agentId: doomed,
+			prompts: [{ title: "Old", message: "Old" }],
+		});
+		expect(await readCachedStarters(orgId, doomed)).not.toBeNull();
+
+		await getTestDb()`
+			DELETE FROM public.agents
+			WHERE organization_id = ${orgId} AND id = ${doomed}
+		`;
+		expect(await readCachedStarters(orgId, doomed)).toBeNull();
 	});
 
 	it("starter rows are scoped per agent — one agent's set never serves another", async () => {

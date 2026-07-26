@@ -197,6 +197,184 @@ describe("connections-unify managed-install routing", () => {
 		expect(await live("slackinst-grid-orphan")).toBe(false);
 	});
 
+	it("carries the retired org-wide connection's fallback agent_id onto its per-workspace successor", async () => {
+		// The new T… slug must carry the admin-configured fallback from the E…
+		// generation retired in the same transaction.
+		const db = getDb();
+		const ENTERPRISE = "EGRIDINHERIT";
+		const WORKSPACE = "TGRIDINHERIT";
+		const secretStore = memorySecretStore();
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentId}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-inherit', 'org'
+			)
+		`;
+		const workspace = await upsertSlackInstallByTeam(
+			createPostgresAppInstallationStore(),
+			secretStore,
+			orgId,
+			WORKSPACE,
+			{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+		);
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBe(agentId);
+	});
+
+	it("does not overwrite a successor's own fallback agent_id when superseding", async () => {
+		const db = getDb();
+		const ENTERPRISE = "EGRIDNOCLOBBER";
+		const WORKSPACE = "TGRIDNOCLOBBER";
+		const secretStore = memorySecretStore();
+		const install = () =>
+			upsertSlackInstallByTeam(
+				createPostgresAppInstallationStore(),
+				secretStore,
+				orgId,
+				WORKSPACE,
+				{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+			);
+
+		// The workspace connection exists first and carries its own routing.
+		const workspace = await install();
+		await db`
+			UPDATE connections SET agent_id = ${agentId}
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`;
+		// A stale org-wide generation pointing at a DIFFERENT agent shows up.
+		const agentB = (await createTestAgent({ organizationId: orgId })).agentId;
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentB}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-noclobber', 'org'
+			)
+		`;
+		await install();
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBe(agentId);
+	});
+
+	it("a managed reinstall does not resurrect a retired agent onto an intentionally-cleared successor", async () => {
+		// On the CONFLICT path the successor row already exists, so
+		// `agent_id IS NULL` means an admin CLEARED it — not that it is an
+		// unfilled gap. Inheriting there would silently undo a deliberate clear
+		// on every subsequent reinstall. Inheritance belongs only to the fresh
+		// INSERT, where NULL really does mean "brand new row".
+		const db = getDb();
+		const ENTERPRISE = "EGRIDCLEARPRESERVE";
+		const WORKSPACE = "TGRIDCLEARPRESERVE";
+		const secretStore = memorySecretStore();
+		const install = () =>
+			upsertSlackInstallByTeam(
+				createPostgresAppInstallationStore(),
+				secretStore,
+				orgId,
+				WORKSPACE,
+				{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+			);
+
+		// The workspace exists with routing an admin then deliberately clears.
+		const workspace = await install();
+		await db`
+			UPDATE connections SET agent_id = NULL
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`;
+		// A stale org-wide generation still carries a binding.
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${agentId}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-clearpreserve', 'org'
+			)
+		`;
+		// The reinstall carries NO agent intent (preserveAgentId) and supersedes
+		// the enterprise row — the cleared fallback must STAY cleared.
+		await install();
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBeNull();
+	});
+
+	it("honors an explicit fallback clear while superseding", async () => {
+		const db = getDb();
+		const ENTERPRISE = "EGRIDCLEAR";
+		const WORKSPACE = "TGRIDCLEAR";
+		const workspace = await upsertSlackInstallByTeam(
+			createPostgresAppInstallationStore(),
+			memorySecretStore(),
+			orgId,
+			WORKSPACE,
+			{ botToken: "xoxb-grid-test", enterpriseId: ENTERPRISE },
+		);
+		await db`
+			UPDATE connections SET agent_id = ${agentId}
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`;
+		const staleAgent = (await createTestAgent({ organizationId: orgId }))
+			.agentId;
+		await db`
+			INSERT INTO connections (
+				organization_id, connector_key, external_tenant_id, agent_id,
+				display_name, status, config, credential_mode, slug, visibility
+			) VALUES (
+				${orgId}, 'slack', ${ENTERPRISE}, ${staleAgent}, 'Stale Grid install',
+				'active', '{}', 'managed', 'slackinst-grid-clear', 'org'
+			)
+		`;
+
+		await db.begin(async (tx: typeof db) => {
+			await upsertChatConnectionProjection(
+				tx,
+				(value) => db.json(value),
+				{
+					id: workspace.id,
+					platform: "slack",
+					organizationId: orgId,
+					config: { botToken: "secret://grid-clear" },
+					settings: {},
+					metadata: { teamId: WORKSPACE, enterpriseId: ENTERPRISE },
+					status: "active",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				},
+				orgId,
+				"managed",
+			);
+		});
+
+		const [successor] = (await db`
+			SELECT agent_id FROM connections
+			WHERE organization_id = ${orgId} AND slug = ${workspace.id}
+				AND deleted_at IS NULL
+		`) as Array<{ agent_id: string | null }>;
+		expect(successor?.agent_id).toBeNull();
+	});
+
 	it("keeps an active org-wide Grid install when a workspace sibling is installed", async () => {
 		const db = getDb();
 		const enterpriseId = "EGRIDACTIVE";

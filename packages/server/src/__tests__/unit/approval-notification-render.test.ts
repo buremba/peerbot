@@ -7,10 +7,10 @@ import {
 } from "../../notifications/triggers";
 
 /**
- * Golden-pins the approval card/body rendering for all four shapes
- * (field change, entity create, entity delete, entity merge) plus the generic fallback —
- * captured from the pre-unification renderer, so the shared model+emitters
- * must stay byte-identical to the three historical blocks.
+ * Golden-pins approval card/body rendering for all four structured shapes
+ * (field change, entity create, entity delete, entity merge) plus the generic
+ * fallback. The in-app and Slack expectations differ where their markup
+ * syntaxes require different escaping.
  */
 
 function cardText(card: ReturnType<typeof buildActionApprovalCard>): string {
@@ -37,9 +37,10 @@ describe("approval notification rendering", () => {
 			"Review topic fields: Severity, Name",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"**Watcher &lt;One&gt;** wants to update [App &amp; Crashes](https://app.lobu.ai/acme/topic/app-crashes):\n" +
+			String.raw`**Watcher \<One\>** wants to update [App & Crashes](https://app.lobu.ai/acme/topic/app-crashes):` +
+				"\n" +
 				"- Severity: ~high~\n→ critical\n" +
-				"- Name: ~Old Name~\n→ New &lt;Name&gt;\n" +
+				"- Name: ~Old Name~\n\u2192 New " + String.raw`\<Name\>` + "\n" +
 				"\nField is protected: severity (currently set by you).\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/42)",
 		);
@@ -86,9 +87,9 @@ describe("approval notification rendering", () => {
 			"Review creating topic",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"**A watcher** wants to create Slow &amp; Loading.\n" +
-				"- Entity type: topic\n- Name: Slow &amp; Loading\n- Parent id: 3\n" +
-				'\nA watcher proposes creating topic "Slow &amp; Loading".\n' +
+			"**A watcher** wants to create Slow & Loading.\n" +
+				"- Entity type: topic\n- Name: Slow & Loading\n- Parent id: 3\n" +
+				'\nA watcher proposes creating topic "Slow & Loading".\n' +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/44)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 44, approvalUrl, details }))).toBe(
@@ -127,8 +128,8 @@ describe("approval notification rendering", () => {
 				details,
 			}),
 		).toBe(
-			"**An agent** wants to delete [Old &lt;Topic&gt;](https://app.lobu.ai/acme/topic/old-topic).\n" +
-				"- Entity id: 11\n- Entity type: topic\n- Name: Old &lt;Topic&gt;\n- Force delete tree: false\n" +
+			String.raw`**An agent** wants to delete [Old \<Topic\>](https://app.lobu.ai/acme/topic/old-topic).` + "\n" +
+				"- Entity id: 11\n- Entity type: topic\n" + String.raw`- Name: Old \<Topic\>` + "\n- Force delete tree: false\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/45)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 45, details }))).toBe(
@@ -165,6 +166,150 @@ describe("approval notification rendering", () => {
 		expect(cardText(buildActionApprovalCard({ details }))).toContain(
 			"*Proposed action:* Merge these entities",
 		);
+	});
+
+	test("escaping is per-surface: Markdown neutralises link/emphasis, Slack neutralises mrkdwn", () => {
+		// One hostile name, two surfaces. The Markdown body must not let it forge a
+		// link or bold run; the Slack card must not let it ping the channel or
+		// spoof `<url|label>`. Neither surface may leak the OTHER's escaping.
+		const details: ActionApprovalDetails = {
+			kind: "entity_change",
+			operation: "delete",
+			actorLabel: "[Review [nested]](https://evil)",
+			entityId: 5,
+			entityType: "topic",
+			entityName: "*Urgent* <!channel> & [click](https://evil)",
+			proposal: { name: "*Urgent* <!channel> & [click](https://evil)" },
+			reason: "# [Review [nested]](https://evil)",
+		};
+
+		const body = formatActionApprovalBody({ details });
+		// Markdown: every link/emphasis delimiter defanged; `&` stays a literal
+		// `&` (Slack's entity escaping must not leak into Markdown).
+		expect(body).toContain(
+			String.raw`**\[Review \[nested\]\](https://evil)** wants to delete ` +
+				String.raw`\*Urgent\* \<!channel\> & \[click\](https://evil) (#5).`,
+		);
+		expect(body).not.toContain("&amp;");
+		// Leading `#` must not become a heading in the reason paragraph.
+		expect(body).toContain(
+			"\n\n" + String.raw`\# \[Review \[nested\]\](https://evil)`,
+		);
+
+		const card = cardText(buildActionApprovalCard({ details }));
+		// Slack: angle brackets/ampersand entity-escaped so `<!channel>` is inert.
+		expect(card).toContain(
+			"*Requested by:* [Review [nested]](https://evil)",
+		);
+		expect(card).toContain(
+			"*Entity:* *Urgent* &lt;!channel&gt; &amp; [click](https://evil)",
+		);
+		// The Markdown backslashes must not bleed into the Slack surface.
+		expect(card).not.toContain("\\*");
+		expect(card).not.toContain("\\[");
+	});
+
+	test("markdown escaping covers strikethrough, autolinks, and unmatched brackets", () => {
+		// The three vectors that survived a narrower escape set: `~~x~~` rendered
+		// as <del>, `<https://evil>` became a real anchor, and a stray `]` closed
+		// our link label early so the rest of the name escaped the anchor.
+		const details: ActionApprovalDetails = {
+			kind: "entity_change",
+			operation: "delete",
+			actorLabel: "~~trusted agent~~",
+			entityId: 7,
+			entityType: "topic",
+			entityName: "Budget] <https://evil.example>",
+			entityUrl: "https://app.lobu.ai/acme/topic/budget",
+			proposal: { entity_ids: [886] },
+			reason: null,
+		};
+		const body = formatActionApprovalBody({ details });
+
+		expect(body).toContain(
+			String.raw`**\~\~trusted agent\~\~** wants to delete ` +
+				String.raw`[Budget\] \<https://evil.example\>](https://app.lobu.ai/acme/topic/budget).`,
+		);
+		// Our own diff/link chrome must survive — only the values are escaped.
+		expect(body).toContain("](https://app.lobu.ai/acme/topic/budget)");
+		// Brackets in JSON values are escaped too; the renderer strips the
+		// backslashes, so the user still reads "[ 886 ]" (asserted in
+		// owletto's markdown-text.inline.test.tsx).
+		expect(body).toContain(String.raw`- Entity ids: \[ 886 \]`);
+	});
+
+	test("multiline names collapse so the summary stays one sentence", () => {
+		// A blank line inside a name would split the summary across Markdown
+		// paragraphs, and the card preview (first block only) would then show a
+		// misleading half-sentence: "wants to delete Bad".
+		const body = formatActionApprovalBody({
+			details: {
+				kind: "entity_change",
+				operation: "delete",
+				actorLabel: "An\nagent",
+				entityId: 5,
+				entityType: "topic",
+				entityName: "Bad\n\nName",
+				reason: null,
+			},
+		});
+		expect(body).toBe("**An agent** wants to delete Bad Name (#5).");
+
+		expect(
+			formatActionApprovalBody({
+				connectionName: "Git\nHub",
+				approvalUrl: "/acme/runs/1",
+			}),
+		).toContain("A queued action on Git Hub is waiting");
+	});
+
+	test("generic approval escapes the connection name", () => {
+		// The non-structured branch interpolates connectionName straight into the
+		// Markdown body; unescaped it could forge an external "Review" anchor.
+		expect(
+			formatActionApprovalBody({
+				connectionName: "GitHub](https://evil.example) [x",
+				approvalUrl: "/acme/runs/46",
+			}),
+		).toBe(
+			String.raw`A queued action on GitHub\](https://evil.example) \[x is waiting for your review.` +
+				"\n\nReview: [Review in Lobu](/acme/runs/46)",
+		);
+	});
+
+	test("setext underlines of any length are escaped", () => {
+		// A single "=" under a line turns it into an <h1>; the escape must not be
+		// limited to the 3+ runs that form a `---` thematic break.
+		for (const underline of ["=", "==", "--", "---"]) {
+			const body = formatActionApprovalBody({
+				details: {
+					kind: "entity_change",
+					operation: "delete",
+					actorLabel: "A watcher",
+					entityId: 1,
+					entityType: "topic",
+					entityName: "X",
+					reason: underline,
+				},
+			});
+			expect(body.split("\n").pop()).toBe(`\\${underline}`);
+		}
+	});
+
+	test("renderer-owned diff delimiters are not escaped away", () => {
+		// `~old~` is OUR strikethrough, not user text. Escaping the assembled
+		// diff line turned it into a literal `\~old\~`.
+		const body = formatActionApprovalBody({
+			details: {
+				kind: "entity_field_change",
+				entityId: 9,
+				entityType: "topic",
+				fields: { severity: "critical" },
+				current: { severity: "high" },
+				reason: null,
+			},
+		});
+		expect(body).toContain("- Severity: ~high~\n→ critical");
 	});
 
 	test("generic action: no card, connection fallback body", () => {

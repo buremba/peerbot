@@ -98,7 +98,7 @@ export async function resolveAgentOptions(
   // them rather than letting the last writer win:
   //   1. baseOptions.nixConfig  — per-request `nix` (POST /agents supplies it),
   //   2. settings.nixConfig     — the agent's own packages (CLI apply bakes the
-  //                               skill union of the time into this too),
+  //                               skill union at apply time into this too),
   //   3. enabled skills' nixPackages — skills enabled via the UI/catalog write
   //                               only `skills_config`, so nothing recomputes
   //                               `nixConfig` and their packages never reached

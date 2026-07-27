@@ -14,6 +14,7 @@
 - **Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are frequently real human signups. Surface them one at a time for confirmation.
 - **Workers never receive real credentials.** They may receive only placeholders/proxied access. The one exception is device-pinned connectors (see `packages/server/AGENTS.md`).
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
+  - Node-version gate exceptions: `packages/cli/bin/lobu.js` defers the existing CLI graph without duplicating it, and `packages/server/src/server-entry.ts` adds an 842-byte gate in front of the 4.34 MB server graph (measured 2026-07-24). Both call sites must stay dependency-free until their checks pass.
 - Bug fixes require red→fix→green evidence, with both outputs pasted into the PR body. If you cannot reproduce, stop and report the dead end — do not ship a speculative fix.
 - Never report done off a green typecheck. Boot it, exercise every branch you touched, clean up test data. If "compiles" is all you ran, say so explicitly.
 - Gates are non-negotiable (sequence in "Ship a change" below). `make pre-pr` builds first — that build step is what protects against a stale-dist false green. `make review` is an LLM verdict only: it does NOT run typecheck/knip/tests and is not proof CI will pass.
@@ -53,4 +54,5 @@
 ## Session efficiency
 - Never poll in the foreground (`sleep`/`until`/`while` wait loops, repeated `tail`). Run long waits (dev-server boot, CI, deploys) in the background and act on the completion notification.
 - Prefer DOM reads (`get_page_text`, `read_page`, `javascript_tool`) over screenshots; screenshot only when visual layout itself is under test. Screenshots are the #1 context-bloat source.
+- Read a file before editing it, and re-read it after any external change (a fixer pass, another agent, a rebase). Blind edits fail and cost a retry round-trip.
 - Batch narrow fixes into one commit, verified once at the end of the batch — not per fix. It never justifies skipping a reproducer or a correctness-critical test. For a one-line or config-only change, take one CI snapshot and move on.

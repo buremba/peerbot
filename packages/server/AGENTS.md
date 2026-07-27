@@ -43,7 +43,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 
 ## Guardrails, network, and runtime
 - Guardrails live under `packages/core/src/guardrails/`; server built-ins/aggregation live under gateway guardrail code. Guardrail infra errors fail open; each trip writes a `guardrail-trip` event.
-- Worker HTTP(S) egress goes through the authenticated gateway proxy plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`; do not hardcode its host or port.
+- Worker HTTP(S) egress goes through the authenticated gateway proxy plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`. The proxy binds `127.0.0.1` **by design** — the Linux `IPAddressDeny=any` / `IPAddressAllow=127.0.0.1` scope depends on it, so do not make the host configurable. The port comes from `WORKER_PROXY_PORT` (default 8118); consume the injected `HTTP_PROXY` URL rather than rebuilding it.
 - Embedded workers are subprocesses under `./workspaces/{agentId}/` with `WORKSPACE_DIR`. Linux hosts with a usable user systemd wrap them in `systemd-run --user --scope`; other hosts run them unwrapped unless `LOBU_REQUIRE_WORKER_SANDBOX=1`.
 
 ## Local dev and validation

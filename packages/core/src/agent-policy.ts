@@ -53,6 +53,10 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Delete a message the bot itself sent, addressed by a conversation or thread handle + message id. Only the bot's own messages can be deleted.",
   },
+  suggest_actions: {
+    description:
+      'ALWAYS call this once before you finish replying, unless the user explicitly said they are done. Offer 2-4 follow-up actions as tappable chips under your reply. Each `message` is sent verbatim as the user\'s next turn, so write it in the user\'s voice ("Show me the diff", not "I can show you the diff"). This is non-blocking and is how users navigate — a reply without chips is a dead end. If the obvious next step is unclear, suggest ways to go deeper on what you just discussed.',
+  },
 };
 
 export const TOOL_INTENT_RULES: ToolIntentRule[] = [

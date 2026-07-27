@@ -99,6 +99,36 @@ describe("buildRunContextBlock", () => {
     expect(line.length).toBeLessThanOrEqual("- Triggered by: ".length + 200);
   });
 
+  test("renders nothing on the web (api) surface", () => {
+    // On `api` the user is looking at the web chat, so "Platform: api" and the
+    // synthetic "Channel: api_<userId>" name orient nobody — there is no other
+    // channel they could have meant. The block is only useful where a run could
+    // have come from one of several places (Slack channel, Telegram thread).
+    // It also LEAKS: pi records whatever string is passed to session.prompt()
+    // into the transcript, so an injected block replays into the UI as if the
+    // user had typed it. Suppressing it here is what keeps the web transcript
+    // equal to what the user actually wrote.
+    expect(
+      buildRunContextBlock({
+        platform: "api",
+        channelId: "api_user_install_HGU-xcFRI4c",
+        platformMetadata: { senderDisplayName: "Burak" },
+      })
+    ).toBe("");
+  });
+
+  test("still renders for non-api platforms with the same shape of metadata", () => {
+    // Guard the fix above from over-reaching: the suppression must key on the
+    // platform, not on the presence of a channel/sender.
+    const out = buildRunContextBlock({
+      platform: "telegram",
+      channelId: "tg_123",
+      platformMetadata: { senderDisplayName: "Burak" },
+    });
+    expect(out).toContain("## This conversation");
+    expect(out).toContain("- Platform: telegram");
+  });
+
   test("returns empty string when nothing is known", () => {
     expect(
       buildRunContextBlock({

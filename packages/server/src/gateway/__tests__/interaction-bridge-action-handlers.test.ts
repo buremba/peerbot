@@ -397,3 +397,99 @@ describe("registerActionHandlers — guards", () => {
     expect(h.grantStore.grant).not.toHaveBeenCalled();
   });
 });
+
+describe("registerActionHandlers — suggestion", () => {
+  function setup(withCallback: boolean): {
+    handler: ActionHandler;
+    onSuggestionClick: ReturnType<typeof mock>;
+    thread: { post: ReturnType<typeof mock> };
+  } {
+    let captured: ActionHandler | undefined;
+    const chat = {
+      onAction: mock((h: ActionHandler) => {
+        captured = h;
+      }),
+    };
+    const onSuggestionClick = mock(async () => undefined);
+    const thread = { post: mock(async () => undefined) };
+
+    registerActionHandlers(
+      chat as any,
+      { id: "conn-1", platform: "slack" } as PlatformConnection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      withCallback ? (onSuggestionClick as any) : undefined
+    );
+    if (!captured) throw new Error("onAction handler not registered");
+    return { handler: captured, onSuggestionClick, thread };
+  }
+
+  test("dispatches the parsed suggestion id and prompt index", async () => {
+    // The button carries only `suggestion:<id>:<i>` — prompt text and routing
+    // live in the pending row, which the click handler resolves. This branch's
+    // whole job is a faithful parse.
+    const h = setup(true);
+    await h.handler({
+      actionId: "suggestion:s_ab12cd34ef56:2",
+      value: "",
+      thread: h.thread,
+      user: { userId: "U_clicker", userName: "ada", fullName: "Ada Lovelace" },
+    });
+
+    expect(h.onSuggestionClick).toHaveBeenCalledTimes(1);
+    const [suggestionId, promptIndex, threadArg, author] =
+      h.onSuggestionClick.mock.calls[0];
+    expect(suggestionId).toBe("s_ab12cd34ef56");
+    expect(promptIndex).toBe(2);
+    expect(threadArg).toBe(h.thread);
+    expect(author).toEqual({
+      userId: "U_clicker",
+      userName: "ada",
+      fullName: "Ada Lovelace",
+    });
+    // No bare post — the message must go through the turn pipeline.
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("drops a malformed action id instead of guessing", async () => {
+    // A mangled id can't resolve a pending row, so there is nothing safe to
+    // send. Each variant must be rejected before the click callback runs.
+    const h = setup(true);
+    for (const actionId of [
+      "suggestion:",
+      "suggestion::0",
+      "suggestion:s_ab12cd34ef56:",
+      "suggestion:s_ab12cd34ef56:x",
+      "suggestion:s_ab12cd34ef56:-1",
+      "suggestion:s_ab12cd34ef56:1.5",
+      "suggestion:s_ab12cd34ef56:0:extra",
+    ]) {
+      await h.handler({
+        actionId,
+        value: "",
+        thread: h.thread,
+        user: { userId: "U_clicker" },
+      });
+    }
+
+    expect(h.onSuggestionClick).not.toHaveBeenCalled();
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("no click pipeline wired → no-op (nothing to post either)", async () => {
+    // Without the callback there is no row lookup, and the button carries no
+    // text — posting anything would fabricate a message the user never chose.
+    const h = setup(false);
+    await h.handler({
+      actionId: "suggestion:s_ab12cd34ef56:1",
+      value: "",
+      thread: h.thread,
+      user: { userId: "U_clicker" },
+    });
+
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+});

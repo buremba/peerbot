@@ -383,10 +383,26 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
+      pe.interaction_type AS interaction_type,
+      ar.id AS approval_run_id,
+      ar.approval_status AS approval_status,
+      ar.action_key AS approval_action_key,
       (t.read_at IS NOT NULL) AS is_read,
       t.delivered_at AS created_at
     FROM notification_targets t
     JOIN events e ON e.id = t.event_id
+    -- Approval notifications point at proposal events; resolve the run here so
+    -- consumers see its current approval state rather than an emitted snapshot.
+    LEFT JOIN events pe
+      ON COALESCE(e.metadata->>'notification_type', 'generic') = 'action_approval_needed'
+     AND e.metadata->>'resource_type' = 'event'
+     AND e.metadata->>'resource_id' ~ '^[0-9]+$'
+     AND pe.id = (e.metadata->>'resource_id')::bigint
+     AND pe.organization_id = e.organization_id
+     AND pe.interaction_type = 'approval'
+    LEFT JOIN runs ar
+      ON ar.organization_id = e.organization_id
+     AND ar.id = pe.run_id
     WHERE e.organization_id = ${opts.organizationId}
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})

@@ -70,6 +70,7 @@ describe("conversations-store read helpers", () => {
 			agentId: AGENT,
 			platform: "web",
 			conversationId: conv,
+			threadId: "get-thread",
 			kind: "owned",
 			userId,
 			title: "a thread",
@@ -83,6 +84,7 @@ describe("conversations-store read helpers", () => {
 			conversationId: conv,
 		});
 		expect(row?.conversationId).toBe(conv);
+		expect(row?.threadId).toBe("get-thread");
 		expect(row?.kind).toBe("owned");
 		expect(row?.title).toBe("a thread");
 
@@ -102,6 +104,7 @@ describe("conversations-store read helpers", () => {
 			agentId: AGENT,
 			platform: "web",
 			conversationId: conv,
+			threadId: null,
 			kind: "owned",
 			userId,
 			title: "to archive",

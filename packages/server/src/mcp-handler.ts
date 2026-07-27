@@ -39,7 +39,12 @@ import {
   clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
   mcpSessionMap,
 } from './mcp-session-state';
-import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
+import {
+  type AuthContext,
+  executeTool,
+  extractAuthContext,
+  isSoftErrorResult,
+} from './tools/execute';
 import { getMcpTools, getTool } from './tools/registry';
 import { validateToolResult } from './tools/validate-args';
 import { formatToolResult } from './formatting/markdown-formatter';
@@ -306,6 +311,12 @@ function createServerForContext(
       // fixable drift and, on an unfixable mismatch, returns null so we fall back
       // to text-only rather than shipping structuredContent the client rejects —
       // a successful tool call must never surface as a validation error.
+      //
+      // A resolved failure is still a failed MCP tool call and must carry
+      // `isError`; otherwise the client treats it as a normal result. query_sql
+      // also renders the error explicitly because its formatter would otherwise
+      // turn `{ rows: [], error }` into a clean empty CSV result.
+      const softError = isSoftErrorResult(result);
       const tool = getTool(name);
       if (tool?.outputSchema && result && typeof result === 'object') {
         const structured = validateToolResult(tool.outputSchema, result);
@@ -313,10 +324,14 @@ function createServerForContext(
           return {
             content: [{ type: 'text' as const, text }],
             structuredContent: structured as Record<string, unknown>,
+            ...(softError ? { isError: true } : {}),
           };
         }
       }
-      return { content: [{ type: 'text' as const, text }] };
+      return {
+        content: [{ type: 'text' as const, text }],
+        ...(softError ? { isError: true } : {}),
+      };
     } catch (error: any) {
       // Surface the structured taxonomy (lobu#2051 Item 2) when the thrown error
       // carries a code, so the client/agent gets a stable code + retryability +

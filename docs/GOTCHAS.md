@@ -43,7 +43,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 **Format only via `bun run check:fix` from the repo root.** Never `bunx biome check --write <path>`. Bare biome uses its own defaults (tabs) and ignores the repo config at `config/biome.config.json`.
 
-**Several packages are biome-EXCLUDED, and an explicit file argument bypasses the exclusion.** `config/biome.config.json` excludes `packages/server`, `packages/owletto`, connector-sdk, connectors, connector-worker, embeddings, apps, and skills. Running biome on a file in one of them turns a 400-line semantic diff into thousands of lines of reflow noise that biome will not undo and the CI format check will not catch. Recover from a clean copy of the file at `HEAD`, preserve any unrelated local changes, and redo the intended edit by hand in that file's existing style. `packages/core` and `packages/cli` *are* biome-formatted.
+**Several packages are biome-EXCLUDED, and an explicit file argument bypasses the exclusion.** `config/biome.config.json` excludes `packages/server`, `packages/owletto`, connector-sdk, connectors, connector-worker, embeddings, apps, and skills. Running biome on a file in one of them can turn a surgical change into a broad reflow diff that the CI format check will not catch. Recover from a clean copy of the file at `HEAD`, preserve any unrelated local changes, and redo the intended edit by hand in that file's existing style. `packages/core` and `packages/cli` *are* biome-formatted.
 
 ## DB & SQL
 
@@ -78,7 +78,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 **`make dev` is not the test harness.** It migrates its owned local per-branch database and boots the app, but that does not exercise the branches a relevant unit or integration suite covers.
 
-**A scratch server that is "healthy" within ~2s is an orphan you are talking to.** A fresh initdb plus migrations takes ~15s. Kill orphans by port, not name — `pkill -f "lobu run --port"` never matches, because the real cmdline is `node .../server.bundle.mjs`. Use `lsof -tiTCP:<port> -sTCP:LISTEN | xargs kill -9`.
+**A scratch server that is "healthy" before the fresh initdb and migration logs appear is probably an orphan.** A cold embedded boot runs `initdb` as a subprocess, so a genuinely fresh server logs it; instant health means you reached a server that was already running. Confirm with the data dir rather than the clock — `<dir>/.lobu/pgdata/PG_VERSION` should exist and be newly created. Kill orphans by port, not name — `pkill -f "lobu run --port"` never matches, because the real cmdline is `node .../server.bundle.mjs`. Use `lsof -tiTCP:<port> -sTCP:LISTEN | xargs kill -9`.
 
 **Isolating a benchmark/scratch server:** pass `DATABASE_URL="file:///tmp/<dir>"` — the embedded runtime creates `<dir>/.lobu/pgdata`. The runtime reads `DATABASE_URL`; `lobu run` maps `LOBU_DATA_DIR` into it only when `DATABASE_URL` is absent. Without either, `lobu run` defaults to the shared `~/.lobu/pgdata`.
 
@@ -90,7 +90,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 ## Browser & connectors
 
-**Chromium launch failures: read which of the two errors you got.** `packages/connector-sdk/src/browser/launcher.ts` distinguishes them — `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH=…` means a path mismatch, `Playwright not installed` means the package itself is unresolvable. The path case is by far the more common, and two things must hold to prevent it: `docker/worker/Dockerfile` and `docker/app/Dockerfile` set `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` *before* install (otherwise chromium lands in `$HOME/.cache/ms-playwright`, the root app pod succeeds, the uid-1001 worker pod fails, and it reads as "intermittent"); and the install must explicitly use patchright's revision (`node node_modules/playwright/cli.js install chromium` in the worker image, `npx patchright install chromium` in the app image) rather than the vanilla `node_modules/.bin/playwright`. In-pod check:
+**Chromium launch failures: read which of the two errors you got.** `packages/connector-sdk/src/browser/launcher.ts` distinguishes them — `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH=…` means a path mismatch, `Playwright not installed` means the package itself is unresolvable. Two things must hold to prevent the path/revision failure: `docker/worker/Dockerfile` and `docker/app/Dockerfile` set `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` *before* install; and the install explicitly uses patchright's revision (`node node_modules/playwright/cli.js install chromium` in the worker image, `npx patchright install chromium` in the app image) rather than the vanilla `node_modules/.bin/playwright`. In-pod check:
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').chromium.executablePath();console.log(p, require('fs').existsSync(p))"

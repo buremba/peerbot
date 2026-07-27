@@ -2477,6 +2477,7 @@ export class ChatInstanceManager {
       agentSettingsStore,
       organizationId,
     );
+    const { nixConfig, ...remainingAgentOptions } = agentOptions;
 
     await sessionManager.setSession({
       conversationId: sessionId,
@@ -2516,7 +2517,8 @@ export class ChatInstanceManager {
         sessionId,
         source: "platform-cli",
       },
-      agentOptions,
+      agentOptions: remainingAgentOptions,
+      nixConfig,
     });
 
     logger.info(

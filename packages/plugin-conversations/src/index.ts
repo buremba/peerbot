@@ -349,7 +349,7 @@ export function createConversationTools(params: ConversationPluginParams) {
         prompts: Type.Array(
           Type.Object({
             title: Type.String({
-              description: "Short chip label shown to the user (≤80 chars)",
+              description: "Short chip label shown to the user (≤20 chars)",
             }),
             message: Type.String({
               description:
@@ -358,7 +358,7 @@ export function createConversationTools(params: ConversationPluginParams) {
           }),
           {
             description:
-              "2-4 follow-up actions to offer the user. Call this before finishing almost every reply — chips are how users navigate. Non-blocking; the turn continues.",
+              "2-3 follow-up actions to offer the user. Call this before finishing almost every reply — chips are how users navigate. Non-blocking; the turn continues.",
           }
         ),
       }),

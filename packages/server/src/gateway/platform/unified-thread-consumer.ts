@@ -23,6 +23,7 @@ import { generateSuggestions } from "../suggestions/generate-suggestions.js";
 import {
   finalizeTurnSuggestions,
   persistSuggestion,
+  readCurrentSuggestion,
 } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
@@ -102,7 +103,8 @@ export class UnifiedThreadResponseConsumer {
   constructor(
     private queue: IMessageQueue,
     private platformRegistry: PlatformRegistry,
-    private sseManager: SseManager
+    private sseManager: SseManager,
+    private readSuggestion = readCurrentSuggestion
   ) {}
 
   setChatResponseBridge(bridge: ChatResponseBridge): void {
@@ -605,8 +607,47 @@ export class UnifiedThreadResponseConsumer {
     }
 
     if (data.customEvent) {
+      let customEventData = data.customEvent.data;
+      if (isApiRow && data.customEvent.name === "suggestion") {
+        const organizationId =
+          data.organizationId ??
+          (typeof data.platformMetadata?.organizationId === "string"
+            ? data.platformMetadata.organizationId
+            : undefined);
+        if (!organizationId) {
+          logger.warn(
+            `Skipping suggestion card for ${data.conversationId}: missing organization context`
+          );
+          return;
+        }
+        try {
+          const current = await this.readSuggestion(
+            organizationId,
+            data.conversationId
+          );
+          // Rebuild rather than spread: the enqueued row is stale by
+          // construction, so nothing on it may survive into the broadcast. The
+          // shape matches the terminal `complete` embed and history replay —
+          // prompts only. (`readCurrentSuggestion` returns the events row id,
+          // not the `s_…` interaction id, so there is no id worth echoing.)
+          customEventData = {
+            type: "suggestion",
+            prompts: current?.prompts ?? [],
+          };
+        } catch (err) {
+          // The terminal completion remains the authoritative delivery path.
+          // Dropping this best-effort mid-turn card is safer than broadcasting
+          // a suggestion event that could not be refreshed.
+          logger.warn(
+            `Failed to refresh suggestion card for ${data.conversationId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+          return;
+        }
+      }
       const eventPayload = {
-        ...data.customEvent.data,
+        ...customEventData,
         timestamp: data.timestamp,
         messageId: data.messageId,
       };

@@ -83,16 +83,16 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    // Suggested follow-up chips. Owner-gated like every other card here: the
-    // SSE socket may live on a different pod than the worker that emitted this,
-    // and a direct broadcast would render on the wrong pod (the failure mode
-    // that made chips persist correctly but never appear in the browser).
+    // Suggested follow-up chips use the same owner-routed queue as every other
+    // API card. The consumer re-reads the durable current set immediately
+    // before broadcasting, so a delayed card cannot replay stale prompts over a
+    // newer turn's terminal state.
     interactionService.on("suggestion:created", (event: any) => {
       if (event.platform !== "api") return;
+      // No prompts here on purpose — the consumer fills them from durable state
+      // at broadcast time, so this row carries only routing.
       this.enqueueInteractionCard(queue, event, "suggestion", {
         type: "suggestion",
-        suggestionId: event.id,
-        prompts: event.prompts,
       });
     });
 
@@ -141,17 +141,6 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    // NOTE: web suggestions are delivered on TWO deliberate paths. (1) The
-    // suggestion:created card above — the agent calls suggest_actions MID-turn,
-    // while the SPA's EventSource is still open, so the chips appear without
-    // waiting for the turn to end. (2) The `complete`-payload embed in
-    // ApiResponseRenderer.handleCompletion — authoritative and replay-safe,
-    // and the ONLY path for fallback-generated sets (those are persisted at
-    // the terminal boundary, when a card would race the SPA closing its socket
-    // on `complete`; generateFallbackSuggestions therefore posts no card).
-    // Whichever arrives is idempotent: both carry the conversation's current
-    // set and the store applies them via the same setter.
-
     logger.debug("✅ API platform initialized");
   }
 
@@ -163,7 +152,12 @@ export class ApiPlatform implements PlatformAdapter {
    */
   private enqueueInteractionCard(
     queue: IMessageQueue,
-    event: { conversationId: string; userId?: string; source?: string },
+    event: {
+      conversationId: string;
+      organizationId?: string;
+      userId?: string;
+      source?: string;
+    },
     name: string,
     data: Record<string, unknown>
   ): void {
@@ -173,6 +167,7 @@ export class ApiPlatform implements PlatformAdapter {
       // For the API platform channelId == conversationId == the SSE key.
       channelId: event.conversationId,
       userId: event.userId ?? "api",
+      organizationId: event.organizationId,
       platform: "api",
       teamId: "api",
       timestamp: Date.now(),

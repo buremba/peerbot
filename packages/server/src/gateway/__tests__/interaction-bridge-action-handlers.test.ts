@@ -465,6 +465,7 @@ describe("registerActionHandlers — suggestion", () => {
       "suggestion:s_ab12cd34ef56:x",
       "suggestion:s_ab12cd34ef56:-1",
       "suggestion:s_ab12cd34ef56:1.5",
+      "suggestion:s_ab12cd34ef56:0:extra",
     ]) {
       await h.handler({
         actionId,

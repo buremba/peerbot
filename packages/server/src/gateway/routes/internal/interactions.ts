@@ -196,11 +196,10 @@ export function createInteractionRoutes(
         `Sending suggestions to conversation ${conversationId} (${prompts.length} prompts)`
       );
 
-      // Persisted for the web surface only. The SPA replays a conversation from
-      // history on reload, so its chips must survive the turn; a chat platform
-      // renders a card that stays in the channel scrollback on its own and has
-      // nothing to rehydrate. Persisting for chat too would leave rows that
-      // nothing ever reads or supersedes.
+      // Persisted for the web surface only. Both its mid-turn card and terminal
+      // embed re-read this authoritative state before delivery, so delayed queue
+      // rows cannot replay stale prompts. A chat platform renders a card that
+      // stays in channel scrollback and has nothing to rehydrate.
       if (platform === "api") {
         await persistSuggestion({
           organizationId,
@@ -211,14 +210,14 @@ export function createInteractionRoutes(
         });
       }
 
-      // Emit the card on every platform. `postSuggestion` fans out to whichever
-      // renderer owns this conversation: the interaction bridge builds a
+      // Emit on every platform. The interaction bridge builds a
       // Card/Actions/Button card for chat platforms — buttons carry only
       // `suggestion:<id>:<i>` (prompt text + routing live in a pending row,
       // keeping Telegram's 64-byte callback_data budget), with a numbered-text
-      // fallback where cards are unsupported — and the API platform pushes it
-      // to the SSE owner for the web.
+      // fallback where cards are unsupported. The API platform owner-routes the
+      // card and refreshes its prompts from durable state at delivery.
       const posted = await interactionService.postSuggestion(
+        organizationId,
         userId,
         conversationId,
         channelId,

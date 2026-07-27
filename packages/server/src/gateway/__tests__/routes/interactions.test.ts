@@ -159,8 +159,10 @@ describe("interaction routes", () => {
       expect(args.organizationId).toBe("org-1");
       expect(args.turnMessageId).toBe("msg-1");
       expect(args.prompts).toHaveLength(2);
-      // Web persists AND posts a card: the row is what the SPA replays on
-      // reload, the card is what renders on the live turn.
+      const postArgs = mockInteractionService.postSuggestion.mock.calls.at(-1);
+      expect(postArgs?.[0]).toBe("org-1");
+      // Web persists and posts; the owner-routed card refreshes from that
+      // durable row at delivery so it cannot replay stale prompts.
       expect(mockInteractionService.postSuggestion).toHaveBeenCalledTimes(1);
     });
 
@@ -209,8 +211,8 @@ describe("interaction routes", () => {
       // The chip's full message must survive to the card — the label alone is
       // not what gets sent as the next turn.
       const args = mockInteractionService.postSuggestion.mock.calls.at(-1);
-      expect(args?.[5]).toBe("slack");
-      expect(args?.[6]).toEqual([{ title: "T", message: "M" }]);
+      expect(args?.[6]).toBe("slack");
+      expect(args?.[7]).toEqual([{ title: "T", message: "M" }]);
     });
 
     test("rejects an API turn with no organization context without persisting", async () => {

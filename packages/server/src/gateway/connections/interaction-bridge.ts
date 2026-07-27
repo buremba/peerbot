@@ -739,9 +739,9 @@ export function registerInteractionBridge(
 			resolveThread(manager, connectionId, channelId, conversationId),
     async (suggestionId, promptIndex, thread, author) => {
       // A suggestion click is just a new user message — no claim, no receipt,
-      // no card edit. The chips intentionally stay clickable: the agent has
-      // already finished, so a second tap is a legitimate follow-up question
-      // rather than a double-submit against a suspended turn.
+      // no card edit. The chips intentionally stay clickable: nothing is
+      // suspended on their response, so a second tap is a legitimate follow-up
+      // question rather than a double-submit against a blocked turn.
       const organizationId = connection.organizationId;
       if (!organizationId) {
         logger.warn(
@@ -1191,7 +1191,12 @@ export function registerActionHandlers(
       // `Number("")` is 0 — an explicit empty-segment check keeps a truncated
       // `suggestion:<id>:` from dispatching as prompt index 0.
       const promptIndex = parts[2] ? Number(parts[2]) : Number.NaN;
-      if (!suggestionId || !Number.isInteger(promptIndex) || promptIndex < 0) {
+      if (
+        parts.length !== 3 ||
+        !suggestionId ||
+        !Number.isInteger(promptIndex) ||
+        promptIndex < 0
+      ) {
         logger.debug(
           { connectionId: connection.id, actionId },
 					"Suggestion click with malformed action id — ignoring",

@@ -76,13 +76,14 @@ export interface PostedQuestion extends BaseMessage {
  * Payload emitted on "suggestion:created" — platform renderers listen for this.
  *
  * Suggested follow-up actions rendered as tappable chips under a reply. Unlike
- * `PostedQuestion`, tapping one does NOT answer a blocked turn: the agent has
- * already finished, and the chip's `message` is sent verbatim as the user's
- * NEXT turn. That is why each option carries both a short `title` (the button
- * label) and a full `message` (what actually gets sent) rather than a single
- * string — the label is a summary, not the payload.
+ * `PostedQuestion`, tapping one does NOT answer a blocked turn: nothing is
+ * waiting on the click, and the chip's `message` is sent verbatim as a new user
+ * turn. That is why each option carries both a short `title` (the button label)
+ * and a full `message` (what actually gets sent) rather than a single string —
+ * the label is a summary, not the payload.
  */
 export interface PostedSuggestion extends BaseMessage {
+  organizationId: string;
   userId: string;
   platform: string;
   prompts: Array<{ title: string; message: string }>;
@@ -216,12 +217,13 @@ export class InteractionService extends EventEmitter {
    * Post suggested follow-up actions as chips (non-blocking, fire-and-forget).
    * Emits "suggestion:created" for platform renderers.
    *
-   * Fire-and-forget in the strict sense: the agent's turn has already ended, so
-   * nothing is waiting on a click. Chat renderers stash a routing-only pending
-   * row (read, never claimed — chips stay multi-clickable), unlike
-   * `postQuestion`, whose card gates a suspended turn and must claim its row.
+   * Fire-and-forget in the strict sense: the tool call does not wait on a
+   * click. Chat renderers stash a routing-only pending row (read, never claimed
+   * — chips stay multi-clickable), unlike `postQuestion`, whose card gates a
+   * suspended turn and must claim its row.
    */
   async postSuggestion(
+    organizationId: string,
     userId: string,
     conversationId: string,
     channelId: string,
@@ -243,6 +245,7 @@ export class InteractionService extends EventEmitter {
       // the card post throws. 12 hex chars keep the callback ~40 bytes with
       // ample collision headroom for a 24h-TTL routing id.
       id: `s_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      organizationId,
       userId,
       conversationId,
       channelId,

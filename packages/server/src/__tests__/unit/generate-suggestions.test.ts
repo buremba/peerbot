@@ -9,6 +9,8 @@ function env(over: Record<string, string | undefined> = {}): Env {
   return {
     ENVIRONMENT: "test",
     SUGGESTION_GENERATOR_API_KEY: "sk-test",
+    SUGGESTION_GENERATOR_BASE_URL: "https://inference.test/v1",
+    SUGGESTION_GENERATOR_MODEL: "suggestion-model",
     ...over,
   } as unknown as Env;
 }
@@ -75,6 +77,32 @@ describe("generateSuggestions", () => {
       env({ SUGGESTION_GENERATOR_API_KEY: undefined })
     );
     expect(out).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  test("requires an explicit endpoint and model rather than hardcoding a provider", async () => {
+    let called = false;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}");
+    }) as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    expect(
+      await generateSuggestions(
+        REPLY,
+        env({ SUGGESTION_GENERATOR_BASE_URL: undefined })
+      )
+    ).toEqual([]);
+    expect(
+      await generateSuggestions(
+        REPLY,
+        env({ SUGGESTION_GENERATOR_MODEL: undefined })
+      )
+    ).toEqual([]);
     expect(called).toBe(false);
   });
 

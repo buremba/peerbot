@@ -9,38 +9,37 @@
  * "there is always an obvious next step to tap" cannot be gated on the model
  * remembering to call a tool.
  *
- * So the terminal boundary asks a small LLM to derive chips from the reply the
- * agent just gave, and pushes them through the SAME persist + card path the tool
- * uses. The agent's own call still wins when it makes one: this only runs for a
- * turn that published nothing, so an explicit `suggest_actions` is never
- * overwritten by a generated set.
+ * So the terminal boundary asks a configured OpenAI-compatible endpoint to
+ * derive chips from the reply the agent just gave, then persists them for the
+ * terminal payload. The agent's own call still wins when it makes one: this
+ * only runs for a turn that published nothing, so an explicit
+ * `suggest_actions` is never overwritten by a generated set.
  *
  * Statelessness: a pure per-turn helper holding no shared state, so it is
  * trivially correct under N>1 replicas — whichever pod processes the terminal
  * row generates independently, and the persist path's advisory lock serializes
  * the write.
  *
- * Opt-in: generation only runs when SUGGESTION_GENERATOR_API_KEY is configured.
- * With no key (or on any failure) it returns [] and the turn ends with no chips
- * — exactly the behavior before this file existed.
+ * Opt-in: generation only runs when SUGGESTION_GENERATOR_API_KEY,
+ * SUGGESTION_GENERATOR_BASE_URL, and SUGGESTION_GENERATOR_MODEL are configured.
+ * With incomplete configuration (or on any failure) it returns [] and the turn
+ * ends with no chips — exactly the behavior before this file existed.
  */
 
 import { getErrorMessage, sanitizeSuggestionPrompts } from "@lobu/core";
 import type { Env } from "../../index";
 import logger from "../../utils/logger";
 
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_MODEL = "gpt-4o-mini";
 /** The tail of a reply carries the "what now" better than its opening. */
 const MAX_INPUT_CHARS = 6_000;
 const TIMEOUT_MS = 15_000;
 
 const SYSTEM_PROMPT = [
   "You write follow-up action chips for a chat UI.",
-  "Given an assistant's reply, return 2-4 things the USER would plausibly want next.",
+  "Given an assistant's reply, return 2-3 things the USER would plausibly want next.",
   "",
   'Each item is {"title","message"}:',
-  '- "title": a short tappable label, at most 6 words.',
+  '- "title": a short tappable label, at most 20 characters.',
   '- "message": the full message sent verbatim AS THE USER if tapped.',
   "",
   "Write `message` in the user's voice, as a request to the assistant:",
@@ -57,7 +56,7 @@ interface ChatCompletionResponse {
 }
 
 /**
- * Derive 2-4 follow-up chips from the agent's reply text. Returns [] on any
+ * Derive 2-3 follow-up chips from the agent's reply text. Returns [] on any
  * failure or when unconfigured — the caller leaves the turn without chips.
  */
 export async function generateSuggestions(
@@ -65,19 +64,18 @@ export async function generateSuggestions(
   env: Env
 ): Promise<Array<{ title: string; message: string }>> {
   const apiKey = env.SUGGESTION_GENERATOR_API_KEY;
-  // Opt-in via the API key. No key → no generation (graceful, default-off).
-  if (!apiKey) return [];
+  const configuredBaseUrl = env.SUGGESTION_GENERATOR_BASE_URL;
+  const model = env.SUGGESTION_GENERATOR_MODEL;
+  // Keep provider selection explicit. The gateway must not silently hardcode a
+  // provider URL or model outside the provider/configuration system.
+  if (!apiKey || !configuredBaseUrl || !model) return [];
 
   const trimmed = replyText.trim();
   // Nothing to derive follow-ups FROM. A one-word reply ("Done.") gives the
   // model no material and reliably yields generic filler chips.
   if (trimmed.length < 40) return [];
 
-  const baseUrl = (env.SUGGESTION_GENERATOR_BASE_URL || DEFAULT_BASE_URL).replace(
-    /\/+$/,
-    ""
-  );
-  const model = env.SUGGESTION_GENERATOR_MODEL || DEFAULT_MODEL;
+  const baseUrl = configuredBaseUrl.replace(/\/+$/, "");
   // Keep the END of a long reply: the conclusion is what a follow-up responds
   // to, whereas the opening is usually restated context.
   const input =

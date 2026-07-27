@@ -28,8 +28,14 @@ describe("sanitizeSuggestionPrompts", () => {
 
     const result = sanitizeSuggestionPrompts(prompts);
     expect(result).toHaveLength(SUGGESTION_LIMITS.maxPrompts);
-    expect(Array.from(result[0]!.title)).toHaveLength(
+    // UTF-16 units, not code points — that is what Slack's cap measures. A
+    // code-point cap would let these 72 emoji through as 144 units.
+    expect(result[0]!.title.length).toBeLessThanOrEqual(
       SUGGESTION_LIMITS.maxTitleChars
+    );
+    // …and it must still fill the budget rather than over-trim.
+    expect(result[0]!.title.length).toBeGreaterThan(
+      SUGGESTION_LIMITS.maxTitleChars - 2
     );
     expect(result[0]!.title.endsWith("😀")).toBe(true);
     expect(result[0]!.message).toHaveLength(SUGGESTION_LIMITS.maxMessageChars);

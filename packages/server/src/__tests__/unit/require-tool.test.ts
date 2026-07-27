@@ -24,11 +24,13 @@ describe("createRequireToolGuardrail", () => {
       name: "need-chips",
       tools: ["suggest_actions"],
     });
-    const r = await g.run(ctx({ toolsUsed: ["suggest_actions", "search_memory"] }));
+    const r = await g.run(
+      ctx({ toolsUsed: ["suggest_actions", "search_memory"] })
+    );
     expect(r.tripped).toBe(false);
   });
 
-  test("fail-closed (default) trips when a tool is missing", async () => {
+  test("trips when a required tool is missing from a known list", async () => {
     const g = createRequireToolGuardrail({
       name: "need-chips",
       tools: ["suggest_actions"],
@@ -41,45 +43,20 @@ describe("createRequireToolGuardrail", () => {
     ]);
   });
 
-  test("fail-open does not trip when a tool is missing", async () => {
+  test("passes when toolsUsed is absent (old worker / rolling deploy)", async () => {
     const g = createRequireToolGuardrail({
       name: "need-chips",
       tools: ["suggest_actions"],
-      onMissing: "fail-open",
-    });
-    const r = await g.run(ctx({ toolsUsed: [] }));
-    expect(r.tripped).toBe(false);
-    expect((r.metadata as { skipped: string }).skipped).toBe("missing");
-  });
-
-  test("fail-open onUnknown when toolsUsed is absent", async () => {
-    const g = createRequireToolGuardrail({
-      name: "need-chips",
-      tools: ["suggest_actions"],
-      onMissing: "fail-closed",
-      onUnknown: "fail-open",
     });
     const r = await g.run(ctx({ toolsUsed: undefined }));
     expect(r.tripped).toBe(false);
     expect((r.metadata as { skipped: string }).skipped).toBe("unknown");
   });
 
-  test("fail-closed onUnknown trips when toolsUsed is absent", async () => {
+  test("empty toolsUsed array is known — missing tool trips", async () => {
     const g = createRequireToolGuardrail({
       name: "need-chips",
       tools: ["suggest_actions"],
-      onUnknown: "fail-closed",
-    });
-    const r = await g.run(ctx({ toolsUsed: undefined }));
-    expect(r.tripped).toBe(true);
-    expect(r.reason).toMatch(/unknown/i);
-  });
-
-  test("empty toolsUsed array is known (not unknown) — can fail-closed", async () => {
-    const g = createRequireToolGuardrail({
-      name: "need-chips",
-      tools: ["suggest_actions"],
-      onMissing: "fail-closed",
     });
     // Worker stamped [] = no tools this turn, not an old worker.
     const r = await g.run(ctx({ toolsUsed: [] }));

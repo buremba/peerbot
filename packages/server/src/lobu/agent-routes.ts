@@ -1624,20 +1624,6 @@ export function validateGuardrailsInline(value: unknown): string | null {
 			) {
 				return `guardrailsInline[${i}].tools must be a non-empty array of tool names for require-tool`;
 			}
-			if (
-				g.onMissing !== undefined &&
-				g.onMissing !== "fail-closed" &&
-				g.onMissing !== "fail-open"
-			) {
-				return `guardrailsInline[${i}].onMissing must be "fail-closed" or "fail-open"`;
-			}
-			if (
-				g.onUnknown !== undefined &&
-				g.onUnknown !== "fail-closed" &&
-				g.onUnknown !== "fail-open"
-			) {
-				return `guardrailsInline[${i}].onUnknown must be "fail-closed" or "fail-open"`;
-			}
 		} else {
 			// judge (default)
 			if (typeof g.policy !== "string" || g.policy.trim() === "") {

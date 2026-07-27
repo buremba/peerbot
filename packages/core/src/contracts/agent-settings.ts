@@ -74,8 +74,8 @@ void _stageCheck;
  *
  * - `kind: "judge"` (default when omitted) — LLM text judge; needs `policy`.
  * - `kind: "require-tool"` — pure lookup against this turn's `toolsUsed`;
- *   needs `tools` (manual tool names). `onMissing` / `onUnknown` control
- *   fail-closed vs fail-open. No model call.
+ *   needs `tools` (manual tool names). Fixed policy: missing tool trips;
+ *   absent toolsUsed (old worker) passes. No model call.
  */
 export const AgentInlineGuardrailSchema = Type.Object({
   name: Type.String(),
@@ -95,22 +95,6 @@ export const AgentInlineGuardrailSchema = Type.Object({
    */
   tools: Type.Optional(Type.Array(Type.String())),
   domains: Type.Optional(Type.Array(Type.String())),
-  /**
-   * `require-tool` only. When a listed tool is absent from `toolsUsed`:
-   * - `fail-closed` (default) — trip the output stage (block the reply).
-   * - `fail-open` — pass; metadata still records the miss for audit.
-   */
-  onMissing: Type.Optional(
-    Type.Union([Type.Literal("fail-closed"), Type.Literal("fail-open")])
-  ),
-  /**
-   * `require-tool` only. When `toolsUsed` is not on the payload (older worker):
-   * - `fail-open` (default) — pass so a rolling deploy never blocks turns.
-   * - `fail-closed` — trip until every worker stamps `toolsUsed`.
-   */
-  onUnknown: Type.Optional(
-    Type.Union([Type.Literal("fail-closed"), Type.Literal("fail-open")])
-  ),
 });
 export type AgentInlineGuardrail = Static<typeof AgentInlineGuardrailSchema>;
 

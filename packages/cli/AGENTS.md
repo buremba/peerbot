@@ -5,7 +5,8 @@ Read root `AGENTS.md` first. This package is the `lobu` binary users install fro
 ## Boundaries
 - This is a published user-facing binary. Error messages are product surface — write them for someone who has never read this repo, and keep the agent-facing vocabulary rule (**Behavior**, never `watcher`) in anything a user or agent sees.
 - `bin/lobu.js` runs on whatever Node the user has, *before* the bundle loads. Keep it dependency-free and import-free; anything it needs must be inline.
-- The installed Mac app invokes the global `lobu` on PATH and runs the frozen `dist`, so a source edit is invisible until the package is rebuilt.
+- The Mac app resolves the CLI in this order (`locateLobuCLI` in `LocalLobuRunner.swift`): `LOBU_CLI_DEV_PATH`, then the source checkout at `~/Code/lobu/packages/cli/bin/lobu.js`, then the version-pinned CLI bundled in the app, then PATH. PATH is the *last* resort — on a machine with a source checkout the app runs your working copy, so know which artifact you are testing before concluding a change did or did not take effect.
+- Every one of those paths executes the built `dist`, so a source edit is invisible until you rebuild the package.
 
 ## Package-specific traps
 - **The dynamic import in `bin/lobu.js` is required — do not "fix" it to a static import.** A static import is hoisted and evaluated before the Node-version gate runs, so an unsupported Node would load the bundle and throw a cryptic error instead of the friendly message. This is a deliberate, documented exception to the repo's static-import rule.

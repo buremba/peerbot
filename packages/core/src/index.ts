@@ -147,6 +147,7 @@ export {
   type ParsedMessageType,
   parseSessionEntries,
   type SessionEntry,
+  stripRunContextBlock,
   titleFromSessionJsonl,
 } from "./utils/session-file";
 export { slugify } from "./utils/slug";

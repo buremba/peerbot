@@ -170,7 +170,11 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
       id: entry.id,
       type: "message",
       role: entry.message.role,
-      content: entry.message.content,
+      // Only the user turn carries the worker's run-context scaffolding.
+      content:
+        entry.message.role === "user"
+          ? stripRunContextFromContent(entry.message.content)
+          : entry.message.content,
       timestamp: entry.timestamp,
       isVerbose: entry.message.role === "toolResult",
       usage: entry.message.usage,
@@ -209,6 +213,57 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
 }
 
 /**
+ * The worker prepends a per-run context block to the USER turn (see
+ * `buildRunContextBlock` in agent-worker): a `## This conversation` heading
+ * followed by `- Key: value` lines, then a blank line, then what the user
+ * actually typed. It is prompt scaffolding for the model — the person never
+ * wrote it — but it IS part of the stored transcript.
+ *
+ * Live turns render from the SSE echo (the user's own text) so it never shows;
+ * a RELOAD replays the transcript, and without this strip the block rendered
+ * verbatim above every user message as a stray markdown heading. Strip it on
+ * the way out so replay matches what the user typed.
+ *
+ * Deliberately conservative: only a block at the very START, only the exact
+ * heading, and only through the first blank line. A user message that merely
+ * contains that text later is untouched.
+ */
+const RUN_CONTEXT_BLOCK = /^## This conversation\n(?:-[^\n]*\n)*(?:\n+|$)/;
+
+export function stripRunContextBlock(text: string): string {
+  return text.replace(RUN_CONTEXT_BLOCK, "");
+}
+
+/**
+ * Apply {@link stripRunContextBlock} to a message `content` payload, preserving
+ * its shape: a bare string, or the `[{type:"text", text}, …]` part array the
+ * transcript stores. Only the FIRST text part can carry the block (it is a
+ * prefix of the whole turn), so later parts are left alone. Non-text content
+ * (images, tool calls) passes through untouched.
+ */
+export function stripRunContextFromContent(content: unknown): unknown {
+  if (typeof content === "string") return stripRunContextBlock(content);
+  if (!Array.isArray(content)) return content;
+  let stripped = false;
+  return content.map((part) => {
+    if (stripped) return part;
+    if (
+      part &&
+      typeof part === "object" &&
+      (part as { type?: string }).type === "text" &&
+      typeof (part as { text?: string }).text === "string"
+    ) {
+      stripped = true;
+      return {
+        ...(part as Record<string, unknown>),
+        text: stripRunContextBlock((part as { text: string }).text),
+      };
+    }
+    return part;
+  });
+}
+
+/**
  * Thread list title: first user message text, truncated. No LLM inference —
  * the UI shows this until/unless we add an explicit title field on write.
  */
@@ -237,7 +292,10 @@ export function titleFromSessionJsonl(
         }
       }
     }
-    const normalized = text.replace(/\s+/g, " ").trim();
+    // Strip the worker's run-context block first: otherwise every derived title
+    // reads "## This conversation - Platform: api - Channel: …" instead of what
+    // the user asked.
+    const normalized = stripRunContextBlock(text).replace(/\s+/g, " ").trim();
     if (!normalized) continue;
     return normalized.length > maxLen
       ? `${normalized.slice(0, maxLen)}…`

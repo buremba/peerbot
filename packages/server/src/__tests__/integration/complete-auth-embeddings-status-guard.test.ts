@@ -29,9 +29,11 @@
  * authorizeRunForWorker's read, in the TOCTOU window before the UPDATE).
  */
 
+import { parseSecretRef } from '@lobu/core';
 import type { Context } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
+import { resolveAuthCredentials } from '../../utils/auth-credential-secrets';
 import { completeAuthRun, completeEmbeddings } from '../../worker-api';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
@@ -226,7 +228,17 @@ describe('completeAuthRun status guard (late-completion-after-timeout)', () => {
       SELECT status, auth_data FROM auth_profiles WHERE id = ${profileId}
     `) as Array<{ status: string; auth_data: Record<string, unknown> }>;
     expect(profileAfter[0].status).toBe('active');
-    expect(profileAfter[0].auth_data).toEqual({ access_token: 'fresh' });
+    // Credentials persist as encrypted secret:// refs, never plaintext, and
+    // resolve back to the real value at connect time.
+    expect(JSON.stringify(profileAfter[0].auth_data)).not.toContain('fresh');
+    expect(
+      parseSecretRef(String(profileAfter[0].auth_data.access_token))?.scheme
+    ).toBe('secret');
+    const resolved = await resolveAuthCredentials({
+      organizationId: org.id,
+      authData: profileAfter[0].auth_data,
+    });
+    expect(resolved).toEqual({ access_token: 'fresh' });
   });
 });
 

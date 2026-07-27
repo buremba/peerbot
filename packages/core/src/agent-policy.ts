@@ -53,6 +53,10 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Delete a message the bot itself sent, addressed by a conversation or thread handle + message id. Only the bot's own messages can be deleted.",
   },
+  suggest_actions: {
+    description:
+      "Offer up to 4 obvious follow-up actions as tappable chips under your reply. Each `message` is sent verbatim as the user's next turn, so write it in the user's voice. Call this once near the end of a turn; it is non-blocking. Skip it when there is no clear next step.",
+  },
 };
 
 export const TOOL_INTENT_RULES: ToolIntentRule[] = [

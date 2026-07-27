@@ -11,8 +11,12 @@
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ProviderConfigEntry, ProvidersConfigFile } from "@lobu/core";
-import { buildSnapshot } from "../gen-models-dev-snapshot";
+import type {
+  ModelsDevSnapshot,
+  ProviderConfigEntry,
+  ProvidersConfigFile,
+} from "@lobu/core";
+import { buildSnapshot, sameModelData } from "../gen-models-dev-snapshot";
 
 const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const GUARD = join(REPO_ROOT, "scripts/check-models-dev-coverage.ts");
@@ -186,5 +190,61 @@ describe("buildSnapshot", () => {
     expect(unresolved).toEqual(["missing -> gone"]);
     expect(snapshot.providers).toEqual({});
     expect(snapshot.joinedFrom).toEqual({});
+  });
+});
+
+/**
+ * The weekly refresh workflow opens a PR whenever the snapshot file differs.
+ * `generatedAt` moves on every run, so without ignoring it a no-change week
+ * would open an empty churn PR every Monday — and a reviewer trained to
+ * rubber-stamp those is exactly how a bad upstream merge lands unread.
+ */
+describe("sameModelData", () => {
+  const base: ModelsDevSnapshot = {
+    source: "https://models.dev/api.json",
+    generatedAt: "2026-07-27",
+    providers: { claude: [{ id: "claude-opus-5", name: "Claude Opus 5" }] },
+    joinedFrom: { claude: "anthropic" },
+  };
+
+  it("ignores a moved generatedAt stamp", () => {
+    expect(sameModelData(base, { ...base, generatedAt: "2026-08-03" })).toBe(
+      true
+    );
+  });
+
+  it("detects an added model", () => {
+    const next: ModelsDevSnapshot = {
+      ...base,
+      generatedAt: "2026-08-03",
+      providers: {
+        claude: [
+          { id: "claude-opus-6", name: "Claude Opus 6" },
+          ...base.providers.claude,
+        ],
+      },
+    };
+    expect(sameModelData(base, next)).toBe(false);
+  });
+
+  it("detects a dropped provider", () => {
+    expect(sameModelData(base, { ...base, providers: {} })).toBe(false);
+  });
+
+  /** A renamed upstream key must not be mistaken for "nothing changed". */
+  it("detects a changed join key", () => {
+    expect(
+      sameModelData(base, { ...base, joinedFrom: { claude: "anthropic-v2" } })
+    ).toBe(false);
+  });
+
+  it("detects changed model metadata", () => {
+    const next: ModelsDevSnapshot = {
+      ...base,
+      providers: {
+        claude: [{ id: "claude-opus-5", name: "Claude Opus 5", costInput: 5 }],
+      },
+    };
+    expect(sameModelData(base, next)).toBe(false);
   });
 });

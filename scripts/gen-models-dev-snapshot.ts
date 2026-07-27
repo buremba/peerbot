@@ -146,6 +146,35 @@ export function buildSnapshot(
   };
 }
 
+/** The committed snapshot, or null on first generation / unreadable file. */
+async function readSnapshotIfPresent(): Promise<ModelsDevSnapshot | null> {
+  try {
+    return JSON.parse(await readFile(OUT, "utf-8")) as ModelsDevSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when two snapshots carry identical model data — everything except the
+ * `generatedAt` stamp. Compared on the serialized form because the generator
+ * emits deterministically (providers in providers.json order, models sorted
+ * newest-first with ties broken on id), so equal data always serializes byte-
+ * identically.
+ */
+export function sameModelData(
+  a: ModelsDevSnapshot,
+  b: ModelsDevSnapshot
+): boolean {
+  const strip = (s: ModelsDevSnapshot) =>
+    JSON.stringify({
+      source: s.source,
+      providers: s.providers,
+      joinedFrom: s.joinedFrom,
+    });
+  return strip(a) === strip(b);
+}
+
 async function main(): Promise<void> {
   const providersConfig = JSON.parse(
     await readFile(PROVIDERS_JSON, "utf-8")
@@ -159,11 +188,10 @@ async function main(): Promise<void> {
   }
   const upstream = (await response.json()) as Record<string, UpstreamProvider>;
 
-  const generatedAt = new Date().toISOString().slice(0, 10);
   const { snapshot, unresolved } = buildSnapshot(
     providersConfig,
     upstream,
-    generatedAt
+    new Date().toISOString().slice(0, 10)
   );
 
   if (unresolved.length > 0) {
@@ -172,6 +200,17 @@ async function main(): Promise<void> {
         `models.dev?):\n  ${unresolved.join("\n  ")}\n` +
         "Fix the mapping in config/providers.json, then re-run."
     );
+  }
+
+  // Keep the PREVIOUS `generatedAt` when nothing but the date would change.
+  // The scheduled refresh (.github/workflows/models-dev-snapshot.yml) opens a
+  // PR whenever this file differs, so a date stamp that moves on every run
+  // would open an empty churn PR every week and train reviewers to rubber-
+  // stamp it — which is precisely how a bad upstream merge slips through.
+  // Comparing everything EXCEPT the stamp keeps a no-change week a true no-op.
+  const previous = await readSnapshotIfPresent();
+  if (previous && sameModelData(previous, snapshot)) {
+    snapshot.generatedAt = previous.generatedAt;
   }
 
   await writeFile(OUT, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");

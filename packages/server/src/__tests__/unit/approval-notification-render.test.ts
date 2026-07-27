@@ -37,9 +37,10 @@ describe("approval notification rendering", () => {
 			"Review topic fields: Severity, Name",
 		);
 		expect(formatActionApprovalBody({ approvalUrl, details })).toBe(
-			"**Watcher <One>** wants to update [App & Crashes](https://app.lobu.ai/acme/topic/app-crashes):\n" +
+			String.raw`**Watcher \<One\>** wants to update [App & Crashes](https://app.lobu.ai/acme/topic/app-crashes):` +
+				"\n" +
 				"- Severity: ~high~\n→ critical\n" +
-				"- Name: ~Old Name~\n→ New <Name>\n" +
+				"- Name: ~Old Name~\n\u2192 New " + String.raw`\<Name\>` + "\n" +
 				"\nField is protected: severity (currently set by you).\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/42)",
 		);
@@ -127,8 +128,8 @@ describe("approval notification rendering", () => {
 				details,
 			}),
 		).toBe(
-			"**An agent** wants to delete [Old <Topic>](https://app.lobu.ai/acme/topic/old-topic).\n" +
-				"- Entity id: 11\n- Entity type: topic\n- Name: Old <Topic>\n- Force delete tree: false\n" +
+			String.raw`**An agent** wants to delete [Old \<Topic\>](https://app.lobu.ai/acme/topic/old-topic).` + "\n" +
+				"- Entity id: 11\n- Entity type: topic\n" + String.raw`- Name: Old \<Topic\>` + "\n- Force delete tree: false\n" +
 				"\n[Review in Lobu](https://app.lobu.ai/acme/runs/45)",
 		);
 		expect(cardText(buildActionApprovalCard({ runId: 45, details }))).toBe(
@@ -183,14 +184,16 @@ describe("approval notification rendering", () => {
 		};
 
 		const body = formatActionApprovalBody({ details });
-		// Markdown: brackets/emphasis defanged, ampersand left as a literal `&`.
+		// Markdown: every link/emphasis delimiter defanged; `&` stays a literal
+		// `&` (Slack's entity escaping must not leak into Markdown).
 		expect(body).toContain(
-			"**[Review [nested]\\](https://evil)** wants to delete " +
-				"\\*Urgent\\* <!channel> & [click\\](https://evil) (#5).",
+			String.raw`**\[Review \[nested\]\](https://evil)** wants to delete ` +
+				String.raw`\*Urgent\* \<!channel\> & \[click\](https://evil) (#5).`,
 		);
 		expect(body).not.toContain("&amp;");
+		// Leading `#` must not become a heading in the reason paragraph.
 		expect(body).toContain(
-			"\n\n\\# [Review [nested]\\](https://evil)",
+			"\n\n" + String.raw`\# \[Review \[nested\]\](https://evil)`,
 		);
 
 		const card = cardText(buildActionApprovalCard({ details }));
@@ -206,27 +209,49 @@ describe("approval notification rendering", () => {
 		expect(card).not.toContain("\\[");
 	});
 
-	test("bracketed values stay literal; only link-forming brackets are escaped", () => {
-		// A JSON array value ("[ 886 ]") is inert Markdown and must render as
-		// typed — escaping every bracket leaked visible backslashes into the card.
+	test("markdown escaping covers strikethrough, autolinks, and unmatched brackets", () => {
+		// The three vectors that survived a narrower escape set: `~~x~~` rendered
+		// as <del>, `<https://evil>` became a real anchor, and a stray `]` closed
+		// our link label early so the rest of the name escaped the anchor.
 		const details: ActionApprovalDetails = {
 			kind: "entity_change",
-			operation: "merge",
-			actorLabel: "An agent",
-			entityId: 886,
-			entityType: "person",
-			entityName: "905319918039@s.whatsapp.net",
-			entityUrl: "https://app.lobu.ai/buremba/person/member-0faa51dac0",
-			proposal: {
-				entity_ids: [886],
-				// Only this one forms a link and must be defanged.
-				note: "see [Review in Lobu](https://evil)",
-			},
+			operation: "delete",
+			actorLabel: "~~trusted agent~~",
+			entityId: 7,
+			entityType: "topic",
+			entityName: "Budget] <https://evil.example>",
+			entityUrl: "https://app.lobu.ai/acme/topic/budget",
+			proposal: { entity_ids: [886] },
 			reason: null,
 		};
 		const body = formatActionApprovalBody({ details });
-		expect(body).toContain("- Entity ids: [ 886 ]");
-		expect(body).toContain("- Note: see [Review in Lobu\\](https://evil)");
+
+		expect(body).toContain(
+			String.raw`**\~\~trusted agent\~\~** wants to delete ` +
+				String.raw`[Budget\] \<https://evil.example\>](https://app.lobu.ai/acme/topic/budget).`,
+		);
+		// Our own diff/link chrome must survive — only the values are escaped.
+		expect(body).toContain("](https://app.lobu.ai/acme/topic/budget)");
+		// Brackets in JSON values are escaped too; the renderer strips the
+		// backslashes, so the user still reads "[ 886 ]" (asserted in
+		// owletto's markdown-text.inline.test.tsx).
+		expect(body).toContain(String.raw`- Entity ids: \[ 886 \]`);
+	});
+
+	test("renderer-owned diff delimiters are not escaped away", () => {
+		// `~old~` is OUR strikethrough, not user text. Escaping the assembled
+		// diff line turned it into a literal `\~old\~`.
+		const body = formatActionApprovalBody({
+			details: {
+				kind: "entity_field_change",
+				entityId: 9,
+				entityType: "topic",
+				fields: { severity: "critical" },
+				current: { severity: "high" },
+				reason: null,
+			},
+		});
+		expect(body).toContain("- Severity: ~high~\n→ critical");
 	});
 
 	test("generic action: no card, connection fallback body", () => {

@@ -58,22 +58,25 @@ function escapeSlackText(value: string): string {
 }
 
 /**
- * Escape user/agent-controlled text for the in-app Markdown body. Narrow by
- * design — it must neutralise forged chrome without littering ordinary prose,
- * because these strings are entity names and JSON values full of brackets,
- * braces and hyphens:
- *  - `*`/`_`/`` ` `` — emphasis marks that would let injected text impersonate
- *    the card's own bolding.
- *  - A closing `]` before `(` or `[` — enough to break inline/reference links,
- *    including labels with nested or escaped brackets. A bare `[ 886 ]` is
- *    inert in Markdown and stays untouched.
- *  - Leading Markdown block marks — reasons render as their own paragraph, so
- *    headings, quotes, and lists must remain literal text there.
+ * Escape user/agent-controlled text for the in-app Markdown body (GFM, so
+ * strikethrough and autolinks are live too). These strings are entity names,
+ * actor labels, and JSON values, and they get interpolated INTO our own
+ * `**bold**` and `[label](url)` chrome — so anything that could terminate that
+ * chrome early, or start markup of its own, has to be neutralised:
+ *  - `` \ ` * _ ~ `` — emphasis/strikethrough/code delimiters. Missing `~` let
+ *    an actor named `~~trusted agent~~` render struck-through.
+ *  - `[` and `]` — a stray `]` closes our link label early, letting the rest of
+ *    the name escape the anchor. Escaping is unconditional: a lookahead rule
+ *    (only before `(`) missed unmatched brackets. The renderer strips the
+ *    backslashes, so `[ 886 ]` still displays literally.
+ *  - `<` and `>` — GFM autolinks. `<https://evil.example>` became a real
+ *    attacker-controlled anchor inside a trusted-looking card.
+ *  - Leading block marks — reasons render as their own paragraph, so headings,
+ *    quotes, lists, and setext underlines must stay literal text there.
  */
 function escapeMarkdownText(value: string): string {
 	return value
-		.replace(/([\\`*_])/g, "\\$1")
-		.replace(/\](?=[([])/g, "\\]")
+		.replace(/([\\`*_~[\]<>])/g, "\\$1")
 		.replace(/^([ \t]{0,3})(-{3,}|={3,})(?=\s*$)/gm, "$1\\$2")
 		.replace(/^([ \t]{0,3})(?=[#>+-](?:\s|$))/gm, "$1\\")
 		.replace(/^([ \t]{0,3}\d{1,9})([.)])(?=\s|$)/gm, "$1\\$2");
@@ -124,17 +127,19 @@ function formatCardLink(label: string, url: string): string {
 	return `<${url}|${escapeSlackText(label.replace(/[<>|]/g, ""))}>`;
 }
 
-function compactDiffLine(
+/**
+ * Raw before/after pair. Kept UNASSEMBLED so each emitter can escape the two
+ * values without touching the `~old~` strikethrough delimiters it adds itself —
+ * escaping a pre-assembled string turned our own markup into literal `\~`.
+ */
+function compactDiffValues(
 	currentValue: unknown,
 	proposedValue: unknown,
-): string {
-	const current = truncateNotificationLine(
-		displayNotificationValue(currentValue),
-	);
-	const proposed = truncateNotificationLine(
-		displayNotificationValue(proposedValue),
-	);
-	return `~${current}~\n→ ${proposed}`;
+): { current: string; proposed: string } {
+	return {
+		current: truncateNotificationLine(displayNotificationValue(currentValue)),
+		proposed: truncateNotificationLine(displayNotificationValue(proposedValue)),
+	};
 }
 
 function formatWhyApprovalNeeded(reason: string | null | undefined): string {
@@ -182,8 +187,12 @@ interface ApprovalRenderModel {
 	entityId: number | null;
 	/** formatLabel(entityType), for the body's entity-link fallback. */
 	entityTypeLabel: string | null;
-	/** Field-change diffs (null for entity_change — kinds render differently). */
-	diffs: Array<{ label: string; diff: string }> | null;
+	/**
+	 * Field-change diffs (null for entity_change — kinds render differently).
+	 * Values stay unassembled so emitters escape them without mangling the
+	 * strikethrough delimiters they wrap around `current`.
+	 */
+	diffs: Array<{ label: string; current: string; proposed: string }> | null;
 	/** entity_change action sentence ("Create/Delete this entity"). */
 	action: string | null;
 	proposal: Array<{ label: string; value: string }>;
@@ -207,7 +216,7 @@ function buildApprovalRenderModel(
 			...base,
 			diffs: Object.entries(details.fields).map(([field, proposed]) => ({
 				label: formatLabel(field),
-				diff: compactDiffLine(current[field], proposed),
+				...compactDiffValues(current[field], proposed),
 			})),
 			action: null,
 			proposal: [],
@@ -259,7 +268,9 @@ function renderApprovalBody(
 	if (model.diffs) {
 		lines.push(`**${who}** wants to update ${entityLink}:`);
 		for (const d of model.diffs)
-			lines.push(`- ${d.label}: ${escapeMarkdownText(d.diff)}`);
+			lines.push(
+				`- ${d.label}: ~${escapeMarkdownText(d.current)}~\n→ ${escapeMarkdownText(d.proposed)}`,
+			);
 	} else {
 		const verb =
 			model.action === "Delete this entity"
@@ -295,7 +306,11 @@ function renderApprovalCardText(model: ApprovalRenderModel): string {
 	}
 	if (model.diffs) {
 		for (const d of model.diffs)
-			lines.push("", `*${d.label}*`, escapeSlackText(d.diff));
+			lines.push(
+				"",
+				`*${d.label}*`,
+				`~${escapeSlackText(d.current)}~\n→ ${escapeSlackText(d.proposed)}`,
+			);
 	}
 	if (model.action) {
 		lines.push("", `*Proposed action:* ${model.action}`);

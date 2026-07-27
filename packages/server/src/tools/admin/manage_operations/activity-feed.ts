@@ -9,6 +9,7 @@
 import { getDb, pgTextArray } from "../../../db/client";
 import { listNotifications } from "../../../notifications/service";
 import { buildResourcePermalink } from "../../../utils/url-builder";
+import { ENTITY_CHANGE_ACTION_KEYS } from "../entity-field-approval";
 
 const USER_FACING_RUN_TYPES = ["behavior", "sync", "action", "internal"] as const;
 
@@ -24,6 +25,16 @@ export type ActivityCard = {
 	unread?: boolean;
 	notification_id?: number;
 	run_id?: number;
+	/**
+	 * Live approval state joined from the run behind an approval notification.
+	 */
+	approval_status?: string;
+	/**
+	 * Server-side policy: this approval's action_key has a known-safe one-click
+	 * web executor (entity change kinds). Clients render inline Approve/Reject
+	 * only when true; other approval kinds keep their review-page CTA.
+	 */
+	approval_inline?: boolean;
 	member_run_ids?: number[];
 	connection_id?: number;
 	watcher_id?: number;
@@ -308,10 +319,24 @@ export async function listOrgActivity(opts: {
 				const type = String(n.type ?? "generic");
 				const created = String(n.created_at ?? new Date().toISOString());
 				const atMs = new Date(created).getTime();
-				const runIdFromResource =
-					n.resource_type === "run" && n.resource_id != null
+				const approvalRunId =
+					n.approval_run_id != null ? Number(n.approval_run_id) : NaN;
+				const runIdFromResource = Number.isFinite(approvalRunId)
+					? approvalRunId
+					: n.resource_type === "run" && n.resource_id != null
 						? Number(n.resource_id)
 						: NaN;
+				const approvalStatus =
+					type === "action_approval_needed" &&
+					typeof n.approval_status === "string" &&
+					n.approval_status !== ""
+						? n.approval_status
+						: undefined;
+				const approvalInline =
+					approvalStatus != null &&
+					(ENTITY_CHANGE_ACTION_KEYS as readonly string[]).includes(
+						String(n.approval_action_key ?? ""),
+					);
 				raw.push({
 					id: `n:${n.id}`,
 					kind: "notification",
@@ -327,6 +352,8 @@ export async function listOrgActivity(opts: {
 					run_id: Number.isFinite(runIdFromResource)
 						? runIdFromResource
 						: undefined,
+					approval_status: approvalStatus,
+					approval_inline: approvalInline || undefined,
 					collapseKey: null,
 					itemsCollected: null,
 				});

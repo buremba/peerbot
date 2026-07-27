@@ -9,6 +9,7 @@ import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.j
 import type { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { readPlatformMetadata } from "../connections/platform-metadata.js";
 import { OutputGuardrailScanner } from "../guardrails/output-scan.js";
+import { generateSuggestFollowups } from "../guardrails/suggest-followups.js";
 import type {
   IMessageQueue,
   QueueJob,
@@ -20,6 +21,7 @@ import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
 import {
   finalizeTurnSuggestions,
+  persistSuggestion,
   readCurrentSuggestion,
 } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
@@ -281,6 +283,83 @@ export class UnifiedThreadResponseConsumer {
   }
 
   /**
+   * After blocking output scans pass: if this turn published no chips and the
+   * agent has the `suggest-followups` enrichment guardrail enabled, derive
+   * chips from the (already-scanned) reply and publish them. Best-effort —
+   * every failure leaves the turn chipless. Never runs on a tripped/blocked
+   * reply (caller must only invoke after scanFinal returned null).
+   */
+  private async maybeEnrichSuggestFollowups(
+    data: ThreadResponsePayload,
+    organizationId: string,
+    agentId: string
+  ): Promise<void> {
+    try {
+      if (
+        !(await this.outputGuardrail.hasSuggestFollowups(
+          agentId,
+          organizationId
+        ))
+      ) {
+        return;
+      }
+
+      const turnMessageIds = [
+        ...(data.messageId ? [data.messageId] : []),
+        ...(data.processedMessageIds ?? []),
+      ].filter(Boolean);
+      const owned = new Set(turnMessageIds);
+      const current = await readCurrentSuggestion(
+        organizationId,
+        data.conversationId
+      );
+      // Agent (or a prior enrichment on a re-queue) already owns the rail —
+      // never overwrite an explicit suggest_actions set.
+      if (
+        current?.turnMessageId != null &&
+        owned.has(current.turnMessageId)
+      ) {
+        return;
+      }
+
+      const replyText =
+        typeof data.finalText === "string" ? data.finalText : "";
+      if (!replyText) return;
+
+      const prompts = await generateSuggestFollowups(replyText);
+      if (prompts.length === 0) return;
+
+      await persistSuggestion({
+        organizationId,
+        conversationId: data.conversationId,
+        prompts,
+        // Stamp the completing turn so the next finalize clears this set.
+        turnMessageId: data.messageId,
+        runId: null,
+      });
+
+      await this.interactionService?.postSuggestion(
+        organizationId,
+        data.userId ?? "api",
+        data.conversationId,
+        data.channelId ?? data.conversationId,
+        data.teamId,
+        typeof data.platformMetadata?.connectionId === "string"
+          ? data.platformMetadata.connectionId
+          : undefined,
+        data.platform ?? "api",
+        prompts
+      );
+    } catch (err) {
+      logger.warn(
+        `suggest-followups enrichment failed for ${data.conversationId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  /**
    * Deliver a fanned-out CHAT-PLATFORM interaction card on the pod that owns
    * the connection's bridge.
    *
@@ -529,6 +608,22 @@ export class UnifiedThreadResponseConsumer {
                 finalText: data.finalText ? blockMsg : data.finalText,
                 error: data.error != null ? blockMsg : data.error,
               };
+            } else if (
+              !data.error &&
+              data.processedMessageIds?.length &&
+              data.finalText
+            ) {
+              // Blocking scan passed — enrichment may derive chips. Never on
+              // error turns or when finalText was replaced by a block notice.
+              const organizationId =
+                data.organizationId ?? md.organizationId;
+              if (organizationId) {
+                await this.maybeEnrichSuggestFollowups(
+                  data,
+                  organizationId,
+                  agentId
+                );
+              }
             }
           }
         }

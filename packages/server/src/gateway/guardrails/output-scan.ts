@@ -15,6 +15,7 @@
 import {
 	createLogger,
 	getErrorMessage,
+	type Guardrail,
 	type GuardrailRegistry,
 	runGuardrailInstances,
 } from "@lobu/core";
@@ -24,6 +25,7 @@ import {
   resolveAgentGuardrails,
 } from "./aggregator.js";
 import { recordGuardrailTrip } from "./audit.js";
+import { isEnrichmentGuardrail } from "./suggest-followups.js";
 
 const logger = createLogger("output-guardrail");
 
@@ -70,7 +72,12 @@ export async function runOutputGuardrailScan(
       registry,
       { inline: enabledInlineGuardrails(settings) }
     );
-    const list = resolved.byStage.output;
+    // Enrichment guardrails (e.g. suggest-followups) never trip and must not
+    // see the reply until blocking scans have passed — exclude them here.
+    // Generation is invoked explicitly by the terminal consumer after a pass.
+    const list = resolved.byStage.output.filter(
+      (g) => !isEnrichmentGuardrail(g.name)
+    );
     if (list.length === 0) return null;
 
     const outcome = await runGuardrailInstances("output", list, {
@@ -163,7 +170,9 @@ export class OutputGuardrailScanner {
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );
-      return resolved.byStage.output.length > 0;
+      // Only blocking output guardrails force withhold-stream. Enrichment
+      // alone (suggest-followups) does not need to suppress token streaming.
+      return resolved.byStage.output.some((g) => !isEnrichmentGuardrail(g.name));
     } catch {
       return false;
     }
@@ -180,4 +189,36 @@ export class OutputGuardrailScanner {
   ): Promise<OutputGuardrailTrip | null> {
     return runOutputGuardrailScan(this.registry, this.settingsStore, text, ctx);
   }
+
+  /**
+   * Whether the agent has the `suggest-followups` enrichment guardrail
+   * enabled. Used by the terminal consumer after a blocking scan pass.
+   */
+  async hasSuggestFollowups(
+    agentId: string,
+    organizationId?: string
+  ): Promise<boolean> {
+    if (!this.enabled || !agentId) return false;
+    try {
+      const settings = await this.settingsStore!.getSettings(agentId, {
+        organizationId,
+      });
+      const resolved = resolveAgentGuardrails(
+        settings ?? { guardrails: [] },
+        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+        this.registry!,
+        { inline: enabledInlineGuardrails(settings) }
+      );
+      return resolved.byStage.output.some((g) => isEnrichmentGuardrail(g.name));
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Test/helper: drop enrichment entries from a resolved output list. */
+export function partitionBlockingOutputGuardrails(
+  list: readonly Guardrail<"output">[]
+): Guardrail<"output">[] {
+  return list.filter((g) => !isEnrichmentGuardrail(g.name));
 }

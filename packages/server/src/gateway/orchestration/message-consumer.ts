@@ -45,6 +45,7 @@ import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections-projection.js";
 import { getDb } from "../../db/client.js";
+import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
   classifyConversation,
   isWatcherConversationId,
@@ -462,11 +463,23 @@ export class MessageConsumer {
       // never fails a live turn.
       if (!isWatcherConversationId(effectiveConversationId)) {
         const { kind, storedPlatform } = classifyConversation(data.platform);
+        // Undo the API id packing once, here at write time, and store the result —
+        // readers route on the stored `thread_id`, never by re-parsing the id.
+        const threadId =
+          kind === "owned"
+            ? threadIdFromApiConversationId({
+                conversationId: effectiveConversationId,
+                agentId: data.agentId,
+                userId: data.userId,
+                organizationId: data.organizationId,
+              })
+            : null;
         await upsertConversation({
           organizationId: data.organizationId,
           agentId: data.agentId,
           platform: storedPlatform,
           conversationId: effectiveConversationId,
+          threadId,
           kind,
           userId: data.userId,
           title: data.messageText?.slice(0, 200) || null,

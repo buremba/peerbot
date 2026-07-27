@@ -960,10 +960,24 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
 }
 
 /**
- * Format database_query result as CSV
+ * Format query_sql result as CSV.
+ *
+ * `query_sql` has no `outputSchema`, so its markdown must distinguish a resolved
+ * `{ rows: [], error }` failure from a successful empty result.
  */
-function formatQuerySqlResult(result: any, _options: FormatterOptions): string {
+function formatQuerySqlResult(result: any): string {
   const { rows, total_count, execution_time_ms } = result;
+
+  if (typeof result?.error === 'string' && result.error.length > 0) {
+    const code = result.error_code ? ` (${result.error_code})` : '';
+    const retry =
+      result.retryable === true
+        ? '\n\nRetrying the identical call may succeed.'
+        : result.retryable === false
+          ? '\n\nRetrying the identical call will not help unless the query or arguments change.'
+          : '';
+    return `# ❌ Error${code}\n\n${result.error}${retry}\n\n*The query did not return data. This is a failure, not an empty result set.*`;
+  }
 
   let csv = '';
 

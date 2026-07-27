@@ -6,7 +6,12 @@ Under the hood, workers run Lobu's Pi-based agent loop (bash, files, MCP tools, 
 
 https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
-## Two ways in
+## Three ways in
+
+Lobu is not a harness you have to build on. It is the data layer your agents
+work against — a durable event log and a typed ontology over your org's tools.
+Bring your own agent and reach it over MCP, the CLI, or the TypeScript SDK; or
+run Lobu's own agents on top. The same org-scoped graph backs all of them.
 
 ### 1. Full agent — Slack, Telegram, behaviors, connectors
 
@@ -23,17 +28,57 @@ npx @lobu/cli@latest chat -c local "hello"    # talk to it
 
 Next steps: [Getting started](https://lobu.ai/getting-started/) (project layout, develop with your coding agent, evals) · [Memory](https://lobu.ai/getting-started/memory/) · [Skills](https://lobu.ai/getting-started/skills/) · [Channels](#channels)
 
-### 2. Memory for Claude Code (and Claude Desktop)
+### 2. Bring your own agent — memory over MCP
 
-Give Claude durable, structured memory via MCP — the same graph your Lobu agents use. Full setup: [Connect from Claude](https://lobu.ai/connect-from/claude/).
+Point any MCP client at Lobu and it gets durable, structured memory — the same
+graph your Lobu agents read. No `lobu.config.ts` or local Lobu agent runtime is
+required.
 
 ```bash
 claude mcp add --transport http lobu https://lobu.ai/mcp   # or http://localhost:8787/mcp locally
 ```
 
-Complete the OAuth flow when prompted, then enable the connector. Pair it with a project instruction or skill that tells Claude when to search memory and when to save what it learned.
+Complete the OAuth flow when prompted, then enable the connector. Pair it with a project instruction or skill that tells the agent when to search memory and when to save what it learned.
 
-Works the same for [ChatGPT](https://lobu.ai/connect-from/chatgpt/) and other MCP clients — one memory backend across clients.
+`lobu memory init` can detect and configure **Claude Code**, **Codex**,
+**Gemini CLI**, and **Cursor**, and provides manual setup instructions for
+**Claude Desktop** and **ChatGPT**. It accepts a Lobu Cloud, local, or custom
+MCP endpoint. Setup guides:
+[Claude](https://lobu.ai/connect-from/claude/) ·
+[ChatGPT](https://lobu.ai/connect-from/chatgpt/).
+
+### 3. Your own code — CLI and TypeScript SDK
+
+The data layer is reachable without an agent at all. From the terminal:
+
+```bash
+npx @lobu/cli@latest memory run                     # list the memory tools
+npx @lobu/cli@latest memory run search_memory '{"query":"onboarding"}'
+npx @lobu/cli@latest memory exec \
+  'export default async (_ctx, client) => client.entities.list({ limit: 5 })'
+```
+
+Or from any Node/TypeScript program, with no sandbox in the loop:
+
+```ts
+import { client, searchMemory } from "@lobu/client";
+
+// Defaults to http://localhost:8787 — point it at your instance and add a token.
+client.setConfig({
+  baseUrl: "https://lobu.ai",
+  headers: { Authorization: `Bearer ${process.env.LOBU_TOKEN}` },
+});
+
+const hits = await searchMemory({
+  path: { orgSlug: "my-org" },
+  body: { query: "onboarding" },
+});
+```
+
+Mint a token with `lobu token create`.
+
+The MCP and typed SDK operations share the server-side tool registry, while the
+CLI dispatches those same MCP operations by name.
 
 ## Architecture
 

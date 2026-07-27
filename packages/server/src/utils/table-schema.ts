@@ -119,6 +119,7 @@ export const DECLARED_SECRETS_REF = '$DECLARED$';
  * `%ALIAS%` is replaced with the connections alias in scope.
  */
 const DECLARED_SECRET_KEYS_SUBQUERY =
+  // security-allowed: static SQL fragment built from string literals; %ALIAS% is replaced with a fixed table alias, never user input.
   `(SELECT COALESCE(array_agg(dk.k), ARRAY[]::text[]) FROM (` +
   `SELECT p.key AS k ` +
   `FROM public.connector_definitions cdsec, jsonb_each(cdsec.options_schema->'properties') p ` +
@@ -128,6 +129,7 @@ const DECLARED_SECRET_KEYS_SUBQUERY =
   `AND jsonb_typeof(cdsec.options_schema->'properties') = 'object' ` +
   `AND p.value->>'format' = 'password' ` +
   `UNION ` +
+  // security-allowed: static SQL fragment (auth_schema UNION branch); no user input.
   `SELECT af->>'key' ` +
   `FROM public.connector_definitions cdsec, ` +
   `jsonb_array_elements(cdsec.auth_schema->'methods') am, ` +
@@ -158,9 +160,11 @@ const DECLARED_SECRET_KEYS_SUBQUERY =
  * redacts.
  */
 const FEED_DECLARED_SECRET_KEYS_SUBQUERY =
+  // security-allowed: static SQL fragment; %ALIAS% is replaced with a fixed table alias, never user input.
   `(SELECT COALESCE(array_agg(fp.key), ARRAY[]::text[]) ` +
   `FROM public.connections cfeed ` +
   `JOIN LATERAL (` +
+  // security-allowed: static SQL fragment (feed definition lookup); no user input.
   `SELECT cdfeed.feeds_schema ` +
   `FROM public.connector_definitions cdfeed ` +
   `WHERE cdfeed.key = cfeed.connector_key ` +
@@ -246,6 +250,7 @@ function buildRedactionExpr(
     `CASE ` +
     // objects: rebuild, redacting denylisted keys and recursing into the rest
     `WHEN jsonb_typeof(${valueExpr}) = 'object' THEN (` +
+    // security-allowed: static redaction SQL; ${kv}/${el} are code-generated aliases, not user input.
     `SELECT COALESCE(jsonb_object_agg(${kv}.key, ` +
     `CASE WHEN ${SQL_KEY_IS_SECRET(`${kv}.key`)}` +
     // Schema-declared secrets: the connector said this key is secret, whatever
@@ -260,6 +265,7 @@ function buildRedactionExpr(
     `FROM jsonb_each(${valueExpr}) ${kv}) ` +
     // arrays: recurse elementwise (a list of header objects is a real shape)
     `WHEN jsonb_typeof(${valueExpr}) = 'array' THEN (` +
+    // security-allowed: static redaction SQL; ${element}/${el} are code-generated aliases, not user input.
     `SELECT COALESCE(jsonb_agg(${element} ORDER BY ${el}.ordinality), '[]'::jsonb) ` +
     `FROM jsonb_array_elements(${valueExpr}) WITH ORDINALITY ${el}(value, ordinality)) ` +
     // credential-bearing URI scalars fail closed; unlike the TypeScript

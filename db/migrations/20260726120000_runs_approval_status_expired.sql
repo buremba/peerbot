@@ -1,4 +1,4 @@
--- migrate:up
+-- migrate:up transaction:false
 
 -- Add 'expired' to the runs.approval_status vocabulary.
 --
@@ -15,45 +15,146 @@
 -- run. A reviewer who never looked at a proposal did not reject it, and an agent
 -- must not train on silence as if it were disapproval.
 --
--- Swap the CHECK inside one transaction so there is never a window where
--- approval_status is unconstrained. NOT VALID + VALIDATE keeps the existing-row
--- scan off the ACCESS EXCLUSIVE lock (the widened predicate accepts every value
--- the old one did, so validation cannot fail).
+-- LOCK SAFETY. `runs` is one of the hottest tables in the system, so the swap is
+-- deliberately NOT one transaction. DROP CONSTRAINT and ADD CONSTRAINT both take
+-- ACCESS EXCLUSIVE, and Postgres holds that lock until COMMIT — so bundling the
+-- VALIDATE into the same transaction would run its full-table scan *under*
+-- ACCESS EXCLUSIVE and stall all `runs` traffic for the length of the scan.
+-- Instead (transaction:false runs each statement standalone; see
+-- packages/server/src/db/migration-loader.ts):
+--   1. ADD the widened CHECK under a TEMPORARY name as NOT VALID — a brief
+--      ACCESS EXCLUSIVE that takes no scan, then commits.
+--   2. VALIDATE it on its own — takes only SHARE UPDATE EXCLUSIVE, so concurrent
+--      reads and writes keep running while the scan proceeds.
+--   3. DROP the old constraint and rename the replacement into its place — both
+--      catalog-only, so each lock is momentary.
+--
+-- The earlier draft used a single transaction reasoning that the column must
+-- never be momentarily unconstrained. That instinct is right but the tradeoff
+-- was wrong, and the temp-name ordering satisfies it anyway: between steps 1 and
+-- 3 the column is guarded by BOTH the old constraint and the new one, never by
+-- neither. Two overlapping constraints for a few seconds is strictly safer than
+-- a production stall. The widened predicate accepts every value the old one did,
+-- so VALIDATE cannot fail on existing rows.
+-- Step 1 is wrapped in a guard because `ADD CONSTRAINT` has no `IF NOT EXISTS`.
+-- Under transaction:false each statement commits on its own, so a crash between
+-- steps leaves the temp constraint behind; a bare ADD would then fail on every
+-- retry with "already exists" and the migration could never record as applied.
+-- Same hazard the companion index migration heals for its INVALID carcass.
+DO $add_new$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_new'
+  ) THEN
+    EXECUTE $ddl$
+      ALTER TABLE public.runs
+        ADD CONSTRAINT runs_approval_status_check_new
+        CHECK (approval_status = ANY (ARRAY[
+          'pending'::text,
+          'approved'::text,
+          'rejected'::text,
+          'expired'::text,
+          'auto'::text
+        ]))
+        NOT VALID
+    $ddl$;
+  END IF;
+END
+$add_new$;
+
+-- Step 2: validate on its own so the scan runs under SHARE UPDATE EXCLUSIVE.
+-- Guarded so the statement is a no-op once the constraint is already validated
+-- (or already renamed away by a completed earlier attempt), which keeps the
+-- whole section convergent on retry from any crash point.
+DO $validate_new$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_new'
+      AND NOT convalidated
+  ) THEN
+    ALTER TABLE public.runs
+      VALIDATE CONSTRAINT runs_approval_status_check_new;
+  END IF;
+END
+$validate_new$;
+
 ALTER TABLE public.runs
   DROP CONSTRAINT IF EXISTS runs_approval_status_check;
 
-ALTER TABLE public.runs
-  ADD CONSTRAINT runs_approval_status_check
-  CHECK (approval_status = ANY (ARRAY[
-    'pending'::text,
-    'approved'::text,
-    'rejected'::text,
-    'expired'::text,
-    'auto'::text
-  ]))
-  NOT VALID;
+-- Guarded for the same retry reason: after a completed run the temp name is
+-- gone, so a bare RENAME would fail on re-execution.
+DO $rename_new$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_new'
+  ) THEN
+    ALTER TABLE public.runs
+      RENAME CONSTRAINT runs_approval_status_check_new TO runs_approval_status_check;
+  END IF;
+END
+$rename_new$;
 
-ALTER TABLE public.runs
-  VALIDATE CONSTRAINT runs_approval_status_check;
+-- migrate:down transaction:false
 
--- migrate:down
-
--- Fold any expired rows back into 'rejected' so the narrower constraint can be
--- re-applied without failing on live data.
+-- Fold any expired rows back into 'rejected' FIRST: the narrower constraint
+-- cannot validate while 'expired' rows exist.
 UPDATE public.runs SET approval_status = 'rejected' WHERE approval_status = 'expired';
 
+-- Same never-unconstrained, never-stalling, retry-safe ordering as the up path.
+DO $add_old$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_old'
+  ) THEN
+    EXECUTE $ddl$
+      ALTER TABLE public.runs
+        ADD CONSTRAINT runs_approval_status_check_old
+        CHECK (approval_status = ANY (ARRAY[
+          'pending'::text,
+          'approved'::text,
+          'rejected'::text,
+          'auto'::text
+        ]))
+        NOT VALID
+    $ddl$;
+  END IF;
+END
+$add_old$;
+
+DO $validate_old$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_old'
+      AND NOT convalidated
+  ) THEN
+    ALTER TABLE public.runs
+      VALIDATE CONSTRAINT runs_approval_status_check_old;
+  END IF;
+END
+$validate_old$;
+
 ALTER TABLE public.runs
   DROP CONSTRAINT IF EXISTS runs_approval_status_check;
 
-ALTER TABLE public.runs
-  ADD CONSTRAINT runs_approval_status_check
-  CHECK (approval_status = ANY (ARRAY[
-    'pending'::text,
-    'approved'::text,
-    'rejected'::text,
-    'auto'::text
-  ]))
-  NOT VALID;
-
-ALTER TABLE public.runs
-  VALIDATE CONSTRAINT runs_approval_status_check;
+DO $rename_old$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.runs'::regclass
+      AND conname = 'runs_approval_status_check_old'
+  ) THEN
+    ALTER TABLE public.runs
+      RENAME CONSTRAINT runs_approval_status_check_old TO runs_approval_status_check;
+  END IF;
+END
+$rename_old$;

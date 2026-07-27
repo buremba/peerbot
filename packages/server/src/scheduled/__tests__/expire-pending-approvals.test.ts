@@ -298,3 +298,140 @@ describe("expirePendingApprovals", () => {
 		expect((await runStateOf(id)).approval_status).toBe("expired");
 	});
 });
+
+/**
+ * Batch draining + cross-org fairness.
+ *
+ * The first cut selected rows globally oldest-first with a flat 500-row cap on a
+ * DAILY job. That starved everyone: a single tenant with more than 500 stale
+ * approvals consumed the whole budget on every tick, so its own backlog never
+ * drained and no other org's approvals were ever reached.
+ */
+describe("expirePendingApprovals — draining and cross-org fairness", () => {
+	/** Seed `count` stale pending approvals for an org in one statement. */
+	async function seedManyStale(
+		organizationId: string,
+		count: number,
+		ageDays: number,
+	): Promise<void> {
+		const sql = getDb();
+		await sql.unsafe(
+			`INSERT INTO runs (
+         organization_id, run_type, status, approval_status, action_key, created_at
+       )
+       SELECT $1, 'action', 'pending', 'pending', 'send_message',
+              now() - ($3::int * interval '1 day') - (g * interval '1 second')
+       FROM generate_series(1, $2::int) AS g`,
+			[organizationId, count, ageDays],
+		);
+	}
+
+	async function pendingCount(organizationId: string): Promise<number> {
+		const sql = getDb();
+		const rows = (await sql`
+      SELECT count(*)::int AS n FROM runs
+      WHERE organization_id = ${organizationId} AND approval_status = 'pending'
+    `) as unknown as Array<{ n: number }>;
+		return Number(rows[0]?.n ?? 0);
+	}
+
+	async function expiredCount(organizationId: string): Promise<number> {
+		const sql = getDb();
+		const rows = (await sql`
+      SELECT count(*)::int AS n FROM runs
+      WHERE organization_id = ${organizationId} AND approval_status = 'expired'
+    `) as unknown as Array<{ n: number }>;
+		return Number(rows[0]?.n ?? 0);
+	}
+
+	async function seedOrg(id: string): Promise<void> {
+		const sql = getDb();
+		await sql`
+      INSERT INTO organization (id, name, slug) VALUES (${id}, ${id}, ${id})
+      ON CONFLICT (id) DO NOTHING
+    `;
+	}
+
+	test("drains a backlog LARGER than one 500-row batch in a single invocation", async () => {
+		// 620 > the 500-row batch size. With the old flat cap this returned exactly
+		// 500 and left 120 waiting a full day for the next tick.
+		await seedManyStale(ORG_ID, 620, TTL_DAYS + 2);
+
+		const result = await expirePendingApprovals(TTL_DAYS);
+
+		expect(result.expired).toBe(620);
+		expect(await pendingCount(ORG_ID)).toBe(0);
+		expect(await expiredCount(ORG_ID)).toBe(620);
+	});
+
+	test("a huge single-tenant backlog does NOT starve other orgs", async () => {
+		// The starvation reproducer. ORG_ID's rows are all OLDER than the other
+		// orgs', so a purely oldest-first global selection would fill the entire
+		// first batch with ORG_ID and never reach the small orgs.
+		const hogOrg = ORG_ID;
+		const hogRows = 700;
+		await seedManyStale(hogOrg, hogRows, TTL_DAYS + 60);
+
+		const smallOrgs = ["fair-org-a", "fair-org-b", "fair-org-c"];
+		for (const org of smallOrgs) {
+			await seedOrg(org);
+			await seedManyStale(org, 5, TTL_DAYS + 1);
+		}
+
+		const result = await expirePendingApprovals(TTL_DAYS);
+
+		// Every org drains — the small ones are not left behind the big tenant.
+		for (const org of smallOrgs) {
+			expect(await expiredCount(org)).toBe(5);
+			expect(await pendingCount(org)).toBe(0);
+		}
+		expect(await expiredCount(hogOrg)).toBe(hogRows);
+		expect(result.expired).toBe(hogRows + smallOrgs.length * 5);
+	});
+
+	test("the per-org cap bounds how much one tenant takes from a single batch", async () => {
+		// Fairness is a per-BATCH property, not only an end-state one. Seed a hog
+		// with far more than one batch of much-older rows plus one small org, then
+		// run a sweep whose ceiling admits only a single batch (ttl unchanged, but
+		// the ceiling is what stops it). Under the old global oldest-first
+		// selection the hog's older rows would fill that batch entirely and the
+		// small org would get nothing.
+		const hogOrg = ORG_ID;
+		const hogRows = 800;
+		await seedManyStale(hogOrg, hogRows, TTL_DAYS + 60);
+		await seedOrg("fair-small");
+		await seedManyStale("fair-small", 3, TTL_DAYS + 1);
+
+		// Ceiling of one batch: only the FIRST batch runs, so this asserts on batch
+		// composition rather than on the end state after everything drains.
+		const result = await expirePendingApprovals(TTL_DAYS, 500);
+
+		// The small org is served within that first batch despite every one of its
+		// rows being NEWER than all 800 of the hog's — proof the selection is not
+		// globally oldest-first. The old code would have spent the whole batch on
+		// the hog and left these three untouched.
+		expect(await expiredCount("fair-small")).toBe(3);
+		expect(result.expired).toBe(500);
+		// The hog is capped well below the batch, leaving room for everyone else.
+		expect(await expiredCount(hogOrg)).toBeLessThan(500);
+	});
+
+	test("respects the per-invocation ceiling on a pathological backlog", async () => {
+		// A backlog larger than the ceiling must stop AT the ceiling rather than
+		// running unbounded, and the remainder must drain on the next tick so no
+		// permanent backlog forms. The ceiling is injected here so this exercises
+		// the real bound without seeding the 10k production value.
+		const ceiling = 120;
+		await seedManyStale(ORG_ID, ceiling + 30, TTL_DAYS + 2);
+
+		const result = await expirePendingApprovals(TTL_DAYS, ceiling);
+
+		expect(result.expired).toBe(ceiling);
+		expect(await pendingCount(ORG_ID)).toBe(30);
+
+		// The remainder drains on the following tick — no permanent backlog.
+		const second = await expirePendingApprovals(TTL_DAYS, ceiling);
+		expect(second.expired).toBe(30);
+		expect(await pendingCount(ORG_ID)).toBe(0);
+	});
+});

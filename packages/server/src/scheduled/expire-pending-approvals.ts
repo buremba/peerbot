@@ -24,6 +24,12 @@
  * `internal` (builder / entity-change / Behavior proposals). Nothing else can
  * hold `approval_status='pending'`.
  *
+ * Fairness + throughput: candidates are selected with a per-organization cap so
+ * one tenant with a huge backlog cannot consume the batch and starve every other
+ * org, and the sweep drains successive batches within a bounded per-invocation
+ * ceiling so a backlog larger than one batch clears in a single run instead of
+ * one batch per daily tick.
+ *
  * Multi-pod safety: the UPDATE re-asserts `approval_status = 'pending'`, so it
  * is the authoritative claim — a row a human approved between scan and write is
  * excluded by the predicate, and only one overlapping runner can commit an
@@ -40,8 +46,31 @@ import logger from "../utils/logger";
 /** Lanes that can hold `approval_status='pending'`. */
 const APPROVAL_RUN_TYPES = ["action", "internal"] as const;
 
-/** Cap on rows expired per tick so one sweep can't hold a long write burst. */
-const EXPIRY_BATCH_LIMIT = 500;
+/**
+ * Rows claimed per batch. Bounds each SELECT and the write burst that follows
+ * it; a backlog larger than this is drained by successive batches within the
+ * same invocation rather than being deferred to tomorrow's tick.
+ */
+const EXPIRY_BATCH_SIZE = 500;
+
+/**
+ * Ceiling on rows expired per invocation. The sweep drains batch after batch up
+ * to this many rows, so a >500-row backlog clears in one run instead of one
+ * batch per DAY, while a pathological backlog still cannot run unbounded.
+ */
+const EXPIRY_INVOCATION_LIMIT = 10_000;
+
+/**
+ * Rows taken from any ONE organization per batch.
+ *
+ * Without this the selection is globally oldest-first, so a single tenant with
+ * more stale approvals than the batch size consumes the entire budget on every
+ * tick: its own backlog never drains AND every other org's stale approvals are
+ * starved indefinitely — which defeats the point of the sweep. Taking a bounded
+ * slice per org per batch means every org with a backlog makes progress on every
+ * batch, and the round-robin across batches drains the big tenants too.
+ */
+const EXPIRY_PER_ORG_BATCH_SIZE = 50;
 
 interface ExpiredApprovalRow {
 	id: string | number;
@@ -61,70 +90,97 @@ interface ExpirePendingApprovalsResult {
 /**
  * One pass of the pending-approval expiry sweep. Idempotent: a row already
  * expired no longer matches `approval_status = 'pending'`.
+ *
+ * `invocationLimit` is injectable purely so tests can exercise the ceiling
+ * without seeding 10k rows; production always uses the default.
  */
 export async function expirePendingApprovals(
 	ttlDays: number = intervals.pendingApprovalTtlDays,
+	invocationLimit: number = EXPIRY_INVOCATION_LIMIT,
 ): Promise<ExpirePendingApprovalsResult> {
 	const sql = getDb();
 	const reason = `Approval expired: nobody decided within ${ttlDays} day${ttlDays === 1 ? "" : "s"}.`;
 
-	const candidates = (await sql`
-    SELECT id FROM runs
-    WHERE approval_status = 'pending'
-      AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
-      AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
-    ORDER BY created_at ASC
-    LIMIT ${EXPIRY_BATCH_LIMIT}
-  `) as unknown as PendingApprovalCandidate[];
-
 	let expiredCount = 0;
-	for (const candidate of candidates) {
-		try {
-			const didExpire = await sql.begin(async (tx) => {
-				// Re-assert the full candidate predicate while claiming the row. A human
-				// decision or another replica's committed expiry wins before this write.
-				const rows = (await tx`
-      UPDATE runs
-      SET approval_status = 'expired',
-          status = 'cancelled',
-          error_message = ${reason},
-          completed_at = NOW()
-      WHERE id = ${candidate.id}
-        AND approval_status = 'pending'
-        AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
-        AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
-      RETURNING id, organization_id, action_key
-        `) as unknown as ExpiredApprovalRow[];
-				const row = rows[0];
-				if (!row) return false;
+	// Drain successive batches so a backlog bigger than one batch clears in this
+	// invocation. Bounded by EXPIRY_INVOCATION_LIMIT; also stops as soon as a
+	// batch comes back empty or makes no progress (see below).
+	while (expiredCount < invocationLimit) {
+		const remaining = invocationLimit - expiredCount;
+		const batchSize = Math.min(EXPIRY_BATCH_SIZE, remaining);
 
-				// `events` stays append-only. interaction_status has no 'expired'
-				// member, so the card uses 'rejected' as its non-actionable UI state
-				// while run status and metadata retain the precise expiry reason.
-				const runId = Number(row.id);
-				const label = row.action_key ?? "approval";
-				await supersedeActionEvent(
-					runId,
-					row.organization_id,
-					"rejected",
-					`${label} — expired`,
-					reason,
-					{ reason, expired: true, expired_after_days: ttlDays },
-					null,
-					tx,
+		// Fair selection: rank each org's stale approvals oldest-first and take at
+		// most EXPIRY_PER_ORG_BATCH_SIZE from any one org, so a single large tenant
+		// cannot consume the batch and starve every other org. Within that, the
+		// batch is still ordered oldest-first so the longest-waiting rows go first.
+		const candidates = (await sql`
+      SELECT id FROM (
+        SELECT id, created_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY organization_id ORDER BY created_at ASC, id ASC
+               ) AS org_rank
+        FROM runs
+        WHERE approval_status = 'pending'
+          AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+          AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
+      ) ranked
+      WHERE org_rank <= ${EXPIRY_PER_ORG_BATCH_SIZE}
+      ORDER BY created_at ASC, id ASC
+      LIMIT ${batchSize}
+    `) as unknown as PendingApprovalCandidate[];
+
+		if (candidates.length === 0) break;
+
+		const expiredBeforeBatch = expiredCount;
+		for (const candidate of candidates) {
+			try {
+				const didExpire = await sql.begin(async (tx) => {
+					// Re-assert the full candidate predicate while claiming the row. A
+					// human decision or another replica's committed expiry wins before
+					// this write.
+					const rows = (await tx`
+            UPDATE runs
+            SET approval_status = 'expired',
+                status = 'cancelled',
+                error_message = ${reason},
+                completed_at = NOW()
+            WHERE id = ${candidate.id}
+              AND approval_status = 'pending'
+              AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
+              AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
+            RETURNING id, organization_id, action_key
+          `) as unknown as ExpiredApprovalRow[];
+					const row = rows[0];
+					if (!row) return false;
+
+					// `events` stays append-only. interaction_status has no 'expired'
+					// member, so the card uses 'rejected' as its non-actionable UI state
+					// while run status and metadata retain the precise expiry reason.
+					await supersedeActionEvent(
+						Number(row.id),
+						row.organization_id,
+						"rejected",
+						`${row.action_key ?? "approval"} — expired`,
+						reason,
+						{ reason, expired: true, expired_after_days: ttlDays },
+						null,
+						tx,
+					);
+					return true;
+				});
+				if (didExpire) expiredCount += 1;
+			} catch (error) {
+				logger.warn(
+					{ runId: Number(candidate.id), error: String(error) },
+					"[task] expire-pending-approvals: expiry rolled back after card supersede failure",
 				);
-				return true;
-			});
-			if (didExpire) expiredCount += 1;
-		} catch (error) {
-			logger.warn(
-				{
-					runId: Number(candidate.id),
-					error: String(error),
-				},
-				"[task] expire-pending-approvals: expiry rolled back after card supersede failure",
-			);
+			}
 		}
+
+		// No row in a non-empty batch advanced — every candidate was either decided
+		// under us or is failing its supersede. Stop rather than re-selecting the
+		// same rows forever; the next scheduled tick retries with fresh state.
+		if (expiredCount === expiredBeforeBatch) break;
 	}
 
 	return { expired: expiredCount };

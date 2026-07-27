@@ -175,6 +175,63 @@ export async function getChatConnectionRow(
 	return rows[0] ?? null;
 }
 
+/**
+ * Unwind the two placeholder layers on an incoming BYO chat config, in order,
+ * before anything treats it as credentials.
+ *
+ * 1. RESTORE. Callers round-trip config read back from the (redacted)
+ *    connection read paths, so a `__LOBU_REDACTED__` here means "unchanged" —
+ *    take the stored value rather than persisting the placeholder. Chat
+ *    connectors are the ones declaring `format: "password"` (Slack/Discord bot
+ *    tokens), so without this an apply built from a redacted read would both
+ *    fail `validateProviderIdentity` and overwrite a live bot token.
+ *
+ * 2. RESOLVE. What the restore hands back is whatever is STORED — and for a BYO
+ *    chat connection that is a `secret://` REFERENCE, not plaintext. None of
+ *    the downstream consumers (`parseConfig`, `connectionMatches`,
+ *    `validateProviderIdentity`) resolve references, so an unresolved ref makes
+ *    an UNCHANGED re-apply look changed and makes `validateProviderIdentity`
+ *    authenticate with the literal `secret://…` URI.
+ *
+ * This is the sentinel bug one indirection out: that fix stopped a PLACEHOLDER
+ * being treated as a live credential, and a stored `secret://` ref is the same
+ * kind of placeholder. Order matters — resolving before restoring does nothing
+ * for a sentinel, so the placeholder would reach the consumers.
+ *
+ * `stableId` IS the runtime id resolution needs (the slug is derived from it),
+ * so this needs nothing that isn't already in hand at the call site: no
+ * validation is reordered to make it possible.
+ *
+ * Exported as the testable seam for that ordering — `upsertByoChatConnection`
+ * itself takes a `pg_advisory_lock` through `sql.reserve()`, which the test
+ * harness's pooled client does not service.
+ */
+export async function unwrapIncomingChatConfig(params: {
+	organizationId: string;
+	stableId: string;
+	incoming: Record<string, unknown>;
+	/** The stored row's config, or undefined when creating. */
+	stored: Record<string, unknown> | undefined;
+	resolveRefs: (
+		runtimeId: string,
+		config: PlatformAdapterConfig,
+	) => Promise<PlatformAdapterConfig>;
+}): Promise<Record<string, unknown>> {
+	// Nothing stored yet: the caller supplied real values, and there is no row
+	// to restore from or reference to resolve.
+	if (!params.stored) return params.incoming;
+
+	const restored = restoreRedactedConfig(
+		params.incoming,
+		params.stored,
+	) as PlatformAdapterConfig;
+
+	return (await orgContext.run(
+		{ organizationId: params.organizationId },
+		() => params.resolveRefs(params.stableId, restored),
+	)) as unknown as Record<string, unknown>;
+}
+
 export async function upsertByoChatConnection(
 	input: UpsertChatConnectionInput,
 ): Promise<{
@@ -212,21 +269,15 @@ export async function upsertByoChatConnection(
 		const manager = requireManager();
 		const settings = { allowGroups: true, ...(input.settings ?? {}) };
 		const existing = existingRows[0];
-		// Callers round-trip config read back from the (redacted) connection read
-		// paths, so a `__LOBU_REDACTED__` here means "unchanged" — restore the
-		// stored value rather than persisting the placeholder. Chat connectors are
-		// the ones declaring `format: "password"` (Slack/Discord bot tokens), so
-		// without this an apply built from a redacted read would both fail
-		// validateProviderIdentity (authenticating with the literal sentinel) and
-		// overwrite a live bot token.
 		const config = parseConfig(
 			input.platform,
-			existing
-				? (restoreRedactedConfig(input.config, existing.config) as Record<
-						string,
-						unknown
-					>)
-				: input.config,
+			await unwrapIncomingChatConfig({
+				organizationId: input.organizationId,
+				stableId: input.stableId,
+				incoming: input.config,
+				stored: existing?.config,
+				resolveRefs: (id, cfg) => manager.resolveConnectionConfig(id, cfg),
+			}),
 		);
 		if (!existing) {
 			const providerMetadata = await validateProviderIdentity(config);

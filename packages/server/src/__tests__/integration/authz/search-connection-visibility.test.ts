@@ -49,7 +49,7 @@ describe('search_memory connection visibility', () => {
 
     const org = await createTestOrganization({ name: 'Search Conn Visibility Org' });
     orgId = org.id;
-    await seedSystemEntityTypes(orgId);
+    await seedSystemEntityTypes();
 
     const owner = await createTestUser();
     const admin = await createTestUser();

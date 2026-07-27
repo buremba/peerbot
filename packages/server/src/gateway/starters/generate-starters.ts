@@ -36,35 +36,50 @@ const logger = createLogger("generate-starters");
 const STARTERS_LEASE_MS = 15 * 60 * 1000;
 
 /**
- * Read-only tools the hidden starters turn may use.
+ * Built-in tools the hidden starters turn may use: NONE.
  *
  * `strictMode` filters ONLY the built-in tool set (createLobuTools: read /
- * write / edit / bash — see session-runner.ts). Plugin and MCP tools are
- * registered separately and are NOT filtered by this list, so naming a plugin
- * tool here does not grant it and omitting one does not revoke it.
+ * write / edit / bash / grep / find / ls — see session-runner.ts). Plugin and
+ * MCP tools are registered separately and are NOT filtered by this list, so
+ * naming a plugin tool here does not grant it and omitting one does not revoke
+ * it. The turn therefore keeps its org-data MCP tools and `suggest_actions`
+ * (both plugin-side) while every filesystem and shell primitive is dropped.
  *
- * That is exactly what we want: the turn keeps its workspace-inspection MCP
- * tools and `suggest_actions` (both plugin-side) while every filesystem and
- * shell primitive is dropped. Listing only plugin names here — as a first cut
- * did — silently yielded `tools=0`, which reads like a lockdown but is really
- * "no built-in matched any name".
+ * An empty list is deliberate. A first cut allowed `read` as "one safe
+ * primitive" — but a filesystem tool is an invitation, and the agent took it:
+ * it read its own scratch directory and proposed "Install dependencies →
+ * `bun install`" and "List the files in the current directory" as the user's
+ * first actions. Starters describe the user's LOBU ORG, and nothing about the
+ * org lives on the worker's disk, so the correct built-in count is zero.
  */
-export const STARTERS_ALLOWED_TOOLS = ["read"];
+export const STARTERS_ALLOWED_TOOLS: string[] = [];
 
 /**
  * The hidden instruction enqueued for a starters turn. The agent inspects the
- * workspace itself — no authored copy, no static examples baked in here.
+ * org itself — no authored copy, no static examples baked in here.
+ *
+ * Note the deliberate avoidance of the bare word "workspace": to this runtime
+ * that ALSO names the worker's scratch directory on disk. An earlier draft said
+ * "inspect this workspace", and (with `read` still allowed) the agent read its
+ * own scratch dir and proposed "Install dependencies → `bun install`" as a
+ * first action. The tools are gone now, but the wording stays explicit.
  */
 const STARTER_PROMPT = [
 	"This is a hidden setup turn — no user is watching and your reply text is",
-	"discarded (only the suggested actions you post are kept). Inspect this",
-	"workspace using your own tools (query the connections, entities, and recent",
-	"data available to you). Then call `suggest_actions` EXACTLY ONCE with 3-4",
-	"excellent first things this user could ask you, tailored to what actually",
-	"exists here. If the workspace is empty (no connections, entities, or data),",
-	"suggest concrete onboarding steps (connect a data source, import entities,",
-	"etc.). Do not ask the user anything, do not call `suggest_actions` more than",
-	"once, and finish immediately after that single call.",
+	"discarded (only the suggested actions you post are kept). Using your Lobu",
+	"data tools, inspect THIS ORGANIZATION's data — its connections, entities,",
+	"and recent activity. Then call `suggest_actions` EXACTLY ONCE with 3-4",
+	"excellent first things this user could ask YOU specifically, tailored to",
+	"your own role and to what actually exists in their org. If the org is empty",
+	"(no connections, entities, or data), suggest concrete onboarding steps",
+	"(connect a data source, import entities, etc.).",
+	"Every suggestion must be something the user would plausibly type to you in",
+	"chat about their org, their data, or their team. NEVER suggest anything",
+	"about this machine, its filesystem, source code, shell commands, or",
+	"development setup — you have no filesystem here and the user is not a",
+	"developer working on Lobu itself.",
+	"Do not ask the user anything, do not call `suggest_actions` more than once,",
+	"and finish immediately after that single call.",
 ].join(" ");
 
 /**

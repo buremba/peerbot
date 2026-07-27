@@ -86,25 +86,22 @@ describe("starter chips (per agent+org cache)", () => {
 		]);
 	});
 
-	it("the allowlist names BUILT-IN tools, never plugin tools", () => {
+	it("grants NO built-in tools — starters describe the org, not the disk", () => {
 		// strictMode filters only the built-in set (createLobuTools: read, write,
 		// edit, bash, grep, find, ls). Plugin/MCP tools — including the
-		// `suggest_actions` this turn exists to call — are registered separately
-		// and are NOT filtered by this list.
+		// `suggest_actions` this turn exists to call and the Lobu org-data tools
+		// it inspects with — are registered separately and are NOT filtered by
+		// this list, so emptying it costs the turn nothing it needs.
 		//
-		// A first cut listed only plugin names here (search_sdk, query_sdk,
-		// query_sql, search_memory, suggest_actions). Nothing matched a built-in,
-		// so the turn ran with `tools=0`: no read, no shell, nothing. It looked
-		// like a deliberate lockdown and was really an empty intersection.
-		const BUILTINS = ["read", "write", "edit", "bash", "grep", "find", "ls"];
-		expect(STARTERS_ALLOWED_TOOLS.length).toBeGreaterThan(0);
-		for (const name of STARTERS_ALLOWED_TOOLS) {
-			expect(BUILTINS).toContain(name);
-		}
-		// Structurally read-only: no shell, no filesystem mutation.
-		for (const forbidden of ["bash", "write", "edit"]) {
-			expect(STARTERS_ALLOWED_TOOLS).not.toContain(forbidden);
-		}
+		// Two earlier cuts got this wrong in opposite directions. The first listed
+		// only PLUGIN names (search_sdk, query_sdk, …): nothing matched a built-in,
+		// so `tools=0` happened by accident and read like a deliberate lockdown.
+		// The second allowed `read` as "one safe primitive" — and the agent used
+		// it to read the worker's scratch directory, then proposed "Install
+		// dependencies → `bun install`" and "List the files in the current
+		// directory" as the user's first actions. Nothing about the user's org
+		// lives on that disk, so the correct count is zero.
+		expect(STARTERS_ALLOWED_TOOLS).toEqual([]);
 	});
 
 	it("a never-generated agent has no cache and must generate", async () => {

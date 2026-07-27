@@ -264,6 +264,122 @@ describe('device connector manifests', () => {
     expect(await readUpdatedAt()).toEqual(afterResync);
   });
 
+  it('archives a definition whose key the fleet no longer advertises', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    // Register the connector, then poll again WITHOUT it — the shape left
+    // behind when a per-capability connector is folded into a broader one
+    // (prod `chrome.tabs` / `browser.*` after the `chrome` v0.2 consolidation).
+    // Reconcile used to only pause feeds, so the definition stayed `active`
+    // forever and kept rendering on the connectors list as "Needs setup".
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    expect(await readDefinition(orgId)).not.toBeNull();
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const rows = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(rows.map((r) => r.status)).toEqual(['archived']);
+
+    // Idempotent: this pass runs on EVERY poll, so a re-archive that kept
+    // stamping updated_at would churn the row forever.
+    const stamp = async () => {
+      const r = (await sql`
+        SELECT updated_at FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY} LIMIT 1
+      `) as unknown as Array<{ updated_at: string }>;
+      return r[0]?.updated_at;
+    };
+    const afterFirst = await stamp();
+    expect((await poll(workerId, [])).status).toBe(200);
+    expect(await stamp()).toEqual(afterFirst);
+  });
+
+  it('leaves a second device’s connectors alone when one device drops its manifests', async () => {
+    const { userId, orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    // A second device on the SAME user, serving a different connector. Manifests
+    // are stored per device and read back across the whole fleet, so a poll from
+    // device A must never archive what device B still serves — the failure mode
+    // that would quietly wipe a user's Mac connectors every time Chrome polled.
+    const otherWorkerId = `wk-${generateSecureToken(6)}`;
+    const otherKey = 'apple.test_other_device';
+    await sql`
+      INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
+      VALUES (${userId}, ${otherWorkerId}, 'macos', '0.1.0', ${sql.json([])}, 'Other Device', ${orgId})
+    `;
+    expect((await poll(otherWorkerId, [manifest({ key: otherKey })])).status).toBe(200);
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+
+    // Device A drops its manifests; device B has not polled again.
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const statusOf = async (key: string) => {
+      const rows = (await sql`
+        SELECT status FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${key}
+      `) as unknown as Array<{ status: string }>;
+      return rows.map((r) => r.status);
+    };
+    expect(await statusOf(CONNECTOR_KEY)).toEqual(['archived']);
+    expect(await statusOf(otherKey)).toEqual(['active']);
+  });
+
+  it('keeps a definition active when a connection has unknown provenance', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    // `connections.created_by` is nullable. A bare `NOT (created_by = $1 AND …)`
+    // is NULL for a NULL creator, which SQL reads as "no blocking row" — so the
+    // archive would fire on a connection we cannot attribute to ourselves.
+    // Unknown provenance must protect the definition, not permit its removal.
+    await sql`
+      UPDATE connections SET created_by = NULL
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+    `;
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const rows = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(rows.map((r) => r.status)).toEqual(['active']);
+  });
+
+  it('keeps a definition active when a user-configured connection references it', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    // Someone OTHER than the polling device owner configured this connector, so
+    // it is not reconcile's own auto-wired row. A poll that no longer sees the
+    // manifest must leave it — retiring machinery we created is fine, deleting
+    // a connector another human set up is not.
+    const otherUserId = `user_${generateSecureToken(4)}`;
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${otherUserId}, 'Other Owner', ${`${otherUserId}@test.local`}, true, NOW(), NOW())
+    `;
+    await sql`
+      UPDATE connections SET created_by = ${otherUserId}
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+    `;
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const rows = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(rows.map((r) => r.status)).toEqual(['active']);
+  });
+
   it('drops a manifest whose key does not belong to the polling platform', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 

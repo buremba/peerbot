@@ -389,6 +389,106 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
 }
 
 /**
+ * Archive device-connector definitions in the user's personal org whose key no
+ * longer appears in ANY source the fleet can serve — the catalog or a device
+ * manifest. {@link pauseStaleDeviceFeeds} only handles keys we still know about
+ * (capability temporarily absent); a key that vanished entirely is never
+ * visited by the reconcile loop at all, so its definition stayed `active`
+ * forever and kept rendering on the connectors list as a permanently
+ * "Needs setup" connector. That is exactly what the `chrome` v0.2 consolidation
+ * left behind in prod: `browser.evaluate` / `browser.fill_form` /
+ * `browser.page_text` / `chrome.tabs` became actions + feeds on `chrome`, and
+ * their standalone definitions outlived the manifests that created them.
+ *
+ * Scoped deliberately narrowly:
+ * - `required_capability IS NOT NULL` — only device connectors. An org-installed
+ *   API connector (github, slack) has no capability and must never be touched.
+ * - every surviving connection must be one WE auto-wired — the same signature
+ *   {@link pauseStaleDeviceFeeds} uses to recognise its own rows (`created_by`
+ *   = the polling user, `auth_profile_id IS NULL`, personal org). Those carry no
+ *   credentials and no user intent; reconcile created them and reconcile
+ *   retires them. A connection the user built by hand, or one bound to an auth
+ *   profile, makes the whole definition off-limits — deleting a connector
+ *   someone deliberately configured is not ours to do from a poll handler.
+ * - `status = 'active'` — archiving is idempotent across polls.
+ *
+ * The auto-wired connections are soft-deleted in the same statement, since a
+ * live connection pointing at an archived definition is the orphaned-connector
+ * state that `queue-service` has to defend against (a run nothing can claim).
+ * `events` those connections already produced are untouched — that table is
+ * append-only, and the rows stay reachable through the soft-deleted connection.
+ *
+ * Reversible by construction: the unique index on (organization_id, key) is
+ * partial on `status = 'active'`, so if a device advertises the key again
+ * `upsertConnectorDefinitionRecords` inserts a fresh active row and
+ * `ensureDeviceConnectorWired` re-wires a connection. Best-effort.
+ */
+async function archiveVanishedDeviceConnectors(
+  userId: string,
+  organizationId: string,
+  liveKeys: string[]
+): Promise<void> {
+  const sql = getDb();
+  try {
+    const archived = await sql.begin(async (tx) => {
+      const rows = (await tx`
+        UPDATE connector_definitions cd
+        SET status = 'archived', updated_at = NOW()
+        WHERE cd.organization_id = ${organizationId}
+          AND cd.status = 'active'
+          AND cd.required_capability IS NOT NULL
+          AND NOT (cd.key = ANY(${pgTextArray(liveKeys)}::text[]))
+          AND NOT EXISTS (
+            SELECT 1 FROM connections c
+            WHERE c.organization_id = cd.organization_id
+              AND c.connector_key = cd.key
+              AND c.deleted_at IS NULL
+              -- Fails CLOSED on unknown provenance: created_by is nullable, so a
+              -- bare NOT (c.created_by = $1 AND ...) evaluates to NULL for a
+              -- NULL creator, which the subquery reads as "no blocking row" --
+              -- i.e. an orphaned connection would silently permit the archive.
+              -- COALESCE to '' makes it a definite TRUE so anything we cannot
+              -- positively identify as our own auto-wired row protects the
+              -- definition instead.
+              AND NOT (COALESCE(c.created_by, '') = ${userId} AND c.auth_profile_id IS NULL)
+          )
+        RETURNING cd.key
+      `) as unknown as Array<{ key: string }>;
+
+      if (rows.length > 0) {
+        const keys = rows.map((r) => r.key);
+        // Deliberately NOT the COALESCE form used in the guard above: there we
+        // needed unknown provenance to COUNT (protect the definition), here we
+        // need it to be EXCLUDED (never delete a row we can't attribute to
+        // ourselves). Both directions are "fail closed" — do not unify them.
+        await tx`
+          UPDATE connections
+          SET deleted_at = NOW(), updated_at = NOW()
+          WHERE organization_id = ${organizationId}
+            AND connector_key = ANY(${pgTextArray(keys)}::text[])
+            AND created_by = ${userId}
+            AND auth_profile_id IS NULL
+            AND deleted_at IS NULL
+        `;
+      }
+      return rows;
+    });
+
+    if (archived.length > 0) {
+      logger.info(
+        { userId, organizationId, keys: archived.map((r) => r.key) },
+        '[device-connectors] Archived definitions no longer served by any device manifest'
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { userId, organizationId, err: errorMessage(err) },
+      '[device-connectors] Failed to archive vanished device connector definitions'
+    );
+  }
+}
+
+/**
  * Reconcile a user's device connectors against what their device fleet can
  * actually serve. The set of device connectors comes from the catalog (any
  * bundled connector with a `runtime` block + a `requiredCapability`); the set of
@@ -404,6 +504,13 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   const sql = getDb();
 
   let bundledDeviceConnectors: BundledDeviceConnector[];
+  // Both connector sources are fail-soft (empty on error), which makes "no
+  // sources" ambiguous: nothing is served, or we failed to look. Only the
+  // latter must suppress the archive pass below — an empty-but-successful read
+  // is a legitimate "this fleet serves nothing", and is in fact the normal
+  // state for a Chrome-only user (no bundled device connectors exist server
+  // side; every one of them arrives as a device manifest).
+  let sourcesReadable = true;
   try {
     bundledDeviceConnectors = await getBundledDeviceConnectors();
   } catch (err) {
@@ -412,6 +519,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       '[device-connectors] Failed to read device connector catalog'
     );
     bundledDeviceConnectors = [];
+    sourcesReadable = false;
   }
 
   // Device data ALWAYS lands in the user's personal org — device tokens are
@@ -471,6 +579,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       { userId, err: errorMessage(err) },
       '[device-connectors] Failed to read device connector manifests'
     );
+    sourcesReadable = false;
   }
 
   const byKey = new Map<
@@ -480,6 +589,16 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   >();
   for (const dc of bundledDeviceConnectors) byKey.set(dc.key, dc);
   for (const src of manifestSources) byKey.set(src.key, { ...src, source: 'device-manifest' });
+
+  // Runs BEFORE the early return: a fleet that advertises nothing is precisely
+  // the case where every device definition in the org has gone stale, so
+  // bailing on an empty `byKey` would skip the one pass that can clean it up.
+  // Gated on `sourcesReadable` rather than on `byKey.size` — a transient read
+  // failure must never be read as "the fleet serves nothing" and archive a
+  // user's whole working set.
+  if (sourcesReadable) {
+    await archiveVanishedDeviceConnectors(userId, personalOrgId, [...byKey.keys()]);
+  }
   if (byKey.size === 0) return;
 
   await Promise.allSettled(

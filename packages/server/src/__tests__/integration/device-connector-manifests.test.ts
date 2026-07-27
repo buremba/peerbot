@@ -264,6 +264,171 @@ describe('device connector manifests', () => {
     expect(await readUpdatedAt()).toEqual(afterResync);
   });
 
+  it('archives an unreferenced manifest definition the fleet no longer advertises', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    // Reconcile used to skip keys that vanished from the source inventory, so
+    // their definitions stayed active indefinitely.
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    expect(await readDefinition(orgId)).not.toBeNull();
+    await sql`
+      UPDATE connections SET deleted_at = NOW()
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+    `;
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const rows = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(rows.map((r) => r.status)).toEqual(['archived']);
+    const liveConnections = await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+        AND deleted_at IS NULL
+    `;
+    expect(liveConnections).toHaveLength(0);
+
+    // Idempotent: this pass runs on every poll, so a re-archive that kept
+    // stamping updated_at would churn the row forever.
+    const stamp = async () => {
+      const r = (await sql`
+        SELECT updated_at FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY} LIMIT 1
+      `) as unknown as Array<{ updated_at: string }>;
+      return r[0]?.updated_at;
+    };
+    const afterFirst = await stamp();
+    expect((await poll(workerId, [])).status).toBe(200);
+    expect(await stamp()).toEqual(afterFirst);
+
+    // Advertising the key again creates one new active definition and live
+    // connection while retaining the archived rows.
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    const restoredDefinitions = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+      ORDER BY id
+    `) as unknown as Array<{ status: string }>;
+    expect(restoredDefinitions.map((r) => r.status)).toEqual(['archived', 'active']);
+    const restoredConnections = await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+        AND deleted_at IS NULL
+    `;
+    expect(restoredConnections).toHaveLength(1);
+  });
+
+  it('leaves a second device’s connectors alone when one device drops its manifests', async () => {
+    const { userId, orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    // Manifests are stored per device and read across the whole fleet, so a poll
+    // from device A must not archive what device B still serves.
+    const otherWorkerId = `wk-${generateSecureToken(6)}`;
+    const otherKey = 'apple.test_other_device';
+    await sql`
+      INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
+      VALUES (${userId}, ${otherWorkerId}, 'macos', '0.1.0', ${sql.json([])}, 'Other Device', ${orgId})
+    `;
+    expect((await poll(otherWorkerId, [manifest({ key: otherKey })])).status).toBe(200);
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    await sql`
+      UPDATE connections SET deleted_at = NOW()
+      WHERE organization_id = ${orgId}
+        AND connector_key IN (${CONNECTOR_KEY}, ${otherKey})
+    `;
+
+    // Device A drops its manifests; device B has not polled again.
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const statusOf = async (key: string) => {
+      const rows = (await sql`
+        SELECT status FROM connector_definitions
+        WHERE organization_id = ${orgId} AND key = ${key}
+      `) as unknown as Array<{ status: string }>;
+      return rows.map((r) => r.status);
+    };
+    expect(await statusOf(CONNECTOR_KEY)).toEqual(['archived']);
+    expect(await statusOf(otherKey)).toEqual(['active']);
+  });
+
+  it('keeps a definition active while the owner has a default-shaped connection', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const definitions = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(definitions.map((r) => r.status)).toEqual(['active']);
+    const liveConnections = await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+        AND deleted_at IS NULL
+    `;
+    expect(liveConnections).toHaveLength(1);
+  });
+
+  it('does not archive a device-gated definition installed from a non-manifest source', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    await sql`
+      UPDATE connector_versions
+      SET source_path = 'custom/device-connector.ts'
+      WHERE connector_key = ${CONNECTOR_KEY}
+        AND (organization_id = ${orgId} OR organization_id IS NULL)
+    `;
+    await sql`
+      UPDATE connections SET deleted_at = NOW()
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+    `;
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const definitions = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(definitions.map((r) => r.status)).toEqual(['active']);
+  });
+
+  it('archives an unreferenced definition left by a formerly bundled device connector', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    await sql`
+      UPDATE connector_versions
+      SET organization_id = NULL,
+          source_path = 'browser/evaluate.ts'
+      WHERE organization_id = ${orgId}
+        AND connector_key = ${CONNECTOR_KEY}
+    `;
+    await sql`
+      UPDATE connections SET deleted_at = NOW()
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+    `;
+
+    expect((await poll(workerId, [])).status).toBe(200);
+
+    const definitions = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(definitions.map((r) => r.status)).toEqual(['archived']);
+  });
+
   it('drops a manifest whose key does not belong to the polling platform', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 
@@ -307,6 +472,38 @@ describe('device connector manifests', () => {
       LIMIT 1
     `) as unknown as Array<{ connector_manifests: Record<string, unknown> }>;
     expect(rows[0]?.connector_manifests).toEqual({});
+  });
+
+  it('preserves the last valid inventory when a later manifest payload is rejected', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    const invalidManifest = manifest({
+      feeds_schema: {
+        snapshots: {
+          eventKinds: {
+            snapshot: {
+              entityLinks: [],
+            },
+          },
+        },
+      },
+    });
+
+    expect((await poll(workerId, [invalidManifest])).status).toBe(200);
+
+    const definitions = (await sql`
+      SELECT status FROM connector_definitions
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR_KEY}
+    `) as unknown as Array<{ status: string }>;
+    expect(definitions.map((r) => r.status)).toEqual(['active']);
+    const devices = (await sql`
+      SELECT connector_manifests
+      FROM device_workers
+      WHERE worker_id = ${workerId}
+    `) as unknown as Array<{ connector_manifests: Record<string, unknown> }>;
+    expect(Object.keys(devices[0]?.connector_manifests ?? {})).toEqual([CONNECTOR_KEY]);
   });
 
   it('keeps manifest inventory separate from live permission state so revoked capabilities pause feeds', async () => {

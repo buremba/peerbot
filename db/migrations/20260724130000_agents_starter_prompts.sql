@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS public.agent_starters (
 
 -- migrate:down
 
+-- squawk-ignore ban-drop-table
 DROP TABLE IF EXISTS public.agent_starters;
 
 ALTER TABLE public.agents

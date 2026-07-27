@@ -55,7 +55,7 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
-  source?: { metadata: ConnectorMetadata; sourcePath: string }
+  source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
 ): Promise<void> {
   const sql = getDb();
 
@@ -233,6 +233,20 @@ async function ensureDeviceConnectorWired(
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
       await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+      if (source) {
+        // A newer poll may have removed this manifest while this reconcile was
+        // waiting for the lock. Re-check the stored fleet inventory so an older
+        // poll cannot resurrect a connector the newer poll just retired.
+        const stillAdvertised = await tx`
+          SELECT 1
+          FROM device_workers
+          WHERE user_id = ${userId}
+            AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+            AND (connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${source.manifestHash}
+          LIMIT 1
+        `;
+        if (stillAdvertised.length === 0) return;
+      }
 
       // 2. Ensure the connector definition + version are installed (idempotent).
       await upsertConnectorDefinitionRecords({
@@ -389,39 +403,12 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
 }
 
 /**
- * Archive device-connector definitions in the user's personal org whose key no
- * longer appears in ANY source the fleet can serve — the catalog or a device
- * manifest. {@link pauseStaleDeviceFeeds} only handles keys we still know about
- * (capability temporarily absent); a key that vanished entirely is never
- * visited by the reconcile loop at all, so its definition stayed `active`
- * forever and kept rendering on the connectors list as a permanently
- * "Needs setup" connector. That is exactly what the `chrome` v0.2 consolidation
- * left behind in prod: `browser.evaluate` / `browser.fill_form` /
- * `browser.page_text` / `chrome.tabs` became actions + feeds on `chrome`, and
- * their standalone definitions outlived the manifests that created them.
- *
- * Scoped deliberately narrowly:
- * - `required_capability IS NOT NULL` — only device connectors. An org-installed
- *   API connector (github, slack) has no capability and must never be touched.
- * - every surviving connection must be one WE auto-wired — the same signature
- *   {@link pauseStaleDeviceFeeds} uses to recognise its own rows (`created_by`
- *   = the polling user, `auth_profile_id IS NULL`, personal org). Those carry no
- *   credentials and no user intent; reconcile created them and reconcile
- *   retires them. A connection the user built by hand, or one bound to an auth
- *   profile, makes the whole definition off-limits — deleting a connector
- *   someone deliberately configured is not ours to do from a poll handler.
- * - `status = 'active'` — archiving is idempotent across polls.
- *
- * The auto-wired connections are soft-deleted in the same statement, since a
- * live connection pointing at an archived definition is the orphaned-connector
- * state that `queue-service` has to defend against (a run nothing can claim).
- * `events` those connections already produced are untouched — that table is
- * append-only, and the rows stay reachable through the soft-deleted connection.
- *
- * Reversible by construction: the unique index on (organization_id, key) is
- * partial on `status = 'active'`, so if a device advertises the key again
- * `upsertConnectorDefinitionRecords` inserts a fresh active row and
- * `ensureDeviceConnectorWired` re-wires a connection. Best-effort.
+ * Archive org-scoped device definitions absent from both the bundled catalog
+ * and every fresh device manifest. Only the exact auto-wire connection shape
+ * may be retired; user-modified or unknown-provenance rows protect the
+ * definition. The wire and archive paths share a per-key lock and re-check the
+ * stored manifest inventory so concurrent polls cannot leave contradictory
+ * definition and connection state. Best-effort.
  */
 async function archiveVanishedDeviceConnectors(
   userId: string,
@@ -431,6 +418,19 @@ async function archiveVanishedDeviceConnectors(
   const sql = getDb();
   try {
     const archived = await sql.begin(async (tx) => {
+      const candidates = (await tx`
+        SELECT key
+        FROM connector_definitions
+        WHERE organization_id = ${organizationId}
+          AND status = 'active'
+          AND required_capability IS NOT NULL
+          AND NOT (key = ANY(${pgTextArray(liveKeys)}::text[]))
+        ORDER BY key
+      `) as unknown as Array<{ key: string }>;
+      for (const { key } of candidates) {
+        await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${key}`}))`;
+      }
+
       const rows = (await tx`
         UPDATE connector_definitions cd
         SET status = 'archived', updated_at = NOW()
@@ -439,28 +439,35 @@ async function archiveVanishedDeviceConnectors(
           AND cd.required_capability IS NOT NULL
           AND NOT (cd.key = ANY(${pgTextArray(liveKeys)}::text[]))
           AND NOT EXISTS (
+            SELECT 1
+            FROM device_workers dw
+            WHERE dw.user_id = ${userId}
+              AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+              AND dw.connector_manifests -> cd.key IS NOT NULL
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM connections c
             WHERE c.organization_id = cd.organization_id
               AND c.connector_key = cd.key
               AND c.deleted_at IS NULL
-              -- Fails CLOSED on unknown provenance: created_by is nullable, so a
-              -- bare NOT (c.created_by = $1 AND ...) evaluates to NULL for a
-              -- NULL creator, which the subquery reads as "no blocking row" --
-              -- i.e. an orphaned connection would silently permit the archive.
-              -- COALESCE to '' makes it a definite TRUE so anything we cannot
-              -- positively identify as our own auto-wired row protects the
-              -- definition instead.
-              AND NOT (COALESCE(c.created_by, '') = ${userId} AND c.auth_profile_id IS NULL)
+              -- Keep unknown provenance as a blocking row: created_by is nullable.
+              AND NOT (
+                COALESCE(c.created_by, '') = ${userId}
+                AND c.auth_profile_id IS NULL
+                AND c.app_auth_profile_id IS NULL
+                AND c.account_id IS NULL
+                AND c.credentials IS NULL
+                AND c.config IS NULL
+                AND c.agent_id IS NULL
+                AND COALESCE(cardinality(c.entity_ids), 0) = 0
+                AND c.visibility = 'private'
+              )
           )
         RETURNING cd.key
       `) as unknown as Array<{ key: string }>;
 
       if (rows.length > 0) {
         const keys = rows.map((r) => r.key);
-        // Deliberately NOT the COALESCE form used in the guard above: there we
-        // needed unknown provenance to COUNT (protect the definition), here we
-        // need it to be EXCLUDED (never delete a row we can't attribute to
-        // ourselves). Both directions are "fail closed" — do not unify them.
         await tx`
           UPDATE connections
           SET deleted_at = NOW(), updated_at = NOW()
@@ -468,6 +475,13 @@ async function archiveVanishedDeviceConnectors(
             AND connector_key = ANY(${pgTextArray(keys)}::text[])
             AND created_by = ${userId}
             AND auth_profile_id IS NULL
+            AND app_auth_profile_id IS NULL
+            AND account_id IS NULL
+            AND credentials IS NULL
+            AND config IS NULL
+            AND agent_id IS NULL
+            AND COALESCE(cardinality(entity_ids), 0) = 0
+            AND visibility = 'private'
             AND deleted_at IS NULL
         `;
       }
@@ -612,7 +626,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             dc.feedKeys,
             matchingDeviceIds,
             'source' in dc && dc.source === 'device-manifest'
-              ? { metadata: dc.metadata, sourcePath: dc.sourcePath }
+              ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
               : undefined
           )
         : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);

@@ -1,6 +1,6 @@
 # Security
 
-This page covers the self-hosted deployment (`lobu run` or the [Docker image](DOCKER.md)): a single Node process — gateway, embedded workers, embeddings, and the Lobu memory backend in-process; Postgres is the only user-provided external. Lobu does not orchestrate per-worker containers — workers are subprocesses of that one process. (Lobu Cloud runs the same image with multiple replicas on Kubernetes; the multi-replica correctness rules live in `packages/server/AGENTS.md` and are out of scope here.) This page documents what's isolated, what's policy, and what isn't a security boundary at all.
+This page covers the self-hosted deployment (`lobu run` or the [Docker image](DOCKER.md)): the gateway, embeddings, and Lobu memory backend share one Node process, while embedded workers run as child processes; Postgres is the only user-provided external. Lobu does not orchestrate per-worker containers. (Lobu Cloud runs the same image with multiple replicas on Kubernetes; the multi-replica correctness rules live in `packages/server/AGENTS.md` and are out of scope here.) This page documents what's isolated, what's policy, and what isn't a security boundary at all.
 
 ## Threat model
 
@@ -34,25 +34,21 @@ This is a **policy layer**, not a security boundary. If you allow `nodejs`, `pyt
 
 ## Network egress
 
-Workers run with `HTTP_PROXY=http://localhost:8118`. The gateway's in-process proxy enforces:
+Workers run with `HTTP_PROXY` pointing at the gateway's authenticated in-process proxy. The gateway binds the proxy to `127.0.0.1` and injects a URL that uses the port from `WORKER_PROXY_PORT` (default `8118`) into each worker. Derive firewall and monitoring rules from `WORKER_PROXY_PORT` rather than the literal 8118. The proxy enforces:
 - **Allowlist mode** — only configured domains reachable.
 - **Blocklist mode** — allow all except denied domains.
 - **LLM egress judge** — risky domains get LLM verdict per request, with a 5 min cache and a circuit breaker.
 
-In embedded mode, `HTTP_PROXY` is **advisory** at the language layer — a worker process that explicitly bypasses the env var can `connect()` directly. On Linux production hosts, the worker spawn path uses `systemd-run --user --scope` with `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` so the kernel drops anything that isn't going to the local proxy. On macOS dev hosts there is no kernel-level enforcement.
+In embedded mode, `HTTP_PROXY` is **advisory** at the language layer — a worker process that explicitly bypasses the env var can `connect()` directly. On Linux hosts with an enabled, usable systemd user manager, the worker spawn path uses `systemd-run --user --scope` with `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` + `IPAddressAllow=::1`, so the kernel drops non-loopback IP traffic. That boundary is host-based and port-independent: it confines the worker's IP traffic to loopback but does not stop it reaching another loopback listener, so do not treat a custom `WORKER_PROXY_PORT` as an isolation control. Without that systemd scope the worker runs without this kernel rule unless `LOBU_REQUIRE_WORKER_SANDBOX=1` makes the spawn fail closed; macOS has no kernel-level enforcement.
 
 ## Worker process hardening (Linux)
 
-When `systemd-run` is available on the host, `EmbeddedDeploymentManager` wraps each worker spawn in a transient unit with:
+When the systemd wrapper is enabled and `systemd-run` can reach a usable user manager, `EmbeddedDeploymentManager` wraps each worker spawn in a transient scope with:
 
-- `NoNewPrivileges=yes`
-- `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=<workspace>`
-- `MemoryMax=512M`, `CPUQuota=200%`, `TasksMax=64`, `LimitNOFILE=1024`
-- `IPAddressDeny=any`, `IPAddressAllow=127.0.0.1`
-- `CapabilityBoundingSet=` (drop all)
-- `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (no `AF_PACKET` / raw sockets)
+- `MemoryMax=512M`, `CPUQuota=200%`, `TasksMax=64` by default; `LOBU_WORKER_MEMORY_MAX`, `LOBU_WORKER_CPU_QUOTA`, and `LOBU_WORKER_TASKS_MAX` override them
+- `IPAddressDeny=any`, `IPAddressAllow=127.0.0.1`, `IPAddressAllow=::1`
 
-This closes most of the gap between "subprocess on the same host" and what Docker namespaces gave us. Recommended for any production deployment on Linux.
+A `--scope` can apply those cgroup and network properties, but it cannot apply exec-context controls such as `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`, `ReadWritePaths`, `LimitNOFILE`, `CapabilityBoundingSet`, or `RestrictAddressFamilies`. Without the scope, workers run as ordinary subprocesses unless `LOBU_REQUIRE_WORKER_SANDBOX=1` is set to fail closed.
 
 ## Credentials
 
@@ -94,4 +90,4 @@ Skills are executable, security-sensitive input:
 
 ## What changed from earlier docs
 
-Previous versions of this page described Kubernetes pod isolation, NetworkPolicies, gVisor, Kata, and per-pod PVCs. None of that is shipped any more — Lobu deploys as a single Node process. The kernel-level protections that mattered most (egress block, cgroup limits, capability drops) are now on the systemd-run worker spawn path on Linux. The rest were paying isolation costs for a multi-tenant deployment Lobu doesn't ship.
+Previous versions of this page described Kubernetes pod isolation, NetworkPolicies, gVisor, Kata, and per-pod PVCs. None of that is shipped any more — the gateway now spawns local worker subprocesses instead of orchestrating per-worker containers. On Linux hosts with an enabled, usable systemd user manager, the worker spawn path applies loopback-only IP rules and cgroup limits through `systemd-run --scope`; it does not apply capability drops or other exec-context hardening. The rest were paying isolation costs for a multi-tenant deployment Lobu doesn't ship.

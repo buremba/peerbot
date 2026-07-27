@@ -1419,9 +1419,9 @@ async function formatEntityResult(
 
 /**
  * `c.config` here is the same verbatim jsonb the manage_connections read paths
- * serve, so it carries connector secrets (bot tokens, DATABASE_URLs). Redacted
- * on the way out — the field stays present (sentinel, not deleted) so a caller
- * can still see WHICH options are configured.
+ * serve, so it can carry connector secrets such as bot tokens and connection
+ * strings. Redacted on the way out; the field stays present so callers can
+ * still see which options are configured.
  */
 async function fetchConnectionsForEntity(
   entityId: number,

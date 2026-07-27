@@ -15,11 +15,11 @@ import { TestWorkspace } from "../setup/test-mcp-client";
  * Secrets must never leave the server through a Connection serializer.
  *
  * `connections.config` is written verbatim on the create/update path (it is
- * split by FEED SCOPE, never by secrecy), so any connector option declared
- * `format: "password"` — Slack/Discord bot tokens, webhook bearer tokens,
- * a Postgres DATABASE_URL — lands in the row as plaintext. Both read paths
- * (`handleList`, `handleGet`) select `c.*`, so without redaction the secret is
- * echoed straight back to any caller who can see the connection.
+ * split by FEED SCOPE, never by secrecy), so secret options such as
+ * Slack/Discord bot tokens and webhook bearer tokens land in the row as
+ * plaintext. Free-form and legacy rows can carry other credentials, including
+ * connection strings. Both read paths (`handleList`, `handleGet`) select `c.*`,
+ * so without redaction the secret is echoed to any caller who can see the row.
  *
  * These probes are the canaries: each value is a distinctive sentinel, and the
  * assertion is on the SERIALIZED response text, so a leak through any nested
@@ -33,10 +33,14 @@ const SECRET_PROBES = {
 	refresh_token: "pw-LEAK-refresh-token",
 	nested: {
 		database: { password: "pw-LEAK-nested-password" },
-		headers: { Authorization: "Bearer pw-LEAK-bearer" },
+		headers: {
+			Authorization: "Bearer pw-LEAK-bearer",
+			"X-Api-Key": "pw-LEAK-hyphenated-header",
+		},
 		credentials: { client_secret: "pw-LEAK-client-secret" },
 		deep: { a: { b: { c: { session_id: "pw-LEAK-deep-session" } } } },
 	},
+	primary: "postgres://user:pw-LEAK-innocent-uri@db.internal:5432/app",
 	cookie: "session=pw-LEAK-cookie",
 } as const;
 
@@ -48,8 +52,10 @@ const LEAK_SENTINELS = [
 	"pw-LEAK-refresh-token",
 	"pw-LEAK-nested-password",
 	"pw-LEAK-bearer",
+	"pw-LEAK-hyphenated-header",
 	"pw-LEAK-client-secret",
 	"pw-LEAK-deep-session",
+	"pw-LEAK-innocent-uri",
 	"pw-LEAK-cookie",
 ];
 
@@ -183,8 +189,8 @@ describe("connection config redaction", () => {
 	});
 
 	/**
-	 * The widest surface of all: `query_sql` is a top-level, member-safe MCP tool
-	 * in every agent's tool set, and `connections` is NOT in
+	 * The widest surface of all: `query_sql` is a top-level, member-safe MCP tool,
+	 * and `connections` is NOT in
 	 * ADMIN_ONLY_QUERYABLE_TABLES — so a plain member (or any agent) could
 	 * `SELECT config FROM connections` and read the raw jsonb.
 	 *
@@ -256,9 +262,9 @@ describe("connection config redaction", () => {
  *    already names it as a column query_sql must never emit; these tools should
  *    not be a way around that, and cursors have historically carried tokens and
  *    whole result payloads.
- *  - `config` — free-form jsonb. No SHIPPED connector routes a credential into
- *    feed-scoped config today, so this arm is hardening rather than a live
- *    leak — pinned so it stays that way.
+ *  - `config` — free-form jsonb. Built-in feed schemas currently declare no
+ *    password/secret fields, but URL and other free-form values can still carry
+ *    credentials.
  *
  * All three read actions are in the same exposure tier as the connection
  * list/get paths, so all three are asserted.
@@ -325,10 +331,13 @@ describe("feed config redaction", () => {
 		const fetched = read.feed?.config ?? {};
 		expect(JSON.stringify(fetched)).toContain(REDACTED_SENTINEL);
 
-		await workspace.owner.feeds.update({
+		const update = await workspace.owner.feeds.update({
 			feed_id: feedId,
 			config: { ...fetched, host: "db.updated" },
 		});
+		assertNoSecrets(update, "feeds.update()");
+		expect(JSON.stringify(update)).not.toContain("pw-LEAK-checkpoint");
+		expect(JSON.stringify(update)).not.toContain("checkpoint");
 
 		const rows = await getTestDb()`
       SELECT config FROM feeds WHERE id = ${feedId}

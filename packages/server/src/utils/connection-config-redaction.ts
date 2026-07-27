@@ -2,10 +2,11 @@
  * Redaction for `connections.config` on every serialization boundary.
  *
  * `connections.config` is written VERBATIM — the create/update path splits it
- * by FEED SCOPE (`splitConfigByFeedScope`), never by secrecy — so a Slack bot
- * token, a webhook bearer token, or a Postgres `DATABASE_URL` lands in the row
- * as plaintext. Every read path that serializes a connection to a caller must
- * therefore pass its `config` through {@link redactConnectionConfig} first.
+ * by FEED SCOPE (`splitConfigByFeedScope`), never by secrecy — so connector
+ * options such as Slack bot tokens and webhook bearer tokens land in the row
+ * as plaintext. Free-form and legacy rows may carry other credentials too.
+ * Every read path that serializes a connection to a caller must therefore pass
+ * its `config` through {@link redactConnectionConfig} first.
  *
  * Two layers, in this order:
  *
@@ -23,7 +24,8 @@
  *     any key at any depth, and legacy rows predate the schemas entirely. So
  *     the schema pass is followed by `deepRedactSecrets` from @lobu/core: the
  *     SAME denylist the config-audit snapshots and the CLI manifest hash use.
- *     There is exactly one denylist in the repo; extend it there, never here.
+ *     TypeScript serializers share this one denylist. The SQL-side mirror for
+ *     query_sql is pinned against it by `table-schema-redaction.test.ts`.
  *
  * Values are REPLACED with {@link REDACTED_SENTINEL}, not deleted, so the UI
  * can still render "this field is SET" and a form can show a filled input.
@@ -43,7 +45,7 @@ export { REDACTED_SENTINEL };
  * conventions. Top-level `config` keys only — nesting under them is handled by
  * the recursive keyname backstop.
  */
-export type ConnectorSecretKeys = ReadonlySet<string>;
+type ConnectorSecretKeys = ReadonlySet<string>;
 
 /** Collect `options_schema.properties.<key>.format === 'password'` keys. */
 function optionPasswordKeys(optionsSchema: unknown): string[] {
@@ -109,8 +111,8 @@ export function connectorSecretKeysFromSchemas(params: {
  * reintroduce the N+1 the list query was explicitly tuned to avoid.
  *
  * A connector with no active definition in this org yields an empty set; the
- * keyname backstop still applies, so an unknown connector is never LESS
- * redacted than an annotated one, only less precise.
+ * keyname and URI backstops still apply, but schema-only secret names cannot be
+ * recognized without the definition.
  */
 export async function loadConnectorSecretKeys(
 	organizationId: string,
@@ -153,24 +155,30 @@ export async function loadConnectorSecretKeys(
  * (backstop, any depth, plus embedded `scheme://user:pass@host` credentials).
  * Non-secret values pass through byte-identical.
  *
- * Returns the input unchanged when it is not an object (null config stays
- * null) so callers can pipe a raw row value straight through.
+ * Arrays use the heuristic walk (schema declarations describe top-level object
+ * fields). Other non-object values pass through unchanged.
  */
 export function redactConnectionConfig(
 	config: unknown,
 	declaredSecretKeys?: ConnectorSecretKeys,
 ): unknown {
-	if (!config || typeof config !== "object" || Array.isArray(config)) {
+	if (!config || typeof config !== "object") {
 		return config;
 	}
+	if (Array.isArray(config)) return deepRedactSecrets(config);
 
-	const walked = deepRedactSecrets(config) as Record<string, unknown>;
-	if (!declaredSecretKeys || declaredSecretKeys.size === 0) return walked;
-
-	for (const key of declaredSecretKeys) {
-		if (walked[key] != null) walked[key] = REDACTED_SENTINEL;
+	if (!declaredSecretKeys || declaredSecretKeys.size === 0) {
+		return deepRedactSecrets(config);
 	}
-	return walked;
+
+	const withDeclaredRedaction = { ...(config as Record<string, unknown>) };
+	for (const key of declaredSecretKeys) {
+		if (withDeclaredRedaction[key] != null) {
+			withDeclaredRedaction[key] = REDACTED_SENTINEL;
+		}
+	}
+
+	return deepRedactSecrets(withDeclaredRedaction);
 }
 
 /**
@@ -226,8 +234,8 @@ export async function redactConnectionRows<T extends Record<string, unknown>>(
  *    {@link redactUriCredentials} produces for connection strings under
  *    non-secret keys.
  *
- * A bare equality check catches only the first, which is exactly how a naive
- * guard silently corrupts every DATABASE_URL in the org.
+ * A bare equality check catches only the first, so it can silently overwrite a
+ * redacted connection string with the placeholder form.
  */
 function isRedactedValue(value: unknown): boolean {
 	return typeof value === "string" && value.includes(REDACTED_SENTINEL);
@@ -236,9 +244,9 @@ function isRedactedValue(value: unknown): boolean {
 /**
  * Restore redacted values in an INCOMING config from what is already stored.
  *
- * Every real client round-trips config — the Owletto action-modes editor
- * spreads the fetched `connection.config` and PATCHes it back with one field
- * changed, and an agent doing `connections.update` via run_sdk does the same.
+ * Clients may round-trip config: the Owletto action-modes editor spreads the
+ * fetched `connection.config` and PATCHes it back with one field changed, and
+ * agents can use the same read-modify-write pattern through run_sdk.
  * Because the read path now returns `__LOBU_REDACTED__` where a secret used to
  * be, that write would persist the SENTINEL over the live credential: the
  * connection breaks at next use, with no error at save time and no way to

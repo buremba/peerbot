@@ -4,7 +4,11 @@ import {
   REDACTED_SENTINEL,
   redactConfigState,
 } from '../config-redaction';
-import { restoreRedactedConfig } from '../connection-config-redaction';
+import {
+  connectorSecretKeysFromSchemas,
+  redactConnectionConfig,
+  restoreRedactedConfig,
+} from '../connection-config-redaction';
 
 describe('redactConfigState', () => {
   it('redacts denylisted keys at any depth, any case style', () => {
@@ -89,7 +93,19 @@ describe('isSecretKey > URL/DSN-shaped credential keys', () => {
     }
   );
 
-  it.each(['authorization', 'Authorization', 'cookie', 'session_id', 'sessionId', 'bearer'])(
+  it.each([
+    'authorization',
+    'Authorization',
+    'cookie',
+    'session_id',
+    'sessionId',
+    'bearer',
+    'X-Api-Key',
+    'Proxy-Authorization',
+    'Set-Cookie',
+    'client-secret',
+    ' password ',
+  ])(
     'classifies %s as secret',
     (key) => {
       expect(isSecretKey(key)).toBe(true);
@@ -170,6 +186,58 @@ describe('restoreRedactedConfig', () => {
   it('is a no-op when nothing is redacted', () => {
     const incoming = { host: 'db.internal', port: 5432, tags: ['a', 'b'] };
     expect(restoreRedactedConfig(incoming, { host: 'old' })).toEqual(incoming);
+  });
+});
+
+describe('redactConnectionConfig', () => {
+  it('redacts array-valued config recursively', () => {
+    expect(
+      redactConnectionConfig([
+        { password: 'array-secret' },
+        { nested: { apiKey: 'nested-array-secret' }, visible: 'value' },
+      ])
+    ).toEqual([
+      { password: REDACTED_SENTINEL },
+      { nested: { apiKey: REDACTED_SENTINEL }, visible: 'value' },
+    ]);
+  });
+
+  it('redacts schema-declared secrets whose names do not match the denylist', () => {
+    const declaredKeys = connectorSecretKeysFromSchemas({
+      optionsSchema: {
+        properties: {
+          opaqueOption: { type: 'string', format: 'password' },
+          visibleOption: { type: 'string' },
+        },
+      },
+      authSchema: {
+        methods: [
+          {
+            fields: [
+              { key: 'authMaterial', secret: true },
+              { key: 'visibleValue', secret: false },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(
+      redactConnectionConfig(
+        {
+          opaqueOption: 'option-secret',
+          authMaterial: 'auth-secret',
+          visibleOption: 'visible',
+          visibleValue: 'also-visible',
+        },
+        declaredKeys
+      )
+    ).toEqual({
+      opaqueOption: REDACTED_SENTINEL,
+      authMaterial: REDACTED_SENTINEL,
+      visibleOption: 'visible',
+      visibleValue: 'also-visible',
+    });
   });
 });
 

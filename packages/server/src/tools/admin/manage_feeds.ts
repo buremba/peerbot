@@ -73,14 +73,10 @@ import {
  *    it as a column query_sql must never emit; there is no reason these tools
  *    should be a way around that, and cursors have historically carried tokens
  *    and full result payloads. Dropped.
- *  - `config` — free-form jsonb, written verbatim. No SHIPPED connector can
- *    currently place a credential here (every `secret: true` / `format:
- *    "password"` declaration sits in an auth/options schema, and
- *    `splitConfigByFeedScope` only routes a key to feeds.config when a feed's
- *    own configSchema declares it), so this is HARDENING against a future
- *    connector rather than a live leak — but the redaction is free and the
- *    invariant should not depend on a connector author's care. Redacted with
- *    the same shared walk the connection serializers use.
+ *  - `config` — free-form jsonb, written verbatim. Built-in feed schemas
+ *    currently declare no password/secret fields, but URL and other free-form
+ *    values can still contain credentials. Redacted with the same shared walk
+ *    the connection serializers use.
  *
  * All three actions are in PUBLIC_READ_ACTIONS, i.e. the same exposure tier as
  * the connections list/get paths this branch fixes.
@@ -616,7 +612,10 @@ async function handleCreateFeed(
     state: inserted[0] as Record<string, unknown>,
   });
 
-  return { action: 'create_feed', feed: inserted[0] };
+  return {
+    action: 'create_feed',
+    feed: toPublicFeed(inserted[0] as Record<string, unknown>),
+  };
 }
 
 async function handleUpdateFeed(
@@ -794,7 +793,7 @@ async function handleUpdateFeed(
     ...(changedFields.length > 0 ? { changedFields } : {}),
   });
 
-  return { action: 'update_feed', feed: updated[0] };
+  return { action: 'update_feed', feed: toPublicFeed(updatedFeed) };
 }
 
 async function handleDeleteFeed(

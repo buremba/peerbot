@@ -1,17 +1,17 @@
 /**
  * Shared secret redaction for config audit + serialization surfaces.
  *
- * One denylist, three consumers with one secret model between them:
+ * One denylist shared across TypeScript config exposures:
  *  - the server redacts config-change audit snapshots before persisting them
  *    (`packages/server/src/utils/config-redaction.ts`),
  *  - the server redacts `connections.config` before it is serialized to any
  *    caller (`packages/server/src/utils/connection-config-redaction.ts`), and
  *  - the CLI strips secret values out of the desired state before hashing it
- *    into a deployment's `manifest_hash` (`_lib/apply/deployment.ts`).
+ *    into a deployment's `manifest_hash` (`_lib/apply/deployment.ts`), while
+ *    setup continuations use the same classification when omitting credentials.
  *
- * Keeping all three on this module means a key classified as secret is
- * redacted from stored snapshots, withheld from API responses, AND excluded
- * from the manifest hash in the same release — they can't drift apart.
+ * A key classified here is therefore omitted or redacted consistently across
+ * persistence, API responses, setup continuations, and deployment hashes.
  */
 
 /**
@@ -22,9 +22,9 @@
 export const REDACTED_SENTINEL = "__LOBU_REDACTED__";
 
 /**
- * Key-name denylist. Matches the whole key or a `_`-separated suffix,
- * singular or plural, any case: `token`, `apiKey`, `api_key`,
- * `refresh_tokens`, `clientSecret`, ...
+ * Key-name denylist. After camel-case and separator normalization, matches the
+ * whole key or an `_`-separated suffix, singular or plural, any case: `token`,
+ * `apiKey`, `X-Api-Key`, `refresh_tokens`, `clientSecret`, ...
  *
  * Anchoring on a `_`-separated SUFFIX (not a substring) is deliberate: it is
  * what keeps `tokenizer`, `keyboard`, and `secretsPolicy` out of the denylist.
@@ -38,7 +38,7 @@ const SECRET_KEY_RE =
   /(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
 
 /**
- * Exact key names (case-insensitive, after camel→snake normalization) that are
+ * Exact key names (case-insensitive, after key normalization) that are
  * credentials but do not end in a denylisted suffix. Kept separate from the
  * suffix regex so a future `cookie_policy` or `authorization_mode` key isn't
  * swept up by accident.
@@ -57,9 +57,13 @@ const SECRET_EXACT_KEYS = new Set([
   "dsn",
 ]);
 
-/** camelCase → snake_case so `apiKey`/`privateKey` hit the `_`-anchored regex. */
+/** Normalize camelCase and separators so config keys and HTTP headers agree. */
 function normalizeKey(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
 }
 
 export function isSecretKey(key: string): boolean {

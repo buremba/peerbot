@@ -39,26 +39,26 @@ function cols(...names: string[]): ColumnDef[] {
  * `config` cannot simply be dropped from the allowlist — it carries the
  * operational settings every legitimate query reads (host, channel, feed_key
  * options). But it is written VERBATIM by the connection/feed write paths
- * (split by feed SCOPE, never by secrecy), so a connector option declared
- * `format: "password"` — a Slack/Discord bot token, a webhook bearer token —
- * and a `secret: true` env field like postgres' DATABASE_URL land in it as
- * plaintext. `query_sql` is a member-safe tool in every agent's tool set and
- * `connections` is deliberately NOT in {@link ADMIN_ONLY_QUERYABLE_TABLES}, so
- * without this a plain member could `SELECT config FROM connections` and read
- * them.
+ * (split by feed SCOPE, never by secrecy), so connector options such as bot and
+ * webhook tokens land in it as plaintext; free-form and legacy rows can carry
+ * other credentials. `query_sql` is member-safe, and `connections` is
+ * deliberately NOT in
+ * {@link ADMIN_ONLY_QUERYABLE_TABLES}, so without this a plain member could
+ * `SELECT config FROM connections` and read them.
  *
  * This is the CHOKEPOINT: `buildColumnList` emits this expression in the
  * generated CTE, so the redaction applies no matter how the caller shapes the
  * query (aliases, subselects, `->>` extraction — all read the redacted CTE).
  *
  * The denylist mirrors `isSecretKey` in @lobu/core (`secret-redaction`), which
- * is the single source of truth for the TypeScript serializers. Keep the two in
- * sync: a key added there must be added here, and
- * `table-schema-redaction.test.ts` pins that they agree.
+ * is the single source of truth for the TypeScript serializers. String values
+ * also fail closed when they contain URI userinfo (`scheme://user:password@`),
+ * matching the value-shaped backstop in `deepRedactSecrets`. Keep both rules in
+ * sync; `table-schema-redaction.test.ts` pins the key-name rule and URI case.
  *
- * Matching is RECURSIVE (a `jsonb_object_agg` over `jsonb_each`, applied by a
- * SQL function so nested objects and arrays are walked). A top-level-only pass
- * is not sufficient: a proven repro planted the secret at
+ * Matching is RECURSIVE (the generated expression rebuilds `jsonb_each` /
+ * `jsonb_array_elements` results so nested objects and arrays are walked). A
+ * top-level-only pass is not sufficient: a proven repro planted the secret at
  * `config.nested.database.password`.
  *
  * Values are replaced with the sentinel, not deleted, so a query can still see
@@ -68,6 +68,8 @@ const SQL_SECRET_KEY_PATTERN =
   '(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$';
 const SQL_SECRET_EXACT_KEYS =
   "('authorization','auth','bearer','cookie','cookies','set_cookie','proxy_authorization','database_url','db_url','connection_string','dsn')";
+const SQL_URI_CREDENTIAL_PATTERN =
+  '[a-z][a-z0-9+.-]*://[^/@[:space:]]*:[^/@[:space:]]*@';
 
 /**
  * Placeholder for the source column inside an {@link ColumnDef.expr}.
@@ -75,12 +77,19 @@ const SQL_SECRET_EXACT_KEYS =
  * quoted column when there is no alias), so an expression may reference the
  * column any number of times.
  */
-export const COLUMN_REF = '$COL$';
+const COLUMN_REF = '$COL$';
 
 /** SQL test for "this jsonb key is a denylisted secret name". */
-const SQL_KEY_IS_SECRET = (keyExpr: string) =>
-  `lower(regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g')) IN ${SQL_SECRET_EXACT_KEYS} ` +
-  `OR lower(regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g')) ~ '${SQL_SECRET_KEY_PATTERN}'`;
+const SQL_KEY_IS_SECRET = (keyExpr: string) => {
+  const normalized =
+    `lower(regexp_replace(regexp_replace(` +
+    `regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g'), ` +
+    `'[^a-zA-Z0-9]+', '_', 'g'), '^_+|_+$', '', 'g'))`;
+  return (
+    `${normalized} IN ${SQL_SECRET_EXACT_KEYS} ` +
+    `OR ${normalized} ~ '${SQL_SECRET_KEY_PATTERN}'`
+  );
+};
 
 /**
  * How many levels of nesting the generated expression walks.
@@ -116,8 +125,13 @@ function buildRedactionExpr(valueExpr: string, depth: number): string {
   // wholesale — fail-closed rather than emitting unredacted nested content.
   if (depth === 0) {
     return (
-      `CASE WHEN jsonb_typeof(${valueExpr}) IN ('object','array') ` +
-      `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ELSE ${valueExpr} END`
+      `CASE ` +
+      `WHEN jsonb_typeof(${valueExpr}) IN ('object','array') ` +
+      `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ` +
+      `WHEN jsonb_typeof(${valueExpr}) = 'string' ` +
+      `AND (${valueExpr} #>> '{}') ~* '${SQL_URI_CREDENTIAL_PATTERN}' ` +
+      `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ` +
+      `ELSE ${valueExpr} END`
     );
   }
   const kv = `kv${depth}`;
@@ -136,7 +150,12 @@ function buildRedactionExpr(valueExpr: string, depth: number): string {
     `WHEN jsonb_typeof(${valueExpr}) = 'array' THEN (` +
     `SELECT COALESCE(jsonb_agg(${element} ORDER BY ${el}.ordinality), '[]'::jsonb) ` +
     `FROM jsonb_array_elements(${valueExpr}) WITH ORDINALITY ${el}(value, ordinality)) ` +
-    // scalars pass through untouched
+    // credential-bearing URI scalars fail closed; unlike the TypeScript
+    // serializer, SQL replaces the whole string rather than rebuilding userinfo
+    `WHEN jsonb_typeof(${valueExpr}) = 'string' ` +
+    `AND (${valueExpr} #>> '{}') ~* '${SQL_URI_CREDENTIAL_PATTERN}' ` +
+    `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ` +
+    // remaining scalars pass through untouched
     `ELSE ${valueExpr} END`
   );
 }

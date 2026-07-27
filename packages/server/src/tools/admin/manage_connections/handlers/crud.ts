@@ -1433,11 +1433,9 @@ export async function handleUpdate(
 				organizationId,
 				connectionId: args.connection_id,
 				displayName: args.display_name,
-				// Same un-redaction as the non-chat path below, and this branch needs
-				// it most: chat connectors are precisely the ones declaring
-				// `format: "password"` (Slack/Discord bot tokens), so a UI round-trip
-				// here would clobber the bot token and take the whole chat
-				// integration down.
+				// Same un-redaction as the non-chat path below. Several chat
+				// connectors declare `format: "password"` bot tokens, so a UI
+				// round-trip here would otherwise clobber the live token.
 				config:
 					args.config === undefined
 						? undefined

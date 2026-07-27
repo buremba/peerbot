@@ -2,13 +2,13 @@
  * `query_sql` redacts `connections.config` / `feeds.config` in SQL, at the
  * table-schema chokepoint, because the tool is member-safe and neither table is
  * in ADMIN_ONLY_QUERYABLE_TABLES. That means the denylist exists twice: once in
- * TypeScript (`isSecretKey` in @lobu/core, used by every serializer) and once
- * as a SQL regex + IN-list inside the generated CTE expression.
+ * TypeScript (`isSecretKey` in @lobu/core, used by the config serializers) and
+ * once as a SQL regex + IN-list inside the generated CTE expression.
  *
  * Two implementations of one security rule drift. These tests pin them
  * together: every key name the TS side calls secret must also be matched by the
- * SQL expression, and vice versa. If you add a term to one, this fails until
- * you add it to the other.
+ * SQL expression, and vice versa. The value-shaped URI credential backstop is
+ * also exercised against the generated expression.
  */
 
 import { isSecretKey } from '@lobu/core';
@@ -43,6 +43,11 @@ const SECRET_KEYS = [
   'db_url',
   'connection_string',
   'dsn',
+  'X-Api-Key',
+  'Proxy-Authorization',
+  'Set-Cookie',
+  'client-secret',
+  ' password ',
 ];
 
 const NON_SECRET_KEYS = [
@@ -139,6 +144,22 @@ describe('table-schema config redaction', () => {
         [sql.json({ nested: { database: { host: 'db.internal' } } }) as unknown as string]
       );
       expect((rows[0] as { value: string | null }).value).toBe('db.internal');
+    });
+
+    it('redacts URI credentials under a non-secret key', async () => {
+      const defs = SAFE_COLUMN_DEFS.get('connections') ?? [];
+      const expr = defs.find((c) => c.name === 'config')?.expr;
+      const bound = (expr ?? '').split('$COL$').join('probe.config');
+      const rows = await sql.unsafe(
+        `SELECT (${bound}) ->> 'primary' AS value
+         FROM (SELECT $1::jsonb AS config) probe`,
+        [
+          sql.json({
+            primary: 'postgres://user:pw-LEAK-uri@db.internal:5432/app',
+          }) as unknown as string,
+        ]
+      );
+      expect((rows[0] as { value: string | null }).value).not.toContain('pw-LEAK-uri');
     });
   });
 });

@@ -269,10 +269,17 @@ export async function listContentInternal(
         baseParamIndex: baseParams.length - link.params.length + 1,
       }).sql;
     } else if (organizationId) {
-      baseParams.push(organizationId);
-      baseConditions.push(
-        `f.entity_ids && ARRAY(SELECT id FROM entities WHERE organization_id = $${baseParams.length})::bigint[]`
-      );
+      // Keep classification-filtered listings on the same direct/entity/
+      // connection org scope as the standard listing path.
+      const orgScope = buildOrgScopeWhere({
+        organization_id: organizationId,
+        baseParamIndex: baseParams.length + 1,
+      });
+      baseConditions.push(orgScope.sql.replace(/^AND\s+/, ''));
+      baseParams.push(...orgScope.params);
+      // Avoid treating the organization id in $1 as a bigint entity id while
+      // walking parent threads.
+      threadEntityLinkSql = 'TRUE';
     }
 
     baseConditions.push(connectionFilterClause);
@@ -327,6 +334,16 @@ export async function listContentInternal(
     if (options.agent_id) {
       baseParams.push(options.agent_id);
       baseConditions.push(`f.metadata->>'agent_id' = $${baseParams.length}`);
+    }
+    if (options.client_id) {
+      // `events.client_id` is a real indexed column (idx_events_client_id), not
+      // a metadata field — so this is a plain column predicate. Always ANY() so
+      // one id and a re-registered client's many ids share a single shape.
+      const clientIds = Array.isArray(options.client_id)
+        ? options.client_id
+        : [options.client_id];
+      baseParams.push(pgTextArray(clientIds));
+      baseConditions.push(`f.client_id = ANY($${baseParams.length}::text[])`);
     }
 
     const classificationExists = buildClassificationExistsClauses(

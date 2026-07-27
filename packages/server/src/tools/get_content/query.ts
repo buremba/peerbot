@@ -434,6 +434,11 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(args.agent_id);
     paramIndex += 1;
   }
+  if (args.client_ids?.length) {
+    conditions.push(`e.client_id = ANY($${paramIndex}::text[])`);
+    queryParams.push(pgTextArray(args.client_ids));
+    paramIndex += 1;
+  }
   if (args.semantic_type) {
     const types = Array.isArray(args.semantic_type)
       ? args.semantic_type
@@ -595,6 +600,12 @@ export async function fetchClassificationStats(opts: {
   if (args.agent_id) {
     conditions.push(`f.metadata->>'agent_id' = $${paramIndex++}`);
     params.push(args.agent_id);
+  }
+  // Keep the stats scope identical to the list scope — a distribution computed
+  // over a wider set than the rows it labels is simply wrong.
+  if (args.client_ids?.length) {
+    conditions.push(`f.client_id = ANY($${paramIndex++}::text[])`);
+    params.push(pgTextArray(args.client_ids));
   }
 
   // Visibility: events from connections the caller can't see must not

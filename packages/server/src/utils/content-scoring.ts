@@ -1,4 +1,4 @@
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import {
   buildFeedFilter,
   buildRunFilter,
@@ -25,6 +25,10 @@ interface NormalizedScoreFilters {
   connection_ids?: number[];
   feed_ids?: number[];
   run_ids?: number[];
+  /** Agent attribution, stored in `metadata->>'agent_id'` (mirrors params.ts $11). */
+  agent_id?: string;
+  /** OAuth client attribution, a real indexed column (mirrors params.ts $12). */
+  client_id?: string | string[];
   platform?: string;
   since?: Date;
   until?: Date;
@@ -32,6 +36,9 @@ interface NormalizedScoreFilters {
   engagement_max?: number;
   // Additional filters to match searchContentByText
   window_id?: number;
+  /** Restrict to content some behavior has analyzed. The handler always passed
+   *  this; the builder used to ignore it — the same dropped-filter class. */
+  analyzed_by_watcher_id?: number;
   exclude_watcher_id?: number; // Exclude content already in any window for this watcher
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
@@ -143,6 +150,19 @@ async function buildFilterConditionsAndJoins(
     filterConditions.push(buildRunFilter(filters.run_ids, 'f'));
   }
 
+  // Attribution filters. These mirror the $11/$12 predicates in
+  // content-search/params.ts so score-sort and date-sort return the same rows
+  // for the same filter — see buildStandardWhereSql.
+  if (filters?.agent_id) {
+    params.push(filters.agent_id);
+    filterConditions.push(`f.metadata->>'agent_id' = $${paramIndex++}::text`);
+  }
+  if (filters?.client_id) {
+    const clientIds = Array.isArray(filters.client_id) ? filters.client_id : [filters.client_id];
+    params.push(pgTextArray(clientIds));
+    filterConditions.push(`f.client_id = ANY($${paramIndex++}::text[])`);
+  }
+
   if (filters?.platform) {
     params.push(filters.platform);
     filterConditions.push(`s.connector_key = $${paramIndex++}`);
@@ -173,6 +193,18 @@ async function buildFilterConditionsAndJoins(
     additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
     params.push(validatedWindowId);
     filterConditions.push(`iwc.window_id = $${paramIndex++}`);
+  }
+
+  if (filters?.analyzed_by_watcher_id !== undefined) {
+    const validatedWatcherId = validateNumericId(
+      filters.analyzed_by_watcher_id,
+      'analyzed_by_watcher_id'
+    );
+    params.push(validatedWatcherId);
+    filterConditions.push(`EXISTS (
+      SELECT 1 FROM watcher_window_events iwc
+      WHERE iwc.event_id = f.id AND iwc.watcher_id = $${paramIndex++}
+    )`);
   }
 
   if (filters?.exclude_watcher_id !== undefined) {

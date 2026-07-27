@@ -35,6 +35,14 @@ export function buildStandardParams(
     // Slot $11 — per-agent memory scope. WHERE template uses
     // `($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)`.
     options.agent_id ?? null,
+    // Slot $12 — per-OAuth-client scope. Always an array (a client that
+    // re-registers has several ids under one name), so the predicate is a
+    // single `= ANY(...)` for both the one-id and many-id cases. pgTextArray
+    // because `sql.unsafe(...)` does not auto-cast JS arrays — see the
+    // semantic_type slot above.
+    options.client_id
+      ? pgTextArray(Array.isArray(options.client_id) ? options.client_id : [options.client_id])
+      : null,
   ];
 }
 
@@ -62,7 +70,8 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           ))
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
-          AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)`;
+          AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
+          AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))`;
 }
 
 export const WINDOW_JOIN_SQL = `LEFT JOIN watcher_window_events iwf

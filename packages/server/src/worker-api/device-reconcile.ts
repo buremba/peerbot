@@ -55,7 +55,7 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
-  source?: { metadata: ConnectorMetadata; sourcePath: string }
+  source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
 ): Promise<void> {
   const sql = getDb();
 
@@ -84,6 +84,18 @@ async function ensureDeviceConnectorWired(
       connectionId,
       matchingDeviceIds,
     });
+  };
+  const manifestStillAdvertised = async (db: typeof sql): Promise<boolean> => {
+    if (!source) return true;
+    const rows = await db`
+      SELECT 1
+      FROM device_workers
+      WHERE user_id = ${userId}
+        AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+        AND (connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${source.manifestHash}
+      LIMIT 1
+    `;
+    return rows.length > 0;
   };
 
   try {
@@ -151,9 +163,6 @@ async function ensureDeviceConnectorWired(
       def_runtime: unknown;
       active_feed_keys: string[] | null;
     }>;
-    if (existingReady[0]?.connection_id) {
-      await reconcilePin(sql, existingReady[0].connection_id);
-    }
     // Device-manifest connectors carry their full metadata in-hand (`source`),
     // so a changed manifest MUST break the fast path or the org catalog is
     // stranded on the old definition forever: the extension re-sends its
@@ -182,9 +191,10 @@ async function ensureDeviceConnectorWired(
       );
     };
     const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
-    if (
-      existingReady[0]?.connection_id &&
-      existingReady[0]?.version_key &&
+    const readyConnectionId = existingReady[0]?.connection_id;
+    const ready =
+      readyConnectionId != null &&
+      existingReady[0]?.version_key != null &&
       definitionMatchesSource(existingReady[0]) &&
       // userManaged-only connectors (e.g. local.directory, browser/*) report
       // declaredFeedKeys=[]. Once the connection + definition are installed,
@@ -192,8 +202,18 @@ async function ensureDeviceConnectorWired(
       // Composing primitives still hit /api/workers/me/feeds to mint
       // explicit per-instance rows; that path is unchanged.
       (declaredFeedKeys.length === 0 ||
-        declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey)))
-    ) {
+        declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey)));
+    if (ready) {
+      if (source) {
+        await sql.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+          if (await manifestStillAdvertised(tx)) {
+            await reconcilePin(tx, readyConnectionId);
+          }
+        });
+      } else {
+        await reconcilePin(sql, readyConnectionId);
+      }
       return;
     }
 
@@ -233,6 +253,10 @@ async function ensureDeviceConnectorWired(
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
       await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+      // A newer poll may have removed this manifest while this reconcile was
+      // waiting for the lock. Re-check the stored fleet inventory so an older
+      // poll cannot resurrect a connector the newer poll just retired.
+      if (source && !(await manifestStillAdvertised(tx))) return;
 
       // 2. Ensure the connector definition + version are installed (idempotent).
       await upsertConnectorDefinitionRecords({
@@ -389,6 +413,114 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
 }
 
 /**
+ * Archive unreferenced org-scoped definitions created by device reconciliation
+ * that no current connector source still advertises. This includes manifest
+ * versions and metadata-only shared pointers left by a formerly bundled device
+ * connector, but excludes org-custom sources. A live connection always protects
+ * its definition: connection fields do not record whether reconcile or a user
+ * created the row, so deleting based on a guessed "auto-wire shape" would risk
+ * deleting user configuration. The wire and archive paths share a per-key lock
+ * and re-check stored manifests so concurrent polls converge. Best-effort.
+ */
+async function archiveVanishedDeviceConnectorDefinitions(
+  userId: string,
+  organizationId: string,
+  liveKeys: string[]
+): Promise<void> {
+  const sql = getDb();
+  try {
+    const archived = await sql.begin(async (tx) => {
+      const candidates = (await tx`
+        SELECT cd.key
+        FROM connector_definitions cd
+        WHERE cd.organization_id = ${organizationId}
+          AND cd.status = 'active'
+          AND cd.required_capability IS NOT NULL
+          AND NOT (cd.key = ANY(${pgTextArray(liveKeys)}::text[]))
+          AND COALESCE((
+            SELECT CASE
+              WHEN cv.organization_id IS NOT NULL
+                THEN cv.source_path LIKE 'device-manifest://%'
+              ELSE cv.source_path IS NOT NULL
+                AND cv.compiled_code IS NULL
+                AND cv.source_code IS NULL
+            END
+            FROM connector_versions cv
+            WHERE cv.connector_key = cd.key
+              AND cv.version = cd.version
+              AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+            ORDER BY cv.organization_id NULLS LAST
+            LIMIT 1
+          ), false)
+          AND NOT EXISTS (
+            SELECT 1 FROM connections c
+            WHERE c.organization_id = cd.organization_id
+              AND c.connector_key = cd.key
+              AND c.deleted_at IS NULL
+          )
+        ORDER BY cd.key
+      `) as unknown as Array<{ key: string }>;
+      for (const { key } of candidates) {
+        await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${key}`}))`;
+      }
+      if (candidates.length === 0) return [];
+      const candidateKeys = candidates.map(({ key }) => key);
+
+      const rows = (await tx`
+        UPDATE connector_definitions cd
+        SET status = 'archived', updated_at = NOW()
+        WHERE cd.organization_id = ${organizationId}
+          AND cd.status = 'active'
+          AND cd.required_capability IS NOT NULL
+          AND cd.key = ANY(${pgTextArray(candidateKeys)}::text[])
+          AND COALESCE((
+            SELECT CASE
+              WHEN cv.organization_id IS NOT NULL
+                THEN cv.source_path LIKE 'device-manifest://%'
+              ELSE cv.source_path IS NOT NULL
+                AND cv.compiled_code IS NULL
+                AND cv.source_code IS NULL
+            END
+            FROM connector_versions cv
+            WHERE cv.connector_key = cd.key
+              AND cv.version = cd.version
+              AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+            ORDER BY cv.organization_id NULLS LAST
+            LIMIT 1
+          ), false)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM device_workers dw
+            WHERE dw.user_id = ${userId}
+              AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+              AND dw.connector_manifests -> cd.key IS NOT NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM connections c
+            WHERE c.organization_id = cd.organization_id
+              AND c.connector_key = cd.key
+              AND c.deleted_at IS NULL
+          )
+        RETURNING cd.key
+      `) as unknown as Array<{ key: string }>;
+      return rows;
+    });
+
+    if (archived.length > 0) {
+      logger.info(
+        { userId, organizationId, keys: archived.map((r) => r.key) },
+        '[device-connectors] Archived definitions no longer served by any connector source'
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { userId, organizationId, err: errorMessage(err) },
+      '[device-connectors] Failed to archive vanished device connector definitions'
+    );
+  }
+}
+
+/**
  * Reconcile a user's device connectors against what their device fleet can
  * actually serve. The set of device connectors comes from the catalog (any
  * bundled connector with a `runtime` block + a `requiredCapability`); the set of
@@ -404,6 +536,13 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   const sql = getDb();
 
   let bundledDeviceConnectors: BundledDeviceConnector[];
+  // Both connector sources are fail-soft (empty on error), which makes "no
+  // sources" ambiguous: nothing is served, or we failed to look. Only the
+  // latter must suppress the archive pass below — an empty-but-successful read
+  // is a legitimate "this fleet serves nothing", and is in fact the normal
+  // state for a Chrome-only user (no bundled device connectors exist server
+  // side; every one of them arrives as a device manifest).
+  let sourcesReadable = true;
   try {
     bundledDeviceConnectors = await getBundledDeviceConnectors();
   } catch (err) {
@@ -412,6 +551,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       '[device-connectors] Failed to read device connector catalog'
     );
     bundledDeviceConnectors = [];
+    sourcesReadable = false;
   }
 
   // Device data ALWAYS lands in the user's personal org — device tokens are
@@ -471,6 +611,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
       { userId, err: errorMessage(err) },
       '[device-connectors] Failed to read device connector manifests'
     );
+    sourcesReadable = false;
   }
 
   const byKey = new Map<
@@ -480,6 +621,16 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   >();
   for (const dc of bundledDeviceConnectors) byKey.set(dc.key, dc);
   for (const src of manifestSources) byKey.set(src.key, { ...src, source: 'device-manifest' });
+
+  // Runs BEFORE the early return: a fleet that advertises nothing is precisely
+  // the case where every device definition in the org has gone stale, so
+  // bailing on an empty `byKey` would skip the one pass that can clean it up.
+  // Gated on `sourcesReadable` rather than on `byKey.size` — a transient read
+  // failure must never be read as "the fleet serves nothing" and archive a
+  // user's whole working set.
+  if (sourcesReadable) {
+    await archiveVanishedDeviceConnectorDefinitions(userId, personalOrgId, [...byKey.keys()]);
+  }
   if (byKey.size === 0) return;
 
   await Promise.allSettled(
@@ -493,7 +644,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             dc.feedKeys,
             matchingDeviceIds,
             'source' in dc && dc.source === 'device-manifest'
-              ? { metadata: dc.metadata, sourcePath: dc.sourcePath }
+              ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
               : undefined
           )
         : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);

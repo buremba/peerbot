@@ -238,6 +238,25 @@ describe("approval notification rendering", () => {
 		expect(body).toContain(String.raw`- Entity ids: \[ 886 \]`);
 	});
 
+	test("setext underlines of any length are escaped", () => {
+		// A single "=" under a line turns it into an <h1>; the escape must not be
+		// limited to the 3+ runs that form a `---` thematic break.
+		for (const underline of ["=", "==", "--", "---"]) {
+			const body = formatActionApprovalBody({
+				details: {
+					kind: "entity_change",
+					operation: "delete",
+					actorLabel: "A watcher",
+					entityId: 1,
+					entityType: "topic",
+					entityName: "X",
+					reason: underline,
+				},
+			});
+			expect(body.split("\n").pop()).toBe(`\\${underline}`);
+		}
+	});
+
 	test("renderer-owned diff delimiters are not escaped away", () => {
 		// `~old~` is OUR strikethrough, not user text. Escaping the assembled
 		// diff line turned it into a literal `\~old\~`.

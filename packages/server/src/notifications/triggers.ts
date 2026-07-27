@@ -77,7 +77,10 @@ function escapeSlackText(value: string): string {
 function escapeMarkdownText(value: string): string {
 	return value
 		.replace(/([\\`*_~[\]<>])/g, "\\$1")
-		.replace(/^([ \t]{0,3})(-{3,}|={3,})(?=\s*$)/gm, "$1\\$2")
+		// Setext underlines and thematic breaks: ANY run length turns the line
+		// above into a heading ("Trusted line\n=" renders as <h1>), so this is not
+		// limited to the 3+ runs that form a `---` rule.
+		.replace(/^([ \t]{0,3})([-=]+)(?=[ \t]*$)/gm, "$1\\$2")
 		.replace(/^([ \t]{0,3})(?=[#>+-](?:\s|$))/gm, "$1\\")
 		.replace(/^([ \t]{0,3}\d{1,9})([.)])(?=\s|$)/gm, "$1\\$2");
 }

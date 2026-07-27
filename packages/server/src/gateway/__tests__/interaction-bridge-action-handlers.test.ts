@@ -397,3 +397,85 @@ describe("registerActionHandlers — guards", () => {
     expect(h.grantStore.grant).not.toHaveBeenCalled();
   });
 });
+
+describe("registerActionHandlers — suggestion", () => {
+  function setup(withCallback: boolean): {
+    handler: ActionHandler;
+    onSuggestionClick: ReturnType<typeof mock>;
+    thread: { post: ReturnType<typeof mock> };
+  } {
+    let captured: ActionHandler | undefined;
+    const chat = {
+      onAction: mock((h: ActionHandler) => {
+        captured = h;
+      }),
+    };
+    const onSuggestionClick = mock(async () => undefined);
+    const thread = { post: mock(async () => undefined) };
+
+    registerActionHandlers(
+      chat as any,
+      { id: "conn-1", platform: "slack" } as PlatformConnection,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      withCallback ? (onSuggestionClick as any) : undefined
+    );
+    if (!captured) throw new Error("onAction handler not registered");
+    return { handler: captured, onSuggestionClick, thread };
+  }
+
+  test("sends the chip's full message, not its button label", async () => {
+    // The action id carries a short title; `value` carries the real message.
+    // Sending the label would post a summary the user never chose.
+    const h = setup(true);
+    await h.handler({
+      actionId: "suggestion:s-7:0",
+      value: "Walk me through connecting Slack",
+      thread: h.thread,
+      user: { userId: "U_clicker", userName: "ada", fullName: "Ada Lovelace" },
+    });
+
+    expect(h.onSuggestionClick).toHaveBeenCalledTimes(1);
+    const [value, threadArg, author] = h.onSuggestionClick.mock.calls[0];
+    expect(value).toBe("Walk me through connecting Slack");
+    expect(threadArg).toBe(h.thread);
+    expect(author).toEqual({
+      userId: "U_clicker",
+      userName: "ada",
+      fullName: "Ada Lovelace",
+    });
+    // No bare post — the message must go through the turn pipeline.
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("drops a click that carries no value instead of guessing", async () => {
+    // A suggestion has no persisted row, so an empty value is unrecoverable.
+    // Falling back to the title would send a message the user did not pick.
+    const h = setup(true);
+    await h.handler({
+      actionId: "suggestion:s-7:0",
+      value: "",
+      thread: h.thread,
+      user: { userId: "U_clicker" },
+    });
+
+    expect(h.onSuggestionClick).not.toHaveBeenCalled();
+    expect(h.thread.post).not.toHaveBeenCalled();
+  });
+
+  test("falls back to a bare post when no click pipeline is wired", async () => {
+    const h = setup(false);
+    await h.handler({
+      actionId: "suggestion:s-7:1",
+      value: "Show me the diff",
+      thread: h.thread,
+      user: { userId: "U_clicker" },
+    });
+
+    expect(h.thread.post).toHaveBeenCalledTimes(1);
+    expect(h.thread.post.mock.calls[0][0]).toBe("Show me the diff");
+  });
+});

@@ -55,7 +55,7 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
   },
   suggest_actions: {
     description:
-      "Offer up to 4 obvious follow-up actions as tappable chips under your reply. Each `message` is sent verbatim as the user's next turn, so write it in the user's voice. Call this once near the end of a turn; it is non-blocking. Skip it when there is no clear next step.",
+      'ALWAYS call this once before you finish replying, unless the user explicitly said they are done. Offer 2-4 follow-up actions as tappable chips under your reply. Each `message` is sent verbatim as the user\'s next turn, so write it in the user\'s voice ("Show me the diff", not "I can show you the diff"). This is non-blocking and is how users navigate — a reply without chips is a dead end. If the obvious next step is unclear, suggest ways to go deeper on what you just discussed.',
   },
 };
 

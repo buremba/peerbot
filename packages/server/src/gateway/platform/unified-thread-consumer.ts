@@ -608,6 +608,7 @@ export class UnifiedThreadResponseConsumer {
  */
 const CHAT_INTERACTION_CHANNELS = [
   "question:created",
+  "suggestion:created",
   "tool:approval-needed",
   "link-button:created",
 ] as const;

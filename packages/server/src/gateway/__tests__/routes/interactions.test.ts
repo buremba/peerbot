@@ -31,6 +31,7 @@ describe("interaction routes", () => {
     mockInteractionService = {
       postQuestion: mock(() => Promise.resolve({ id: "interaction-123" })),
       postLinkButton: mock(() => Promise.resolve({ id: "link-123" })),
+      postSuggestion: mock(() => Promise.resolve({ id: "suggestion-123" })),
     };
 
     router = createInteractionRoutes(mockInteractionService);
@@ -158,6 +159,9 @@ describe("interaction routes", () => {
       expect(args.organizationId).toBe("org-1");
       expect(args.turnMessageId).toBe("msg-1");
       expect(args.prompts).toHaveLength(2);
+      // Web persists AND posts a card: the row is what the SPA replays on
+      // reload, the card is what renders on the live turn.
+      expect(mockInteractionService.postSuggestion).toHaveBeenCalledTimes(1);
     });
 
     test("server-side rejects malformed prompts (bare strings) without persisting", async () => {
@@ -176,7 +180,12 @@ describe("interaction routes", () => {
       expect(persistSuggestion).not.toHaveBeenCalled();
     });
 
-    test("rejects non-API platforms (no chat delivery yet) without persisting", async () => {
+    test("posts a card on chat platforms WITHOUT persisting a row", async () => {
+      // Chat suggestions ride the interaction-card rail, so they no longer 400
+      // (this test previously asserted the opposite). They are deliberately not
+      // persisted: a Slack card stays in the channel scrollback on its own,
+      // whereas the SPA rebuilds a conversation from history and needs the row.
+      // Persisting here would write rows nothing reads or supersedes.
       const slackToken = generateWorkerToken("user-1", "conv-1", "deploy-1", {
         channelId: "chan-1",
         teamId: "team-1",
@@ -192,10 +201,16 @@ describe("interaction routes", () => {
         },
         body: JSON.stringify({ prompts: [{ title: "T", message: "M" }] }),
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.success).toBe(false);
+      expect(body.success).toBe(true);
       expect(persistSuggestion).not.toHaveBeenCalled();
+      expect(mockInteractionService.postSuggestion).toHaveBeenCalledTimes(1);
+      // The chip's full message must survive to the card — the label alone is
+      // not what gets sent as the next turn.
+      const args = mockInteractionService.postSuggestion.mock.calls.at(-1);
+      expect(args?.[5]).toBe("slack");
+      expect(args?.[6]).toEqual([{ title: "T", message: "M" }]);
     });
 
     test("rejects an API turn with no organization context without persisting", async () => {

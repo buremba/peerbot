@@ -83,6 +83,19 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
+    // Suggested follow-up chips. Owner-gated like every other card here: the
+    // SSE socket may live on a different pod than the worker that emitted this,
+    // and a direct broadcast would render on the wrong pod (the failure mode
+    // that made chips persist correctly but never appear in the browser).
+    interactionService.on("suggestion:created", (event: any) => {
+      if (event.platform !== "api") return;
+      this.enqueueInteractionCard(queue, event, "suggestion", {
+        type: "suggestion",
+        suggestionId: event.id,
+        prompts: event.prompts,
+      });
+    });
+
     interactionService.on("tool:approval-needed", (event: any) => {
       if (event.platform !== "api") return;
       this.enqueueInteractionCard(queue, event, "tool-approval", {

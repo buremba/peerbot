@@ -28,13 +28,19 @@ describe("conversation plugin", () => {
     ]);
   });
 
-  test("withholds suggest_actions off the api platform", () => {
-    // The gateway 400s suggest_actions on every non-api platform, so exposing it
-    // there advertises a capability that cannot work. An undefined platform is
-    // included deliberately: unknown must fail closed, not default to api.
+  test("offers suggest_actions on every platform", () => {
+    // Suggestions ride the interaction-card rail (Card/Actions/Button), the
+    // same one ask_user already uses, so every chat platform can render them —
+    // with postWithFallback degrading to a numbered list where cards are
+    // unsupported. This previously asserted the OPPOSITE: the tool was gated to
+    // `api` because only the SPA had a renderer. Keeping that gate now would
+    // withhold a capability that works.
     for (const platform of ["slack", "telegram", undefined]) {
       const tools = createConversationTools({ ...params, platform });
-      expect(tools.map((tool) => tool.name)).toEqual(BASE_TOOLS);
+      expect(tools.map((tool) => tool.name)).toEqual([
+        ...BASE_TOOLS,
+        "suggest_actions",
+      ]);
     }
   });
 });

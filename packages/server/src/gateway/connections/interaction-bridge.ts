@@ -14,6 +14,7 @@ import type {
   InteractionService,
   PostedLinkButton,
   PostedQuestion,
+  PostedSuggestion,
   PostedToolApproval,
 } from "../interactions.js";
 import type { GrantStore } from "../permissions/grant-store.js";
@@ -565,7 +566,43 @@ export function registerInteractionBridge(
     },
   );
 
+  const onSuggestionCreated = withResolvedThread<PostedSuggestion>(
+    "suggestion:created",
+    async (event, thread) => {
+      if (event.prompts.length === 0) return;
+
+      // No pending row, unlike question:created. A question's card gates a
+      // suspended turn, so a click MUST find a row to claim; a suggestion is
+      // posted after the turn already ended, and its click is just an ordinary
+      // new user message. Nothing to reconcile if it is never tapped, so there
+      // is nothing to persist first and nothing to delete on post failure.
+      //
+      // The chip's full `message` rides in the action id, not the button label:
+      // the label is a short title and the message is what actually gets sent.
+      const buttons = event.prompts.map((prompt, i) =>
+        Button({
+          id: `suggestion:${event.id}:${i}`,
+          label: prompt.title,
+          value: prompt.message,
+        })
+      );
+      const card = Card({ children: [Actions(buttons)] });
+      // Platforms without card support get a numbered list. Each line shows the
+      // title only — the message can be a full sentence and would bury the list.
+      const fallbackText = event.prompts
+        .map((prompt, i) => `${i + 1}. ${prompt.title}`)
+        .join("\n");
+      await postWithFallback(
+        thread,
+        { card, fallbackText },
+        connectionId,
+        "suggestion interaction"
+      );
+    }
+  );
+
   interactionService.on("question:created", onQuestionCreated);
+  interactionService.on("suggestion:created", onSuggestionCreated);
   interactionService.on("tool:approval-needed", onToolApprovalNeeded);
   interactionService.on("link-button:created", onLinkButtonCreated);
 
@@ -682,12 +719,49 @@ export function registerInteractionBridge(
     },
     async (channelId, conversationId) =>
 			resolveThread(manager, connectionId, channelId, conversationId),
+    async (value, thread, author) => {
+      // A suggestion click is just a new user message — no claim, no receipt,
+      // no card edit. The chips intentionally stay clickable: the agent has
+      // already finished, so a second tap is a legitimate follow-up question
+      // rather than a double-submit against a suspended turn.
+      const instance = manager.getInstance(connectionId);
+      if (!instance) {
+        logger.warn(
+          { connectionId },
+					"Suggestion click: no instance for connection",
+        );
+        return;
+      }
+      if (!author?.userId) {
+        logger.debug(
+          { connectionId },
+					"Suggestion click without author.userId — ignoring",
+        );
+        return;
+      }
+      // Routed with the CLICKER's userId, unlike question clicks. A question
+      // resumes a specific suspended session keyed on the original asker; a
+      // suggestion starts a fresh turn, so whoever tapped it is the author.
+      await instance.messageBridge.ingestClick({
+        userId: author.userId,
+        channelId:
+          typeof thread?.channelId === "string" ? thread.channelId : "",
+        conversationId: typeof thread?.id === "string" ? thread.id : "",
+        teamId: typeof thread?.teamId === "string" ? thread.teamId : undefined,
+        authorName: author?.fullName,
+        authorUsername: author?.userName,
+        value,
+        thread,
+        responseThreadId: typeof thread?.id === "string" ? thread.id : undefined,
+      });
+    },
   );
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
 
   return () => {
     interactionService.off("question:created", onQuestionCreated);
+    interactionService.off("suggestion:created", onSuggestionCreated);
     interactionService.off("tool:approval-needed", onToolApprovalNeeded);
     interactionService.off("link-button:created", onLinkButtonCreated);
     for (const timer of activeTimers) {
@@ -720,6 +794,18 @@ type OnQuestionClickFn = (
 ) => Promise<void>;
 
 /**
+ * `value` is the chip's full `message` (what gets sent as the next user turn),
+ * not its short button label. No `suggestionId` is threaded through: unlike a
+ * question there is no pending row to claim — the id exists only to make the
+ * action id unique per card.
+ */
+type OnSuggestionClickFn = (
+  value: string,
+  thread: any,
+	author: { userId?: string; userName?: string; fullName?: string } | undefined,
+) => Promise<void>;
+
+/**
  * Exported for testing. Wires chat.onAction to tool-approval and question flows.
  *
  * `claimApprovalCard` (optional) returns the SentMessage for a given
@@ -728,6 +814,9 @@ type OnQuestionClickFn = (
  * away. Absent in tests.
  *
  * `onQuestionClick` (optional) handles the `question:*` click path. Absent
+ * in tests that only exercise tool-approval flows.
+ *
+ * `onSuggestionClick` (optional) handles the `suggestion:*` click path. Absent
  * in tests that only exercise tool-approval flows.
  */
 export function registerActionHandlers(
@@ -741,6 +830,7 @@ export function registerActionHandlers(
     channelId: string,
 		conversationId: string,
 	) => Promise<any | null>,
+  onSuggestionClick?: OnSuggestionClickFn,
 ): void {
 	chat.onAction(async (event: any) => {
 		const actionId: string = event.actionId ?? "";
@@ -1036,6 +1126,39 @@ export function registerActionHandlers(
     }
 
     // Handle question responses — Button value carries the option text on all platforms
+    if (actionId.startsWith("suggestion:")) {
+      // The chip's message rides in `value`. There is deliberately no index
+      // fallback the way `question:` has one: a question's option list is
+      // recoverable from its persisted row, but a suggestion has no row, so an
+      // empty value means the platform dropped the payload and we have nothing
+      // to send. Posting the bare title instead would send the user a message
+      // they did not choose.
+      if (!value) {
+        logger.debug(
+          { connectionId: connection.id, actionId },
+					"Suggestion click carried no value — ignoring",
+        );
+        return;
+      }
+      if (!onSuggestionClick) {
+        try {
+          await thread.post(value);
+        } catch {
+          // best effort
+        }
+        return;
+      }
+      try {
+        await onSuggestionClick(value, thread, event.user);
+      } catch (error) {
+        logger.error(
+          { connectionId: connection.id, error: String(error) },
+					"Failed to handle suggestion click",
+        );
+      }
+      return;
+    }
+
     if (actionId.startsWith("question:")) {
       const parts = actionId.split(":");
       const questionId = parts[1] ?? "";

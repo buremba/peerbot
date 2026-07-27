@@ -73,6 +73,22 @@ export interface PostedQuestion extends BaseMessage {
 }
 
 /**
+ * Payload emitted on "suggestion:created" — platform renderers listen for this.
+ *
+ * Suggested follow-up actions rendered as tappable chips under a reply. Unlike
+ * `PostedQuestion`, tapping one does NOT answer a blocked turn: the agent has
+ * already finished, and the chip's `message` is sent verbatim as the user's
+ * NEXT turn. That is why each option carries both a short `title` (the button
+ * label) and a full `message` (what actually gets sent) rather than a single
+ * string — the label is a summary, not the payload.
+ */
+export interface PostedSuggestion extends BaseMessage {
+  userId: string;
+  platform: string;
+  prompts: Array<{ title: string; message: string }>;
+}
+
+/**
  * Payload emitted on "link-button:created" — platform renderers listen for this.
  *
  * `body`: optional explanatory text shown above the button inside the card.
@@ -193,6 +209,50 @@ export class InteractionService extends EventEmitter {
     );
 
     this.emit("question:created", posted);
+    return posted;
+  }
+
+  /**
+   * Post suggested follow-up actions as chips (non-blocking, fire-and-forget).
+   * Emits "suggestion:created" for platform renderers.
+   *
+   * Fire-and-forget in the strict sense: the agent's turn has already ended, so
+   * nothing is waiting on a click. A chip that is never tapped simply expires
+   * with the conversation — there is no pending row to reconcile, unlike
+   * `postQuestion`, whose card gates a suspended turn.
+   */
+  async postSuggestion(
+    userId: string,
+    conversationId: string,
+    channelId: string,
+    teamId: string | undefined,
+    connectionId: string | undefined,
+    platform: string,
+    prompts: Array<{ title: string; message: string }>,
+    source?: string
+  ): Promise<PostedSuggestion> {
+    assertRoutableInteraction(connectionId, platform, "suggestion");
+    if (this.beforeCreateHook) {
+      await this.beforeCreateHook(userId, conversationId);
+    }
+
+    const posted: PostedSuggestion = {
+      id: `s_${randomUUID()}`,
+      userId,
+      conversationId,
+      channelId,
+      teamId,
+      connectionId,
+      platform,
+      prompts,
+      source,
+    };
+
+    logger.info(
+      `Posted ${prompts.length} suggestion(s) ${posted.id} for conversation ${conversationId}`
+    );
+
+    this.emit("suggestion:created", posted);
     return posted;
   }
 

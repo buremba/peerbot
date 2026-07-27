@@ -1498,6 +1498,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       const baseOptions: Record<string, any> = {
         provider: session.provider || "claude",
         model: behaviorModel ?? session.model,
+        nixConfig: session.nixConfig,
         ...(behaviorModel ? { behaviorModelOverride: true } : {}),
       };
       const agentOptions = await resolveAgentOptions(
@@ -1510,6 +1511,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       const {
         networkConfig: settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
+        nixConfig: resolvedNixConfig,
         ...remainingOptions
       } = agentOptions;
 
@@ -1623,6 +1625,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         agentOptions: remainingOptions,
         networkConfig: session.networkConfig || settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
+        nixConfig: resolvedNixConfig,
       });
 
       rootSpan?.end();

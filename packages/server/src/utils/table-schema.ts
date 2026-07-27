@@ -141,9 +141,47 @@ const DECLARED_SECRET_KEYS_SUBQUERY =
   `AND af->>'key' IS NOT NULL` +
   `) dk)`;
 
+/**
+ * The declared-secret key set for one `feeds` row.
+ *
+ * A feed's own credentials are declared in
+ * `feeds_schema[feed_key].configSchema.properties.<k>.format === "password"`.
+ * `FeedDefinition.configSchema` is an unconstrained `Record<string, unknown>`,
+ * so a CUSTOM connector may name such a field anything; no shipped connector
+ * declares one today (all 27 audited, zero hits), which makes this latent
+ * rather than live — but custom connector definitions are a supported feature,
+ * and a redactor documented as total must not exempt a declaration site.
+ *
+ * `feeds` carries no `connector_key` of its own, so the definition is reached
+ * through `connection_id` → `connections` → `connector_definitions`. Both hops
+ * are org-scoped, so another tenant's definition can never decide what this row
+ * redacts.
+ */
+const FEED_DECLARED_SECRET_KEYS_SUBQUERY =
+  `(SELECT COALESCE(array_agg(fp.key), ARRAY[]::text[]) ` +
+  `FROM public.connections cfeed ` +
+  `JOIN LATERAL (` +
+  `SELECT cdfeed.feeds_schema ` +
+  `FROM public.connector_definitions cdfeed ` +
+  `WHERE cdfeed.key = cfeed.connector_key ` +
+  `AND cdfeed.organization_id = cfeed.organization_id ` +
+  `AND cdfeed.status = 'active' ` +
+  `ORDER BY cdfeed.updated_at DESC LIMIT 1` +
+  `) cdf ON TRUE, ` +
+  `jsonb_each(cdf.feeds_schema -> %ALIAS%.feed_key -> 'configSchema' -> 'properties') fp ` +
+  `WHERE cfeed.id = %ALIAS%.connection_id ` +
+  `AND cfeed.organization_id = %ALIAS%.organization_id ` +
+  `AND jsonb_typeof(cdf.feeds_schema -> %ALIAS%.feed_key -> 'configSchema' -> 'properties') = 'object' ` +
+  `AND fp.value->>'format' = 'password')`;
+
 /** Bind {@link DECLARED_SECRET_KEYS_SUBQUERY} to a concrete table alias. */
 export function declaredSecretKeysExpr(alias: string): string {
   return DECLARED_SECRET_KEYS_SUBQUERY.split('%ALIAS%').join(alias);
+}
+
+/** Bind {@link FEED_DECLARED_SECRET_KEYS_SUBQUERY} to a concrete table alias. */
+export function feedDeclaredSecretKeysExpr(alias: string): string {
+  return FEED_DECLARED_SECRET_KEYS_SUBQUERY.split('%ALIAS%').join(alias);
 }
 
 /**
@@ -237,17 +275,19 @@ function buildRedactionExpr(
 /**
  * The `config` column, redacted at the chokepoint.
  *
- * `withDeclaredSecrets` is set for `connections`, whose rows carry the
- * `connector_key` + `organization_id` needed to resolve the connector's
- * declared secret fields. `feeds.config` has no such association, so it stays
- * on heuristic + URI redaction — feed-scoped config is not where connectors
- * declare credentials.
+ * Both `connections` and `feeds` resolve their connector's DECLARED secret
+ * fields on top of the keyname/URI heuristic — a declared secret with an
+ * off-denylist name would otherwise be redacted by the TypeScript serializers
+ * and served plaintext here. The two differ only in how the definition is
+ * reached: a connection carries `connector_key` directly, a feed reaches it
+ * through `connection_id` (see {@link feedDeclaredSecretKeysExpr}), which is
+ * why `buildColumnList` binds the marker per table.
  */
-function redactedConfigColumn(withDeclaredSecrets = false): ColumnDef {
+function redactedConfigColumn(): ColumnDef {
   return {
     name: 'config',
     type: 'jsonb',
-    expr: buildRedactionExpr(COLUMN_REF, REDACTION_DEPTH, withDeclaredSecrets),
+    expr: buildRedactionExpr(COLUMN_REF, REDACTION_DEPTH, true),
   };
 }
 
@@ -333,7 +373,7 @@ export const QUERYABLE_SCHEMA = {
           'account_id',
           'entity_ids'
         ),
-        redactedConfigColumn(true),
+        redactedConfigColumn(),
         ...cols(
           'error_message',
           'created_by',
@@ -678,7 +718,11 @@ export const SAFE_COLUMN_DEFS = new Map<string, ColumnDef[]>(
 );
 
 /** Build a SELECT column list from column defs, optionally prefixed with a table alias. */
-export function buildColumnList(defs: ColumnDef[], alias?: string): string {
+export function buildColumnList(
+  defs: ColumnDef[],
+  alias?: string,
+  table?: string
+): string {
   return defs
     .map((c) => {
       if (c.expr) {
@@ -693,16 +737,20 @@ export function buildColumnList(defs: ColumnDef[], alias?: string): string {
             ? c.expr.replace(/^(\w+)/, `${alias}.$1`)
             : c.expr;
         // `$DECLARED$` resolves to the connector's declared secret key set for
-        // the row. It needs a table alias to correlate on (connector_key +
-        // organization_id); with no alias there is nothing to correlate to, so
-        // it degrades to the empty set — heuristic-only, never MORE exposed
-        // than before, just less precise.
+        // the row. It needs a table alias to correlate on, and the correlation
+        // differs per table: `connections` carries `connector_key` directly,
+        // `feeds` reaches the definition through `connection_id`. With no alias
+        // — or an unrecognized table — there is nothing to correlate to, so it
+        // degrades to the empty set: heuristic-only, never MORE exposed than
+        // before, just less precise.
         if (prefixed.includes(DECLARED_SECRETS_REF)) {
-          prefixed = prefixed
-            .split(DECLARED_SECRETS_REF)
-            .join(
-              alias ? declaredSecretKeysExpr(alias) : `ARRAY[]::text[]`
-            );
+          const declared =
+            alias && table === 'connections'
+              ? declaredSecretKeysExpr(alias)
+              : alias && table === 'feeds'
+                ? feedDeclaredSecretKeysExpr(alias)
+                : `ARRAY[]::text[]`;
+          prefixed = prefixed.split(DECLARED_SECRETS_REF).join(declared);
         }
         return `${prefixed} as "${c.name}"`;
       }

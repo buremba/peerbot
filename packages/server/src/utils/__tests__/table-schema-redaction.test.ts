@@ -85,7 +85,11 @@ describe('table-schema config redaction', () => {
 
     // Bound to an alias, the marker must resolve to a real correlated lookup
     // over connector_definitions — not silently vanish.
-    const bound = buildColumnList(SAFE_COLUMN_DEFS.get('connections') ?? [], 'cn');
+    const bound = buildColumnList(
+      SAFE_COLUMN_DEFS.get('connections') ?? [],
+      'cn',
+      'connections'
+    );
     expect(bound).not.toContain(DECLARED_SECRETS_REF);
     expect(bound).toContain('connector_definitions');
     expect(bound).toContain("'password'");
@@ -94,6 +98,29 @@ describe('table-schema config redaction', () => {
     // must not decide what this row redacts.
     expect(bound).toContain('cn.organization_id');
     expect(bound).toContain('cn.connector_key');
+  });
+
+  it('incorporates connector-declared secrets for feeds, correlated via connection_id', () => {
+    // `feeds` carries no `connector_key`, so the definition is reached through
+    // `connection_id` -> `connections` -> `connector_definitions`. An earlier
+    // pass claimed this was not correlatable and left the feeds arm
+    // heuristic-only; it IS correlatable, and this pins it.
+    const bound = buildColumnList(SAFE_COLUMN_DEFS.get('feeds') ?? [], 'fd', 'feeds');
+    expect(bound).not.toContain(DECLARED_SECRETS_REF);
+    expect(bound).toContain('connector_definitions');
+    expect(bound).toContain("'configSchema'");
+    expect(bound).toContain('fd.connection_id');
+    expect(bound).toContain('fd.feed_key');
+    // Org-scoped on BOTH hops.
+    expect(bound).toContain('fd.organization_id');
+    expect(bound).toContain('cdfeed.organization_id = cfeed.organization_id');
+  });
+
+  it('falls back to the empty set for an unrecognized table', () => {
+    // No correlation available -> heuristic-only, never MORE exposed.
+    const bound = buildColumnList(SAFE_COLUMN_DEFS.get('feeds') ?? [], 'z', 'not_a_table');
+    expect(bound).not.toContain(DECLARED_SECRETS_REF);
+    expect(bound).toContain('ARRAY[]::text[]');
   });
 
   it('emits a redacting expression for connections.config and feeds.config', () => {
@@ -107,7 +134,7 @@ describe('table-schema config redaction', () => {
         `${table}.config must carry a redacting expr, not be selected raw`
       ).toBeTruthy();
       // The generated list must never contain a bare reference to the column.
-      const list = buildColumnList(defs ?? [], 'x');
+      const list = buildColumnList(defs ?? [], 'x', table);
       expect(list).toContain('as "config"');
       expect(list).not.toMatch(/x\."config" as "config"/);
     }

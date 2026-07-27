@@ -273,6 +273,131 @@ describe("connection config redaction", () => {
  * other, but only via `isSecretKey` — so by construction it could never catch
  * a schema-declared name. That is what this test is for.
  */
+/**
+ * Feed-scoped declared secrets.
+ *
+ * `FeedDefinition.configSchema` is `Record<string, unknown>` — completely
+ * unconstrained — so a CUSTOM connector may declare `format: "password"` on a
+ * feed's own config just as it can on the connection's. No shipped connector
+ * does today (all 27 audited, zero hits), so this is a latent hole rather than
+ * a live leak — but custom connector definitions are a supported product
+ * feature, and a redactor documented as total must not silently exempt one
+ * declaration site.
+ *
+ * Both feed surfaces are covered: the manage_feeds serializers and the
+ * `SELECT config FROM feeds` arm of query_sql.
+ */
+describe("feed tools honor schema-declared secrets", () => {
+	let workspace: TestWorkspace;
+	let feedId: number;
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		workspace = await TestWorkspace.create({
+			name: "Feed Declared Secret Org",
+			visibility: "public",
+		});
+
+		const sql = getTestDb();
+		// A connector whose FEED declares a secret field the keyname heuristic
+		// cannot see — `signingMaterial` matches neither the suffix regex nor the
+		// exact-name set.
+		await sql`
+      INSERT INTO connector_definitions (
+        key, name, version, options_schema, auth_schema, feeds_schema,
+        organization_id, status, created_at, updated_at
+      ) VALUES (
+        'feeddeclared', 'Feed Declared Secret Connector', '1.0.0',
+        ${sql.json({ type: "object", properties: {} })},
+        ${sql.json({ methods: [{ type: "none" }] })},
+        ${sql.json({
+					default: {
+						key: "default",
+						name: "Default",
+						configSchema: {
+							type: "object",
+							properties: {
+								signingMaterial: { type: "string", format: "password" },
+								host: { type: "string" },
+							},
+						},
+					},
+				})},
+        ${workspace.org.id}, 'active', NOW(), NOW()
+      )
+    `;
+
+		const connection = await createTestConnection({
+			organization_id: workspace.org.id,
+			connector_key: "feeddeclared",
+			display_name: "Feed Declared Connection",
+			created_by: workspace.users.owner.id,
+			visibility: "org",
+		});
+
+		const rows = await sql`
+      UPDATE feeds
+      SET config = ${sql.json({
+				signingMaterial: "pw-LEAK-feed-declared",
+				host: "feed.internal",
+			})}::jsonb
+      WHERE connection_id = ${Number(connection.id)}
+      RETURNING id
+    `;
+		feedId = Number((rows[0] as { id: number }).id);
+	});
+
+	it("redacts a feed's declared secret through feeds.get()", async () => {
+		const result = await workspace.owner.feeds.get({ feed_id: feedId });
+		expect(
+			JSON.stringify(result).includes("pw-LEAK-feed-declared"),
+			"feeds.get() leaked a configSchema format:password field",
+		).toBe(false);
+
+		// Redaction, not suppression — the non-secret declared field survives.
+		const feed = (result as { feed?: { config?: Record<string, unknown> } })
+			.feed;
+		expect(feed?.config?.host).toBe("feed.internal");
+	});
+
+	it("redacts a feed's declared secret through feeds.list()", async () => {
+		const result = await workspace.owner.feeds.list({});
+		expect(
+			JSON.stringify(result).includes("pw-LEAK-feed-declared"),
+			"feeds.list() leaked a configSchema format:password field",
+		).toBe(false);
+	});
+
+	it("redacts a feed's declared secret through query_sql", async () => {
+		const memberCtx = {
+			organizationId: workspace.org.id,
+			userId: workspace.users.member.id,
+			memberRole: "member",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: true,
+			allowCrossOrg: false,
+			scopes: ["mcp:read"],
+		} as ToolContext;
+
+		const result = await querySql(
+			{ sql: "SELECT id, config FROM feeds" } as never,
+			{} as never,
+			memberCtx,
+		);
+		expect(
+			JSON.stringify(result).includes("pw-LEAK-feed-declared"),
+			"query_sql leaked a feed configSchema format:password field",
+		).toBe(false);
+
+		const rows = (result as { rows?: Array<{ config?: unknown }> }).rows ?? [];
+		expect(rows.length).toBeGreaterThan(0);
+		expect((rows[0]?.config as Record<string, unknown>)?.host).toBe(
+			"feed.internal",
+		);
+	});
+});
+
 describe("query_sql honors schema-declared secrets", () => {
 	let workspace: TestWorkspace;
 

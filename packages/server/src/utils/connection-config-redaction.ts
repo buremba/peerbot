@@ -45,7 +45,7 @@ export { REDACTED_SENTINEL };
  * conventions. Top-level `config` keys only — nesting under them is handled by
  * the recursive keyname backstop.
  */
-type ConnectorSecretKeys = ReadonlySet<string>;
+export type ConnectorSecretKeys = ReadonlySet<string>;
 
 /** Collect `options_schema.properties.<key>.format === 'password'` keys. */
 function optionPasswordKeys(optionsSchema: unknown): string[] {
@@ -101,6 +101,81 @@ export function connectorSecretKeysFromSchemas(params: {
 		...optionPasswordKeys(params.optionsSchema),
 		...authSecretFieldKeys(params.authSchema),
 	]);
+}
+
+/**
+ * Declared secret keys for ONE feed, from its connector's
+ * `feeds_schema[feed_key].configSchema.properties.<k>.format === "password"`.
+ *
+ * `FeedDefinition.configSchema` is `Record<string, unknown>` — unconstrained —
+ * so a custom connector may declare a feed-scoped credential under any name.
+ * No shipped connector does today, but the redaction contract must not exempt
+ * a declaration site just because nothing currently uses it.
+ */
+export function feedSecretKeysFromSchema(
+	feedsSchema: unknown,
+	feedKey: string,
+): ConnectorSecretKeys {
+	if (!feedsSchema || typeof feedsSchema !== "object") return new Set();
+	const definition = (feedsSchema as Record<string, unknown>)[feedKey];
+	if (!definition || typeof definition !== "object") return new Set();
+	return new Set(
+		optionPasswordKeys((definition as Record<string, unknown>).configSchema),
+	);
+}
+
+/**
+ * Batch form: resolve each row's feed-declared secret keys from its own
+ * `connector_key` + `feed_key`, in ONE query for the whole page.
+ *
+ * Rows must carry `feed_key` and `connector_key` (the manage_feeds queries
+ * already join the connection for `connector_key`).
+ */
+export async function loadFeedSecretKeys(
+	organizationId: string,
+	rows: ReadonlyArray<{ connector_key?: unknown; feed_key?: unknown }>,
+): Promise<Map<string, ConnectorSecretKeys>> {
+	const byConnectorFeed = new Map<string, ConnectorSecretKeys>();
+	const connectorKeys = [
+		...new Set(rows.map((r) => String(r.connector_key ?? "")).filter(Boolean)),
+	];
+	if (connectorKeys.length === 0) return byConnectorFeed;
+
+	const sql = getDb();
+	const definitions = await sql`
+    SELECT DISTINCT ON (key) key, feeds_schema
+    FROM connector_definitions
+    WHERE organization_id = ${organizationId}
+      AND status = 'active'
+      AND key = ANY(${pgTextArray(connectorKeys)}::text[])
+    ORDER BY key, updated_at DESC
+  `;
+	const schemaByConnector = new Map<string, unknown>(
+		(
+			definitions as unknown as Array<{ key: string; feeds_schema: unknown }>
+		).map((row) => [row.key, row.feeds_schema]),
+	);
+
+	for (const row of rows) {
+		const connectorKey = String(row.connector_key ?? "");
+		const feedKey = String(row.feed_key ?? "");
+		if (!connectorKey || !feedKey) continue;
+		const cacheKey = `${connectorKey}\u0000${feedKey}`;
+		if (byConnectorFeed.has(cacheKey)) continue;
+		byConnectorFeed.set(
+			cacheKey,
+			feedSecretKeysFromSchema(schemaByConnector.get(connectorKey), feedKey),
+		);
+	}
+	return byConnectorFeed;
+}
+
+/** Key into the {@link loadFeedSecretKeys} map for a row. */
+export function feedSecretKeyLookup(row: {
+	connector_key?: unknown;
+	feed_key?: unknown;
+}): string {
+	return `${String(row.connector_key ?? "")}\u0000${String(row.feed_key ?? "")}`;
 }
 
 /**
@@ -244,31 +319,24 @@ function isRedactedValue(value: unknown): boolean {
 /**
  * Restore redacted values in an INCOMING config from what is already stored.
  *
- * Clients may round-trip config: the Owletto action-modes editor spreads the
- * fetched `connection.config` and PATCHes it back with one field changed, and
- * agents can use the same read-modify-write pattern through run_sdk.
- * Because the read path now returns `__LOBU_REDACTED__` where a secret used to
- * be, that write would persist the SENTINEL over the live credential: the
- * connection breaks at next use, with no error at save time and no way to
- * recover the plaintext. That is data loss caused by the redaction, which is
- * strictly worse than the leak it prevents.
+ * INVARIANT: on the write side a sentinel means "unchanged", never a literal
+ * value. Clients round-trip config (the Owletto editor spreads
+ * `connection.config` and PATCHes it back; agents do the same via run_sdk), so
+ * without this the sentinel would overwrite the live credential — silent data
+ * loss, worse than the leak the redaction prevents. Rotation still works: new
+ * plaintext carries no sentinel.
  *
- * So a sentinel on the WRITE side means "unchanged": it is replaced with the
- * value currently stored at the same path. Well-behaved clients see a no-op;
- * a client that genuinely wants to rotate a secret sends the new plaintext,
- * which contains no sentinel and is written normally.
+ * Preserve was chosen over rejecting the write because the API is public and
+ * already in use; a 400 would break shipped clients for doing the obvious
+ * read-modify-write.
  *
- * Walks objects and arrays so it matches the read path's depth, and handles
- * the URI form by restoring the stored value whenever the incoming string
- * merely CONTAINS a sentinel. A sentinel with no stored counterpart (a key that
- * did not previously exist) is dropped rather than persisted — writing the
- * literal placeholder is never the caller's intent.
+ * Walks objects and arrays to match the read path's depth, and treats a string
+ * that CONTAINS a sentinel as redacted so the URI form is covered too. A
+ * sentinel with no stored counterpart is dropped rather than persisted.
  *
- * REJECTING the write instead was the alternative. Preserve wins because the
- * API is public and already in use: an agent that reads-modifies-writes is
- * doing the obvious thing, and a 400 would break the shipped action-modes
- * toggle until every client is patched. Preserve is invisible to correct
- * clients and lossless for careless ones.
+ * Callers must pass the value they are actually writing against — restoring
+ * from a stale snapshot rolls back a concurrent rotation, so read the row under
+ * the same lock/transaction as the write.
  */
 export function restoreRedactedConfig(
 	incoming: unknown,

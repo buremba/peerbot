@@ -99,6 +99,7 @@ function truncateNotificationLine(value: string): string {
 		: normalized;
 }
 
+
 /** "$parent_id" → "Parent id", "entity_type" → "Entity type". */
 export function formatLabel(value: string): string {
 	return value
@@ -207,8 +208,16 @@ function buildApprovalRenderModel(
 	details: ActionApprovalDetails,
 ): ApprovalRenderModel {
 	const base = {
-		requestedBy: details.actorLabel ?? null,
-		entityName: details.entityName ?? null,
+		// Collapsed to one line: these are interpolated into a single summary
+		// sentence, and an embedded newline would split it across Markdown
+		// paragraphs — leaving the card preview (first block only) showing a
+		// truncated half-sentence.
+		requestedBy: details.actorLabel
+			? truncateNotificationLine(details.actorLabel)
+			: null,
+		entityName: details.entityName
+			? truncateNotificationLine(details.entityName)
+			: null,
 		entityUrl: details.entityUrl ?? null,
 		entityId: details.entityId ?? null,
 		entityTypeLabel: details.entityType ? formatLabel(details.entityType) : null,
@@ -343,7 +352,7 @@ export function formatActionApprovalBody(params: {
 	// Escaped like every other interpolation into this Markdown body — a
 	// connection named "X](https://evil) [y" would otherwise forge an anchor.
 	const connLabel = params.connectionName
-		? ` on ${escapeMarkdownText(params.connectionName)}`
+		? ` on ${escapeMarkdownText(truncateNotificationLine(params.connectionName))}`
 		: "";
 	const urlLine = params.approvalUrl
 		? `\n\nReview: ${formatReviewLink(params.approvalUrl)}`

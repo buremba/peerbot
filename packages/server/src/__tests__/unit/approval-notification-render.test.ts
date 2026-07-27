@@ -238,6 +238,31 @@ describe("approval notification rendering", () => {
 		expect(body).toContain(String.raw`- Entity ids: \[ 886 \]`);
 	});
 
+	test("multiline names collapse so the summary stays one sentence", () => {
+		// A blank line inside a name would split the summary across Markdown
+		// paragraphs, and the card preview (first block only) would then show a
+		// misleading half-sentence: "wants to delete Bad".
+		const body = formatActionApprovalBody({
+			details: {
+				kind: "entity_change",
+				operation: "delete",
+				actorLabel: "An\nagent",
+				entityId: 5,
+				entityType: "topic",
+				entityName: "Bad\n\nName",
+				reason: null,
+			},
+		});
+		expect(body).toBe("**An agent** wants to delete Bad Name (#5).");
+
+		expect(
+			formatActionApprovalBody({
+				connectionName: "Git\nHub",
+				approvalUrl: "/acme/runs/1",
+			}),
+		).toContain("A queued action on Git Hub is waiting");
+	});
+
 	test("generic approval escapes the connection name", () => {
 		// The non-structured branch interpolates connectionName straight into the
 		// Markdown body; unescaped it could forge an external "Review" anchor.

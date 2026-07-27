@@ -43,6 +43,7 @@ import {
 import {
   createPluginLogger,
   createRuntimePluginHost,
+  isUnattendedSource,
 } from "./plugin-composition";
 import type { AgentProgressProcessor } from "./processor";
 import { resetSessionForProviderChange } from "./provider-session";
@@ -647,14 +648,34 @@ export async function runAISession(
 
   progressProcessor.setVerboseLogging(verboseLogging);
 
+  // Whether this turn runs unattended (e.g. the hidden `starters` turn): no
+  // user is watching and no one has consented to side effects. The plugin host
+  // already restricts plugin/MCP tools for these sources; the runtime enforces
+  // the rest of the capability boundary below: no built-in tools, and MCP
+  // exposed as read-only first-class `tools` (never a `cli` that could shell
+  // out mutations). `toolsConfig.allowedTools` cannot express this: with strict
+  // mode off `isToolAllowedByPolicy` passes every built-in, so a dispatched
+  // `allowedTools: []` is inert and the boundary must be structural.
+  const source =
+    typeof (platformMetadata as { source?: unknown } | undefined)?.source ===
+    "string"
+      ? (platformMetadata as { source: string }).source
+      : undefined;
+  const unattended = isUnattendedSource(source);
+
   // Resolve how MCP tools should be exposed to the agent. In embedded mode,
   // operators can swap the many first-class MCP tools for a small set of
-  // per-server just-bash CLIs (keeps the tool list lean).
+  // per-server just-bash CLIs (keeps the tool list lean). Unattended turns are
+  // pinned to read-only first-class `tools`: a `cli` exposure would hand the
+  // turn a bash surface that sidesteps the read-only MCP filter.
   const configuredMcpExposure = (
     rawOptions.toolsConfig as ToolsConfig | undefined
   )?.mcpExposure;
-  const mcpExposure: "tools" | "cli" =
-    configuredMcpExposure === "cli" ? "cli" : "tools";
+  const mcpExposure: "tools" | "cli" = unattended
+    ? "tools"
+    : configuredMcpExposure === "cli"
+      ? "cli"
+      : "tools";
 
   // Fetch session context BEFORE model resolution. Pass `mcpExposure` so
   // MCP setup instructions use the right call syntax.
@@ -1041,10 +1062,17 @@ export async function runAISession(
   // credential-strip), and the `!`-bash intercept reuses the same guards (via
   // enforceBashPreflight) rather than a second raw path. The filter then removes
   // bash entirely when the agent policy disallows it (strict / disallowedTools).
-  const tools = createLobuTools(workspaceDir, {
+  const builtinTools = createLobuTools(workspaceDir, {
     bashOperations: embeddedBashOps,
     bashPolicy: toolsPolicy.bashPolicy,
   }).filter((tool) => isToolAllowedByPolicy(tool.name, toolsPolicy));
+  // Unattended turns get NO built-in tools (read/write/edit/bash/…): they run
+  // without a user, so a filesystem or shell surface is capability the turn has
+  // no consent to use. The policy filter above can't enforce this (strict mode
+  // is off, so it passes everything), so we drop them structurally here. This
+  // also disables the `!`-bang bash path below, which is guarded on a `bash`
+  // tool being present.
+  const tools = unattended ? [] : builtinTools;
 
   // Credential injection — resolve API key from the in-memory credential store,
   // falling back to process.env only for values that were present at startup.
@@ -1164,11 +1192,7 @@ user references earlier discussion or you need prior context.`);
     onMcpAuthChanged: invalidateSessionContextCache,
     // Unattended sources (e.g. "starters") compose a restricted plugin host:
     // read-only MCP tools, no conversation mutation, no memory capture.
-    source:
-      typeof (platformMetadata as { source?: unknown } | undefined)?.source ===
-      "string"
-        ? (platformMetadata as { source: string }).source
-        : undefined,
+    source,
   });
   const pluginRuntimeContext: PluginRuntimeContext = {
     organizationId,

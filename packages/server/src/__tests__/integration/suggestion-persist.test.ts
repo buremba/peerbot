@@ -119,9 +119,13 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		expect(current?.turnMessageId).toBe("msg-2");
 	});
 
-	it("finalize supersedes a prior set on a turn that emitted none", async () => {
+	it("finalize supersedes a prior set on a LATER turn that emitted none", async () => {
 		// A later turn (msg-9) completes without (re)issuing suggestions → the
-		// stale msg-2 chips must be cleared.
+		// stale msg-2 chips must be cleared. Clearing requires ordering evidence:
+		// seed both turns' runs so msg-2 (resolved from its turnMessageId) is
+		// provably EARLIER than the completing msg-9.
+		await seedTurnRun("msg-2");
+		await seedTurnRun("msg-9");
 		await finalizeTurnSuggestions({
 			organizationId: orgId,
 			conversationId,
@@ -240,5 +244,28 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		});
 
 		expect(await readCurrentSuggestion(orgId, conversationId)).toBeNull();
+	});
+
+	it("does NOT clear a set it cannot order (no resolvable run id)", async () => {
+		// The deployment-token case: `worker.runId` is absent, so the row is
+		// stamped run_id = null, and no agent_run_input row backs its
+		// turnMessageId either. The set is UNORDERABLE — finalize cannot prove it
+		// belongs to an earlier turn, so it must leave it in place. Clearing it
+		// unconditionally is exactly the "erase the chips the user is looking at"
+		// bug the ordering guard exists to prevent.
+		const id = await persistSuggestion({
+			organizationId: orgId,
+			conversationId,
+			prompts: [{ title: "Keep", message: "keep me" }],
+			turnMessageId: "msg-unorderable",
+		});
+		await finalizeTurnSuggestions({
+			organizationId: orgId,
+			conversationId,
+			turnMessageIds: ["msg-also-unorderable"],
+		});
+		const current = await readCurrentSuggestion(orgId, conversationId);
+		expect(current?.id).toBe(id);
+		expect(current?.prompts).toEqual([{ title: "Keep", message: "keep me" }]);
 	});
 });

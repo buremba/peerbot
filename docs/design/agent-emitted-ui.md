@@ -139,9 +139,14 @@ hard way, all still true:
   after refresh (this produced a visible bug: the worker's `## This conversation` scaffolding
   showed above every user message on reload — fixed in `stripRunContextBlock`, core
   `session-file.ts`).
-- **Unattended turns must not gain capability.** Anything that dispatches a hidden turn goes
-  through `UNATTENDED_SOURCES` (agent-worker `plugin-composition.ts`): read-only MCP tools
-  only, no conversation mutation, no memory capture. `toolsConfig.allowedTools` does NOT
-  cover plugin/MCP tools — it gates built-ins only.
+- **Unattended turns must not gain capability.** Anything that dispatches a hidden turn is
+  matched by `isUnattendedSource` (agent-worker `plugin-composition.ts`), and the boundary is
+  enforced by the runtime, not by dispatch config. `plugin-composition.ts` restricts the
+  plugin host (read-only MCP tools only, no conversation mutation, no memory capture); the
+  session runner additionally drops ALL built-in tools (no read/write/edit/bash, which also
+  disables `!`-bash) and pins MCP exposure to read-only first-class `tools` (never a `cli`
+  shell surface). `toolsConfig.allowedTools` cannot express any of this: it gates built-ins
+  only, never plugin/MCP tools, and with strict mode off it passes every built-in, so a
+  dispatched `allowedTools: []` is inert. The gate must be structural at composition time.
 - **`events` is append-only.** Append a superseding event linked to the prior row; never
   DELETE.

@@ -223,6 +223,12 @@ export interface InstructionContext {
   workingDirectory: string;
   availableProjects?: string[];
   userPrompt?: string;
+  /**
+   * Delivery platform for this turn (`api`, `slack`, `telegram`, …). Lets
+   * instruction providers scope platform-specific guidance, e.g. suppressing a
+   * tool-policy rule for a tool that only exists on the api surface.
+   */
+  platform?: string;
 }
 
 /**

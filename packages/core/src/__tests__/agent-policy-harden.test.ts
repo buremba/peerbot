@@ -80,6 +80,25 @@ describe("renderAlwaysOnToolPolicyRules", () => {
       renderAlwaysOnToolPolicyRules()
     );
   });
+
+  test("no-arg renders platform-scoped rules (backward compatible)", () => {
+    // Callers that don't thread a platform still see every always-on rule,
+    // including the api-only suggest_actions guidance.
+    expect(renderAlwaysOnToolPolicyRules()).toContain("suggest_actions");
+  });
+
+  test("includes the api-only suggest_actions rule for the api platform", () => {
+    expect(renderAlwaysOnToolPolicyRules("api")).toContain("suggest_actions");
+  });
+
+  test("omits the api-only suggest_actions rule on a non-api platform", () => {
+    // suggest_actions is registered only for api conversations, so a Slack turn
+    // must not be told to call a tool it does not have.
+    const output = renderAlwaysOnToolPolicyRules("slack");
+    expect(output).not.toContain("suggest_actions");
+    // Unscoped always-on rules are still present.
+    expect(output).toContain("ask_user");
+  });
 });
 
 // ── getCustomToolDescription ──────────────────────────────────────────────────

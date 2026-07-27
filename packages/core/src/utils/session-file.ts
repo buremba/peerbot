@@ -230,13 +230,22 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
  * anchored to `^` and silently failed on every one of those turns.
  *
  * Matching anywhere would be wrong in the other direction — a user quoting the
- * block (asking about this very behaviour) would have their text mangled. The
- * discriminator is position: the worker's block is always the LAST thing before
- * the user's own words. So: match at a LINE start, take the FINAL occurrence,
- * and only remove it when nothing but the user's text follows.
+ * block (asking about this very behaviour) would have their text mangled. Two
+ * discriminators keep this tight:
+ *
+ *  1. SHAPE. The bullets are not free text: `buildRunContextBlock`
+ *     (agent-worker session-runner.ts) emits ONLY the fixed field lines below
+ *     (`- Platform: …`, `- Channel: …`, `- Thread: …`, `- Triggered by: …`,
+ *     `- Link: …`). Requiring every bullet to be one of those keys means a
+ *     user's own `## This conversation` section with prose bullets (`- my
+ *     note`) is not a candidate at all — it is left untouched even when it is
+ *     the LAST heading in the turn. Keep this list in sync with the worker.
+ *  2. POSITION. Among the (worker-shaped) candidates the block is always the
+ *     LAST thing before the user's own words, so take the FINAL occurrence — a
+ *     user who literally quotes the field lines earlier still keeps their copy.
  */
 const RUN_CONTEXT_BLOCK =
-  /(?:^|\n)## This conversation\n(?:-[^\n]*\n)*(?:\n+|$)/g;
+  /(?:^|\n)## This conversation\n(?:- (?:Platform|Channel|Thread|Triggered by|Link): [^\n]*\n)+(?:\n+|$)/g;
 
 export function stripRunContextBlock(text: string): string {
   let last: RegExpExecArray | null = null;

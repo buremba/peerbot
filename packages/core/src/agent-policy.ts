@@ -10,6 +10,14 @@ export interface ToolIntentRule {
   patterns: RegExp[];
   priority: number;
   alwaysInclude?: boolean;
+  /**
+   * Restrict the rule to specific platforms. When set, an always-on rule is
+   * rendered only when the turn's platform is in this list, to avoid
+   * instructing an agent to call a tool that isn't available on its platform
+   * (e.g. `suggest_actions` exists on the api surface only). Omitted = every
+   * platform.
+   */
+  platforms?: string[];
 }
 
 export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
@@ -86,6 +94,10 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
     patterns: [],
     priority: 15,
     alwaysInclude: true,
+    // API surface only: the `suggest_actions` gateway tool is registered solely
+    // for api conversations (the gateway 400s non-api posts), so a Slack/Telegram
+    // agent must not be instructed to call a tool it does not have.
+    platforms: ["api"],
   },
   {
     id: "share-generated-files",
@@ -181,10 +193,17 @@ function renderRule(rule: ToolIntentRule): string {
   return `### ${rule.title}\nTools: ${tools}\n${body}`;
 }
 
-export function renderAlwaysOnToolPolicyRules(): string {
-  const rules = TOOL_INTENT_RULES.filter((rule) => rule.alwaysInclude).sort(
-    (a, b) => a.priority - b.priority
-  );
+export function renderAlwaysOnToolPolicyRules(platform?: string): string {
+  const rules = TOOL_INTENT_RULES.filter(
+    (rule) =>
+      rule.alwaysInclude &&
+      // Honor a platform restriction when the caller supplies the platform. A
+      // caller that doesn't thread it keeps the historical behavior (render
+      // every always-on rule).
+      (rule.platforms === undefined ||
+        platform === undefined ||
+        rule.platforms.includes(platform))
+  ).sort((a, b) => a.priority - b.priority);
   if (rules.length === 0) {
     return "";
   }

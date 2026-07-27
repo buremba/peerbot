@@ -228,6 +228,7 @@ export class LobuAgentWorker implements WorkerExecutor {
           sessionKey: this.config.sessionKey,
           workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
           userPrompt,
+          platform: this.config.platform,
           availableProjects: listAppDirectories(
             this.workspaceManager.getCurrentWorkingDirectory()
           ),

@@ -756,14 +756,23 @@ export function createAgentHistoryRoutes(deps: {
 			// `complete` payload carries them, but they're lost on reload without
 			// this). Separate branch — NOT the approval query, which maps every row
 			// to tool-approval.
-			const currentSuggestion = await readCurrentSuggestion(
-				scope.organizationId,
-				conversationId
-			);
-			if (currentSuggestion) {
-				interactions.push({
-					type: "suggestion",
-					prompts: currentSuggestion.prompts,
+			// Supplemental, like the error-interaction read above: a transient DB
+			// failure must degrade to no chips, never drop the whole transcript.
+			try {
+				const currentSuggestion = await readCurrentSuggestion(
+					scope.organizationId,
+					conversationId
+				);
+				if (currentSuggestion) {
+					interactions.push({
+						type: "suggestion",
+						prompts: currentSuggestion.prompts,
+					});
+				}
+			} catch (error) {
+				logger.warn("Failed to replay current suggestion chips", {
+					error,
+					conversationId,
 				});
 			}
 		}

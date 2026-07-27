@@ -18,7 +18,7 @@ export class LobuCoreInstructionProvider extends BaseInstructionProvider {
       `You are a Lobu agent for user ${context.userId}.`,
       `Working directory: ${context.workingDirectory}`,
       renderBaselineAgentPolicy(),
-      renderAlwaysOnToolPolicyRules(),
+      renderAlwaysOnToolPolicyRules(context.platform),
       `## Image Analysis
 
 If the user asks to analyze an uploaded image, use the image content already attached to the prompt and provide direct analysis.`,

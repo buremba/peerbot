@@ -76,6 +76,24 @@ export async function persistSuggestion(
     `) as Array<{ id: number }>;
     const supersedesEventId = priorRows[0]?.id ?? null;
 
+    // Stamp a durable ordering key on the row. `worker.runId` is only minted for
+    // runs-queue per-job tokens, so a deployment-token turn passes null — and a
+    // suggestion row with run_id = null slips past the delayed-terminal ordering
+    // guard in finalizeTurnSuggestions, which would then clear it unconditionally
+    // (the exact "erase the chips the user is looking at" failure that guard
+    // exists to prevent). `agent_run_input` has a row for every turn keyed by
+    // this message id, so resolve the run from there when it wasn't supplied.
+    let effectiveRunId = runId ?? null;
+    if (effectiveRunId == null && turnMessageId) {
+      const owner = (await tx`
+        SELECT max(run_id) AS run_id
+        FROM public.agent_run_input
+        WHERE organization_id = ${organizationId}
+          AND message_id = ${turnMessageId}
+      `) as Array<{ run_id: number | null }>;
+      effectiveRunId = owner[0]?.run_id ?? null;
+    }
+
     const event = await insertEvent(
       {
         entityIds: [],
@@ -88,7 +106,7 @@ export async function persistSuggestion(
         // pollute memory search / feeds / retrieval.
         title: null,
         content: null,
-        runId: runId ?? null,
+        runId: effectiveRunId,
         interactionType: "suggestion",
         interactionStatus: "current",
         interactionInput: { prompts },
@@ -221,7 +239,25 @@ export async function finalizeTurnSuggestions(args: {
     // turn that emitted no suggestions, which leaves no suggestion event of its
     // own to compare against. Rows are marked 'completed', never deleted, so the
     // run id is still readable at terminal time.
-    if (owned.size > 0 && row.run_id != null) {
+    //
+    // Resolve the ROW's owning run: prefer its stamped run_id, then fall back to
+    // the run behind its turnMessageId (a deployment-token turn stamps null).
+    let rowRunId = row.run_id;
+    if (rowRunId == null && turnMessageId != null) {
+      const owner = (await tx`
+        SELECT max(run_id) AS run_id
+        FROM public.agent_run_input
+        WHERE organization_id = ${organizationId}
+          AND message_id = ${turnMessageId}
+      `) as Array<{ run_id: number | null }>;
+      rowRunId = owner[0]?.run_id ?? null;
+    }
+    // No ordering key for the row → we cannot prove it belongs to an earlier
+    // turn, so we must NOT clear it. Erasing an unorderable set is precisely the
+    // bug this guard prevents; a slightly stale set lingering is the safe error.
+    if (rowRunId == null) return;
+
+    if (owned.size > 0) {
       const mine = (await tx`
         SELECT max(run_id) AS run_id
         FROM public.agent_run_input
@@ -230,7 +266,7 @@ export async function finalizeTurnSuggestions(args: {
       `) as Array<{ run_id: number | null }>;
       const myRun = mine[0]?.run_id ?? null;
       // Only clear a set published by an EARLIER run.
-      if (myRun != null && row.run_id > myRun) return;
+      if (myRun != null && rowRunId > myRun) return;
     }
 
     // A prior turn's set survived a turn that emitted none — supersede it.

@@ -45,13 +45,25 @@ interface RuntimePluginParams extends GatewayParams {
 const UNATTENDED_SOURCES = new Set(["starters"]);
 
 /**
+ * True when a dispatch `source` runs unattended (no user watching, no consent
+ * for side effects). Shared with the session runner so the runtime capability
+ * boundary is derived from one list: `createRuntimePluginHost` uses it to
+ * restrict plugin/MCP tools, and the session runner uses it to drop built-in
+ * tools and force read-only MCP exposure. Keeping both call sites on the same
+ * predicate means a new unattended source is gated everywhere at once.
+ */
+export function isUnattendedSource(source?: string): boolean {
+  return UNATTENDED_SOURCES.has(source ?? "");
+}
+
+/**
  * Conversation-plugin tools an unattended turn may use. Allowlist, not
  * denylist: a new mutating tool must be excluded by default.
  */
 const UNATTENDED_CONVERSATION_TOOLS = new Set(["suggest_actions"]);
 
 export function createRuntimePluginHost(params: RuntimePluginParams) {
-  const unattended = UNATTENDED_SOURCES.has(params.source ?? "");
+  const unattended = isUnattendedSource(params.source);
   const plugins = [
     // The memory plugin's `agentEnd` hook calls `save_memory` with the last
     // user+assistant text — for an unattended turn that is the hidden internal

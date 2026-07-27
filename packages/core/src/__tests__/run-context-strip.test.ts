@@ -57,15 +57,34 @@ describe("run-context block stripping", () => {
   // and silently failed on every turn that carried any prefix — the reviewer
   // reproduced it with a direct probe.
   it.each([
-    ["a session summary", "Previously: we discussed the Q3 roadmap."],
-    [
-      "recalled memory",
-      "<lobu-memory>\nUser prefers concise answers.\n</lobu-memory>",
-    ],
-    ["a config notice", "NOTE: your model was changed to gemini-2.5-pro."],
-  ])("strips the block when %s precedes it", (_label, prefix) => {
+    {
+      label: "a session summary",
+      prefix: "Previously: we discussed the Q3 roadmap.",
+    },
+    {
+      label: "recalled memory",
+      prefix: "<lobu-memory>\nUser prefers concise answers.\n</lobu-memory>",
+    },
+    {
+      label: "a config notice",
+      prefix: "NOTE: your model was changed to gemini-2.5-pro.",
+    },
+  ])("strips the block when $label precedes it", ({ prefix }) => {
     expect(stripRunContextBlock(`${prefix}\n\n${BLOCK}what is next?`)).toBe(
       `${prefix}\n\nwhat is next?`
+    );
+  });
+
+  it("strips the worker's block, not a LATER user section reusing the heading", () => {
+    // The worker's block is a PREFIX of the turn, so a user's own
+    // `## This conversation` section always lands AFTER it. Selecting the final
+    // matching heading would wrongly strip the user's section (with prose
+    // bullets) and leave the real scaffolding. The block is identified by its
+    // fixed field shape, so the user's prose-bullet section is not a candidate.
+    const userSection = "## This conversation\n- my own note\n- another thought";
+    const asStored = `${BLOCK}Here is what I mean:\n\n${userSection}\n\nwhat next?`;
+    expect(stripRunContextBlock(asStored)).toBe(
+      `Here is what I mean:\n\n${userSection}\n\nwhat next?`
     );
   });
 

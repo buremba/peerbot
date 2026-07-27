@@ -1724,19 +1724,30 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
     // Config override: static starterPrompts win, no LLM turn, no cache.
     if (agentSettingsStore) {
-      const settings = await agentSettingsStore.getSettings(agentId, {
-        organizationId,
-      });
-      const configured = sanitizeSuggestionPrompts(
-        (settings as { starterPrompts?: unknown } | null)?.starterPrompts
-      );
-      if (configured.length > 0) {
-        return c.json({
-          prompts: configured,
-          source: "config",
-          stale: false,
-          generating: false,
+      // Guard the settings read the same way the cache read below is guarded —
+      // a transient settings-store failure must fall through to the cached
+      // path, never 500 the landing.
+      try {
+        const settings = await agentSettingsStore.getSettings(agentId, {
+          organizationId,
         });
+        const configured = sanitizeSuggestionPrompts(
+          (settings as { starterPrompts?: unknown } | null)?.starterPrompts
+        );
+        if (configured.length > 0) {
+          return c.json({
+            prompts: configured,
+            source: "config",
+            stale: false,
+            generating: false,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          `Failed to read configured starterPrompts for ${agentId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
       }
     }
 

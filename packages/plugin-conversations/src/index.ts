@@ -357,7 +357,8 @@ export function createConversationTools(params: ConversationPluginParams) {
           prompts: Type.Array(
             Type.Object({
               title: Type.String({
-                description: "Short chip label shown to the user (max 80 chars)",
+                description:
+                  "Short chip label shown to the user (max 80 chars)",
               }),
               message: Type.String({
                 description:

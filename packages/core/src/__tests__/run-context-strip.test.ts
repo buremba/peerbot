@@ -81,7 +81,8 @@ describe("run-context block stripping", () => {
     // matching heading would wrongly strip the user's section (with prose
     // bullets) and leave the real scaffolding. The block is identified by its
     // fixed field shape, so the user's prose-bullet section is not a candidate.
-    const userSection = "## This conversation\n- my own note\n- another thought";
+    const userSection =
+      "## This conversation\n- my own note\n- another thought";
     const asStored = `${BLOCK}Here is what I mean:\n\n${userSection}\n\nwhat next?`;
     expect(stripRunContextBlock(asStored)).toBe(
       `Here is what I mean:\n\n${userSection}\n\nwhat next?`

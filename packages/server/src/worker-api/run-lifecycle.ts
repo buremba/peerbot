@@ -36,9 +36,11 @@ import type { Env } from "../index";
 import { notifyBrowserAuthExpired } from "../notifications/triggers";
 import { supersedeActionEvent } from "../tools/admin/manage_operations";
 import {
+	type AuthProfileKind,
 	getAuthProfileById,
 	getBrowserSessionReadiness,
 } from "../utils/auth-profiles";
+import { toSecretRefAuthData } from "../utils/auth-credential-secrets";
 import { autoLinkEvent } from "../utils/auto-linker";
 import { nextRunAt as nextRunAtFromCron } from "../utils/cron";
 import { needsEmbeddingSql } from "../utils/embeddings";
@@ -102,35 +104,60 @@ async function finalizeRun(
 async function reactivateProfileCascade(
 	sql: DbClient,
 	authProfileId: number,
+	organizationId: string,
+	profileKind: AuthProfileKind | null,
 	authData: {
 		credentials: Record<string, unknown>;
 		metadata: Record<string, unknown>;
 	}
 ): Promise<void> {
-	await sql`
-    UPDATE auth_profiles
-    SET auth_data = ${sql.json(authData.credentials)},
-        metadata = ${sql.json(authData.metadata)},
-        status = 'active',
-        updated_at = current_timestamp
-    WHERE id = ${authProfileId}
-  `;
-	await sql`
-    UPDATE connections
-    SET status = 'active', updated_at = current_timestamp
-    WHERE auth_profile_id = ${authProfileId}
-      AND status = 'pending_auth'
-  `;
-	await sql`
-    UPDATE feeds f
-    SET status = 'active',
-        next_run_at = COALESCE(f.next_run_at, NOW()),
-        updated_at = current_timestamp
-    FROM connections c
-    WHERE f.connection_id = c.id
-      AND c.auth_profile_id = ${authProfileId}
-      AND f.status = 'paused'
-  `;
+	// Only flat bearer-credential kinds (env, oauth_account, …) get their
+	// auth_data stored as `secret://` refs. `browser_session` / `interactive`
+	// profiles hold structured session state (cookie jars, Baileys creds) that
+	// execution passes through verbatim as `sessionState` and never resolves as
+	// refs — secret-ref'ing them would both strip their non-string values
+	// (normalizeAuthValues keeps only strings) and leave unresolvable refs on
+	// the worker. So those kinds pass their session state through unchanged.
+	//
+	// Secret upsert + profile activation still share one transaction so a
+	// partial failure cannot leave a rotated secret without the matching
+	// auth_data row (or vice versa).
+	const isSessionStateProfile =
+		profileKind === "browser_session" || profileKind === "interactive";
+	await sql.begin(async (tx) => {
+		const nextAuthData = isSessionStateProfile
+			? authData.credentials
+			: await toSecretRefAuthData({
+					organizationId,
+					authProfileId,
+					credentials: authData.credentials,
+					db: tx,
+				});
+		await tx`
+      UPDATE auth_profiles
+      SET auth_data = ${tx.json(nextAuthData)},
+          metadata = ${tx.json(authData.metadata)},
+          status = 'active',
+          updated_at = current_timestamp
+      WHERE id = ${authProfileId}
+    `;
+		await tx`
+      UPDATE connections
+      SET status = 'active', updated_at = current_timestamp
+      WHERE auth_profile_id = ${authProfileId}
+        AND status = 'pending_auth'
+    `;
+		await tx`
+      UPDATE feeds f
+      SET status = 'active',
+          next_run_at = COALESCE(f.next_run_at, NOW()),
+          updated_at = current_timestamp
+      FROM connections c
+      WHERE f.connection_id = c.id
+        AND c.auth_profile_id = ${authProfileId}
+        AND f.status = 'paused'
+    `;
+	});
 }
 
 /**
@@ -1332,11 +1359,29 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 		const authProfileId = runRows[0]?.auth_profile_id ?? null;
 		const organizationId = runRows[0]?.organization_id;
 
-		if (req.status === "success" && authProfileId && req.credentials) {
-			await reactivateProfileCascade(sql, authProfileId, {
-				credentials: req.credentials,
-				metadata: req.metadata ?? {},
-			});
+		if (
+			req.status === "success" &&
+			authProfileId &&
+			req.credentials &&
+			organizationId
+		) {
+			// The profile kind decides whether the returned credentials are
+			// secret-ref'd (bearer kinds) or written through as session state
+			// (browser_session / interactive) — see reactivateProfileCascade.
+			const authProfile = await getAuthProfileById(
+				organizationId,
+				authProfileId
+			);
+			await reactivateProfileCascade(
+				sql,
+				authProfileId,
+				organizationId,
+				authProfile?.profile_kind ?? null,
+				{
+					credentials: req.credentials,
+					metadata: req.metadata ?? {},
+				}
+			);
 
 			if (organizationId) {
 				emit(organizationId, { keys: ["connections", "auth-profiles"] });

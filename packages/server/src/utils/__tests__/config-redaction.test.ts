@@ -1,4 +1,4 @@
-import { isSecretKey } from '@lobu/core';
+import { isSecretKey, redactUriCredentials } from '@lobu/core';
 import { describe, expect, it } from 'vitest';
 import {
   REDACTED_SENTINEL,
@@ -119,6 +119,36 @@ describe('isSecretKey > URL/DSN-shaped credential keys', () => {
       expect(isSecretKey(key)).toBe(false);
     }
   );
+});
+
+/**
+ * URI redaction runs on every string in untrusted config. An unbounded scheme
+ * quantifier (`[a-z0-9+.-]*`) is a polynomial-ReDoS on long non-matching
+ * input (e.g. runs of 'a' with no `://`). The scheme quantifier is bounded
+ * `{0,63}` so work stays linear — this pins that against regression.
+ */
+describe('redactUriCredentials > ReDoS-safe on adversarial non-matching input', () => {
+  it('stays near-linear as non-matching input doubles', () => {
+    const sizes = [10_000, 20_000, 40_000] as const;
+    const times: number[] = [];
+    for (const n of sizes) {
+      const input = 'a'.repeat(n);
+      const start = performance.now();
+      expect(redactUriCredentials(input)).toBe(input);
+      times.push(performance.now() - start);
+    }
+    // Quadratic growth would put 40k ~4× the 20k cost (or worse). Allow up to
+    // 8× headroom for timer noise / GC, which still fails a true quadratic.
+    expect(times[2]).toBeLessThan(Math.max(times[1] * 8, 50));
+    // Absolute ceiling: even the largest sample should finish quickly.
+    expect(times[2]).toBeLessThan(200);
+  });
+
+  it('still redacts a real credential-bearing URI', () => {
+    expect(redactUriCredentials('postgres://u:pw@host/db')).toBe(
+      `postgres://${REDACTED_SENTINEL}@host/db`,
+    );
+  });
 });
 
 /**

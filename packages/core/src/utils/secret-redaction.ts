@@ -35,7 +35,7 @@ export const REDACTED_SENTINEL = "__LOBU_REDACTED__";
  * {@link isSecretKey}'s exact-name set and by {@link redactUriCredentials}.
  */
 const SECRET_KEY_RE =
-  /(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
+  /(^|_)(token|secret|password|passwd|api_?key|secret_?(?:access_?)?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
 
 /**
  * Exact key names (case-insensitive, after key normalization) that are
@@ -55,15 +55,27 @@ const SECRET_EXACT_KEYS = new Set([
   "db_url",
   "connection_string",
   "dsn",
+  // Fully capitalized acronym runs have no case boundary for `normalizeKey`
+  // to split, so they need explicit entries.
+  "dburl",
+  "databaseurl",
+  "connectionstring",
 ]);
 
 /** Normalize camelCase and separators so config keys and HTTP headers agree. */
 function normalizeKey(key: string): string {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
+  return (
+    key
+      // Split an acronym run from a following word ("APIKey" -> "API_Key").
+      // A fixed-width lookahead (never a greedy `[A-Z]+` that overlaps the next
+      // `[A-Z]`) keeps this linear: a long uppercase run like "AAAA..." can't
+      // trigger quadratic backtracking (CodeQL polynomial-ReDoS).
+      .replace(/([A-Z])(?=[A-Z][a-z])/g, "$1_")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase()
+  );
 }
 
 export function isSecretKey(key: string): boolean {

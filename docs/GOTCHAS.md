@@ -96,7 +96,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').chromium.executablePath();console.log(p, require('fs').existsSync(p))"
 ```
 
-**Connector success status in `runs` is `completed`, not `success`.** Nudge a feed with `UPDATE feeds SET next_run_at = now() WHERE id = …`.
+**Connector success status in `runs` is `completed`, not `success`.** To re-trigger one feed: `UPDATE feeds SET next_run_at = now() WHERE id = <id>` — always with the `WHERE`, and against a dev database. Unscoped, it schedules every feed in the table at once.
 
 **To drive the user's real logged-in browser, use the paired Owletto extension**, not claude-in-chrome (that drives a different Chrome without their sessions) and not `lobu connector run` (local Playwright/CDP only — it errors with "Missing --auth-profile"). The recipe is in `docs/BROWSER_TESTING.md` under "Driving the paired Owletto extension"; it routes through `packages/server/src/worker-api/dispatch-chrome-action.ts`. Discover the `operations` namespace with `search_sdk operations`, then call it through `run_sdk`. A new server-side chrome action also needs a handler in the *installed* extension build, so check `git ls-tree origin/main packages/owletto`, never the working-tree submodule HEAD.
 
@@ -116,4 +116,4 @@ git -C packages/owletto checkout <squash-sha> && git add packages/owletto && git
 
 ## Prod safety
 
-**Your local run gets claimed and failed by a prod worker.** When testing run/sync flows against a shared prod database, scale the prod worker deployment to 0 first, and restore it afterwards — otherwise the prod pod claims your pending runs out from under local dev.
+**Your local run gets claimed and failed by a prod worker.** A prod worker pod polling the same database will claim your pending runs and fail them out from under local dev. The fix is to stop sharing the database: point `DATABASE_URL` at a local or embedded Postgres (see "Isolating a benchmark/scratch server" above). Scaling the prod worker deployment down is a production change, not a dev step — it stops real users' runs, so it needs the deployment owner's explicit approval and a restore plan, never an ad hoc `kubectl scale` mid-debug.

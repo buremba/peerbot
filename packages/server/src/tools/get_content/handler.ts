@@ -422,6 +422,7 @@ async function getContentImpl(
         feed_ids: args.feed_ids,
         run_ids: args.run_ids,
         ...(args.agent_id && { agent_id: args.agent_id }),
+        ...(args.client_ids?.length && { client_id: args.client_ids }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
         analyzed_by_watcher_id: args.analyzed_by_behavior_id,

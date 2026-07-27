@@ -96,15 +96,17 @@ export async function searchContentBySingleQuery(
   const searchEntityScopes =
     entityId != null ? await fetchEntityIdentityScopes(sql, entityId) : [];
 
-  // Slot $11 is the agent_id memory-scope filter — bumps orgScope to $12.
+  // Slots $11/$12 are the agent_id memory-scope and client_id filters — they
+  // bump orgScope to $13. Keep this in step with buildStandardParams: the two
+  // param lists are positional mirrors, so an added slot shifts BOTH.
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: options.organization_id,
-    baseParamIndex: 12,
+    baseParamIndex: 13,
   });
   // Exclude-watcher param slot sits immediately after orgScope so its $N index
   // is stable regardless of whether an embedding param follows.
-  const excludeParamIdx = 12 + orgScope.params.length;
+  const excludeParamIdx = 13 + orgScope.params.length;
   const excludeClause = buildExcludeWatcherClause(
     options.exclude_watcher_id,
     excludeParamIdx
@@ -171,6 +173,7 @@ export async function searchContentBySingleQuery(
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
+          AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))
           ${excludeClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}${entityTypesClause.sql}`;
@@ -462,8 +465,13 @@ export async function searchContentBySingleQuery(
       : null,
     options.interaction_status ?? null,
     // Slot $11 — per-agent memory scope. See buildStandardParams for the
-    // mirror call site. Bumps orgScope to $12 (set above).
+    // mirror call site.
     options.agent_id ?? null,
+    // Slot $12 — per-OAuth-client scope. Together with $11 this bumps orgScope
+    // to $13 (set above).
+    options.client_id
+      ? pgTextArray(Array.isArray(options.client_id) ? options.client_id : [options.client_id])
+      : null,
     ...orgScope.params,
     ...excludeClause.params,
     ...visibilityClause.params,

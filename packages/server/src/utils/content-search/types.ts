@@ -50,6 +50,16 @@ export interface ContentSearchOptions {
   // (`entity_identities.namespace`) — see identity-normalize.ts.
   agent_id?: string;
 
+  // Per-OAuth-client scope — the `events.client_id` COLUMN (indexed,
+  // FK → oauth_clients), not a metadata field. Scopes the timeline to what one
+  // registered client did: the MCP activity view passes it alongside
+  // `semantic_type: 'audit'` to show a connected client's tool calls.
+  //
+  // A client that re-registers gets a NEW oauth_clients row with the same
+  // `client_name`, so callers wanting "everything ChatGPT did" pass every id
+  // for that name (see listMcpClientActivity) rather than a single id.
+  client_id?: string | string[];
+
   // Classification options (only JOINs when needed)
   include_classifications?: boolean; // Include classifications in results
   classification_filters?: ClassificationFilter[]; // Filter by classifications

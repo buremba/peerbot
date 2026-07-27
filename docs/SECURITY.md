@@ -34,12 +34,12 @@ This is a **policy layer**, not a security boundary. If you allow `nodejs`, `pyt
 
 ## Network egress
 
-Workers run with `HTTP_PROXY=http://localhost:8118`. The gateway's in-process proxy enforces:
+Workers run with `HTTP_PROXY` pointing at the gateway's in-process proxy on loopback — `http://127.0.0.1:$WORKER_PROXY_PORT` (default `8118`). The gateway injects the resolved URL into each worker; the loopback host is fixed by the kernel allowlist below, while the port is configurable, so derive firewall and monitoring rules from `WORKER_PROXY_PORT` rather than the literal 8118. The proxy enforces:
 - **Allowlist mode** — only configured domains reachable.
 - **Blocklist mode** — allow all except denied domains.
 - **LLM egress judge** — risky domains get LLM verdict per request, with a 5 min cache and a circuit breaker.
 
-In embedded mode, `HTTP_PROXY` is **advisory** at the language layer — a worker process that explicitly bypasses the env var can `connect()` directly. On Linux production hosts, the worker spawn path uses `systemd-run --user --scope` with `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` so the kernel drops anything that isn't going to the local proxy. On macOS dev hosts there is no kernel-level enforcement.
+In embedded mode, `HTTP_PROXY` is **advisory** at the language layer — a worker process that explicitly bypasses the env var can `connect()` directly. On Linux production hosts, the worker spawn path uses `systemd-run --user --scope` with `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` + `IPAddressAllow=::1` so the kernel drops anything that isn't going to the local proxy. That boundary is host-based and port-independent: it confines a worker to loopback but does not stop it reaching another loopback listener, so do not treat a custom `WORKER_PROXY_PORT` as an isolation control. On macOS dev hosts there is no kernel-level enforcement.
 
 ## Worker process hardening (Linux)
 
@@ -48,7 +48,7 @@ When `systemd-run` is available on the host, `EmbeddedDeploymentManager` wraps e
 - `NoNewPrivileges=yes`
 - `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=<workspace>`
 - `MemoryMax=512M`, `CPUQuota=200%`, `TasksMax=64`, `LimitNOFILE=1024`
-- `IPAddressDeny=any`, `IPAddressAllow=127.0.0.1`
+- `IPAddressDeny=any`, `IPAddressAllow=127.0.0.1`, `IPAddressAllow=::1`
 - `CapabilityBoundingSet=` (drop all)
 - `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (no `AF_PACKET` / raw sockets)
 

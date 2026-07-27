@@ -903,13 +903,23 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // `auth_data` holds `secret://` refs, not values. An `authenticate` run
   // consumes these as REAL credentials (e.g. to refresh an expiring token),
   // so resolve them rather than shipping the refs verbatim.
-  const previousCredentials =
+  // resolveAuthCredentials returns `{}` (not undefined) when there are no
+  // refs to resolve, e.g. a null auth_profile_auth_data. Collapse the empty
+  // object to undefined so `previous_credentials` is omitted rather than
+  // serialized as `{}` — matching the connection_credentials idiom below and
+  // keeping the payload contract unchanged for workers that test presence.
+  const resolvedPreviousCredentials =
     deliverConnectionAuth && row.run_auth_profile_id != null
       ? await resolveAuthCredentials({
           organizationId: row.organization_id,
           authProfileId: Number(row.run_auth_profile_id),
           authData: row.auth_profile_auth_data,
         })
+      : undefined;
+  const previousCredentials =
+    resolvedPreviousCredentials &&
+    Object.keys(resolvedPreviousCredentials).length > 0
+      ? resolvedPreviousCredentials
       : undefined;
 
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.

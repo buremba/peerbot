@@ -457,12 +457,29 @@ export async function createAuthProfile(params: {
     if (params.profileKind === 'env') {
       const values = normalizeAuthValues(params.authData ?? {});
       if (Object.keys(values).length > 0) {
-        created.auth_data = await persistAuthCredentials({
-          organizationId: params.organizationId,
-          authProfileId: created.id,
-          credentials: values,
-          ...(db !== getDb() ? { db } : {}),
-        });
+        try {
+          created.auth_data = await persistAuthCredentials({
+            organizationId: params.organizationId,
+            authProfileId: created.id,
+            credentials: values,
+            ...(db !== getDb() ? { db } : {}),
+          });
+        } catch (err) {
+          // Default (non-transactional) path: the INSERT above already
+          // committed, so a persist failure would strand an `env` profile with
+          // empty auth_data (no compensating rollback). Delete the orphan row
+          // before rethrowing. Transactional callers pass their own `db`; their
+          // tx rolls back the INSERT (and is already aborted), so skip the
+          // compensating delete for them.
+          if (db === getDb()) {
+            await sql`
+              DELETE FROM auth_profiles
+              WHERE id = ${created.id}
+                AND organization_id = ${params.organizationId}
+            `;
+          }
+          throw err;
+        }
       }
     }
 

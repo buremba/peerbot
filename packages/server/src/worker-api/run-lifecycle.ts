@@ -36,6 +36,7 @@ import type { Env } from "../index";
 import { notifyBrowserAuthExpired } from "../notifications/triggers";
 import { supersedeActionEvent } from "../tools/admin/manage_operations";
 import {
+	type AuthProfileKind,
 	getAuthProfileById,
 	getBrowserSessionReadiness,
 } from "../utils/auth-profiles";
@@ -104,25 +105,37 @@ async function reactivateProfileCascade(
 	sql: DbClient,
 	authProfileId: number,
 	organizationId: string,
+	profileKind: AuthProfileKind | null,
 	authData: {
 		credentials: Record<string, unknown>;
 		metadata: Record<string, unknown>;
 	}
 ): Promise<void> {
-	// Credentials returned by an auth run are bearer values; store refs, not
-	// the values themselves. Secret upsert + profile activation share one
-	// transaction so a partial failure cannot leave a rotated secret without
-	// the matching auth_data row (or vice versa).
+	// Only flat bearer-credential kinds (env, oauth_account, …) get their
+	// auth_data stored as `secret://` refs. `browser_session` / `interactive`
+	// profiles hold structured session state (cookie jars, Baileys creds) that
+	// execution passes through verbatim as `sessionState` and never resolves as
+	// refs — secret-ref'ing them would both strip their non-string values
+	// (normalizeAuthValues keeps only strings) and leave unresolvable refs on
+	// the worker. So those kinds pass their session state through unchanged.
+	//
+	// Secret upsert + profile activation still share one transaction so a
+	// partial failure cannot leave a rotated secret without the matching
+	// auth_data row (or vice versa).
+	const isSessionStateProfile =
+		profileKind === "browser_session" || profileKind === "interactive";
 	await sql.begin(async (tx) => {
-		const credentialRefs = await toSecretRefAuthData({
-			organizationId,
-			authProfileId,
-			credentials: authData.credentials,
-			db: tx,
-		});
+		const nextAuthData = isSessionStateProfile
+			? authData.credentials
+			: await toSecretRefAuthData({
+					organizationId,
+					authProfileId,
+					credentials: authData.credentials,
+					db: tx,
+				});
 		await tx`
       UPDATE auth_profiles
-      SET auth_data = ${tx.json(credentialRefs)},
+      SET auth_data = ${tx.json(nextAuthData)},
           metadata = ${tx.json(authData.metadata)},
           status = 'active',
           updated_at = current_timestamp
@@ -1352,10 +1365,23 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 			req.credentials &&
 			organizationId
 		) {
-			await reactivateProfileCascade(sql, authProfileId, organizationId, {
-				credentials: req.credentials,
-				metadata: req.metadata ?? {},
-			});
+			// The profile kind decides whether the returned credentials are
+			// secret-ref'd (bearer kinds) or written through as session state
+			// (browser_session / interactive) — see reactivateProfileCascade.
+			const authProfile = await getAuthProfileById(
+				organizationId,
+				authProfileId
+			);
+			await reactivateProfileCascade(
+				sql,
+				authProfileId,
+				organizationId,
+				authProfile?.profile_kind ?? null,
+				{
+					credentials: req.credentials,
+					metadata: req.metadata ?? {},
+				}
+			);
 
 			if (organizationId) {
 				emit(organizationId, { keys: ["connections", "auth-profiles"] });

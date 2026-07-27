@@ -24,11 +24,12 @@
  * `internal` (builder / entity-change / Behavior proposals). Nothing else can
  * hold `approval_status='pending'`.
  *
- * Fairness + throughput: candidates are selected with a per-organization cap so
- * one tenant with a huge backlog cannot consume the batch and starve every other
- * org, and the sweep drains successive batches within a bounded per-invocation
- * ceiling so a backlog larger than one batch clears in a single run instead of
- * one batch per daily tick.
+ * Fairness + throughput: candidates are selected round-robin across
+ * organizations — interleaved by per-org rank, with a per-org cap — so neither
+ * one huge tenant nor the N oldest tenants can consume a batch and starve
+ * everyone else. The sweep then drains successive batches within a bounded
+ * per-invocation ceiling, so a backlog larger than one batch clears in a single
+ * run instead of one batch per daily tick.
  *
  * Multi-pod safety: the UPDATE re-asserts `approval_status = 'pending'`, so it
  * is the authoritative claim — a row a human approved between scan and write is
@@ -109,10 +110,20 @@ export async function expirePendingApprovals(
 		const remaining = invocationLimit - expiredCount;
 		const batchSize = Math.min(EXPIRY_BATCH_SIZE, remaining);
 
-		// Fair selection: rank each org's stale approvals oldest-first and take at
-		// most EXPIRY_PER_ORG_BATCH_SIZE from any one org, so a single large tenant
-		// cannot consume the batch and starve every other org. Within that, the
-		// batch is still ordered oldest-first so the longest-waiting rows go first.
+		// Fair selection, round-robin across organizations.
+		//
+		// Ranking per org and capping at EXPIRY_PER_ORG_BATCH_SIZE is NOT enough on
+		// its own: if the capped set is then ordered globally by age, the oldest
+		// (batchSize / perOrgCap) orgs fill the batch exactly and every other org
+		// is invisible — starvation with the threshold moved from 1 org to N,
+		// rather than removed.
+		//
+		// Ordering by `org_rank` FIRST interleaves the orgs: every org's oldest row
+		// comes before any org's second row, and so on. Representation therefore
+		// never depends on how many other orgs are backlogged. `created_at` stays
+		// as the tiebreak WITHIN a rank, so the longest-waiting rows still lead at
+		// equal standing, and the per-org cap keeps one tenant from monopolising
+		// the tail of the batch.
 		const candidates = (await sql`
       SELECT id FROM (
         SELECT id, created_at,
@@ -125,7 +136,7 @@ export async function expirePendingApprovals(
           AND created_at < NOW() - (${ttlDays}::int * interval '1 day')
       ) ranked
       WHERE org_rank <= ${EXPIRY_PER_ORG_BATCH_SIZE}
-      ORDER BY created_at ASC, id ASC
+      ORDER BY org_rank ASC, created_at ASC, id ASC
       LIMIT ${batchSize}
     `) as unknown as PendingApprovalCandidate[];
 

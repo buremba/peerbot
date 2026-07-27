@@ -181,23 +181,12 @@ describe("expirePendingApprovals", () => {
 		expect((await runStateOf(internalId)).approval_status).toBe("expired");
 	});
 
-	test("scheduler health surfaces approvals that remain pending past the TTL", async () => {
-		await seedApproval({
-			approvalStatus: "pending",
-			ageDays: TTL_DAYS + 3,
-		});
-
+	/** Run getSchedulerHealth with the TTL pinned to this suite's value. */
+	async function healthWithPinnedTtl() {
 		const previousTtl = process.env.PENDING_APPROVAL_TTL_DAYS;
 		process.env.PENDING_APPROVAL_TTL_DAYS = String(TTL_DAYS);
 		try {
-			const health = await getSchedulerHealth({} as Env);
-			expect(health.metrics.stalePendingApprovals).toBe(1);
-			expect(health.metrics.oldestPendingApprovalDays).toBeGreaterThan(
-				TTL_DAYS,
-			);
-			expect(
-				health.issues.some((issue) => /approvals undecided past/i.test(issue)),
-			).toBe(true);
+			return await getSchedulerHealth({} as Env);
 		} finally {
 			if (previousTtl === undefined) {
 				delete process.env.PENDING_APPROVAL_TTL_DAYS;
@@ -205,6 +194,44 @@ describe("expirePendingApprovals", () => {
 				process.env.PENDING_APPROVAL_TTL_DAYS = previousTtl;
 			}
 		}
+	}
+
+	// The sweep runs DAILY, so a row that crosses the TTL right after a tick is
+	// stale for up to a day BY DESIGN. Alarming on that would leave
+	// /health/scheduler at 503 during normal operation and train operators to
+	// ignore it. The count is still reported — only the issue is withheld.
+	test("scheduler health reports, but does NOT alarm on, expected between-tick drift", async () => {
+		await seedApproval({
+			approvalStatus: "pending",
+			// Past the TTL but inside the one-day sweep grace.
+			ageDays: TTL_DAYS,
+		});
+
+		const health = await healthWithPinnedTtl();
+
+		// The operator still sees the backlog...
+		expect(health.metrics.stalePendingApprovals).toBe(1);
+		// ...but this is not a fault, so no issue is raised.
+		expect(
+			health.issues.some((issue) => /approvals undecided past/i.test(issue)),
+		).toBe(false);
+	});
+
+	test("scheduler health DOES alarm once a full sweep opportunity was missed", async () => {
+		await seedApproval({
+			approvalStatus: "pending",
+			// Past TTL + the one-day grace: a sweep should have taken this terminal.
+			ageDays: TTL_DAYS + 3,
+		});
+
+		const health = await healthWithPinnedTtl();
+
+		expect(health.metrics.stalePendingApprovals).toBe(1);
+		expect(health.metrics.oldestPendingApprovalDays).toBeGreaterThan(TTL_DAYS);
+		expect(
+			health.issues.some((issue) => /approvals undecided past/i.test(issue)),
+		).toBe(true);
+		expect(health.healthy).toBe(false);
 	});
 
 	test("is idempotent — a second pass expires nothing new", async () => {
@@ -396,24 +423,58 @@ describe("expirePendingApprovals — draining and cross-org fairness", () => {
 		// the ceiling is what stops it). Under the old global oldest-first
 		// selection the hog's older rows would fill that batch entirely and the
 		// small org would get nothing.
+		// A ceiling of 120 makes this a single bounded batch, so the assertion is
+		// about batch COMPOSITION rather than the end state after a full drain.
+		// The hog holds far more than the per-org cap (50), so an unfair selection
+		// would spend the whole batch on it.
+		const batchCeiling = 120;
 		const hogOrg = ORG_ID;
-		const hogRows = 800;
-		await seedManyStale(hogOrg, hogRows, TTL_DAYS + 60);
+		await seedManyStale(hogOrg, 200, TTL_DAYS + 60);
 		await seedOrg("fair-small");
 		await seedManyStale("fair-small", 3, TTL_DAYS + 1);
 
-		// Ceiling of one batch: only the FIRST batch runs, so this asserts on batch
-		// composition rather than on the end state after everything drains.
-		const result = await expirePendingApprovals(TTL_DAYS, 500);
+		const result = await expirePendingApprovals(TTL_DAYS, batchCeiling);
 
-		// The small org is served within that first batch despite every one of its
-		// rows being NEWER than all 800 of the hog's — proof the selection is not
-		// globally oldest-first. The old code would have spent the whole batch on
-		// the hog and left these three untouched.
+		// The small org is served despite every one of its rows being NEWER than
+		// all 200 of the hog's — proof the selection is not globally oldest-first.
 		expect(await expiredCount("fair-small")).toBe(3);
-		expect(result.expired).toBe(500);
-		// The hog is capped well below the batch, leaving room for everyone else.
-		expect(await expiredCount(hogOrg)).toBeLessThan(500);
+		expect(result.expired).toBe(batchCeiling);
+		// The hog cannot take the whole batch: the per-org cap bounds its share,
+		// leaving room for other orgs even though its rows are the oldest.
+		expect(await expiredCount(hogOrg)).toBeLessThan(batchCeiling);
+	});
+
+	test("more backlogged orgs than the batch can cover: a newer org still gets rows in the FIRST batch", async () => {
+		// The per-org cap alone does NOT give fairness. With batch=500 and
+		// per-org=50, ten backlogged orgs fill the batch exactly (10 × 50 = 500).
+		// If the batch is then ordered globally by age, the ten OLDEST orgs consume
+		// it entirely and an eleventh org never appears — and if those ten sustain
+		// their backlog, the eleventh is starved forever. That is the original
+		// starvation bug with the threshold moved from 1 org to 10.
+		//
+		// Selection must interleave by per-org rank (every org's oldest row first,
+		// then every org's second, …) so representation does not depend on how many
+		// other orgs are backlogged.
+		// 14 older orgs × the 50-row per-org cap = 700 rows ranked ahead of the
+		// newcomer under global age ordering — more than the 120-row batch below,
+		// so the newcomer is invisible unless selection interleaves by org.
+		const olderOrgs = Array.from({ length: 14 }, (_, i) => `starve-old-${i}`);
+		for (const org of olderOrgs) {
+			await seedOrg(org);
+			await seedManyStale(org, 12, TTL_DAYS + 90);
+		}
+		// One newer org, guaranteed to lose every global age comparison.
+		await seedOrg("starve-newcomer");
+		await seedManyStale("starve-newcomer", 4, TTL_DAYS + 1);
+
+		// Ceiling of exactly one batch so this asserts on batch COMPOSITION.
+		const batchCeiling = 120;
+		const result = await expirePendingApprovals(TTL_DAYS, batchCeiling);
+		expect(result.expired).toBe(batchCeiling);
+
+		// The newcomer must be represented in that first batch. Under global age
+		// ordering it gets 0: all 14 older orgs rank ahead of it.
+		expect(await expiredCount("starve-newcomer")).toBeGreaterThan(0);
 	});
 
 	test("respects the per-invocation ceiling on a pathological backlog", async () => {

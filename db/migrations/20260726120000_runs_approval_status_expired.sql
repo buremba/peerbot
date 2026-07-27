@@ -29,18 +29,15 @@
 --   3. DROP the old constraint and rename the replacement into its place — both
 --      catalog-only, so each lock is momentary.
 --
--- The earlier draft used a single transaction reasoning that the column must
--- never be momentarily unconstrained. That instinct is right but the tradeoff
--- was wrong, and the temp-name ordering satisfies it anyway: between steps 1 and
--- 3 the column is guarded by BOTH the old constraint and the new one, never by
--- neither. Two overlapping constraints for a few seconds is strictly safer than
--- a production stall. The widened predicate accepts every value the old one did,
--- so VALIDATE cannot fail on existing rows.
--- Step 1 is wrapped in a guard because `ADD CONSTRAINT` has no `IF NOT EXISTS`.
--- Under transaction:false each statement commits on its own, so a crash between
--- steps leaves the temp constraint behind; a bare ADD would then fail on every
--- retry with "already exists" and the migration could never record as applied.
--- Same hazard the companion index migration heals for its INVALID carcass.
+-- The column is never left unconstrained: between steps 1 and 3 BOTH the old
+-- constraint and the new one guard it. The widened predicate accepts every value
+-- the old one did, so VALIDATE cannot fail on existing rows.
+--
+-- RETRY SAFETY. Each step is guarded because ADD/RENAME CONSTRAINT have no
+-- `IF NOT EXISTS`, and under transaction:false every statement commits on its
+-- own. Without the guards a crash mid-sequence would leave the temp constraint
+-- behind and fail every retry with "already exists", so the migration could
+-- never record as applied. Re-running the section from any point converges.
 DO $add_new$
 BEGIN
   IF NOT EXISTS (

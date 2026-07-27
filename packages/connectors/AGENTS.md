@@ -3,7 +3,7 @@
 Read root `AGENTS.md` first. This package owns built-in Lobu connectors.
 
 ## Connector rules
-- Connectors are `*.connector.ts` files extending `ConnectorRuntime`.
+- Every connector is a default-exported class extending `ConnectorRuntime`. Built-ins in this package are plain `src/<name>.ts` (e.g. `github.ts`); the `*.connector.ts` suffix is for user-authored connectors compiled from a project directory (see `examples/`).
 - npm deps go in the project `package.json` and are bundled by esbuild at compile time.
 - Native deps go in `runtime.nix.packages` as nixpkgs refs and are provisioned with `nix-shell` at run time.
 - Compile happens on the CLI path (`lobu apply`). It runs `bun install --ignore-scripts` when bun is available, else `npm install --ignore-scripts` because Node ships npm.

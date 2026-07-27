@@ -1,6 +1,6 @@
 # Connector SDK package agent rules
 
-Read root `AGENTS.md` first. This package is the contract every connector compiles against: `ConnectorRuntime`, the source primitives (`file-source`, `acl-source`, `http-client`), identity normalization, pagination/retry/scoring helpers, and the browser automation layer. Connector *implementations* live in `packages/connectors` — keep this package generic.
+Read root `AGENTS.md` first. This package is the contract every connector compiles against: `ConnectorRuntime`, the source primitives (`file-source`, `acl-source`, `http-client`), identity normalization, pagination/retry/scoring helpers, and the browser automation layer. Built-in connector *implementations* live in `packages/connectors`; user-authored ones are compiled from project directories. Keep this package generic — it serves both.
 
 ## Boundaries
 - This is a published contract consumed by external connectors. A breaking change to an exported type or runtime method breaks compiled connectors in the wild — additive changes only unless a migration is planned.

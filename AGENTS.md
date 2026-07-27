@@ -17,6 +17,7 @@
 - Bug fixes require red→fix→green evidence, with both outputs pasted into the PR body. If you cannot reproduce, stop and report the dead end — do not ship a speculative fix.
 - Never report done off a green typecheck. Boot it, exercise every branch you touched, clean up test data. If "compiles" is all you ran, say so explicitly.
 - Gates are non-negotiable (sequence in "Ship a change" above). `make pre-pr` builds first — that build step is what protects against a stale-dist false green. `make review` is an LLM verdict only: it does NOT run typecheck/knip/tests and is not proof CI will pass.
+- The agent-facing product name is **Behavior**; `watcher` is internal engine/DB vocabulary. It must not appear in MCP tool schemas/names/descriptions, ClientSDK discovery metadata, or the connector-sdk public reaction contract — `make pre-pr` fails on it. Internal identifiers (`actingWatcherId`, table/column names, comments) are fine.
 - `make review-fix` is the unposted fixer pass and runs BEFORE the first `make review`; verify its diff and commit it. Never iterate `make review` as a find-fix loop — each posted round costs a review + CI cycle.
 - Fix the class, not the instance: on the first hit, grep every other instance and fix in one pass — a diff-scoped reviewer only ever finds the next one. Same root cause twice = stop reviewing, grep-enumerate. A class-wide fix is in scope for the branch that found it and does not count as scope creep.
 - **Stage by explicit path; never commit the whole tree of a worktree that hosted other work.** A commit is a snapshot — stale file copies silently revert already-merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal the task's intended file list; extra files = stop. Verify a "reverts merged work" review finding by diff direction against `origin/main`, never dismiss it as merge-base noise.
@@ -25,7 +26,7 @@
 1. `make task-setup NAME=<slug>` → work in `.claude/worktrees/<slug>/`.
 2. Reproduce the bug (red) before fixing it. Fix, then prove green.
 3. Test: `make test-unit` (no DB) / `make test-integration` (needs `DATABASE_URL` with pgvector). One file: `bun test <path>`, or `cd packages/server && bunx vitest run <path>` for vitest suites.
-4. `make pre-pr` — build + typecheck + knip + lint.
+4. `make pre-pr` — build, typecheck, knip, lint, exposed-surface naming.
 5. `make review-fix` on the settled diff, verify its diff, commit.
 6. Stage by explicit path, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title, e.g. `fix(server): …`).

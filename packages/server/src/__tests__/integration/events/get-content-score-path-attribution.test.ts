@@ -1,23 +1,26 @@
 /**
- * Regression test: `sort_by: 'score'` must honour the attribution filters.
+ * Regression test: `sort_by: 'score'` must honour the forwarded filters.
  *
  * `get_content` has FOUR filter-application sites, and the
- * `sort_by === 'score' && entity_id` branch builds its OWN filters object
- * (handler.ts, the `getNormalizedScoreContent` call). That object enumerates
- * fields explicitly, so anything not listed is silently DROPPED — the query
- * returns unfiltered rows rather than erroring, which is the worst failure
- * shape: a caller asking "what did this client do" gets everything.
+ * `sort_by === 'score' && entity_id` branch runs through its own builder
+ * (`buildFilterConditionsAndJoins` in content-scoring.ts). Both it and the
+ * handler's filters object enumerate fields explicitly, so anything not listed
+ * is silently DROPPED — the query returns unfiltered rows rather than erroring,
+ * which is the worst failure shape: a caller asking "what did this client do"
+ * gets everything, led by whatever scored highest.
  *
- * Two filters were missing there:
- *   - `client_ids` — added alongside the filter itself in this branch
- *   - `agent_id`   — pre-existing hole, so this is a CLASS not a one-off
+ * THREE filters were missing, i.e. a class not a one-off:
+ *   - `client_ids`             — added alongside the filter in this branch
+ *   - `agent_id`               — pre-existing
+ *   - `analyzed_by_behavior_id`— pre-existing; the handler always passed it
  *
- * Both are asserted here against the score path specifically. The date/list and
- * search paths are covered by get-content-client-id-filter.test.ts.
+ * Fixtures deliberately give the NON-matching rows the higher score, so a
+ * dropped filter surfaces them first and fails loudly rather than passing by
+ * accident on ordering. Score sorting derives per-connection scoring formulas
+ * from the entity's sources, so unlike the list-path test these fixtures need a
+ * real entity + connection.
  *
- * Score sorting requires an entity (it derives per-connection scoring formulas
- * from the entity's sources), so unlike the list-path test these fixtures need
- * a real entity + connection, and events linked to both.
+ * The list and search paths are covered by get-content-client-id-filter.test.ts.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -38,6 +41,8 @@ const CHATGPT = 'mcp_score_path_chatgpt';
 const CLI = 'mcp_score_path_cli';
 const AGENT_A = 'agent_score_path_a';
 const AGENT_B = 'agent_score_path_b';
+const BEHAVIOR_A = 910_001;
+const BEHAVIOR_B = 910_002;
 
 async function registerClient(opts: {
   id: string;
@@ -56,11 +61,6 @@ async function registerClient(opts: {
   `;
 }
 
-/**
- * Insert an event carrying both attribution stamps. `client_id` is a real
- * column; `agent_id` lives in metadata — the two predicates differ, so both
- * shapes must be exercised.
- */
 async function insertAttributedEvent(opts: {
   organizationId: string;
   entityId: number;
@@ -70,9 +70,9 @@ async function insertAttributedEvent(opts: {
   agentId: string | null;
   score: number;
   occurredAt: Date;
-}): Promise<void> {
+}): Promise<number> {
   const sql = getTestDb();
-  await sql`
+  const [row] = await sql`
     INSERT INTO events (
       entity_ids, connection_id, organization_id, origin_id, title,
       payload_type, payload_text, semantic_type, connector_key,
@@ -93,10 +93,12 @@ async function insertAttributedEvent(opts: {
       ${opts.occurredAt},
       NOW()
     )
+    RETURNING id
   `;
+  return Number((row as { id: unknown }).id);
 }
 
-describe('getContent > score path honours attribution filters', () => {
+describe('getContent > score path honours forwarded filters', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let user: Awaited<ReturnType<typeof createTestUser>>;
   let entityId: number;
@@ -139,10 +141,7 @@ describe('getContent > score path honours attribution filters', () => {
     });
 
     const t0 = new Date('2026-07-01T00:00:00Z');
-    // Deliberately give the NON-matching rows the higher score. If the filter is
-    // dropped, score ordering surfaces them first and the assertions fail loudly
-    // rather than passing by accident on ordering.
-    await insertAttributedEvent({
+    const chatgptEventId = await insertAttributedEvent({
       organizationId: org.id,
       entityId,
       connectionId: connection.id,
@@ -152,7 +151,7 @@ describe('getContent > score path honours attribution filters', () => {
       score: 99,
       occurredAt: t0,
     });
-    await insertAttributedEvent({
+    const cliEventId = await insertAttributedEvent({
       organizationId: org.id,
       entityId,
       connectionId: connection.id,
@@ -172,6 +171,14 @@ describe('getContent > score path honours attribution filters', () => {
       score: 50,
       occurredAt: new Date(t0.getTime() + 2000),
     });
+
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO watcher_window_events (window_id, event_id, watcher_id)
+      VALUES
+        (${chatgptEventId}, ${chatgptEventId}, ${BEHAVIOR_A}),
+        (${cliEventId}, ${cliEventId}, ${BEHAVIOR_B})
+    `;
 
     ctx = {
       organizationId: org.id,
@@ -204,12 +211,10 @@ describe('getContent > score path honours attribution filters', () => {
       {} as never,
       ctx
     );
-    // Before the fix this returned all three rows, led by the score-99 ChatGPT
-    // row — the exact "asked for one client, got everything" failure.
     expect(result.content.map((c) => c.title)).toEqual(['cli low score row']);
   });
 
-  it('agent_id scopes score-sorted rows to that agent (pre-existing hole)', async () => {
+  it('agent_id scopes score-sorted rows to that agent', async () => {
     const result = await getContent(
       { entity_id: entityId, sort_by: 'score', agent_id: AGENT_B, limit: 100 } as never,
       {} as never,
@@ -218,9 +223,35 @@ describe('getContent > score path honours attribution filters', () => {
     expect(result.content.map((c) => c.title)).toEqual(['cli low score row']);
   });
 
+  it('analyzed_by_behavior_id scopes score-sorted rows to that behavior', async () => {
+    const result = await getContent(
+      {
+        entity_id: entityId,
+        sort_by: 'score',
+        analyzed_by_behavior_id: BEHAVIOR_B,
+        limit: 100,
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(result.content.map((c) => c.title)).toEqual(['cli low score row']);
+  });
+
+  it('include_superseded applies the client scope', async () => {
+    const result = await getContent(
+      {
+        entity_id: entityId,
+        include_superseded: true,
+        client_ids: [CLI],
+        limit: 100,
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(result.content.map((c) => c.title)).toEqual(['cli low score row']);
+  });
+
   it('total count matches the filtered rows, not the unfiltered set', async () => {
-    // Rows and count come from two separate queries sharing one filter builder.
-    // If only the row query were fixed, has_more/pagination would still lie.
     const result = await getContent(
       { entity_id: entityId, sort_by: 'score', client_ids: [CHATGPT], limit: 100 } as never,
       {} as never,

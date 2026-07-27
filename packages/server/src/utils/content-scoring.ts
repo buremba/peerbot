@@ -36,6 +36,9 @@ interface NormalizedScoreFilters {
   engagement_max?: number;
   // Additional filters to match searchContentByText
   window_id?: number;
+  /** Restrict to content some behavior has analyzed. The handler always passed
+   *  this; the builder used to ignore it — the same dropped-filter class. */
+  analyzed_by_watcher_id?: number;
   exclude_watcher_id?: number; // Exclude content already in any window for this watcher
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
@@ -190,6 +193,18 @@ async function buildFilterConditionsAndJoins(
     additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
     params.push(validatedWindowId);
     filterConditions.push(`iwc.window_id = $${paramIndex++}`);
+  }
+
+  if (filters?.analyzed_by_watcher_id !== undefined) {
+    const validatedWatcherId = validateNumericId(
+      filters.analyzed_by_watcher_id,
+      'analyzed_by_watcher_id'
+    );
+    params.push(validatedWatcherId);
+    filterConditions.push(`EXISTS (
+      SELECT 1 FROM watcher_window_events iwc
+      WHERE iwc.event_id = f.id AND iwc.watcher_id = $${paramIndex++}
+    )`);
   }
 
   if (filters?.exclude_watcher_id !== undefined) {

@@ -342,19 +342,14 @@ export async function applyCreate(
   }
   const sql = createDbClientFromEnv(env);
   const ownerUserId = ctx.userId;
-  // Fresh-agent provisioning defaults, resolved from the SAME helper the boot
-  // provisioning paths use. `models` is baked in ONLY when the caller did not
-  // pin an explicit `default_model` — an explicit choice always wins and is
-  // persisted below by the non-column field loop.
-  //
-  // Without this the row landed with `models = NULL`, and on a deployment whose
-  // only model credential is an environment API key there is no
-  // `inference_providers` is_default row to fall back to. The agent then
-  // resolved NO model, never completed a turn, and its Behavior failed with
-  // "Agent reply finished without calling completeWindow" — while an older
-  // agent from `ensureDefaultAgent` (which bakes the list) ran the same
-  // Behavior fine. That divergence was the bug.
-  const provisioning = await resolveNewAgentProvisioningDefaults();
+  // Fresh-agent provisioning defaults, from the SAME helper every other create
+  // path uses (see `resolveNewAgentProvisioningDefaults` for the full rationale
+  // and the org-default ordering). Seeded ONLY when the caller did not pin an
+  // explicit `default_model` — that outranks both and is persisted below by the
+  // non-column field loop.
+  const provisioning = await resolveNewAgentProvisioningDefaults(
+    ctx.organizationId
+  );
   const explicitModel = argValue(args, 'default_model');
   const seedModels =
     explicitModel !== undefined && explicitModel.trim()

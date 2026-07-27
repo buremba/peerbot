@@ -15,6 +15,7 @@
  * at and then listed here deliberately, which is the whole point.
  */
 
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,10 +49,9 @@ const SANCTIONED_INSERT_SITES = [
 
 const PROVISIONING_HELPER = "resolveNewAgentProvisioningDefaults";
 
-async function findAgentInsertSites(): Promise<string[]> {
+function findAgentInsertSites(): string[] {
 	// `git grep` keeps this honest against the real tree (respects .gitignore,
 	// no stale build output) and is fast enough to run inline.
-	const { spawnSync } = await import("node:child_process");
 	const res = spawnSync(
 		"git",
 		["grep", "-l", "INSERT INTO agents", "--", "src/**/*.ts"],
@@ -68,8 +68,8 @@ async function findAgentInsertSites(): Promise<string[]> {
 }
 
 describe("agents insert-site guard", () => {
-	it("every INSERT INTO agents site is a known, sanctioned one", async () => {
-		const found = await findAgentInsertSites();
+	it("every INSERT INTO agents site is a known, sanctioned one", () => {
+		const found = findAgentInsertSites();
 		expect(found.length).toBeGreaterThan(0); // guard against a broken grep
 		expect(found).toEqual(SANCTIONED_INSERT_SITES);
 	});

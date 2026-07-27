@@ -276,7 +276,7 @@ export async function ensureDefaultAgent(
 		// immediately hit "No model configured" — even though the env keys are
 		// sitting right there in the same process. Shared with the other create
 		// paths so every freshly provisioned agent starts runnable.
-		const resolved = await resolveNewAgentProvisioningDefaults();
+		const resolved = await resolveNewAgentProvisioningDefaults(organizationId);
 
 		// Resolve the owning user — the personal_org metadata is the canonical
 		// marker. The default agent is shown as user-owned (rather than the

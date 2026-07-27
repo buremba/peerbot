@@ -13,6 +13,7 @@ import { resolveEnv } from "../gateway/auth/mcp/string-substitution";
 import { collectProviderModelOptions } from "../gateway/auth/provider-model-options";
 import { UNRESOLVED_MODEL_SUFFIX } from "../gateway/auth/model-sentinel";
 import { getModelProviderModules } from "../gateway/modules/module-system";
+import { getOrgDefaultModel } from "../lobu/stores/provider-secrets";
 import {
 	ProviderRegistryService,
 	resolveProviderRegistryPath,
@@ -208,26 +209,43 @@ export const DEFAULT_PRE_APPROVED_TOOLS = ["/mcp/lobu-memory/tools/*"];
 /**
  * The provisioning defaults a brand-new agent row must carry to be runnable on
  * THIS deployment. Every create path — `ensureDefaultAgent`,
- * `ensureBuilderAgent`, the web `POST /agents` route, and the `manage_agents`
- * create tool — resolves its fresh-agent defaults here.
+ * `ensureBuilderAgent`, the web `POST /agents` route, the `manage_agents` create
+ * tool, and the shared `saveMetadata` UPSERT — resolves its defaults here.
  *
- * Why `models` must be baked in at create rather than inferred at run time: the
- * run path's fallback is `agent.models[0] → the org's `inference_providers`
- * `is_default` ROW → nothing`. Environment API keys (ANTHROPIC_API_KEY,
- * CLAUDE_CODE_OAUTH_TOKEN, a providers.json `envVarName`, a module registry
- * `hasSystemKey()`) never create that row, so on an env-key-only deployment an
- * agent left with `models = NULL` resolves NO model at all. It then never
- * completes a turn, and its Behavior fails with "Agent reply finished without
- * calling completeWindow".
+ * The run path resolves a model as `agent.models[0] → the org's
+ * `inference_providers` is_default ROW → nothing`, so `models` is seeded
+ * ORG-AWARELY, in that same order of authority:
+ *
+ *   - The org HAS a configured default ⇒ seed an EMPTY list. The agent inherits
+ *     the org default at run time, which is the documented design. Baking a
+ *     concrete ref here would be persisted at `models[0]` and permanently SHADOW
+ *     the org default — an admin's later change to it would silently not reach
+ *     agents created before the change.
+ *   - The org has NO default ⇒ bake the system-key list. Environment API keys
+ *     (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, a providers.json
+ *     `envVarName`, a module registry `hasSystemKey()`) never create an
+ *     `inference_providers` row, so without this the agent resolves NO model at
+ *     all, never completes a turn, and its Behavior fails with "Agent reply
+ *     finished without calling completeWindow".
+ *
+ * An explicit `default_model` supplied by the caller outranks both and is
+ * applied by the caller, not here.
  *
  * Keeping this in ONE place is the point: the divergence between paths that
  * baked a models list and paths that did not WAS the bug.
  */
-export async function resolveNewAgentProvisioningDefaults(): Promise<{
+export async function resolveNewAgentProvisioningDefaults(
+	organizationId: string,
+): Promise<{
 	models: string[];
 	preApprovedTools: string[];
 }> {
-	const resolved = await resolveSystemKeyProvidersAndModel();
+	// An org-level default already makes the agent runnable through the
+	// documented fallback, so seed nothing and let it inherit.
+	const orgDefault = await getOrgDefaultModel(organizationId);
+	const resolved = orgDefault
+		? { models: [] }
+		: await resolveSystemKeyProvidersAndModel();
 	return {
 		models: resolved.models,
 		preApprovedTools: [...DEFAULT_PRE_APPROVED_TOOLS],

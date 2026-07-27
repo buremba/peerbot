@@ -222,7 +222,7 @@ export async function ensureBuilderAgent(
 			return { created: false };
 		}
 
-		const resolved = await resolveNewAgentProvisioningDefaults();
+		const resolved = await resolveNewAgentProvisioningDefaults(organizationId);
 		const ownerUserId = await resolveOwnerUserId(client, organizationId);
 
 		await client`

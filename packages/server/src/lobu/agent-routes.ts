@@ -522,7 +522,7 @@ routes.post("/", async (c) => {
 	// is baked in here because the run path's org-default tail reads an
 	// `inference_providers` row that environment API keys never create; an agent
 	// left model-less on an env-key-only deployment resolves no model at all.
-	const provisioning = await resolveNewAgentProvisioningDefaults();
+	const provisioning = await resolveNewAgentProvisioningDefaults(orgId);
 	const inserted = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, owner_platform, owner_user_id,

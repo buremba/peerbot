@@ -386,6 +386,13 @@ export const ManageOperationsResultSchema = Type.Union([
         unread: Type.Optional(Type.Boolean()),
         notification_id: Type.Optional(Type.Integer()),
         run_id: Type.Optional(Type.Integer()),
+        /**
+         * Live approval state ('pending' | 'approved' | 'rejected') joined
+         * from the run behind an approval notification.
+         */
+        approval_status: Type.Optional(Type.String()),
+        /** This approval supports one-click inline approve/reject. */
+        approval_inline: Type.Optional(Type.Boolean()),
         member_run_ids: Type.Optional(Type.Array(Type.Integer())),
         connection_id: Type.Optional(Type.Integer()),
         behavior_id: Type.Optional(Type.Integer()),

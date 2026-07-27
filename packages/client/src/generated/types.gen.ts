@@ -3536,6 +3536,14 @@ export type ManageOperationsResponses = {
           unread?: boolean;
           notification_id?: number;
           run_id?: number;
+          /**
+           * Live approval state ('pending' | 'approved' | 'rejected') joined from the run behind an approval notification.
+           */
+          approval_status?: string;
+          /**
+           * This approval supports one-click inline approve/reject.
+           */
+          approval_inline?: boolean;
           member_run_ids?: Array<number>;
           connection_id?: number;
           behavior_id?: number;

@@ -24,6 +24,7 @@ import {
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { filterChannelsForRequester } from '../authz/channel-visibility';
+import { redactConnectionRows } from '../utils/connection-config-redaction';
 import { toVectorLiteral } from '../utils/entity-management';
 import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -1416,6 +1417,12 @@ async function formatEntityResult(
   };
 }
 
+/**
+ * `c.config` here is the same verbatim jsonb the manage_connections read paths
+ * serve, so it can carry connector secrets such as bot tokens and connection
+ * strings. Redacted on the way out; the field stays present so callers can
+ * still see which options are configured.
+ */
 async function fetchConnectionsForEntity(
   entityId: number,
   scope: AuthzScope
@@ -1454,7 +1461,10 @@ async function fetchConnectionsForEntity(
     LIMIT 20
   `;
 
-  return result as ConnectionInfo[];
+  return (await redactConnectionRows(
+    scope.organizationId,
+    result as unknown as Array<Record<string, unknown>>
+  )) as unknown as ConnectionInfo[];
 }
 
 async function attachOrganizationSlugs(rows: EntityQueryRow[]): Promise<void> {

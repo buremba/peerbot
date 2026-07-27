@@ -1,4 +1,4 @@
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import {
   buildFeedFilter,
   buildRunFilter,
@@ -25,6 +25,10 @@ interface NormalizedScoreFilters {
   connection_ids?: number[];
   feed_ids?: number[];
   run_ids?: number[];
+  /** Agent attribution, stored in `metadata->>'agent_id'` (mirrors params.ts $11). */
+  agent_id?: string;
+  /** OAuth client attribution, a real indexed column (mirrors params.ts $12). */
+  client_id?: string | string[];
   platform?: string;
   since?: Date;
   until?: Date;
@@ -141,6 +145,19 @@ async function buildFilterConditionsAndJoins(
   }
   if (filters?.run_ids && filters.run_ids.length > 0) {
     filterConditions.push(buildRunFilter(filters.run_ids, 'f'));
+  }
+
+  // Attribution filters. These mirror the $11/$12 predicates in
+  // content-search/params.ts so score-sort and date-sort return the same rows
+  // for the same filter — see buildStandardWhereSql.
+  if (filters?.agent_id) {
+    params.push(filters.agent_id);
+    filterConditions.push(`f.metadata->>'agent_id' = $${paramIndex++}::text`);
+  }
+  if (filters?.client_id) {
+    const clientIds = Array.isArray(filters.client_id) ? filters.client_id : [filters.client_id];
+    params.push(pgTextArray(clientIds));
+    filterConditions.push(`f.client_id = ANY($${paramIndex++}::text[])`);
   }
 
   if (filters?.platform) {

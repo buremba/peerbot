@@ -381,6 +381,8 @@ async function getContentImpl(
         ...(effectiveConnectionIds?.length && { connection_ids: effectiveConnectionIds }),
         ...(args.feed_ids?.length && { feed_ids: args.feed_ids }),
         ...(args.run_ids?.length && { run_ids: args.run_ids }),
+        ...(args.agent_id && { agent_id: args.agent_id }),
+        ...(args.client_ids?.length && { client_id: args.client_ids }),
         ...(effectivePlatform && { platform: effectivePlatform }),
         ...(sinceDate && { since: sinceDate }),
         ...(untilDate && { until: untilDate }),

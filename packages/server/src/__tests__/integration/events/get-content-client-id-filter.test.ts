@@ -1,10 +1,10 @@
 /**
  * Integration test: the `client_id` filter scopes events to one OAuth client.
  *
- * This backs the MCP activity view — "what did ChatGPT do here" — which reads
- * events filtered by `client_id` plus `semantic_type: 'audit'`. `client_id` is a
- * real indexed column on `events` (idx_events_client_id, FK → oauth_clients),
- * NOT a metadata field, so the predicate is a plain column match.
+ * Answers "what did this MCP client do here": events filtered by `client_id`,
+ * typically alongside `semantic_type: 'audit'`. `client_id` is a real indexed
+ * column on `events` (idx_events_client_id, FK → oauth_clients), NOT a metadata
+ * field, so the predicate is a plain column match.
  *
  * Why an integration test and not a unit one: the filter is threaded through two
  * SQL builders that share POSITIONAL parameter slots. `client_id` took slot $12,

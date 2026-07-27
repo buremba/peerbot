@@ -131,7 +131,7 @@ export type SkillsConfig = Static<typeof SkillsConfigSchema>;
  * interface in `../types`. Used by `starterPrompts` (static, config-authored
  * starter chips that skip the AI generator).
  */
-export const SuggestedPromptSchema = Type.Object({
+const SuggestedPromptSchema = Type.Object({
   title: Type.String(),
   message: Type.String(),
 });

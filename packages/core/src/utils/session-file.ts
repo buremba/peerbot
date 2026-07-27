@@ -267,7 +267,7 @@ export function stripRunContextBlock(text: string): string {
  * prefix of the whole turn), so later parts are left alone. Non-text content
  * (images, tool calls) passes through untouched.
  */
-export function stripRunContextFromContent(content: unknown): unknown {
+function stripRunContextFromContent(content: unknown): unknown {
   if (typeof content === "string") return stripRunContextBlock(content);
   if (!Array.isArray(content)) return content;
   let stripped = false;

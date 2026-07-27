@@ -9,10 +9,9 @@ Scope: plugin-conversations + server (gateway routes, history replay) + owletto 
 ## 1. Goal
 
 Today every "the agent emits something the client renders as a component, not prose" feature
-is built as a bespoke **triple**: a plugin tool → an internal POST route → an SSE kind → a
-renderer branch → a history-replay branch. We have done this three times and are about to do
-it a fourth (progress blocks). The shapes are near-identical and the differences are
-incidental, not essential.
+hand-wires some or all of five layers: a plugin tool → an internal POST route → an SSE kind →
+a renderer branch → a history-replay branch. The three current elements take different
+subsets of that path, and progress blocks would add another bespoke variant.
 
 Goal: **one substrate** so element #4 is a payload schema plus a renderer, not five files
 across three packages.
@@ -27,39 +26,43 @@ Three elements exist today, each hand-rolled:
 
 | element | plugin tool | emit route | persistence | SSE kind | replay |
 |---|---|---|---|---|---|
-| approval card | (server-side) | `/internal/interactions/create` | `events.interaction_type='approval'` | `tool-approval` | `agent-history.ts:637` |
-| question | `ask_user` | `/internal/interactions/create` | `interaction_type='approval'` | `question` | — |
-| suggestion chips | `suggest_actions` | `/internal/suggestions/create` | `interaction_type='suggestion'` | on `complete` payload | `agent-history.ts:665` |
+| approval card | (server-side) | `/internal/interactions/create` | `events.interaction_type='approval'` | `tool-approval` | `agent-history.ts` |
+| question | `ask_user` | `/internal/interactions/create` | none | `question` | — |
+| suggestion chips | `suggest_actions` | `/internal/suggestions/create` | `events.interaction_type='suggestion'` | on `complete` payload | `agent-history.ts` |
 
 Load-bearing facts:
 
-- **`events` already IS the substrate.** `interaction_type ∈ {none, approval, suggestion}`
-  with `interaction_status`, `interaction_input`, `interaction_output`, and supersede-by-
-  `origin_id`. Adding an element type today is a CHECK-constraint migration
+- **`events` already IS the durable substrate.** `interaction_type ∈ {none, approval,
+  suggestion}` with `interaction_status`, `interaction_input`, `interaction_output`, and
+  explicit supersession between event rows. Stable `origin_id` values identify an
+  interaction stream; the suggestion writer serializes and supplies `supersedesEventId`
+  itself because API conversations have no numeric `connection_id`. Adding an element type
+  today is a CHECK-constraint migration
   (`20260724010000_events_interaction_suggestion.sql` did exactly that for `suggestion`).
-- **The renderer is a 10-branch `if/else` chain** on `env.kind` (`lobu-chat-store.tsx`
-  :835–941: `output`, `status`, `complete`, `closed`, `error`, `agent-error`, `question`,
-  `tool_use`, `link-button`, `tool-approval`). Each new element appends a branch.
+- **The renderer is an `if/else` chain** on `env.kind` in `lobu-chat-store.tsx`, covering
+  `output`, `status`, `complete`, `closed`, `error`, `agent-error`, `question`, `tool_use`,
+  `link-button`, and `tool-approval`. Each new element appends a branch.
 - **Two emit routes already diverge** for no real reason: `suggest_actions` posts to
   `/internal/suggestions/create` while `ask_user` posts to `/internal/interactions/create`.
   That split is historical, not principled.
 - **History replay is per-type.** `agent-history.ts` carries a discriminated union
-  (`ToolApprovalHistoryInteraction`, `SuggestionHistoryInteraction`, …) and every element
-  adds a member plus a query.
+  (`ToolApprovalHistoryInteraction`, `SuggestionHistoryInteraction`, …); each replayed
+  element adds a member and its own lookup.
 - **Delivery timing differs and this is the one real axis.** Suggestions ride the terminal
-  `complete` payload because that branch `return`s (`lobu-chat-store.tsx:840,857`) and the
-  `finally` closes the EventSource (:986) — a separate post-complete card cannot arrive live.
-  Progress blocks are the opposite: many mid-turn updates, nothing at the end.
+  `complete` payload because that branch returns from the stream loop and the `finally`
+  closes the EventSource — a separate post-complete card cannot arrive live. Progress
+  blocks are the opposite: many mid-turn updates, nothing at the end.
 
 ## 3. The trap this doc exists to prevent
 
 Progress blocks (grouped tool calls with human labels + status, as in ChatGPT/Claude UIs)
-look like a new feature but are ~80% the same plumbing. Built the current way they would add:
-a 4th emit route, an 11th SSE branch, a 4th union member, a 4th replay query — and a *second*
-independent notion of "structured thing attached to a turn" that will drift from the first.
+look like a new feature but reuse much of the same plumbing. Built the current way they would
+add another emit payload or route, another SSE branch, and another replay shape if persisted
+— plus a *second* independent notion of "structured thing attached to a turn" that will drift
+from the first.
 
 The specific duplication risk is **`tool_use`**. It already streams mid-turn and already has
-a renderer branch (`lobu-chat-store.tsx:915`). Progress blocks are largely *grouping and
+a renderer branch in `lobu-chat-store.tsx`. Progress blocks are largely *grouping and
 labelling of `tool_use` events*, not a new event stream. Building them as a parallel channel
 would mean two sources of truth for "what the agent did during this turn".
 
@@ -119,12 +122,12 @@ it risks an abstraction shaped like a single feature. Two rules of thumb:
 
 - If progress blocks are built and a *third* element is proposed, build the substrate first.
 - If progress blocks are built the current way, budget for the refactor rather than pretending
-  the 11th `env.kind` branch is free.
+  another `env.kind` branch is free.
 
-The cheap insurance meanwhile: when adding element #4, put its payload on
-`events.interaction_type` (do not invent side storage) and give it an `origin_id` so
-supersede works. Those two choices are what make a later consolidation mechanical rather than
-a rewrite.
+The cheap insurance meanwhile: when adding a durable element #4, put its payload on
+`events.interaction_type` (do not invent side storage), give it a stable `origin_id`, and
+link replacement rows through the existing supersession fields. Those choices are what make
+a later consolidation mechanical rather than a rewrite.
 
 ## 7. Prior art to check before building
 
@@ -140,4 +143,5 @@ hard way, all still true:
   through `UNATTENDED_SOURCES` (agent-worker `plugin-composition.ts`): read-only MCP tools
   only, no conversation mutation, no memory capture. `toolsConfig.allowedTools` does NOT
   cover plugin/MCP tools — it gates built-ins only.
-- **`events` is append-only.** Supersede via `origin_id`; never DELETE.
+- **`events` is append-only.** Append a superseding event linked to the prior row; never
+  DELETE.

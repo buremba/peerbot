@@ -1,8 +1,8 @@
 -- migrate:up transaction:false
 
 -- Widen the events interaction CHECK constraints to admit the non-blocking
--- "suggested actions" interaction type. Suggestions are agent-emitted (or
--- settings-configured) chips the user MAY tap to send a message as a new turn.
+-- "suggested actions" interaction type. Suggestions are agent-emitted chips
+-- the user MAY tap to send a message as a new turn.
 -- They are a first-class interaction type on the same durable-event substrate
 -- as `approval` cards (persisted, replayed on reload, superseded each turn),
 -- but non-blocking: they are never resolved by a click — the next turn's

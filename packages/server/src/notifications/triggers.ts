@@ -465,7 +465,7 @@ export async function notifyActionApprovalNeeded(params: {
 	runId: number;
 	actionKey: string;
 	connectionName?: string;
-	eventId?: number;
+	eventId: number;
 	approvalUrl?: string;
 	connectionId?: string | null;
 	channelId?: string | null;
@@ -493,9 +493,7 @@ export async function notifyActionApprovalNeeded(params: {
 				details: params.details,
 			}),
 			resourceType: "event",
-			resourceId: params.eventId
-				? String(params.eventId)
-				: String(params.runId),
+			resourceId: String(params.eventId),
 			resourceUrl,
 			connectionId: params.connectionId,
 			channelId: params.channelId,

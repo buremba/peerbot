@@ -3536,6 +3536,18 @@ export type ManageOperationsResponses = {
           unread?: boolean;
           notification_id?: number;
           run_id?: number;
+          /**
+           * Kind of pending interaction behind this notification (events `interaction_type` vocabulary — 'approval' today).
+           */
+          interaction_type?: string;
+          /**
+           * Live interaction state, from the interaction's authoritative per-type source. For 'approval' it is passed through verbatim from the run's approval_status (e.g. 'pending', 'approved', 'rejected', 'expired', 'auto'). Not a fixed enum — treat any value not explicitly handled as non-actionable.
+           */
+          interaction_status?: string;
+          /**
+           * This interaction can be completed inline from the feed.
+           */
+          interaction_inline?: boolean;
           member_run_ids?: Array<number>;
           connection_id?: number;
           behavior_id?: number;

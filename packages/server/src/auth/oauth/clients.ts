@@ -316,7 +316,11 @@ export class OAuthClientsStore {
         oc.*,
         tok_agg.user_name,
         tok_agg.user_email,
-        COALESCE(oc.user_id, tok_agg.token_user_id) AS owner_user_id,
+        -- Owner IS the token the displayed name/email came from. Deliberately
+        -- NOT COALESCE(oc.user_id, ...): preferring the registration's user_id
+        -- while displaying the newest token's identity means a reused
+        -- registration shows Bob's row and revokes Alice's grant.
+        tok_agg.token_user_id AS owner_user_id,
         COALESCE(tok_agg.active_token_count, 0)::int AS active_token_count
       FROM oauth_clients oc
       INNER JOIN LATERAL (

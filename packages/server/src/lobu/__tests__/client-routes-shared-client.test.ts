@@ -141,6 +141,32 @@ describe('shared OAuth registration', () => {
     expect(row?.linkedUserEmail).toBe(expectedEmail);
   });
 
+  test('a registration owned by one user but last used by another revokes the user it displays', async () => {
+    // The gap every previous round missed: these tests only covered
+    // `oauth_clients.user_id IS NULL`. When the registration DOES name an
+    // owner (Bob) but the newest token belongs to someone else (Alice), a
+    // `COALESCE(oc.user_id, …)` owner pick revokes Bob while the row displays
+    // Alice — click one person, disconnect another.
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      UPDATE oauth_clients SET user_id = ${BOB} WHERE id = ${SHARED_CLIENT}
+    `;
+
+    const routes = await importClientRoutes();
+    const listRes = await routes.request('/');
+    const listed = (await listRes.json()) as {
+      clients: Array<{ id: string; linkedUserEmail: string | null }>;
+    };
+    const row = listed.clients.find((c) => c.id === SHARED_CLIENT);
+    // Display follows the newest token — Alice.
+    expect(row?.linkedUserEmail).toBe('alice@test');
+
+    await routes.request(`/mcp/${SHARED_CLIENT}`, { method: 'DELETE' });
+
+    // …and so must the revocation. Bob keeps his grant.
+    expect(await liveTokenUsers()).toEqual([BOB]);
+  });
+
   test('scope=all also stays within the resolved owner', async () => {
     const routes = await importClientRoutes();
     const res = await routes.request(`/mcp/${SHARED_CLIENT}?scope=all`, {

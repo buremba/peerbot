@@ -333,7 +333,11 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	      SELECT
 	        oc.id,
 	        oc.client_name,
-	        COALESCE(oc.user_id, org_token.user_id) AS owner_user_id
+	        -- Must match listClientsByOrganization exactly: the newest org token,
+	        -- NOT COALESCE(oc.user_id, ...). Preferring the registration's owner
+	        -- here while the page displays the newest token's identity is how an
+	        -- admin ends up clicking Bob's row and revoking Alice's grant.
+	        org_token.user_id AS owner_user_id
 	      FROM oauth_clients oc
 	      LEFT JOIN LATERAL (
 	        SELECT ot.user_id
@@ -373,7 +377,9 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	          FROM oauth_tokens ot
 	          WHERE ot.client_id = sibling.id
 	            AND ot.organization_id = ${organizationId}
-	          ORDER BY ot.created_at DESC
+	          -- Same tie-break as the primary owner pick and the listing, so a
+	          -- sibling with two same-second tokens resolves identically.
+	          ORDER BY ot.created_at DESC, ot.id DESC
 	          LIMIT 1
 	        ) org_token ON true
 	        WHERE sibling.client_name = ${target.client_name}

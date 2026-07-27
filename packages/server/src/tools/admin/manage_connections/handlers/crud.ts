@@ -1433,16 +1433,15 @@ export async function handleUpdate(
 				organizationId,
 				connectionId: args.connection_id,
 				displayName: args.display_name,
-				// Same un-redaction as the non-chat path below. Several chat
-				// connectors declare `format: "password"` bot tokens, so a UI
-				// round-trip here would otherwise clobber the live token.
-				config:
-					args.config === undefined
-						? undefined
-						: (restoreRedactedConfig(
-								args.config,
-								parseJsonObject(existing.config),
-							) as Record<string, unknown>),
+				// Pass the RAW incoming config. Un-redaction deliberately does NOT
+				// happen here: `existing` is the UNLOCKED snapshot read at the top
+				// of this handler, and restoring from it would roll back a
+				// rotation another replica committed in between — the same stale
+				// -restore race fixed for the non-chat path below, and it matters
+				// more here because the chat connectors are the ones declaring
+				// `format: "password"` bot tokens. `updateChatConnection` re-reads
+				// the row under the stable-chat lock and restores from THAT.
+				config: args.config,
 				status: args.status,
 				...(hasAgentIdArg ? { agentId: args.agent_id ?? null } : {}),
 			});

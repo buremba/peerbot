@@ -5,6 +5,7 @@
  */
 
 import { createChildSpan, createLogger, type GuardrailRegistry } from "@lobu/core";
+import type { Env } from "../../index.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { readPlatformMetadata } from "../connections/platform-metadata.js";
@@ -18,7 +19,11 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
-import { finalizeTurnSuggestions } from "../suggestions/persist-suggestion.js";
+import { generateSuggestions } from "../suggestions/generate-suggestions.js";
+import {
+  finalizeTurnSuggestions,
+  persistSuggestion,
+} from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
 const logger = createLogger("unified-thread-consumer");
@@ -295,6 +300,55 @@ export class UnifiedThreadResponseConsumer {
    * synchronously at the top of each bridge handler, before any await, so even a
    * concurrent local-emit + re-emit cannot both render.
    */
+  /**
+   * Derive follow-up chips for a turn the agent ended without calling
+   * `suggest_actions`, and publish them through the same persist + card path
+   * the tool uses.
+   *
+   * Best-effort by construction: every failure mode (unconfigured key, model
+   * error, unusable output) resolves to "no chips", which is exactly the state
+   * the turn was already in. Nothing here may throw into terminal delivery.
+   */
+  private async generateFallbackSuggestions(
+    data: ThreadResponsePayload,
+    organizationId: string
+  ): Promise<void> {
+    const replyText = typeof data.finalText === "string" ? data.finalText : "";
+    if (!replyText) return;
+
+    const prompts = await generateSuggestions(
+      replyText,
+      process.env as unknown as Env
+    );
+    if (prompts.length === 0) return;
+
+    // Persist with this turn's message id so the NEXT turn's finalize sees a
+    // set owned by an earlier turn and clears it — identical lifecycle to an
+    // agent-published set. Without the id the row would look orphaned and
+    // linger as stale chips.
+    await persistSuggestion({
+      organizationId,
+      conversationId: data.conversationId,
+      prompts,
+      turnMessageId: data.messageId,
+      runId: null,
+    });
+
+    // Push the card so the chips appear on THIS turn rather than only after a
+    // reload. `userId` mirrors what the API platform stamps on its own cards.
+    await this.interactionService?.postSuggestion(
+      data.userId ?? "api",
+      data.conversationId,
+      data.channelId ?? data.conversationId,
+      data.teamId,
+      typeof data.platformMetadata?.connectionId === "string"
+        ? data.platformMetadata.connectionId
+        : undefined,
+      data.platform ?? "api",
+      prompts
+    );
+  }
+
   private async handleChatInteraction(
     data: ThreadResponsePayload
   ): Promise<void> {
@@ -408,7 +462,7 @@ export class UnifiedThreadResponseConsumer {
           : undefined);
       if (organizationId) {
         try {
-          await finalizeTurnSuggestions({
+          const { published } = await finalizeTurnSuggestions({
             organizationId,
             conversationId: data.conversationId,
             turnMessageIds: [
@@ -416,6 +470,16 @@ export class UnifiedThreadResponseConsumer {
               ...(data.processedMessageIds ?? []),
             ],
           });
+          // The agent skipped `suggest_actions` (it does on ~2 of 3 turns, and
+          // prompt wording did not move that) — derive chips from the reply it
+          // just gave so the user still has a next step. Runs AFTER finalize so
+          // an agent-published set always wins, and awaited so the generated set
+          // is persisted before the renderer embeds the current set on
+          // `complete`. Unconfigured or failing generation returns [] and the
+          // turn simply ends chipless, as it did before.
+          if (!published) {
+            await this.generateFallbackSuggestions(data, organizationId);
+          }
         } catch (err) {
           // Never let suggestion finalization break terminal delivery.
           logger.warn(

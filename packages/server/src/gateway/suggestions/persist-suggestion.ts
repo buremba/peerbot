@@ -188,16 +188,21 @@ export async function readCurrentSuggestion(
  * Idempotent: re-running (e.g. the row re-queued to the SSE owner after a
  * non-owning pod already finalized) either re-observes an owned/empty row and
  * no-ops, or the supersede is a no-op because the row is already cleared.
+ *
+ * Returns whether THIS turn published a set of its own (the "owned" case). The
+ * fallback generator keys off this: a turn that published nothing is the one
+ * worth deriving chips for, and the answer has to come from inside the advisory
+ * lock — reading it separately afterwards would race a concurrent turn.
  */
 export async function finalizeTurnSuggestions(args: {
   organizationId: string;
   conversationId: string;
   /** messageId + processedMessageIds of the completing turn. */
   turnMessageIds: string[];
-}): Promise<void> {
+}): Promise<{ published: boolean }> {
   const { organizationId, conversationId, turnMessageIds } = args;
   const owned = new Set(turnMessageIds.filter(Boolean));
-  await getDb().begin(async (tx: DbClient) => {
+  return getDb().begin(async (tx: DbClient) => {
     await tx`SELECT pg_advisory_xact_lock(${SUGGESTION_LOCK_NAMESPACE}, ${suggestionLockKey(
       conversationId
     )})`;
@@ -221,11 +226,13 @@ export async function finalizeTurnSuggestions(args: {
       metadata: Record<string, unknown> | null;
     }>;
     const row = rows[0];
-    if (!row) return; // nothing current
+    if (!row) return { published: false }; // nothing current
     const turnMessageId =
       (row.metadata?.turnMessageId as string | null) ?? null;
     // This turn (re)issued the current set → keep it for the renderer to embed.
-    if (turnMessageId != null && owned.has(turnMessageId)) return;
+    if (turnMessageId != null && owned.has(turnMessageId)) {
+      return { published: true };
+    }
 
     // Ordering guard. "Belongs to a different turn" does NOT imply "belongs to
     // an EARLIER turn": a terminal row whose processing lags a whole subsequent
@@ -247,8 +254,10 @@ export async function finalizeTurnSuggestions(args: {
           AND message_id = ANY(${pgTextArray([...owned])}::text[])
       `) as Array<{ run_id: number | null }>;
       const myRun = mine[0]?.run_id ?? null;
-      // Only clear a set published by an EARLIER run.
-      if (myRun != null && row.run_id > myRun) return;
+      // Only clear a set published by an EARLIER run. A LATER run's set is the
+      // one the user is looking at, so this turn is not the chipless one —
+      // report published so the fallback does not generate over it.
+      if (myRun != null && row.run_id > myRun) return { published: true };
     }
 
     // A prior turn's set survived a turn that emitted none — supersede it.
@@ -271,5 +280,6 @@ export async function finalizeTurnSuggestions(args: {
       },
       { sql: tx }
     );
+    return { published: false };
   });
 }

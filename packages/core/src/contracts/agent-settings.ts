@@ -69,14 +69,48 @@ type _StageCheck = GuardrailStage extends (typeof GUARDRAIL_STAGES)[number]
 const _stageCheck: _StageCheck = true;
 void _stageCheck;
 
+/**
+ * Operator-authored guardrail on an agent.
+ *
+ * - `kind: "judge"` (default when omitted) — LLM text judge; needs `policy`.
+ * - `kind: "require-tool"` — pure lookup against this turn's `toolsUsed`;
+ *   needs `tools` (manual tool names). `onMissing` / `onUnknown` control
+ *   fail-closed vs fail-open. No model call.
+ */
 export const AgentInlineGuardrailSchema = Type.Object({
   name: Type.String(),
   enabled: Type.Boolean(),
   stage: GuardrailStageSchema,
-  policy: Type.String(),
+  /** Defaults to `"judge"` when omitted (backward compatible). */
+  kind: Type.Optional(
+    Type.Union([Type.Literal("judge"), Type.Literal("require-tool")])
+  ),
+  /** Required for `kind: "judge"`. Ignored for `require-tool`. */
+  policy: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  /**
+   * For `judge` pre-tool: optional tool-name filter (run only for these tools).
+   * For `require-tool`: the tool name(s) that must appear in this turn's
+   * `toolsUsed` (manual, e.g. `["suggest_actions"]`).
+   */
   tools: Type.Optional(Type.Array(Type.String())),
   domains: Type.Optional(Type.Array(Type.String())),
+  /**
+   * `require-tool` only. When a listed tool is absent from `toolsUsed`:
+   * - `fail-closed` (default) — trip the output stage (block the reply).
+   * - `fail-open` — pass; metadata still records the miss for audit.
+   */
+  onMissing: Type.Optional(
+    Type.Union([Type.Literal("fail-closed"), Type.Literal("fail-open")])
+  ),
+  /**
+   * `require-tool` only. When `toolsUsed` is not on the payload (older worker):
+   * - `fail-open` (default) — pass so a rolling deploy never blocks turns.
+   * - `fail-closed` — trip until every worker stamps `toolsUsed`.
+   */
+  onUnknown: Type.Optional(
+    Type.Union([Type.Literal("fail-closed"), Type.Literal("fail-open")])
+  ),
 });
 export type AgentInlineGuardrail = Static<typeof AgentInlineGuardrailSchema>;
 

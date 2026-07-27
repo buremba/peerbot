@@ -44,6 +44,12 @@ export class HttpWorkerTransport implements WorkerTransport {
   // `undefined` until an explicit final is seen — pure-streaming turns fall
   // back to the accumulation (which IS the final text there).
   private finalText?: string;
+  /**
+   * Distinct tool names finished this turn (`tool_execution_end`). Stamped on
+   * the terminal completion row so gateway output guardrails can require a
+   * tool without a separate durable ledger.
+   */
+  private toolsUsed = new Set<string>();
 
   constructor(config: WorkerTransportConfig) {
     this.gatewayUrl = config.gatewayUrl;
@@ -72,6 +78,12 @@ export class HttpWorkerTransport implements WorkerTransport {
     if (!this.processedMessageIds.includes(messageId)) {
       this.processedMessageIds.push(messageId);
     }
+  }
+
+  /** Record a tool name finished this turn (from `tool_execution_end`). */
+  recordToolUsed(toolName: string): void {
+    const name = toolName?.trim();
+    if (name) this.toolsUsed.add(name);
   }
 
   async signalDone(finalDelta?: string): Promise<void> {
@@ -183,6 +195,9 @@ export class HttpWorkerTransport implements WorkerTransport {
       this.buildBaseResponse({
         processedMessageIds: this.processedMessageIds,
         finalText: this.finalText ?? this.accumulatedStreamContent.join(""),
+        // Always stamp (including empty) so the gateway can tell "no tools"
+        // from "worker too old to report" (undefined).
+        toolsUsed: [...this.toolsUsed],
       })
     );
   }
@@ -196,6 +211,7 @@ export class HttpWorkerTransport implements WorkerTransport {
       this.buildBaseResponse({
         error: error.message,
         processedMessageIds: this.processedMessageIds,
+        toolsUsed: [...this.toolsUsed],
         ...(errorCode && { errorCode }),
         ...(errorContext && { errorContext }),
       })

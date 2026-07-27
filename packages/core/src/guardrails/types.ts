@@ -42,6 +42,13 @@ export interface OutputGuardrailContext {
   text: string;
   platform: string;
   conversationId?: string;
+  /**
+   * Tool names the worker recorded for this turn (from `tool_execution_end`).
+   * Present on terminal completion rows from workers that stamp `toolsUsed`.
+   * Absent when the worker is old or the turn never ran tools — require-tool
+   * guardrails treat absence via their `onUnknown` policy (default fail-open).
+   */
+  toolsUsed?: string[];
 }
 
 export interface PreToolGuardrailContext {

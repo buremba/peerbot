@@ -598,6 +598,7 @@ export class UnifiedThreadResponseConsumer {
               userId: data.userId,
               conversationId: data.conversationId,
               platform: "api",
+              toolsUsed: data.toolsUsed,
             });
             if (trip) {
               const blockMsg = `Message blocked by guardrail: ${

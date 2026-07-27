@@ -35,6 +35,8 @@ export interface OutputScanContext {
   userId: string;
   conversationId?: string;
   platform: string;
+  /** Tool names this turn (from the worker's terminal `toolsUsed` stamp). */
+  toolsUsed?: string[];
 }
 
 export interface OutputGuardrailTrip {
@@ -86,6 +88,7 @@ export async function runOutputGuardrailScan(
       text: scanText,
       platform: ctx.platform,
       conversationId: ctx.conversationId,
+      toolsUsed: ctx.toolsUsed,
     });
     if (!outcome.tripped) return null;
 

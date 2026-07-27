@@ -193,6 +193,7 @@ export class ChatResponseBridge implements ResponseRenderer {
       userId: payload.userId,
       conversationId: payload.conversationId,
       platform: ctx.platform,
+      toolsUsed: payload.toolsUsed,
     });
   }
 

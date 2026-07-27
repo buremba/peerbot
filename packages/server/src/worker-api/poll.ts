@@ -233,15 +233,20 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   if (registrationUserId) {
     try {
       const incomingCaps = authorizedCapabilities;
-      const validConnectorManifests = connectorManifestsProvided
+      const manifestValidation = connectorManifestsProvided
         ? validateDeviceConnectorManifests({
             platform: effectivePlatform,
             capabilities: incomingCaps,
             manifests: connectorManifestsRaw,
           })
         : null;
-      const connectorManifestMap = validConnectorManifests
-        ? storedManifestMap(validConnectorManifests)
+      // An explicitly empty array is an authoritative "this device serves no
+      // connectors". A payload the validator rejected is not: replacing the
+      // last good inventory with {} would make reconcile archive working
+      // definitions because a malformed poll looked like removal.
+      const connectorManifestsAccepted = manifestValidation?.accepted === true;
+      const connectorManifestMap = connectorManifestsAccepted
+        ? storedManifestMap(manifestValidation.manifests)
         : null;
 
       // `xmax = 0` on the RETURNING row distinguishes a brand-new device
@@ -270,7 +275,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           label = COALESCE(EXCLUDED.label, device_workers.label),
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
           connector_manifests = CASE
-            WHEN ${connectorManifestsProvided} THEN EXCLUDED.connector_manifests
+            WHEN ${connectorManifestsAccepted} THEN EXCLUDED.connector_manifests
             ELSE device_workers.connector_manifests
           END,
           last_seen_at = now()

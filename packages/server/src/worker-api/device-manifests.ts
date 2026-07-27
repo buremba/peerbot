@@ -37,6 +37,11 @@ export interface DeviceConnectorSource {
   manifestHash: string;
 }
 
+interface DeviceManifestValidationResult {
+  manifests: StoredDeviceManifest[];
+  accepted: boolean;
+}
+
 export function deviceManifestHash(manifest: DeviceConnectorManifest): string {
   const { manifest_hash: _ignored, ...payload } = manifest;
   for (const key of [
@@ -88,22 +93,23 @@ export function validateDeviceConnectorManifests(params: {
   platform: string | null;
   capabilities: readonly string[];
   manifests: unknown;
-}): StoredDeviceManifest[] {
+}): DeviceManifestValidationResult {
   const { platform, manifests } = params;
-  if (!Array.isArray(manifests)) return [];
-  if (!platform || !isKnownPlatform(platform)) return [];
+  if (!Array.isArray(manifests)) return { manifests: [], accepted: false };
+  if (!platform || !isKnownPlatform(platform)) return { manifests: [], accepted: false };
   if (manifests.length > MAX_MANIFESTS_PER_POLL) {
     logger.warn({ platform, count: manifests.length }, '[device-manifests] too many manifests; dropping payload');
-    return [];
+    return { manifests: [], accepted: false };
   }
   const encodedBytes = Buffer.byteLength(JSON.stringify(manifests), 'utf8');
   if (encodedBytes > MAX_MANIFEST_BYTES) {
     logger.warn({ platform, encodedBytes }, '[device-manifests] manifest payload too large; dropping payload');
-    return [];
+    return { manifests: [], accepted: false };
   }
 
   const seen = new Set<string>();
   const valid: StoredDeviceManifest[] = [];
+  let accepted = true;
   for (const raw of manifests) {
     try {
       const manifest = normalizeManifest(raw);
@@ -134,13 +140,14 @@ export function validateDeviceConnectorManifests(params: {
         manifest,
       });
     } catch (err) {
+      accepted = false;
       logger.warn(
         { platform, err: err instanceof Error ? err.message : String(err) },
         '[device-manifests] dropped invalid manifest'
       );
     }
   }
-  return valid;
+  return { manifests: valid, accepted };
 }
 
 export async function getDeviceManifestSourcesForUser(params: {

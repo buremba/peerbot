@@ -85,6 +85,18 @@ async function ensureDeviceConnectorWired(
       matchingDeviceIds,
     });
   };
+  const manifestStillAdvertised = async (db: typeof sql): Promise<boolean> => {
+    if (!source) return true;
+    const rows = await db`
+      SELECT 1
+      FROM device_workers
+      WHERE user_id = ${userId}
+        AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+        AND (connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${source.manifestHash}
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  };
 
   try {
     // Fast path: definition + version + connection + EVERY declared feed active
@@ -151,9 +163,6 @@ async function ensureDeviceConnectorWired(
       def_runtime: unknown;
       active_feed_keys: string[] | null;
     }>;
-    if (existingReady[0]?.connection_id) {
-      await reconcilePin(sql, existingReady[0].connection_id);
-    }
     // Device-manifest connectors carry their full metadata in-hand (`source`),
     // so a changed manifest MUST break the fast path or the org catalog is
     // stranded on the old definition forever: the extension re-sends its
@@ -182,9 +191,10 @@ async function ensureDeviceConnectorWired(
       );
     };
     const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
-    if (
-      existingReady[0]?.connection_id &&
-      existingReady[0]?.version_key &&
+    const readyConnectionId = existingReady[0]?.connection_id;
+    const ready =
+      readyConnectionId != null &&
+      existingReady[0]?.version_key != null &&
       definitionMatchesSource(existingReady[0]) &&
       // userManaged-only connectors (e.g. local.directory, browser/*) report
       // declaredFeedKeys=[]. Once the connection + definition are installed,
@@ -192,8 +202,18 @@ async function ensureDeviceConnectorWired(
       // Composing primitives still hit /api/workers/me/feeds to mint
       // explicit per-instance rows; that path is unchanged.
       (declaredFeedKeys.length === 0 ||
-        declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey)))
-    ) {
+        declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey)));
+    if (ready) {
+      if (source) {
+        await sql.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+          if (await manifestStillAdvertised(tx)) {
+            await reconcilePin(tx, readyConnectionId);
+          }
+        });
+      } else {
+        await reconcilePin(sql, readyConnectionId);
+      }
       return;
     }
 
@@ -233,20 +253,10 @@ async function ensureDeviceConnectorWired(
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
       await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
-      if (source) {
-        // A newer poll may have removed this manifest while this reconcile was
-        // waiting for the lock. Re-check the stored fleet inventory so an older
-        // poll cannot resurrect a connector the newer poll just retired.
-        const stillAdvertised = await tx`
-          SELECT 1
-          FROM device_workers
-          WHERE user_id = ${userId}
-            AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-            AND (connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${source.manifestHash}
-          LIMIT 1
-        `;
-        if (stillAdvertised.length === 0) return;
-      }
+      // A newer poll may have removed this manifest while this reconcile was
+      // waiting for the lock. Re-check the stored fleet inventory so an older
+      // poll cannot resurrect a connector the newer poll just retired.
+      if (source && !(await manifestStillAdvertised(tx))) return;
 
       // 2. Ensure the connector definition + version are installed (idempotent).
       await upsertConnectorDefinitionRecords({
@@ -403,14 +413,16 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
 }
 
 /**
- * Archive org-scoped device definitions absent from both the bundled catalog
- * and every fresh device manifest. Only the exact auto-wire connection shape
- * may be retired; user-modified or unknown-provenance rows protect the
- * definition. The wire and archive paths share a per-key lock and re-check the
- * stored manifest inventory so concurrent polls cannot leave contradictory
- * definition and connection state. Best-effort.
+ * Archive unreferenced org-scoped definitions created by device reconciliation
+ * that no current connector source still advertises. This includes manifest
+ * versions and metadata-only shared pointers left by a formerly bundled device
+ * connector, but excludes org-custom sources. A live connection always protects
+ * its definition: connection fields do not record whether reconcile or a user
+ * created the row, so deleting based on a guessed "auto-wire shape" would risk
+ * deleting user configuration. The wire and archive paths share a per-key lock
+ * and re-check stored manifests so concurrent polls converge. Best-effort.
  */
-async function archiveVanishedDeviceConnectors(
+async function archiveVanishedDeviceConnectorDefinitions(
   userId: string,
   organizationId: string,
   liveKeys: string[]
@@ -419,17 +431,40 @@ async function archiveVanishedDeviceConnectors(
   try {
     const archived = await sql.begin(async (tx) => {
       const candidates = (await tx`
-        SELECT key
-        FROM connector_definitions
-        WHERE organization_id = ${organizationId}
-          AND status = 'active'
-          AND required_capability IS NOT NULL
-          AND NOT (key = ANY(${pgTextArray(liveKeys)}::text[]))
-        ORDER BY key
+        SELECT cd.key
+        FROM connector_definitions cd
+        WHERE cd.organization_id = ${organizationId}
+          AND cd.status = 'active'
+          AND cd.required_capability IS NOT NULL
+          AND NOT (cd.key = ANY(${pgTextArray(liveKeys)}::text[]))
+          AND COALESCE((
+            SELECT CASE
+              WHEN cv.organization_id IS NOT NULL
+                THEN cv.source_path LIKE 'device-manifest://%'
+              ELSE cv.source_path IS NOT NULL
+                AND cv.compiled_code IS NULL
+                AND cv.source_code IS NULL
+            END
+            FROM connector_versions cv
+            WHERE cv.connector_key = cd.key
+              AND cv.version = cd.version
+              AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+            ORDER BY cv.organization_id NULLS LAST
+            LIMIT 1
+          ), false)
+          AND NOT EXISTS (
+            SELECT 1 FROM connections c
+            WHERE c.organization_id = cd.organization_id
+              AND c.connector_key = cd.key
+              AND c.deleted_at IS NULL
+          )
+        ORDER BY cd.key
       `) as unknown as Array<{ key: string }>;
       for (const { key } of candidates) {
         await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${key}`}))`;
       }
+      if (candidates.length === 0) return [];
+      const candidateKeys = candidates.map(({ key }) => key);
 
       const rows = (await tx`
         UPDATE connector_definitions cd
@@ -437,7 +472,22 @@ async function archiveVanishedDeviceConnectors(
         WHERE cd.organization_id = ${organizationId}
           AND cd.status = 'active'
           AND cd.required_capability IS NOT NULL
-          AND NOT (cd.key = ANY(${pgTextArray(liveKeys)}::text[]))
+          AND cd.key = ANY(${pgTextArray(candidateKeys)}::text[])
+          AND COALESCE((
+            SELECT CASE
+              WHEN cv.organization_id IS NOT NULL
+                THEN cv.source_path LIKE 'device-manifest://%'
+              ELSE cv.source_path IS NOT NULL
+                AND cv.compiled_code IS NULL
+                AND cv.source_code IS NULL
+            END
+            FROM connector_versions cv
+            WHERE cv.connector_key = cd.key
+              AND cv.version = cd.version
+              AND (cv.organization_id = cd.organization_id OR cv.organization_id IS NULL)
+            ORDER BY cv.organization_id NULLS LAST
+            LIMIT 1
+          ), false)
           AND NOT EXISTS (
             SELECT 1
             FROM device_workers dw
@@ -450,48 +500,16 @@ async function archiveVanishedDeviceConnectors(
             WHERE c.organization_id = cd.organization_id
               AND c.connector_key = cd.key
               AND c.deleted_at IS NULL
-              -- Keep unknown provenance as a blocking row: created_by is nullable.
-              AND NOT (
-                COALESCE(c.created_by, '') = ${userId}
-                AND c.auth_profile_id IS NULL
-                AND c.app_auth_profile_id IS NULL
-                AND c.account_id IS NULL
-                AND c.credentials IS NULL
-                AND c.config IS NULL
-                AND c.agent_id IS NULL
-                AND COALESCE(cardinality(c.entity_ids), 0) = 0
-                AND c.visibility = 'private'
-              )
           )
         RETURNING cd.key
       `) as unknown as Array<{ key: string }>;
-
-      if (rows.length > 0) {
-        const keys = rows.map((r) => r.key);
-        await tx`
-          UPDATE connections
-          SET deleted_at = NOW(), updated_at = NOW()
-          WHERE organization_id = ${organizationId}
-            AND connector_key = ANY(${pgTextArray(keys)}::text[])
-            AND created_by = ${userId}
-            AND auth_profile_id IS NULL
-            AND app_auth_profile_id IS NULL
-            AND account_id IS NULL
-            AND credentials IS NULL
-            AND config IS NULL
-            AND agent_id IS NULL
-            AND COALESCE(cardinality(entity_ids), 0) = 0
-            AND visibility = 'private'
-            AND deleted_at IS NULL
-        `;
-      }
       return rows;
     });
 
     if (archived.length > 0) {
       logger.info(
         { userId, organizationId, keys: archived.map((r) => r.key) },
-        '[device-connectors] Archived definitions no longer served by any device manifest'
+        '[device-connectors] Archived definitions no longer served by any connector source'
       );
     }
   } catch (err) {
@@ -611,7 +629,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   // failure must never be read as "the fleet serves nothing" and archive a
   // user's whole working set.
   if (sourcesReadable) {
-    await archiveVanishedDeviceConnectors(userId, personalOrgId, [...byKey.keys()]);
+    await archiveVanishedDeviceConnectorDefinitions(userId, personalOrgId, [...byKey.keys()]);
   }
   if (byKey.size === 0) return;
 

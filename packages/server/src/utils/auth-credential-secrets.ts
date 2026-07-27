@@ -31,7 +31,7 @@ import {
 	encrypt,
 	parseSecretRef,
 } from "@lobu/core";
-import { type DbClient, getDb } from "../db/client";
+import { type DbClient, getDb, pgTextArray } from "../db/client";
 import { PostgresSecretStore } from "../lobu/stores/postgres-secret-store";
 import { orgContext } from "../lobu/stores/org-context";
 import {
@@ -243,12 +243,14 @@ async function storeAuthCredentialRefs(
           AND name LIKE ${`auth-profile/${params.authProfileId}/%`}
       `;
 		} else {
-			// `sql(array)` expands to a parenthesized list for IN/NOT IN.
+			// fetch_types:false can't auto-serialize a JS array, so pass a
+			// `text[]` literal and use `<> ALL(...)` — equivalent to `NOT IN`
+			// for the non-null secret names collected above.
 			await sql`
         DELETE FROM agent_secrets
         WHERE organization_id = ${params.organizationId}
           AND name LIKE ${`auth-profile/${params.authProfileId}/%`}
-          AND name NOT IN ${sql(keepNames)}
+          AND name <> ALL(${pgTextArray(keepNames)}::text[])
       `;
 		}
 	}

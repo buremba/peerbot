@@ -41,6 +41,9 @@ describe("resolvePinnedSelection — fail closed on total DB failure", () => {
     vi.doMock("../../../gateway/services/conversations-store.js", () => ({
       classifyConversation: () => ({ kind: "owned", storedPlatform: "web" }),
       isWatcherConversationId: () => false,
+      // An ordinary user conversation, so it does materialize a listing row —
+      // this test is about the pin read failing, not about listing suppression.
+      shouldMaterializeListingRow: () => true,
     }));
 
     const { resolvePinnedSelection } = await import("../sandbox-store.js");

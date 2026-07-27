@@ -1,11 +1,11 @@
 # Core package agent rules
 
-Read root `AGENTS.md` first. This package holds the shared contracts every other package builds against: types, errors, capabilities, credentials, the guardrail engine, and the logger. Ten workspace packages depend on it.
+Read root `AGENTS.md` first. This package holds the shared contracts many other packages build against: types, errors, capabilities, credentials, the guardrail engine, and the logger.
 
 ## Boundaries
 - Core is the bottom of the dependency graph. It must not import from `server`, `agent-worker`, `connectors`, or any package above it — if a helper needs one of those, it does not belong here.
-- Changing an exported type is a fan-out change. Ten packages compile against it, and `packages/server` typechecks against the **built dist**, not the source.
-- Guardrails live in `src/guardrails/`. Infra errors fail open by design, and each trip writes a `guardrail-trip` event — preserve both properties when editing the runner.
+- Changing an exported type is a fan-out change. Its consumers compile against it, and `packages/server` typechecks against the **built dist**, not the source.
+- Guardrails live in `src/guardrails/`. The core runner treats thrown guardrails as passes; gateway consumers persist trips as `guardrail-trip` events. Preserve both halves of that contract when changing guardrail execution.
 
 ## Package-specific traps
 - **After any contract change, rebuild before trusting a typecheck.** A stale `dist` produces a green typecheck that CI then fails, and inside a worktree it produces phantom `TS2305` errors resolved from the main checkout's dist. `make pre-pr` builds first for exactly this reason. See `docs/GOTCHAS.md`, "Build & typecheck".
@@ -13,4 +13,4 @@ Read root `AGENTS.md` first. This package holds the shared contracts every other
 - Unlike `server` and `connector-sdk`, this package **is** biome-formatted — use `bun run check:fix` from the repo root.
 
 ## Validation
-- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`). For a contract change, also typecheck the consumers — a green build here says nothing about the ten packages downstream.
+- Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`). For a contract change, also typecheck the consumers — a green build here says nothing about downstream packages.

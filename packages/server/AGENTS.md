@@ -30,7 +30,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Device-pinned connectors are special: resolved connection credentials may be delivered only to the authorized device worker that owns that run.
 
 ## Multi-replica correctness
-- Production can run N>1 replicas behind ClientIP affinity. Before claiming a feature works, ask: “does this hold with 3 replicas?”
+- Production can run N>1 replicas. Before claiming a feature works, ask: “does this hold with 3 replicas?” Correctness must not depend on session affinity.
 - Per-pod state (`SseManager`, event backlog, in-process worker map, deploy-lock cache) is pod-local. Cross-replica delivery must use Postgres (`thread_response` queue or equivalent).
 - API/SSE terminal rows and interaction cards are owner-routed; non-owners requeue until the owning pod claims. Headless rows with no SSE client may be delivered by first claim.
 - Streaming deltas/status are best-effort across pods today. Do not build correctness on cross-pod in-memory delivery.
@@ -43,8 +43,8 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 
 ## Guardrails, network, and runtime
 - Guardrails live under `packages/core/src/guardrails/`; server built-ins/aggregation live under gateway guardrail code. Guardrail infra errors fail open; each trip writes a `guardrail-trip` event.
-- Worker egress goes through `HTTP_PROXY=http://localhost:8118` plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`; Linux prod also denies direct network except loopback.
-- Workers are subprocesses under `./workspaces/{agentId}/` with `WORKSPACE_DIR`; Linux wraps them in `systemd-run --user --scope` for limits.
+- Worker HTTP(S) egress goes through the authenticated gateway proxy plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`; do not hardcode its host or port.
+- Embedded workers are subprocesses under `./workspaces/{agentId}/` with `WORKSPACE_DIR`. Linux hosts with a usable user systemd wrap them in `systemd-run --user --scope`; other hosts run them unwrapped unless `LOBU_REQUIRE_WORKER_SANDBOX=1`.
 
 ## Local dev and validation
 - Prereqs: Bun, supported Node per package engines, and Postgres+pgvector via `DATABASE_URL`. `./scripts/setup-dev.sh` provisions local Postgres where needed.

@@ -5,7 +5,7 @@ Read root `AGENTS.md` first. This package is the contract every connector compil
 ## Boundaries
 - This is a published contract consumed by external connectors. A breaking change to an exported type or runtime method breaks compiled connectors in the wild — additive changes only unless a migration is planned.
 - `playwright` is a **peer** dependency aliased to patchright, and it is optional. Never make a top-level import of it a hard requirement of the package entrypoint; browser code must stay reachable only from the browser paths.
-- Egress helpers enforce SSRF guards and domain allowlists (`url-guards.ts`). Route new outbound-fetch surfaces through them rather than calling `fetch` directly.
+- `url-guards.ts` provides SSRF and domain checks; call them before outbound requests whose URL is caller- or content-controlled. `createHttpClient` handles auth and retries, but it does not validate URLs.
 
 ## Browser automation
 - The stealth layer exists to look like a real browser; patchright (not vanilla playwright) is deliberate. Do not "fix" the alias in `package.json` — install revision and runtime revision must match, or Chromium fails to launch.
@@ -14,7 +14,7 @@ Read root `AGENTS.md` first. This package is the contract every connector compil
 
 ## Package-specific traps
 - This package is **biome-excluded** (`config/biome.config.json`). Never run biome on it — edit surgically, matching each file's existing style. See `docs/GOTCHAS.md`, "Formatting & lint".
-- Adding this package to another package's imports means adding it to all three build lists — see `docs/GOTCHAS.md`, "Build & typecheck".
+- A new workspace package that imports this SDK must appear after connector-sdk in all three build lists — see `docs/GOTCHAS.md`, "Build & typecheck".
 
 ## Validation
 - Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted SDK tests. Browser changes need a real connector run, not just a unit test — a green mock proves nothing about Chromium launch.

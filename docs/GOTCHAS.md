@@ -43,7 +43,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 **Format only via `bun run check:fix` from the repo root.** Never `bunx biome check --write <path>`. Bare biome uses its own defaults (tabs) and ignores the repo config at `config/biome.config.json`.
 
-**Several packages are biome-EXCLUDED, and an explicit file argument bypasses the exclusion.** `config/biome.config.json` excludes `packages/server`, `packages/owletto`, connector-sdk, connectors, connector-worker, embeddings, openclaw-plugin, apps, and skills. Running biome on a file in one of them turns a 400-line semantic diff into thousands of lines of reflow noise that biome will not undo and the CI format check will not catch. Recover with `git checkout HEAD -- <file>` and redo the edit by hand in the file's existing style (2-space, single quotes). `packages/core` and `packages/cli` *are* biome-formatted.
+**Several packages are biome-EXCLUDED, and an explicit file argument bypasses the exclusion.** `config/biome.config.json` excludes `packages/server`, `packages/owletto`, connector-sdk, connectors, connector-worker, embeddings, apps, and skills. Running biome on a file in one of them turns a 400-line semantic diff into thousands of lines of reflow noise that biome will not undo and the CI format check will not catch. Recover from a clean copy of the file at `HEAD`, preserve any unrelated local changes, and redo the intended edit by hand in that file's existing style. `packages/core` and `packages/cli` *are* biome-formatted.
 
 ## DB & SQL
 
@@ -58,7 +58,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 **pgvector columns read back as the text string `"[1,2,3]"`, not `number[]`.** Parse before use.
 
-**Reproduce array-binding bugs with `getDb()`, not `getTestDb()`.** Both share the prod value options, but test-client type inference can mask the failure you are chasing.
+**Keep array-binding repros on the production value options.** `getDb()` and the integration harness's `getTestDb()` both use `PROD_PG_VALUE_OPTIONS`; an ad hoc `postgres()` client without those options can mask the failure you are chasing.
 
 **Dropping a column from a queryable table is a two-phase change.** `buildScopedQuery` emits explicit column lists from `QUERYABLE_SCHEMA`, so a single-release drop breaks old replicas mid-rollout. Remove the column from `QUERYABLE_SCHEMA` in release N; ship the `DROP COLUMN` migration in release N+1.
 
@@ -74,13 +74,13 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 **`could not create shared memory segment: No space left on device` on macOS.** The SHMMNI limit, not disk. Reap detached segments: `ipcs -mob`, then `ipcrm -m <id>` for entries with `nattch=0` **only**.
 
-**Integration suite prerequisites.** Node 22 (the repo rejects newer — see `.node-version`). Global setup uses `DATABASE_URL` if set, otherwise spawns an ephemeral embedded Postgres + pgvector.
+**Integration suite prerequisites.** Node 22 is the repo default (`.node-version`); Lobu accepts Node 22–24 and 26+, while Node 25 boots without the SDK sandbox. Global setup uses `DATABASE_URL` if set, otherwise spawns an ephemeral embedded Postgres + pgvector.
 
-**`make dev` is not the test harness.** It only schema-version-*checks*; it never migrates. Pre-migrate with `dbmate --no-dump-schema --migrations-dir db/migrations up`.
+**`make dev` is not the test harness.** It migrates its owned local per-branch database and boots the app, but that does not exercise the branches a relevant unit or integration suite covers.
 
 **A scratch server that is "healthy" within ~2s is an orphan you are talking to.** A fresh initdb plus migrations takes ~15s. Kill orphans by port, not name — `pkill -f "lobu run --port"` never matches, because the real cmdline is `node .../server.bundle.mjs`. Use `lsof -tiTCP:<port> -sTCP:LISTEN | xargs kill -9`.
 
-**Isolating a benchmark/scratch server:** pass `DATABASE_URL="file:///tmp/<dir>"` — the embedded runtime creates `<dir>/.lobu/pgdata`. `LOBU_DATA_DIR` is *not* honored, and without `DATABASE_URL` you silently share `~/.lobu/pgdata`.
+**Isolating a benchmark/scratch server:** pass `DATABASE_URL="file:///tmp/<dir>"` — the embedded runtime creates `<dir>/.lobu/pgdata`. The runtime reads `DATABASE_URL`; `lobu run` maps `LOBU_DATA_DIR` into it only when `DATABASE_URL` is absent. Without either, `lobu run` defaults to the shared `~/.lobu/pgdata`.
 
 ## Shell & CLI
 
@@ -90,7 +90,7 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 ## Browser & connectors
 
-**Chromium launch failures: read which of the two errors you got.** `packages/connector-sdk/src/browser/launcher.ts` distinguishes them — `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH=…` means a path mismatch, `Playwright not installed` means the package itself is unresolvable. The path case is by far the more common, and two things must hold to prevent it: `docker/worker/Dockerfile` and `docker/app/Dockerfile` set `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` *before* install (otherwise chromium lands in `$HOME/.cache/ms-playwright`, the root app pod succeeds, the uid-1001 worker pod fails, and it reads as "intermittent"); and because `playwright` is aliased to patchright in `packages/connector-sdk/package.json` while `node_modules/.bin/playwright` is vanilla, install via `node node_modules/playwright/cli.js install chromium` so the install revision matches the runtime revision. In-pod check:
+**Chromium launch failures: read which of the two errors you got.** `packages/connector-sdk/src/browser/launcher.ts` distinguishes them — `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH=…` means a path mismatch, `Playwright not installed` means the package itself is unresolvable. The path case is by far the more common, and two things must hold to prevent it: `docker/worker/Dockerfile` and `docker/app/Dockerfile` set `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` *before* install (otherwise chromium lands in `$HOME/.cache/ms-playwright`, the root app pod succeeds, the uid-1001 worker pod fails, and it reads as "intermittent"); and the install must explicitly use patchright's revision (`node node_modules/playwright/cli.js install chromium` in the worker image, `npx patchright install chromium` in the app image) rather than the vanilla `node_modules/.bin/playwright`. In-pod check:
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').chromium.executablePath();console.log(p, require('fs').existsSync(p))"
@@ -98,7 +98,7 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').c
 
 **Connector success status in `runs` is `completed`, not `success`.** Nudge a feed with `UPDATE feeds SET next_run_at = now() WHERE id = …`.
 
-**To drive the user's real logged-in browser, use the paired Owletto extension**, not claude-in-chrome (that drives a different Chrome without their sessions) and not `lobu connector run` (local Playwright/CDP only — it errors with "Missing --auth-profile"). The recipe is in `docs/BROWSER_TESTING.md` under "Driving the paired Owletto extension"; it routes through `packages/server/src/worker-api/dispatch-chrome-action.ts`. Note that `search_sdk` does not list the `operations` namespace — discover it via `run_sdk` with `Object.keys(client)`. A new server-side chrome action also needs a handler in the *installed* extension build, so check `git ls-tree origin/main packages/owletto`, never the working-tree submodule HEAD.
+**To drive the user's real logged-in browser, use the paired Owletto extension**, not claude-in-chrome (that drives a different Chrome without their sessions) and not `lobu connector run` (local Playwright/CDP only — it errors with "Missing --auth-profile"). The recipe is in `docs/BROWSER_TESTING.md` under "Driving the paired Owletto extension"; it routes through `packages/server/src/worker-api/dispatch-chrome-action.ts`. Discover the `operations` namespace with `search_sdk operations`, then call it through `run_sdk`. A new server-side chrome action also needs a handler in the *installed* extension build, so check `git ls-tree origin/main packages/owletto`, never the working-tree submodule HEAD.
 
 **Receiving real third-party webhooks against a local gateway** uses Tailscale Funnel on :443: `tailscale funnel --bg --https=443 http://127.0.0.1:<port>`. The `serve` subcommand looks identical but silently makes the port tailnet-only — always `funnel`, and verify with `tailscale funnel status`. curl from the same machine resolves over the tailnet, so a local 200 does not prove public reachability.
 

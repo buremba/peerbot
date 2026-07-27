@@ -52,12 +52,11 @@ export interface ContentSearchOptions {
 
   // Per-OAuth-client scope — the `events.client_id` COLUMN (indexed,
   // FK → oauth_clients), not a metadata field. Scopes the timeline to what one
-  // registered client did: the MCP activity view passes it alongside
-  // `semantic_type: 'audit'` to show a connected client's tool calls.
+  // registered client did, typically alongside `semantic_type: 'audit'`.
   //
-  // A client that re-registers gets a NEW oauth_clients row with the same
-  // `client_name`, so callers wanting "everything ChatGPT did" pass every id
-  // for that name (see listMcpClientActivity) rather than a single id.
+  // Accepts an array because a client that re-registers gets a NEW
+  // oauth_clients row under the same `client_name` (prod: "Lobu CLI" has 6
+  // ids), so "everything ChatGPT did" means every id for that name.
   client_id?: string | string[];
 
   // Classification options (only JOINs when needed)

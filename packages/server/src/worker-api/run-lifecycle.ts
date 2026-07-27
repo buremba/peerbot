@@ -110,36 +110,41 @@ async function reactivateProfileCascade(
 	}
 ): Promise<void> {
 	// Credentials returned by an auth run are bearer values; store refs, not
-	// the values themselves.
-	const credentialRefs = await toSecretRefAuthData({
-		organizationId,
-		authProfileId,
-		credentials: authData.credentials,
+	// the values themselves. Secret upsert + profile activation share one
+	// transaction so a partial failure cannot leave a rotated secret without
+	// the matching auth_data row (or vice versa).
+	await sql.begin(async (tx) => {
+		const credentialRefs = await toSecretRefAuthData({
+			organizationId,
+			authProfileId,
+			credentials: authData.credentials,
+			db: tx,
+		});
+		await tx`
+      UPDATE auth_profiles
+      SET auth_data = ${tx.json(credentialRefs)},
+          metadata = ${tx.json(authData.metadata)},
+          status = 'active',
+          updated_at = current_timestamp
+      WHERE id = ${authProfileId}
+    `;
+		await tx`
+      UPDATE connections
+      SET status = 'active', updated_at = current_timestamp
+      WHERE auth_profile_id = ${authProfileId}
+        AND status = 'pending_auth'
+    `;
+		await tx`
+      UPDATE feeds f
+      SET status = 'active',
+          next_run_at = COALESCE(f.next_run_at, NOW()),
+          updated_at = current_timestamp
+      FROM connections c
+      WHERE f.connection_id = c.id
+        AND c.auth_profile_id = ${authProfileId}
+        AND f.status = 'paused'
+    `;
 	});
-	await sql`
-    UPDATE auth_profiles
-    SET auth_data = ${sql.json(credentialRefs)},
-        metadata = ${sql.json(authData.metadata)},
-        status = 'active',
-        updated_at = current_timestamp
-    WHERE id = ${authProfileId}
-  `;
-	await sql`
-    UPDATE connections
-    SET status = 'active', updated_at = current_timestamp
-    WHERE auth_profile_id = ${authProfileId}
-      AND status = 'pending_auth'
-  `;
-	await sql`
-    UPDATE feeds f
-    SET status = 'active',
-        next_run_at = COALESCE(f.next_run_at, NOW()),
-        updated_at = current_timestamp
-    FROM connections c
-    WHERE f.connection_id = c.id
-      AND c.auth_profile_id = ${authProfileId}
-      AND f.status = 'paused'
-  `;
 }
 
 /**

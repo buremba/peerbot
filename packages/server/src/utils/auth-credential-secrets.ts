@@ -17,9 +17,20 @@
  * Only `env`-kind profiles are converted. `browser_session` / `interactive`
  * profiles hold structured session state (cookie jars, Baileys creds), not
  * flat credential strings; they are out of scope here and untouched.
+ *
+ * Caller-supplied credential values are NEVER treated as already-stored
+ * refs: a crafted `secret://…` string is encrypted as opaque input under
+ * this profile's name. Already-stored refs are preserved only on internal
+ * paths (no-authData profile updates, legacy migration of partially
+ * converted rows).
  */
 
-import { parseSecretRef } from "@lobu/core";
+import {
+	createBuiltinSecretRef,
+	createLogger,
+	encrypt,
+	parseSecretRef,
+} from "@lobu/core";
 import { type DbClient, getDb } from "../db/client";
 import { PostgresSecretStore } from "../lobu/stores/postgres-secret-store";
 import { orgContext } from "../lobu/stores/org-context";
@@ -28,7 +39,6 @@ import {
 	type SecretStore,
 	type WritableSecretStore,
 } from "../gateway/secrets/index.js";
-import { createLogger } from "@lobu/core";
 import { normalizeAuthValues } from "./auth-profiles";
 
 const logger = createLogger("auth-credential-secrets");
@@ -67,66 +77,81 @@ type SecretRefAuthDataParams = {
 	organizationId: string;
 	authProfileId: number;
 	credentials: Record<string, unknown>;
+	/** Injected store for tests; production writes use `db` directly. */
 	secretStore?: WritableSecretStore;
+	/**
+	 * Connection that also owns the profile UPDATE. Secret rows are written
+	 * on this handle so they share the caller's transaction (rollback +
+	 * concurrent delete cannot leave decryptable orphans).
+	 */
+	db?: DbClient;
+	/**
+	 * Internal only (legacy migration). When set, already-stored
+	 * `secret://` values are kept rather than re-encrypted as opaque strings.
+	 * Public create/validate/completion paths must leave this false.
+	 */
+	preserveStoredRefs?: boolean;
 };
 
 /**
- * True when `value` is a builtin `secret://` ref that already belongs to
- * THIS auth profile (live name or legacy-convergence staging name).
- *
- * Public create / validate / completion paths must NEVER treat a
- * caller-supplied `secret://…` string as already-stored: an attacker who
- * can guess an org-scoped name would otherwise bind the profile to that
- * secret without ever knowing its plaintext. Only refs under
- * `auth-profile/<this-id>/…` are trusted, and only for no-op updates that
- * re-submit the profile's own stored refs.
+ * Encrypt one credential into `agent_secrets` on the caller's DbClient so the
+ * write participates in the same transaction as the profile row update.
  */
-function isOwnedAuthCredentialRef(
-	value: string,
-	authProfileId: number,
-): boolean {
-	const parsed = parseSecretRef(value);
-	if (parsed?.scheme !== BUILTIN_SECRET_SCHEME) return false;
-	let name: string;
-	try {
-		name = decodeURIComponent(parsed.path);
-	} catch {
-		return false;
-	}
-	const livePrefix = `auth-profile/${authProfileId}/`;
-	if (!name.startsWith(livePrefix)) return false;
-	// Reject path-traversal-ish names (`auth-profile/1/../2/key`).
-	const rest = name.slice(livePrefix.length);
-	return rest.length > 0 && !rest.includes("..") && !rest.includes("//");
+async function putAuthCredentialOnDb(params: {
+	db: DbClient;
+	organizationId: string;
+	name: string;
+	value: string;
+}): Promise<string> {
+	const ciphertext = encrypt(params.value);
+	await params.db`
+    INSERT INTO agent_secrets (organization_id, name, ciphertext, expires_at, created_at, updated_at)
+    VALUES (${params.organizationId}, ${params.name}, ${ciphertext}, NULL, now(), now())
+    ON CONFLICT (organization_id, name) DO UPDATE SET
+      ciphertext = EXCLUDED.ciphertext,
+      expires_at = EXCLUDED.expires_at,
+      updated_at = now()
+  `;
+	return createBuiltinSecretRef(encodeURIComponent(params.name));
 }
 
 async function storeAuthCredentialRefs(
 	params: SecretRefAuthDataParams,
 	namespace?: "legacy-convergence",
 ): Promise<Record<string, string>> {
-	const store = params.secretStore ?? new PostgresSecretStore();
 	const values = normalizeAuthValues(params.credentials);
 	const out: Record<string, string> = {};
+	const sql = params.db ?? getDb();
 
-	await orgContext.run({ organizationId: params.organizationId }, async () => {
-		for (const [key, value] of Object.entries(values)) {
-			// Owned refs (rename-only profile update re-submitting stored
-			// auth_data): keep them rather than re-storing the ref string as
-			// if it were a credential. Foreign or crafted `secret://` values
-			// fall through to `store.put` and are encrypted as opaque strings
-			// under THIS profile's name — they do not bind another secret.
-			if (isOwnedAuthCredentialRef(value, params.authProfileId)) {
-				out[key] = value;
-				continue;
-			}
-			// `store.put` directly, NOT `persistSecretValue` — the latter skips
-			// any value matching `isSecretRef`, which a `postgres://` DSN does.
-			out[key] = await store.put(
-				authCredentialSecretName(params.authProfileId, key, namespace),
-				value,
-			);
+	for (const [key, value] of Object.entries(values)) {
+		// Migration of partially-converted rows may still hold some refs.
+		// Public paths never set preserveStoredRefs — every caller-supplied
+		// value is encrypted under THIS profile's field name.
+		if (params.preserveStoredRefs && isStoredSecretRef(value)) {
+			out[key] = value;
+			continue;
 		}
-	});
+		const name = authCredentialSecretName(
+			params.authProfileId,
+			key,
+			namespace,
+		);
+		if (params.secretStore) {
+			// Test injection path — still force the org context so a bare
+			// store cannot land tenant secrets in the GLOBAL bucket.
+			out[key] = await orgContext.run(
+				{ organizationId: params.organizationId },
+				() => params.secretStore!.put(name, value),
+			);
+		} else {
+			out[key] = await putAuthCredentialOnDb({
+				db: sql,
+				organizationId: params.organizationId,
+				name,
+				value,
+			});
+		}
+	}
 
 	return out;
 }
@@ -135,12 +160,16 @@ async function storeAuthCredentialRefs(
  * Convert a credential map into one safe to store in `auth_data`: every
  * value is written to the secret store and replaced by its `secret://` ref.
  *
- * The org is threaded EXPLICITLY rather than relying on the ambient
- * AsyncLocalStorage context. `PostgresSecretStore.put` silently falls back to
- * a deployment-wide GLOBAL bucket when no context is set, and a tenant
- * credential landing there would shadow every other org's read of the same
- * name. Worker-token paths (run completion) have no ambient org, so the
- * fallback would otherwise be reachable in production.
+ * Caller-supplied strings are always stored, including strings that look
+ * like `secret://…`. That closes the connect-route ref-injection attack:
+ * an attacker cannot bind a profile field to another secret by submitting
+ * its ref. Rename-only updates that must keep existing refs go through
+ * `updateAuthProfile` without `authData`, which never calls this function.
+ *
+ * The org is threaded EXPLICITLY on every write. `PostgresSecretStore.put`
+ * silently falls back to a deployment-wide GLOBAL bucket when no ambient
+ * context is set; worker-token paths have none, so the fallback would
+ * otherwise be reachable in production for the test-store path.
  */
 export async function toSecretRefAuthData(
 	params: SecretRefAuthDataParams,
@@ -150,6 +179,11 @@ export async function toSecretRefAuthData(
 
 /**
  * Write a credential map onto an auth profile, storing only `secret://` refs.
+ *
+ * Secret upserts and the `auth_data` UPDATE run on the same DbClient. When
+ * the caller does not pass one, they share a fresh transaction so a failed
+ * update cannot leave a rotated secret behind, and a rolled-back create
+ * cannot leave decryptable orphans.
  */
 export async function persistAuthCredentials(params: {
 	organizationId: string;
@@ -158,16 +192,42 @@ export async function persistAuthCredentials(params: {
 	secretStore?: WritableSecretStore;
 	db?: DbClient;
 }): Promise<Record<string, string>> {
-	const refs = await toSecretRefAuthData(params);
-	const sql = params.db ?? getDb();
-	await sql`
-    UPDATE auth_profiles
-    SET auth_data = ${sql.json(refs)},
-        updated_at = NOW()
-    WHERE id = ${params.authProfileId}
-      AND organization_id = ${params.organizationId}
-  `;
-	return refs;
+	const write = async (sql: DbClient): Promise<Record<string, string>> => {
+		// Lock the profile row so a concurrent delete cannot race a secret
+		// write and leave credentials without a profile.
+		const locked = await sql`
+      SELECT id
+      FROM auth_profiles
+      WHERE id = ${params.authProfileId}
+        AND organization_id = ${params.organizationId}
+      FOR UPDATE
+    `;
+		if (locked.length === 0) {
+			throw new Error(
+				`auth profile ${params.authProfileId} not found for credential write`,
+			);
+		}
+		const refs = await storeAuthCredentialRefs({
+			organizationId: params.organizationId,
+			authProfileId: params.authProfileId,
+			credentials: params.credentials,
+			secretStore: params.secretStore,
+			db: sql,
+		});
+		await sql`
+      UPDATE auth_profiles
+      SET auth_data = ${sql.json(refs)},
+          updated_at = NOW()
+      WHERE id = ${params.authProfileId}
+        AND organization_id = ${params.organizationId}
+    `;
+		return refs;
+	};
+
+	if (params.db) {
+		return write(params.db);
+	}
+	return getDb().begin((tx) => write(tx));
 }
 
 /**
@@ -240,27 +300,43 @@ export async function migrateLegacyPlaintextAuthData(): Promise<number> {
 			continue;
 		}
 
-		// Use a staging namespace rather than the live rotation names. If a user
-		// rotates this profile after the scan but before the UPDATE below, a
-		// losing convergence attempt must not overwrite the live secret value.
-		const refs = await storeAuthCredentialRefs(
-			{
-				organizationId: row.organization_id,
-				authProfileId: Number(row.id),
-				credentials: values,
-			},
-			"legacy-convergence",
-		);
-		const updated = await sql`
-      UPDATE auth_profiles
-      SET auth_data = ${sql.json(refs)},
-          updated_at = NOW()
-      WHERE id = ${row.id}
-        AND organization_id = ${row.organization_id}
-        AND auth_data = ${sql.json(row.auth_data)}::jsonb
-      RETURNING id
-		`;
-		if (updated.length > 0) converted += 1;
+		// Staging namespace + compare-and-swap on auth_data: a rotation that
+		// lands between scan and write wins, and the losing staging rows are
+		// cleaned up below.
+		const refs = await sql.begin(async (tx) => {
+			const locked = await tx`
+        SELECT id, auth_data
+        FROM auth_profiles
+        WHERE id = ${row.id}
+          AND organization_id = ${row.organization_id}
+          AND auth_data = ${tx.json(row.auth_data)}::jsonb
+        FOR UPDATE
+      `;
+			if (locked.length === 0) return null;
+
+			const nextRefs = await storeAuthCredentialRefs(
+				{
+					organizationId: row.organization_id,
+					authProfileId: Number(row.id),
+					credentials: values,
+					db: tx,
+					// Partially-converted rows may already hold some refs.
+					preserveStoredRefs: true,
+				},
+				"legacy-convergence",
+			);
+			const updated = await tx`
+        UPDATE auth_profiles
+        SET auth_data = ${tx.json(nextRefs)},
+            updated_at = NOW()
+        WHERE id = ${row.id}
+          AND organization_id = ${row.organization_id}
+          AND auth_data = ${tx.json(row.auth_data)}::jsonb
+        RETURNING id
+      `;
+			return updated.length > 0 ? nextRefs : null;
+		});
+		if (refs) converted += 1;
 	}
 
 	// Staging rows remain referenced after a successful conversion. Remove them

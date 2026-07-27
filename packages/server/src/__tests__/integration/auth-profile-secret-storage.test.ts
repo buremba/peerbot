@@ -510,20 +510,17 @@ describe("auth_profiles credential storage", () => {
 
 	/**
 	 * Public create/validate paths must never treat a caller-supplied
-	 * `secret://…` string as an already-stored ref. Without ownership checks a
-	 * crafted credential would bind the profile to a predictable org/global
-	 * secret without ever writing the submitted value.
+	 * `secret://…` string as an already-stored ref — not even one under this
+	 * profile's own name (cross-key binding) or another profile's.
 	 */
 	it("does not bind a caller-supplied foreign secret:// ref", async () => {
 		const orgId = workspace.org.id;
 		const victimId = await seedEnvProfile(orgId, "pg-ref-victim", {});
-		await orgContext.run({ organizationId: orgId }, () =>
-			persistAuthCredentials({
-				organizationId: orgId,
-				authProfileId: victimId,
-				credentials: { DATABASE_URL: DSN },
-			}),
-		);
+		await persistAuthCredentials({
+			organizationId: orgId,
+			authProfileId: victimId,
+			credentials: { DATABASE_URL: DSN },
+		});
 		const victimRef = String((await rawAuthData(victimId)).DATABASE_URL);
 		expect(parseSecretRef(victimRef)?.scheme).toBe("secret");
 
@@ -536,14 +533,12 @@ describe("auth_profiles credential storage", () => {
 			return originalPut(name, value, options);
 		};
 
-		const out = await orgContext.run({ organizationId: orgId }, () =>
-			toSecretRefAuthData({
-				organizationId: orgId,
-				authProfileId: attackerId,
-				credentials: { DATABASE_URL: victimRef },
-				secretStore: store,
-			}),
-		);
+		const out = await toSecretRefAuthData({
+			organizationId: orgId,
+			authProfileId: attackerId,
+			credentials: { DATABASE_URL: victimRef },
+			secretStore: store,
+		});
 
 		// Must have written (not short-circuited) and must not keep the victim ref.
 		expect(putCalls).toHaveLength(1);
@@ -560,36 +555,63 @@ describe("auth_profiles credential storage", () => {
 		expect(resolved.DATABASE_URL).not.toBe(DSN);
 	});
 
-	it("preserves a rename-only re-submit of the profile's own refs", async () => {
+	it("does not bind one field to another via same-profile secret:// ref", async () => {
 		const orgId = workspace.org.id;
-		const profileId = await seedEnvProfile(orgId, "pg-ref-owned", {});
-		await orgContext.run({ organizationId: orgId }, () =>
-			persistAuthCredentials({
-				organizationId: orgId,
-				authProfileId: profileId,
-				credentials: { DATABASE_URL: DSN },
-			}),
-		);
-		const ownedRef = String((await rawAuthData(profileId)).DATABASE_URL);
-		const putCalls: string[] = [];
-		const store = new PostgresSecretStore();
-		const originalPut = store.put.bind(store);
-		store.put = async (name, value, options) => {
-			putCalls.push(value);
-			return originalPut(name, value, options);
-		};
+		const profileId = await seedEnvProfile(orgId, "pg-ref-cross-key", {});
+		await persistAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			credentials: { API_KEY: "real-api-key", DATABASE_URL: DSN },
+		});
+		const stored = await rawAuthData(profileId);
+		const apiKeyRef = String(stored.API_KEY);
+		expect(parseSecretRef(apiKeyRef)?.scheme).toBe("secret");
 
-		const out = await orgContext.run({ organizationId: orgId }, () =>
-			toSecretRefAuthData({
-				organizationId: orgId,
-				authProfileId: profileId,
-				credentials: { DATABASE_URL: ownedRef },
-				secretStore: store,
-			}),
-		);
+		// Attacker re-submits the API_KEY ref as DATABASE_URL.
+		await persistAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			credentials: { DATABASE_URL: apiKeyRef },
+		});
+		const after = await rawAuthData(profileId);
+		// DATABASE_URL must be a NEW ref for that field — not the API_KEY ref.
+		expect(String(after.DATABASE_URL)).not.toBe(apiKeyRef);
+		const resolved = await resolveAuthCredentials({
+			organizationId: orgId,
+			authData: after,
+		});
+		// Opaque store of the ref string — must not resolve to the API key value.
+		expect(resolved.DATABASE_URL).toBe(apiKeyRef);
+		expect(resolved.DATABASE_URL).not.toBe("real-api-key");
+		expect(resolved.DATABASE_URL).not.toBe(DSN);
+	});
 
-		expect(putCalls).toHaveLength(0);
-		expect(out.DATABASE_URL).toBe(ownedRef);
+	it("rename-only update keeps existing refs without re-storing", async () => {
+		const { updateAuthProfile } = await import("../../utils/auth-profiles");
+		const orgId = workspace.org.id;
+		const profile = await createAuthProfile({
+			organizationId: orgId,
+			connectorKey: "postgres",
+			displayName: "Rename me",
+			slug: "pg-ref-rename",
+			profileKind: "env",
+			authData: { DATABASE_URL: DSN },
+		});
+		const before = String((await rawAuthData(profile.id)).DATABASE_URL);
+		expect(parseSecretRef(before)?.scheme).toBe("secret");
+
+		const updated = await updateAuthProfile({
+			organizationId: orgId,
+			slug: profile.slug,
+			displayName: "Renamed",
+		});
+		expect(updated?.display_name).toBe("Renamed");
+		expect(String((await rawAuthData(profile.id)).DATABASE_URL)).toBe(before);
+		const resolved = await resolveAuthCredentials({
+			organizationId: orgId,
+			authData: await rawAuthData(profile.id),
+		});
+		expect(resolved.DATABASE_URL).toBe(DSN);
 	});
 
 	/**
@@ -628,5 +650,47 @@ describe("auth_profiles credential storage", () => {
         AND name LIKE ${`auth-profile/${profile.id}/%`}
     `;
 		expect(secretRowsAfter).toHaveLength(0);
+	});
+
+	it("rolls back agent_secrets when the caller transaction aborts", async () => {
+		const sql = getTestDb();
+		const orgId = workspace.org.id;
+		let profileId: number | undefined;
+		try {
+			await sql.begin(async (tx) => {
+				const profile = await createAuthProfile(
+					{
+						organizationId: orgId,
+						connectorKey: "postgres",
+						displayName: "Rollback secrets",
+						slug: "pg-rollback-secrets",
+						profileKind: "env",
+						authData: { DATABASE_URL: DSN },
+					},
+					tx,
+				);
+				profileId = profile.id;
+				const secretsInTx = await tx`
+          SELECT name FROM agent_secrets
+          WHERE organization_id = ${orgId}
+            AND name LIKE ${`auth-profile/${profile.id}/%`}
+        `;
+				expect(secretsInTx.length).toBeGreaterThan(0);
+				throw new Error("force-rollback");
+			});
+		} catch (err) {
+			expect((err as Error).message).toBe("force-rollback");
+		}
+		expect(profileId).toBeDefined();
+		const profileGone = await sql`
+      SELECT 1 FROM auth_profiles WHERE id = ${profileId!}
+    `;
+		expect(profileGone).toHaveLength(0);
+		const secretsGone = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profileId!}/%`}
+    `;
+		expect(secretsGone).toHaveLength(0);
 	});
 });

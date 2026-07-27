@@ -269,19 +269,7 @@ export async function mcpRequest<T = any>(
 export async function mcpToolsCall<T = any>(
   toolName: string,
   args: any,
-  options?: {
-    token?: string;
-    env?: Partial<Env>;
-    agentId?: string;
-    orgSlug?: string;
-    /**
-     * Return the parsed result even when the tool resolves a soft failure
-     * (`isError: true`). Failure-path tests that assert on the structured
-     * `{ success: false, error }` payload of `run_sdk`/`query_sdk` need this,
-     * since those resolved failures now carry `isError` at the MCP envelope.
-     */
-    allowToolError?: boolean;
-  }
+  options?: { token?: string; env?: Partial<Env>; agentId?: string; orgSlug?: string }
 ): Promise<T> {
   const sessionId = await ensureMcpSession(options);
   const mcpPath = options?.orgSlug ? `/mcp/${options.orgSlug}` : '/mcp';
@@ -304,10 +292,8 @@ export async function mcpToolsCall<T = any>(
     throw new Error(`MCP Error [${json.error.code}]: ${json.error.message}`);
   }
 
-  // Tool-level errors: MCP returns isError on the result, not at JSON-RPC level.
-  // Callers that deliberately exercise a failure path opt out via
-  // `allowToolError` and inspect the parsed result themselves.
-  if (json.result?.isError && !options?.allowToolError) {
+  // Tool-level errors: MCP returns isError on the result, not at JSON-RPC level
+  if (json.result?.isError) {
     const errText = json.result.content?.[0]?.text ?? 'Tool execution failed';
     throw new Error(errText);
   }

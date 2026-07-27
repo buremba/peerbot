@@ -653,7 +653,6 @@ describe("connections.connect — setup_required continuation", () => {
 			error?: { name: string; message: string; details?: unknown };
 		}>(
 			`export default async (_ctx, client) => client.connections.connect({ connector_key: "missing-continuation-connector" });`,
-			{ allowToolError: true },
 		);
 		expect(failed.success).toBe(false);
 		expect(failed.error).toMatchObject({

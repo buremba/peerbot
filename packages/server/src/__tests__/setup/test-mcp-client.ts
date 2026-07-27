@@ -148,21 +148,13 @@ export class TestMcpClient {
    * Use `querySdk()` instead for read-only scripts — it gates writes at the
    * tool boundary so a bug in test setup can't accidentally mutate state.
    */
-  async runSdk<T = unknown>(
-    script: string,
-    options?: { timeout_ms?: number; allowToolError?: boolean }
-  ): Promise<T> {
-    const { allowToolError, ...scriptArgs } = options ?? {};
-    return mcpToolsCall<T>('run_sdk', { script, ...scriptArgs }, { ...this.opts, allowToolError });
+  async runSdk<T = unknown>(script: string, options?: { timeout_ms?: number }): Promise<T> {
+    return mcpToolsCall<T>('run_sdk', { script, ...(options ?? {}) }, this.opts);
   }
 
   /** Read-only counterpart of `runSdk()` — see #432. */
-  async querySdk<T = unknown>(
-    script: string,
-    options?: { timeout_ms?: number; allowToolError?: boolean }
-  ): Promise<T> {
-    const { allowToolError, ...scriptArgs } = options ?? {};
-    return mcpToolsCall<T>('query_sdk', { script, ...scriptArgs }, { ...this.opts, allowToolError });
+  async querySdk<T = unknown>(script: string, options?: { timeout_ms?: number }): Promise<T> {
+    return mcpToolsCall<T>('query_sdk', { script, ...(options ?? {}) }, this.opts);
   }
 
   /**

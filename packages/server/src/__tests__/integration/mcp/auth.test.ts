@@ -909,7 +909,7 @@ describe('MCP Authentication', () => {
           script:
             'export default async (_c, client) => { await client.connections.installConnector({ connector_id: "__nonexistent__" }); return { ok: true }; }',
         },
-        { token, orgSlug: roleOrg.slug, allowToolError: true }
+        { token, orgSlug: roleOrg.slug }
       );
       expect(admin.success).toBe(false);
       expect(admin.error?.message).toMatch(

@@ -29,6 +29,7 @@ import {
   ADMIN_ONLY_QUERYABLE_TABLES,
   buildColumnList,
   type ColumnDef,
+  formatUnknownTablesError,
   QUERYABLE_TABLE_NAMES,
   SAFE_COLUMN_DEFS,
   validateTableQuery,
@@ -353,14 +354,15 @@ export function validateAndScopeQuery(
   const tableRefs = extractTableRefs(trimmed);
   const unknown = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
   if (unknown.length > 0) {
-    throw new Error(`Unknown table(s): ${unknown.join(', ')}`);
+    throw new Error(formatUnknownTablesError(unknown));
   }
 
   if (options?.restrictedTables) {
     const blocked = tableRefs.filter((t) => options.restrictedTables?.has(t));
     if (blocked.length > 0) {
       throw new Error(
-        `Table(s) require admin access: ${[...new Set(blocked)].join(', ')}`
+        `Table(s) '${[...new Set(blocked)].join("', '")}' require owner/admin access — ` +
+          `the query did not run. This is an error, not an empty result.`
       );
     }
   }

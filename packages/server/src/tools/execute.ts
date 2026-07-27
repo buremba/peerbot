@@ -58,6 +58,29 @@ export interface AuthContext {
   adminTools?: string[] | null;
 }
 
+/**
+ * A resolved TOOL-level failure — the tool could not do its job — which is not
+ * thrown, so the MCP boundary must mark it with `isError`. These carry a
+ * top-level `error` STRING (query_sql's `{ rows: [], error }`, an action tool's
+ * `{ error }`).
+ *
+ * Deliberately NOT a script failure. `run_sdk` / `query_sdk` execute arbitrary
+ * caller code and report the outcome as DATA: `SdkScriptResultSchema` makes
+ * `success` a required field and documents `error` as "the thrown error, with
+ * script position" (name/message/line/column). When a script throws, the tool
+ * itself ran perfectly — it executed the code and returned a faithful report.
+ * Marking that `isError` conflates "the sandbox failed to run your code" with
+ * "your code ran and threw", which callers must distinguish: `mcpToolsCall`
+ * throws on `isError`, so it would stop tests/agents from ever reading the
+ * documented `success: false` payload, and `interaction-bridge` would relabel a
+ * legitimate script throw as "Tool error:" in agent-visible output.
+ */
+export function isSoftErrorResult(result: unknown): boolean {
+  if (typeof result !== 'object' || result === null) return false;
+  const candidate = result as { error?: unknown };
+  return typeof candidate.error === 'string' && candidate.error.length > 0;
+}
+
 export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
   const mcpAuthInfo = c.var.mcpAuthInfo ?? null;
   const tokenType: TokenType =
@@ -224,9 +247,9 @@ export async function executeTool(
   try {
     // Auto-retry (lobu#2051 Item 2): only transient thrown ToolErrors, and only
     // for read/test tools on the allowlist. Mutations and run_sdk are never
-    // retried here — re-running them could double-write. Soft-error results
-    // (query_sql/query_sdk `{error, retryable}`) never throw, so they're never
-    // auto-retried; their `retryable` flag is advisory for the agent.
+    // retried here — re-running them could double-write. Resolved failures from
+    // query_sql and query_sdk never throw, so their retryability metadata is
+    // advisory for the agent.
     const result = RETRYABLE_TOOLS.has(toolName)
       ? await retryWithBackoff(runHandler, {
           maxRetries: 2,

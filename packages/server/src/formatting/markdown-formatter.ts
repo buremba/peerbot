@@ -965,7 +965,7 @@ function formatManageBehaviorsResult(result: any, _options: FormatterOptions): s
  * `query_sql` has no `outputSchema`, so its markdown must distinguish a resolved
  * `{ rows: [], error }` failure from a successful empty result.
  */
-function formatQuerySqlResult(result: any, _options: FormatterOptions): string {
+function formatQuerySqlResult(result: any): string {
   const { rows, total_count, execution_time_ms } = result;
 
   if (typeof result?.error === 'string' && result.error.length > 0) {

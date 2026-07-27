@@ -80,7 +80,7 @@ describe("connection config redaction", () => {
 			name: "Redaction Org",
 			visibility: "public",
 		});
-		await seedSystemEntityTypes(workspace.org.id);
+		await seedSystemEntityTypes();
 
 		entityId = Number(
 			(

@@ -61,16 +61,23 @@ export async function buildAgentSettingsUrl(
   publicGatewayUrl: string | undefined,
   organizationId: string | undefined,
   agentId: string | undefined,
-  // A pending manage_agents update run to review: appends `?run_id=<id>` so the
-  // settings form prefills the proposed change for Approve/Reject (WI-0.3).
-  opts?: { runId?: number }
+  opts?: {
+    // A pending manage_agents update run to review: appends `?run_id=<id>` so the
+    // settings form prefills the proposed change for Approve/Reject (WI-0.3).
+    runId?: number;
+    // Model-related CTAs ("choose a model") append `#models` so the page scrolls
+    // to the ordered models allow-list. Per-call because not every settings CTA
+    // is about models — the run-review CTA above lands on the whole form.
+    modelsAnchor?: boolean;
+  }
 ): Promise<string | null> {
   if (!publicGatewayUrl || !organizationId || !agentId) return null;
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
   const base = `${webOrigin}/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/settings`;
-  return opts?.runId ? `${base}?run_id=${opts.runId}` : base;
+  const withQuery = opts?.runId ? `${base}?run_id=${opts.runId}` : base;
+  return opts?.modelsAnchor ? `${withQuery}#models` : withQuery;
 }
 
 /**

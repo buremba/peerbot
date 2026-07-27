@@ -602,9 +602,11 @@ export class ChatResponseBridge implements ResponseRenderer {
       const orgId = this.resolveOrganizationId(payload, ctx) ?? undefined;
       const agentId = this.resolveAgentId(payload, ctx) ?? undefined;
       const rendered = await renderAgentError(code, payload.error, {
-        // "pick a model" → the agent's settings tab.
+        // "pick a model" → the agent's settings tab, models section.
         'agent-settings': () =>
-          buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
+          buildAgentSettingsUrl(gatewayUrl, orgId, agentId, {
+            modelsAnchor: true,
+          }),
         // "connect a provider" → the org's connect-a-provider page.
         'provider-connect': () => buildProviderConnectUrl(gatewayUrl, orgId),
         // Provider auth/quota/routing → manage the exact existing provider.

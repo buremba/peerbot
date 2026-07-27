@@ -1329,7 +1329,9 @@ export class MessageHandlerBridge {
                 reason: "model_provider_not_connected",
                 agentId,
               })
-            : await buildAgentSettingsUrl(gatewayUrl, organizationId, agentId);
+            : await buildAgentSettingsUrl(gatewayUrl, organizationId, agentId, {
+                modelsAnchor: true,
+              });
         const label =
           modelResolution.cta === "provider-connect"
             ? "Connect a provider"

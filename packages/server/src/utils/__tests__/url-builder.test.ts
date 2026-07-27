@@ -125,6 +125,25 @@ describe('buildAgentSettingsUrl', () => {
     expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings');
   });
 
+  // Model-related CTAs ("choose a model") opt into the `#models` fragment so the
+  // settings page scrolls to the ordered models allow-list. Per-call, NOT the
+  // default: the run-review CTA (?run_id) reviews the whole config form, so the
+  // exact-URL assertions above double as the "no fragment unless asked" proof.
+  it('appends #models when the caller opts in via modelsAnchor', async () => {
+    const url = await buildAgentSettingsUrl('https://app.lobu.com/lobu', 'org-1', 'lobu-builder', {
+      modelsAnchor: true,
+    });
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings#models');
+  });
+
+  it('places the fragment after the ?run_id query when both are given', async () => {
+    const url = await buildAgentSettingsUrl('https://app.lobu.com', 'org-1', 'lobu-builder', {
+      runId: 42,
+      modelsAnchor: true,
+    });
+    expect(url).toBe('https://app.lobu.com/acme/agents/lobu-builder/settings?run_id=42#models');
+  });
+
   it('strips the embedded-mode /lobu suffix from the web origin', async () => {
     const url = await buildAgentSettingsUrl('https://app.lobu.com/lobu/', 'org-1', 'my agent/id');
     // agentId is percent-encoded; origin has no /lobu.

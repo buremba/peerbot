@@ -70,6 +70,36 @@ type SecretRefAuthDataParams = {
 	secretStore?: WritableSecretStore;
 };
 
+/**
+ * True when `value` is a builtin `secret://` ref that already belongs to
+ * THIS auth profile (live name or legacy-convergence staging name).
+ *
+ * Public create / validate / completion paths must NEVER treat a
+ * caller-supplied `secret://…` string as already-stored: an attacker who
+ * can guess an org-scoped name would otherwise bind the profile to that
+ * secret without ever knowing its plaintext. Only refs under
+ * `auth-profile/<this-id>/…` are trusted, and only for no-op updates that
+ * re-submit the profile's own stored refs.
+ */
+function isOwnedAuthCredentialRef(
+	value: string,
+	authProfileId: number,
+): boolean {
+	const parsed = parseSecretRef(value);
+	if (parsed?.scheme !== BUILTIN_SECRET_SCHEME) return false;
+	let name: string;
+	try {
+		name = decodeURIComponent(parsed.path);
+	} catch {
+		return false;
+	}
+	const livePrefix = `auth-profile/${authProfileId}/`;
+	if (!name.startsWith(livePrefix)) return false;
+	// Reject path-traversal-ish names (`auth-profile/1/../2/key`).
+	const rest = name.slice(livePrefix.length);
+	return rest.length > 0 && !rest.includes("..") && !rest.includes("//");
+}
+
 async function storeAuthCredentialRefs(
 	params: SecretRefAuthDataParams,
 	namespace?: "legacy-convergence",
@@ -80,9 +110,12 @@ async function storeAuthCredentialRefs(
 
 	await orgContext.run({ organizationId: params.organizationId }, async () => {
 		for (const [key, value] of Object.entries(values)) {
-			// Already a builtin ref (e.g. a rename-only profile update): keep it
-			// rather than re-storing the ref string as if it were a credential.
-			if (isStoredSecretRef(value)) {
+			// Owned refs (rename-only profile update re-submitting stored
+			// auth_data): keep them rather than re-storing the ref string as
+			// if it were a credential. Foreign or crafted `secret://` values
+			// fall through to `store.put` and are encrypted as opaque strings
+			// under THIS profile's name — they do not bind another secret.
+			if (isOwnedAuthCredentialRef(value, params.authProfileId)) {
 				out[key] = value;
 				continue;
 			}

@@ -558,14 +558,28 @@ export async function deleteAuthProfile(
   slug: string
 ): Promise<AuthProfileRow | null> {
   const sql = getDb();
-  const rows = await sql`
-    DELETE FROM auth_profiles
-    WHERE organization_id = ${organizationId}
-      AND slug = ${slug}
-    RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
-  `;
-
-  return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+  // Profile row + its encrypted credential rows must leave together. Env
+  // profiles write `agent_secrets` under `auth-profile/<id>/…`; leaving those
+  // behind after a delete keeps decryptable bearer credentials (DSNs, API
+  // keys) until manual GC. Both deletes run in one transaction so a partial
+  // failure cannot orphan secrets or leave a profile without credentials.
+  return await sql.begin(async (tx) => {
+    const rows = await tx`
+      DELETE FROM auth_profiles
+      WHERE organization_id = ${organizationId}
+        AND slug = ${slug}
+      RETURNING ${tx.unsafe(AUTH_PROFILE_COLUMNS)}
+    `;
+    if (rows.length === 0) return null;
+    const deleted = rows[0] as AuthProfileRow;
+    // Numeric id → safe as a LIKE prefix; no caller-controlled wildcards.
+    await tx`
+      DELETE FROM agent_secrets
+      WHERE organization_id = ${organizationId}
+        AND name LIKE ${`auth-profile/${deleted.id}/%`}
+    `;
+    return deleted;
+  });
 }
 
 export async function getPrimaryAuthProfileForKind(params: {

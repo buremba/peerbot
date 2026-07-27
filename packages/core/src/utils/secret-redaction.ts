@@ -89,7 +89,12 @@ export function isSecretKey(key: string): boolean {
  * (`host`, `endpoint`, `primary`). Only the userinfo is replaced: the scheme
  * and host stay readable so a UI can still show which database is wired up.
  */
-const URI_CREDENTIAL_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi;
+// The scheme repetition is bounded ({0,63}, i.e. schemes up to 64 chars — far
+// longer than any real URI scheme) rather than `*`: an unbounded quantifier
+// re-scans at every start offset on adversarial input (e.g. a long run of 'a's
+// with no `://`), which is a polynomial-ReDoS shape. A constant bound keeps the
+// per-offset work constant, so matching stays linear on untrusted config values.
+const URI_CREDENTIAL_RE = /([a-z][a-z0-9+.-]{0,63}:\/\/)([^/\s@]+)@/gi;
 
 /**
  * Replace the `user:password@` userinfo of any URI inside a string with the

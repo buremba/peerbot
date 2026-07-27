@@ -6,8 +6,12 @@ import {
 	migrateLegacyPlaintextAuthData,
 	persistAuthCredentials,
 	resolveAuthCredentials,
+	toSecretRefAuthData,
 } from "../../utils/auth-credential-secrets";
-import { createAuthProfile } from "../../utils/auth-profiles";
+import {
+	createAuthProfile,
+	deleteAuthProfile,
+} from "../../utils/auth-profiles";
 import { resolveExecutionAuth } from "../../utils/execution-context";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestConnection } from "../setup/test-fixtures";
@@ -502,5 +506,127 @@ describe("auth_profiles credential storage", () => {
 			DSN_PASSWORD,
 		);
 		expect(JSON.stringify(row.config)).not.toContain(DSN_PASSWORD);
+	});
+
+	/**
+	 * Public create/validate paths must never treat a caller-supplied
+	 * `secret://…` string as an already-stored ref. Without ownership checks a
+	 * crafted credential would bind the profile to a predictable org/global
+	 * secret without ever writing the submitted value.
+	 */
+	it("does not bind a caller-supplied foreign secret:// ref", async () => {
+		const orgId = workspace.org.id;
+		const victimId = await seedEnvProfile(orgId, "pg-ref-victim", {});
+		await orgContext.run({ organizationId: orgId }, () =>
+			persistAuthCredentials({
+				organizationId: orgId,
+				authProfileId: victimId,
+				credentials: { DATABASE_URL: DSN },
+			}),
+		);
+		const victimRef = String((await rawAuthData(victimId)).DATABASE_URL);
+		expect(parseSecretRef(victimRef)?.scheme).toBe("secret");
+
+		const attackerId = await seedEnvProfile(orgId, "pg-ref-attacker", {});
+		const putCalls: string[] = [];
+		const store = new PostgresSecretStore();
+		const originalPut = store.put.bind(store);
+		store.put = async (name, value, options) => {
+			putCalls.push(value);
+			return originalPut(name, value, options);
+		};
+
+		const out = await orgContext.run({ organizationId: orgId }, () =>
+			toSecretRefAuthData({
+				organizationId: orgId,
+				authProfileId: attackerId,
+				credentials: { DATABASE_URL: victimRef },
+				secretStore: store,
+			}),
+		);
+
+		// Must have written (not short-circuited) and must not keep the victim ref.
+		expect(putCalls).toHaveLength(1);
+		expect(putCalls[0]).toBe(victimRef);
+		expect(out.DATABASE_URL).not.toBe(victimRef);
+		expect(parseSecretRef(out.DATABASE_URL)?.scheme).toBe("secret");
+
+		// Resolving the attacker's profile must NOT yield the victim DSN.
+		const resolved = await resolveAuthCredentials({
+			organizationId: orgId,
+			authData: out,
+		});
+		expect(resolved.DATABASE_URL).toBe(victimRef);
+		expect(resolved.DATABASE_URL).not.toBe(DSN);
+	});
+
+	it("preserves a rename-only re-submit of the profile's own refs", async () => {
+		const orgId = workspace.org.id;
+		const profileId = await seedEnvProfile(orgId, "pg-ref-owned", {});
+		await orgContext.run({ organizationId: orgId }, () =>
+			persistAuthCredentials({
+				organizationId: orgId,
+				authProfileId: profileId,
+				credentials: { DATABASE_URL: DSN },
+			}),
+		);
+		const ownedRef = String((await rawAuthData(profileId)).DATABASE_URL);
+		const putCalls: string[] = [];
+		const store = new PostgresSecretStore();
+		const originalPut = store.put.bind(store);
+		store.put = async (name, value, options) => {
+			putCalls.push(value);
+			return originalPut(name, value, options);
+		};
+
+		const out = await orgContext.run({ organizationId: orgId }, () =>
+			toSecretRefAuthData({
+				organizationId: orgId,
+				authProfileId: profileId,
+				credentials: { DATABASE_URL: ownedRef },
+				secretStore: store,
+			}),
+		);
+
+		expect(putCalls).toHaveLength(0);
+		expect(out.DATABASE_URL).toBe(ownedRef);
+	});
+
+	/**
+	 * Deleting a profile must drop its encrypted credential rows. Leaving
+	 * `agent_secrets` behind keeps decryptable bearer credentials forever.
+	 */
+	it("deletes agent_secrets when the auth profile is deleted", async () => {
+		const sql = getTestDb();
+		const orgId = workspace.org.id;
+		const profile = await createAuthProfile({
+			organizationId: orgId,
+			connectorKey: "postgres",
+			displayName: "Delete cleanup",
+			slug: "pg-delete-cleanup",
+			profileKind: "env",
+			authData: { DATABASE_URL: DSN },
+		});
+		const secretRowsBefore = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profile.id}/%`}
+    `;
+		expect(secretRowsBefore.length).toBeGreaterThan(0);
+
+		const deleted = await deleteAuthProfile(orgId, profile.slug);
+		expect(deleted?.id).toBe(profile.id);
+
+		const profileGone = await sql`
+      SELECT 1 FROM auth_profiles WHERE id = ${profile.id}
+    `;
+		expect(profileGone).toHaveLength(0);
+
+		const secretRowsAfter = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profile.id}/%`}
+    `;
+		expect(secretRowsAfter).toHaveLength(0);
 	});
 });

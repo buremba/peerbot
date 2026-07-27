@@ -1534,6 +1534,7 @@ export class DeploymentManager {
             agentId,
             platform,
             conversationId,
+            source: platformMetadata?.source,
           })
         : {};
 

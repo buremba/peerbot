@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "../../db/client.js";
 import {
 	classifyConversation,
-	isWatcherConversationId,
+	shouldMaterializeListingRow,
 } from "../../gateway/services/conversations-store.js";
 import { sandboxSecretName } from "./provider-secrets.js";
 
@@ -206,15 +206,24 @@ export async function resolvePinnedSelection(args: {
 	agentId: string | undefined;
 	platform: string;
 	conversationId: string;
+	/** Dispatch source (`platformMetadata.source`), used to skip pinning for
+	 *  turns that must never leave a `conversations` row. */
+	source?: unknown;
 }): Promise<AgentRuntimeSelection> {
 	const { organizationId, agentId, conversationId } = args;
 	if (!organizationId || !agentId) return {};
-	// Watcher runs are ephemeral and deliberately have NO conversations row (the
-	// live dual-write excludes them via isWatcherConversationId). Honor the same
-	// exclusion here: never pin and never materialize a listing row for a watcher —
-	// resolve the agent's current selection live. A repointed watcher just picks up
-	// the new realm on its next run, which is the desired behavior for watchers.
-	if (isWatcherConversationId(conversationId)) {
+	// Turns that must never leave a listing row must never pin either: the pin
+	// UPSERT below CREATES the conversations row when the dual-write hasn't
+	// landed one, so pinning here would resurrect exactly the ghost row
+	// `shouldMaterializeListingRow` exists to suppress. Both excluded classes are
+	// single-shot with no follow-up turn, so resolving the agent's selection live
+	// is correct — there is no later turn whose realm could drift.
+	//
+	// Watcher runs are ephemeral (a repointed watcher picks up the new realm on
+	// its next run — desired). The hidden "starters" turn has no user and no
+	// transcript; a row for it surfaces a ghost conversation in the sidebar
+	// titled with its internal prompt text.
+	if (!shouldMaterializeListingRow({ conversationId, source: args.source })) {
 		return resolveAgentRuntimeSelection(agentId, organizationId);
 	}
 	// The conversations row is keyed on the STORED platform (api→web, lowercased) —

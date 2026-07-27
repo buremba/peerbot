@@ -152,6 +152,69 @@ describe("resolvePinnedSelection", () => {
     expect(rows.length).toBe(0);
   });
 
+  it("never materializes a conversations row for a hidden starters turn", async () => {
+    // The starters turn generates starter chips with no user and no transcript.
+    // message-consumer already excludes it from the listing dual-write
+    // (shouldMaterializeListingRow), but the pin UPSERT CREATES the row when the
+    // dual-write hasn't landed one — so without this exclusion every starter
+    // generation resurrected a titleless ghost row that the sidebar rendered as
+    // "Conversation N". Observed live: three generations, three ghost rows.
+    const org = await createTestOrganization({ name: "Pin Starters Org" });
+    const agent = await createTestAgent({ organizationId: org.id });
+    const sandbox = await createSandbox(org.id, {
+      name: "vercel-starters",
+      providerKind: "vercel",
+    });
+    await setAgentSandbox(org.id, agent.agentId, sandbox.id);
+
+    // A starters thread id carries no watcher marker — only `source` excludes it.
+    const startersConvId = `${agent.agentId}_${agent.agentId}_e337df9d-1bce`;
+    const sel = await resolvePinnedSelection({
+      organizationId: org.id,
+      agentId: agent.agentId,
+      platform: PLATFORM,
+      conversationId: startersConvId,
+      source: "starters",
+    });
+
+    // Live selection returned (the turn still runs in the right realm) …
+    expect(sel.runtimeProviderId).toBe("vercel");
+    // … but NO listing row was created.
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT 1 FROM public.conversations
+      WHERE organization_id = ${org.id} AND agent_id = ${agent.agentId}
+        AND conversation_id = ${startersConvId}
+    `) as unknown[];
+    expect(rows.length).toBe(0);
+  });
+
+  it("still pins a normal turn on the same id shape (the guard is source-scoped)", async () => {
+    // Guards against over-broad exclusion: the id above is an ordinary owned-thread
+    // shape. Without `source: "starters"` it MUST pin and materialize as before.
+    const org = await createTestOrganization({ name: "Pin Normal Org" });
+    const agent = await createTestAgent({ organizationId: org.id });
+    const sandbox = await createSandbox(org.id, {
+      name: "vercel-normal",
+      providerKind: "vercel",
+    });
+    await setAgentSandbox(org.id, agent.agentId, sandbox.id);
+
+    const convId = `${agent.agentId}_${agent.agentId}_e337df9d-1bce`;
+    const sel = await resolvePinnedSelection({
+      organizationId: org.id,
+      agentId: agent.agentId,
+      platform: PLATFORM,
+      conversationId: convId,
+    });
+
+    expect(sel.runtimeProviderId).toBe("vercel");
+    expect(await readPin(org.id, agent.agentId, convId)).toEqual({
+      mode: "provider",
+      provider: "vercel",
+    });
+  });
+
   it("converges under a concurrent first-turn race (both callers agree on one pin)", async () => {
     // Two simultaneous first turns on the same absent conversation: the upsert's
     // first-writer-wins guard must yield ONE pin, and both callers must return it

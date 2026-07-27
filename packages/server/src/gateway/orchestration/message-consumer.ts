@@ -538,6 +538,7 @@ export class MessageConsumer {
           agentId: data.agentId,
           platform: data.platform,
           conversationId: effectiveConversationId,
+          source: data.platformMetadata?.source,
         });
       } catch (err) {
         logger.warn(

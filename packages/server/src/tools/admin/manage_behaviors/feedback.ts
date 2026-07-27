@@ -431,12 +431,13 @@ export async function handleGetFeedback(
 // ============================================
 
 /**
- * List the entities a watcher promoted (its keyed children). These are the
- * durable, per-item correctable units of the recap: each row carries the
- * entity's metadata (the extracted field values) plus `field_controls` (which
- * fields a human already owns), so the recap can render approve/correct
- * affordances keyed on (entity_id, field). Promoted children stamp
- * `metadata.watcher_id` / `source='watcher_promotion'` at promotion time.
+ * List the entities a watcher promoted (its keyed children) — the behavior's
+ * durable product. Each row carries the entity's metadata (the extracted
+ * field values) plus `field_controls` (which fields a human already owns).
+ * The web activity view uses only the count + entity_type for its outputs
+ * strip; field ownership/corrections live on the entity page. Promoted
+ * children stamp `metadata.watcher_id` / `source='watcher_promotion'` at
+ * promotion time.
  *
  * Org-scoped so a member of org A can't enumerate org B's promoted entities by
  * passing a watcher_id (auth also gates on requireWatcherAccess 'read').

@@ -27,8 +27,6 @@ describe('#2214 classification_filters', () => {
     const otherOrg = await createTestOrganization({ name: 'Classification Filter Other Org' });
     const user = await createTestUser({ email: 'cls-repro@example.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
-    const otherUser = await createTestUser({ email: 'cls-repro-other@example.com' });
-    await addUserToOrganization(otherUser.id, otherOrg.id, 'owner');
 
     const sql = getTestDb();
     const entity = await createTestEntity({

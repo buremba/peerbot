@@ -54,6 +54,12 @@ export const GetContentSchema = Type.Object({
         'Limit results to memory written by this agent. Filters events where metadata.agent_id matches.',
     })
   ),
+  client_ids: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'OAuth client IDs to filter by (events.client_id — the connected client that produced the event, e.g. a ChatGPT or CLI registration). Pass several ids to cover one client that registered more than once.',
+    })
+  ),
   platforms: Type.Optional(
     Type.Array(Type.String(), {
       description: 'Platform types to filter by (reddit, trustpilot, etc.)',

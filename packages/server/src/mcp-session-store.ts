@@ -72,6 +72,36 @@ export class McpSessionStore {
     `;
   }
 
+  /**
+   * Refresh an EXISTING session row. Returns false if no live row matched.
+   *
+   * Follow-up requests must not use `upsertSession`: the persisted row is the
+   * cross-replica revocation signal, and an INSERT would resurrect a row that
+   * a concurrent revoke just deleted — re-arming a session that was meant to
+   * die. Checking existence first is not enough, because the revoke can commit
+   * between the check and the write; making the write itself update-only
+   * collapses that window. Reserve `upsertSession` for initialize/recovery,
+   * where creating the row IS the intent.
+   */
+  async refreshSession(session: PersistedMcpSession): Promise<boolean> {
+    const sql = getDb();
+    const rows = await sql`
+      UPDATE mcp_sessions SET
+        user_id = ${session.userId},
+        client_id = ${session.clientId},
+        organization_id = ${session.organizationId},
+        member_role = ${session.memberRole},
+        requested_agent_id = ${session.requestedAgentId},
+        is_authenticated = ${session.isAuthenticated},
+        scoped_to_org = ${session.scopedToOrg},
+        last_accessed_at = ${new Date(session.lastAccessedAt)},
+        expires_at = ${new Date(session.expiresAt)}
+      WHERE session_id = ${session.sessionId}
+      RETURNING session_id
+    `;
+    return rows.length > 0;
+  }
+
   async getSession(sessionId: string): Promise<PersistedMcpSession | null> {
     const sql = getDb();
     const rows = await sql`

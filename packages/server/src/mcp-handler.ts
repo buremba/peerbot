@@ -99,14 +99,24 @@ export async function cleanupExpiredMcpSessions(): Promise<void> {
 // loading this file (and its `@lobu/connector-sdk`-dependent tool registry).
 export const clearInMemoryMcpSessionsForTests = clearInMemoryMcpSessionsForTestsShared;
 
+/**
+ * `userId` narrows the sweep to one person's sessions on this client — the
+ * same scoping `revokeClientForOrganization` applies to tokens. A shared
+ * registration can hold sessions for several people; without this, revoking
+ * for one of them closes everyone else's live transport too.
+ */
 export async function revokeInMemoryMcpSessionsForClient(
   clientId: string,
-  organizationId: string
+  organizationId: string,
+  userId?: string | null
 ): Promise<string[]> {
   const revokedSessionIds: string[] = [];
 
   for (const [sessionId, entry] of sessions.entries()) {
     if (entry.authCtx.clientId !== clientId || entry.authCtx.organizationId !== organizationId) {
+      continue;
+    }
+    if (userId && entry.authCtx.userId !== userId) {
       continue;
     }
 
@@ -483,6 +493,25 @@ async function persistSessionState(
 ): Promise<void> {
   if (!sessionId) return;
   await mcpSessionStore.upsertSession(buildPersistedSession(sessionId, authCtx, lastAccessedAt));
+}
+
+/**
+ * Refresh an already-established session's row, update-only.
+ *
+ * Returns false when the row is gone — i.e. another replica revoked the client
+ * — so the caller can tear the local transport down. Distinct from
+ * `persistSessionState`, which may CREATE the row and would otherwise
+ * resurrect a session a concurrent revoke just deleted.
+ */
+async function refreshSessionState(
+  sessionId: string | null | undefined,
+  authCtx: SessionAuthContext,
+  lastAccessedAt: number = Date.now()
+): Promise<boolean> {
+  if (!sessionId) return true;
+  return mcpSessionStore.refreshSession(
+    buildPersistedSession(sessionId, authCtx, lastAccessedAt)
+  );
 }
 
 async function deletePersistedSession(sessionId: string | null | undefined): Promise<void> {
@@ -916,10 +945,17 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
   // Existing session → reuse
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId)!;
-    // The persisted row is the cross-replica revocation signal. Without this
-    // check, a live transport on another pod can keep using a revoked client
-    // and upsert the row that the revoking pod deleted.
-    if (!(await mcpSessionStore.getSession(sessionId))) {
+    session.lastAccessedAt = Date.now();
+
+    // The persisted row is the cross-replica revocation signal: revoking on any
+    // pod DELETEs it. Refresh update-only and treat "no row" as revoked, so a
+    // live transport on another pod cannot keep serving a revoked client. This
+    // is deliberately a single atomic UPDATE rather than a check followed by an
+    // upsert — a revoke committing between those two would be undone by the
+    // write that follows it.
+    if (
+      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
+    ) {
       sessions.delete(sessionId);
       session.transport.close?.();
       return buildJsonRpcErrorResponse(
@@ -928,7 +964,6 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
         404
       );
     }
-    session.lastAccessedAt = Date.now();
 
     const clearSession = () => {
       sessions.delete(sessionId);
@@ -1010,7 +1045,10 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     }
 
     await recordMcpClientActivity(c.env, session.authCtx, req);
-    await persistSessionState(sessionId, session.authCtx, session.lastAccessedAt);
+    // No persist here: the update-only refresh at the top of this branch
+    // already wrote last_accessed_at. An upsert at this point would re-INSERT
+    // a row deleted by a revoke that committed mid-request, resurrecting the
+    // session the refresh was there to catch.
 
     // Anonymous root /mcp session: any follow-up GET or tool call must upgrade to auth.
     if (!session.authCtx.organizationId && !session.authCtx.isAuthenticated) {

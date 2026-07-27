@@ -385,10 +385,22 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 			if (ids.length > 0) targetIds = ids;
 		}
 
+		// Scope the revocation to the owner we resolved and grouped on. One
+		// registration can carry tokens for several people (RFC 7591 registration
+		// is per-client, not per-user), so revoking org-wide would disconnect
+		// bystanders who happen to share the app's registration.
 		const clientsStore = new OAuthClientsStore(sql);
 		for (const id of targetIds) {
-			await clientsStore.revokeClientForOrganization(id, organizationId);
-			await revokeInMemoryMcpSessionsForClient(id, organizationId);
+			await clientsStore.revokeClientForOrganization(
+				id,
+				organizationId,
+				target.owner_user_id,
+			);
+			await revokeInMemoryMcpSessionsForClient(
+				id,
+				organizationId,
+				target.owner_user_id,
+			);
 		}
 		return c.json({ success: true, revokedClientIds: targetIds });
 	});

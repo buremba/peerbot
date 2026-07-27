@@ -243,7 +243,24 @@ export class OAuthClientsStore {
    * Revoke a client's tokens and MCP sessions only within one organization.
    * Keeps the client registration intact so other organizations are unaffected.
    */
-  async revokeClientForOrganization(clientId: string, organizationId: string): Promise<boolean> {
+  /**
+   * `userId` scopes the revocation to ONE person's grants on this client.
+   *
+   * RFC 7591 registration is per-client, not per-user: a single
+   * `oauth_clients` row can hold tokens for several people in the same org
+   * (a shared registration, or a legacy row with no `user_id`). Revoking
+   * org-wide there takes out bystanders — Alice disconnects an app and Bob
+   * loses access too. Callers that resolved a specific owner MUST pass it so
+   * the blast radius matches the identity the decision was made on.
+   *
+   * Omitting it keeps the historical org-wide behavior for callers that
+   * genuinely mean "this client, everyone, this org".
+   */
+  async revokeClientForOrganization(
+    clientId: string,
+    organizationId: string,
+    userId?: string | null
+  ): Promise<boolean> {
     return this.sql.begin(async (tx) => {
       const revokedTokens = await tx`
         UPDATE oauth_tokens
@@ -251,6 +268,7 @@ export class OAuthClientsStore {
         WHERE client_id = ${clientId}
           AND organization_id = ${organizationId}
           AND revoked_at IS NULL
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
         RETURNING id
       `;
 
@@ -258,6 +276,7 @@ export class OAuthClientsStore {
         DELETE FROM mcp_sessions
         WHERE client_id = ${clientId}
           AND organization_id = ${organizationId}
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
         RETURNING session_id
       `;
 

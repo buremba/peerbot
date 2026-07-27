@@ -297,11 +297,11 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		expect(await readCurrentSuggestion(orgId, conversationId)).toBeNull();
 	});
 
-	it("a stale persist cannot supersede a LATER run's set (fallback TOCTOU)", async () => {
-		// The fallback generator decides to publish inside finalize's lock but
-		// persists only after its model call returns — a window in which the next
-		// turn may have published. persistSuggestion's ordering guard must refuse
-		// to clobber the newer set with the stale one.
+	it("a stale persist cannot supersede a LATER run's set (TOCTOU)", async () => {
+		// A suggest_actions POST is decided by the worker but persists over the
+		// network — a window in which the next turn may have published.
+		// persistSuggestion's ordering guard must refuse to clobber the newer
+		// set with the stale one.
 		const convo = "api:conv-toctou";
 		const runG = await seedTurnRun("msg-G", { conversationId: convo });
 		const runH = await seedTurnRun("msg-H", { conversationId: convo });
@@ -313,7 +313,7 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 			runId: runH,
 		});
 
-		// Turn G's fallback persist lands late, carrying the older run id.
+		// Turn G's persist lands late, carrying the older run id.
 		const returned = await persistSuggestion({
 			organizationId: orgId,
 			conversationId: convo,
@@ -351,7 +351,7 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		});
 		expect(await readCurrentSuggestion(orgId, convo)).toBeNull();
 
-		// Turn J's fallback persist lands after K's clear.
+		// Turn J's persist lands after K's clear.
 		await persistSuggestion({
 			organizationId: orgId,
 			conversationId: convo,

@@ -399,7 +399,7 @@ export class UnifiedThreadResponseConsumer {
     // replaying stale chips on reload forever). It supersedes a prior turn's
     // set when this turn emitted none, and keeps this turn's own for the
     // renderer to embed. Idempotent under the re-queue-to-owner retry. Skipped
-    // on error turns (keep the last good chips — decided product behavior).
+    // on error turns so they do not alter durable suggestion state.
     if (isApiRow && !data.error && data.processedMessageIds?.length) {
       const organizationId =
         data.organizationId ??

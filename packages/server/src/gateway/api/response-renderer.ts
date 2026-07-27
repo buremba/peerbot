@@ -83,8 +83,8 @@ export class ApiResponseRenderer implements ResponseRenderer {
     // Resolve the current suggestion set for this conversation and decide
     // whether to attach it to `complete` (this turn produced it), clear it
     // (this turn produced none — stale chips must not linger), or leave it
-    // untouched (turn errored — keep the last good chips so the user can
-    // retry). This runs on the SSE-owning pod (terminal rows are owner-gated),
+    // untouched (turn errored — do not alter durable suggestion state). This
+    // runs on the SSE-owning pod (terminal rows are owner-gated),
     // so embedding on `complete` — rather than a separate post-complete card
     // the SPA would miss after it closes the socket — is the only live path.
     const suggestions = await this.resolveTerminalSuggestions(payload);
@@ -120,14 +120,14 @@ export class ApiResponseRenderer implements ResponseRenderer {
    * owner-gate), which supersedes a stale prior set or keeps this turn's own.
    * So the current row here is the authoritative post-turn state; this method
    * never mutates it, it only decides what the SPA renders:
-   *  - errored turn → undefined ("no change"): keep the last good chips.
+   *  - errored turn → undefined ("no change").
    *  - a current set exists → return it (embed).
    *  - none current → [] ("clear"): finalize already superseded it.
    */
   private async resolveTerminalSuggestions(
     payload: ThreadResponsePayload
   ): Promise<SuggestedPrompt[] | undefined> {
-    // Keep prior chips on an errored turn (decided product behavior).
+    // Error delivery does not alter durable suggestion state.
     if (payload.error) return undefined;
     const organizationId =
       payload.organizationId ??

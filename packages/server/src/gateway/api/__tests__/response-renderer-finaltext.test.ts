@@ -106,7 +106,7 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
     expect(broadcasts.find((b) => b.event === "complete")?.data.suggestions).toEqual([]);
   });
 
-  test("keeps prior chips on an errored turn (no change, no read)", async () => {
+  test("does not resolve suggestions on an errored completion", async () => {
     const { renderer, broadcasts } = makeRenderer();
     await renderer.handleCompletion(
       basePayload({ organizationId: "org-1", error: "boom", messageId: "m1" }),

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { sanitizeSuggestionPrompts, SUGGESTION_LIMITS } from "../types";
 
 describe("sanitizeSuggestionPrompts", () => {
-  test("drops malformed entries and trims valid prompts", () => {
+  test("drops malformed entries, trims, and deduplicates valid prompts", () => {
     expect(
       sanitizeSuggestionPrompts([
         null,
@@ -10,6 +10,7 @@ describe("sanitizeSuggestionPrompts", () => {
         { title: " ", message: "empty title" },
         { title: "Missing message" },
         { title: "  Ship  ", message: "  Ship it  " },
+        { title: "Ship", message: "Ship it" },
       ])
     ).toEqual([{ title: "Ship", message: "Ship it" }]);
     expect(sanitizeSuggestionPrompts({ prompts: [] })).toEqual([]);

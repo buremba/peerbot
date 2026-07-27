@@ -243,6 +243,7 @@ export async function finalizeTurnSuggestions(args: {
         SELECT max(run_id) AS run_id
         FROM public.agent_run_input
         WHERE organization_id = ${organizationId}
+          AND conversation_id = ${conversationId}
           AND message_id = ANY(${pgTextArray([...owned])}::text[])
       `) as Array<{ run_id: number | null }>;
       const myRun = mine[0]?.run_id ?? null;

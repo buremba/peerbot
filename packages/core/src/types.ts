@@ -344,6 +344,7 @@ export const SUGGESTION_LIMITS = {
 export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
   if (!Array.isArray(value)) return [];
   const out: SuggestedPrompt[] = [];
+  const seen = new Set<string>();
   for (const p of value) {
     if (!p || typeof p !== "object") continue;
     const { title, message } = p as { title?: unknown; message?: unknown };
@@ -355,6 +356,9 @@ export function sanitizeSuggestionPrompts(value: unknown): SuggestedPrompt[] {
       .slice(0, SUGGESTION_LIMITS.maxMessageChars)
       .join("");
     if (t.length === 0 || m.length === 0) continue;
+    const key = JSON.stringify([t, m]);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ title: t, message: m });
     if (out.length >= SUGGESTION_LIMITS.maxPrompts) break;
   }

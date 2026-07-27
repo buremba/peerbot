@@ -39,8 +39,16 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 	 * Returns the real `runs.id` — run ids are assigned by the sequence, so the
 	 * ordering under test is the genuine monotonic one, not a hand-picked number.
 	 */
-	async function seedTurnRun(messageId: string): Promise<number> {
+	async function seedTurnRun(
+		messageId: string,
+		options: {
+			conversationId?: string;
+			deploymentName?: string;
+		} = {},
+	): Promise<number> {
 		const sql = getTestDb();
+		const turnConversationId = options.conversationId ?? conversationId;
+		const deploymentName = options.deploymentName ?? "test-deploy";
 		const runRows = (await sql`
 			INSERT INTO public.runs (organization_id, run_type, status)
 			VALUES (${orgId}, 'chat_message', 'completed')
@@ -52,8 +60,8 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 				organization_id, message_id, agent_id, conversation_id,
 				deployment_name, run_id, payload, token_claims
 			) VALUES (
-				${orgId}, ${messageId}, 'suggest-agent', ${conversationId},
-				'test-deploy', ${runId}, '{}'::jsonb, '{}'::jsonb
+				${orgId}, ${messageId}, 'suggest-agent', ${turnConversationId},
+				${deploymentName}, ${runId}, '{}'::jsonb, '{}'::jsonb
 			)
 			ON CONFLICT (organization_id, deployment_name, message_id) DO NOTHING
 		`;
@@ -268,6 +276,12 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 			prompts: [{ title: "D", message: "from turn D" }],
 			turnMessageId: "msg-D",
 			runId: runD,
+		});
+		// message_id is only unique per deployment. A later run in another
+		// conversation must not be mistaken for this turn's ordering row.
+		await seedTurnRun("msg-C", {
+			conversationId: "api:other-conversation",
+			deploymentName: "other-deploy",
 		});
 
 		await finalizeTurnSuggestions({

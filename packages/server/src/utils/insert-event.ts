@@ -86,8 +86,8 @@ interface InsertEventParams {
     | 'rejected'
     | 'completed'
     | 'failed'
-    // Non-blocking suggested actions: 'current' while shown, superseded (never
-    // resolved by a click) by the next turn's suggestions for the conversation.
+    // Non-blocking suggested actions: 'current' while shown, superseded or
+    // cleared by a later successful turn rather than resolved by a click.
     | 'current'
     | null;
   interactionInputSchema?: Record<string, unknown> | null;

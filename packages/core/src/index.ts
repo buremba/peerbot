@@ -134,7 +134,11 @@ export type { BaseMessage } from "./types/message";
 export * from "./utils/encryption";
 export * from "./utils/env";
 export * from "./utils/json";
-export type { McpStatus, McpToolDef } from "./utils/mcp-tool-instructions";
+export {
+  isReadOnlyMcpTool,
+  type McpStatus,
+  type McpToolDef,
+} from "./utils/mcp-tool-instructions";
 export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";

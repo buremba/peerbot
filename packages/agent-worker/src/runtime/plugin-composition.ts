@@ -24,26 +24,90 @@ interface RuntimePluginParams extends GatewayParams {
   }>;
   mcpContext?: Record<string, string>;
   onMcpAuthChanged: () => void;
+  /**
+   * Dispatch source (`platformMetadata.source`). `"starters"` marks the hidden
+   * chip-generation turn — see {@link UNATTENDED_SOURCES}.
+   */
+  source?: string | undefined;
 }
 
+/**
+ * Sources that run with NO user watching and NO user consent for side effects.
+ *
+ * A turn from one of these gets a restricted plugin host: read-only MCP tools
+ * only, no conversation mutation, no memory capture. `toolsConfig.allowedTools`
+ * cannot express this — it gates only the built-in tools (read/bash/edit/…) and
+ * never touches plugin or MCP tools, so an unattended turn composed the normal
+ * way is handed `send_message`, `edit_message`, `delete_message` and every
+ * mutating MCP tool. The starters turn fires automatically whenever a user
+ * opens a fresh chat; before this gate it could have posted to a real Slack.
+ */
+const UNATTENDED_SOURCES = new Set(["starters"]);
+
+/**
+ * Conversation-plugin tools an unattended turn may use. Allowlist, not
+ * denylist: a new mutating tool must be excluded by default.
+ */
+const UNATTENDED_CONVERSATION_TOOLS = new Set(["suggest_actions"]);
+
 export function createRuntimePluginHost(params: RuntimePluginParams) {
+  const unattended = UNATTENDED_SOURCES.has(params.source ?? "");
   const plugins = [
-    createMemoryPlugin(params, callMcpTool),
-    createMediaPlugin({
-      ...params,
-      onFileUploaded: (data) => params.onCustomEvent("file-uploaded", data),
-    }),
-    createConversationPlugin(params),
+    // The memory plugin's `agentEnd` hook calls `save_memory` with the last
+    // user+assistant text — for an unattended turn that is the hidden internal
+    // prompt, which would pollute durable org memory. The worker's transcript
+    // skip does NOT prevent this: the hook fires independently of the snapshot.
+    ...(unattended ? [] : [createMemoryPlugin(params, callMcpTool)]),
+    ...(unattended
+      ? []
+      : [
+          createMediaPlugin({
+            ...params,
+            onFileUploaded: (data) =>
+              params.onCustomEvent("file-uploaded", data),
+          }),
+        ]),
+    unattended
+      ? restrictToolsTo(
+          createConversationPlugin(params),
+          UNATTENDED_CONVERSATION_TOOLS
+        )
+      : createConversationPlugin(params),
   ];
   if (params.includeMcpTools) {
     plugins.push(
       createMcpPlugin({
         ...params,
         onAuthChanged: params.onMcpAuthChanged,
+        // Read-only MCP tools only — the org-data tools this turn needs to
+        // inspect the workspace, and nothing that writes.
+        ...(unattended ? { readOnlyOnly: true } : {}),
       })
     );
   }
   return new PluginHost<ToolDefinition>(plugins);
+}
+
+/**
+ * Wrap a plugin so it contributes only the named tools. Applied at composition
+ * time so the restriction is structural — the excluded tools are never built,
+ * never described to the model, and cannot be called.
+ */
+function restrictToolsTo<T extends { tools?: (context: never) => unknown }>(
+  plugin: T,
+  allowed: ReadonlySet<string>
+): T {
+  const original = plugin.tools;
+  if (!original) return plugin;
+  return {
+    ...plugin,
+    tools: async (context: never) => {
+      const all = (await original.call(plugin, context)) as Array<{
+        name?: string;
+      }>;
+      return all.filter((tool) => allowed.has(tool.name ?? ""));
+    },
+  };
 }
 
 export function createPluginLogger(logger: {

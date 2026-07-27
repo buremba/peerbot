@@ -50,11 +50,34 @@ describe("run-context block stripping", () => {
     expect(stripRunContextBlock(own)).toBe(own);
   });
 
-  it("does not strip the block from the MIDDLE of a message", () => {
-    // Only a block at the very start is scaffolding. The same text quoted
-    // later is the user's content (e.g. asking about this very bug).
-    const quoted = `why does it show\n\n${BLOCK}above my message?`;
-    expect(stripRunContextBlock(quoted)).toBe(quoted);
+  // The worker builds the turn as
+  //   configNotice + sessionSummary + ephemeralContext + prependContexts +
+  //   runContext + userPrompt
+  // so the block is frequently NOT at position 0. A first cut anchored to `^`
+  // and silently failed on every turn that carried any prefix — the reviewer
+  // reproduced it with a direct probe.
+  it.each([
+    ["a session summary", "Previously: we discussed the Q3 roadmap."],
+    [
+      "recalled memory",
+      "<lobu-memory>\nUser prefers concise answers.\n</lobu-memory>",
+    ],
+    ["a config notice", "NOTE: your model was changed to gemini-2.5-pro."],
+  ])("strips the block when %s precedes it", (_label, prefix) => {
+    expect(stripRunContextBlock(`${prefix}\n\n${BLOCK}what is next?`)).toBe(
+      `${prefix}\n\nwhat is next?`
+    );
+  });
+
+  it("strips the worker's block, not an earlier one the user quoted", () => {
+    // A user asking about this very behaviour pastes the block into a session
+    // summary / earlier context. The worker's own block is appended LAST, right
+    // before the user's words — that is the only one that may be removed.
+    const earlier = `Earlier you asked about:\n\n${BLOCK}(quoted above)`;
+    const asStored = `${earlier}\n\n${BLOCK}so why does it show?`;
+    expect(stripRunContextBlock(asStored)).toBe(
+      `${earlier}\n\nso why does it show?`
+    );
   });
 
   it("strips through entryToMessage — the replay path every history route uses", () => {

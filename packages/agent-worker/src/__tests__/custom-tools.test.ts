@@ -61,6 +61,7 @@ describe("createLobuCustomTools", () => {
       "edit_message",
       "delete_message",
       "ask_user",
+      "suggest_actions",
     ]);
   });
 

@@ -38,12 +38,13 @@ const STARTERS_LEASE_MS = 15 * 60 * 1000;
 /**
  * Built-in tools the hidden starters turn may use: NONE.
  *
- * `strictMode` filters ONLY the built-in tool set (createLobuTools: read /
- * write / edit / bash / grep / find / ls — see session-runner.ts). Plugin and
- * MCP tools are registered separately and are NOT filtered by this list, so
- * naming a plugin tool here does not grant it and omitting one does not revoke
- * it. The turn therefore keeps its org-data MCP tools and `suggest_actions`
- * (both plugin-side) while every filesystem and shell primitive is dropped.
+ * This closes only HALF the surface, and it is important to know which half.
+ * `strictMode` + this list filter ONLY the built-in tool set (createLobuTools:
+ * read / write / edit / bash / grep / find / ls). Plugin and MCP tools are
+ * registered on a separate path and are NOT filtered here — naming one grants
+ * nothing, omitting one revokes nothing. Those are gated at plugin composition
+ * instead (`UNATTENDED_SOURCES` in agent-worker's plugin-composition.ts), which
+ * is what keeps `send_message` and every mutating MCP tool away from this turn.
  *
  * An empty list is deliberate. A first cut allowed `read` as "one safe
  * primitive" — but a filesystem tool is an invitation, and the agent took it:

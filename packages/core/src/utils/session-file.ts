@@ -221,17 +221,43 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
  *
  * Live turns render from the SSE echo (the user's own text) so it never shows;
  * a RELOAD replays the transcript, and without this strip the block rendered
- * verbatim above every user message as a stray markdown heading. Strip it on
- * the way out so replay matches what the user typed.
+ * verbatim above every user message as a stray markdown heading.
  *
- * Deliberately conservative: only a block at the very START, only the exact
- * heading, and only through the first blank line. A user message that merely
- * contains that text later is untouched.
+ * The block is NOT always at position 0. The worker builds the turn as
+ * `configNotice + sessionSummary + ephemeralContext + prependContexts +
+ * runContext + userPrompt` (session-runner.ts), so a config notice, a session
+ * summary, or a recalled `<lobu-memory>` block can precede it. A first cut
+ * anchored to `^` and silently failed on every one of those turns.
+ *
+ * Matching anywhere would be wrong in the other direction — a user quoting the
+ * block (asking about this very behaviour) would have their text mangled. The
+ * discriminator is position: the worker's block is always the LAST thing before
+ * the user's own words. So: match at a LINE start, take the FINAL occurrence,
+ * and only remove it when nothing but the user's text follows.
  */
-const RUN_CONTEXT_BLOCK = /^## This conversation\n(?:-[^\n]*\n)*(?:\n+|$)/;
+const RUN_CONTEXT_BLOCK =
+  /(?:^|\n)## This conversation\n(?:-[^\n]*\n)*(?:\n+|$)/g;
 
 export function stripRunContextBlock(text: string): string {
-  return text.replace(RUN_CONTEXT_BLOCK, "");
+  let last: RegExpExecArray | null = null;
+  // `g` + exec walks every line-anchored candidate; keep the final one.
+  RUN_CONTEXT_BLOCK.lastIndex = 0;
+  for (
+    let m = RUN_CONTEXT_BLOCK.exec(text);
+    m !== null;
+    m = RUN_CONTEXT_BLOCK.exec(text)
+  ) {
+    last = m;
+    // Zero-length matches can't occur here (the heading is required), but guard
+    // against an infinite loop if the pattern ever changes.
+    if (m.index === RUN_CONTEXT_BLOCK.lastIndex) RUN_CONTEXT_BLOCK.lastIndex++;
+  }
+  if (!last) return text;
+  const before = text.slice(0, last.index);
+  const after = text.slice(last.index + last[0].length);
+  // Preserve the separator the leading `(?:^|\n)` consumed, so a preceding
+  // prefix (config notice, session summary, recalled memory) keeps its shape.
+  return last.index === 0 ? after : `${before}\n${after}`;
 }
 
 /**

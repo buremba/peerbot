@@ -1154,6 +1154,13 @@ user references earlier discussion or you need prior context.`);
     mcpStatus: context.mcpStatus,
     mcpContext: context.mcpContext,
     onMcpAuthChanged: invalidateSessionContextCache,
+    // Unattended sources (e.g. "starters") compose a restricted plugin host:
+    // read-only MCP tools, no conversation mutation, no memory capture.
+    source:
+      typeof (platformMetadata as { source?: unknown } | undefined)?.source ===
+      "string"
+        ? (platformMetadata as { source: string }).source
+        : undefined,
   });
   const pluginRuntimeContext: PluginRuntimeContext = {
     organizationId,

@@ -1,4 +1,4 @@
-import type { McpToolDef } from "@lobu/core";
+import { isReadOnlyMcpTool, type McpToolDef } from "@lobu/core";
 import { defineLobuPlugin } from "@lobu/plugin-api";
 import {
   defineTool,
@@ -30,18 +30,34 @@ export interface McpPluginParams extends GatewayParams {
   }>;
   mcpContext?: Record<string, string>;
   onAuthChanged: () => void;
+  /** Expose only server-declared read-only tools (unattended background turns). */
+  readOnlyOnly?: boolean;
 }
 
 export function createMcpToolDefinitions(
   mcpTools: Record<string, McpToolDef[]>,
   gateway: GatewayParams,
-  mcpContext?: Record<string, string>
+  mcpContext?: Record<string, string>,
+  options?: {
+    /**
+     * Admit ONLY tools the owning MCP server annotated `readOnlyHint: true`.
+     * Used by unattended background turns (see `source: "starters"`).
+     *
+     * Fails closed by design: a missing annotation means "assume it mutates",
+     * matching how the proxy already gates approvals ("Require approval unless
+     * we have annotations"). A server that declares nothing is excluded, and a
+     * newly added mutating tool is excluded automatically rather than exposed
+     * until someone remembers to deny it.
+     */
+    readOnlyOnly?: boolean;
+  }
 ): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
   for (const [mcpId, definitions] of Object.entries(mcpTools)) {
     const contextPrefix = mcpContext?.[mcpId];
     for (const definition of definitions) {
       if (!definition.name?.trim()) continue;
+      if (options?.readOnlyOnly && !isReadOnlyMcpTool(definition)) continue;
       const baseDescription =
         definition.description || `MCP tool from ${mcpId}`;
       tools.push({
@@ -136,16 +152,22 @@ export function createMcpPlugin(params: McpPluginParams) {
       const tools = createMcpToolDefinitions(
         params.mcpTools,
         gateway,
-        params.mcpContext
+        params.mcpContext,
+        params.readOnlyOnly ? { readOnlyOnly: true } : undefined
       );
-      tools.push(
-        ...createMcpAuthToolDefinitions(
-          params.mcpStatus,
-          gateway,
-          new Set(tools.map((tool) => tool.name)),
-          params.onAuthChanged
-        )
-      );
+      // Auth tools mutate credential state (they complete OAuth / store input),
+      // so a read-only turn never gets them either. It also has no user to
+      // complete an auth flow.
+      if (!params.readOnlyOnly) {
+        tools.push(
+          ...createMcpAuthToolDefinitions(
+            params.mcpStatus,
+            gateway,
+            new Set(tools.map((tool) => tool.name)),
+            params.onAuthChanged
+          )
+        );
+      }
       return tools;
     },
   });

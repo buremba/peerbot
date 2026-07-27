@@ -48,7 +48,7 @@ export type ActivityCard = {
 	interaction_inline?: boolean;
 	member_run_ids?: number[];
 	connection_id?: number;
-	watcher_id?: number;
+	behavior_id?: number;
 };
 
 type RawCard = ActivityCard & {
@@ -444,7 +444,7 @@ export async function listOrgActivity(opts: {
 					href: runHref(opts.ownerSlug, r),
 					run_id: r.id,
 					connection_id: r.connection_id ?? undefined,
-					watcher_id: r.watcher_id ?? undefined,
+					behavior_id: r.watcher_id ?? undefined,
 					collapseKey: collapseKeyForRun(r),
 					itemsCollected: r.items_collected,
 				});

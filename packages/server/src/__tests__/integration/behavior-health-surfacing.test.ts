@@ -177,6 +177,11 @@ describe("behavior health surfacing (#2033)", () => {
 
   it("3.3: list emits behavior_* lineage keys, never the internal watcher_* names", async () => {
     const { behaviorId, ctx } = await createScheduledBehavior();
+    await getTestDb()`
+      UPDATE watchers
+      SET source_watcher_id = id
+      WHERE id = ${behaviorId}
+    `;
     const result = await manageBehaviors({ action: "list" }, {} as Env, ctx);
     if (result.action !== "list") throw new Error("expected list result");
     const row = result.behaviors.find(
@@ -184,7 +189,7 @@ describe("behavior health surfacing (#2033)", () => {
     ) as Record<string, unknown> | undefined;
     expect(row).toBeDefined();
     expect(row?.behavior_group_id).toBe(String(behaviorId));
-    expect(row?.source_behavior_id).toBeNull();
+    expect(row?.source_behavior_id).toBe(String(behaviorId));
     expect(row).not.toHaveProperty("watcher_group_id");
     expect(row).not.toHaveProperty("source_watcher_id");
   });

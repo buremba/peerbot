@@ -30,11 +30,13 @@ describe("conversation plugin", () => {
 
   test("offers suggest_actions on every platform", () => {
     // Suggestions ride the interaction-card rail (Card/Actions/Button), the
-    // same one ask_user already uses, so every chat platform can render them —
-    // with postWithFallback degrading to a numbered list where cards are
-    // unsupported. This previously asserted the OPPOSITE: the tool was gated to
-    // `api` because only the SPA had a renderer. Keeping that gate now would
-    // withhold a capability that works.
+    // same one ask_user already uses. Chip buttons carry only a short
+    // `suggestion:<id>:<i>` action id (routing + prompt text live in a pending
+    // row), which keeps the serialized callback inside Telegram's 64-byte
+    // callback_data cap; platforms without card support degrade to a
+    // numbered-list text via postWithFallback. This previously asserted the
+    // OPPOSITE: the tool was gated to `api` because only the SPA had a
+    // renderer.
     for (const platform of ["slack", "telegram", undefined]) {
       const tools = createConversationTools({ ...params, platform });
       expect(tools.map((tool) => tool.name)).toEqual([

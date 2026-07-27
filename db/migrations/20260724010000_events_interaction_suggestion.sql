@@ -42,11 +42,17 @@ ALTER TABLE public.events
 
 -- API/Builder conversations have no numeric connection_id, so the existing
 -- (connection_id, origin_id) index cannot serve suggestion lookups.
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_current_suggestion_origin
+--
+-- Deliberately NO interaction_status filter in the predicate:
+-- persistSuggestion's prior-row lookup is status-agnostic (it must chain past
+-- 'completed' clear markers), so a status='current' predicate would exclude
+-- exactly the rows that hot path reads and degrade it to an org-wide scan
+-- under the suggestion advisory lock. Status-filtered readers still use this
+-- index with status as a post-filter.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_live_suggestion_origin
   ON public.events (organization_id, origin_id)
   WHERE superseded_by IS NULL
-    AND interaction_type = 'suggestion'
-    AND interaction_status = 'current';
+    AND interaction_type = 'suggestion';
 
 -- migrate:down transaction:false
 
@@ -82,4 +88,4 @@ BEGIN
 END
 $$;
 
-DROP INDEX CONCURRENTLY IF EXISTS public.idx_events_current_suggestion_origin;
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_events_live_suggestion_origin;

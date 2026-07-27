@@ -141,12 +141,16 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    // NOTE: suggestions are NOT delivered as a separate post-turn card. Such a
-    // card would race the terminal `complete` row and, if it lost, arrive after
-    // the SPA closed its EventSource on `complete` — undeliverable. The web path
-    // instead EMBEDS the conversation's current suggestion set on the `complete`
-    // payload in ApiResponseRenderer.handleCompletion (owner-gated, ordered,
-    // replay-safe). suggest_actions persists the set; the completion reads it.
+    // NOTE: web suggestions are delivered on TWO deliberate paths. (1) The
+    // suggestion:created card above — the agent calls suggest_actions MID-turn,
+    // while the SPA's EventSource is still open, so the chips appear without
+    // waiting for the turn to end. (2) The `complete`-payload embed in
+    // ApiResponseRenderer.handleCompletion — authoritative and replay-safe,
+    // and the ONLY path for fallback-generated sets (those are persisted at
+    // the terminal boundary, when a card would race the SPA closing its socket
+    // on `complete`; generateFallbackSuggestions therefore posts no card).
+    // Whichever arrives is idempotent: both carry the conversation's current
+    // set and the store applies them via the same setter.
 
     logger.debug("✅ API platform initialized");
   }

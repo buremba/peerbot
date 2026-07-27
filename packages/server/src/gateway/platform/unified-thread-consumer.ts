@@ -282,6 +282,58 @@ export class UnifiedThreadResponseConsumer {
   }
 
   /**
+   * Derive follow-up chips for a turn the agent ended without calling
+   * `suggest_actions`, and persist them exactly as the tool would have.
+   *
+   * Delivery is the `complete`-payload embed ONLY (the caller awaits this
+   * method before rendering the terminal row, so the just-persisted set is
+   * what handleCompletion embeds). Deliberately NO interaction card: this path
+   * runs only for api rows, the SPA closes its EventSource as soon as it
+   * handles `complete`, so an owner-gated card enqueued here would find no SSE
+   * owner on any pod and churn its whole retry budget into the failed lane —
+   * for chips the embed already delivered.
+   *
+   * Skipped for headless sources: no user is watching a watcher/scheduled
+   * run's chip rail, so a model call would be pure spend.
+   *
+   * Best-effort by construction: every failure mode (unconfigured key, model
+   * error, unusable output) resolves to "no chips", which is exactly the state
+   * the turn was already in. Nothing here may throw into terminal delivery.
+   */
+  private async generateFallbackSuggestions(
+    data: ThreadResponsePayload,
+    organizationId: string,
+    turnRunId: number | null
+  ): Promise<void> {
+    const source =
+      typeof data.platformMetadata?.source === "string"
+        ? data.platformMetadata.source
+        : undefined;
+    if (source && HEADLESS_SOURCES.has(source)) return;
+    const replyText = typeof data.finalText === "string" ? data.finalText : "";
+    if (!replyText) return;
+
+    const prompts = await generateSuggestions(
+      replyText,
+      process.env as unknown as Env
+    );
+    if (prompts.length === 0) return;
+
+    // Persist with this turn's message id AND run id — identical lifecycle to
+    // an agent-published set: the next turn's finalize sees a set owned by an
+    // earlier run and clears it, and persistSuggestion's own ordering guard
+    // (keyed on this runId) refuses to overwrite a set a LATER run published
+    // while our model call was in flight.
+    await persistSuggestion({
+      organizationId,
+      conversationId: data.conversationId,
+      prompts,
+      turnMessageId: data.messageId,
+      runId: turnRunId,
+    });
+  }
+
+  /**
    * Deliver a fanned-out CHAT-PLATFORM interaction card on the pod that owns
    * the connection's bridge.
    *
@@ -300,54 +352,6 @@ export class UnifiedThreadResponseConsumer {
    * synchronously at the top of each bridge handler, before any await, so even a
    * concurrent local-emit + re-emit cannot both render.
    */
-  /**
-   * Derive follow-up chips for a turn the agent ended without calling
-   * `suggest_actions`, and publish them through the same persist + card path
-   * the tool uses.
-   *
-   * Best-effort by construction: every failure mode (unconfigured key, model
-   * error, unusable output) resolves to "no chips", which is exactly the state
-   * the turn was already in. Nothing here may throw into terminal delivery.
-   */
-  private async generateFallbackSuggestions(
-    data: ThreadResponsePayload,
-    organizationId: string
-  ): Promise<void> {
-    const replyText = typeof data.finalText === "string" ? data.finalText : "";
-    if (!replyText) return;
-
-    const prompts = await generateSuggestions(
-      replyText,
-      process.env as unknown as Env
-    );
-    if (prompts.length === 0) return;
-
-    // Persist with this turn's message id so the NEXT turn's finalize sees a
-    // set owned by an earlier turn and clears it — identical lifecycle to an
-    // agent-published set. Without the id the row would look orphaned and
-    // linger as stale chips.
-    await persistSuggestion({
-      organizationId,
-      conversationId: data.conversationId,
-      prompts,
-      turnMessageId: data.messageId,
-      runId: null,
-    });
-
-    // Push the card so the chips appear on THIS turn rather than only after a
-    // reload. `userId` mirrors what the API platform stamps on its own cards.
-    await this.interactionService?.postSuggestion(
-      data.userId ?? "api",
-      data.conversationId,
-      data.channelId ?? data.conversationId,
-      data.teamId,
-      typeof data.platformMetadata?.connectionId === "string"
-        ? data.platformMetadata.connectionId
-        : undefined,
-      data.platform ?? "api",
-      prompts
-    );
-  }
 
   private async handleChatInteraction(
     data: ThreadResponsePayload
@@ -462,7 +466,7 @@ export class UnifiedThreadResponseConsumer {
           : undefined);
       if (organizationId) {
         try {
-          const { published } = await finalizeTurnSuggestions({
+          const { published, turnRunId } = await finalizeTurnSuggestions({
             organizationId,
             conversationId: data.conversationId,
             turnMessageIds: [
@@ -475,10 +479,16 @@ export class UnifiedThreadResponseConsumer {
           // just gave so the user still has a next step. Runs AFTER finalize so
           // an agent-published set always wins, and awaited so the generated set
           // is persisted before the renderer embeds the current set on
-          // `complete`. Unconfigured or failing generation returns [] and the
-          // turn simply ends chipless, as it did before.
+          // `complete`. `turnRunId` (resolved inside finalize's lock) lets the
+          // persist refuse to clobber a set a LATER run publishes while the
+          // model call is in flight. Unconfigured or failing generation returns
+          // [] and the turn simply ends chipless, as it did before.
           if (!published) {
-            await this.generateFallbackSuggestions(data, organizationId);
+            await this.generateFallbackSuggestions(
+              data,
+              organizationId,
+              turnRunId
+            );
           }
         } catch (err) {
           // Never let suggestion finalization break terminal delivery.

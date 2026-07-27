@@ -94,7 +94,13 @@ describe("generateSuggestions", () => {
   });
 
   test("fails open on a non-OK response", async () => {
-    restore = stubFetch(null, false);
+    // The body is deliberately VALID — if the status check were deleted, this
+    // payload would parse into a prompt and the test would fail. A null body
+    // here would pass vacuously via the parse-failure path instead.
+    restore = stubFetch(
+      JSON.stringify({ prompts: [{ title: "T", message: "M" }] }),
+      false
+    );
     expect(await generateSuggestions(REPLY, env())).toEqual([]);
   });
 

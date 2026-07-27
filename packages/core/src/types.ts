@@ -326,10 +326,13 @@ export interface SuggestedPrompt {
   message: string; // Full message sent when clicked
 }
 
-/** Limits enforced wherever suggestions enter or leave durable storage. */
+/** Limits enforced wherever suggestions enter or leave durable storage.
+ * `maxTitleChars` stays under Slack's 75-char button-text cap (the tightest
+ * platform limit a title reaches) with margin for code-point/UTF-16 counting
+ * differences — an over-limit title degrades the whole card, not just itself. */
 export const SUGGESTION_LIMITS = {
   maxPrompts: 4,
-  maxTitleChars: 80,
+  maxTitleChars: 72,
   maxMessageChars: 2000,
 } as const;
 

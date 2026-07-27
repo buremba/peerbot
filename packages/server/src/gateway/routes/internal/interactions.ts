@@ -212,9 +212,12 @@ export function createInteractionRoutes(
       }
 
       // Emit the card on every platform. `postSuggestion` fans out to whichever
-      // renderer owns this conversation: the interaction bridge builds
-      // Card/Actions/Button for Slack/Telegram (with a numbered-text fallback),
-      // and the API platform pushes it to the SSE owner for the web.
+      // renderer owns this conversation: the interaction bridge builds a
+      // Card/Actions/Button card for chat platforms — buttons carry only
+      // `suggestion:<id>:<i>` (prompt text + routing live in a pending row,
+      // keeping Telegram's 64-byte callback_data budget), with a numbered-text
+      // fallback where cards are unsupported — and the API platform pushes it
+      // to the SSE owner for the web.
       const posted = await interactionService.postSuggestion(
         userId,
         conversationId,

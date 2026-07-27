@@ -296,4 +296,70 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 
 		expect(await readCurrentSuggestion(orgId, conversationId)).toBeNull();
 	});
+
+	it("a stale persist cannot supersede a LATER run's set (fallback TOCTOU)", async () => {
+		// The fallback generator decides to publish inside finalize's lock but
+		// persists only after its model call returns — a window in which the next
+		// turn may have published. persistSuggestion's ordering guard must refuse
+		// to clobber the newer set with the stale one.
+		const convo = "api:conv-toctou";
+		const runG = await seedTurnRun("msg-G", { conversationId: convo });
+		const runH = await seedTurnRun("msg-H", { conversationId: convo });
+		const idH = await persistSuggestion({
+			organizationId: orgId,
+			conversationId: convo,
+			prompts: [{ title: "H", message: "from turn H" }],
+			turnMessageId: "msg-H",
+			runId: runH,
+		});
+
+		// Turn G's fallback persist lands late, carrying the older run id.
+		const returned = await persistSuggestion({
+			organizationId: orgId,
+			conversationId: convo,
+			prompts: [{ title: "G", message: "stale generated chips" }],
+			turnMessageId: "msg-G",
+			runId: runG,
+		});
+
+		// The guard reports the surviving row and H's set stays current.
+		expect(returned).toBe(idH);
+		const current = await readCurrentSuggestion(orgId, convo);
+		expect(current?.id).toBe(idH);
+		expect(current?.prompts).toEqual([{ title: "H", message: "from turn H" }]);
+	});
+
+	it("a stale persist cannot resurrect chips over a LATER run's clear", async () => {
+		// Same race, other terminal state: the newer turn emitted nothing, so its
+		// finalize CLEARED the rail. The clear marker carries the clearing run's
+		// id precisely so this delayed persist can see it is outdated — without
+		// the stamp the rail would flash stale chips after the user saw it empty.
+		const convo = "api:conv-toctou-clear";
+		const runJ = await seedTurnRun("msg-J", { conversationId: convo });
+		await persistSuggestion({
+			organizationId: orgId,
+			conversationId: convo,
+			prompts: [{ title: "J", message: "from turn J" }],
+			turnMessageId: "msg-J",
+			runId: runJ,
+		});
+		await seedTurnRun("msg-K", { conversationId: convo });
+		await finalizeTurnSuggestions({
+			organizationId: orgId,
+			conversationId: convo,
+			turnMessageIds: ["msg-K"],
+		});
+		expect(await readCurrentSuggestion(orgId, convo)).toBeNull();
+
+		// Turn J's fallback persist lands after K's clear.
+		await persistSuggestion({
+			organizationId: orgId,
+			conversationId: convo,
+			prompts: [{ title: "J-late", message: "stale generated chips" }],
+			turnMessageId: "msg-J",
+			runId: runJ,
+		});
+
+		expect(await readCurrentSuggestion(orgId, convo)).toBeNull();
+	});
 });

@@ -46,9 +46,11 @@ export async function askUserQuestion(
  * Non-blocking suggested next actions. Unlike `ask_user`, this does NOT end
  * the turn — the model posts chips the user MAY tap and continues/finishes
  * normally. Each prompt is `{ title, message }`: `title` is the chip label,
- * `message` is sent verbatim as a new user turn if tapped. The server persists
- * these as a superseded interaction event so they survive reload and clear on
- * the next turn.
+ * `message` is sent verbatim as a new user turn if tapped. For web (api)
+ * conversations the server persists the set as a superseded interaction event
+ * so it survives reload and clears on the next turn; chat platforms render a
+ * card whose routing lives in a pending row instead — the card itself stays
+ * in the channel scrollback.
  */
 export async function suggestActions(
   gateway: GatewayParams,

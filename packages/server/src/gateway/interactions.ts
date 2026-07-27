@@ -217,9 +217,9 @@ export class InteractionService extends EventEmitter {
    * Emits "suggestion:created" for platform renderers.
    *
    * Fire-and-forget in the strict sense: the agent's turn has already ended, so
-   * nothing is waiting on a click. A chip that is never tapped simply expires
-   * with the conversation — there is no pending row to reconcile, unlike
-   * `postQuestion`, whose card gates a suspended turn.
+   * nothing is waiting on a click. Chat renderers stash a routing-only pending
+   * row (read, never claimed — chips stay multi-clickable), unlike
+   * `postQuestion`, whose card gates a suspended turn and must claim its row.
    */
   async postSuggestion(
     userId: string,
@@ -237,7 +237,12 @@ export class InteractionService extends EventEmitter {
     }
 
     const posted: PostedSuggestion = {
-      id: `s_${randomUUID()}`,
+      // Short id, deliberately: chat button action ids embed it as
+      // `suggestion:<id>:<i>`, and Telegram's callback_data caps the whole
+      // serialized envelope at 64 bytes — a full UUID blows that budget and
+      // the card post throws. 12 hex chars keep the callback ~40 bytes with
+      // ample collision headroom for a 24h-TTL routing id.
+      id: `s_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
       userId,
       conversationId,
       channelId,

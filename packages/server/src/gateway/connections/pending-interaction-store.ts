@@ -1,5 +1,6 @@
 /**
- * Postgres-backed store for chat-interaction-bridge pending questions.
+ * Postgres-backed store for chat-interaction-bridge pending interactions:
+ * questions (claim-once) and suggestion routing rows (read-many).
  *
  * Replaces the in-process `Map<questionId, PendingQuestionEntry>` so a
  * button click that lands on pod B can claim a question registered on
@@ -22,10 +23,14 @@
  */
 
 import { getDb } from "../../db/client.js";
-import type { PostedQuestion } from "../interactions.js";
+import type { PostedQuestion, PostedSuggestion } from "../interactions.js";
 
 interface StoredPendingQuestion {
   question: PostedQuestion;
+}
+
+interface StoredPendingSuggestion {
+  suggestion: PostedSuggestion;
 }
 
 export async function storePendingQuestion(
@@ -63,6 +68,73 @@ export async function storePendingQuestion(
   // or a misbehaving retry loop could keep the row alive indefinitely.
   // `claimed_at = NULL` is still reset so an unclaimed retry can still
   // be claimed by a legitimate click.
+}
+
+/**
+ * Stash the routing context for a posted suggestion card. Same table and TTL
+ * sweep as questions; the differences are semantic, not structural:
+ *   - The row carries ROUTING (conversationId/channelId/teamId + the prompt
+ *     list), not a suspended turn. Rebuilding routing from the click event's
+ *     thread is wrong — a Slack DM card posts channel-level, so the click's
+ *     thread id keys to the card's own ts and would fork the conversation.
+ *   - It is READ, never claimed: chips deliberately stay multi-clickable
+ *     (a second tap is a legitimate follow-up, not a double-submit).
+ */
+export async function storePendingSuggestion(
+  suggestionId: string,
+  organizationId: string,
+  connectionId: string,
+  recipientUserId: string,
+  entry: StoredPendingSuggestion,
+): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO pending_interactions (
+      id,
+      organization_id,
+      connection_id,
+      expected_user_id,
+      entry_payload
+    )
+    VALUES (
+      ${suggestionId},
+      ${organizationId},
+      ${connectionId},
+      ${recipientUserId},
+      ${sql.json(entry as object)}
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      organization_id  = EXCLUDED.organization_id,
+      connection_id    = EXCLUDED.connection_id,
+      expected_user_id = EXCLUDED.expected_user_id,
+      entry_payload    = EXCLUDED.entry_payload
+  `;
+}
+
+/**
+ * Read a suggestion's routing row without claiming it. Scoped by
+ * `(id, organization_id, connection_id)` — a leaked id cannot resolve another
+ * tenant's or connection's row. No `expected_user_id` match: any member of the
+ * channel may tap a chip (the resulting turn is authored as the CLICKER, who
+ * could have typed the same message manually — no privilege is conferred).
+ */
+export async function readPendingSuggestion(
+  suggestionId: string,
+  organizationId: string,
+  connectionId: string,
+): Promise<StoredPendingSuggestion | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT entry_payload
+      FROM pending_interactions
+     WHERE id              = ${suggestionId}
+       AND organization_id = ${organizationId}
+       AND connection_id   = ${connectionId}
+  `;
+  if (rows.length === 0) return null;
+  const payload = (rows[0] as { entry_payload: StoredPendingSuggestion })
+    .entry_payload;
+  return payload?.suggestion ? payload : null;
 }
 
 /**

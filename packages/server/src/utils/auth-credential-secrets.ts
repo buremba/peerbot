@@ -154,6 +154,24 @@ async function storeAuthCredentialRefs(
 	const out: Record<string, string> = {};
 	const sql = params.db ?? getDb();
 
+	// When writing on a caller transaction, lock the profile first. Concurrent
+	// deleteAuthProfile takes the same row lock; if the profile is gone we must
+	// not insert decryptable agent_secrets that would survive as orphans.
+	if (params.db && !params.secretStore) {
+		const locked = await sql`
+      SELECT id
+      FROM auth_profiles
+      WHERE id = ${params.authProfileId}
+        AND organization_id = ${params.organizationId}
+      FOR UPDATE
+    `;
+		if (locked.length === 0) {
+			throw new Error(
+				`auth profile ${params.authProfileId} not found for credential write`,
+			);
+		}
+	}
+
 	for (const [key, value] of Object.entries(values)) {
 		// Migration of partially-converted rows may still hold some refs.
 		// Public paths never set preserveStoredRefs — every caller-supplied

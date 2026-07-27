@@ -11,6 +11,7 @@ import {
 import {
 	createAuthProfile,
 	deleteAuthProfile,
+	updateAuthProfile,
 } from "../../utils/auth-profiles";
 import { resolveExecutionAuth } from "../../utils/execution-context";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -658,7 +659,6 @@ describe("auth_profiles credential storage", () => {
 	});
 
 	it("rename-only update keeps existing refs without re-storing", async () => {
-		const { updateAuthProfile } = await import("../../utils/auth-profiles");
 		const orgId = workspace.org.id;
 		const profile = await createAuthProfile({
 			organizationId: orgId,
@@ -722,6 +722,38 @@ describe("auth_profiles credential storage", () => {
         AND name LIKE ${`auth-profile/${profile.id}/%`}
     `;
 		expect(secretRowsAfter).toHaveLength(0);
+	});
+
+	it("refuses credential writes when the profile was deleted concurrently", async () => {
+		const sql = getTestDb();
+		const orgId = workspace.org.id;
+		const profile = await createAuthProfile({
+			organizationId: orgId,
+			connectorKey: "postgres",
+			displayName: "Race delete",
+			slug: "pg-race-delete",
+			profileKind: "env",
+			authData: { DATABASE_URL: DSN },
+		});
+		await deleteAuthProfile(orgId, profile.slug);
+
+		await expect(
+			sql.begin(async (tx) =>
+				toSecretRefAuthData({
+					organizationId: orgId,
+					authProfileId: profile.id,
+					credentials: { DATABASE_URL: ROTATED_DSN },
+					db: tx,
+				}),
+			),
+		).rejects.toThrow(/not found for credential write/);
+
+		const secrets = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profile.id}/%`}
+    `;
+		expect(secrets).toHaveLength(0);
 	});
 
 	it("rolls back agent_secrets when the caller transaction aborts", async () => {

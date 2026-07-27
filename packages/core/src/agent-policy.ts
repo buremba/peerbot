@@ -53,6 +53,10 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Delete a message the bot itself sent, addressed by a conversation or thread handle + message id. Only the bot's own messages can be deleted.",
   },
+  suggest_actions: {
+    description:
+      "Offer up to 4 follow-up actions the user might want next, shown as tappable chips under your reply. Tapping one sends its `message` verbatim as the user's next turn, so write each `message` in the USER's voice (\"Show me last week's numbers\"), not your own. Call this at the END of a turn, once, when there are obvious next steps — after answering a question that invites a follow-up, after finishing a task that has a natural successor, or when the user seems unsure what to ask. Non-blocking: the turn continues and your reply text is still shown. Skip it when the conversation is genuinely finished or the next step is entirely up to the user.",
+  },
 };
 
 export const TOOL_INTENT_RULES: ToolIntentRule[] = [
@@ -67,6 +71,20 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
     ],
     patterns: [],
     priority: 10,
+    alwaysInclude: true,
+  },
+  {
+    id: "suggest-next-actions",
+    title: "Suggest Next Actions",
+    tools: ["suggest_actions"],
+    instructionLines: [
+      "When your reply has obvious follow-ups, end the turn by calling suggest_actions once with up to 4 of them.",
+      "Write each `message` in the user's voice — it is sent verbatim AS the user when they tap the chip.",
+      "Keep `title` short enough to read as a chip; put the full request in `message`.",
+      "Skip it when the conversation is finished or the next step is entirely the user's call. Never call it more than once in a turn.",
+    ],
+    patterns: [],
+    priority: 15,
     alwaysInclude: true,
   },
   {

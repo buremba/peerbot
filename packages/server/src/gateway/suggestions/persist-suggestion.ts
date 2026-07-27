@@ -88,10 +88,9 @@ export async function persistSuggestion(
     `) as Array<{ id: number; run_id: number | null }>;
     const prior = priorRows[0];
 
-    // Ordering guard, mirror of finalize's: the caller may have decided to
-    // publish OUTSIDE this lock (the fallback generator holds no lock across
-    // its model call; a delayed agent-tool POST can arrive after a later turn
-    // already ran). If the live row belongs to a LATER run than ours, it is
+    // Ordering guard, mirror of finalize's: the caller decided to publish
+    // OUTSIDE this lock, so a delayed agent-tool POST can arrive after a later
+    // turn already ran. If the live row belongs to a LATER run than ours, it is
     // the set the user is looking at — never supersede it with stale chips.
     // Detectable only when both sides carry a run id, which is why finalize
     // stamps its clear markers with the clearing turn's run id.
@@ -204,19 +203,13 @@ export async function readCurrentSuggestion(
  * non-owning pod already finalized) either re-observes an owned/empty row and
  * no-ops, or the supersede is a no-op because the row is already cleared.
  *
- * Returns whether THIS turn published a set of its own (the "owned" case), plus
- * the turn's run id resolved inside the lock. The fallback generator keys off
- * both: a turn that published nothing is the one worth deriving chips for, and
- * its persist reuses the run id for the same ordering guard — both answers have
- * to come from inside the advisory lock, since reading them separately
- * afterwards would race a concurrent turn.
  */
 export async function finalizeTurnSuggestions(args: {
   organizationId: string;
   conversationId: string;
   /** messageId + processedMessageIds of the completing turn. */
   turnMessageIds: string[];
-}): Promise<{ published: boolean; turnRunId: number | null }> {
+}): Promise<void> {
   const { organizationId, conversationId, turnMessageIds } = args;
   const owned = new Set(turnMessageIds.filter(Boolean));
   return getDb().begin(async (tx: DbClient) => {
@@ -228,9 +221,8 @@ export async function finalizeTurnSuggestions(args: {
     // keyed by the message ids this finalizer already holds, including a turn
     // that emitted no suggestions (which leaves no suggestion event of its own
     // to read a run id from). Rows are marked 'completed', never deleted, so
-    // the id is still readable at terminal time. Used three ways: the
-    // out-of-order-terminal guard below, the run stamp on the clear marker,
-    // and the fallback generator's persist guard (via the return value).
+    // the id is still readable at terminal time. Used two ways: the
+    // out-of-order-terminal guard below, and the run stamp on the clear marker.
     let turnRunId: number | null = null;
     if (owned.size > 0) {
       const mine = (await tx`
@@ -262,12 +254,12 @@ export async function finalizeTurnSuggestions(args: {
       metadata: Record<string, unknown> | null;
     }>;
     const row = rows[0];
-    if (!row) return { published: false, turnRunId }; // nothing current
+    if (!row) return; // nothing current
     const turnMessageId =
       (row.metadata?.turnMessageId as string | null) ?? null;
     // This turn (re)issued the current set → keep it for the renderer to embed.
     if (turnMessageId != null && owned.has(turnMessageId)) {
-      return { published: true, turnRunId };
+      return;
     }
 
     // Ordering guard. "Belongs to a different turn" does NOT imply "belongs to
@@ -275,11 +267,9 @@ export async function finalizeTurnSuggestions(args: {
     // turn (queue backlog or retry) arrives after that later turn published.
     // Clearing then erases chips the user is looking at, in the live payload and
     // in history replay alike. Only clear a set published by an EARLIER run — a
-    // LATER run's set is the one the user is looking at, so this turn is not
-    // the chipless one; report published so the fallback does not generate
-    // over it.
+    // LATER run's set is the one the user is looking at.
     if (turnRunId != null && row.run_id != null && row.run_id > turnRunId) {
-      return { published: true, turnRunId };
+      return;
     }
 
     // A prior turn's set survived a turn that emitted none — supersede it.
@@ -299,13 +289,12 @@ export async function finalizeTurnSuggestions(args: {
         supersedesEventId: row.id,
         // Stamped with the CLEARING turn's run id so persistSuggestion's
         // ordering guard can see "a later run already cleared this" — without
-        // it a delayed fallback persist could resurrect chips over the clear.
+        // it a delayed persist could resurrect chips over the clear.
         runId: turnRunId,
         metadata: { conversationId, cleared: true },
         authorName: "system",
       },
       { sql: tx }
     );
-    return { published: false, turnRunId };
   });
 }

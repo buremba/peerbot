@@ -28,6 +28,7 @@ import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
+import { runExpirePendingApprovals } from './expire-pending-approvals';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -292,6 +293,19 @@ function registerMaintenanceTasks(
       await runReapExpiredPendingSlackInstalls();
     },
     { cron: '17 3 * * *' },
+  );
+
+  // Long-horizon pending-approval expiry: the counterpart to the short-horizon
+  // claim reaper, which exempts approval-pending rows on purpose (#2044) and so
+  // never resolves them. Rationale + fairness/draining details live in
+  // scheduled/expire-pending-approvals.ts. Daily, off-peak, distinct minute from
+  // the other two reapers.
+  scheduler.register(
+    'expire-pending-approvals',
+    async () => {
+      await runExpirePendingApprovals();
+    },
+    { cron: '31 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

@@ -223,12 +223,62 @@ export const RejectAction = Type.Object({
   reason: Type.Optional(Type.String()),
 });
 
+/**
+ * Explicit scope for a batch decision over queued connector-operation approvals
+ * (`run_type='action'`), the lane that accumulates when nobody decides.
+ *
+ * At least one narrowing filter is REQUIRED — there is deliberately no
+ * "decide everything pending" shape. Batch APPROVE executes queued side effects
+ * en masse, so the caller must name what they are approving; an unscoped sweep
+ * would let one click fire every queued write in the org.
+ */
+export const ApprovalBatchScope = Type.Object(
+  {
+    connection_id: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: "Only approvals queued against this connection.",
+      })
+    ),
+    connector_key: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description: "Only approvals for this connector (e.g. 'github').",
+      })
+    ),
+    action_key: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description: "Only approvals for this operation key.",
+      })
+    ),
+    behavior_id: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: "Only approvals queued by this Behavior.",
+      })
+    ),
+    older_than_days: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          "Only approvals queued more than this many days ago. Narrows further; never widens.",
+      })
+    ),
+  },
+  {
+    description:
+      "Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.",
+  }
+);
+
 export const ApproveBatchAction = Type.Object({
   action: Type.Literal("approve_batch", {
     description:
-      "Approve every pending proposal a Behavior run produced, in one go. Groups by the run's window.",
+      "Approve many pending approvals at once. Either scope by window_id (a Behavior run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.",
   }),
-  window_id: Type.Number(),
+  window_id: Type.Optional(Type.Number()),
+  scope: Type.Optional(ApprovalBatchScope),
   run_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), {
       minItems: 1,
@@ -243,9 +293,10 @@ export const ApproveBatchAction = Type.Object({
 export const RejectBatchAction = Type.Object({
   action: Type.Literal("reject_batch", {
     description:
-      "Reject every pending proposal a Behavior run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).",
+      "Reject many pending approvals at once. Either scope by window_id (a Behavior run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.",
   }),
-  window_id: Type.Number(),
+  window_id: Type.Optional(Type.Number()),
+  scope: Type.Optional(ApprovalBatchScope),
   run_ids: Type.Optional(
     Type.Array(Type.Integer({ minimum: 1 }), {
       minItems: 1,
@@ -358,7 +409,8 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("approve_batch"),
-    window_id: Type.Integer(),
+    /** Present when the batch was scoped by window (Behavior proposals). */
+    window_id: Type.Optional(Type.Integer()),
     approved_count: Type.Integer(),
     failed_count: Type.Integer(),
     run_ids: Type.Array(Type.Integer()),
@@ -366,7 +418,8 @@ export const ManageOperationsResultSchema = Type.Union([
   }),
   Type.Object({
     action: Type.Literal("reject_batch"),
-    window_id: Type.Integer(),
+    /** Present when the batch was scoped by window (Behavior proposals). */
+    window_id: Type.Optional(Type.Integer()),
     rejected_count: Type.Integer(),
     run_ids: Type.Array(Type.Integer()),
     message: Type.String(),

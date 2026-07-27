@@ -665,7 +665,16 @@ export interface Feed {
 
 export type RunType = 'sync' | 'action' | 'code' | 'behavior' | 'auth';
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout';
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'auto';
+// 'expired' is the system giving up on an undecided approval after the TTL
+// (scheduled/expire-pending-approvals.ts). It is deliberately distinct from
+// 'rejected', which is a HUMAN decision the Behavior learns from — an agent
+// must not train on silence as if it were disapproval.
+export type ApprovalStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'auto';
 
 export interface Run {
   id: number;

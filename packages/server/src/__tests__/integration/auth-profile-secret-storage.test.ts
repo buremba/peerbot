@@ -591,7 +591,6 @@ describe("auth_profiles credential storage", () => {
 	});
 
 	it("does not resolve a legacy unowned secret:// planted in auth_data", async () => {
-		const sql = getTestDb();
 		const orgId = workspace.org.id;
 		const store = new PostgresSecretStore();
 		const foreignRef = await orgContext.run({ organizationId: orgId }, () =>

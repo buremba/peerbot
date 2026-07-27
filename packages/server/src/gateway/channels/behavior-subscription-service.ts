@@ -330,6 +330,46 @@ export class BehaviorSubscriptionService {
 		`;
 	}
 
+	/**
+	 * Materialize the chat-link Behavior after a group message routes through the
+	 * connection-owner fallback. Returns false when the active, org-scoped chat
+	 * connection cannot be resolved. createChatBehavior serializes concurrent
+	 * attempts for the same connection and channel.
+	 */
+	async materializeConnectionFallbackLink(
+		connectionId: string,
+		organizationId: string,
+		agentId: string,
+		platform: string,
+		channelId: string,
+		teamId: string | undefined,
+	): Promise<boolean> {
+		const sql = getDb();
+		const slug = runtimeConnectionIdToSlug(connectionId);
+		const rows = (await sql`
+			SELECT id
+			FROM connections
+			WHERE slug = ${slug}
+			  AND organization_id = ${organizationId}
+			  AND connector_key = ${platform}
+			  AND credential_mode IS NOT NULL
+			  AND status = 'active'
+			  AND deleted_at IS NULL
+			LIMIT 1
+		`) as Array<{ id: number | string }>;
+		const numericId = rows[0] ? Number(rows[0].id) : NaN;
+		if (!Number.isInteger(numericId) || numericId < 1) return false;
+		// create-only: never overwrite an explicit link that a concurrent
+		// `/lobu link` may have committed — the check happens under the advisory
+		// lock inside createChatBehavior, so it is race-safe across replicas.
+		await this.createChatBehavior(agentId, platform, channelId, teamId, {
+			organizationId,
+			connectionId: numericId,
+			createOnly: true,
+		});
+		return true;
+	}
+
 	async createChatBehavior(
 		agentId: string,
 		platform: string,
@@ -341,6 +381,15 @@ export class BehaviorSubscriptionService {
 			sql?: DbClient;
 			connectionId: number;
 			model?: string;
+			/**
+			 * Create-only: when a chat-link already covers this connection+channel,
+			 * preserve it and return instead of relinking it to `agentId`. Used by
+			 * the connection-owner fallback so it can never overwrite an explicit
+			 * `/lobu link` that committed between the caller's check and this write
+			 * — the decision is made under the advisory lock, so it holds across
+			 * replicas. Explicit link/relink flows omit it and keep relinking.
+			 */
+			createOnly?: boolean;
 		},
 	): Promise<void> {
 		if (!Number.isInteger(options.connectionId) || options.connectionId < 1) {
@@ -399,6 +448,10 @@ export class BehaviorSubscriptionService {
 				FOR UPDATE OF w
 			`;
 			if (existing[0]) {
+				// A chat-link already covers this connection+channel. Under
+				// create-only (the connection-owner fallback), leave it untouched —
+				// this is where a racing explicit `/lobu link` is preserved.
+				if (options.createOnly) return;
 				// Relink must not wipe user-added triggers (schedule, extra events)
 				// on the same Behavior — only replace the chat message.created
 				// trigger for this connection+channel.

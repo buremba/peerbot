@@ -25,9 +25,11 @@
  * (non-'user') cloud worker would hit it in production.
  */
 
+import { parseSecretRef } from '@lobu/core';
 import type { Context } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
+import { resolveAuthCredentials } from '../../utils/auth-credential-secrets';
 import { completeAuthRun } from '../../worker-api';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
@@ -137,7 +139,18 @@ describe('completeAuthRun claimant guard', () => {
       SELECT status, auth_data FROM auth_profiles WHERE id = ${profileId}
     `) as Array<{ status: string; auth_data: Record<string, unknown> }>;
     expect(profile[0].status).toBe('active');
-    expect(profile[0].auth_data).toEqual({ api_key: 'real-token' });
+    // Credentials persist as encrypted secret:// refs, never plaintext, and
+    // resolve back to the real value at connect time.
+    expect(JSON.stringify(profile[0].auth_data)).not.toContain('real-token');
+    expect(parseSecretRef(String(profile[0].auth_data.api_key))?.scheme).toBe(
+      'secret'
+    );
+    const resolved = await resolveAuthCredentials({
+      organizationId: org.id,
+      authProfileId: profileId,
+      authData: profile[0].auth_data,
+    });
+    expect(resolved).toEqual({ api_key: 'real-token' });
 
     const run = (await sql`
       SELECT status FROM runs WHERE id = ${runId}

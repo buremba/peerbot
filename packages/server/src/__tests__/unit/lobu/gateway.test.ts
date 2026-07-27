@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { ensureEmbeddedGatewaySecrets } from '../../../lobu/gateway';
+import { BootConfigError } from '../../../utils/errors';
 
 const ORIGINAL_ENV = {
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
@@ -21,7 +22,8 @@ describe('ensureEmbeddedGatewaySecrets', () => {
     delete process.env.ENCRYPTION_KEY;
     delete process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY;
 
-    expect(() => ensureEmbeddedGatewaySecrets()).toThrow(/ENCRYPTION_KEY is required/);
+    expect(() => ensureEmbeddedGatewaySecrets()).toThrow(BootConfigError);
+    expect(() => ensureEmbeddedGatewaySecrets()).toThrow(/lobu init/);
   });
 
   it('allows explicitly ephemeral encryption keys', () => {

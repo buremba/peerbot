@@ -20,6 +20,7 @@ import {
 } from "../internal/context.js";
 import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
+import { checkNodeSupport } from "../internal/node-version.js";
 import { loadProjectLink } from "../internal/project-link.js";
 import { loadProjectConfig } from "./_lib/apply/desired-state.js";
 
@@ -135,6 +136,23 @@ export async function devCommand(
   options: DevOptions = {}
 ): Promise<void> {
   const spinner = ora("Validating environment...").start();
+
+  // The server also warns on Node 25, but only after the CLI's boot output.
+  // Surface the sandbox limitation before validation so it is hard to miss.
+  const nodeSupport = checkNodeSupport();
+  if (nodeSupport.ok && !nodeSupport.sandbox) {
+    spinner.warn(
+      chalk.yellow(
+        `Node ${process.versions.node}: the agent-code sandbox (query_sdk / run_sdk) is unavailable.`
+      )
+    );
+    console.warn(
+      chalk.dim(
+        "  isolated-vm has no Node 25 build. Use Node 24 (LTS) or 26+ to enable the sandbox.\n"
+      )
+    );
+    spinner.start("Validating environment...");
+  }
 
   const envPath = join(cwd, ".env");
   let envVars: Record<string, string> = {};

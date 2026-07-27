@@ -16,6 +16,13 @@ import {
 } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
 import {
+	connectorSecretKeysFromSchemas,
+	loadConnectorSecretKeys,
+	redactConnectionConfig,
+	redactConnectionRow,
+	restoreRedactedConfig,
+} from "../../../../utils/connection-config-redaction";
+import {
 	deleteChatConnection,
 	updateChatConnection,
 	upsertByoChatConnection,
@@ -372,6 +379,13 @@ export async function handleList(
 		organizationId,
 		connectorKeys,
 	);
+	// `SELECT c.*` carries the raw `config` jsonb, which is written verbatim
+	// (split by feed scope, never by secrecy). Resolve each connector's
+	// schema-declared secret keys ONCE for the page, then redact per row below.
+	const secretKeysByConnector = await loadConnectorSecretKeys(
+		organizationId,
+		connectorKeys,
+	);
 
   const connections = resolved.map((row) => {
 		const operationsSummary = summaries.get(String(row.connector_key)) ?? {
@@ -380,6 +394,11 @@ export async function handleList(
     const hasOperations = operationsSummary.total > 0;
     return {
       ...row,
+      // Secrets never leave the server through a connection serializer.
+      config: redactConnectionConfig(
+        row.config,
+        secretKeysByConnector.get(String(row.connector_key)),
+      ),
       // Postgres returns bigint[] as a literal string ('{2}'); parse to number[]
       // so the API contract matches the typed entity_ids the UI picker expects.
       entity_ids: parsePgNumberArray(row.entity_ids),
@@ -436,6 +455,10 @@ export async function handleGet(
            cd.name AS connector_name,
            cd.feeds_schema,
            cd.auth_schema,
+           -- options_schema drives schema-declared config redaction below
+           -- (format:"password" properties); auth_schema covers the
+           -- env_keys secret:true fields.
+           cd.options_schema,
            cd.declares_chat,
            ap.slug AS auth_profile_slug,
            ap.display_name AS auth_profile_name,
@@ -540,6 +563,16 @@ export async function handleGet(
 				device_label: getRow.device_label as string | null,
 			}),
       ...(connectToken ? { connect_token: connectToken } : {}),
+      // Secrets never leave the server through a connection serializer. The
+      // connector's own schemas are already joined in above (cd.auth_schema /
+      // cd.options_schema), so this needs no extra query.
+      config: redactConnectionConfig(
+        getRow.config,
+        connectorSecretKeysFromSchemas({
+          optionsSchema: getRow.options_schema,
+          authSchema: getRow.auth_schema,
+        }),
+      ),
       operations_summary: operationsSummary,
       has_operations: hasOperations,
       facets: deriveConnectionFacets({
@@ -639,6 +672,13 @@ export async function handleCreate(
 			error: `Connector '${args.connector_key}' not found or not active`,
 		};
 	}
+
+	// Schema-declared secret config keys for this connector — used to redact the
+	// `RETURNING *` row before it is serialized back to the caller.
+	const createSecretKeys = connectorSecretKeysFromSchemas({
+		optionsSchema: connector.options_schema,
+		authSchema: connector.auth_schema,
+	});
 
 	const chatPlatform =
 		connector.options_schema &&
@@ -1227,7 +1267,10 @@ export async function handleCreate(
   return {
 		action: "create",
     connection: enrichWithAuthProfiles(
-      inserted[0] as Record<string, unknown>,
+      // `RETURNING *` echoes back the config we just inserted — including any
+      // secret the caller supplied. Redact before serializing; `connector` is
+      // already loaded here, so the schema pass is free.
+      redactConnectionRow(inserted[0] as Record<string, unknown>, createSecretKeys),
       authSelection?.authProfile ?? null,
 			authSelection?.appAuthProfile ?? null,
     ),
@@ -1299,10 +1342,10 @@ export async function handleUpdate(
   // Verify ownership
   const existingRows = await sql`
     SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by,
-           c.config, c.credential_mode, cd.auth_schema, cd.feeds_schema
+           c.config, c.credential_mode, cd.auth_schema, cd.options_schema, cd.feeds_schema
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT auth_schema, feeds_schema
+      SELECT auth_schema, options_schema, feeds_schema
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -1322,6 +1365,7 @@ export async function handleUpdate(
     id: number;
     connector_key: string;
     auth_schema: { methods?: Array<Record<string, unknown>> } | null;
+    options_schema: Record<string, unknown> | null;
     feeds_schema: Record<string, unknown> | null;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
@@ -1389,6 +1433,14 @@ export async function handleUpdate(
 				organizationId,
 				connectionId: args.connection_id,
 				displayName: args.display_name,
+				// Pass the RAW incoming config. Un-redaction deliberately does NOT
+				// happen here: `existing` is the UNLOCKED snapshot read at the top
+				// of this handler, and restoring from it would roll back a
+				// rotation another replica committed in between — the same stale
+				// -restore race fixed for the non-chat path below, and it matters
+				// more here because the chat connectors are the ones declaring
+				// `format: "password"` bot tokens. `updateChatConnection` re-reads
+				// the row under the stable-chat lock and restores from THAT.
 				config: args.config,
 				status: args.status,
 				...(hasAgentIdArg ? { agentId: args.agent_id ?? null } : {}),
@@ -1605,8 +1657,25 @@ export async function handleUpdate(
 					? "active"
 					: "pending_auth"
       : null);
+  // Un-redact BEFORE anything reads the incoming config. Clients round-trip
+  // what the (now redacted) read path gave them — the Owletto action-modes
+  // editor spreads `connection.config` and PATCHes it straight back — so a
+  // `__LOBU_REDACTED__` here means "unchanged", not "set the literal
+  // placeholder". Without this the update would overwrite the live credential
+  // with the sentinel: silent data loss, worse than the leak it came from.
+  //
+  // Placed ahead of splitConfigByFeedScope so the feed-scope split, the
+  // consent_only computation, the merge and the replace all see real values.
+  const incomingConfigForWrite =
+    args.config === undefined
+      ? undefined
+      : (restoreRedactedConfig(
+          args.config,
+          parseJsonObject(existing.config),
+        ) as Record<string, unknown>);
+
   const splitConfig = splitConfigByFeedScope(
-    args.config ?? null,
+    incomingConfigForWrite ?? null,
 		(existing.feeds_schema as Record<string, FeedDefinition>) ?? null,
   );
 
@@ -1707,24 +1776,69 @@ export async function handleUpdate(
   // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
   let updated: any[];
   try {
-    updated = await sql`
-      UPDATE connections
-      SET display_name = COALESCE(${args.display_name ?? null}, display_name),
-          slug = COALESCE(${nextSlug}, slug),
-          status = COALESCE(${effectiveStatus}, status),
-          auth_profile_id = ${nextAuthProfileId},
-          app_auth_profile_id = ${nextAppAuthProfileId},
-          visibility = CASE WHEN ${rebindToPersonalCred} THEN 'private' ELSE visibility END,
-          entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
-          config = ${
-            replaceConfig
-              ? sql`${sql.json(connectionConfigForReplace)}::jsonb`
-              : sql`CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END`
-          },
-          updated_at = NOW()
-      WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
-      RETURNING *
-    `;
+    // Row-locked restore→write. The `existing` snapshot at the top of this
+    // handler is read WITHOUT a lock, and many awaits (auth-profile lookups,
+    // device binding, feed checks) happen between it and this write — so
+    // restoring sentinels from that snapshot could roll back a rotation another
+    // replica committed in the meantime: A reads, B rotates the secret, A's
+    // restore fills the sentinel from its STALE copy and writes the OLD
+    // plaintext back over B's new value. Silent credential rollback, invisible
+    // through the API because the response is redacted either way.
+    //
+    // Re-reading the config FOR UPDATE inside the same transaction as the
+    // UPDATE makes the restore source the row the write is actually based on.
+    // Mirrors the shape manage_feeds already uses for handleUpdateFeed.
+    updated = await sql.begin(async (tx) => {
+      const lockedRows = await tx`
+        SELECT config
+        FROM connections
+        WHERE id = ${args.connection_id}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        FOR UPDATE
+      `;
+      if (lockedRows.length === 0) return [];
+      const lockedConfig = parseJsonObject(
+        (lockedRows[0] as { config: unknown }).config,
+      );
+
+      // Recompute the incoming config against the LOCKED row. Only the restore
+      // depends on stored values, so this is the sole recomputation needed —
+      // the merge itself is already atomic (`config || <incoming>` below reads
+      // the live row).
+      const lockedSplit =
+        args.config === undefined
+          ? null
+          : splitConfigByFeedScope(
+              restoreRedactedConfig(args.config, lockedConfig) as Record<
+                string,
+                unknown
+              >,
+              (existing.feeds_schema as Record<string, FeedDefinition>) ?? null,
+            );
+      const lockedConnectionConfig = lockedSplit?.connectionConfig ?? null;
+      const lockedReplaceConfig = lockedConnectionConfig ?? {};
+
+      return tx`
+        UPDATE connections
+        SET display_name = COALESCE(${args.display_name ?? null}, display_name),
+            slug = COALESCE(${nextSlug}, slug),
+            status = COALESCE(${effectiveStatus}, status),
+            auth_profile_id = ${nextAuthProfileId},
+            app_auth_profile_id = ${nextAppAuthProfileId},
+            visibility = CASE WHEN ${rebindToPersonalCred} THEN 'private' ELSE visibility END,
+            entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
+            config = ${
+              replaceConfig
+                ? tx`${tx.json(lockedReplaceConfig)}::jsonb`
+                : tx`CASE WHEN ${lockedConnectionConfig ? tx.json(lockedConnectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${lockedConnectionConfig ? tx.json(lockedConnectionConfig) : null}::jsonb ELSE config END`
+            },
+            updated_at = NOW()
+        WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
+        RETURNING *
+      `;
+    });
+    if (updated.length === 0) return { error: "Connection not found" };
   } catch (err) {
     if (isConnectionSlugUniqueViolation(err) && updateExplicitSlug) {
 			return {
@@ -1833,7 +1947,15 @@ export async function handleUpdate(
   return {
 		action: "update",
     connection: enrichWithAuthProfiles(
-      updated[0] as Record<string, unknown>,
+      // `RETURNING *` echoes the merged config back — redact before it is
+      // serialized. Schemas came from the `existing` lookup at the top.
+      redactConnectionRow(
+        updated[0] as Record<string, unknown>,
+        connectorSecretKeysFromSchemas({
+          optionsSchema: existing.options_schema,
+          authSchema: existing.auth_schema,
+        }),
+      ),
       effectiveAuth ?? null,
 			effectiveAppAuth ?? null,
     ),

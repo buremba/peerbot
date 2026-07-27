@@ -1,5 +1,6 @@
 import { slugify } from '@lobu/core';
 import { getDb, type DbClient } from '../db/client';
+import { persistAuthCredentials } from './auth-credential-secrets';
 import { ToolUserError } from './errors';
 import { isUniqueViolation } from './pg-errors';
 
@@ -69,6 +70,10 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
   resolved_cdp_url: string | null;
 }
 
+// `auth-credential-secrets` imports `normalizeAuthValues` from this module and
+// this module imports the persist helpers back. The cycle is safe (both sides
+// only call across at runtime, never during module init) and keeps the
+// credential-at-rest policy in one file instead of splitting it.
 export function normalizeAuthValues(raw: unknown): Record<string, string> {
   if (typeof raw === 'string') {
     try {
@@ -388,7 +393,11 @@ export async function createAuthProfile(params: {
           ${params.connectorKey ?? null},
           ${params.profileKind},
           ${params.status ?? 'active'},
-          ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
+          ${sql.json(
+            params.profileKind === 'env'
+              ? {}
+              : normalizeAuthData(params.profileKind, params.authData ?? {})
+          )},
           ${params.accountId ?? null},
           ${normalizedProvider},
           ${params.createdBy ?? null},
@@ -436,7 +445,45 @@ export async function createAuthProfile(params: {
       );
     }
 
-    return rows[0] as AuthProfileRow;
+    const created = rows[0] as AuthProfileRow;
+
+    // `env` credentials are inserted empty above (the secret name is namespaced
+    // by profile id, which only exists after the INSERT), then written as
+    // `secret://` refs here — so a raw credential never touches the column.
+    // When the caller passed a transaction (`db !== getDb()`), secrets must
+    // use that same handle so a rollback discards both. Otherwise omit `db`
+    // and let persistAuthCredentials open its own transaction for the
+    // put+update pair (a bare pool connection cannot hold FOR UPDATE).
+    if (params.profileKind === 'env') {
+      const values = normalizeAuthValues(params.authData ?? {});
+      if (Object.keys(values).length > 0) {
+        try {
+          created.auth_data = await persistAuthCredentials({
+            organizationId: params.organizationId,
+            authProfileId: created.id,
+            credentials: values,
+            ...(db !== getDb() ? { db } : {}),
+          });
+        } catch (err) {
+          // Default (non-transactional) path: the INSERT above already
+          // committed, so a persist failure would strand an `env` profile with
+          // empty auth_data (no compensating rollback). Delete the orphan row
+          // before rethrowing. Transactional callers pass their own `db`; their
+          // tx rolls back the INSERT (and is already aborted), so skip the
+          // compensating delete for them.
+          if (db === getDb()) {
+            await sql`
+              DELETE FROM auth_profiles
+              WHERE id = ${created.id}
+                AND organization_id = ${params.organizationId}
+            `;
+          }
+          throw err;
+        }
+      }
+    }
+
+    return created;
   }
 }
 
@@ -491,16 +538,36 @@ export async function updateAuthProfile(params: {
         })
       : existing.slug;
 
+  // `env` profiles: a no-credential update (rename, status) leaves authData
+  // undefined and keeps existing refs as-is. An explicit authData rewrite
+  // always encrypts caller-supplied values (never trusts secret:// strings).
+  if (
+    existing.profile_kind === 'env' &&
+    params.authData !== undefined
+  ) {
+    await persistAuthCredentials({
+      organizationId: params.organizationId,
+      authProfileId: existing.id,
+      credentials: normalizeAuthData(existing.profile_kind, params.authData),
+    });
+  }
+
   const nextAuthData =
-    params.authData === undefined
-      ? normalizeAuthData(existing.profile_kind, existing.auth_data)
-      : normalizeAuthData(existing.profile_kind, params.authData);
+    existing.profile_kind === 'env'
+      ? undefined // already written above (or left unchanged)
+      : params.authData === undefined
+        ? normalizeAuthData(existing.profile_kind, existing.auth_data)
+        : normalizeAuthData(existing.profile_kind, params.authData);
 
   const rows = await sql`
     UPDATE auth_profiles
     SET slug = ${nextSlug},
         display_name = COALESCE(${params.displayName ?? null}, display_name),
-        auth_data = ${sql.json(nextAuthData)},
+        ${
+          nextAuthData !== undefined
+            ? sql`auth_data = ${sql.json(nextAuthData)},`
+            : sql``
+        }
         status = COALESCE(${params.status ?? null}, status),
         account_id = COALESCE(${params.accountId ?? null}, account_id),
         provider = COALESCE(${params.provider ?? null}, provider),
@@ -518,14 +585,28 @@ export async function deleteAuthProfile(
   slug: string
 ): Promise<AuthProfileRow | null> {
   const sql = getDb();
-  const rows = await sql`
-    DELETE FROM auth_profiles
-    WHERE organization_id = ${organizationId}
-      AND slug = ${slug}
-    RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
-  `;
-
-  return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+  // Profile row + its encrypted credential rows must leave together. Env
+  // profiles write `agent_secrets` under `auth-profile/<id>/…`; leaving those
+  // behind after a delete keeps decryptable bearer credentials (DSNs, API
+  // keys) until manual GC. Both deletes run in one transaction so a partial
+  // failure cannot orphan secrets or leave a profile without credentials.
+  return await sql.begin(async (tx) => {
+    const rows = await tx`
+      DELETE FROM auth_profiles
+      WHERE organization_id = ${organizationId}
+        AND slug = ${slug}
+      RETURNING ${tx.unsafe(AUTH_PROFILE_COLUMNS)}
+    `;
+    if (rows.length === 0) return null;
+    const deleted = rows[0] as AuthProfileRow;
+    // Numeric id → safe as a LIKE prefix; no caller-controlled wildcards.
+    await tx`
+      DELETE FROM agent_secrets
+      WHERE organization_id = ${organizationId}
+        AND name LIKE ${`auth-profile/${deleted.id}/%`}
+    `;
+    return deleted;
+  });
 }
 
 export async function getPrimaryAuthProfileForKind(params: {

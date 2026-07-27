@@ -5,6 +5,7 @@ import type {
 	AgentSettings,
 } from "@lobu/core";
 import { createLogger } from "@lobu/core";
+import { resolveNewAgentProvisioningDefaults } from "../../auth/system-provider-resolution";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
@@ -239,6 +240,19 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const sql = getDb();
 			const orgId = getOrgId();
 			const now = new Date();
+			// Fresh-agent provisioning defaults, from the SAME helper every other
+			// create path uses (see `resolveNewAgentProvisioningDefaults`). This is
+			// the shared UPSERT reached by `AgentMetadataStore.createAgent`, i.e. the
+			// `POST /api/v1/agents` route, so seeding here is what keeps an agent
+			// created through that route runnable.
+			//
+			// These two columns are deliberately ABSENT from the DO UPDATE SET
+			// clause below. `saveMetadata` is an UPSERT, so any caller re-saving an
+			// existing agent (a re-`createAgent` on an id that already exists, a
+			// replayed apply) must never clobber an admin's curated `models`
+			// allow-list or an agent's pre-approvals. INSERT seeds them; CONFLICT
+			// leaves them untouched.
+			const provisioning = await resolveNewAgentProvisioningDefaults(orgId);
 			// The PK is (organization_id, id) — UPSERT on the composite key. Two
 			// orgs can independently own an agent with the same id; the conflict
 			// path here only triggers for re-saves within the *same* org.
@@ -246,10 +260,12 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			// a CONFLICT UPDATE so we can emit the right lifecycle event.
 			const rows = await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
-                            created_at)
+                            models, pre_approved_tools, created_at)
         VALUES (
           ${agentId}, ${orgId}, ${metadata.name}, ${metadata.description ?? null},
           ${metadata.owner.platform}, ${metadata.owner.userId},
+          ${sql.json(provisioning.models)},
+          ${sql.json(provisioning.preApprovedTools)},
           ${metadata.createdAt ? new Date(metadata.createdAt) : now}
         )
         ON CONFLICT (organization_id, id) DO UPDATE SET
@@ -273,9 +289,33 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			});
 		},
 		async updateMetadata(agentId, updates) {
-			const existing = await store.getMetadata(agentId);
-			if (!existing) return;
-			await store.saveMetadata(agentId, { ...existing, ...updates });
+			const sql = getDb();
+			const orgId = getOrgId();
+			// A DIRECT update of the three mutable metadata fields, deliberately NOT
+			// a read-then-`saveMetadata` round trip. Routing a rename through the
+			// UPSERT would run fresh-agent provisioning (provider discovery, and a
+			// possible org-default lookup) on a metadata-only edit — wasted work,
+			// and a rename that could fail on a provider-discovery error. COALESCE
+			// keeps an omitted field at its current value.
+			const rows = await sql`
+        UPDATE agents SET
+          name = COALESCE(${updates.name ?? null}, name),
+          description = COALESCE(${updates.description ?? null}, description),
+          last_used_at = COALESCE(${
+						updates.lastUsedAt ? new Date(updates.lastUsedAt) : null
+					}, last_used_at),
+          updated_at = ${new Date()}
+        WHERE id = ${agentId} AND organization_id = ${orgId}
+        RETURNING name
+      `;
+			if (rows.length === 0) return;
+			recordLifecycleEvent({
+				organizationId: orgId,
+				entityType: "agent",
+				op: "updated",
+				entityId: agentId,
+				summary: `Agent "${rows[0].name ?? agentId}" updated`,
+			});
 		},
 		async deleteMetadata(agentId) {
 			const sql = getDb();

@@ -494,7 +494,10 @@ export function buildScopedQuery(
   const sel = (table: string, alias?: string) => {
     const defs = sc?.get(table);
     if (!defs) return alias ? `${alias}.*` : '*';
-    return buildColumnList(defs, alias);
+    // `table` drives how a redaction expression resolves the row's
+    // connector-DECLARED secret fields: a connection carries `connector_key`,
+    // a feed reaches it through `connection_id`.
+    return buildColumnList(defs, alias, table);
   };
 
   // Build the SELECT list for the entities CTE, where entity_type is now a

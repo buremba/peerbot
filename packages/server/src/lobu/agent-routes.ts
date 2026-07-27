@@ -12,6 +12,7 @@ import {
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
+import { resolveNewAgentProvisioningDefaults } from "../auth/system-provider-resolution";
 import { resolveBehaviorTriggerWrite } from "../behaviors/triggers";
 import { getDb } from "../db/client";
 import { grantStrategyFor } from "../gateway/auth/oauth/grant-strategy";
@@ -516,16 +517,22 @@ routes.post("/", async (c) => {
 	// stored per-agent — it's derived at worker startup by McpConfigService.
 	const sql = getDb();
 	const now = new Date();
-	const ownerPreApprovedTools = ["/mcp/lobu-memory/tools/*"];
+	// Fresh-agent provisioning defaults from the shared helper — the SAME source
+	// the boot provisioning paths and the manage_agents create tool use. `models`
+	// is baked in here because the run path's org-default tail reads an
+	// `inference_providers` row that environment API keys never create; an agent
+	// left model-less on an env-key-only deployment resolves no model at all.
+	const provisioning = await resolveNewAgentProvisioningDefaults(orgId);
 	const inserted = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, owner_platform, owner_user_id,
-      pre_approved_tools, created_at, updated_at
+      models, pre_approved_tools, created_at, updated_at
     )
     VALUES (
       ${agentId}, ${orgId}, ${name}, ${description ?? null},
       'lobu', ${user.id},
-      ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
+      ${sql.json(provisioning.models)},
+      ${sql.json(provisioning.preApprovedTools)}, ${now}, ${now}
     )
     ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id

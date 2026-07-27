@@ -17,7 +17,7 @@ Read root `AGENTS.md` first. This package owns agent execution and Lobu integrat
 - Past channel conversation is read through `search_memory`, which also scans `channel_messages`.
 
 ## Network and runtime
-- Worker subprocesses use `HTTP_PROXY=http://localhost:8118`.
+- Worker subprocesses reach the network through the gateway proxy on `127.0.0.1` (loopback is required by the Linux `IPAddressDeny` scope), port from `WORKER_PROXY_PORT` (default 8118). Consume the injected `HTTP_PROXY` URL rather than rebuilding it from a hardcoded port.
 - `WORKER_ALLOWED_DOMAINS`: empty = no network by default; exact domains or `.wildcard`; `*` means allow all and is not for prod; combine with `WORKER_DISALLOWED_DOMAINS` for blocklist mode.
 - Linux prod adds kernel network denial except loopback; risky domains may route through the LLM egress judge.
 - SDK sandbox loads the per-Node-major `isolated-vm` optional native build dynamically in `sandbox/run-script.ts`; keep that exception unless there is a static equivalent.

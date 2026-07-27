@@ -34,7 +34,7 @@ export function resolveSettingsLookupUserId(
     : session.userId;
 }
 
-function sessionMatchesMetadataOwner(
+export function sessionMatchesMetadataOwner(
   session: SettingsTokenPayload,
   ownerPlatform: string,
   ownerUserId: string

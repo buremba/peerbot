@@ -6,6 +6,7 @@ import {
 	slugToRuntimeConnectionId,
 } from "../../lobu/stores/connections-projection.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { restoreRedactedConfig } from "../../utils/connection-config-redaction.js";
 import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installations.js";
 import { PlatformAdapterConfigSchema } from "../routes/schemas/platform-config.js";
 import { isAdapterlessPlatform } from "./chat-instance-manager.js";
@@ -174,6 +175,63 @@ export async function getChatConnectionRow(
 	return rows[0] ?? null;
 }
 
+/**
+ * Unwind the two placeholder layers on an incoming BYO chat config, in order,
+ * before anything treats it as credentials.
+ *
+ * 1. RESTORE. Callers round-trip config read back from the (redacted)
+ *    connection read paths, so a `__LOBU_REDACTED__` here means "unchanged" —
+ *    take the stored value rather than persisting the placeholder. Chat
+ *    connectors are the ones declaring `format: "password"` (Slack/Discord bot
+ *    tokens), so without this an apply built from a redacted read would both
+ *    fail `validateProviderIdentity` and overwrite a live bot token.
+ *
+ * 2. RESOLVE. What the restore hands back is whatever is STORED — and for a BYO
+ *    chat connection that is a `secret://` REFERENCE, not plaintext. None of
+ *    the downstream consumers (`parseConfig`, `connectionMatches`,
+ *    `validateProviderIdentity`) resolve references, so an unresolved ref makes
+ *    an UNCHANGED re-apply look changed and makes `validateProviderIdentity`
+ *    authenticate with the literal `secret://…` URI.
+ *
+ * This is the sentinel bug one indirection out: that fix stopped a PLACEHOLDER
+ * being treated as a live credential, and a stored `secret://` ref is the same
+ * kind of placeholder. Order matters — resolving before restoring does nothing
+ * for a sentinel, so the placeholder would reach the consumers.
+ *
+ * `stableId` IS the runtime id resolution needs (the slug is derived from it),
+ * so this needs nothing that isn't already in hand at the call site: no
+ * validation is reordered to make it possible.
+ *
+ * Exported as the testable seam for that ordering — `upsertByoChatConnection`
+ * itself takes a `pg_advisory_lock` through `sql.reserve()`, which the test
+ * harness's pooled client does not service.
+ */
+export async function unwrapIncomingChatConfig(params: {
+	organizationId: string;
+	stableId: string;
+	incoming: Record<string, unknown>;
+	/** The stored row's config, or undefined when creating. */
+	stored: Record<string, unknown> | undefined;
+	resolveRefs: (
+		runtimeId: string,
+		config: PlatformAdapterConfig,
+	) => Promise<PlatformAdapterConfig>;
+}): Promise<Record<string, unknown>> {
+	// Nothing stored yet: the caller supplied real values, and there is no row
+	// to restore from or reference to resolve.
+	if (!params.stored) return params.incoming;
+
+	const restored = restoreRedactedConfig(
+		params.incoming,
+		params.stored,
+	) as PlatformAdapterConfig;
+
+	return (await orgContext.run(
+		{ organizationId: params.organizationId },
+		() => params.resolveRefs(params.stableId, restored),
+	)) as unknown as Record<string, unknown>;
+}
+
 export async function upsertByoChatConnection(
 	input: UpsertChatConnectionInput,
 ): Promise<{
@@ -208,10 +266,19 @@ export async function upsertByoChatConnection(
 			agent_id: string | null;
 		}>;
 
-		const config = parseConfig(input.platform, input.config);
 		const manager = requireManager();
 		const settings = { allowGroups: true, ...(input.settings ?? {}) };
 		const existing = existingRows[0];
+		const config = parseConfig(
+			input.platform,
+			await unwrapIncomingChatConfig({
+				organizationId: input.organizationId,
+				stableId: input.stableId,
+				incoming: input.config,
+				stored: existing?.config,
+				resolveRefs: (id, cfg) => manager.resolveConnectionConfig(id, cfg),
+			}),
+		);
 		if (!existing) {
 			const providerMetadata = await validateProviderIdentity(config);
 			await orgContext.run({ organizationId: input.organizationId }, () =>
@@ -318,60 +385,85 @@ export async function updateChatConnection(input: {
 	config?: Record<string, unknown>;
 	status?: string;
 }): Promise<void> {
-	const row = await getChatConnectionRow(
+	// Identity-only pre-read: resolves which connection this is (and therefore
+	// the lock key). Every value this function ACTS on is re-read under the lock
+	// below — nothing from this snapshot is trusted for the write.
+	const identity = await getChatConnectionRow(
 		input.organizationId,
 		input.connectionId,
 	);
-	if (!row) throw new Error("Chat connection not found");
-	// Managed installs own their credentials, but credential-free updates —
-	// pause/resume, rename — still apply to them.
-	if (row.credential_mode !== "byo" && input.config) {
-		throw new Error("Managed app credentials cannot be edited directly");
-	}
-	const runtimeId = slugToRuntimeConnectionId(row.slug);
-	const manager = requireManager();
-	if (input.config) {
-		const currentConfig = { ...(row.config ?? {}) };
-		delete currentConfig.settings;
-		delete currentConfig.chatMetadata;
-		const merged = {
-			...currentConfig,
-			...input.config,
-		} as PlatformAdapterConfig;
-		const resolved = await manager.resolveConnectionConfig(runtimeId, merged);
-		const config = parseConfig(row.connector_key, resolved);
-		const providerMetadata = await validateProviderIdentity(config);
-		await orgContext.run({ organizationId: input.organizationId }, () =>
-			manager.updateConnection(runtimeId, {
-				...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
-				config,
-				metadata: {
-					...providerMetadata,
-					...(input.displayName ? { teamName: input.displayName } : {}),
-				},
-			}),
+	if (!identity) throw new Error("Chat connection not found");
+	const runtimeId = slugToRuntimeConnectionId(identity.slug);
+
+	// Serialize on the same stable-chat lock `upsertByoChatConnection` uses, so
+	// a config edit and a concurrent apply/rotation of the SAME connection
+	// cannot interleave. Without it there is no serialization on this path at
+	// all, and the restore below would source a stale row.
+	return withStableChatLock(input.organizationId, runtimeId, async () => {
+		// Re-read INSIDE the lock: this is the row the write is actually based on.
+		const row = await getChatConnectionRow(
+			input.organizationId,
+			input.connectionId,
 		);
-	} else if (input.agentId !== undefined) {
-		// agentId-only update: no config change, so no restart is needed — the
-		// manager persists the new fallback agent and refreshes any warm
-		// in-memory instance in place.
-		await orgContext.run({ organizationId: input.organizationId }, () =>
-			manager.updateConnection(runtimeId, { agentId: input.agentId }),
-		);
-	}
-	if (input.status === "active") {
-		await manager.restartConnection(runtimeId);
-	} else if (input.status === "paused") {
-		await manager.stopConnection(runtimeId);
-	}
-	if (input.displayName !== undefined) {
-		const sql = getDb();
-		await sql`
-      UPDATE connections
-      SET display_name = ${input.displayName || row.connector_key}, updated_at = now()
-      WHERE id = ${row.id} AND organization_id = ${input.organizationId}
-    `;
-	}
+		if (!row) throw new Error("Chat connection not found");
+		// Managed installs own their credentials, but credential-free updates —
+		// pause/resume, rename — still apply to them.
+		if (row.credential_mode !== "byo" && input.config) {
+			throw new Error("Managed app credentials cannot be edited directly");
+		}
+		const manager = requireManager();
+		if (input.config) {
+			const currentConfig = { ...(row.config ?? {}) };
+			delete currentConfig.settings;
+			delete currentConfig.chatMetadata;
+			// Un-redact against the LOCKED row, not the caller's snapshot. A
+			// `__LOBU_REDACTED__` means "unchanged", so it must resolve to what is
+			// stored NOW — restoring from a stale read would write a pre-rotation
+			// token back over a newer one, silently rolling the rotation back.
+			// (This is why crud.ts hands us the RAW incoming config.)
+			const restored = restoreRedactedConfig(
+				input.config,
+				currentConfig,
+			) as Record<string, unknown>;
+			const merged = {
+				...currentConfig,
+				...restored,
+			} as PlatformAdapterConfig;
+			const resolved = await manager.resolveConnectionConfig(runtimeId, merged);
+			const config = parseConfig(row.connector_key, resolved);
+			const providerMetadata = await validateProviderIdentity(config);
+			await orgContext.run({ organizationId: input.organizationId }, () =>
+				manager.updateConnection(runtimeId, {
+					...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+					config,
+					metadata: {
+						...providerMetadata,
+						...(input.displayName ? { teamName: input.displayName } : {}),
+					},
+				}),
+			);
+		} else if (input.agentId !== undefined) {
+			// agentId-only update: no config change, so no restart is needed — the
+			// manager persists the new fallback agent and refreshes any warm
+			// in-memory instance in place.
+			await orgContext.run({ organizationId: input.organizationId }, () =>
+				manager.updateConnection(runtimeId, { agentId: input.agentId }),
+			);
+		}
+		if (input.status === "active") {
+			await manager.restartConnection(runtimeId);
+		} else if (input.status === "paused") {
+			await manager.stopConnection(runtimeId);
+		}
+		if (input.displayName !== undefined) {
+			const sql = getDb();
+			await sql`
+        UPDATE connections
+        SET display_name = ${input.displayName || row.connector_key}, updated_at = now()
+        WHERE id = ${row.id} AND organization_id = ${input.organizationId}
+      `;
+		}
+	});
 }
 
 export async function deleteChatConnection(

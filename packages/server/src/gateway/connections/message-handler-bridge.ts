@@ -751,6 +751,45 @@ export class MessageHandlerBridge {
       }
     }
 
+    // A group message routed via the connection-owner fallback has no chat-link
+    // Behavior, so its channel is absent from Behavior-backed visibility
+    // (history / ACL graph / search / notifications). Materialize the missing
+    // link so routing and visibility share one source of truth; later messages
+    // then route via the planner as `source:"subscription"`. Create-only, so it
+    // can never overwrite an explicit `/lobu link` that races it (decided under
+    // the advisory lock inside createChatBehavior — race-safe across replicas).
+    // Group channels only (DMs stay out of the bound set); hosted-preview
+    // placeholder agents are excluded. Slack passes only a real workspace `T…`
+    // (never enterprise `E…`); an unknown team is filled later by
+    // healSubscriptionTeam. Best-effort — a failure must never block the turn.
+    if (
+      resolved.source === "connection" &&
+      isGroup &&
+      !isPreview &&
+      behaviorSubscriptionService &&
+      this.connection.organizationId
+    ) {
+      const bindingTeamId =
+        platform !== "slack" || /^T[A-Z0-9]+$/i.test(teamId ?? "")
+          ? teamId
+          : undefined;
+      try {
+        await behaviorSubscriptionService.materializeConnectionFallbackLink(
+          this.connection.id,
+          this.connection.organizationId,
+          agentId,
+          platform,
+          channelId,
+          bindingTeamId
+        );
+      } catch (err) {
+        logger.debug(
+          { channelId, teamId, agentId, error: String(err) },
+          "Connection-fallback chat-link materialization failed (non-fatal)"
+        );
+      }
+    }
+
     // Durable transcript capture: persist this inbound message so
     // read_conversation can serve channel history from Postgres instead of the
     // throttled platform history API. Fire-and-forget + idempotent. thread_id is

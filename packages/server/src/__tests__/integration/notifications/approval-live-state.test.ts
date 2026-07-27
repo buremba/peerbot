@@ -94,14 +94,16 @@ describe("approval notification live state", () => {
 		expect(pending.items.find((item) => item.title === "Merge duplicates")).toEqual(
 			expect.objectContaining({
 				run_id: entityRunId,
-				approval_status: "pending",
-				approval_inline: true,
+				interaction_type: "approval",
+				interaction_status: "pending",
+				interaction_inline: true,
 			}),
 		);
 		expect(pending.items.find((item) => item.title === "Change Behavior")).toEqual(
 			expect.objectContaining({
-				approval_status: "pending",
-				approval_inline: undefined,
+				interaction_type: "approval",
+				interaction_status: "pending",
+				interaction_inline: undefined,
 			}),
 		);
 
@@ -120,8 +122,9 @@ describe("approval notification live state", () => {
 		expect(expired.items.find((item) => item.title === "Merge duplicates")).toEqual(
 			expect.objectContaining({
 				run_id: entityRunId,
-				approval_status: "expired",
-				approval_inline: true,
+				interaction_type: "approval",
+				interaction_status: "expired",
+				interaction_inline: true,
 			}),
 		);
 	});

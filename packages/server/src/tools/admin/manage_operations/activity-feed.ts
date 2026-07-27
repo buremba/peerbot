@@ -26,15 +26,26 @@ export type ActivityCard = {
 	notification_id?: number;
 	run_id?: number;
 	/**
-	 * Live approval state joined from the run behind an approval notification.
+	 * Kind of pending interaction behind this notification (events
+	 * `interaction_type` vocabulary — 'approval' today). Clients pick the UI
+	 * for the type; new interaction kinds extend this value, not the card shape.
 	 */
-	approval_status?: string;
+	interaction_type?: string;
 	/**
-	 * Server-side policy: this approval's action_key has a known-safe one-click
-	 * web executor (entity change kinds). Clients render inline Approve/Reject
-	 * only when true; other approval kinds keep their review-page CTA.
+	 * LIVE interaction state, resolved from the interaction's authoritative
+	 * per-type source — for 'approval' that is runs.approval_status
+	 * ('pending' | 'approved' | 'rejected'), NOT the proposal event's own
+	 * interaction_status, which stays 'pending' forever because the events
+	 * chain supersedes instead of mutating. A decided interaction therefore
+	 * stops rendering as actionable everywhere.
 	 */
-	approval_inline?: boolean;
+	interaction_status?: string;
+	/**
+	 * Server-side policy: this interaction can be completed inline from the
+	 * feed. For 'approval': the action_key has a known-safe one-click web
+	 * executor (entity change kinds); other kinds keep their review-page CTA.
+	 */
+	interaction_inline?: boolean;
 	member_run_ids?: number[];
 	connection_id?: number;
 	watcher_id?: number;
@@ -326,14 +337,22 @@ export async function listOrgActivity(opts: {
 					: n.resource_type === "run" && n.resource_id != null
 						? Number(n.resource_id)
 						: NaN;
-				const approvalStatus =
-					type === "action_approval_needed" &&
+				const interactionType =
+					typeof n.interaction_type === "string" && n.interaction_type !== ""
+						? n.interaction_type
+						: undefined;
+				// Per-type live-state resolution: 'approval' reads the run's state
+				// machine. A future interaction kind plugs its own source in here —
+				// the card contract (interaction_*) does not change.
+				const interactionStatus =
+					interactionType === "approval" &&
 					typeof n.approval_status === "string" &&
 					n.approval_status !== ""
 						? n.approval_status
 						: undefined;
-				const approvalInline =
-					approvalStatus != null &&
+				const interactionInline =
+					interactionType === "approval" &&
+					interactionStatus != null &&
 					(ENTITY_CHANGE_ACTION_KEYS as readonly string[]).includes(
 						String(n.approval_action_key ?? ""),
 					);
@@ -352,8 +371,9 @@ export async function listOrgActivity(opts: {
 					run_id: Number.isFinite(runIdFromResource)
 						? runIdFromResource
 						: undefined,
-					approval_status: approvalStatus,
-					approval_inline: approvalInline || undefined,
+					interaction_type: interactionStatus != null ? interactionType : undefined,
+					interaction_status: interactionStatus,
+					interaction_inline: interactionInline || undefined,
 					collapseKey: null,
 					itemsCollected: null,
 				});

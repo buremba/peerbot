@@ -3537,13 +3537,17 @@ export type ManageOperationsResponses = {
           notification_id?: number;
           run_id?: number;
           /**
-           * Live approval state ('pending' | 'approved' | 'rejected') joined from the run behind an approval notification.
+           * Kind of pending interaction behind this notification (events `interaction_type` vocabulary — 'approval' today).
            */
-          approval_status?: string;
+          interaction_type?: string;
           /**
-           * This approval supports one-click inline approve/reject.
+           * Live interaction state, from the interaction's authoritative per-type source. For 'approval': 'pending' | 'approved' | 'rejected' (the run's state machine).
            */
-          approval_inline?: boolean;
+          interaction_status?: string;
+          /**
+           * This interaction can be completed inline from the feed.
+           */
+          interaction_inline?: boolean;
           member_run_ids?: Array<number>;
           connection_id?: number;
           behavior_id?: number;

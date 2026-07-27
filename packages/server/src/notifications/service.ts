@@ -383,6 +383,13 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
+      -- Legacy approval rows (resource_type='run') have no proposal event but
+      -- still resolve their run below — ar only ever matches approval
+      -- notifications, so a resolved run implies the 'approval' kind.
+      COALESCE(
+        pe.interaction_type,
+        CASE WHEN ar.id IS NOT NULL THEN 'approval' END
+      ) AS interaction_type,
       ar.id AS approval_run_id,
       ar.approval_status AS approval_status,
       ar.action_key AS approval_action_key,

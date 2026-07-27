@@ -9,6 +9,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { invalidateMembershipRoleCache } from '../../../workspace/multi-tenant';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -517,6 +518,17 @@ describe('MCP Authentication', () => {
     });
 
     it('revokes an MCP client only within the current organization', async () => {
+      // Revoking is owner/admin only (see client-routes.ts withOrgAdmin); the
+      // shared fixture user joins as a plain 'member'. This test is about ORG
+      // SCOPING, not authorization, so elevate the role here rather than let a
+      // 403 mask what it actually asserts. Authorization has its own coverage
+      // in lobu/__tests__/client-routes-revoke.test.ts.
+      await getTestDb()`
+        UPDATE "member" SET role = 'owner'
+        WHERE "userId" = ${user.id} AND "organizationId" = ${org.id}
+      `;
+      invalidateMembershipRoleCache(org.id, user.id);
+
       const scopedClient = await createTestOAuthClient({
         client_name: 'Scoped Revoke Client',
       });

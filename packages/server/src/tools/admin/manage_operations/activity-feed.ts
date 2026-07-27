@@ -68,7 +68,6 @@ function resolveNotifHref(
 	n: {
 		type?: unknown;
 		resource_url?: unknown;
-		resource_type?: unknown;
 		resource_id?: unknown;
 	},
 ): string | null {
@@ -103,14 +102,6 @@ function resolveNotifHref(
 	}
 	if (n.type === "invitation_received" && typeof n.resource_id === "string") {
 		return `/auth/accept-invitation?invitationId=${encodeURIComponent(n.resource_id.trim())}`;
-	}
-	if (n.resource_type === "run" && n.resource_id) {
-		const runId = Number(n.resource_id);
-		if (Number.isFinite(runId) && runId > 0) {
-			return (
-				buildResourcePermalink(ownerSlug, { kind: "run", runId }) ?? null
-			);
-		}
 	}
 	if (
 		n.type === "connection_permission_request" ||
@@ -332,11 +323,6 @@ export async function listOrgActivity(opts: {
 				const atMs = new Date(created).getTime();
 				const approvalRunId =
 					n.approval_run_id != null ? Number(n.approval_run_id) : NaN;
-				const runIdFromResource = Number.isFinite(approvalRunId)
-					? approvalRunId
-					: n.resource_type === "run" && n.resource_id != null
-						? Number(n.resource_id)
-						: NaN;
 				const interactionType =
 					typeof n.interaction_type === "string" && n.interaction_type !== ""
 						? n.interaction_type
@@ -368,9 +354,7 @@ export async function listOrgActivity(opts: {
 					href: resolveNotifHref(opts.ownerSlug, n),
 					unread: n.is_read === false || n.is_read === "f",
 					notification_id: Number(n.id),
-					run_id: Number.isFinite(runIdFromResource)
-						? runIdFromResource
-						: undefined,
+					run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
 					interaction_type: interactionStatus != null ? interactionType : undefined,
 					interaction_status: interactionStatus,
 					interaction_inline: interactionInline || undefined,

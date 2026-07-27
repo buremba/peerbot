@@ -383,13 +383,7 @@ export async function listNotifications(opts: {
       e.metadata->>'resource_type' AS resource_type,
       e.metadata->>'resource_id' AS resource_id,
       e.metadata->>'resource_url' AS resource_url,
-      -- Legacy approval rows (resource_type='run') have no proposal event but
-      -- still resolve their run below — ar only ever matches approval
-      -- notifications, so a resolved run implies the 'approval' kind.
-      COALESCE(
-        pe.interaction_type,
-        CASE WHEN ar.id IS NOT NULL THEN 'approval' END
-      ) AS interaction_type,
+      pe.interaction_type AS interaction_type,
       ar.id AS approval_run_id,
       ar.approval_status AS approval_status,
       ar.action_key AS approval_action_key,
@@ -408,15 +402,7 @@ export async function listNotifications(opts: {
      AND pe.interaction_type = 'approval'
     LEFT JOIN runs ar
       ON ar.organization_id = e.organization_id
-     AND ar.id = COALESCE(
-        pe.run_id,
-        -- Legacy rows (resource_type='run') stored the run id directly.
-        CASE
-          WHEN COALESCE(e.metadata->>'notification_type', 'generic') = 'action_approval_needed'
-           AND e.metadata->>'resource_type' = 'run'
-           AND e.metadata->>'resource_id' ~ '^[0-9]+$'
-          THEN (e.metadata->>'resource_id')::bigint
-        END)
+     AND ar.id = pe.run_id
     WHERE e.organization_id = ${opts.organizationId}
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})

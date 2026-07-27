@@ -8,10 +8,7 @@ import {
 	stripPlatformPrefix,
 } from "../channels/bound-channels.js";
 import { buildApiConversationId } from "./api-conversation-id.js";
-import {
-	listConversations,
-	webThreadIdFromConversationId,
-} from "./conversations-store.js";
+import { listConversations } from "./conversations-store.js";
 import { paginateSessionMessages } from "./session-message-page.js";
 import { readSnapshotJsonl } from "./transcript-snapshot.js";
 
@@ -201,14 +198,10 @@ export async function listAgentThreads(args: {
 		const at = row.lastActivityAt.getTime();
 		const createdAt = row.createdAt.getTime();
 		if (row.kind === "owned") {
-			const threadId = webThreadIdFromConversationId(
-				row.conversationId,
-				agentId,
-				userId,
-				organizationId,
-			);
-			// Prefix-only "default thread" ids carry no routable thread id and were
-			// never listed by the legacy path either — skip them.
+			// Routable id is STORED (`thread_id`), never re-parsed out of the id
+			// string. A row without one carries no routable thread id — the
+			// prefix-only "default thread" case — and was never listed; skip it.
+			const threadId = row.threadId;
 			if (!threadId || !isSafeThreadId(threadId) || byKey.has(threadId)) {
 				continue;
 			}

@@ -43,6 +43,12 @@ export interface ConversationUpsert {
 	agentId: string;
 	platform: string;
 	conversationId: string;
+	/**
+	 * Routable id, when the origin has one distinct from `conversationId` (a web
+	 * thread's suffix). Omit/null when the conversation is routed by its
+	 * `conversationId` — readers resolve `threadId ?? conversationId`.
+	 */
+	threadId?: string | null;
 	kind: ConversationKind;
 	userId?: string | null;
 	title?: string | null;
@@ -68,11 +74,11 @@ export async function upsertConversation(
 		const sql = getDb();
 		await sql`
       INSERT INTO public.conversations (
-        organization_id, agent_id, platform, conversation_id,
+        organization_id, agent_id, platform, conversation_id, thread_id,
         kind, user_id, title, last_activity_at
       ) VALUES (
         ${row.organizationId}, ${row.agentId}, ${row.platform},
-        ${row.conversationId}, ${row.kind},
+        ${row.conversationId}, ${row.threadId ?? null}, ${row.kind},
         ${row.userId ?? null}, ${row.title ?? null}, ${row.lastActivityAt}
       )
       ON CONFLICT (organization_id, agent_id, platform, conversation_id)
@@ -80,9 +86,10 @@ export async function upsertConversation(
         last_activity_at = GREATEST(
           public.conversations.last_activity_at, EXCLUDED.last_activity_at
         ),
-        -- keep the earliest known non-null title/user; don't clobber with null
+        -- keep the earliest known non-null title/user/thread; don't clobber with null
         title = COALESCE(public.conversations.title, EXCLUDED.title),
         user_id = COALESCE(public.conversations.user_id, EXCLUDED.user_id),
+        thread_id = COALESCE(public.conversations.thread_id, EXCLUDED.thread_id),
         updated_at = now()
     `;
 	} catch (err) {
@@ -98,31 +105,16 @@ export async function upsertConversation(
 	}
 }
 
-/**
- * Extract the web thread id from an owned conversation's packed id, given the
- * row's OWN (agentId, userId, organizationId) columns. This is a deterministic
- * prefix strip from known columns — NOT the fuzzy reverse-parse the old
- * `extractThreadIdFromConversationId` heuristic did against the raw id string.
- *
- * Web ids are `{agentId}_{userId}_{organizationId}_{threadId}`. Returns null for
- * the prefix-only "default thread" id (no `{threadId}` suffix), which the
- * sidebar does not list — matching legacy behavior.
- */
-export function webThreadIdFromConversationId(
-	conversationId: string,
-	agentId: string,
-	userId: string,
-	organizationId: string,
-): string | null {
-	const prefix = `${agentId}_${userId}_${organizationId}_`;
-	if (!conversationId.startsWith(prefix)) return null;
-	const suffix = conversationId.slice(prefix.length);
-	return suffix.length > 0 ? suffix : null;
-}
-
 export interface ConversationListRow {
 	platform: string;
 	conversationId: string;
+	/**
+	 * Routable id for this conversation, stored at write time by the origin that
+	 * knows it. NULL means "route by `conversationId`" — so readers resolve the
+	 * route as `threadId ?? conversationId` without parsing the id string or
+	 * branching on `kind`.
+	 */
+	threadId: string | null;
 	kind: ConversationKind;
 	userId: string | null;
 	title: string | null;
@@ -146,13 +138,14 @@ export async function getConversation(args: {
 	const rows = await sql<{
 		platform: string;
 		conversation_id: string;
+		thread_id: string | null;
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
-    SELECT platform, conversation_id, kind, user_id, title,
+    SELECT platform, conversation_id, thread_id, kind, user_id, title,
            last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
@@ -167,6 +160,7 @@ export async function getConversation(args: {
 	return {
 		platform: r.platform,
 		conversationId: r.conversation_id,
+		threadId: r.thread_id,
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
@@ -255,13 +249,14 @@ export async function listConversations(args: {
 	const rows = await sql<{
 		platform: string;
 		conversation_id: string;
+		thread_id: string | null;
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
-    SELECT platform, conversation_id, kind, user_id, title,
+    SELECT platform, conversation_id, thread_id, kind, user_id, title,
            last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
@@ -277,6 +272,7 @@ export async function listConversations(args: {
 	return rows.map((r) => ({
 		platform: r.platform,
 		conversationId: r.conversation_id,
+		threadId: r.thread_id,
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,

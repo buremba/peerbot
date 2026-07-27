@@ -29,7 +29,6 @@ import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import { buildApiConversationId } from "../services/api-conversation-id.js";
-import { webThreadIdFromConversationId } from "../services/conversations-store.js";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
@@ -972,23 +971,4 @@ describe("agent history conversation id helpers", () => {
 		);
 	});
 
-	test("webThreadIdFromConversationId strips the known-column prefix", () => {
-		expect(
-			webThreadIdFromConversationId(
-				"owletto-default_auth-user-1_org__abc_d108bc64-64f",
-				"owletto-default",
-				"auth-user-1",
-				"org__abc",
-			),
-		).toBe("d108bc64-64f");
-		// prefix-only "default thread" id → no routable thread id
-		expect(
-			webThreadIdFromConversationId(
-				"owletto-default_auth-user-1_org__abc",
-				"owletto-default",
-				"auth-user-1",
-				"org__abc",
-			),
-		).toBeNull();
-	});
 });

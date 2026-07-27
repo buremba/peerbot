@@ -2,10 +2,13 @@
  * Repro probe: one OAuth registration, tokens belonging to TWO different users.
  *
  * RFC 7591 dynamic registration is per-client, not per-user — a single
- * `oauth_clients` row can hold tokens for several people in the same org. The
- * revoke path picks ONE owner (LIMIT 1 over that client's org tokens) but
- * `revokeClientForOrganization` revokes EVERY org token for the client, so the
- * blast radius is wider than the identity the decision was made on.
+ * `oauth_clients` row can hold tokens for several people in the same org.
+ *
+ * Two things have to hold, and both used to be broken:
+ *   - revocation is scoped to the resolved owner, so revoking one person's
+ *     grant does not disconnect bystanders sharing the registration
+ *   - the LISTED owner and the REVOKED owner are the same person, i.e. both
+ *     sides pick the same token by the same ordering
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
@@ -59,14 +62,23 @@ async function seed(): Promise<void> {
   `;
 
   // Alice and Bob each authorized that same registration.
-  for (const uid of [ALICE, BOB]) {
+  // ALICE's token is the NEWEST while BOB sorts lexicographically LAST. That
+  // split is deliberate: a MAX(user_id) owner pick lands on Bob and a
+  // newest-token pick lands on Alice, so any divergence between the listing
+  // and the revoke path shows up as a concrete wrong-person outcome rather
+  // than passing by coincidence.
+  for (const [uid, ageMinutes] of [
+    [BOB, 10],
+    [ALICE, 1],
+  ] as const) {
     await sql`
       INSERT INTO oauth_tokens (
         id, token_type, token_hash, client_id, user_id, organization_id,
         scope, expires_at, created_at
       ) VALUES (
         ${`tok_${uid}`}, 'access', ${`hash_${uid}`}, ${SHARED_CLIENT}, ${uid}, ${ORG},
-        'mcp:read', now() + interval '1 hour', now()
+        'mcp:read', now() + interval '1 hour',
+        now() - (${ageMinutes} * interval '1 minute')
       )
       ON CONFLICT (id) DO NOTHING
     `;
@@ -99,10 +111,34 @@ describe('shared OAuth registration', () => {
     });
     expect(res.status).toBe(200);
 
-    // The route resolves the owner from the most recent org token (Bob, seeded
-    // last) and revokes only that person's grants. Before the user scoping
-    // both rows were revoked, so Alice lost access to an app she shares.
-    expect(await liveTokenUsers()).toEqual([ALICE]);
+    // The route resolves the owner from the most recent org token (ALICE) and
+    // revokes only that person's grants. Before the user scoping both rows
+    // were revoked, so Bob lost access to an app he merely shares.
+    expect(await liveTokenUsers()).toEqual([BOB]);
+  });
+
+  test('the listed owner is the owner that gets revoked', async () => {
+    // BOB sorts lexicographically LAST but ALICE's token is NEWEST. A
+    // MAX(user_id) listing would name Bob while a newest-token revoke hits
+    // Alice — the row you click would not be the grant you kill. Both sides
+    // must pick the same token.
+    const routes = await importClientRoutes();
+
+    const listRes = await routes.request('/');
+    expect(listRes.status).toBe(200);
+    const listed = (await listRes.json()) as {
+      clients: Array<{ id: string; linkedUserEmail: string | null }>;
+    };
+    const row = listed.clients.find((c) => c.id === SHARED_CLIENT);
+    expect(row).toBeDefined();
+
+    await routes.request(`/mcp/${SHARED_CLIENT}`, { method: 'DELETE' });
+
+    // Whoever the list named is exactly who lost access.
+    const stillLive = await liveTokenUsers();
+    const revokedUser = [ALICE, BOB].find((u) => !stillLive.includes(u));
+    const expectedEmail = revokedUser === ALICE ? 'alice@test' : 'bob@test';
+    expect(row?.linkedUserEmail).toBe(expectedEmail);
   });
 
   test('scope=all also stays within the resolved owner', async () => {
@@ -111,6 +147,6 @@ describe('shared OAuth registration', () => {
       method: 'DELETE',
     });
     expect(res.status).toBe(200);
-    expect(await liveTokenUsers()).toEqual([ALICE]);
+    expect(await liveTokenUsers()).toEqual([BOB]);
   });
 });

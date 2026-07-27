@@ -321,16 +321,30 @@ export class OAuthClientsStore {
       FROM oauth_clients oc
       INNER JOIN LATERAL (
         SELECT
-          MAX(u.name) AS user_name,
-          MAX(u.email) AS user_email,
-          MAX(ot.user_id) AS token_user_id,
+          -- Owner identity must come from ONE token, picked the SAME way the
+          -- revoke path picks it (newest token for this client in this org).
+          -- Independent MAX() aggregates would let a shared registration
+          -- display one person's name, another's email, and revoke a third —
+          -- so the row you click would not be the grant you kill.
+          owner.user_name,
+          owner.user_email,
+          owner.token_user_id,
           COUNT(*) FILTER (
             WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
           )::int AS active_token_count
         FROM oauth_tokens ot
-        LEFT JOIN "user" u ON u.id = ot.user_id
+        LEFT JOIN LATERAL (
+          SELECT u2.name AS user_name, u2.email AS user_email, ot2.user_id AS token_user_id
+          FROM oauth_tokens ot2
+          LEFT JOIN "user" u2 ON u2.id = ot2.user_id
+          WHERE ot2.client_id = oc.id
+            AND ot2.organization_id = ${organizationId}
+          ORDER BY ot2.created_at DESC, ot2.id DESC
+          LIMIT 1
+        ) owner ON true
         WHERE ot.client_id = oc.id
           AND ot.organization_id = ${organizationId}
+        GROUP BY owner.user_name, owner.user_email, owner.token_user_id
       ) tok_agg ON true
       WHERE oc.organization_id = ${organizationId}
          OR EXISTS (

@@ -1045,10 +1045,23 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     }
 
     await recordMcpClientActivity(c.env, session.authCtx, req);
-    // No persist here: the update-only refresh at the top of this branch
-    // already wrote last_accessed_at. An upsert at this point would re-INSERT
-    // a row deleted by a revoke that committed mid-request, resurrecting the
-    // session the refresh was there to catch.
+
+    // `session.authCtx` may have been UPGRADED above (anonymous → authenticated,
+    // or a fresh org/role), so the row written by the refresh at the top of this
+    // branch is now stale — another replica recovering this session would use
+    // the old binding. Persist the upgrade, but update-only: an upsert here
+    // would re-INSERT a row deleted by a revoke that committed mid-request,
+    // resurrecting exactly the session the refresh exists to catch.
+    if (
+      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
+    ) {
+      clearSession();
+      return buildJsonRpcErrorResponse(
+        'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+        null,
+        404
+      );
+    }
 
     // Anonymous root /mcp session: any follow-up GET or tool call must upgrade to auth.
     if (!session.authCtx.organizationId && !session.authCtx.isAuthenticated) {

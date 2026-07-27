@@ -340,7 +340,10 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	        FROM oauth_tokens ot
 	        WHERE ot.client_id = oc.id
 	          AND ot.organization_id = ${organizationId}
-	        ORDER BY ot.created_at DESC
+	        -- Same ordering as listClientsByOrganization's owner pick (id breaks
+	        -- created_at ties). If these two diverge, the page shows one owner
+	        -- and Revoke kills a different one's grant.
+	        ORDER BY ot.created_at DESC, ot.id DESC
 	        LIMIT 1
 	      ) org_token ON true
 	      WHERE oc.id = ${clientId}

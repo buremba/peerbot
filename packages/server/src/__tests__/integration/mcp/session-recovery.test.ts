@@ -106,6 +106,36 @@ describe('MCP session recovery', () => {
     expect(body.result?.tools?.length).toBeGreaterThan(0);
   });
 
+  it('persists an anonymous → authenticated upgrade', async () => {
+    // The reuse path refreshes the row BEFORE re-resolving auth, then upgrades
+    // `session.authCtx` IN PLACE (isAuthenticated, userId, clientId, role).
+    // Without a write after that upgrade the row keeps the anonymous binding,
+    // and a replica recovering this session enforces the stale identity — the
+    // upgraded user/client binding silently doesn't cross pods.
+    //
+    // A public workspace is the one place an anonymous session legitimately
+    // exists and can later present a token on the same session id.
+    const sessionId = await initSession({ orgSlug: publicOrg.slug });
+
+    const anonRow = (await getTestDb()`
+      SELECT is_authenticated FROM mcp_sessions WHERE session_id = ${sessionId}
+    `)[0] as { is_authenticated: boolean } | undefined;
+    expect(anonRow?.is_authenticated).toBe(false);
+
+    const { token } = await createTestAccessToken(user.id, publicOrg.id, client.client_id);
+    const res = await toolsList(sessionId, { token, orgSlug: publicOrg.slug });
+    expect(res.status).toBe(200);
+
+    const rows = await getTestDb()`
+      SELECT user_id, is_authenticated
+      FROM mcp_sessions WHERE session_id = ${sessionId}
+    `;
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as { user_id: string | null; is_authenticated: boolean };
+    expect(row.is_authenticated).toBe(true);
+    expect(row.user_id).toBe(user.id);
+  });
+
   it('rejects a live local session whose persisted row was deleted by another replica', async () => {
     const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
     const sessionId = await initSession({ token, orgSlug: org.slug });

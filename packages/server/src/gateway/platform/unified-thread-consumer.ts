@@ -5,7 +5,6 @@
  */
 
 import { createChildSpan, createLogger, type GuardrailRegistry } from "@lobu/core";
-import type { Env } from "../../index.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { readPlatformMetadata } from "../connections/platform-metadata.js";
@@ -19,10 +18,8 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
-import { generateSuggestions } from "../suggestions/generate-suggestions.js";
 import {
   finalizeTurnSuggestions,
-  persistSuggestion,
   readCurrentSuggestion,
 } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
@@ -284,58 +281,6 @@ export class UnifiedThreadResponseConsumer {
   }
 
   /**
-   * Derive follow-up chips for a turn the agent ended without calling
-   * `suggest_actions`, and persist them exactly as the tool would have.
-   *
-   * Delivery is the `complete`-payload embed ONLY (the caller awaits this
-   * method before rendering the terminal row, so the just-persisted set is
-   * what handleCompletion embeds). Deliberately NO interaction card: this path
-   * runs only for api rows, the SPA closes its EventSource as soon as it
-   * handles `complete`, so an owner-gated card enqueued here would find no SSE
-   * owner on any pod and churn its whole retry budget into the failed lane —
-   * for chips the embed already delivered.
-   *
-   * Skipped for headless sources: no user is watching a watcher/scheduled
-   * run's chip rail, so a model call would be pure spend.
-   *
-   * Best-effort by construction: every failure mode (unconfigured key, model
-   * error, unusable output) resolves to "no chips", which is exactly the state
-   * the turn was already in. Nothing here may throw into terminal delivery.
-   */
-  private async generateFallbackSuggestions(
-    data: ThreadResponsePayload,
-    organizationId: string,
-    turnRunId: number | null
-  ): Promise<void> {
-    const source =
-      typeof data.platformMetadata?.source === "string"
-        ? data.platformMetadata.source
-        : undefined;
-    if (source && HEADLESS_SOURCES.has(source)) return;
-    const replyText = typeof data.finalText === "string" ? data.finalText : "";
-    if (!replyText) return;
-
-    const prompts = await generateSuggestions(
-      replyText,
-      process.env as unknown as Env
-    );
-    if (prompts.length === 0) return;
-
-    // Persist with this turn's message id AND run id — identical lifecycle to
-    // an agent-published set: the next turn's finalize sees a set owned by an
-    // earlier run and clears it, and persistSuggestion's own ordering guard
-    // (keyed on this runId) refuses to overwrite a set a LATER run published
-    // while our model call was in flight.
-    await persistSuggestion({
-      organizationId,
-      conversationId: data.conversationId,
-      prompts,
-      turnMessageId: data.messageId,
-      runId: turnRunId,
-    });
-  }
-
-  /**
    * Deliver a fanned-out CHAT-PLATFORM interaction card on the pod that owns
    * the connection's bridge.
    *
@@ -468,7 +413,7 @@ export class UnifiedThreadResponseConsumer {
           : undefined);
       if (organizationId) {
         try {
-          const { published, turnRunId } = await finalizeTurnSuggestions({
+          await finalizeTurnSuggestions({
             organizationId,
             conversationId: data.conversationId,
             turnMessageIds: [
@@ -476,22 +421,6 @@ export class UnifiedThreadResponseConsumer {
               ...(data.processedMessageIds ?? []),
             ],
           });
-          // The agent skipped `suggest_actions` (it does on ~2 of 3 turns, and
-          // prompt wording did not move that) — derive chips from the reply it
-          // just gave so the user still has a next step. Runs AFTER finalize so
-          // an agent-published set always wins, and awaited so the generated set
-          // is persisted before the renderer embeds the current set on
-          // `complete`. `turnRunId` (resolved inside finalize's lock) lets the
-          // persist refuse to clobber a set a LATER run publishes while the
-          // model call is in flight. Unconfigured or failing generation returns
-          // [] and the turn simply ends chipless, as it did before.
-          if (!published) {
-            await this.generateFallbackSuggestions(
-              data,
-              organizationId,
-              turnRunId
-            );
-          }
         } catch (err) {
           // Never let suggestion finalization break terminal delivery.
           logger.warn(

@@ -28,8 +28,8 @@
 2. Reproduce the bug (red) before fixing it. Fix, then prove green.
 3. Test: `make test-unit` (no DB) / `make test-integration` (needs `DATABASE_URL` with pgvector). One file: `bun test <path>`, or `cd packages/server && bunx vitest run <path>` for vitest suites.
 4. `make pre-pr` — build, typecheck, knip, lint, exposed-surface naming.
-5. `make review-fix` on the settled diff, verify its diff, commit.
-6. Stage by explicit path, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list.
+5. `make review-fix` on the settled diff and verify what it changed — it edits the working tree, so re-read the files before trusting them.
+6. Stage by explicit path (`git add -- <paths>`, never `-A`), commit, then confirm `git diff --name-only origin/main...HEAD` is exactly your intended file list. Extra files = stop.
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title, e.g. `fix(server): …`).
 8. `make review` **once** on the settled HEAD. It posts the `pi-review` status, which is a REQUIRED check.
 9. Merge squash once CI is green: `gh pr merge <n> --squash --admin`. Never `--admin` past a check that has not reported.

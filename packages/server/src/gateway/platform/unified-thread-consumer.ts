@@ -23,6 +23,7 @@ import {
   finalizeTurnSuggestions,
   persistSuggestion,
   readCurrentSuggestion,
+  readTurnRunId,
 } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
@@ -326,6 +327,19 @@ export class UnifiedThreadResponseConsumer {
         typeof data.finalText === "string" ? data.finalText : "";
       if (!replyText) return;
 
+      // This turn's run id, resolved the same way finalize does. Enrichment
+      // decides to publish OUTSIDE persistSuggestion's advisory lock and only
+      // after a model call that can take up to 15s, so a later turn's
+      // suggest_actions set can land first. Stamping our run id lets
+      // persistSuggestion's ordering guard reject this stale enrichment instead
+      // of clobbering the newer set (the guard fires only when both sides carry
+      // a run id).
+      const runId = await readTurnRunId(
+        organizationId,
+        data.conversationId,
+        turnMessageIds
+      );
+
       const prompts = await generateSuggestFollowups(replyText);
       if (prompts.length === 0) return;
 
@@ -335,7 +349,7 @@ export class UnifiedThreadResponseConsumer {
         prompts,
         // Stamp the completing turn so the next finalize clears this set.
         turnMessageId: data.messageId,
-        runId: null,
+        runId,
       });
 
       await this.interactionService?.postSuggestion(
@@ -619,7 +633,11 @@ export class UnifiedThreadResponseConsumer {
               const organizationId =
                 data.organizationId ?? md.organizationId;
               if (organizationId) {
-                await this.maybeEnrichSuggestFollowups(
+                // Fire-and-forget: chips are delivered out-of-band via
+                // interactionService.postSuggestion, not through the completion
+                // payload, so terminal delivery must not wait on the up-to-15s
+                // model call + DB write. Errors are caught inside the method.
+                void this.maybeEnrichSuggestFollowups(
                   data,
                   organizationId,
                   agentId

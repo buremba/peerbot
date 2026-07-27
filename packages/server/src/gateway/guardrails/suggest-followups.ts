@@ -25,7 +25,6 @@ import {
   getErrorMessage,
   sanitizeSuggestionPrompts,
   type Guardrail,
-  type OutputGuardrailContext,
   type SuggestedPrompt,
 } from "@lobu/core";
 
@@ -88,7 +87,7 @@ export function createSuggestFollowupsGuardrail(): Guardrail<"output"> {
   return {
     name: SUGGEST_FOLLOWUPS_NAME,
     stage: "output",
-    async run(_ctx: OutputGuardrailContext) {
+    async run() {
       return { tripped: false };
     },
   };

@@ -2,6 +2,13 @@
 
 Read root `AGENTS.md` first. This package owns the gateway, auth, connections, feeds, orchestration, connector operations, guardrails, Slackbot MCP integration, and embedded runtime.
 
+## Package-specific traps
+Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
+- This package is **biome-excluded**. Never run biome on it — edit surgically, matching each file's existing style. CI will not catch the reflow.
+- The DB client sets `fetch_types: false`, so a raw JS array bound as a parameter always fails. CI enforces this via `scripts/check-raw-array-params.mjs`; see GOTCHAS "DB & SQL" for the safe binding forms before reaching for a workaround.
+- Hoisted `vi.mock()` silently fails in the integration suite (shared module registry). Use `vi.resetModules()` + `vi.doMock()` + dynamic import, and verify by co-running sibling test files.
+- Dropping a column from a queryable table is a two-phase change across two releases — `QUERYABLE_SCHEMA` emits explicit column lists.
+
 ## Boundaries and vocabulary
 - Connections are rows, not processes. Agents bind to connections/channels; replicas hydrate connection instances on demand from DB rows and must not assume boot warm-start.
 - Connectors collect external data into feeds/events; chat platforms deliver conversations/messages. Do not blur connector sync with chat transport.
@@ -42,7 +49,8 @@ Read root `AGENTS.md` first. This package owns the gateway, auth, connections, f
 ## Local dev and validation
 - Prereqs: Bun, supported Node per package engines, and Postgres+pgvector via `DATABASE_URL`. `./scripts/setup-dev.sh` provisions local Postgres where needed.
 - `make dev` uses shared brew Postgres with one DB per branch. `LOBU_EMBEDDED=1 make dev` / `make dev-embedded` uses embedded per-worktree Postgres.
-- Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs.
+- Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs. Read your worktree's `PORT` from `.env.local` — it is not 8787.
+- Smoke a booted server: `curl -s localhost:$PORT/api/health` (readiness is `/health/ready`). The SPA is pathless at `:$PORT`; the agent API is under `:$PORT/lobu`. "It booted" is not "it works" — drive the path you changed.
 - Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
 
 ## Slackbot MCP integration

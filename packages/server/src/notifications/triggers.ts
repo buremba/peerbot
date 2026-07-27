@@ -40,22 +40,50 @@ export type ActionApprovalDetails =
 	| EntityChangeApprovalDetails;
 
 /**
- * Escape user/agent-controlled text before it lands in Slack mrkdwn (and the
- * in-app Markdown body — both render HTML entities). Without this, a proposed
- * field value containing `<!channel>` pings the room from inside a trusted
- * approval card, and `<https://evil|Review in Lobu>` spoofs the review link.
+ * Escape user/agent-controlled text before it lands in Slack mrkdwn. Without
+ * this, a proposed field value containing `<!channel>` pings the room from
+ * inside a trusted approval card, and `<https://evil|Review in Lobu>` spoofs
+ * the review link.
+ *
+ * Slack-only: the persisted in-app body is Markdown source, not Slack mrkdwn.
+ * Storing Slack's HTML entities there couples plain-text consumers to Slack
+ * escaping. The Markdown emitter neutralises its own injection vectors via
+ * `escapeMarkdownText`.
  */
-function escapeNotificationText(value: string): string {
+function escapeSlackText(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;");
 }
 
+/**
+ * Escape user/agent-controlled text for the in-app Markdown body. Narrow by
+ * design — it must neutralise forged chrome without littering ordinary prose,
+ * because these strings are entity names and JSON values full of brackets,
+ * braces and hyphens:
+ *  - `*`/`_`/`` ` `` — emphasis marks that would let injected text impersonate
+ *    the card's own bolding.
+ *  - A closing `]` before `(` or `[` — enough to break inline/reference links,
+ *    including labels with nested or escaped brackets. A bare `[ 886 ]` is
+ *    inert in Markdown and stays untouched.
+ *  - Leading Markdown block marks — reasons render as their own paragraph, so
+ *    headings, quotes, and lists must remain literal text there.
+ */
+function escapeMarkdownText(value: string): string {
+	return value
+		.replace(/([\\`*_])/g, "\\$1")
+		.replace(/\](?=[([])/g, "\\]")
+		.replace(/^([ \t]{0,3})(-{3,}|={3,})(?=\s*$)/gm, "$1\\$2")
+		.replace(/^([ \t]{0,3})(?=[#>+-](?:\s|$))/gm, "$1\\")
+		.replace(/^([ \t]{0,3}\d{1,9})([.)])(?=\s|$)/gm, "$1\\$2");
+}
+
+/** Raw display text; each emitter applies its own escaping. */
 function displayNotificationValue(value: unknown): string {
 	if (value === undefined || value === null || value === "") return "Not set";
-	if (typeof value === "string") return escapeNotificationText(value);
-	return escapeNotificationText(JSON.stringify(value, null, 2));
+	if (typeof value === "string") return value;
+	return JSON.stringify(value, null, 2);
 }
 
 function truncateNotificationLine(value: string): string {
@@ -93,7 +121,7 @@ function formatReviewLink(url: string): string {
 }
 
 function formatCardLink(label: string, url: string): string {
-	return `<${url}|${escapeNotificationText(label.replace(/[<>|]/g, ""))}>`;
+	return `<${url}|${escapeSlackText(label.replace(/[<>|]/g, ""))}>`;
 }
 
 function compactDiffLine(
@@ -115,9 +143,7 @@ function formatWhyApprovalNeeded(reason: string | null | undefined): string {
 	const fallback =
 		"This change needs a human approval before it is applied.";
 	if (!reason) return fallback;
-	return escapeNotificationText(
-		reason.replace(/^Watcher proposes updating /i, "Field is protected: "),
-	);
+	return reason.replace(/^Watcher proposes updating /i, "Field is protected: ");
 }
 
 export function formatActionApprovalTitle(
@@ -145,9 +171,9 @@ export function formatActionApprovalTitle(
 
 /**
  * Format-neutral content of an approval card, computed ONCE for both surfaces
- * (in-app Markdown body and Slack mrkdwn card): escaping, truncation, labels,
- * diff lines, and the "why" sentence live here; the two emitters below only
- * decide bolding, link syntax, and blank-line placement.
+ * (in-app Markdown body and Slack mrkdwn card): truncation, labels, diff lines,
+ * and the "why" sentence live here. Each emitter applies the escaping required
+ * by its own markup syntax.
  */
 interface ApprovalRenderModel {
 	requestedBy: string | null;
@@ -169,9 +195,7 @@ function buildApprovalRenderModel(
 	details: ActionApprovalDetails,
 ): ApprovalRenderModel {
 	const base = {
-		requestedBy: details.actorLabel
-			? escapeNotificationText(details.actorLabel)
-			: null,
+		requestedBy: details.actorLabel ?? null,
 		entityName: details.entityName ?? null,
 		entityUrl: details.entityUrl ?? null,
 		entityId: details.entityId ?? null,
@@ -203,7 +227,7 @@ function buildApprovalRenderModel(
 			label: formatLabel(field),
 			value: truncateNotificationLine(displayNotificationValue(value)),
 		})),
-		why: details.reason ? escapeNotificationText(details.reason) : null,
+		why: details.reason ?? null,
 	};
 }
 
@@ -219,20 +243,23 @@ function renderApprovalBody(
 	approvalUrl?: string,
 ): string {
 	const lines: string[] = [];
-	const label = escapeNotificationText(
+	const label = escapeMarkdownText(
 		model.entityName ?? model.entityTypeLabel ?? "this entity",
 	);
+	// Only the label is escaped — the URL is ours (buildResourcePermalink), and
+	// escaping it would break the link target.
 	const entityLink = model.entityUrl
 		? `[${label}](${model.entityUrl})`
 		: model.entityId
 			? `${label} (#${model.entityId})`
 			: label;
-	const who = model.requestedBy ?? "A watcher";
+	const who = escapeMarkdownText(model.requestedBy ?? "A watcher");
 
 	// One summary line: "<Watcher> wants to <verb> <entity>."
 	if (model.diffs) {
 		lines.push(`**${who}** wants to update ${entityLink}:`);
-		for (const d of model.diffs) lines.push(`- ${d.label}: ${d.diff}`);
+		for (const d of model.diffs)
+			lines.push(`- ${d.label}: ${escapeMarkdownText(d.diff)}`);
 	} else {
 		const verb =
 			model.action === "Delete this entity"
@@ -242,11 +269,12 @@ function renderApprovalBody(
 					: "create";
 		lines.push(`**${who}** wants to ${verb} ${entityLink}.`);
 		if (model.proposal.length > 0) {
-			for (const p of model.proposal) lines.push(`- ${p.label}: ${p.value}`);
+			for (const p of model.proposal)
+				lines.push(`- ${p.label}: ${escapeMarkdownText(p.value)}`);
 		}
 	}
 	// The proposer's own reason, inline and unlabeled (it reads as a sentence).
-	if (model.why) lines.push("", model.why);
+	if (model.why) lines.push("", escapeMarkdownText(model.why));
 	if (approvalUrl) lines.push("", formatReviewLink(approvalUrl));
 	return lines.join("\n");
 }
@@ -254,24 +282,28 @@ function renderApprovalBody(
 /** Slack mrkdwn card text (bold labels, `<url|label>` links). */
 function renderApprovalCardText(model: ApprovalRenderModel): string {
 	const lines: string[] = [];
-	if (model.requestedBy) lines.push(`*Requested by:* ${model.requestedBy}`);
+	if (model.requestedBy)
+		lines.push(`*Requested by:* ${escapeSlackText(model.requestedBy)}`);
 	if (model.entityName) {
 		lines.push(
 			`*Entity:* ${
 				model.entityUrl
 					? formatCardLink(model.entityName, model.entityUrl)
-					: escapeNotificationText(model.entityName)
+					: escapeSlackText(model.entityName)
 			}`,
 		);
 	}
 	if (model.diffs) {
-		for (const d of model.diffs) lines.push("", `*${d.label}*`, d.diff);
+		for (const d of model.diffs)
+			lines.push("", `*${d.label}*`, escapeSlackText(d.diff));
 	}
 	if (model.action) {
 		lines.push("", `*Proposed action:* ${model.action}`);
-		for (const p of model.proposal) lines.push(`*${p.label}:* ${p.value}`);
+		for (const p of model.proposal)
+			lines.push(`*${p.label}:* ${escapeSlackText(p.value)}`);
 	}
-	if (model.why) lines.push("", `*Why approval is needed:* ${model.why}`);
+	if (model.why)
+		lines.push("", `*Why approval is needed:* ${escapeSlackText(model.why)}`);
 	return lines.join("\n");
 }
 

@@ -3,6 +3,7 @@ import { resolveCloudCredential } from '../connect/cloud-credential';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
 import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
+import { resolveAuthCredentials } from './auth-credential-secrets';
 import {
   getAppInstallationAuthMethods,
   getOAuthAuthMethods,
@@ -145,11 +146,20 @@ export async function resolveExecutionAuth(
     }
   }
 
+  // `env` credentials live in `auth_data` as `secret://` refs, never as raw
+  // values — resolve them here so this single seam serves BOTH execution
+  // paths: the worker sync poll (worker-api/poll.ts) and the virtual-feed
+  // pushdown (lib/connector-pushdown.ts). Non-ref entries (scope bookkeeping)
+  // pass through untouched.
   const connectionCredentials = {
-    ...normalizeAuthValues(appAuthProfile?.auth_data ?? {}),
-    ...normalizeAuthValues(
-      authProfile?.profile_kind === 'env' ? (authProfile.auth_data ?? {}) : {}
-    ),
+    ...(await resolveAuthCredentials({
+      organizationId: params.organizationId,
+      authData: appAuthProfile?.auth_data ?? {},
+    })),
+    ...(await resolveAuthCredentials({
+      organizationId: params.organizationId,
+      authData: authProfile?.profile_kind === 'env' ? (authProfile.auth_data ?? {}) : {},
+    })),
   };
   let sessionState =
     authProfile?.profile_kind === 'browser_session' || authProfile?.profile_kind === 'interactive'

@@ -30,6 +30,7 @@ import {
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
+import { resolveAuthCredentials } from '../utils/auth-credential-secrets';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import { stripServerOnlyExecutionConfig } from '../tools/admin/behavior-execution-config';
 import logger from '../utils/logger';
@@ -899,6 +900,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         sessionState: null,
       };
 
+  // `auth_data` holds `secret://` refs, not values. An `authenticate` run
+  // consumes these as REAL credentials (e.g. to refresh an expiring token),
+  // so resolve them rather than shipping the refs verbatim.
+  const previousCredentials = deliverConnectionAuth
+    ? await resolveAuthCredentials({
+        organizationId: row.organization_id,
+        authData: row.auth_profile_auth_data,
+      })
+    : undefined;
+
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.
   const nixPackages = (row.connector_runtime?.nix?.packages ?? []).filter(
@@ -939,8 +950,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     operation_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,
     auth_profile_id: deliverConnectionAuth ? (row.run_auth_profile_id ?? undefined) : undefined,
-    previous_credentials: deliverConnectionAuth
-      ? (row.auth_profile_auth_data ?? undefined)
-      : undefined,
+    previous_credentials: previousCredentials,
   });
 }

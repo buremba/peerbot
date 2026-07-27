@@ -1,5 +1,6 @@
 import { slugify } from '@lobu/core';
 import { getDb, type DbClient } from '../db/client';
+import { persistAuthCredentials, toSecretRefAuthData } from './auth-credential-secrets';
 import { ToolUserError } from './errors';
 import { isUniqueViolation } from './pg-errors';
 
@@ -69,6 +70,10 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
   resolved_cdp_url: string | null;
 }
 
+// `auth-credential-secrets` imports `normalizeAuthValues` from this module and
+// this module imports the persist helpers back. The cycle is safe (both sides
+// only call across at runtime, never during module init) and keeps the
+// credential-at-rest policy in one file instead of splitting it.
 export function normalizeAuthValues(raw: unknown): Record<string, string> {
   if (typeof raw === 'string') {
     try {
@@ -388,7 +393,11 @@ export async function createAuthProfile(params: {
           ${params.connectorKey ?? null},
           ${params.profileKind},
           ${params.status ?? 'active'},
-          ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
+          ${sql.json(
+            params.profileKind === 'env'
+              ? {}
+              : normalizeAuthData(params.profileKind, params.authData ?? {})
+          )},
           ${params.accountId ?? null},
           ${normalizedProvider},
           ${params.createdBy ?? null},
@@ -436,7 +445,24 @@ export async function createAuthProfile(params: {
       );
     }
 
-    return rows[0] as AuthProfileRow;
+    const created = rows[0] as AuthProfileRow;
+
+    // `env` credentials are inserted empty above (the secret name is namespaced
+    // by profile id, which only exists after the INSERT), then written as
+    // `secret://` refs here — so a raw credential never touches the column.
+    if (params.profileKind === 'env') {
+      const values = normalizeAuthValues(params.authData ?? {});
+      if (Object.keys(values).length > 0) {
+        created.auth_data = await persistAuthCredentials({
+          organizationId: params.organizationId,
+          authProfileId: created.id,
+          credentials: values,
+          db,
+        });
+      }
+    }
+
+    return created;
   }
 }
 
@@ -491,10 +517,24 @@ export async function updateAuthProfile(params: {
         })
       : existing.slug;
 
-  const nextAuthData =
+  const normalizedAuthData =
     params.authData === undefined
       ? normalizeAuthData(existing.profile_kind, existing.auth_data)
       : normalizeAuthData(existing.profile_kind, params.authData);
+
+  // `env` profiles hold flat bearer credentials (e.g. a postgres DSN, which
+  // embeds its own password). Those never persist verbatim — swap each value
+  // for a `secret://` ref backed by the encrypted secret store. Values already
+  // in ref form are passed through unchanged, so a no-credential update
+  // (rename, status change) does not re-write the secret.
+  const nextAuthData =
+    existing.profile_kind === 'env'
+      ? await toSecretRefAuthData({
+          organizationId: params.organizationId,
+          authProfileId: existing.id,
+          credentials: normalizedAuthData,
+        })
+      : normalizedAuthData;
 
   const rows = await sql`
     UPDATE auth_profiles

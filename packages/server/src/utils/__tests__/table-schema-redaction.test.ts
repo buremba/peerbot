@@ -52,6 +52,17 @@ const SECRET_KEYS = [
   'Set-Cookie',
   'client-secret',
   ' password ',
+  // Unseparated acronym runs: `normalizeKey` only splits on a
+  // lowercase-to-uppercase boundary, so these collapse to one unspaced token
+  // the suffix pattern cannot reach. Covered by explicit exact-key entries on
+  // both sides; removing those entries makes exactly these three go plaintext.
+  'DBUrl',
+  'DBURL',
+  'DATABASEURL',
+  'AWSSecretKey',
+  'AWS_SECRET_KEY',
+  'AWSSecretAccessKey',
+  'AWS_SECRET_ACCESS_KEY',
 ];
 
 const NON_SECRET_KEYS = [
@@ -65,6 +76,11 @@ const NON_SECRET_KEYS = [
   'secretsPolicy',
   'display_name',
   'feed_key',
+  // A bare `key` is not a credential suffix: `feed_key`, `sort_key`, and
+  // `idempotency_key` are ordinary identifiers. Explicit credential compounds
+  // such as `secret_key`, `api_key`, and `private_key` are covered above.
+  'sort_key',
+  'idempotency_key',
 ];
 
 describe('table-schema config redaction', () => {

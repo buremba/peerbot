@@ -35,7 +35,7 @@ export const REDACTED_SENTINEL = "__LOBU_REDACTED__";
  * {@link isSecretKey}'s exact-name set and by {@link redactUriCredentials}.
  */
 const SECRET_KEY_RE =
-  /(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
+  /(^|_)(token|secret|password|passwd|api_?key|secret_?(?:access_?)?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$/i;
 
 /**
  * Exact key names (case-insensitive, after key normalization) that are
@@ -55,11 +55,17 @@ const SECRET_EXACT_KEYS = new Set([
   "db_url",
   "connection_string",
   "dsn",
+  // Fully capitalized acronym runs have no case boundary for `normalizeKey`
+  // to split, so they need explicit entries.
+  "dburl",
+  "databaseurl",
+  "connectionstring",
 ]);
 
 /** Normalize camelCase and separators so config keys and HTTP headers agree. */
 function normalizeKey(key: string): string {
   return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
@@ -77,12 +83,7 @@ export function isSecretKey(key: string): boolean {
  * (`host`, `endpoint`, `primary`). Only the userinfo is replaced: the scheme
  * and host stay readable so a UI can still show which database is wired up.
  */
-// The scheme repetition is bounded ({0,63}, i.e. schemes up to 64 chars — far
-// longer than any real URI scheme) rather than `*`: an unbounded quantifier
-// re-scans at every start offset on adversarial input (e.g. a long run of 'a's
-// with no `://`), which is a polynomial-ReDoS shape. A constant bound keeps the
-// per-offset work constant, so matching stays linear on untrusted config values.
-const URI_CREDENTIAL_RE = /([a-z][a-z0-9+.-]{0,63}:\/\/)([^/\s@]+)@/gi;
+const URI_CREDENTIAL_RE = /([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi;
 
 /**
  * Replace the `user:password@` userinfo of any URI inside a string with the

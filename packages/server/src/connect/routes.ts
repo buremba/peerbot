@@ -29,6 +29,7 @@ import {
   normalizeAuthProfileSlug,
   normalizeAuthValues,
 } from '../utils/auth-profiles';
+import { toSecretRefAuthData } from '../utils/auth-credential-secrets';
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
@@ -279,10 +280,18 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
     );
   }
 
-  // Store credentials on the pending auth profile but keep connection in pending_auth
+  // Store credentials on the pending auth profile but keep connection in
+  // pending_auth. The submitted values are bearer credentials (a postgres DSN
+  // embeds its own password), so they go to the encrypted secret store and
+  // only `secret://` refs land in `auth_data`.
+  const credentialRefs = await toSecretRefAuthData({
+    organizationId: tokenRow.organization_id,
+    authProfileId: tokenRow.auth_profile_id,
+    credentials: normalizeAuthValues(body.credentials),
+  });
   await sql`
     UPDATE auth_profiles
-    SET auth_data = ${sql.json(normalizeAuthValues(body.credentials))},
+    SET auth_data = ${sql.json(credentialRefs)},
         status = 'pending_auth',
         updated_at = NOW()
     WHERE id = ${tokenRow.auth_profile_id}

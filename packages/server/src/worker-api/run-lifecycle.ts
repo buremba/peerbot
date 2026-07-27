@@ -39,6 +39,7 @@ import {
 	getAuthProfileById,
 	getBrowserSessionReadiness,
 } from "../utils/auth-profiles";
+import { toSecretRefAuthData } from "../utils/auth-credential-secrets";
 import { autoLinkEvent } from "../utils/auto-linker";
 import { nextRunAt as nextRunAtFromCron } from "../utils/cron";
 import { needsEmbeddingSql } from "../utils/embeddings";
@@ -102,14 +103,22 @@ async function finalizeRun(
 async function reactivateProfileCascade(
 	sql: DbClient,
 	authProfileId: number,
+	organizationId: string,
 	authData: {
 		credentials: Record<string, unknown>;
 		metadata: Record<string, unknown>;
 	}
 ): Promise<void> {
+	// Credentials returned by an auth run are bearer values; store refs, not
+	// the values themselves.
+	const credentialRefs = await toSecretRefAuthData({
+		organizationId,
+		authProfileId,
+		credentials: authData.credentials,
+	});
 	await sql`
     UPDATE auth_profiles
-    SET auth_data = ${sql.json(authData.credentials)},
+    SET auth_data = ${sql.json(credentialRefs)},
         metadata = ${sql.json(authData.metadata)},
         status = 'active',
         updated_at = current_timestamp
@@ -1332,8 +1341,13 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
 		const authProfileId = runRows[0]?.auth_profile_id ?? null;
 		const organizationId = runRows[0]?.organization_id;
 
-		if (req.status === "success" && authProfileId && req.credentials) {
-			await reactivateProfileCascade(sql, authProfileId, {
+		if (
+			req.status === "success" &&
+			authProfileId &&
+			req.credentials &&
+			organizationId
+		) {
+			await reactivateProfileCascade(sql, authProfileId, organizationId, {
 				credentials: req.credentials,
 				metadata: req.metadata ?? {},
 			});

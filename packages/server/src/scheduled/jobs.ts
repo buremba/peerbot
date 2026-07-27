@@ -36,6 +36,7 @@ import {
   enqueueAgentMessage,
 } from '../gateway/services/agent-threads';
 import { buildMessagePayload } from '../gateway/services/platform-helpers';
+import { migrateLegacyPlaintextAuthData } from '../utils/auth-credential-secrets';
 
 function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   if (!value || typeof value !== 'object') return null;
@@ -263,6 +264,23 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '0 * * * *' },
+  );
+
+  // Credential-at-rest convergence — rewrites any `env` auth profile still
+  // holding a PLAINTEXT credential (e.g. a postgres DSN, which embeds its own
+  // password) into an encrypted `secret://` ref. Encryption cannot happen in a
+  // SQL migration, so the conversion runs here instead. Idempotent: a profile
+  // already holding refs is skipped, so this is a no-op after the first pass.
+  // Single-claimant per tick; pure Postgres, so multi-replica safe.
+  scheduler.register(
+    'converge-auth-credential-secrets',
+    async () => {
+      const converted = await migrateLegacyPlaintextAuthData();
+      if (converted > 0) {
+        logger.info({ converted }, '[task] converge-auth-credential-secrets converted profiles');
+      }
+    },
+    { cron: '*/10 * * * *' },
   );
 
   // Stale device-worker reaper — deletes device_workers rows that are unseen

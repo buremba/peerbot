@@ -65,9 +65,9 @@ function cols(...names: string[]): ColumnDef[] {
  * WHICH options are set.
  */
 const SQL_SECRET_KEY_PATTERN =
-  '(^|_)(token|secret|password|passwd|api_?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$';
+  '(^|_)(token|secret|password|passwd|api_?key|secret_?(access_?)?key|credential|private_?key|refresh_?token|access_?token|client_?secret|session_?id|auth_?header)s?$';
 const SQL_SECRET_EXACT_KEYS =
-  "('authorization','auth','bearer','cookie','cookies','set_cookie','proxy_authorization','database_url','db_url','connection_string','dsn')";
+  "('authorization','auth','bearer','cookie','cookies','set_cookie','proxy_authorization','database_url','db_url','connection_string','dsn','dburl','databaseurl','connectionstring')";
 const SQL_URI_CREDENTIAL_PATTERN =
   '[a-z][a-z0-9+.-]*://[^/@[:space:]]*:[^/@[:space:]]*@';
 
@@ -81,9 +81,13 @@ const COLUMN_REF = '$COL$';
 
 /** SQL test for "this jsonb key is a denylisted secret name". */
 const SQL_KEY_IS_SECRET = (keyExpr: string) => {
+  // Mirrors `normalizeKey` in `@lobu/core/utils/secret-redaction`: splits
+  // acronym-to-word boundaries (`AWSSecretKey` -> `AWS_Secret_Key`) and
+  // lower-to-uppercase boundaries (`apiKey` -> `api_Key`).
   const normalized =
-    `lower(regexp_replace(regexp_replace(` +
-    `regexp_replace(${keyExpr}, '([a-z0-9])([A-Z])', '\\1_\\2', 'g'), ` +
+    `lower(regexp_replace(regexp_replace(regexp_replace(` +
+    `regexp_replace(${keyExpr}, '([A-Z]+)([A-Z][a-z])', '\\1_\\2', 'g'), ` +
+    `'([a-z0-9])([A-Z])', '\\1_\\2', 'g'), ` +
     `'[^a-zA-Z0-9]+', '_', 'g'), '^_+|_+$', '', 'g'))`;
   return (
     `${normalized} IN ${SQL_SECRET_EXACT_KEYS} ` +

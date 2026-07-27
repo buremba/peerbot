@@ -84,27 +84,6 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		return rows[0]?.n ?? 0;
 	}
 
-	/**
-	 * Count rows LIVE IN THE VIEW, whatever their interaction_status.
-	 *
-	 * `current_event_records` defines live as "nothing supersedes me" and does
-	 * NOT filter interaction_status, so a row this count sees but `currentCount`
-	 * does not is a row nothing will ever supersede — an unbounded leak in an
-	 * append-only table. Every assertion here used to filter on
-	 * interaction_status='current', which is precisely the filter that let a
-	 * clear-row leak survive six green tests.
-	 */
-	async function liveCount(): Promise<number> {
-		const rows = (await getTestDb()`
-			SELECT count(*)::int AS n
-			FROM current_event_records
-			WHERE organization_id = ${orgId}
-			  AND interaction_type = 'suggestion'
-			  AND origin_id = ${`suggestion:${conversationId}`}
-		`) as Array<{ n: number }>;
-		return rows[0]?.n ?? 0;
-	}
-
 	it("persists a current suggestion set readable by conversation", async () => {
 		const id = await persistSuggestion({
 			organizationId: orgId,
@@ -200,7 +179,8 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		// append-only table.
 		//
 		// currentCount() cannot see this: it applies the same status filter that
-		// caused the bug. Only liveCount() can, which is why it exists.
+		// caused the bug. Only the status-agnostic query below can, which is why
+		// this test asserts on a raw count rather than currentCount().
 		const cycles = "api:conv-cycles";
 		for (let i = 0; i < 3; i++) {
 			await persistSuggestion({

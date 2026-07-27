@@ -387,8 +387,10 @@ export const ManageOperationsResultSchema = Type.Union([
         notification_id: Type.Optional(Type.Integer()),
         run_id: Type.Optional(Type.Integer()),
         /**
-         * Live approval state ('pending' | 'approved' | 'rejected') joined
-         * from the run behind an approval notification.
+         * Live approval state of the run behind an approval notification,
+         * passed through verbatim from the run's approval_status (e.g.
+         * 'pending', 'approved', 'rejected', 'expired', 'auto'). Not a fixed
+         * enum — treat any value not explicitly handled as non-actionable.
          */
         approval_status: Type.Optional(Type.String()),
         /** This approval supports one-click inline approve/reject. */

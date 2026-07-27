@@ -2,11 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  type BaseMessage,
-  createLogger,
-  type UserSuggestion,
-} from "@lobu/core";
+import { type BaseMessage, createLogger } from "@lobu/core";
 import type {
   ApprovalAttribution,
   InteractionResourceKind,
@@ -74,6 +70,23 @@ export interface PostedQuestion extends BaseMessage {
   platform: string;
   question: string;
   options: string[];
+}
+
+/**
+ * Payload emitted on "suggestion:created" — platform renderers listen for this.
+ *
+ * Suggested follow-up actions rendered as tappable chips under a reply. Unlike
+ * `PostedQuestion`, tapping one does NOT answer a blocked turn: nothing is
+ * waiting on the click, and the chip's `message` is sent verbatim as a new user
+ * turn. That is why each option carries both a short `title` (the button label)
+ * and a full `message` (what actually gets sent) rather than a single string —
+ * the label is a summary, not the payload.
+ */
+export interface PostedSuggestion extends BaseMessage {
+  organizationId: string;
+  userId: string;
+  platform: string;
+  prompts: Array<{ title: string; message: string }>;
 }
 
 /**
@@ -197,6 +210,57 @@ export class InteractionService extends EventEmitter {
     );
 
     this.emit("question:created", posted);
+    return posted;
+  }
+
+  /**
+   * Post suggested follow-up actions as chips (non-blocking, fire-and-forget).
+   * Emits "suggestion:created" for platform renderers.
+   *
+   * Fire-and-forget in the strict sense: the tool call does not wait on a
+   * click. Chat renderers stash a routing-only pending row (read, never claimed
+   * — chips stay multi-clickable), unlike `postQuestion`, whose card gates a
+   * suspended turn and must claim its row.
+   */
+  async postSuggestion(
+    organizationId: string,
+    userId: string,
+    conversationId: string,
+    channelId: string,
+    teamId: string | undefined,
+    connectionId: string | undefined,
+    platform: string,
+    prompts: Array<{ title: string; message: string }>,
+    source?: string
+  ): Promise<PostedSuggestion> {
+    assertRoutableInteraction(connectionId, platform, "suggestion");
+    if (this.beforeCreateHook) {
+      await this.beforeCreateHook(userId, conversationId);
+    }
+
+    const posted: PostedSuggestion = {
+      // Short id, deliberately: chat button action ids embed it as
+      // `suggestion:<id>:<i>`, and Telegram's callback_data caps the whole
+      // serialized envelope at 64 bytes — a full UUID blows that budget and
+      // the card post throws. 12 hex chars keep the callback ~40 bytes with
+      // ample collision headroom for a 24h-TTL routing id.
+      id: `s_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      organizationId,
+      userId,
+      conversationId,
+      channelId,
+      teamId,
+      connectionId,
+      platform,
+      prompts,
+      source,
+    };
+
+    logger.info(
+      `Posted ${prompts.length} suggestion(s) ${posted.id} for conversation ${conversationId}`
+    );
+
+    this.emit("suggestion:created", posted);
     return posted;
   }
 
@@ -350,33 +414,5 @@ export class InteractionService extends EventEmitter {
 
     this.emit("link-button:created", posted);
     return posted;
-  }
-
-  /**
-   * Create non-blocking suggestions.
-   * Emits event immediately, no state tracking needed.
-   */
-  async createSuggestion(
-    userId: string,
-    conversationId: string,
-    channelId: string,
-    teamId: string | undefined,
-    prompts: Array<{ title: string; message: string }>
-  ): Promise<void> {
-    const suggestion: UserSuggestion = {
-      id: `sug_${randomUUID()}`,
-      userId,
-      conversationId,
-      channelId,
-      teamId,
-      blocking: false,
-      prompts,
-    };
-
-    logger.info(
-      `Created suggestion ${suggestion.id} for conversation ${conversationId}`
-    );
-
-    this.emit("suggestion:created", suggestion);
   }
 }

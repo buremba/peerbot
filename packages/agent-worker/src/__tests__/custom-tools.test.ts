@@ -61,6 +61,12 @@ describe("createLobuCustomTools", () => {
       "edit_message",
       "delete_message",
       "ask_user",
+      // Present on every platform, telegram included: suggestions ride the same
+      // interaction-card rail as ask_user, and chip buttons carry only a short
+      // `suggestion:<id>:<i>` action id that fits Telegram's 64-byte
+      // callback_data cap. It was briefly gated to `api`, when the SPA was the
+      // only surface with a renderer.
+      "suggest_actions",
     ]);
   });
 

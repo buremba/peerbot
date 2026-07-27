@@ -19,6 +19,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
 import { resolveOrgId } from "../../../lobu/stores/org-context.js";
+import { readCurrentSuggestion } from "../../suggestions/persist-suggestion.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
@@ -86,9 +87,15 @@ type AgentErrorHistoryInteraction = {
 	errorContext: { provider?: string; model?: string } | null;
 };
 
+type SuggestionHistoryInteraction = {
+	type: "suggestion";
+	prompts: Array<{ title: string; message: string }>;
+};
+
 type HistoryInteraction =
 	| ToolApprovalHistoryInteraction
-	| AgentErrorHistoryInteraction;
+	| AgentErrorHistoryInteraction
+	| SuggestionHistoryInteraction;
 
 /**
  * Rehydrate the latest non-silent terminal agent error for a conversation.
@@ -744,6 +751,21 @@ export function createAgentHistoryRoutes(deps: {
 				conversationId
 			);
 			if (errorInteraction) interactions.push(errorInteraction);
+
+			// Replay the conversation's current suggestion chips (a live-streamed
+			// `complete` payload carries them, but they're lost on reload without
+			// this). Separate branch — NOT the approval query, which maps every row
+			// to tool-approval.
+			const currentSuggestion = await readCurrentSuggestion(
+				scope.organizationId,
+				conversationId
+			);
+			if (currentSuggestion) {
+				interactions.push({
+					type: "suggestion",
+					prompts: currentSuggestion.prompts,
+				});
+			}
 		}
 		return c.json({ ...data, interactions });
 	});

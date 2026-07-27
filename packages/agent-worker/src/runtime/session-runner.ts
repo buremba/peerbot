@@ -385,6 +385,18 @@ export function buildRunContextBlock(input: {
   channelId: string | undefined;
   platformMetadata: unknown;
 }): string {
+  // The web chat gets no block. This context exists to disambiguate WHICH
+  // conversation a run came from when several are possible (a Slack channel, a
+  // Telegram thread); on `api` there is only ever the chat the user is looking
+  // at, so "Platform: api" / "Channel: api_<userId>" is pure noise. It is also
+  // the one surface where the block is visibly harmful: pi records whatever
+  // string is handed to `session.prompt()` into the transcript, so the injected
+  // scaffolding replays into the UI attributed to the user. Suppressing it at
+  // the source keeps the web transcript equal to what the user actually typed —
+  // stripping it back out downstream can't work, because by then injected text
+  // and identical user-typed text are indistinguishable.
+  if (input.platform === "api") return "";
+
   const md =
     input.platformMetadata && typeof input.platformMetadata === "object"
       ? (input.platformMetadata as Record<string, unknown>)

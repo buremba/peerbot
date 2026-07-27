@@ -2,6 +2,13 @@
 
 Read root `AGENTS.md` first. This package owns the gateway, auth, connections, feeds, orchestration, connector operations, guardrails, Slackbot MCP integration, and embedded runtime.
 
+## Package-specific traps
+Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
+- This package is **biome-excluded**. Never run biome on it — edit surgically, matching each file's existing style. CI will not catch the reflow.
+- The DB client sets `fetch_types: false`, so a raw JS array bound as a parameter always fails. CI enforces this via `scripts/check-raw-array-params.mjs`; see GOTCHAS "DB & SQL" for the safe binding forms before reaching for a workaround.
+- Hoisted `vi.mock()` silently fails in the integration suite (shared module registry). Use `vi.resetModules()` + `vi.doMock()` + dynamic import, and verify by co-running sibling test files.
+- Dropping a column from a queryable table is a two-phase change across two releases — `QUERYABLE_SCHEMA` emits explicit column lists.
+
 ## Boundaries and vocabulary
 - Connections are rows, not processes. Agents bind to connections/channels; replicas hydrate connection instances on demand from DB rows and must not assume boot warm-start.
 - Connectors collect external data into feeds/events; chat platforms deliver conversations/messages. Do not blur connector sync with chat transport.
@@ -23,7 +30,7 @@ Read root `AGENTS.md` first. This package owns the gateway, auth, connections, f
 - Device-pinned connectors are special: resolved connection credentials may be delivered only to the authorized device worker that owns that run.
 
 ## Multi-replica correctness
-- Production can run N>1 replicas behind ClientIP affinity. Before claiming a feature works, ask: “does this hold with 3 replicas?”
+- Production can run N>1 replicas. Before claiming a feature works, ask: “does this hold with 3 replicas?” Correctness must not depend on session affinity.
 - Per-pod state (`SseManager`, event backlog, in-process worker map, deploy-lock cache) is pod-local. Cross-replica delivery must use Postgres (`thread_response` queue or equivalent).
 - API/SSE terminal rows and interaction cards are owner-routed; non-owners requeue until the owning pod claims. Headless rows with no SSE client may be delivered by first claim.
 - Streaming deltas/status are best-effort across pods today. Do not build correctness on cross-pod in-memory delivery.
@@ -36,13 +43,14 @@ Read root `AGENTS.md` first. This package owns the gateway, auth, connections, f
 
 ## Guardrails, network, and runtime
 - Guardrails live under `packages/core/src/guardrails/`; server built-ins/aggregation live under gateway guardrail code. Guardrail infra errors fail open; each trip writes a `guardrail-trip` event.
-- Worker egress goes through `HTTP_PROXY=http://localhost:8118` plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`; Linux prod also denies direct network except loopback.
-- Workers are subprocesses under `./workspaces/{agentId}/` with `WORKSPACE_DIR`; Linux wraps them in `systemd-run --user --scope` for limits.
+- Worker HTTP(S) egress goes through the authenticated gateway proxy plus `WORKER_ALLOWED_DOMAINS`/`WORKER_DISALLOWED_DOMAINS`. The proxy binds `127.0.0.1` **by design** — the Linux `IPAddressDeny=any` / `IPAddressAllow=127.0.0.1` scope depends on it, so do not make the host configurable. The port comes from `WORKER_PROXY_PORT` (default 8118); consume the injected `HTTP_PROXY` URL rather than rebuilding it.
+- Embedded workers are subprocesses under `./workspaces/{agentId}/` with `WORKSPACE_DIR`. Linux hosts with a usable user systemd wrap them in `systemd-run --user --scope`; other hosts run them unwrapped unless `LOBU_REQUIRE_WORKER_SANDBOX=1`.
 
 ## Local dev and validation
 - Prereqs: Bun, supported Node per package engines, and Postgres+pgvector via `DATABASE_URL`. `./scripts/setup-dev.sh` provisions local Postgres where needed.
 - `make dev` uses shared brew Postgres with one DB per branch. `LOBU_EMBEDDED=1 make dev` / `make dev-embedded` uses embedded per-worktree Postgres.
-- Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs.
+- Parallel worktrees use `.env.local` for non-default `PORT`/`WORKER_PROXY_PORT`; do not `git switch` while a dev server runs. Read your worktree's `PORT` from `.env.local` — it is not 8787.
+- Smoke a booted server: `curl -s localhost:$PORT/api/health` (readiness is `/health/ready`). The SPA is pathless at `:$PORT`; the agent API is under `:$PORT/lobu`. "It booted" is not "it works" — drive the path you changed.
 - Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus the relevant server `bun test` / `make test-integration` suites.
 
 ## Slackbot MCP integration

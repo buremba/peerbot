@@ -328,6 +328,16 @@ export async function listContentInternal(
       baseParams.push(options.agent_id);
       baseConditions.push(`f.metadata->>'agent_id' = $${baseParams.length}`);
     }
+    if (options.client_id) {
+      // `events.client_id` is a real indexed column (idx_events_client_id), not
+      // a metadata field — so this is a plain column predicate. Always ANY() so
+      // one id and a re-registered client's many ids share a single shape.
+      const clientIds = Array.isArray(options.client_id)
+        ? options.client_id
+        : [options.client_id];
+      baseParams.push(pgTextArray(clientIds));
+      baseConditions.push(`f.client_id = ANY($${baseParams.length}::text[])`);
+    }
 
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,

@@ -34,13 +34,22 @@ import {
 const logger = createLogger("generate-starters");
 
 const STARTERS_LEASE_MS = 15 * 60 * 1000;
-const STARTERS_ALLOWED_TOOLS = [
-	"search_sdk",
-	"query_sdk",
-	"query_sql",
-	"search_memory",
-	"suggest_actions",
-];
+
+/**
+ * Read-only tools the hidden starters turn may use.
+ *
+ * `strictMode` filters ONLY the built-in tool set (createLobuTools: read /
+ * write / edit / bash — see session-runner.ts). Plugin and MCP tools are
+ * registered separately and are NOT filtered by this list, so naming a plugin
+ * tool here does not grant it and omitting one does not revoke it.
+ *
+ * That is exactly what we want: the turn keeps its workspace-inspection MCP
+ * tools and `suggest_actions` (both plugin-side) while every filesystem and
+ * shell primitive is dropped. Listing only plugin names here — as a first cut
+ * did — silently yielded `tools=0`, which reads like a lockdown but is really
+ * "no built-in matched any name".
+ */
+export const STARTERS_ALLOWED_TOOLS = ["read"];
 
 /**
  * The hidden instruction enqueued for a starters turn. The agent inspects the

@@ -9,7 +9,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensureStarters } from "../../gateway/starters/generate-starters";
+import {
+	ensureStarters,
+	STARTERS_ALLOWED_TOOLS,
+} from "../../gateway/starters/generate-starters";
 import {
 	finalizeStarterGeneration,
 	readCachedStarters,
@@ -81,6 +84,27 @@ describe("starter chips (per agent+org cache)", () => {
 		expect(cached?.prompts).toEqual([
 			{ title: "Import CRM", message: "Import your CRM contacts" },
 		]);
+	});
+
+	it("the allowlist names BUILT-IN tools, never plugin tools", () => {
+		// strictMode filters only the built-in set (createLobuTools: read, write,
+		// edit, bash, grep, find, ls). Plugin/MCP tools — including the
+		// `suggest_actions` this turn exists to call — are registered separately
+		// and are NOT filtered by this list.
+		//
+		// A first cut listed only plugin names here (search_sdk, query_sdk,
+		// query_sql, search_memory, suggest_actions). Nothing matched a built-in,
+		// so the turn ran with `tools=0`: no read, no shell, nothing. It looked
+		// like a deliberate lockdown and was really an empty intersection.
+		const BUILTINS = ["read", "write", "edit", "bash", "grep", "find", "ls"];
+		expect(STARTERS_ALLOWED_TOOLS.length).toBeGreaterThan(0);
+		for (const name of STARTERS_ALLOWED_TOOLS) {
+			expect(BUILTINS).toContain(name);
+		}
+		// Structurally read-only: no shell, no filesystem mutation.
+		for (const forbidden of ["bash", "write", "edit"]) {
+			expect(STARTERS_ALLOWED_TOOLS).not.toContain(forbidden);
+		}
 	});
 
 	it("a never-generated agent has no cache and must generate", async () => {

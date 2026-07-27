@@ -101,6 +101,63 @@ describe("buildProviderCatalog", () => {
     expect(claude?.systemAvailable).toBe(true);
   });
 
+  /**
+   * Models come from the build-time models.dev snapshot keyed by LOBU provider
+   * id, NOT from a hand-maintained array. A curated list is exactly what went
+   * stale silently — the shipped Claude list was missing a flagship released
+   * days earlier and no gate caught it.
+   */
+  test("models come from the models.dev snapshot, newest release first", () => {
+    moduleRegistry.register(
+      fakeModule({ providerId: "claude", providerDisplayName: "Claude" })
+    );
+
+    const claude = buildProviderCatalog().find((e) => e.slug === "claude");
+    // The snapshot's current Anthropic flagship, which no hand-maintained list
+    // in this repo contained — the staleness this replaces.
+    expect(claude?.models).toContain("claude-opus-5");
+    // Rich metadata rides alongside the bare ids, in the same order.
+    expect(claude?.modelDetails.map((m) => m.id)).toEqual(claude?.models ?? []);
+    // Sorted newest-first, so the picker's first entry is the current flagship.
+    const dates = (claude?.modelDetails ?? [])
+      .map((m) => m.releaseDate)
+      .filter((d): d is string => !!d);
+    expect([...dates].sort().reverse()).toEqual(dates);
+  });
+
+  /**
+   * A deployment-level provider has no providers.json enrichment in the
+   * agent-config call path (buildProviderCatalog is called with no configs),
+   * but its models must still appear — otherwise a system-key provider shows an
+   * empty picker.
+   */
+  test("snapshot models appear even with no providers.json enrichment", () => {
+    moduleRegistry.register(
+      fakeModule({
+        providerId: "claude",
+        providerDisplayName: "Claude",
+        hasSystemKey: () => true,
+      })
+    );
+
+    const claude = buildProviderCatalog().find((e) => e.slug === "claude");
+    expect(claude?.systemAvailable).toBe(true);
+    expect(claude?.models.length).toBeGreaterThan(0);
+  });
+
+  test("a provider absent from the snapshot degrades to an empty list", () => {
+    moduleRegistry.register(
+      fakeModule({ providerId: "self-hosted-vllm" })
+    );
+    const entry = buildProviderCatalog().find(
+      (e) => e.slug === "self-hosted-vllm"
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.models).toEqual([]);
+    expect(entry?.modelDetails).toEqual([]);
+    expect(entry?.modelsDevId).toBeNull();
+  });
+
   test("supportedAuthTypes defaults to [authType] when absent", () => {
     moduleRegistry.register(fakeModule({ providerId: "cerebras" }));
     const catalog = buildProviderCatalog();

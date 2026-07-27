@@ -38,6 +38,31 @@ if (fs.existsSync(providersSrc)) {
   fs.cpSync(providersSrc, providersDest);
 }
 
+// Copy the models.dev snapshot next to providers.json — the server resolves it
+// as that file's sibling (resolveModelsDevSnapshotPath). It carries the model
+// lists for the "Add provider" picker, which must work with no egress, so it
+// ships as a build artifact rather than being fetched at runtime. Missing ⇒ the
+// picker degrades to freeform entry.
+const modelsSnapshotSrc = "../../config/models-dev-snapshot.json";
+const modelsSnapshotDest = "dist/models-dev-snapshot.json";
+const modelsLicenseSrc = "../../config/models-dev-LICENSE";
+const modelsLicenseDest = "dist/models-dev-LICENSE";
+if (fs.existsSync(modelsSnapshotSrc)) {
+  if (!fs.existsSync(modelsLicenseSrc)) {
+    throw new Error(
+      `[cli build] models.dev license missing at ${modelsLicenseSrc}`
+    );
+  }
+  fs.cpSync(modelsSnapshotSrc, modelsSnapshotDest);
+  fs.cpSync(modelsLicenseSrc, modelsLicenseDest);
+} else {
+  console.warn(
+    `[cli build] models.dev snapshot missing at ${modelsSnapshotSrc}; ` +
+      "provider model pickers will be empty. Regenerate with " +
+      "`bun run scripts/gen-models-dev-snapshot.ts`."
+  );
+}
+
 // Copy bundled connector source files next to the embedded server bundle.
 // The server lists these runtime code-based connectors for picker UIs and
 // compiles them on demand when a workspace installs or runs one. Only the

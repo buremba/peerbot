@@ -553,6 +553,18 @@ jobs:
         # gate: a value whose static type is a JS array, bound as a SQL param, fails.
         run: bun scripts/check-raw-array-params.mjs
 
+      - name: models.dev coverage gate
+        # Provider model lists come from the build-time models.dev snapshot,
+        # joined on `modelsDevId`. Hand-maintained lists rotted silently (a
+        # shipped Claude list was missing a days-old flagship and nothing
+        # failed); an entry added without the mapping reintroduces that class as
+        # a silently-empty model picker. Every providers.json entry must declare
+        # `modelsDevId` or explicitly opt out with `modelsDevExempt`.
+        run: bun scripts/check-models-dev-coverage.ts
+
+      - name: models.dev coverage gate fixtures
+        run: bun test scripts/__tests__/check-models-dev-coverage.test.ts
+
       - name: Connection-visibility compiler gate
         # The per-user connection-visibility READ-SEAM gate (connection_id IN
         # (SELECT ... FROM connections ... visibility ...)) must come from the one

@@ -1,11 +1,13 @@
 import {
   createLogger,
   isSdkCompat,
+  type ModelsDevSnapshotModel,
   type ProviderConfigEntry,
   SDK_COMPAT_PROTOCOLS,
   type SdkCompat,
 } from "@lobu/core";
 import type { InferenceProviderListItem } from "../../lobu/stores/provider-secrets.js";
+import { getSnapshotModels } from "../services/models-dev-snapshot.js";
 import {
   getModelProviderModules,
   type ModelProviderModule,
@@ -49,10 +51,22 @@ export interface ProviderCatalogEntry {
   /** True when this deployment has a process-level credential for the provider. */
   systemAvailable: boolean;
   /**
-   * Static fallback model IDs (from providers.json), used by the model picker
-   * when a provider has no live `modelsEndpoint` or the live fetch is empty.
+   * Model IDs for the picker, from the build-time models.dev snapshot joined on
+   * the entry's `modelsDevId` — newest release first. Used when a provider has
+   * no live `modelsEndpoint` or the live fetch is empty. Empty when the
+   * provider declares no `modelsDevId` (custom/self-hosted): the picker then
+   * falls back to freeform entry.
    */
   models: string[];
+  /**
+   * The same models with their snapshot metadata (context/output limits, per-
+   * million costs, tool-call + reasoning support, release date). Lets the
+   * picker show capability and cost hints instead of a bare id list. Parallel
+   * to `models` and in the same order.
+   */
+  modelDetails: ModelsDevSnapshotModel[];
+  /** models.dev provider key this entry's models came from, when mapped. */
+  modelsDevId: string | null;
   apiKeyPlaceholder: string;
   apiKeyInstructions: string;
   /** Modalities served; drives which per-modality overrides the UI offers. */
@@ -105,6 +119,20 @@ export function buildProviderCatalog(
           : null;
       const baseUrl = config?.upstreamBaseUrl ?? upstream?.upstreamBaseUrl ?? "";
 
+      // Models come from the build-time models.dev snapshot, keyed by the LOBU
+      // provider id (the generator does the modelsDevId join, so this lookup
+      // uses the id we already hold). There is deliberately NO hand-maintained
+      // list to fall back to: a curated array is what went stale silently — the
+      // shipped Claude list was missing a flagship released days earlier and no
+      // gate caught it. A provider with no `modelsDevId` — or a deployment
+      // where the snapshot artifact did not ship — yields an empty list, which
+      // the picker degrades to freeform entry.
+      //
+      // Deliberately NOT gated on `config`: a deployment-level provider has no
+      // providers.json enrichment in some call paths but must still list its
+      // models, which is what keeps `systemAvailable` providers usable.
+      const modelDetails = getSnapshotModels(module.providerId);
+
       entries.push({
         slug: module.providerId,
         displayName: config?.displayName || module.providerDisplayName,
@@ -116,7 +144,9 @@ export function buildProviderCatalog(
         defaultModel,
         modelsEndpoint: config?.modelsEndpoint ?? null,
         systemAvailable: module.hasSystemKey?.() ?? false,
-        models: config?.models ?? module.catalogModels ?? [],
+        models: modelDetails.map((m) => m.id),
+        modelDetails,
+        modelsDevId: config?.modelsDevId ?? null,
         apiKeyPlaceholder:
           config?.apiKeyPlaceholder ?? module.apiKeyPlaceholder ?? "",
         apiKeyInstructions:

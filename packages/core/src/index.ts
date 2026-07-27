@@ -80,6 +80,8 @@ export {
 // Config-driven provider types
 export type {
   ConfigProviderMeta,
+  ModelsDevSnapshot,
+  ModelsDevSnapshotModel,
   ProviderConfigEntry,
   ProviderOAuthConfig,
   ProviderOAuthGrantKind,

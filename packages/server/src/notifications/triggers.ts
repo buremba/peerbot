@@ -40,22 +40,56 @@ export type ActionApprovalDetails =
 	| EntityChangeApprovalDetails;
 
 /**
- * Escape user/agent-controlled text before it lands in Slack mrkdwn (and the
- * in-app Markdown body — both render HTML entities). Without this, a proposed
- * field value containing `<!channel>` pings the room from inside a trusted
- * approval card, and `<https://evil|Review in Lobu>` spoofs the review link.
+ * Escape user/agent-controlled text before it lands in Slack mrkdwn. Without
+ * this, a proposed field value containing `<!channel>` pings the room from
+ * inside a trusted approval card, and `<https://evil|Review in Lobu>` spoofs
+ * the review link.
+ *
+ * Slack-only: the persisted in-app body is Markdown source, not Slack mrkdwn.
+ * Storing Slack's HTML entities there couples plain-text consumers to Slack
+ * escaping. The Markdown emitter neutralises its own injection vectors via
+ * `escapeMarkdownText`.
  */
-function escapeNotificationText(value: string): string {
+function escapeSlackText(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;");
 }
 
+/**
+ * Escape user/agent-controlled text for the in-app Markdown body (GFM, so
+ * strikethrough and autolinks are live too). These strings are entity names,
+ * actor labels, and JSON values, and they get interpolated INTO our own
+ * `**bold**` and `[label](url)` chrome — so anything that could terminate that
+ * chrome early, or start markup of its own, has to be neutralised:
+ *  - `` \ ` * _ ~ `` — emphasis/strikethrough/code delimiters. Missing `~` let
+ *    an actor named `~~trusted agent~~` render struck-through.
+ *  - `[` and `]` — a stray `]` closes our link label early, letting the rest of
+ *    the name escape the anchor. Escaping is unconditional: a lookahead rule
+ *    (only before `(`) missed unmatched brackets. The renderer strips the
+ *    backslashes, so `[ 886 ]` still displays literally.
+ *  - `<` and `>` — GFM autolinks. `<https://evil.example>` became a real
+ *    attacker-controlled anchor inside a trusted-looking card.
+ *  - Leading block marks — reasons render as their own paragraph, so headings,
+ *    quotes, lists, and setext underlines must stay literal text there.
+ */
+function escapeMarkdownText(value: string): string {
+	return value
+		.replace(/([\\`*_~[\]<>])/g, "\\$1")
+		// Setext underlines and thematic breaks: ANY run length turns the line
+		// above into a heading ("Trusted line\n=" renders as <h1>), so this is not
+		// limited to the 3+ runs that form a `---` rule.
+		.replace(/^([ \t]{0,3})([-=]+)(?=[ \t]*$)/gm, "$1\\$2")
+		.replace(/^([ \t]{0,3})(?=[#>+-](?:\s|$))/gm, "$1\\")
+		.replace(/^([ \t]{0,3}\d{1,9})([.)])(?=\s|$)/gm, "$1\\$2");
+}
+
+/** Raw display text; each emitter applies its own escaping. */
 function displayNotificationValue(value: unknown): string {
 	if (value === undefined || value === null || value === "") return "Not set";
-	if (typeof value === "string") return escapeNotificationText(value);
-	return escapeNotificationText(JSON.stringify(value, null, 2));
+	if (typeof value === "string") return value;
+	return JSON.stringify(value, null, 2);
 }
 
 function truncateNotificationLine(value: string): string {
@@ -64,6 +98,7 @@ function truncateNotificationLine(value: string): string {
 		? `${normalized.slice(0, 477)}...`
 		: normalized;
 }
+
 
 /** "$parent_id" → "Parent id", "entity_type" → "Entity type". */
 export function formatLabel(value: string): string {
@@ -93,20 +128,22 @@ function formatReviewLink(url: string): string {
 }
 
 function formatCardLink(label: string, url: string): string {
-	return `<${url}|${escapeNotificationText(label.replace(/[<>|]/g, ""))}>`;
+	return `<${url}|${escapeSlackText(label.replace(/[<>|]/g, ""))}>`;
 }
 
-function compactDiffLine(
+/**
+ * Raw before/after pair. Kept UNASSEMBLED so each emitter can escape the two
+ * values without touching the `~old~` strikethrough delimiters it adds itself —
+ * escaping a pre-assembled string turned our own markup into literal `\~`.
+ */
+function compactDiffValues(
 	currentValue: unknown,
 	proposedValue: unknown,
-): string {
-	const current = truncateNotificationLine(
-		displayNotificationValue(currentValue),
-	);
-	const proposed = truncateNotificationLine(
-		displayNotificationValue(proposedValue),
-	);
-	return `~${current}~\n→ ${proposed}`;
+): { current: string; proposed: string } {
+	return {
+		current: truncateNotificationLine(displayNotificationValue(currentValue)),
+		proposed: truncateNotificationLine(displayNotificationValue(proposedValue)),
+	};
 }
 
 function formatWhyApprovalNeeded(reason: string | null | undefined): string {
@@ -115,9 +152,7 @@ function formatWhyApprovalNeeded(reason: string | null | undefined): string {
 	const fallback =
 		"This change needs a human approval before it is applied.";
 	if (!reason) return fallback;
-	return escapeNotificationText(
-		reason.replace(/^Watcher proposes updating /i, "Field is protected: "),
-	);
+	return reason.replace(/^Watcher proposes updating /i, "Field is protected: ");
 }
 
 export function formatActionApprovalTitle(
@@ -145,9 +180,9 @@ export function formatActionApprovalTitle(
 
 /**
  * Format-neutral content of an approval card, computed ONCE for both surfaces
- * (in-app Markdown body and Slack mrkdwn card): escaping, truncation, labels,
- * diff lines, and the "why" sentence live here; the two emitters below only
- * decide bolding, link syntax, and blank-line placement.
+ * (in-app Markdown body and Slack mrkdwn card): truncation, labels, diff lines,
+ * and the "why" sentence live here. Each emitter applies the escaping required
+ * by its own markup syntax.
  */
 interface ApprovalRenderModel {
 	requestedBy: string | null;
@@ -156,8 +191,12 @@ interface ApprovalRenderModel {
 	entityId: number | null;
 	/** formatLabel(entityType), for the body's entity-link fallback. */
 	entityTypeLabel: string | null;
-	/** Field-change diffs (null for entity_change — kinds render differently). */
-	diffs: Array<{ label: string; diff: string }> | null;
+	/**
+	 * Field-change diffs (null for entity_change — kinds render differently).
+	 * Values stay unassembled so emitters escape them without mangling the
+	 * strikethrough delimiters they wrap around `current`.
+	 */
+	diffs: Array<{ label: string; current: string; proposed: string }> | null;
 	/** entity_change action sentence ("Create/Delete this entity"). */
 	action: string | null;
 	proposal: Array<{ label: string; value: string }>;
@@ -169,10 +208,16 @@ function buildApprovalRenderModel(
 	details: ActionApprovalDetails,
 ): ApprovalRenderModel {
 	const base = {
+		// Collapsed to one line: these are interpolated into a single summary
+		// sentence, and an embedded newline would split it across Markdown
+		// paragraphs — leaving the card preview (first block only) showing a
+		// truncated half-sentence.
 		requestedBy: details.actorLabel
-			? escapeNotificationText(details.actorLabel)
+			? truncateNotificationLine(details.actorLabel)
 			: null,
-		entityName: details.entityName ?? null,
+		entityName: details.entityName
+			? truncateNotificationLine(details.entityName)
+			: null,
 		entityUrl: details.entityUrl ?? null,
 		entityId: details.entityId ?? null,
 		entityTypeLabel: details.entityType ? formatLabel(details.entityType) : null,
@@ -183,7 +228,7 @@ function buildApprovalRenderModel(
 			...base,
 			diffs: Object.entries(details.fields).map(([field, proposed]) => ({
 				label: formatLabel(field),
-				diff: compactDiffLine(current[field], proposed),
+				...compactDiffValues(current[field], proposed),
 			})),
 			action: null,
 			proposal: [],
@@ -203,7 +248,7 @@ function buildApprovalRenderModel(
 			label: formatLabel(field),
 			value: truncateNotificationLine(displayNotificationValue(value)),
 		})),
-		why: details.reason ? escapeNotificationText(details.reason) : null,
+		why: details.reason ?? null,
 	};
 }
 
@@ -219,20 +264,25 @@ function renderApprovalBody(
 	approvalUrl?: string,
 ): string {
 	const lines: string[] = [];
-	const label = escapeNotificationText(
+	const label = escapeMarkdownText(
 		model.entityName ?? model.entityTypeLabel ?? "this entity",
 	);
+	// Only the label is escaped — the URL is ours (buildResourcePermalink), and
+	// escaping it would break the link target.
 	const entityLink = model.entityUrl
 		? `[${label}](${model.entityUrl})`
 		: model.entityId
 			? `${label} (#${model.entityId})`
 			: label;
-	const who = model.requestedBy ?? "A watcher";
+	const who = escapeMarkdownText(model.requestedBy ?? "A watcher");
 
 	// One summary line: "<Watcher> wants to <verb> <entity>."
 	if (model.diffs) {
 		lines.push(`**${who}** wants to update ${entityLink}:`);
-		for (const d of model.diffs) lines.push(`- ${d.label}: ${d.diff}`);
+		for (const d of model.diffs)
+			lines.push(
+				`- ${d.label}: ~${escapeMarkdownText(d.current)}~\n→ ${escapeMarkdownText(d.proposed)}`,
+			);
 	} else {
 		const verb =
 			model.action === "Delete this entity"
@@ -242,11 +292,12 @@ function renderApprovalBody(
 					: "create";
 		lines.push(`**${who}** wants to ${verb} ${entityLink}.`);
 		if (model.proposal.length > 0) {
-			for (const p of model.proposal) lines.push(`- ${p.label}: ${p.value}`);
+			for (const p of model.proposal)
+				lines.push(`- ${p.label}: ${escapeMarkdownText(p.value)}`);
 		}
 	}
 	// The proposer's own reason, inline and unlabeled (it reads as a sentence).
-	if (model.why) lines.push("", model.why);
+	if (model.why) lines.push("", escapeMarkdownText(model.why));
 	if (approvalUrl) lines.push("", formatReviewLink(approvalUrl));
 	return lines.join("\n");
 }
@@ -254,24 +305,32 @@ function renderApprovalBody(
 /** Slack mrkdwn card text (bold labels, `<url|label>` links). */
 function renderApprovalCardText(model: ApprovalRenderModel): string {
 	const lines: string[] = [];
-	if (model.requestedBy) lines.push(`*Requested by:* ${model.requestedBy}`);
+	if (model.requestedBy)
+		lines.push(`*Requested by:* ${escapeSlackText(model.requestedBy)}`);
 	if (model.entityName) {
 		lines.push(
 			`*Entity:* ${
 				model.entityUrl
 					? formatCardLink(model.entityName, model.entityUrl)
-					: escapeNotificationText(model.entityName)
+					: escapeSlackText(model.entityName)
 			}`,
 		);
 	}
 	if (model.diffs) {
-		for (const d of model.diffs) lines.push("", `*${d.label}*`, d.diff);
+		for (const d of model.diffs)
+			lines.push(
+				"",
+				`*${d.label}*`,
+				`~${escapeSlackText(d.current)}~\n→ ${escapeSlackText(d.proposed)}`,
+			);
 	}
 	if (model.action) {
 		lines.push("", `*Proposed action:* ${model.action}`);
-		for (const p of model.proposal) lines.push(`*${p.label}:* ${p.value}`);
+		for (const p of model.proposal)
+			lines.push(`*${p.label}:* ${escapeSlackText(p.value)}`);
 	}
-	if (model.why) lines.push("", `*Why approval is needed:* ${model.why}`);
+	if (model.why)
+		lines.push("", `*Why approval is needed:* ${escapeSlackText(model.why)}`);
 	return lines.join("\n");
 }
 
@@ -290,7 +349,11 @@ export function formatActionApprovalBody(params: {
 		);
 	}
 
-	const connLabel = params.connectionName ? ` on ${params.connectionName}` : "";
+	// Escaped like every other interpolation into this Markdown body — a
+	// connection named "X](https://evil) [y" would otherwise forge an anchor.
+	const connLabel = params.connectionName
+		? ` on ${escapeMarkdownText(truncateNotificationLine(params.connectionName))}`
+		: "";
 	const urlLine = params.approvalUrl
 		? `\n\nReview: ${formatReviewLink(params.approvalUrl)}`
 		: "";

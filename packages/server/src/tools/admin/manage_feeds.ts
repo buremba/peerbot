@@ -58,7 +58,64 @@ import {
   validateFeedConfig,
   type FeedDefinition,
 } from './helpers/feed-helpers';
+import {
+  feedSecretKeyLookup,
+  feedSecretKeysFromSchema,
+  loadFeedSecretKeys,
+  redactConnectionConfig,
+  restoreRedactedConfig,
+  type ConnectorSecretKeys,
+} from '../../utils/connection-config-redaction';
 
+/**
+ * Sanitize a raw `feeds` row before it is serialized to a caller.
+ *
+ * `list_feeds` / `read_feed` / `read_feeds` select `f.*` and spread the row, so
+ * two columns need handling:
+ *
+ *  - `checkpoint` — the connector's opaque sync cursor. `table-schema.ts` names
+ *    it as a column query_sql must never emit; there is no reason these tools
+ *    should be a way around that, and cursors have historically carried tokens
+ *    and full result payloads. Dropped.
+ *  - `config` — free-form jsonb, written verbatim. Redacted on two layers, the
+ *    same as connection config: the connector's own
+ *    `feeds_schema[feed_key].configSchema` `format: "password"` declarations
+ *    (exact), then the shared keyname/URI walk (backstop). `configSchema` is
+ *    an unconstrained `Record<string, unknown>`, so a CUSTOM connector may
+ *    declare a feed-scoped credential under any name — no shipped connector
+ *    does today (all 27 audited, zero hits), which makes the declared layer
+ *    latent rather than live, but custom definitions are a supported feature
+ *    and the contract must not exempt a declaration site.
+ *
+ * All three actions are in PUBLIC_READ_ACTIONS, i.e. the same exposure tier as
+ * the connections list/get paths this branch fixes.
+ */
+function toPublicFeed<T extends Record<string, unknown>>(
+  row: T,
+  declaredSecretKeys?: ConnectorSecretKeys
+): Omit<T, 'checkpoint'> {
+  const { checkpoint: _checkpoint, ...feed } = row;
+  if (!('config' in feed)) return feed;
+  return {
+    ...feed,
+    config: redactConnectionConfig(feed.config, declaredSecretKeys),
+  };
+}
+
+/**
+ * Batch form: sanitize a page of feed rows, resolving each one's
+ * connector-declared secret keys from its own `connector_key` + `feed_key`.
+ * One definition query for the whole page — a per-row lookup would reintroduce
+ * an N+1 on the list path.
+ */
+async function toPublicFeeds<T extends Record<string, unknown>>(
+  organizationId: string,
+  rows: T[]
+): Promise<Array<Omit<T, 'checkpoint'>>> {
+  if (rows.length === 0) return [];
+  const secretKeys = await loadFeedSecretKeys(organizationId, rows);
+  return rows.map((row) => toPublicFeed(row, secretKeys.get(feedSecretKeyLookup(row))));
+}
 
 // ============================================
 // Main Function (Action Router)
@@ -134,7 +191,7 @@ async function handleListFeeds(
   // page (offset past the last row); the overshoot fallback below recovers the
   // true count there.
   const pageQuery = sql`
-    SELECT f.*, COUNT(*) OVER()::int AS filtered_total
+    SELECT f.*, c.connector_key, COUNT(*) OVER()::int AS filtered_total
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE ${where}
@@ -229,8 +286,12 @@ async function handleListFeeds(
     total = Number(countRow?.total ?? 0);
   }
   // Strip the window-count helper column from each feed row — it is metadata
-  // about the result set, not a feed field.
-  const feeds = rows.map(({ filtered_total: _filtered_total, ...feed }) => feed);
+  // about the result set, not a feed field — then sanitize the row itself
+  // (checkpoint out, config redacted).
+  const feeds = await toPublicFeeds(
+    organizationId,
+    rows.map(({ filtered_total: _filtered_total, ...feed }) => feed)
+  );
   return {
     action: 'list_feeds',
     feeds,
@@ -288,7 +349,7 @@ async function handleReadFeed(
       ${visibilityFilter}
   `) as Array<Record<string, any>>;
   if (rows.length === 0) return { error: 'Feed not found' };
-  const feed = rows[0];
+  const [feed] = await toPublicFeeds(organizationId, [rows[0]]);
 
   // A streaming (chat-channel) feed has no sync runs — its content is the live
   // transcript in `channel_messages`. Map the connection slug + feed_key to the
@@ -580,7 +641,15 @@ async function handleCreateFeed(
     state: inserted[0] as Record<string, unknown>,
   });
 
-  return { action: 'create_feed', feed: inserted[0] };
+  return {
+    action: 'create_feed',
+    feed: toPublicFeed(
+      inserted[0] as Record<string, unknown>,
+      // `feedsSchema` is the connector definition already loaded above for
+      // config validation — no extra lookup needed.
+      feedSecretKeysFromSchema(feedsSchema, args.feed_key)
+    ),
+  };
 }
 
 async function handleUpdateFeed(
@@ -668,10 +737,20 @@ async function handleUpdateFeed(
     }
     const feedRow = existing[0] as Record<string, unknown>;
 
+    // `read_feed`/`list_feeds` redact feeds.config, so a client that reads and
+    // PATCHes back would otherwise persist `__LOBU_REDACTED__` over the stored
+    // value. Restore from the row (read under the same FOR UPDATE lock, so the
+    // restore sees exactly what the write is based on) before merge/replace.
+    const restoredConfig = hasConfigArg
+      ? (restoreRedactedConfig(args.config, parseJsonObject(feedRow.config)) as Record<
+          string,
+          unknown
+        >)
+      : undefined;
     const effectiveConfig = hasConfigArg
       ? replaceFeedConfig
-        ? (args.config as Record<string, unknown>)
-        : { ...parseJsonObject(feedRow.config), ...args.config }
+        ? (restoredConfig as Record<string, unknown>)
+        : { ...parseJsonObject(feedRow.config), ...restoredConfig }
       : null;
     // Only collected feeds sync — virtual/streaming configs are not the
     // sync-config contract.
@@ -716,12 +795,19 @@ async function handleUpdateFeed(
     return {
       updated,
       authProfileId: Number(feedRow.auth_profile_id) || null,
+      // Resolved here because the connector's feeds_schema is already joined
+      // into this query — the response serializer below needs it to redact
+      // feed-scoped `format: "password"` fields without a second lookup.
+      declaredSecretKeys: feedSecretKeysFromSchema(
+        feedRow.feeds_schema,
+        String(feedRow.feed_key)
+      ),
     };
   });
   if ('error' in txResult && txResult.error !== undefined) {
     return { error: txResult.error };
   }
-  const { updated, authProfileId } = txResult;
+  const { updated, authProfileId, declaredSecretKeys } = txResult;
   if (authProfileId) {
     const authProfile = await getAuthProfileById(organizationId, authProfileId);
     if (authProfile?.profile_kind === 'oauth_account') {
@@ -748,7 +834,10 @@ async function handleUpdateFeed(
     ...(changedFields.length > 0 ? { changedFields } : {}),
   });
 
-  return { action: 'update_feed', feed: updated[0] };
+  return {
+    action: 'update_feed',
+    feed: toPublicFeed(updatedFeed, declaredSecretKeys),
+  };
 }
 
 async function handleDeleteFeed(

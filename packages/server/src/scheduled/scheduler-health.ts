@@ -32,6 +32,10 @@ interface SchedulerHealthStatus {
     overdueBehaviors: number;
     behaviorsOverdueByHours: number;
     stalePendingBehaviorRuns: number;
+    /** Approvals still undecided past PENDING_APPROVAL_TTL_DAYS. */
+    stalePendingApprovals: number;
+    /** Age of the oldest undecided approval, in days. */
+    oldestPendingApprovalDays: number;
   };
 }
 
@@ -42,6 +46,10 @@ const EXECUTION_GAP_THRESHOLD_HOURS = 2; // Alert if no runs are created in 2 ho
 // Alert only once it is overdue by more than an hour — matches the feed
 // threshold and avoids flapping on normal tick jitter.
 const BEHAVIOR_OVERDUE_THRESHOLD_HOURS = 1;
+// Cadence of the pending-approval expiry sweep (`expire-pending-approvals` is
+// registered on a daily cron in scheduled/jobs.ts). Used as the grace window on
+// top of the TTL before a stale approval counts as a fault rather than drift.
+const EXPIRY_SWEEP_INTERVAL_DAYS = 1;
 
 export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStatus> {
   const sql = getDb();
@@ -145,6 +153,36 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         ?.stale_pending || 0
     );
 
+    // Undecided approvals past the long-horizon TTL — the expire-pending-
+    // approvals sweep (scheduled/expire-pending-approvals.ts) should have taken
+    // these terminal. The COUNT is always reported: it is the operator's view of
+    // the backlog, which the original gap let grow forever unseen (the
+    // short-horizon reaper exempts these rows on purpose, #2044, and nothing
+    // else resolved them). The health ISSUE is raised only past the sweep grace
+    // below, since a non-zero count between daily ticks is expected drift.
+    const stalePendingApprovalStats = await sql`
+      SELECT
+        CAST(COUNT(*) AS INTEGER) AS stale_pending,
+        MAX(EXTRACT(EPOCH FROM (current_timestamp - created_at)) / 86400.0)
+          AS oldest_days
+      FROM runs
+      WHERE approval_status = 'pending'
+        AND run_type IN ('action', 'internal')
+        AND created_at
+            < current_timestamp - (${intervals.pendingApprovalTtlDays}::int * interval '1 day')
+    `;
+    // One full sweep interval of slack on top of the TTL. The expiry job is
+    // registered on a daily cron (scheduled/jobs.ts), so anything younger than
+    // this is drift the next tick will clear, not a fault.
+    const staleApprovalAlarmAfterDays =
+      intervals.pendingApprovalTtlDays + EXPIRY_SWEEP_INTERVAL_DAYS;
+    const stalePendingApprovals = Number(
+      stalePendingApprovalStats[0]?.stale_pending || 0
+    );
+    const oldestPendingApprovalDays = Number(
+      stalePendingApprovalStats[0]?.oldest_days || 0
+    );
+
     // Check for issues
     if (overdueByHours > OVERDUE_THRESHOLD_HOURS) {
       issues.push(`${overdueFeeds} feeds overdue by up to ${overdueByHours.toFixed(1)} hours`);
@@ -180,6 +218,18 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
       );
     }
 
+    // Alarm only once a full sweep opportunity has been MISSED, not merely
+    // because a row crossed the TTL. The expiry sweep runs daily, so an approval
+    // that ages past the TTL just after a tick sits stale for up to a day by
+    // design; alarming on that would put /health/scheduler in 503 during normal
+    // operation and train operators to ignore it. Past TTL + one sweep interval,
+    // a row that is still pending means the sweep did not do its job.
+    if (oldestPendingApprovalDays > staleApprovalAlarmAfterDays) {
+      issues.push(
+        `${stalePendingApprovals} approvals undecided past the ${intervals.pendingApprovalTtlDays}-day TTL with the oldest at ${oldestPendingApprovalDays.toFixed(1)} days — past the ${staleApprovalAlarmAfterDays}-day sweep grace, so the expiry sweep looks wedged`
+      );
+    }
+
     const healthy = issues.length === 0;
 
     if (!healthy) {
@@ -202,6 +252,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueBehaviors,
         behaviorsOverdueByHours: Math.round(behaviorsOverdueByHours * 10) / 10,
         stalePendingBehaviorRuns,
+        stalePendingApprovals,
+        oldestPendingApprovalDays: Math.round(oldestPendingApprovalDays * 10) / 10,
       },
     };
   } catch (error) {
@@ -222,6 +274,8 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
         overdueBehaviors: 0,
         behaviorsOverdueByHours: 0,
         stalePendingBehaviorRuns: 0,
+        stalePendingApprovals: 0,
+        oldestPendingApprovalDays: 0,
       },
     };
   }

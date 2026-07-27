@@ -26,9 +26,10 @@ import {
 import type { ProgressUpdate, SessionExecutionResult } from "../core/types";
 import { createEmbeddedBashOps } from "../embedded/just-bash-bootstrap";
 import { consumePendingConfigNotifications } from "../gateway/pending-config-notifications";
-import { getApiKeyEnvVarForProvider } from "../shared/provider-auth-hints";
 import { getWorkerTokenManager } from "../gateway/worker-token-manager";
+import { getApiKeyEnvVarForProvider } from "../shared/provider-auth-hints";
 import { isRecord } from "../shared/type-guards";
+import { activeToolNames } from "./active-tool-names";
 import {
   buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
@@ -45,14 +46,14 @@ import {
 } from "./plugin-composition";
 import type { AgentProgressProcessor } from "./processor";
 import { resetSessionForProviderChange } from "./provider-session";
-import { activeToolNames } from "./active-tool-names";
+import { buildRuntimeShellInstructions } from "./runtime-shell-instructions";
+import { checkSandboxLeak } from "./sandbox-leak";
 import {
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "./session-context";
 import { buildToolPolicy, isToolAllowedByPolicy } from "./tool-policy";
 import { buildToolUseEventPayload } from "./tool-use-events";
-import { checkSandboxLeak } from "./sandbox-leak";
 import { createLobuTools, enforceBashPreflight } from "./tools";
 import { clearSnapshots, hydrateFromSnapshot } from "./transcript-snapshot";
 import { TurnController, wrapToolsWithTurnGuard } from "./turn-controller";
@@ -1083,6 +1084,13 @@ export async function runAISession(
 
   // Merge gateway instructions into custom instructions
   const instructionParts = [context.gatewayInstructions, customInstructions];
+
+  instructionParts.push(
+    buildRuntimeShellInstructions(
+      runtimeProviderId,
+      tools.some((tool) => tool.name === "bash")
+    )
+  );
 
   // CLI backends are delivered via session context from the gateway.
   const cliBackends = pc.cliBackends;

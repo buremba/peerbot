@@ -35,7 +35,10 @@ import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import logger from "../utils/logger";
 import { hasOrgSentinel } from "./default-provisioning";
-import { resolveSystemKeyProvidersAndModel } from "./system-provider-resolution";
+import {
+	resolveNewAgentProvisioningDefaults,
+	resolveSystemKeyProvidersAndModel,
+} from "./system-provider-resolution";
 
 export const BUILDER_AGENT_ID = "lobu-builder";
 export const BUILDER_AGENT_SENTINEL = "builder_agent_provisioned";
@@ -219,19 +222,20 @@ export async function ensureBuilderAgent(
 			return { created: false };
 		}
 
-		const resolved = await resolveSystemKeyProvidersAndModel();
+		const resolved = await resolveNewAgentProvisioningDefaults(organizationId);
 		const ownerUserId = await resolveOwnerUserId(client, organizationId);
 
 		await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id,
-        models,
+        models, pre_approved_tools,
         created_at, updated_at
       ) VALUES (
         ${BUILDER_AGENT_ID}, ${organizationId}, ${BUILDER_AGENT_NAME}, ${BUILDER_AGENT_IDENTITY},
         'external', ${ownerUserId},
         ${client.json(resolved.models)},
+        ${client.json(resolved.preApprovedTools)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING

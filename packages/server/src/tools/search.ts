@@ -13,6 +13,7 @@ import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb } from '../db/client';
+import { callerIsAdmin } from './admin/helpers/db-helpers';
 import type { Env } from '../index';
 import type { FeedReader, SourceKind } from '../lib/feed-reader';
 import { readVirtualFeed } from '../lib/connector-pushdown';
@@ -23,6 +24,7 @@ import {
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { filterChannelsForRequester } from '../authz/channel-visibility';
+import { redactConnectionRows } from '../utils/connection-config-redaction';
 import { toVectorLiteral } from '../utils/entity-management';
 import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -894,6 +896,14 @@ async function searchImpl(
           }
         )
       : Promise.resolve({});
+  const connectionScope: AuthzScope = {
+    ...authzScopeFromToolContext({
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
+    }),
+    principalIsAdmin: await callerIsAdmin(getDb(), ctx),
+  };
 
   // ========================================
   // ID-BASED LOOKUP (highest priority)
@@ -901,7 +911,7 @@ async function searchImpl(
 
   if (args.entity_id) {
     const [entity, recall] = await Promise.all([
-      fetchEntityById(args.entity_id, env, ctx.organizationId),
+      fetchEntityById(args.entity_id, env, connectionScope),
       recallPromise,
     ]);
     if (entity) {
@@ -915,7 +925,7 @@ async function searchImpl(
           recall
         );
       }
-      return withRecall(await formatEntityResult(readable, args, ctx), recall);
+      return withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall);
     }
     return withRecall(
       emptyResult({
@@ -941,7 +951,7 @@ async function searchImpl(
   );
 
   let [results, recall] = await Promise.all([
-    queryEntities(query, args, env, ctx.organizationId),
+    queryEntities(query, args, env, connectionScope),
     recallPromise,
   ]);
 
@@ -954,7 +964,7 @@ async function searchImpl(
         fallbackQuery.slice(0, 200).trim() || null,
         args,
         env,
-        ctx.organizationId
+        connectionScope
       );
       if (results.length > 0) {
         logger.info(
@@ -968,7 +978,7 @@ async function searchImpl(
   if (results.length > 0) {
     const readable = await filterEntitiesByReadPolicy(ctx, [...results]);
     if (readable.length > 0) {
-      return withRecall(await formatEntityResult(readable, args, ctx), recall);
+      return withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall);
     }
   }
 
@@ -1050,9 +1060,10 @@ async function fetchTopEntitiesByType(
 // running them globally for a public-catalog entity would leak other
 // tenants' activity volumes through aggregate counts. Each count is
 // gated on `e.organization_id = $callerOrg` so we return zeros for
-// cross-org rows. Caller passes the parameter index for their org.
-function entitySelectColumns(callerOrgParamIdx: number): string {
+// cross-org rows. Connection counts additionally apply per-user visibility.
+function entitySelectColumns(callerOrgParamIdx: number, scope: AuthzScope): string {
   const ownOrg = `e.organization_id = $${callerOrgParamIdx}`;
+  const connectionVisibility = compileConnectionRowVisibility(scope, 'cn');
   return `
   e.id, e.organization_id, e.name, et.slug AS entity_type, e.slug, e.metadata, e.parent_id,
   pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
@@ -1070,8 +1081,10 @@ function entitySelectColumns(callerOrgParamIdx: number): string {
       JOIN connections cn ON cn.id = f.connection_id
       WHERE e.id = ANY(f.entity_ids)
         AND f.organization_id = e.organization_id
+        AND cn.organization_id = e.organization_id
         AND f.deleted_at IS NULL
         AND cn.deleted_at IS NULL
+        ${connectionVisibility}
     ), 0)
   ELSE 0 END as connection_count,
   CASE WHEN ${ownOrg} THEN
@@ -1081,8 +1094,10 @@ function entitySelectColumns(callerOrgParamIdx: number): string {
       JOIN connections cn ON cn.id = f.connection_id
       WHERE e.id = ANY(f.entity_ids)
         AND f.organization_id = e.organization_id
+        AND cn.organization_id = e.organization_id
         AND f.deleted_at IS NULL
         AND cn.deleted_at IS NULL
+        ${connectionVisibility}
         AND cn.status = 'active'
     ), 0)
   ELSE 0 END as active_connection_count,
@@ -1107,13 +1122,13 @@ const ENTITY_JOINS = `
  * - category, market: additional filters
  * - query_embedding: vector similarity search
  * - metadata_filter: key-value metadata conditions
- * - organizationId: organization IDs the user can read from
+ * - scope: organization and connection-visibility principal
  */
 async function queryEntities(
   query: string | null,
   args: SearchArgs,
   _env: Env,
-  organizationId: string
+  scope: AuthzScope
 ) {
   const sql = getDb();
   const fuzzyEnabled = args.fuzzy ?? true;
@@ -1155,11 +1170,11 @@ async function queryEntities(
   // flag is on (default), so an agent looking up "Apple" finds tenant-local
   // and canonical hits in one call. The result row carries the org_id so the
   // agent can tell which is which. The same param index is reused by the
-  // count subqueries in entitySelectColumns(orgParamIdx), which gate
+  // count subqueries in entitySelectColumns(orgParamIdx, scope), which gate
   // operational counts (events, connections, watchers) on caller-org rows
   // so cross-org public results don't leak other tenants' activity.
   const includePublic = args.include_public_catalogs ?? true;
-  const orgParamIdx = addParam(organizationId);
+  const orgParamIdx = addParam(scope.organizationId);
   if (includePublic) {
     conditions.push(
       `(e.organization_id = $${orgParamIdx} OR EXISTS (SELECT 1 FROM organization o WHERE o.id = e.organization_id AND o.visibility = 'public'))`
@@ -1226,7 +1241,7 @@ async function queryEntities(
   }
 
   const rows = await sql.unsafe<EntityQueryRow>(
-    `SELECT ${entitySelectColumns(orgParamIdx)},
+    `SELECT ${entitySelectColumns(orgParamIdx, scope)},
       ${scoreExpr} as match_score,
       '${matchReason}' as match_reason,
       ${vectorSimExpr} as vector_similarity
@@ -1242,21 +1257,21 @@ async function queryEntities(
   return rows;
 }
 
-async function fetchEntityById(entityId: number, _env: Env, organizationId: string) {
+async function fetchEntityById(entityId: number, _env: Env, scope: AuthzScope) {
   const sql = getDb();
 
   // Caller's org or any visibility=public catalog. Lets entity_id lookup find
   // canonical entities (HMRC, banks) the agent has discovered via search.
-  // Operational counts (events, connections, watchers) are gated on
-  // caller-org so cross-org public hits don't leak other tenants' activity.
+  // Operational counts are gated on caller org; connection counts also use
+  // the caller's row-visibility predicate.
   const result = await sql.unsafe<EntityQueryRow>(
-    `SELECT ${entitySelectColumns(2)}
+    `SELECT ${entitySelectColumns(2, scope)}
     ${ENTITY_JOINS}
     LEFT JOIN organization eo ON eo.id = e.organization_id
     WHERE e.id = $1
       AND (e.organization_id = $2 OR eo.visibility = 'public')
       AND e.deleted_at IS NULL`,
-    [entityId, organizationId]
+    [entityId, scope.organizationId]
   );
 
   if (result.length === 0) return null;
@@ -1272,7 +1287,8 @@ async function fetchEntityById(entityId: number, _env: Env, organizationId: stri
 async function formatEntityResult(
   entityRows: EntityQueryRow[],
   args: SearchArgs,
-  ctx: ToolContext
+  ctx: ToolContext,
+  connectionScope: AuthzScope
 ): Promise<UnifiedSearchResult> {
   // Map rows to unified Entity format (all fields, nulls where not applicable)
   const matches: Entity[] = entityRows.map((row) => ({
@@ -1312,7 +1328,7 @@ async function formatEntityResult(
   let connections: ConnectionInfo[] | undefined;
   const primaryIsCallerOrg = String(primaryRow.organization_id) === ctx.organizationId;
   if ((args.include_connections ?? true) && primaryIsCallerOrg) {
-    connections = await fetchConnectionsForEntity(primaryEntity.id);
+    connections = await fetchConnectionsForEntity(primaryEntity.id, connectionScope);
   }
 
   // Fetch children for root entities (no parent). Children are scoped to
@@ -1401,7 +1417,16 @@ async function formatEntityResult(
   };
 }
 
-async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionInfo[]> {
+/**
+ * `c.config` here is the same verbatim jsonb the manage_connections read paths
+ * serve, so it can carry connector secrets such as bot tokens and connection
+ * strings. Redacted on the way out; the field stays present so callers can
+ * still see which options are configured.
+ */
+async function fetchConnectionsForEntity(
+  entityId: number,
+  scope: AuthzScope
+): Promise<ConnectionInfo[]> {
   const sql = getDb();
   const result = await sql`
     SELECT
@@ -1422,6 +1447,9 @@ async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionIn
     FROM connections c
     LEFT JOIN current_event_records f ON f.connection_id = c.id
     WHERE ${sql.unsafe(connectionLinkedToBusinessEntitySql(String(entityId), 'c', 'c.organization_id'))}
+      AND c.organization_id = ${scope.organizationId}
+      AND c.deleted_at IS NULL
+      ${sql.unsafe(compileConnectionRowVisibility(scope, 'c'))}
     GROUP BY c.id, c.connector_key, c.display_name, c.status, c.config, c.created_at, c.updated_at
     ORDER BY
       CASE c.status
@@ -1433,7 +1461,10 @@ async function fetchConnectionsForEntity(entityId: number): Promise<ConnectionIn
     LIMIT 20
   `;
 
-  return result as ConnectionInfo[];
+  return (await redactConnectionRows(
+    scope.organizationId,
+    result as unknown as Array<Record<string, unknown>>
+  )) as unknown as ConnectionInfo[];
 }
 
 async function attachOrganizationSlugs(rows: EntityQueryRow[]): Promise<void> {

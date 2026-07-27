@@ -185,8 +185,9 @@ export function managedTenantAdvisoryLockKey(
  * intent, and `StoredConnection.agentId === undefined` cannot distinguish
  * "no intent" from an explicit clear (the manager deletes the key on clear).
  * So the caller declares intent: with `preserveAgentId` the conflict UPDATE
- * keeps the existing row's `agent_id` (a fresh insert still starts NULL);
- * without it, `agent_id` is written from `conn.agentId` (set or clear).
+ * keeps the existing row's `agent_id`, or adopts one from an enterprise
+ * generation retired by the same write; without it, `agent_id` is written from
+ * `conn.agentId` (set or clear).
  */
 export async function upsertChatConnectionProjection(
   sql: any,
@@ -218,6 +219,7 @@ export async function upsertChatConnectionProjection(
     settings: conn.settings ?? {},
     chatMetadata: conn.metadata ?? {},
   };
+  let inheritedAgentId: string | null = null;
 
   if (status === "active" && externalTenantId) {
     // Universal order (see chatTenantAdvisoryLockKey): tenant advisories up
@@ -293,9 +295,21 @@ export async function upsertChatConnectionProjection(
               AND ai.metadata->>'external_id' = connections.slug
               AND ai.status = 'active'
           )
-        RETURNING slug
+        RETURNING slug, agent_id
       `;
       if (supersededEnterprise.length > 0) {
+        if (opts?.preserveAgentId) {
+          // A managed install has no routing intent. Carry the retired generation's
+          // admin-configured fallback onto its new-slug successor.
+          inheritedAgentId =
+            (supersededEnterprise[0] as { agent_id: string | null }).agent_id ??
+            null;
+        }
+        const droppedAgentId =
+          !inheritedAgentId &&
+          supersededEnterprise.some(
+            (r: { agent_id: string | null }) => r.agent_id != null,
+          );
         logger.info(
           {
             orgId,
@@ -304,9 +318,29 @@ export async function upsertChatConnectionProjection(
             enterpriseId,
             activated: slug,
             superseded: supersededEnterprise.map((r: { slug: string }) => r.slug),
+            inheritedAgentId,
           },
           "Retired stale enterprise-keyed Slack Grid connection projection",
         );
+        if (droppedAgentId) {
+          // The retired generation carried fallback routing that this write is
+          // NOT carrying forward, so the successor may come up ownerless:
+          // `resolveAgentId` finds no connection owner, inbound messages hit the
+          // unclaimed-workspace responder, and channels bound only by that
+          // fallback go dark. This went unnoticed for days in prod (conn 430 →
+          // 448) because nothing surfaced it — warn instead of failing silently.
+          logger.warn(
+            {
+              orgId,
+              platform: conn.platform,
+              activated: slug,
+              superseded: supersededEnterprise
+                .filter((r: { agent_id: string | null }) => r.agent_id != null)
+                .map((r: { slug: string }) => r.slug),
+            },
+            "Superseded connection's fallback agent_id was NOT carried forward — successor may be ownerless",
+          );
+        }
       }
     }
 
@@ -351,13 +385,22 @@ export async function upsertChatConnectionProjection(
       display_name, status, config, credential_mode, slug, visibility,
       error_message, created_at, updated_at
     ) VALUES (
-      ${orgId}, ${conn.platform}, ${externalTenantId}, ${conn.agentId ?? null},
+      ${orgId}, ${conn.platform}, ${externalTenantId},
+      ${
+        opts?.preserveAgentId
+          ? (conn.agentId ?? inheritedAgentId)
+          : (conn.agentId ?? null)
+      },
       ${displayName}, ${status}, ${jsonOf(foldedConfig)}, ${credentialMode},
       ${slug}, 'org', ${conn.errorMessage ?? null}, now(), now()
     )
     ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
       connector_key = EXCLUDED.connector_key,
       external_tenant_id = EXCLUDED.external_tenant_id,
+      -- No inheritance on the CONFLICT path: the row already exists, so a NULL
+      -- agent_id is an admin's explicit CLEAR, not an unfilled gap. Adopting
+      -- there would undo that clear on every later reinstall. Inheritance
+      -- applies only to the fresh INSERT above, where NULL means "new row".
       agent_id = ${
         opts?.preserveAgentId
           ? sql`connections.agent_id`

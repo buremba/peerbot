@@ -39,6 +39,7 @@ import {
   resolveWritePolicyDecision,
   type ActingPrincipal,
 } from '../../authz/entity-policy';
+import { resolveNewAgentProvisioningDefaults } from '../../auth/system-provider-resolution';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import {
@@ -341,6 +342,19 @@ export async function applyCreate(
   }
   const sql = createDbClientFromEnv(env);
   const ownerUserId = ctx.userId;
+  // Fresh-agent provisioning defaults, from the SAME helper every other create
+  // path uses (see `resolveNewAgentProvisioningDefaults` for the full rationale
+  // and the org-default ordering). Seeded ONLY when the caller did not pin an
+  // explicit `default_model` — that outranks both and is persisted below by the
+  // non-column field loop.
+  const provisioning = await resolveNewAgentProvisioningDefaults(
+    ctx.organizationId
+  );
+  const explicitModel = argValue(args, 'default_model');
+  const seedModels =
+    explicitModel !== undefined && explicitModel.trim()
+      ? null
+      : provisioning.models;
   // Mirror the provisioning pattern (ensureDefaultAgent / ensureBuilderAgent):
   // owner_platform='external' on the row AND an agent_users mapping, so the
   // per-user ownership check (SPA cookie / PAT session) can reach the new agent.
@@ -350,11 +364,15 @@ export async function applyCreate(
   const rows = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, identity_md,
-      owner_platform, owner_user_id, created_at, updated_at
+      owner_platform, owner_user_id, models, pre_approved_tools,
+      created_at, updated_at
     )
     VALUES (
       ${args.agent_id}, ${ctx.organizationId}, ${args.name}, ${args.description ?? null},
-      ${args.identity_md ?? ''}, 'external', ${ownerUserId}, NOW(), NOW()
+      ${args.identity_md ?? ''}, 'external', ${ownerUserId},
+      ${seedModels === null ? null : sql.json(seedModels)},
+      ${sql.json(provisioning.preApprovedTools)},
+      NOW(), NOW()
     )
     ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id

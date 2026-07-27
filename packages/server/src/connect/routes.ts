@@ -29,6 +29,10 @@ import {
   normalizeAuthProfileSlug,
   normalizeAuthValues,
 } from '../utils/auth-profiles';
+import {
+  persistAuthCredentials,
+  toSecretRefAuthData,
+} from '../utils/auth-credential-secrets';
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
@@ -213,6 +217,8 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
   if (!tokenRow.auth_profile_id || !tokenRow.connection_id) {
     return c.json({ error: 'This env auth flow is not attached to a pending connection.' }, 400);
   }
+  const authProfileId = Number(tokenRow.auth_profile_id);
+  const connectionId = Number(tokenRow.connection_id);
 
   const sql = getDb();
 
@@ -223,7 +229,7 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
       f.feed_key,
       f.config
     FROM feeds f
-    WHERE connection_id = ${tokenRow.connection_id} AND f.deleted_at IS NULL
+    WHERE connection_id = ${connectionId} AND f.deleted_at IS NULL
     ORDER BY id ASC
     LIMIT 1
   `;
@@ -279,32 +285,45 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
     );
   }
 
-  // Store credentials on the pending auth profile but keep connection in pending_auth
-  await sql`
-    UPDATE auth_profiles
-    SET auth_data = ${sql.json(normalizeAuthValues(body.credentials))},
-        status = 'pending_auth',
-        updated_at = NOW()
-    WHERE id = ${tokenRow.auth_profile_id}
-      AND organization_id = ${tokenRow.organization_id}
-  `;
+  // Store credentials on the pending auth profile but keep connection in
+  // pending_auth. The submitted values are bearer credentials (a postgres DSN
+  // embeds its own password), so they go to the encrypted secret store and
+  // only `secret://` refs land in `auth_data`. Secret write + profile/connection
+  // updates share one transaction so a partial failure cannot leave a
+  // decryptable secret without the matching auth_data ref.
+  await sql.begin(async (tx) => {
+    const credentialRefs = await toSecretRefAuthData({
+      organizationId: tokenRow.organization_id,
+      authProfileId,
+      credentials: normalizeAuthValues(body.credentials),
+      db: tx,
+    });
+    await tx`
+      UPDATE auth_profiles
+      SET auth_data = ${tx.json(credentialRefs)},
+          status = 'pending_auth',
+          updated_at = NOW()
+      WHERE id = ${authProfileId}
+        AND organization_id = ${tokenRow.organization_id}
+    `;
 
-  await sql`
-    UPDATE connections
-    SET status = 'pending_auth',
-        updated_at = NOW()
-    WHERE id = ${tokenRow.connection_id}
-      AND organization_id = ${tokenRow.organization_id}
-  `;
+    await tx`
+      UPDATE connections
+      SET status = 'pending_auth',
+          updated_at = NOW()
+      WHERE id = ${connectionId}
+        AND organization_id = ${tokenRow.organization_id}
+    `;
 
-  // Activate feeds so the worker can pick them up for validation
-  await sql`
-    UPDATE feeds
-    SET status = 'active',
-        next_run_at = NOW(),
-        updated_at = NOW()
-    WHERE connection_id = ${tokenRow.connection_id}
-  `;
+    // Activate feeds so the worker can pick them up for validation
+    await tx`
+      UPDATE feeds
+      SET status = 'active',
+          next_run_at = NOW(),
+          updated_at = NOW()
+      WHERE connection_id = ${connectionId}
+    `;
+  });
 
   const feedId = Number(feed.id);
   const runId = await createSyncRun(feedId, c.env as unknown as Env);
@@ -478,10 +497,17 @@ connectRoutes.post('/:token/cancel', requireConnectToken, async (c) => {
 
   await sql.begin(async (tx) => {
     if (tokenRow.auth_profile_id) {
+      // Clear auth_data AND drop the encrypted credential rows. Setting
+      // auth_data to {} alone would leave decryptable agent_secrets behind.
+      await persistAuthCredentials({
+        organizationId: tokenRow.organization_id,
+        authProfileId: Number(tokenRow.auth_profile_id),
+        credentials: {},
+        db: tx,
+      });
       await tx`
         UPDATE auth_profiles
-        SET auth_data = '{}'::jsonb,
-            status = 'pending_auth',
+        SET status = 'pending_auth',
             updated_at = NOW()
         WHERE id = ${tokenRow.auth_profile_id}
           AND organization_id = ${tokenRow.organization_id}

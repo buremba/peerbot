@@ -28,6 +28,7 @@ import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
+import { runExpirePendingApprovals } from './expire-pending-approvals';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -35,6 +36,7 @@ import {
   enqueueAgentMessage,
 } from '../gateway/services/agent-threads';
 import { buildMessagePayload } from '../gateway/services/platform-helpers';
+import { migrateLegacyPlaintextAuthData } from '../utils/auth-credential-secrets';
 
 function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   if (!value || typeof value !== 'object') return null;
@@ -264,6 +266,23 @@ function registerMaintenanceTasks(
     { cron: '0 * * * *' },
   );
 
+  // Credential-at-rest convergence — rewrites any `env` auth profile still
+  // holding a PLAINTEXT credential (e.g. a postgres DSN, which embeds its own
+  // password) into an encrypted `secret://` ref. Encryption cannot happen in a
+  // SQL migration, so the conversion runs here instead. Idempotent: a profile
+  // already holding refs is skipped, so this is a no-op after the first pass.
+  // Single-claimant per tick; pure Postgres, so multi-replica safe.
+  scheduler.register(
+    'converge-auth-credential-secrets',
+    async () => {
+      const converted = await migrateLegacyPlaintextAuthData();
+      if (converted > 0) {
+        logger.info({ converted }, '[task] converge-auth-credential-secrets converted profiles');
+      }
+    },
+    { cron: '*/10 * * * *' },
+  );
+
   // Stale device-worker reaper — deletes device_workers rows that are unseen
   // for 30+ days AND have no pinned connections/watchers/auth-profiles. Safety
   // net for orphaning that identity-reuse-at-mint can't cover (extension
@@ -292,6 +311,19 @@ function registerMaintenanceTasks(
       await runReapExpiredPendingSlackInstalls();
     },
     { cron: '17 3 * * *' },
+  );
+
+  // Long-horizon pending-approval expiry: the counterpart to the short-horizon
+  // claim reaper, which exempts approval-pending rows on purpose (#2044) and so
+  // never resolves them. Rationale + fairness/draining details live in
+  // scheduled/expire-pending-approvals.ts. Daily, off-peak, distinct minute from
+  // the other two reapers.
+  scheduler.register(
+    'expire-pending-approvals',
+    async () => {
+      await runExpirePendingApprovals();
+    },
+    { cron: '31 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

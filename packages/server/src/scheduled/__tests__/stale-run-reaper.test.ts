@@ -52,7 +52,8 @@ interface SeedRunOpts {
 	feedId?: number | null;
 	createdAtAgoSeconds?: number;
 	/** Defaults to 'auto' (worker-claimable). Set 'pending' for a human-approval run. */
-	approvalStatus?: "auto" | "pending" | "approved" | "rejected";
+	approvalStatus?: "auto" | "pending" | "approved" | "rejected" | "expired";
+	createdAtAgoDays?: number;
 }
 
 async function seedRun(opts: SeedRunOpts): Promise<number> {
@@ -66,7 +67,10 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 		opts.claimedAtAgoSeconds !== null && opts.claimedAtAgoSeconds !== undefined
 			? `current_timestamp - interval '${opts.claimedAtAgoSeconds} seconds'`
 			: "NULL";
-	const createdAt = `current_timestamp - interval '${opts.createdAtAgoSeconds ?? 0} seconds'`;
+	const createdAt =
+		opts.createdAtAgoDays !== undefined
+			? `current_timestamp - interval '${opts.createdAtAgoDays} days'`
+			: `current_timestamp - interval '${opts.createdAtAgoSeconds ?? 0} seconds'`;
 	const rows = (await sql.unsafe(
 		`INSERT INTO runs (
        organization_id, run_type, feed_id, status, approval_status,
@@ -113,6 +117,14 @@ async function statusOf(runId: number): Promise<string> {
 			status: string;
 		}>;
 	return rows[0]?.status ?? "missing";
+}
+
+async function approvalStatusOf(runId: number): Promise<string> {
+	const sql = getDb();
+	const rows = (await sql`
+    SELECT approval_status FROM runs WHERE id = ${runId}
+  `) as unknown as Array<{ approval_status: string }>;
+	return rows[0]?.approval_status ?? "missing";
 }
 
 describe("reapStaleRuns — connector lanes", () => {
@@ -206,6 +218,68 @@ describe("reapStaleRuns — connector lanes", () => {
 
 		expect(result.reaped).toBe(1);
 		expect(await statusOf(autoId)).toBe("timeout");
+	});
+
+	// #2044 REGRESSION GUARD — the single most important assertion here.
+	//
+	// The long-horizon expiry sweep (scheduled/expire-pending-approvals.ts) was
+	// added to take undecided approvals terminal after DAYS. It must not have
+	// leaked into the SHORT-horizon reaper: a fresh approval-pending run, and a
+	// stale-by-CLAIM-horizon one, must both still survive this reaper untouched,
+	// however long they sit, because no worker will ever claim them and the human
+	// has not decided yet. If this fails, #2044 is re-broken and approval URLs
+	// point at dead runs again.
+	test("#2044: approval-pending runs survive the short-horizon reaper at every age", async () => {
+		const fresh = await seedRun({
+			status: "pending",
+			approvalStatus: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoSeconds: 1,
+		});
+		const pastClaimHorizon = await seedRun({
+			status: "pending",
+			approvalStatus: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 50,
+		});
+		// Older than the LONG horizon too. Even here the short reaper must not act
+		// — expiring this row is the expiry sweep's job, under its own vocabulary
+		// ('expired'), not a claim timeout.
+		const pastExpiryHorizon = await seedRun({
+			status: "pending",
+			approvalStatus: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoDays: 30,
+		});
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(0);
+		for (const id of [fresh, pastClaimHorizon, pastExpiryHorizon]) {
+			expect(await statusOf(id)).toBe("pending");
+			expect(await approvalStatusOf(id)).toBe("pending");
+		}
+	});
+
+	// The reaper must also leave an already-EXPIRED row alone: it is terminal, and
+	// re-reaping it would overwrite 'cancelled' with 'timeout' and lose the reason.
+	test("an expired approval run is terminal and not re-reaped", async () => {
+		const expiredId = await seedRun({
+			status: "cancelled",
+			approvalStatus: "expired",
+			lastHeartbeatAgoSeconds: null,
+			runType: "action",
+			createdAtAgoDays: 30,
+		});
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(0);
+		expect(await statusOf(expiredId)).toBe("cancelled");
+		expect(await approvalStatusOf(expiredId)).toBe("expired");
 	});
 
 	test("a worker claim holding the row lock wins over pending expiration", async () => {

@@ -65,7 +65,11 @@ const SECRET_EXACT_KEYS = new Set([
 /** Normalize camelCase and separators so config keys and HTTP headers agree. */
 function normalizeKey(key: string): string {
   return key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    // Split an acronym run from a following word ("APIKey" -> "API_Key").
+    // A fixed-width lookahead (never a greedy `[A-Z]+` that overlaps the next
+    // `[A-Z]`) keeps this linear: a long uppercase run like "AAAA..." can't
+    // trigger quadratic backtracking (CodeQL polynomial-ReDoS).
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, "$1_")
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")

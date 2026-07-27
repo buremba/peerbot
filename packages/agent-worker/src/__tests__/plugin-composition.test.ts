@@ -61,6 +61,8 @@ describe("runtime plugin composition", () => {
       "edit_message",
       "delete_message",
       "ask_user",
+      // Conversation-plugin tool, so it composes before any MCP tool.
+      "suggest_actions",
       "search_issues",
     ]);
   });

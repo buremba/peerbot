@@ -124,9 +124,9 @@ export type {
   ThinkingLevel,
   ThreadResponsePayload,
   ToolsConfig,
-  UserSuggestion,
 } from "./types";
 export { hasCredentialSource } from "./types";
+export { SUGGESTION_LIMITS, sanitizeSuggestionPrompts } from "./types";
 // Shared message/interaction base shape
 export type { BaseMessage } from "./types/message";
 

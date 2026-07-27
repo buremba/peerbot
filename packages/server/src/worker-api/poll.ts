@@ -903,12 +903,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // `auth_data` holds `secret://` refs, not values. An `authenticate` run
   // consumes these as REAL credentials (e.g. to refresh an expiring token),
   // so resolve them rather than shipping the refs verbatim.
-  const previousCredentials = deliverConnectionAuth
-    ? await resolveAuthCredentials({
-        organizationId: row.organization_id,
-        authData: row.auth_profile_auth_data,
-      })
-    : undefined;
+  const previousCredentials =
+    deliverConnectionAuth && row.run_auth_profile_id != null
+      ? await resolveAuthCredentials({
+          organizationId: row.organization_id,
+          authProfileId: Number(row.run_auth_profile_id),
+          authData: row.auth_profile_auth_data,
+        })
+      : undefined;
 
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.

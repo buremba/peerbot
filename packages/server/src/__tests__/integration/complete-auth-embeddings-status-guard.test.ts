@@ -236,6 +236,7 @@ describe('completeAuthRun status guard (late-completion-after-timeout)', () => {
     ).toBe('secret');
     const resolved = await resolveAuthCredentials({
       organizationId: org.id,
+      authProfileId: profileId,
       authData: profileAfter[0].auth_data,
     });
     expect(resolved).toEqual({ access_token: 'fresh' });

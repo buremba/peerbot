@@ -147,6 +147,7 @@ describe('completeAuthRun claimant guard', () => {
     );
     const resolved = await resolveAuthCredentials({
       organizationId: org.id,
+      authProfileId: profileId,
       authData: profile[0].auth_data,
     });
     expect(resolved).toEqual({ api_key: 'real-token' });

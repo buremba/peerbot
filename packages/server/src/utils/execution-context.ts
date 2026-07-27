@@ -152,14 +152,20 @@ export async function resolveExecutionAuth(
   // pushdown (lib/connector-pushdown.ts). Non-ref entries (scope bookkeeping)
   // pass through untouched.
   const connectionCredentials = {
-    ...(await resolveAuthCredentials({
-      organizationId: params.organizationId,
-      authData: appAuthProfile?.auth_data ?? {},
-    })),
-    ...(await resolveAuthCredentials({
-      organizationId: params.organizationId,
-      authData: authProfile?.profile_kind === 'env' ? (authProfile.auth_data ?? {}) : {},
-    })),
+    ...(appAuthProfile
+      ? await resolveAuthCredentials({
+          organizationId: params.organizationId,
+          authProfileId: appAuthProfile.id,
+          authData: appAuthProfile.auth_data ?? {},
+        })
+      : {}),
+    ...(authProfile?.profile_kind === 'env'
+      ? await resolveAuthCredentials({
+          organizationId: params.organizationId,
+          authProfileId: authProfile.id,
+          authData: authProfile.auth_data ?? {},
+        })
+      : {}),
   };
   let sessionState =
     authProfile?.profile_kind === 'browser_session' || authProfile?.profile_kind === 'interactive'

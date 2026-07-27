@@ -60,6 +60,37 @@ function isStoredSecretRef(value: string): boolean {
 }
 
 /**
+ * Decode a builtin secret ref to its logical name, or null if not a builtin ref.
+ */
+function secretRefName(value: string): string | null {
+	const parsed = parseSecretRef(value);
+	if (parsed?.scheme !== BUILTIN_SECRET_SCHEME) return null;
+	try {
+		return decodeURIComponent(parsed.path);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * True when `value` is exactly the live or legacy-convergence secret for
+ * `auth-profile/<id>/<key>`. Resolution and migration must not honor any
+ * other `secret://` string — including same-org secrets or GLOBAL names.
+ */
+function isOwnedFieldRef(
+	value: string,
+	authProfileId: number,
+	key: string,
+): boolean {
+	const name = secretRefName(value);
+	if (name === null) return false;
+	return (
+		name === authCredentialSecretName(authProfileId, key) ||
+		name === authCredentialSecretName(authProfileId, key, "legacy-convergence")
+	);
+}
+
+/**
  * Secret name for one credential field. Namespaced per auth profile so two
  * profiles holding a `DATABASE_URL` never collide.
  */
@@ -127,7 +158,10 @@ async function storeAuthCredentialRefs(
 		// Migration of partially-converted rows may still hold some refs.
 		// Public paths never set preserveStoredRefs — every caller-supplied
 		// value is encrypted under THIS profile's field name.
-		if (params.preserveStoredRefs && isStoredSecretRef(value)) {
+		if (
+			params.preserveStoredRefs &&
+			isOwnedFieldRef(value, params.authProfileId, key)
+		) {
 			out[key] = value;
 			continue;
 		}
@@ -150,6 +184,54 @@ async function storeAuthCredentialRefs(
 				name,
 				value,
 			});
+		}
+	}
+
+	// Drop prior credential rows whose fields are no longer present. Replacing
+	// or shrinking auth_data must not leave decryptable bearer secrets behind.
+	// (Namespace staging rows for keys still referenced above are kept.)
+	const keepNames = Object.keys(out).flatMap((key) => {
+		const live = authCredentialSecretName(params.authProfileId, key);
+		const staged = authCredentialSecretName(
+			params.authProfileId,
+			key,
+			"legacy-convergence",
+		);
+		const kept: string[] = [live];
+		const current = out[key];
+		if (current && secretRefName(current) === staged) kept.push(staged);
+		return kept;
+	});
+	if (params.secretStore) {
+		await orgContext.run({ organizationId: params.organizationId }, async () => {
+			const listed = await params.secretStore!.list(
+				`auth-profile/${params.authProfileId}/`,
+			);
+			const keep = new Set(keepNames);
+			await Promise.all(
+				listed
+					.filter((entry) => !keep.has(entry.name))
+					.map((entry) => params.secretStore!.delete(entry.ref)),
+			);
+		});
+	} else {
+		// postgres.js: empty array for NOT IN is awkward — only run when we
+		// have keep names (always at least one when out is non-empty). When
+		// out is empty, delete the entire profile prefix.
+		if (keepNames.length === 0) {
+			await sql`
+        DELETE FROM agent_secrets
+        WHERE organization_id = ${params.organizationId}
+          AND name LIKE ${`auth-profile/${params.authProfileId}/%`}
+      `;
+		} else {
+			// `sql(array)` expands to a parenthesized list for IN/NOT IN.
+			await sql`
+        DELETE FROM agent_secrets
+        WHERE organization_id = ${params.organizationId}
+          AND name LIKE ${`auth-profile/${params.authProfileId}/%`}
+          AND name NOT IN ${sql(keepNames)}
+      `;
 		}
 	}
 
@@ -240,6 +322,8 @@ export async function persistAuthCredentials(params: {
  */
 export async function resolveAuthCredentials(params: {
 	organizationId: string;
+	/** Required so resolution can refuse foreign/predictable secret:// names. */
+	authProfileId: number;
 	authData: Record<string, unknown> | null | undefined;
 	secretStore?: SecretStore;
 }): Promise<Record<string, string>> {
@@ -252,7 +336,18 @@ export async function resolveAuthCredentials(params: {
 	await orgContext.run({ organizationId: params.organizationId }, async () => {
 		for (const [key, value] of Object.entries(values)) {
 			if (!isStoredSecretRef(value)) {
+				// Non-ref bookkeeping or still-plaintext legacy values.
 				out[key] = value;
+				continue;
+			}
+			// Only resolve refs that name THIS profile's field. A crafted
+			// secret://other-name in auth_data must not materialize another
+			// org/GLOBAL secret at execution time.
+			if (!isOwnedFieldRef(value, params.authProfileId, key)) {
+				logger.warn(
+					{ key, auth_profile_id: params.authProfileId, auth_profile_ref: value },
+					"Ignoring unowned auth credential ref",
+				);
 				continue;
 			}
 			const resolved = await resolveSecretValue(store, value);
@@ -296,7 +391,13 @@ export async function migrateLegacyPlaintextAuthData(): Promise<number> {
 	let converted = 0;
 	for (const row of rows) {
 		const values = normalizeAuthValues(row.auth_data ?? {});
-		if (!Object.values(values).some((value) => !isStoredSecretRef(value))) {
+		const profileId = Number(row.id);
+		// Convert plaintext AND unowned secret:// strings. Fully owned rows
+		// (every value is already this profile's field ref) are no-ops.
+		const needsConversion = Object.entries(values).some(
+			([key, value]) => !isOwnedFieldRef(value, profileId, key),
+		);
+		if (!needsConversion) {
 			continue;
 		}
 
@@ -317,10 +418,10 @@ export async function migrateLegacyPlaintextAuthData(): Promise<number> {
 			const nextRefs = await storeAuthCredentialRefs(
 				{
 					organizationId: row.organization_id,
-					authProfileId: Number(row.id),
+					authProfileId: profileId,
 					credentials: values,
 					db: tx,
-					// Partially-converted rows may already hold some refs.
+					// Keep only refs that already name this profile's field.
 					preserveStoredRefs: true,
 				},
 				"legacy-convergence",

@@ -339,6 +339,7 @@ describe("auth_profiles credential storage", () => {
 
 		const resolved = await resolveAuthCredentials({
 			organizationId: orgId,
+			authProfileId: targetId,
 			authData: await rawAuthData(targetId),
 		});
 		expect(resolved.DATABASE_URL).toBe(ROTATED_DSN);
@@ -549,6 +550,7 @@ describe("auth_profiles credential storage", () => {
 		// Resolving the attacker's profile must NOT yield the victim DSN.
 		const resolved = await resolveAuthCredentials({
 			organizationId: orgId,
+			authProfileId: attackerId,
 			authData: out,
 		});
 		expect(resolved.DATABASE_URL).toBe(victimRef);
@@ -578,12 +580,81 @@ describe("auth_profiles credential storage", () => {
 		expect(String(after.DATABASE_URL)).not.toBe(apiKeyRef);
 		const resolved = await resolveAuthCredentials({
 			organizationId: orgId,
+			authProfileId: profileId,
 			authData: after,
 		});
 		// Opaque store of the ref string — must not resolve to the API key value.
 		expect(resolved.DATABASE_URL).toBe(apiKeyRef);
 		expect(resolved.DATABASE_URL).not.toBe("real-api-key");
 		expect(resolved.DATABASE_URL).not.toBe(DSN);
+	});
+
+	it("does not resolve a legacy unowned secret:// planted in auth_data", async () => {
+		const sql = getTestDb();
+		const orgId = workspace.org.id;
+		const store = new PostgresSecretStore();
+		const foreignRef = await orgContext.run({ organizationId: orgId }, () =>
+			store.put("predictable-global-name", "should-not-leak"),
+		);
+		const profileId = await seedEnvProfile(orgId, "pg-legacy-inject", {
+			DATABASE_URL: foreignRef,
+		});
+		const resolved = await resolveAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			authData: await rawAuthData(profileId),
+		});
+		expect(resolved.DATABASE_URL).toBeUndefined();
+		// Convergence must encrypt the foreign ref as opaque input, not keep it.
+		await migrateLegacyPlaintextAuthData();
+		const after = await rawAuthData(profileId);
+		expect(String(after.DATABASE_URL)).not.toBe(foreignRef);
+		expect(parseSecretRef(String(after.DATABASE_URL))?.scheme).toBe("secret");
+		const afterResolve = await resolveAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			authData: after,
+		});
+		expect(afterResolve.DATABASE_URL).toBe(foreignRef);
+		expect(afterResolve.DATABASE_URL).not.toBe("should-not-leak");
+	});
+
+	it("deletes agent_secrets for credential keys removed from auth_data", async () => {
+		const sql = getTestDb();
+		const orgId = workspace.org.id;
+		const profileId = await seedEnvProfile(orgId, "pg-key-prune", {});
+		await persistAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			credentials: { DATABASE_URL: DSN, API_KEY: "extra-key" },
+		});
+		const before = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profileId}/%`}
+      ORDER BY name
+    `;
+		expect(before.map((r) => (r as { name: string }).name)).toEqual(
+			expect.arrayContaining([
+				`auth-profile/${profileId}/API_KEY`,
+				`auth-profile/${profileId}/DATABASE_URL`,
+			]),
+		);
+
+		await persistAuthCredentials({
+			organizationId: orgId,
+			authProfileId: profileId,
+			credentials: { DATABASE_URL: DSN },
+		});
+		const after = await sql`
+      SELECT name FROM agent_secrets
+      WHERE organization_id = ${orgId}
+        AND name LIKE ${`auth-profile/${profileId}/%`}
+      ORDER BY name
+    `;
+		expect(after.map((r) => (r as { name: string }).name)).toEqual([
+			`auth-profile/${profileId}/DATABASE_URL`,
+		]);
 	});
 
 	it("rename-only update keeps existing refs without re-storing", async () => {
@@ -609,6 +680,7 @@ describe("auth_profiles credential storage", () => {
 		expect(String((await rawAuthData(profile.id)).DATABASE_URL)).toBe(before);
 		const resolved = await resolveAuthCredentials({
 			organizationId: orgId,
+			authProfileId: profile.id,
 			authData: await rawAuthData(profile.id),
 		});
 		expect(resolved.DATABASE_URL).toBe(DSN);

@@ -463,10 +463,10 @@ export class MessageConsumer {
       // never fails a live turn.
       if (!isWatcherConversationId(effectiveConversationId)) {
         const { kind, storedPlatform } = classifyConversation(data.platform);
-        // Undo the id packing ONCE, here at write time, and store the result —
+        // Undo the API id packing once, here at write time, and store the result —
         // readers route on the stored `thread_id`, never by re-parsing the id.
         const threadId =
-          kind === "owned" && data.userId
+          kind === "owned"
             ? threadIdFromApiConversationId({
                 conversationId: effectiveConversationId,
                 agentId: data.agentId,

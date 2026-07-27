@@ -1,39 +1,52 @@
 -- migrate:up
 
--- Store the ROUTABLE id explicitly instead of re-deriving it by parsing
--- `conversation_id` at read time.
---
--- The listing loop (agent-thread-list.ts) emitted two different `id` values:
---   kind='owned'    -> the SUFFIX of the packed web id, recovered by
---                      webThreadIdFromConversationId() stripping the
---                      `{agentId}_{userId}_{orgId}_` prefix
---   kind='platform' -> the whole conversation_id
--- The frontend routes on that `id` (a web thread by threadId, a platform
--- conversation by conversationId), so the parse was reconstructing a field that
--- was simply never stored.
---
--- Parsing the id string is the same defect the `platform` column already fixed:
--- that column exists precisely because deriving the label from the id mislabelled
--- opaque ids (gchat `spaces_A_threads_B`) as web. This does the same for the
--- routable id — and it is what unblocks any NEW conversation origin (MCP
--- sessions, behaviour runs) whose id does not happen to match the web packing.
--- Under the old parse such a row was written correctly, passed every ACL check,
--- and was then SILENTLY SKIPPED at render (`if (!threadId) continue`).
---
--- NULL means "this conversation is routed by its conversation_id" — the
--- platform-branch behaviour — so the read collapses to
--- `thread_id ?? conversation_id` with no branch on kind and no skip-on-parse.
+-- Store an owned web conversation's route segment instead of reconstructing it
+-- from conversation_id on every list read. Platform conversations continue to
+-- route by their complete conversation_id.
 ALTER TABLE public.conversations
   ADD COLUMN IF NOT EXISTS thread_id text;
 
--- Backfill reproduces the OLD parse EXACTLY so no existing row changes its
--- routable id: only kind='owned' ids carrying the full
--- `{agent_id}_{user_id}_{organization_id}_` prefix yielded a thread id, and only
--- when the remaining suffix was non-empty. Rows that the parse rejected
--- (prefix-only "default thread" ids, foreign-shaped ids) keep thread_id NULL —
--- they were never listed before, and `thread_id ?? conversation_id` must not
--- resurrect them under a different route. The listing keeps skipping them via the
--- same isSafeThreadId/default-thread guards, now applied to a stored value.
+-- Migrations run before the app deployment changes, so an old server can still
+-- insert rows after the backfill. Fill packed web ids at the database boundary
+-- during that compatibility window; opaque owned ids remain unlisted, matching
+-- the old reader.
+CREATE OR REPLACE FUNCTION public.conversations_fill_thread_id()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  prefix text;
+BEGIN
+  IF NEW.thread_id IS NOT NULL
+     OR NEW.kind <> 'owned'
+     OR NEW.user_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  prefix := NEW.agent_id || '_' || NEW.user_id || '_' || NEW.organization_id || '_';
+
+  IF left(NEW.conversation_id, length(prefix)) = prefix
+     AND length(NEW.conversation_id) > length(prefix) THEN
+    -- Packed web id: the routable thread id is the suffix.
+    NEW.thread_id := substring(NEW.conversation_id from length(prefix) + 1);
+  END IF;
+  -- Otherwise leave NULL: either the default id has no thread suffix or the id
+  -- has a foreign shape. Both remain unlisted, matching the old reader.
+
+  RETURN NEW;
+END;
+$$;
+
+-- The embedded migrator can replay SQL before recording its ledger row.
+DROP TRIGGER IF EXISTS conversations_fill_thread_id ON public.conversations;
+CREATE TRIGGER conversations_fill_thread_id
+  BEFORE INSERT OR UPDATE OF thread_id ON public.conversations
+  FOR EACH ROW
+  EXECUTE FUNCTION public.conversations_fill_thread_id();
+
+-- Backfill only the exact known-column prefix the old reader stripped. LIKE
+-- would treat underscores in ids as wildcards and could materialize a false
+-- route for a foreign-shaped conversation id.
 UPDATE public.conversations
    SET thread_id = substring(
          conversation_id
@@ -41,11 +54,17 @@ UPDATE public.conversations
        )
  WHERE kind = 'owned'
    AND user_id IS NOT NULL
-   AND conversation_id LIKE agent_id || '_' || user_id || '_' || organization_id || '_%'
+   AND thread_id IS NULL
+   AND left(
+         conversation_id,
+         length(agent_id || '_' || user_id || '_' || organization_id || '_')
+       ) = agent_id || '_' || user_id || '_' || organization_id || '_'
    AND length(conversation_id)
        > length(agent_id || '_' || user_id || '_' || organization_id || '_');
 
 -- migrate:down
+DROP TRIGGER IF EXISTS conversations_fill_thread_id ON public.conversations;
+DROP FUNCTION IF EXISTS public.conversations_fill_thread_id();
 -- squawk-ignore ban-drop-column -- rollback path for the column introduced here
 ALTER TABLE public.conversations
   DROP COLUMN IF EXISTS thread_id;

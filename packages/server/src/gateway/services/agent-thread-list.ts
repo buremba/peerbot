@@ -199,8 +199,8 @@ export async function listAgentThreads(args: {
 		const createdAt = row.createdAt.getTime();
 		if (row.kind === "owned") {
 			// Routable id is STORED (`thread_id`), never re-parsed out of the id
-			// string. A row without one carries no routable thread id — the
-			// prefix-only "default thread" case — and was never listed; skip it.
+			// string. The migration trigger also covers writes from an old server
+			// between the pre-upgrade migration and deployment replacement.
 			const threadId = row.threadId;
 			if (!threadId || !isSafeThreadId(threadId) || byKey.has(threadId)) {
 				continue;

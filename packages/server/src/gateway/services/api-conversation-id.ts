@@ -6,16 +6,20 @@
 
 /**
  * Inverse of {@link buildApiConversationId}: recover the `threadId` suffix from a
- * packed web/API conversation id using the row's OWN known columns.
+ * packed web/API conversation id using its known owner columns.
  *
- * This is the ONE place the packing is undone, and it runs at WRITE time so the
- * result can be stored in `conversations.thread_id`. Readers must never re-derive
- * a route from the id string — they read the stored column
- * (`thread_id ?? conversation_id`), which is what lets conversation origins whose
- * ids are not packed this way (MCP sessions, behaviour runs) list correctly.
+ * This runs at write time so the result can be stored in
+ * `conversations.thread_id`; list readers do not parse the id string again.
+ * Returns null when the id is not packed for this owner or has no thread suffix.
  *
- * Returns null for the prefix-only "default thread" id (no suffix), which carries
- * no routable thread id and is not listed.
+ * NOTE for a future origin with OPAQUE ids (an MCP session, a behaviour run):
+ * storing the id verbatim here is NOT enough to make it work, and is why that
+ * case is deliberately still null. The thread read path re-PACKS the id —
+ * `readThreadMessages` and the interactions query in `routes/public/agent-history.ts`
+ * both call {@link buildApiConversationId} with the thread id — so an opaque
+ * value would list in the sidebar and then resolve to a conversation id no row
+ * has. Making those origins listable means teaching the read path to address a
+ * conversation by its stored id, not just widening what gets stored.
  */
 export function threadIdFromApiConversationId(args: {
 	conversationId: string;

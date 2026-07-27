@@ -44,11 +44,10 @@ export interface ConversationUpsert {
 	platform: string;
 	conversationId: string;
 	/**
-	 * Routable id, when the origin has one distinct from `conversationId` (a web
-	 * thread's suffix). Omit/null when the conversation is routed by its
-	 * `conversationId` — readers resolve `threadId ?? conversationId`.
+	 * Web route segment for an owned conversation. Platform conversations and
+	 * owned ids without a web thread suffix store null.
 	 */
-	threadId?: string | null;
+	threadId: string | null;
 	kind: ConversationKind;
 	userId?: string | null;
 	title?: string | null;
@@ -59,7 +58,8 @@ export interface ConversationUpsert {
  * Materialize (or refresh) the `conversations` row for a turn. Called on every
  * dispatch that starts a turn — the row is the single listing source. Idempotent:
  * the first turn INSERTs, later turns bump `last_activity_at` and fill in a
- * newly-known `title`/`user_id` without clobbering earlier non-null values.
+ * newly-known `title`/`user_id`/`thread_id` without clobbering earlier non-null
+ * values.
  * Failures are swallowed — a listing-materialization hiccup must never fail a
  * live turn.
  */
@@ -78,7 +78,7 @@ export async function upsertConversation(
         kind, user_id, title, last_activity_at
       ) VALUES (
         ${row.organizationId}, ${row.agentId}, ${row.platform},
-        ${row.conversationId}, ${row.threadId ?? null}, ${row.kind},
+        ${row.conversationId}, ${row.threadId}, ${row.kind},
         ${row.userId ?? null}, ${row.title ?? null}, ${row.lastActivityAt}
       )
       ON CONFLICT (organization_id, agent_id, platform, conversation_id)
@@ -109,10 +109,8 @@ export interface ConversationListRow {
 	platform: string;
 	conversationId: string;
 	/**
-	 * Routable id for this conversation, stored at write time by the origin that
-	 * knows it. NULL means "route by `conversationId`" — so readers resolve the
-	 * route as `threadId ?? conversationId` without parsing the id string or
-	 * branching on `kind`.
+	 * Web route segment for an owned conversation. Platform rows route by
+	 * `conversationId`; an owned row with null here is not listable.
 	 */
 	threadId: string | null;
 	kind: ConversationKind;

@@ -28,7 +28,10 @@ import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
-import { buildApiConversationId } from "../services/api-conversation-id.js";
+import {
+	buildApiConversationId,
+	threadIdFromApiConversationId,
+} from "../services/api-conversation-id.js";
 import {
 	ensureDbForGatewayTests,
 	resetTestDatabase,
@@ -971,4 +974,47 @@ describe("agent history conversation id helpers", () => {
 		);
 	});
 
+	describe("threadIdFromApiConversationId", () => {
+		const owner = {
+			agentId: "owletto-default",
+			userId: "auth-user-1",
+			organizationId: "org__abc",
+		};
+
+		test("packed web id → the suffix", () => {
+			expect(
+				threadIdFromApiConversationId({
+					...owner,
+					conversationId: "owletto-default_auth-user-1_org__abc_d108bc64-64f",
+				}),
+			).toBe("d108bc64-64f");
+		});
+
+		test("prefix-only default-thread id → null (nothing to route to)", () => {
+			expect(
+				threadIdFromApiConversationId({
+					...owner,
+					conversationId: "owletto-default_auth-user-1_org__abc",
+				}),
+			).toBeNull();
+		});
+
+		test("opaque id → null rather than a false web route", () => {
+			expect(
+				threadIdFromApiConversationId({
+					...owner,
+					conversationId: "opaque-session-42",
+				}),
+			).toBeNull();
+		});
+
+		test("id packed for a different user is not unpacked as this user's", () => {
+			expect(
+				threadIdFromApiConversationId({
+					...owner,
+					conversationId: "owletto-default_auth-user-2_org__abc_other",
+				}),
+			).toBeNull();
+		});
+	});
 });

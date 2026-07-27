@@ -71,12 +71,18 @@ export async function persistSuggestion(
       conversationId
     )})`;
 
+    // Supersede the latest LIVE row whatever its interaction_status, not just a
+    // 'current' one. `current_event_records` defines live as "nothing supersedes
+    // me" and never looks at status, so filtering on status='current' here left
+    // finalize's 'completed' clear markers with nothing pointing at them: they
+    // stayed live in the view forever and every suggest→clear cycle stranded
+    // another one in an append-only table. Matching the view's own definition of
+    // live keeps the lineage a single chain.
     const priorRows = (await tx`
       SELECT id
       FROM current_event_records
       WHERE organization_id = ${organizationId}
         AND interaction_type = 'suggestion'
-        AND interaction_status = 'current'
         AND origin_id = ${`suggestion:${conversationId}`}
       ORDER BY id DESC
     `) as Array<{ id: number }>;
@@ -195,6 +201,11 @@ export async function finalizeTurnSuggestions(args: {
     await tx`SELECT pg_advisory_xact_lock(${SUGGESTION_LOCK_NAMESPACE}, ${suggestionLockKey(
       conversationId
     )})`;
+    // Unlike persistSuggestion, this DOES filter on status='current': it asks
+    // "is there a visible set to clear?", and only a 'current' row is visible to
+    // the renderer. Widening this to any live row would make each clear observe
+    // the previous clear marker and supersede it, appending a fresh 'completed'
+    // row on every terminal for the rest of the conversation's life.
     const rows = (await tx`
       SELECT id, metadata
       FROM current_event_records

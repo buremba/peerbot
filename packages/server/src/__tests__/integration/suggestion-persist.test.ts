@@ -33,6 +33,10 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		await cleanupTestDatabase();
 	});
 
+	/**
+	 * Count rows the CURRENT-SET QUERY sees — i.e. what the renderer reads.
+	 * Deliberately mirrors readCurrentSuggestion's filter.
+	 */
 	async function currentCount(): Promise<number> {
 		const rows = (await getTestDb()`
 			SELECT count(*)::int AS n
@@ -40,6 +44,27 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 			WHERE organization_id = ${orgId}
 			  AND interaction_type = 'suggestion'
 			  AND interaction_status = 'current'
+			  AND origin_id = ${`suggestion:${conversationId}`}
+		`) as Array<{ n: number }>;
+		return rows[0]?.n ?? 0;
+	}
+
+	/**
+	 * Count rows LIVE IN THE VIEW, whatever their interaction_status.
+	 *
+	 * `current_event_records` defines live as "nothing supersedes me" and does
+	 * NOT filter interaction_status, so a row this count sees but `currentCount`
+	 * does not is a row nothing will ever supersede — an unbounded leak in an
+	 * append-only table. Every assertion here used to filter on
+	 * interaction_status='current', which is precisely the filter that let a
+	 * clear-row leak survive six green tests.
+	 */
+	async function liveCount(): Promise<number> {
+		const rows = (await getTestDb()`
+			SELECT count(*)::int AS n
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND interaction_type = 'suggestion'
 			  AND origin_id = ${`suggestion:${conversationId}`}
 		`) as Array<{ n: number }>;
 		return rows[0]?.n ?? 0;
@@ -128,5 +153,44 @@ describe("suggestion persistence (turn-owned supersede)", () => {
 		expect(current?.prompts).toEqual([
 			{ title: "Fresh", message: "Fresh message" },
 		]);
+	});
+
+	it("leaves exactly one live row across repeated suggest→clear cycles", async () => {
+		// THE LEAK: finalize writes its clear marker with interaction_status
+		// 'completed'. persistSuggestion used to search for a prior row filtered
+		// on status='current', so it never saw that clear marker and never
+		// superseded it — and `current_event_records` keeps it live forever
+		// (the view filters on "nothing supersedes me", NOT on status). Every
+		// suggest→clear cycle therefore stranded one immortal row in an
+		// append-only table.
+		//
+		// currentCount() cannot see this: it applies the same status filter that
+		// caused the bug. Only liveCount() can, which is why it exists.
+		const cycles = "api:conv-cycles";
+		for (let i = 0; i < 3; i++) {
+			await persistSuggestion({
+				organizationId: orgId,
+				conversationId: cycles,
+				prompts: [{ title: `T${i}`, message: `M${i}` }],
+				turnMessageId: `cycle-${i}`,
+			});
+			await finalizeTurnSuggestions({
+				organizationId: orgId,
+				conversationId: cycles,
+				// A different turn id, so this clears rather than keeps.
+				turnMessageIds: [`other-${i}`],
+			});
+		}
+
+		const rows = (await getTestDb()`
+			SELECT count(*)::int AS n
+			FROM current_event_records
+			WHERE organization_id = ${orgId}
+			  AND interaction_type = 'suggestion'
+			  AND origin_id = ${`suggestion:${cycles}`}
+		`) as Array<{ n: number }>;
+		// One live row: the final clear marker. Pre-fix this was 3 and grew
+		// without bound — one stranded row per cycle, forever.
+		expect(rows[0]?.n ?? 0).toBe(1);
 	});
 });

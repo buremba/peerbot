@@ -340,7 +340,11 @@ export function formatActionApprovalBody(params: {
 		);
 	}
 
-	const connLabel = params.connectionName ? ` on ${params.connectionName}` : "";
+	// Escaped like every other interpolation into this Markdown body — a
+	// connection named "X](https://evil) [y" would otherwise forge an anchor.
+	const connLabel = params.connectionName
+		? ` on ${escapeMarkdownText(params.connectionName)}`
+		: "";
 	const urlLine = params.approvalUrl
 		? `\n\nReview: ${formatReviewLink(params.approvalUrl)}`
 		: "";

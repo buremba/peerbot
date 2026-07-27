@@ -238,6 +238,20 @@ describe("approval notification rendering", () => {
 		expect(body).toContain(String.raw`- Entity ids: \[ 886 \]`);
 	});
 
+	test("generic approval escapes the connection name", () => {
+		// The non-structured branch interpolates connectionName straight into the
+		// Markdown body; unescaped it could forge an external "Review" anchor.
+		expect(
+			formatActionApprovalBody({
+				connectionName: "GitHub](https://evil.example) [x",
+				approvalUrl: "/acme/runs/46",
+			}),
+		).toBe(
+			String.raw`A queued action on GitHub\](https://evil.example) \[x is waiting for your review.` +
+				"\n\nReview: [Review in Lobu](/acme/runs/46)",
+		);
+	});
+
 	test("setext underlines of any length are escaped", () => {
 		// A single "=" under a line turns it into an <h1>; the escape must not be
 		// limited to the 3+ runs that form a `---` thematic break.

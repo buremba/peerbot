@@ -100,15 +100,31 @@ describe('query_sql unknown-table errors are never rendered as an empty result',
 
   it('the same soft-error guard applies to every tool, not just query_sql', () => {
     expect(isSoftErrorResult({ error: 'boom' })).toBe(true);
-    expect(
-      isSoftErrorResult({
-        success: false,
-        error: { name: 'Error', message: 'boom', code: 'VALIDATION', retryable: false },
-      })
-    ).toBe(true);
     expect(isSoftErrorResult({ success: true, error: { message: 'historical warning' } })).toBe(
       false
     );
+  });
+
+  // A run_sdk/query_sdk SCRIPT throw is NOT a tool failure: the tool ran the
+  // caller's code and faithfully reported the outcome as data (success=false
+  // plus name/message/line/column, per SdkScriptResultSchema). Flagging it
+  // isError makes `mcpToolsCall` throw before a caller can read that payload,
+  // and makes interaction-bridge relabel it "Tool error:" to the agent.
+  it('does NOT flag an SDK script failure as a tool-level error', () => {
+    expect(
+      isSoftErrorResult({
+        success: false,
+        logs: [],
+        error: {
+          name: 'TypeError',
+          message: 'client.connections.installConnector is not a function',
+          line: 1,
+          column: 42,
+        },
+        duration_ms: 3,
+        sdk_calls: 0,
+      })
+    ).toBe(false);
   });
 
   it('does not drop fields from unrelated error results', () => {

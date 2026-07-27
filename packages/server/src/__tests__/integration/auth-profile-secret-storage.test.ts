@@ -154,13 +154,13 @@ describe("auth_profiles credential storage", () => {
 	});
 
 	/**
-	 * ITEM 4/5 — BOTH EXECUTION PATHS. `resolveExecutionAuth` is the single
-	 * seam the worker-sync path (poll.ts) and the virtual-feed pushdown path
-	 * (connector-pushdown.ts) both funnel through, so proving it here proves
-	 * the credential materializes for both. The dedicated per-path tests below
-	 * assert each caller actually reaches this seam.
+	 * BOTH execution paths (worker poll + virtual-feed pushdown) resolve
+	 * credentials through `resolveExecutionAuth` only — not through
+	 * `connections.config`. One seam test covers both; separate path-A/path-B
+	 * copies that re-called the same helper were deleted as pure duplication.
 	 */
 	it("resolves the real credential back through resolveExecutionAuth", async () => {
+		const sql = getTestDb();
 		const orgId = workspace.org.id;
 		const conn = await createTestConnection({
 			organization_id: orgId,
@@ -174,12 +174,24 @@ describe("auth_profiles credential storage", () => {
 				credentials: { DATABASE_URL: DSN },
 			}),
 		);
+		await sql`
+      UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${conn.id}
+    `;
 
 		const creds = await resolveCredentials(orgId, conn.id, profileId);
+		// Stored as a ref, delivered as a usable DSN (not secret://…).
 		expect(JSON.stringify(await rawAuthData(profileId))).not.toContain(
 			DSN_PASSWORD,
 		);
 		expect(creds.DATABASE_URL).toBe(DSN);
+		expect(String(creds.DATABASE_URL)).not.toContain("secret://");
+		// Credential comes from the auth profile, not a second plaintext copy
+		// in connections.config (that column is exposed by query_sql).
+		const [row] = (await sql`
+      SELECT COALESCE(config, '{}'::jsonb) AS config
+      FROM connections WHERE id = ${conn.id}
+    `) as unknown as Array<{ config: Record<string, unknown> }>;
+		expect(JSON.stringify(row.config)).not.toContain(DSN_PASSWORD);
 	});
 
 	/**
@@ -351,163 +363,6 @@ describe("auth_profiles credential storage", () => {
         AND name LIKE ${`auth-profile/${targetId}/legacy-convergence/%`}
     `;
 		expect(staleStagingRows).toHaveLength(0);
-	});
-
-	/**
-	 * ITEM 4 — EXECUTION PATH A (worker sync).
-	 *
-	 * `poll.ts` hands the connector its DSN through the `connection_credentials`
-	 * field, which the worker merges into `ctx.config` (executor.ts `mergeEnv`).
-	 * Asserted against the poll SELECT's own shape: the path reads
-	 * `conn.auth_profile_id` and resolves through `resolveExecutionAuth`, so a
-	 * regression that dropped ref-resolution would surface the literal
-	 * `secret://…` string here instead of a usable DSN.
-	 */
-	it("path A (worker sync) receives a usable DSN, not a ref", async () => {
-		const sql = getTestDb();
-		const orgId = workspace.org.id;
-		const conn = await createTestConnection({
-			organization_id: orgId,
-			connector_key: "postgres",
-		});
-		const profileId = await seedEnvProfile(orgId, "pg-path-a", {});
-		await orgContext.run({ organizationId: orgId }, () =>
-			persistAuthCredentials({
-				organizationId: orgId,
-				authProfileId: profileId,
-				credentials: { DATABASE_URL: DSN },
-			}),
-		);
-		await sql`
-      UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${conn.id}
-    `;
-
-		// The columns poll.ts selects for credential resolution.
-		const [row] = (await sql`
-      SELECT auth_profile_id, app_auth_profile_id
-      FROM connections WHERE id = ${conn.id}
-    `) as unknown as Array<{
-			auth_profile_id: number | null;
-			app_auth_profile_id: number | null;
-		}>;
-
-		const { connectionCredentials } = await resolveExecutionAuth({
-			organizationId: orgId,
-			connectionId: conn.id,
-			authProfileId: row.auth_profile_id,
-			appAuthProfileId: row.app_auth_profile_id,
-			credentialDb: getTestDb(),
-			logContext: {},
-		});
-
-		// Two-sided: the credential must ARRIVE usable *and* have been stored as
-		// a ref. Asserting only that it resolves passes trivially when the DSN
-		// is sitting in the column as plaintext — verified by neutering.
-		expect(JSON.stringify(await rawAuthData(profileId))).not.toContain(
-			DSN_PASSWORD,
-		);
-		expect(connectionCredentials.DATABASE_URL).toBe(DSN);
-		expect(String(connectionCredentials.DATABASE_URL)).not.toContain(
-			"secret://",
-		);
-	});
-
-	/**
-	 * ITEM 5 — EXECUTION PATH B (virtual feed pushdown).
-	 *
-	 * This is the path the live churn feed uses, and the one that would break
-	 * silently: `connector-pushdown.ts` never selects `connections.config`, so
-	 * its ONLY credential source is the auth profile. It builds ctx.config as
-	 * `{...connectionCredentials, ...feedConfig, ...dbEgressConfig()}`, which is
-	 * reproduced here — a regression that left the DSN out of
-	 * `connectionCredentials` would leave `ctx.config.DATABASE_URL` undefined
-	 * and the connector would throw "DATABASE_URL is required".
-	 */
-	it("path B (virtual feed pushdown) receives a usable DSN, not a ref", async () => {
-		const sql = getTestDb();
-		const orgId = workspace.org.id;
-		const conn = await createTestConnection({
-			organization_id: orgId,
-			connector_key: "postgres",
-		});
-		const profileId = await seedEnvProfile(orgId, "pg-path-b", {});
-		await orgContext.run({ organizationId: orgId }, () =>
-			persistAuthCredentials({
-				organizationId: orgId,
-				authProfileId: profileId,
-				credentials: { DATABASE_URL: DSN },
-			}),
-		);
-		await sql`
-      UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${conn.id}
-    `;
-
-		// Exactly the columns readVirtualFeed selects — note it does NOT read
-		// c.config, so nothing but the auth profile can supply the DSN.
-		const [feedRow] = (await sql`
-      SELECT c.id AS connection_id, c.auth_profile_id, c.app_auth_profile_id
-      FROM connections c WHERE c.id = ${conn.id}
-    `) as unknown as Array<{
-			connection_id: number;
-			auth_profile_id: number | null;
-			app_auth_profile_id: number | null;
-		}>;
-
-		const { connectionCredentials } = await resolveExecutionAuth({
-			organizationId: orgId,
-			connectionId: Number(feedRow.connection_id),
-			authProfileId: Number(feedRow.auth_profile_id) || null,
-			appAuthProfileId: Number(feedRow.app_auth_profile_id) || null,
-			credentialDb: getTestDb(),
-			logContext: {},
-		});
-
-		// The config object the pushdown actually hands the connector.
-		const config = { ...connectionCredentials, ...{ query: "SELECT 1" } };
-		expect(JSON.stringify(await rawAuthData(profileId))).not.toContain(
-			DSN_PASSWORD,
-		);
-		expect(config.DATABASE_URL).toBe(DSN);
-		expect(String(config.DATABASE_URL)).not.toContain("secret://");
-	});
-
-	/**
-	 * ITEM 2 — the second copy. `connections.config` is exposed by design
-	 * through `query_sql`, so a DSN must never be duplicated into it. Path A
-	 * gets its credential from `connection_credentials` (the auth profile),
-	 * never from `config`, so there is nothing to keep here.
-	 */
-	it("keeps no plaintext DSN in connections.config", async () => {
-		const sql = getTestDb();
-		const orgId = workspace.org.id;
-		const conn = await createTestConnection({
-			organization_id: orgId,
-			connector_key: "postgres",
-		});
-		const profileId = await seedEnvProfile(orgId, "pg-config", {});
-		await orgContext.run({ organizationId: orgId }, () =>
-			persistAuthCredentials({
-				organizationId: orgId,
-				authProfileId: profileId,
-				credentials: { DATABASE_URL: DSN },
-			}),
-		);
-		await sql`
-      UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${conn.id}
-    `;
-
-		const [row] = (await sql`
-      SELECT COALESCE(config, '{}'::jsonb) AS config
-      FROM connections WHERE id = ${conn.id}
-    `) as unknown as Array<{ config: Record<string, unknown> }>;
-
-		// `config` never held the DSN for a fixture-created connection, so assert
-		// the auth profile as well — otherwise this test is vacuous and would
-		// pass with the fix removed.
-		expect(JSON.stringify(await rawAuthData(profileId))).not.toContain(
-			DSN_PASSWORD,
-		);
-		expect(JSON.stringify(row.config)).not.toContain(DSN_PASSWORD);
 	});
 
 	/**

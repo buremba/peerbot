@@ -1777,24 +1777,69 @@ export async function handleUpdate(
   // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
   let updated: any[];
   try {
-    updated = await sql`
-      UPDATE connections
-      SET display_name = COALESCE(${args.display_name ?? null}, display_name),
-          slug = COALESCE(${nextSlug}, slug),
-          status = COALESCE(${effectiveStatus}, status),
-          auth_profile_id = ${nextAuthProfileId},
-          app_auth_profile_id = ${nextAppAuthProfileId},
-          visibility = CASE WHEN ${rebindToPersonalCred} THEN 'private' ELSE visibility END,
-          entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
-          config = ${
-            replaceConfig
-              ? sql`${sql.json(connectionConfigForReplace)}::jsonb`
-              : sql`CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END`
-          },
-          updated_at = NOW()
-      WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
-      RETURNING *
-    `;
+    // Row-locked restore→write. The `existing` snapshot at the top of this
+    // handler is read WITHOUT a lock, and many awaits (auth-profile lookups,
+    // device binding, feed checks) happen between it and this write — so
+    // restoring sentinels from that snapshot could roll back a rotation another
+    // replica committed in the meantime: A reads, B rotates the secret, A's
+    // restore fills the sentinel from its STALE copy and writes the OLD
+    // plaintext back over B's new value. Silent credential rollback, invisible
+    // through the API because the response is redacted either way.
+    //
+    // Re-reading the config FOR UPDATE inside the same transaction as the
+    // UPDATE makes the restore source the row the write is actually based on.
+    // Mirrors the shape manage_feeds already uses for handleUpdateFeed.
+    updated = await sql.begin(async (tx) => {
+      const lockedRows = await tx`
+        SELECT config
+        FROM connections
+        WHERE id = ${args.connection_id}
+          AND organization_id = ${organizationId}
+          AND deleted_at IS NULL
+        FOR UPDATE
+      `;
+      if (lockedRows.length === 0) return [];
+      const lockedConfig = parseJsonObject(
+        (lockedRows[0] as { config: unknown }).config,
+      );
+
+      // Recompute the incoming config against the LOCKED row. Only the restore
+      // depends on stored values, so this is the sole recomputation needed —
+      // the merge itself is already atomic (`config || <incoming>` below reads
+      // the live row).
+      const lockedSplit =
+        args.config === undefined
+          ? null
+          : splitConfigByFeedScope(
+              restoreRedactedConfig(args.config, lockedConfig) as Record<
+                string,
+                unknown
+              >,
+              (existing.feeds_schema as Record<string, FeedDefinition>) ?? null,
+            );
+      const lockedConnectionConfig = lockedSplit?.connectionConfig ?? null;
+      const lockedReplaceConfig = lockedConnectionConfig ?? {};
+
+      return tx`
+        UPDATE connections
+        SET display_name = COALESCE(${args.display_name ?? null}, display_name),
+            slug = COALESCE(${nextSlug}, slug),
+            status = COALESCE(${effectiveStatus}, status),
+            auth_profile_id = ${nextAuthProfileId},
+            app_auth_profile_id = ${nextAppAuthProfileId},
+            visibility = CASE WHEN ${rebindToPersonalCred} THEN 'private' ELSE visibility END,
+            entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
+            config = ${
+              replaceConfig
+                ? tx`${tx.json(lockedReplaceConfig)}::jsonb`
+                : tx`CASE WHEN ${lockedConnectionConfig ? tx.json(lockedConnectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${lockedConnectionConfig ? tx.json(lockedConnectionConfig) : null}::jsonb ELSE config END`
+            },
+            updated_at = NOW()
+        WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
+        RETURNING *
+      `;
+    });
+    if (updated.length === 0) return { error: "Connection not found" };
   } catch (err) {
     if (isConnectionSlugUniqueViolation(err) && updateExplicitSlug) {
 			return {

@@ -14,7 +14,11 @@
 import { isSecretKey } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getTestDb } from '../../__tests__/setup/test-db';
-import { SAFE_COLUMN_DEFS, buildColumnList } from '../table-schema';
+import {
+  DECLARED_SECRETS_REF,
+  SAFE_COLUMN_DEFS,
+  buildColumnList,
+} from '../table-schema';
 
 /** Key names probed against both implementations. */
 const SECRET_KEYS = [
@@ -64,6 +68,34 @@ const NON_SECRET_KEYS = [
 ];
 
 describe('table-schema config redaction', () => {
+  /**
+   * The heuristic denylist is only ONE of the two layers the TypeScript
+   * serializers apply; the other is what the connector DECLARES secret. The SQL
+   * path must carry both, or a declared secret with an off-denylist name
+   * (`signingMaterial`) is redacted by list()/get() and plaintext via query_sql.
+   *
+   * The parity cases below compare SQL to `isSecretKey` and by construction can
+   * never catch that, so the declared layer is pinned structurally here.
+   */
+  it('incorporates connector-declared secrets for connections, not just the denylist', () => {
+    const connectionsConfig = SAFE_COLUMN_DEFS.get('connections')?.find(
+      (c) => c.name === 'config'
+    );
+    expect(connectionsConfig?.expr).toContain(DECLARED_SECRETS_REF);
+
+    // Bound to an alias, the marker must resolve to a real correlated lookup
+    // over connector_definitions — not silently vanish.
+    const bound = buildColumnList(SAFE_COLUMN_DEFS.get('connections') ?? [], 'cn');
+    expect(bound).not.toContain(DECLARED_SECRETS_REF);
+    expect(bound).toContain('connector_definitions');
+    expect(bound).toContain("'password'");
+    expect(bound).toContain("af->>'secret'");
+    // Correlation must be org-scoped: another tenant's connector definition
+    // must not decide what this row redacts.
+    expect(bound).toContain('cn.organization_id');
+    expect(bound).toContain('cn.connector_key');
+  });
+
   it('emits a redacting expression for connections.config and feeds.config', () => {
     for (const table of ['connections', 'feeds']) {
       const defs = SAFE_COLUMN_DEFS.get(table);
@@ -89,6 +121,24 @@ describe('table-schema config redaction', () => {
     });
 
     /**
+     * Bind the generated expression's markers for a synthetic probe row.
+     *
+     * `$COL$` becomes the probe's jsonb literal. `$DECLARED$` becomes the empty
+     * array: these cases probe the HEURISTIC layer against a row with no
+     * connector to correlate to, and an unbound `$DECLARED$` would additionally
+     * be parsed by Postgres as a dollar-quote and blow up the statement. The
+     * declared-secret layer is covered separately, structurally above and
+     * end-to-end in connections-config-redaction.test.ts.
+     */
+    function bindExpr(expr: string): string {
+      return expr
+        .split('$COL$')
+        .join('probe.config')
+        .split('$DECLARED$')
+        .join('ARRAY[]::text[]');
+    }
+
+    /**
      * Run the real generated expression over a one-row jsonb literal and report
      * whether the value under `key` came back redacted.
      */
@@ -96,9 +146,7 @@ describe('table-schema config redaction', () => {
       const defs = SAFE_COLUMN_DEFS.get('connections') ?? [];
       const expr = defs.find((c) => c.name === 'config')?.expr;
       if (!expr) throw new Error('connections.config has no redaction expr');
-      // The expr references the source column via the $COL$ marker, which
-      // buildColumnList substitutes; here we bind it to the probe literal.
-      const bound = expr.split('$COL$').join('probe.config');
+      const bound = bindExpr(expr);
       // The key is inlined as a quoted literal rather than bound: postgres.js
       // cannot infer a type for the right-hand side of `->>`, so a $N parameter
       // there comes back NULL and every probe would read as "redacted". Keys
@@ -125,7 +173,7 @@ describe('table-schema config redaction', () => {
     it('redacts a nested secret, not just the top level', async () => {
       const defs = SAFE_COLUMN_DEFS.get('connections') ?? [];
       const expr = defs.find((c) => c.name === 'config')?.expr;
-      const bound = (expr ?? '').split('$COL$').join('probe.config');
+      const bound = bindExpr(expr ?? '');
       const rows = await sql.unsafe(
         `SELECT (${bound}) #>> '{nested,database,password}' AS value
          FROM (SELECT $1::jsonb AS config) probe`,
@@ -137,7 +185,7 @@ describe('table-schema config redaction', () => {
     it('preserves a nested non-secret value', async () => {
       const defs = SAFE_COLUMN_DEFS.get('connections') ?? [];
       const expr = defs.find((c) => c.name === 'config')?.expr;
-      const bound = (expr ?? '').split('$COL$').join('probe.config');
+      const bound = bindExpr(expr ?? '');
       const rows = await sql.unsafe(
         `SELECT (${bound}) #>> '{nested,database,host}' AS value
          FROM (SELECT $1::jsonb AS config) probe`,
@@ -149,7 +197,7 @@ describe('table-schema config redaction', () => {
     it('redacts URI credentials under a non-secret key', async () => {
       const defs = SAFE_COLUMN_DEFS.get('connections') ?? [];
       const expr = defs.find((c) => c.name === 'config')?.expr;
-      const bound = (expr ?? '').split('$COL$').join('probe.config');
+      const bound = bindExpr(expr ?? '');
       const rows = await sql.unsafe(
         `SELECT (${bound}) ->> 'primary' AS value
          FROM (SELECT $1::jsonb AS config) probe`,

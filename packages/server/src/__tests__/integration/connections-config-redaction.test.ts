@@ -255,6 +255,126 @@ describe("connection config redaction", () => {
 });
 
 /**
+ * The keyname heuristic is a BACKSTOP, not the contract. The contract is what
+ * the connector DECLARES secret:
+ *   - `options_schema.properties.<k>.format === "password"`
+ *   - `auth_schema.methods[].fields[].secret === true`
+ *
+ * A connector is free to name such a field anything. `signingMaterial` and
+ * `OPAQUE_HANDLE` are declared secrets whose names match NEITHER the suffix
+ * regex nor the exact-name set, so the heuristic alone cannot see them.
+ *
+ * The TypeScript serializers apply both layers, so list()/get() redact these
+ * correctly. query_sql redacted in SQL with the heuristic only — meaning a
+ * declared secret with an off-denylist name stayed PLAINTEXT on a member-safe
+ * tool in every agent's tool set. Same class as the original P0, same surface.
+ *
+ * `table-schema-redaction.test.ts` pins the SQL and TS denylists against each
+ * other, but only via `isSecretKey` — so by construction it could never catch
+ * a schema-declared name. That is what this test is for.
+ */
+describe("query_sql honors schema-declared secrets", () => {
+	let workspace: TestWorkspace;
+
+	beforeAll(async () => {
+		await cleanupTestDatabase();
+		workspace = await TestWorkspace.create({
+			name: "Declared Secret Org",
+			visibility: "public",
+		});
+
+		const sql = getTestDb();
+		// A connector whose secret fields are declared, not guessable by name.
+		await sql`
+      INSERT INTO connector_definitions (
+        key, name, version, options_schema, auth_schema, feeds_schema,
+        organization_id, status, created_at, updated_at
+      ) VALUES (
+        'declaredsecret', 'Declared Secret Connector', '1.0.0',
+        ${sql.json({
+					type: "object",
+					properties: {
+						signingMaterial: { type: "string", format: "password" },
+						host: { type: "string" },
+					},
+				})},
+        ${sql.json({
+					methods: [
+						{
+							type: "env_keys",
+							fields: [
+								{ key: "OPAQUE_HANDLE", secret: true },
+								{ key: "region" },
+							],
+						},
+					],
+				})},
+        ${sql.json({ default: {} })},
+        ${workspace.org.id}, 'active', NOW(), NOW()
+      )
+    `;
+
+		await createTestConnection({
+			organization_id: workspace.org.id,
+			connector_key: "declaredsecret",
+			display_name: "Declared Secret Connection",
+			created_by: workspace.users.owner.id,
+			visibility: "org",
+			config: {
+				// Declared secret, name defeats the heuristic entirely.
+				signingMaterial: "pw-LEAK-declared-signing",
+				OPAQUE_HANDLE: "pw-LEAK-declared-handle",
+				host: "declared.internal",
+			},
+		});
+	});
+
+	it("redacts a schema-declared secret through connections.get()", async () => {
+		// The TS serializer already handled this — asserted so the two layers are
+		// pinned to the SAME expectation.
+		const result = await workspace.owner.connections.list({});
+		const serialized = JSON.stringify(result);
+		expect(serialized).not.toContain("pw-LEAK-declared-signing");
+		expect(serialized).not.toContain("pw-LEAK-declared-handle");
+	});
+
+	it("redacts a schema-declared secret through query_sql", async () => {
+		const memberCtx = {
+			organizationId: workspace.org.id,
+			userId: workspace.users.member.id,
+			memberRole: "member",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: true,
+			allowCrossOrg: false,
+			scopes: ["mcp:read"],
+		} as ToolContext;
+
+		const result = await querySql(
+			{ sql: "SELECT id, config FROM connections" } as never,
+			{} as never,
+			memberCtx,
+		);
+		const serialized = JSON.stringify(result);
+		expect(
+			serialized.includes("pw-LEAK-declared-signing"),
+			"query_sql leaked options_schema format:password field",
+		).toBe(false);
+		expect(
+			serialized.includes("pw-LEAK-declared-handle"),
+			"query_sql leaked auth_schema secret:true field",
+		).toBe(false);
+
+		// Redaction, not suppression — the non-secret declared field survives.
+		const rows = (result as { rows?: Array<{ config?: unknown }> }).rows ?? [];
+		expect(rows.length).toBeGreaterThan(0);
+		expect((rows[0]?.config as Record<string, unknown>)?.host).toBe(
+			"declared.internal",
+		);
+	});
+});
+
+/**
  * `manage_feeds` serializes `f.*`, which carries two columns that must not
  * reach a caller:
  *
@@ -452,6 +572,73 @@ describe("connection config redaction > sentinel round-trip", () => {
 		expect((await storedConfig()).password).toBe("rotated-plaintext");
 	});
 
+	/**
+	 * Preserve-from-a-stale-snapshot is a credential ROLLBACK.
+	 *
+	 * `handleUpdate` reads the row without a lock, then does a long stretch of
+	 * awaits (auth-profile lookups, device binding, feed checks) before writing.
+	 * If the restore sourced its values from that stale snapshot, this sequence
+	 * would silently undo a rotation:
+	 *
+	 *   A: read (redacted)            — sees sentinel, snapshot has OLD secret
+	 *   B: rotate secret              — commits NEW secret
+	 *   A: write, restoring from A's snapshot → OLD secret overwrites NEW
+	 *
+	 * Multi-replica correctness is a hard invariant here (AGENTS.md), so this is
+	 * a real interleaving, not a theoretical one. The fix re-reads the config
+	 * FOR UPDATE inside the write transaction, so the restore source is the row
+	 * the write is actually based on.
+	 *
+	 * Asserted against the raw row: the API response is redacted either way, so
+	 * a rolled-back credential is invisible through it.
+	 */
+	it("does not roll back a concurrent rotation via a stale restore", async () => {
+		// A: read the redacted config (the snapshot a round-tripping client holds).
+		const read = (await workspace.owner.connections.get(connectionId)) as {
+			connection?: { config?: Record<string, unknown> };
+		};
+		const staleFetched = read.connection?.config ?? {};
+		expect(JSON.stringify(staleFetched)).toContain(REDACTED_SENTINEL);
+
+		// Force the interleaving deterministically rather than racing the
+		// scheduler: hold a row lock on the connection, kick off A's redacted
+		// round-trip (which blocks at its own `FOR UPDATE`), rotate the secret
+		// under the held lock, then release. A therefore resumes with a snapshot
+		// that predates the rotation — precisely the A-reads / B-rotates /
+		// A-writes ordering. Without the locked re-read, A's restore would source
+		// the pre-rotation plaintext and overwrite B's new value.
+		const sql = getTestDb();
+		let updatePromise!: Promise<unknown>;
+		await sql.begin(async (tx) => {
+			await tx`
+        SELECT config FROM connections WHERE id = ${connectionId} FOR UPDATE
+      `;
+
+			updatePromise = workspace.owner.connections.update({
+				connection_id: connectionId,
+				config: { ...staleFetched, action_modes: { later_op: "manual" } },
+			});
+
+			// Let A run until it blocks on the row lock this transaction holds.
+			await new Promise((resolve) => setTimeout(resolve, 300));
+
+			// B rotates while A is parked mid-update.
+			await tx`
+        UPDATE connections
+        SET config = jsonb_set(config, '{password}', ${tx.json("rotated-by-replica-b")}::jsonb)
+        WHERE id = ${connectionId}
+      `;
+		});
+
+		await updatePromise;
+
+		const stored = await storedConfig();
+		// A's unrelated edit landed...
+		expect(stored.action_modes).toEqual({ later_op: "manual" });
+		// ...without clobbering B's rotation with A's stale plaintext.
+		expect(stored.password).toBe("rotated-by-replica-b");
+	});
+
 	it("preserves secrets under replace_config (declarative apply)", async () => {
 		// `lobu apply` sends replace_config: true so a REMOVED manifest key really
 		// disappears. A sentinel there still means "unchanged", not "set the
@@ -461,6 +648,9 @@ describe("connection config redaction > sentinel round-trip", () => {
 			connection?: { config?: Record<string, unknown> };
 		};
 		const fetched = read.connection?.config ?? {};
+		// Whatever the earlier cases left stored — asserted against the row rather
+		// than a hardcoded value so this stays independent of test ordering.
+		const before = await storedConfig();
 
 		await workspace.owner.connections.update({
 			connection_id: connectionId,
@@ -470,7 +660,7 @@ describe("connection config redaction > sentinel round-trip", () => {
 
 		const stored = await storedConfig();
 		expect(stored.host).toBe("db.replaced");
-		expect(stored.password).toBe("rotated-plaintext");
+		expect(stored.password).toBe(before.password);
 		expect(stored.DATABASE_URL).toBe(SECRET_PROBES.DATABASE_URL);
 	});
 });

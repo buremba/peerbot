@@ -92,6 +92,61 @@ const SQL_KEY_IS_SECRET = (keyExpr: string) => {
 };
 
 /**
+ * Marker for the expression that yields the set of key names the CONNECTOR
+ * declares secret for the row being redacted. {@link buildColumnList}
+ * substitutes it the same way it substitutes {@link COLUMN_REF}; a table with
+ * no connector association (or a caller with no substitution) gets an empty
+ * array, which degrades cleanly to heuristic-only redaction.
+ */
+export const DECLARED_SECRETS_REF = '$DECLARED$';
+
+/**
+ * The declared-secret key set for one `connections` row, as a correlated
+ * subquery over that row's active `connector_definitions` entry.
+ *
+ * Connectors declare secrecy in two conventions, and the TypeScript
+ * serializers honor BOTH on top of the keyname heuristic:
+ *   - `options_schema.properties.<key>.format === "password"`
+ *   - `auth_schema.methods[].fields[].secret === true`
+ *
+ * The SQL path previously had the heuristic ONLY, so a declared secret whose
+ * name does not match the denylist (`signingMaterial`, `OPAQUE_HANDLE`, or
+ * anything a custom connector chooses) was redacted by list()/get() but served
+ * PLAINTEXT by query_sql — the same class of leak as the original P0, on a
+ * member-reachable tool. This closes that gap by resolving the declarations in
+ * SQL, so the two redactors cannot disagree about what a connector declared.
+ *
+ * `%ALIAS%` is replaced with the connections alias in scope.
+ */
+const DECLARED_SECRET_KEYS_SUBQUERY =
+  `(SELECT COALESCE(array_agg(dk.k), ARRAY[]::text[]) FROM (` +
+  `SELECT p.key AS k ` +
+  `FROM public.connector_definitions cdsec, jsonb_each(cdsec.options_schema->'properties') p ` +
+  `WHERE cdsec.key = %ALIAS%.connector_key ` +
+  `AND cdsec.organization_id = %ALIAS%.organization_id ` +
+  `AND cdsec.status = 'active' ` +
+  `AND jsonb_typeof(cdsec.options_schema->'properties') = 'object' ` +
+  `AND p.value->>'format' = 'password' ` +
+  `UNION ` +
+  `SELECT af->>'key' ` +
+  `FROM public.connector_definitions cdsec, ` +
+  `jsonb_array_elements(cdsec.auth_schema->'methods') am, ` +
+  `jsonb_array_elements(am->'fields') af ` +
+  `WHERE cdsec.key = %ALIAS%.connector_key ` +
+  `AND cdsec.organization_id = %ALIAS%.organization_id ` +
+  `AND cdsec.status = 'active' ` +
+  `AND jsonb_typeof(cdsec.auth_schema->'methods') = 'array' ` +
+  `AND jsonb_typeof(am->'fields') = 'array' ` +
+  `AND af->>'secret' = 'true' ` +
+  `AND af->>'key' IS NOT NULL` +
+  `) dk)`;
+
+/** Bind {@link DECLARED_SECRET_KEYS_SUBQUERY} to a concrete table alias. */
+export function declaredSecretKeysExpr(alias: string): string {
+  return DECLARED_SECRET_KEYS_SUBQUERY.split('%ALIAS%').join(alias);
+}
+
+/**
  * How many levels of nesting the generated expression walks.
  *
  * Config nesting in practice is shallow — the deepest real shapes are
@@ -120,7 +175,18 @@ const REDACTION_DEPTH = 3;
  * re-test the OUTERMOST key and nested secrets would survive — that bug was
  * caught by the nested-probe case in table-schema-redaction.test.ts.
  */
-function buildRedactionExpr(valueExpr: string, depth: number): string {
+function buildRedactionExpr(
+  valueExpr: string,
+  depth: number,
+  /**
+   * Whether keys at THIS level are also tested against the connector's
+   * declared secret set. True only at the root: `options_schema.properties`
+   * and `auth_schema…fields[].key` name TOP-LEVEL config keys, so applying the
+   * set deeper would redact an unrelated nested key that merely shares a name.
+   * Nested levels remain covered by the heuristic + URI shape.
+   */
+  applyDeclared = false
+): string {
   // Bottom of the walk: anything still an object/array here is replaced
   // wholesale — fail-closed rather than emitting unredacted nested content.
   if (depth === 0) {
@@ -143,8 +209,16 @@ function buildRedactionExpr(valueExpr: string, depth: number): string {
     // objects: rebuild, redacting denylisted keys and recursing into the rest
     `WHEN jsonb_typeof(${valueExpr}) = 'object' THEN (` +
     `SELECT COALESCE(jsonb_object_agg(${kv}.key, ` +
-    `CASE WHEN ${SQL_KEY_IS_SECRET(`${kv}.key`)} ` +
-    `THEN to_jsonb('${REDACTED_SENTINEL}'::text) ELSE ${child} END), '{}'::jsonb) ` +
+    `CASE WHEN ${SQL_KEY_IS_SECRET(`${kv}.key`)}` +
+    // Schema-declared secrets: the connector said this key is secret, whatever
+    // it is named. Only applied at the root (see `applyDeclared`).
+    // `= ANY(<subquery>)` would treat the subquery as a set of rows; the
+    // subquery yields ONE text[] row, so the array is compared with `@>`
+    // (contains) instead.
+    (applyDeclared
+      ? ` OR (${DECLARED_SECRETS_REF}) @> ARRAY[${kv}.key]::text[]`
+      : '') +
+    ` THEN to_jsonb('${REDACTED_SENTINEL}'::text) ELSE ${child} END), '{}'::jsonb) ` +
     `FROM jsonb_each(${valueExpr}) ${kv}) ` +
     // arrays: recurse elementwise (a list of header objects is a real shape)
     `WHEN jsonb_typeof(${valueExpr}) = 'array' THEN (` +
@@ -160,12 +234,20 @@ function buildRedactionExpr(valueExpr: string, depth: number): string {
   );
 }
 
-/** The `config` column, redacted at the chokepoint. */
-function redactedConfigColumn(): ColumnDef {
+/**
+ * The `config` column, redacted at the chokepoint.
+ *
+ * `withDeclaredSecrets` is set for `connections`, whose rows carry the
+ * `connector_key` + `organization_id` needed to resolve the connector's
+ * declared secret fields. `feeds.config` has no such association, so it stays
+ * on heuristic + URI redaction — feed-scoped config is not where connectors
+ * declare credentials.
+ */
+function redactedConfigColumn(withDeclaredSecrets = false): ColumnDef {
   return {
     name: 'config',
     type: 'jsonb',
-    expr: buildRedactionExpr(COLUMN_REF, REDACTION_DEPTH),
+    expr: buildRedactionExpr(COLUMN_REF, REDACTION_DEPTH, withDeclaredSecrets),
   };
 }
 
@@ -251,7 +333,7 @@ export const QUERYABLE_SCHEMA = {
           'account_id',
           'entity_ids'
         ),
-        redactedConfigColumn(),
+        redactedConfigColumn(true),
         ...cols(
           'error_message',
           'created_by',
@@ -605,11 +687,23 @@ export function buildColumnList(defs: ColumnDef[], alias?: string): string {
         // times). Legacy expressions with no marker keep the old behavior:
         // alias-prefix the leading identifier.
         const ref = alias ? `${alias}."${c.name}"` : `"${c.name}"`;
-        const prefixed = c.expr.includes(COLUMN_REF)
+        let prefixed = c.expr.includes(COLUMN_REF)
           ? c.expr.split(COLUMN_REF).join(ref)
           : alias
             ? c.expr.replace(/^(\w+)/, `${alias}.$1`)
             : c.expr;
+        // `$DECLARED$` resolves to the connector's declared secret key set for
+        // the row. It needs a table alias to correlate on (connector_key +
+        // organization_id); with no alias there is nothing to correlate to, so
+        // it degrades to the empty set — heuristic-only, never MORE exposed
+        // than before, just less precise.
+        if (prefixed.includes(DECLARED_SECRETS_REF)) {
+          prefixed = prefixed
+            .split(DECLARED_SECRETS_REF)
+            .join(
+              alias ? declaredSecretKeysExpr(alias) : `ARRAY[]::text[]`
+            );
+        }
         return `${prefixed} as "${c.name}"`;
       }
       return alias ? `${alias}."${c.name}"` : `"${c.name}"`;

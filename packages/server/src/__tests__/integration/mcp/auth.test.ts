@@ -9,7 +9,6 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
-import { invalidateMembershipRoleCache } from '../../../workspace/multi-tenant';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -518,26 +517,20 @@ describe('MCP Authentication', () => {
     });
 
     it('revokes an MCP client only within the current organization', async () => {
-      // Revoking is owner/admin only (see client-routes.ts withOrgAdmin); the
-      // shared fixture user joins as a plain 'member'. This test is about ORG
-      // SCOPING, not authorization, so elevate the role here rather than let a
-      // 403 mask what it actually asserts. Authorization has its own coverage
-      // in lobu/__tests__/client-routes-revoke.test.ts.
-      await getTestDb()`
-        UPDATE "member" SET role = 'owner'
-        WHERE "userId" = ${user.id} AND "organizationId" = ${org.id}
-      `;
-      invalidateMembershipRoleCache(org.id, user.id);
+      const revoker = await createTestUser({});
+      await addUserToOrganization(revoker.id, org.id, 'owner');
+      await addUserToOrganization(revoker.id, org2.id, 'owner');
+      const revokerSession = await createTestSession(revoker.id);
 
       const scopedClient = await createTestOAuthClient({
         client_name: 'Scoped Revoke Client',
       });
       const { token: orgToken } = await createTestAccessToken(
-        user.id,
+        revoker.id,
         org.id,
         scopedClient.client_id
       );
-      await createTestAccessToken(user.id, org2.id, scopedClient.client_id);
+      await createTestAccessToken(revoker.id, org2.id, scopedClient.client_id);
 
       const initResponse = await post('/mcp', {
         body: {
@@ -592,7 +585,7 @@ describe('MCP Authentication', () => {
           expires_at
         ) VALUES (
           'session-org-1',
-          ${user.id},
+          ${revoker.id},
           ${scopedClient.client_id},
           ${org.id},
           'owner',
@@ -603,7 +596,7 @@ describe('MCP Authentication', () => {
           NOW() + INTERVAL '1 hour'
         ), (
           'session-org-2',
-          ${user.id},
+          ${revoker.id},
           ${scopedClient.client_id},
           ${org2.id},
           'owner',
@@ -616,7 +609,7 @@ describe('MCP Authentication', () => {
       `;
 
       const response = await del(`/api/${org.slug}/clients/mcp/${scopedClient.client_id}`, {
-        cookie: sessionCookie,
+        cookie: revokerSession.cookieHeader,
       });
 
       expect(response.status).toBe(200);

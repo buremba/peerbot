@@ -916,6 +916,18 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
   // Existing session → reuse
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId)!;
+    // The persisted row is the cross-replica revocation signal. Without this
+    // check, a live transport on another pod can keep using a revoked client
+    // and upsert the row that the revoking pod deleted.
+    if (!(await mcpSessionStore.getSession(sessionId))) {
+      sessions.delete(sessionId);
+      session.transport.close?.();
+      return buildJsonRpcErrorResponse(
+        'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+        null,
+        404
+      );
+    }
     session.lastAccessedAt = Date.now();
 
     const clearSession = () => {

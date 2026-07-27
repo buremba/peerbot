@@ -106,6 +106,17 @@ describe('MCP session recovery', () => {
     expect(body.result?.tools?.length).toBeGreaterThan(0);
   });
 
+  it('rejects a live local session whose persisted row was deleted by another replica', async () => {
+    const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+    const sessionId = await initSession({ token, orgSlug: org.slug });
+
+    await getTestDb()`DELETE FROM mcp_sessions WHERE session_id = ${sessionId}`;
+
+    const res = await toolsList(sessionId, { token, orgSlug: org.slug });
+    expect(res.status).toBe(404);
+    expect(await sessionRowExists(sessionId)).toBe(false);
+  });
+
   it('returns 404 (not 200) for an authenticated caller whose session fully expired, and creates no phantom row', async () => {
     const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
     const sessionId = await initSession({ token, orgSlug: org.slug });

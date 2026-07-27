@@ -25,9 +25,6 @@ export interface AuthStash {
   // gated by `requireSessionOrAdminPat` see a non-null value.
   authSource: 'session' | 'pat' | 'oauth' | null;
   mcpAuthInfo: { scopes: string[] } | null;
-  // Org membership role, as the real middleware resolves it from `member`.
-  // Routes gated on owner/admin (e.g. revoking a connected client) read this.
-  // Defaults to 'owner' so pre-existing route tests keep their prior access.
   memberRole: string | null;
 }
 

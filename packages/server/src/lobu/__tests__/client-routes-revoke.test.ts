@@ -1,21 +1,3 @@
-/**
- * Coverage for revoking a connected MCP client (client-routes.ts):
- *
- *  1. Authorization. `mcpAuth` only resolves identity — it authenticates, it
- *     does not authorize a role — so before this gate any org member could
- *     revoke a client another member registered, killing live tokens and MCP
- *     sessions for everyone. Revoke is owner/admin; listing stays open to
- *     members (it exposes no secrets).
- *
- *  2. Multi-registration semantics. A client that re-registers gets a NEW
- *     oauth_clients row under the same client_name (prod: "Lobu CLI" has 6
- *     ids). Revoking one id leaves the same app connected through its
- *     siblings — the user disconnects ChatGPT and ChatGPT stays online.
- *     `?scope=all` fans out across same (client_name, user_id, organization_id).
- *
- * Uses the shared route-test mocks over the embedded Postgres harness.
- */
-
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   ensureDbForGatewayTests,
@@ -37,7 +19,6 @@ async function importClientRoutes() {
   return mod.clientRoutes;
 }
 
-/** Seed org + user, then N registrations of the same logical client. */
 async function seed(): Promise<void> {
   const { getDb } = await import('../../db/client.js');
   const sql = getDb();
@@ -57,7 +38,6 @@ async function seed(): Promise<void> {
     ON CONFLICT (id) DO NOTHING
   `;
 
-  // Two registrations of "ChatGPT" (same name/user/org) + one unrelated client.
   for (const id of ['mcp_chatgpt_a', 'mcp_chatgpt_b']) {
     await sql`
       INSERT INTO oauth_clients (id, client_name, redirect_uris, user_id, organization_id)
@@ -71,7 +51,6 @@ async function seed(): Promise<void> {
     ON CONFLICT (id) DO NOTHING
   `;
 
-  // One live token per client so revocation has something to revoke.
   for (const id of ['mcp_chatgpt_a', 'mcp_chatgpt_b', 'mcp_other']) {
     await sql`
       INSERT INTO oauth_tokens (
@@ -111,7 +90,6 @@ describe('DELETE /clients/mcp/:clientId', () => {
     const res = await routes.request('/mcp/mcp_chatgpt_a', { method: 'DELETE' });
 
     expect(res.status).toBe(403);
-    // Nothing was revoked.
     expect(await liveTokenIds()).toEqual([
       'mcp_chatgpt_a',
       'mcp_chatgpt_b',
@@ -126,17 +104,61 @@ describe('DELETE /clients/mcp/:clientId', () => {
     expect(res.status).toBe(403);
   });
 
+  test('a request without an organization is rejected before role authorization', async () => {
+    authStash.organizationId = null;
+    const routes = await importClientRoutes();
+    const res = await routes.request('/mcp/mcp_chatgpt_a', { method: 'DELETE' });
+    expect(res.status).toBe(401);
+  });
+
   test('an admin can revoke, and by default only the one registration', async () => {
     authStash.memberRole = 'admin';
     const routes = await importClientRoutes();
     const res = await routes.request('/mcp/mcp_chatgpt_a', { method: 'DELETE' });
 
     expect(res.status).toBe(200);
-    // The sibling registration is deliberately untouched without ?scope=all.
     expect(await liveTokenIds()).toEqual(['mcp_chatgpt_b', 'mcp_other']);
   });
 
   test('scope=all revokes every registration of the same client', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    await sql`
+      INSERT INTO oauth_clients (id, client_name, redirect_uris)
+      VALUES ('mcp_chatgpt_legacy', 'ChatGPT', ARRAY['https://example.test/cb']::text[])
+    `;
+    await sql`
+      INSERT INTO oauth_tokens (
+        id, token_type, token_hash, client_id, user_id, organization_id,
+        scope, expires_at, created_at
+      ) VALUES (
+        'tok_mcp_chatgpt_legacy', 'access', 'hash_mcp_chatgpt_legacy',
+        'mcp_chatgpt_legacy', ${USER}, ${ORG}, 'mcp:read',
+        now() + interval '1 hour', now()
+      )
+    `;
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES ('u2', 'Other', 'u2@test', true, now(), now())
+    `;
+    await sql`
+      INSERT INTO oauth_clients (id, client_name, redirect_uris, user_id, organization_id)
+      VALUES (
+        'mcp_chatgpt_other_user', 'ChatGPT',
+        ARRAY['https://example.test/cb']::text[], 'u2', ${ORG}
+      )
+    `;
+    await sql`
+      INSERT INTO oauth_tokens (
+        id, token_type, token_hash, client_id, user_id, organization_id,
+        scope, expires_at, created_at
+      ) VALUES (
+        'tok_mcp_chatgpt_other_user', 'access', 'hash_mcp_chatgpt_other_user',
+        'mcp_chatgpt_other_user', 'u2', ${ORG}, 'mcp:read',
+        now() + interval '1 hour', now()
+      )
+    `;
+
     const routes = await importClientRoutes();
     const res = await routes.request('/mcp/mcp_chatgpt_a?scope=all', {
       method: 'DELETE',
@@ -147,9 +169,12 @@ describe('DELETE /clients/mcp/:clientId', () => {
     expect([...body.revokedClientIds].sort()).toEqual([
       'mcp_chatgpt_a',
       'mcp_chatgpt_b',
+      'mcp_chatgpt_legacy',
     ]);
-    // Both ChatGPT registrations gone; the unrelated client survives.
-    expect(await liveTokenIds()).toEqual(['mcp_other']);
+    expect(await liveTokenIds()).toEqual([
+      'mcp_chatgpt_other_user',
+      'mcp_other',
+    ]);
   });
 
   test('scope=all does not reach a different client that shares nothing', async () => {

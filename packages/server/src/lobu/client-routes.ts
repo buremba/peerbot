@@ -71,30 +71,17 @@ function withOrg(c: any, fn: () => Promise<Response>): Promise<Response> {
 	return orgContext.run({ organizationId }, fn);
 }
 
-/**
- * Same as `withOrg`, but additionally requires an elevated member role.
- *
- * `mcpAuth` only resolves identity — it authenticates, it does not authorize a
- * role — so a plain member could otherwise revoke a client another member
- * registered. Revoking kills live tokens and MCP sessions for everyone in the
- * org, so it is owner/admin only. Reading the list stays open to members: it
- * shows no secrets, and hiding it would just make the page useless for the
- * people who need to notice a rogue client.
- *
- * Elevated == owner|admin, matching `resolveToolAccessLevel` in
- * auth/tool-access.ts so the two authorization surfaces agree.
- */
 function withOrgAdmin(c: any, fn: () => Promise<Response>): Promise<Response> {
-	const role = c.get("memberRole");
-	if (role !== "owner" && role !== "admin") {
-		return Promise.resolve(
-			c.json(
+	return withOrg(c, async () => {
+		const role = c.get("memberRole");
+		if (role !== "owner" && role !== "admin") {
+			return c.json(
 				{ error: "Revoking a connected client requires an owner or admin." },
 				403,
-			),
-		);
-	}
-	return withOrg(c, fn);
+			);
+		}
+		return fn();
+	});
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -276,6 +263,14 @@ routes.get("/", mcpAuth, async (c) => {
 					id: client.client_id,
 					kind: "mcp" as const,
 					title,
+					registrationGroupKey:
+						client.client_name && client.owner_user_id
+							? JSON.stringify([
+									client.client_name,
+									client.owner_user_id,
+									organizationId,
+								])
+							: client.client_id,
 					identifier: client.client_id,
 					platform: softwareId,
 					assignedAgentId,
@@ -335,46 +330,57 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 		const sql = getDb();
 
 		const rows = await sql`
-      SELECT oc.id
-      FROM oauth_clients oc
-      WHERE oc.id = ${clientId}
-        AND (
-          oc.organization_id = ${organizationId}
-          OR EXISTS (
-            SELECT 1
-            FROM oauth_tokens ot
-            WHERE ot.client_id = oc.id
-              AND ot.organization_id = ${organizationId}
-          )
-        )
-      LIMIT 1
-    `;
+	      SELECT
+	        oc.id,
+	        oc.client_name,
+	        COALESCE(oc.user_id, org_token.user_id) AS owner_user_id
+	      FROM oauth_clients oc
+	      LEFT JOIN LATERAL (
+	        SELECT ot.user_id
+	        FROM oauth_tokens ot
+	        WHERE ot.client_id = oc.id
+	          AND ot.organization_id = ${organizationId}
+	        ORDER BY ot.created_at DESC
+	        LIMIT 1
+	      ) org_token ON true
+	      WHERE oc.id = ${clientId}
+	        AND (
+	          oc.organization_id = ${organizationId}
+	          OR org_token.user_id IS NOT NULL
+	        )
+	      LIMIT 1
+	    `;
 
 		if (rows.length === 0) {
 			return c.json({ error: "Client not found" }, 404);
 		}
 
-		// A client that re-registers gets a NEW oauth_clients row under the same
-		// client_name (prod: "Lobu CLI" has 6 ids), so revoking a single id can
-		// leave the same app still connected through its other registrations —
-		// the user asked to disconnect ChatGPT and ChatGPT stays online.
-		//
-		// `?scope=all` opts into revoking every sibling registration: same
-		// client_name, same owning user, same org. Default stays single-id so
-		// existing callers are unchanged.
 		const revokeAll = c.req.query("scope") === "all";
 		let targetIds = [clientId];
-		if (revokeAll) {
+		const target = rows[0] as {
+			client_name: string | null;
+			owner_user_id: string | null;
+		};
+		if (revokeAll && target.client_name && target.owner_user_id) {
 			const siblings = await sql`
-        SELECT sibling.id
-        FROM oauth_clients target
-        JOIN oauth_clients sibling
-          ON sibling.client_name IS NOT DISTINCT FROM target.client_name
-         AND sibling.user_id IS NOT DISTINCT FROM target.user_id
-         AND sibling.organization_id IS NOT DISTINCT FROM target.organization_id
-        WHERE target.id = ${clientId}
-          AND target.organization_id = ${organizationId}
-      `;
+	        SELECT sibling.id
+	        FROM oauth_clients sibling
+	        LEFT JOIN LATERAL (
+	          SELECT ot.user_id
+	          FROM oauth_tokens ot
+	          WHERE ot.client_id = sibling.id
+	            AND ot.organization_id = ${organizationId}
+	          ORDER BY ot.created_at DESC
+	          LIMIT 1
+	        ) org_token ON true
+	        WHERE sibling.client_name = ${target.client_name}
+	          AND COALESCE(sibling.user_id, org_token.user_id) = ${target.owner_user_id}
+	          AND (
+	            sibling.organization_id = ${organizationId}
+	            OR org_token.user_id IS NOT NULL
+	          )
+	        ORDER BY sibling.id
+	      `;
 			const ids = (siblings as Array<{ id: string }>).map((r) => r.id);
 			if (ids.length > 0) targetIds = ids;
 		}

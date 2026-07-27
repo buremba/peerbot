@@ -288,6 +288,7 @@ export class OAuthClientsStore {
       metadata: Record<string, unknown>;
       user_name?: string;
       user_email?: string;
+      owner_user_id: string | null;
       active_token_count: number;
     })[]
   > {
@@ -296,12 +297,14 @@ export class OAuthClientsStore {
         oc.*,
         tok_agg.user_name,
         tok_agg.user_email,
+        COALESCE(oc.user_id, tok_agg.token_user_id) AS owner_user_id,
         COALESCE(tok_agg.active_token_count, 0)::int AS active_token_count
       FROM oauth_clients oc
       INNER JOIN LATERAL (
         SELECT
           MAX(u.name) AS user_name,
           MAX(u.email) AS user_email,
+          MAX(ot.user_id) AS token_user_id,
           COUNT(*) FILTER (
             WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
           )::int AS active_token_count
@@ -325,6 +328,8 @@ export class OAuthClientsStore {
         ...client,
         user_name: (row as Record<string, unknown>).user_name as string | undefined,
         user_email: (row as Record<string, unknown>).user_email as string | undefined,
+        owner_user_id:
+          ((row as Record<string, unknown>).owner_user_id as string | null) ?? null,
         active_token_count: (row as Record<string, unknown>).active_token_count as number,
       };
     });

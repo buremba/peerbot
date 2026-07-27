@@ -29,7 +29,10 @@ import {
   normalizeAuthProfileSlug,
   normalizeAuthValues,
 } from '../utils/auth-profiles';
-import { toSecretRefAuthData } from '../utils/auth-credential-secrets';
+import {
+  persistAuthCredentials,
+  toSecretRefAuthData,
+} from '../utils/auth-credential-secrets';
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
@@ -494,10 +497,17 @@ connectRoutes.post('/:token/cancel', requireConnectToken, async (c) => {
 
   await sql.begin(async (tx) => {
     if (tokenRow.auth_profile_id) {
+      // Clear auth_data AND drop the encrypted credential rows. Setting
+      // auth_data to {} alone would leave decryptable agent_secrets behind.
+      await persistAuthCredentials({
+        organizationId: tokenRow.organization_id,
+        authProfileId: Number(tokenRow.auth_profile_id),
+        credentials: {},
+        db: tx,
+      });
       await tx`
         UPDATE auth_profiles
-        SET auth_data = '{}'::jsonb,
-            status = 'pending_auth',
+        SET status = 'pending_auth',
             updated_at = NOW()
         WHERE id = ${tokenRow.auth_profile_id}
           AND organization_id = ${tokenRow.organization_id}

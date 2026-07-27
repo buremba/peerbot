@@ -811,6 +811,20 @@ function outputAliases(sql: string): Set<string> {
   return out;
 }
 
+/** Build one actionable error covering all unknown tables in a query. */
+export function formatUnknownTablesError(tableNames: Iterable<string>): string {
+  const names = [...new Set(tableNames)].sort();
+  const subject =
+    names.length === 1
+      ? `Unknown table '${names[0]}'`
+      : `Unknown tables ${names.map((name) => `'${name}'`).join(', ')}`;
+  const queryableTables = [...QUERYABLE_TABLE_NAMES].sort().join(', ');
+  return (
+    `${subject} — not in the queryable allowlist, so the query did not run. ` +
+    `This is an error, not an empty result. Queryable tables are: ${queryableTables}.`
+  );
+}
+
 export function validateTableQuery(sql: string): { valid: boolean; errors: string[] } {
   const result = validateWithSchema(sql, QUERYABLE_SCHEMA, 'postgresql', { checkReferences: true });
   const aliases = outputAliases(sql);
@@ -824,8 +838,18 @@ export function validateTableQuery(sql: string): { valid: boolean; errors: strin
     }
     return e.code === 'E200'; // unknown table — always a real error
   });
+  const unknownTables: string[] = [];
+  const messages: string[] = [];
+  for (const error of errors as Array<{ code: string; message: string }>) {
+    const match = error.code === 'E200' ? /Unknown table '([^']+)'/i.exec(error.message) : null;
+    if (match) unknownTables.push(match[1]);
+    else messages.push(error.message);
+  }
+  if (unknownTables.length > 0) {
+    messages.unshift(formatUnknownTablesError(unknownTables));
+  }
   return {
-    valid: errors.length === 0,
-    errors: errors.map((e: { message: string }) => e.message),
+    valid: messages.length === 0,
+    errors: messages,
   };
 }

@@ -58,6 +58,22 @@ export interface AuthContext {
   adminTools?: string[] | null;
 }
 
+/**
+ * Resolved tool failures are not thrown, so the MCP boundary must mark them
+ * with `isError`. Action/query tools use a top-level error string; SDK scripts
+ * return `success: false` with a structured error object.
+ */
+export function isSoftErrorResult(result: unknown): boolean {
+  if (typeof result !== 'object' || result === null) return false;
+  const candidate = result as { success?: unknown; error?: unknown };
+  if (typeof candidate.error === 'string') return candidate.error.length > 0;
+  return (
+    candidate.success === false &&
+    typeof candidate.error === 'object' &&
+    candidate.error !== null
+  );
+}
+
 export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
   const mcpAuthInfo = c.var.mcpAuthInfo ?? null;
   const tokenType: TokenType =
@@ -224,9 +240,9 @@ export async function executeTool(
   try {
     // Auto-retry (lobu#2051 Item 2): only transient thrown ToolErrors, and only
     // for read/test tools on the allowlist. Mutations and run_sdk are never
-    // retried here — re-running them could double-write. Soft-error results
-    // (query_sql/query_sdk `{error, retryable}`) never throw, so they're never
-    // auto-retried; their `retryable` flag is advisory for the agent.
+    // retried here — re-running them could double-write. Resolved failures from
+    // query_sql and query_sdk never throw, so their retryability metadata is
+    // advisory for the agent.
     const result = RETRYABLE_TOOLS.has(toolName)
       ? await retryWithBackoff(runHandler, {
           maxRetries: 2,

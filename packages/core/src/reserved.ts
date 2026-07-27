@@ -27,10 +27,9 @@ export const OWNER_ROUTE_SEGMENTS = [
   "agents",
   "connectors",
   "devices",
-  // Legacy redirect path /$owner/environments → infrastructure/sandboxes.
+  // Legacy redirect path /$owner/environments → connectors/runtime.
   // Keep reserved so an org/entity slug never collides with the redirect.
   "environments",
-  "infrastructure",
   "memory",
   "members",
   "settings",
@@ -42,6 +41,9 @@ export const REMOVED_OWNER_SEGMENTS = [
   "watchers",
   "connections",
   "sources",
+  // Every Connect surface moved under /connectors/ (providers, runtime,
+  // deployments); the vestigial /infrastructure prefix no longer routes.
+  "infrastructure",
 ] as const;
 
 /**

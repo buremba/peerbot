@@ -12,7 +12,7 @@ import { type AgentErrorCtaResolvers, renderAgentError } from "../url-builder";
 const SETTINGS_URL = "https://app.lobu.ai/acme/agents/agent-1/settings";
 const CONNECT_URL = "https://app.lobu.ai/acme/inference-providers/new";
 const MANAGE_URL =
-  "https://app.lobu.ai/acme/infrastructure/models?provider=z-ai&model=glm-5.2";
+  "https://app.lobu.ai/acme/connectors/providers?provider=z-ai&model=glm-5.2";
 
 // Distinct resolvers per CTA kind, so a test can assert that a code routes to
 // the RIGHT page (pick-a-model vs connect-a-provider), not just "some url".

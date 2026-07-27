@@ -149,7 +149,7 @@ export async function buildProviderManagementUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(`/${encodeURIComponent(slug)}/infrastructure/models`, `${webOrigin}/`);
+  const url = new URL(`/${encodeURIComponent(slug)}/connectors/providers`, `${webOrigin}/`);
   if (target?.provider) url.searchParams.set('provider', target.provider);
   if (target?.model) url.searchParams.set('model', target.model);
   return url.toString();

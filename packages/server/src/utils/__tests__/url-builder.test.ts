@@ -264,13 +264,25 @@ describe('buildProviderManagementUrl', () => {
       provider: 'z-ai',
       model: 'glm-5.2',
     });
-    expect(url).toBe('https://app.lobu.com/acme/infrastructure/models?provider=z-ai&model=glm-5.2');
+    expect(url).toBe('https://app.lobu.com/acme/connectors/providers?provider=z-ai&model=glm-5.2');
   });
 
   it('returns null when org slug or gateway url is missing', async () => {
     expect(await buildProviderManagementUrl(undefined, 'org-1')).toBeNull();
     expect(await buildProviderManagementUrl('https://x', undefined)).toBeNull();
     expect(await buildProviderManagementUrl('https://x', 'unknown-org')).toBeNull();
+  });
+
+  // This path is server-rendered into Slack/Telegram buttons, so it must match
+  // the admin UI's actual route. The frontend declares the same path in
+  // owletto's `agent-error-cta.ts` (and as the `/$owner/connectors/providers`
+  // file route); nothing links the two repos at compile time, so pin the exact
+  // segment here. A rename on either side that skips the other ships a 404
+  // button to every chat surface.
+  it('points at the /connectors/providers admin route, not a stale prefix', async () => {
+    const url = await buildProviderManagementUrl('https://app.lobu.com', 'org-1');
+    expect(new URL(url as string).pathname).toBe('/acme/connectors/providers');
+    expect(url).not.toContain('infrastructure');
   });
 });
 

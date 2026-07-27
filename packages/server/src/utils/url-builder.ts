@@ -5,6 +5,7 @@
  */
 
 import { AGENT_ERRORS, type AgentErrorCode } from '@lobu/core';
+import { INFERENCE_ROW_KEY_PREFIX } from '@lobu/core/reserved';
 import { getWorkspaceProvider } from '../workspace';
 import {
   getConfiguredPublicOrigin,
@@ -102,15 +103,29 @@ export async function buildBehaviorSettingsUrl(
 }
 
 /**
- * Build the org's "connect a provider" URL — `<webOrigin>/<orgSlug>/
- * inference-providers/new` — the preflight CTA target when the selected model's
- * provider is not connected yet, as opposed to *picking a model* on an agent
- * (which is {@link buildAgentSettingsUrl}). This is the same live route the
- * pre-enqueue model-provider preflight links to.
+ * The provider's connector-detail path under an org: `/<orgSlug>/connectors/
+ * <INFERENCE_ROW_KEY_PREFIX><provider>` — model providers are ordinary
+ * connectors, so both provider CTAs land on the shared connector detail page.
+ * The prefixed key is one path segment and contains `:`, so it is
+ * percent-encoded (`inference-provider%3A…`); the SPA router decodes the param.
+ * No provider → the connectors list.
+ */
+function providerConnectorPath(slug: string, provider?: string): string {
+  const base = `/${encodeURIComponent(slug)}/connectors`;
+  if (!provider) return base;
+  return `${base}/${encodeURIComponent(`${INFERENCE_ROW_KEY_PREFIX}${provider}`)}`;
+}
+
+/**
+ * Build the org's "connect a provider" URL — the provider's connector detail
+ * page (which hosts the create-provider form while the provider is not
+ * connected yet) — as opposed to *picking a model* on an agent (which is
+ * {@link buildAgentSettingsUrl}). This is the same live route the pre-enqueue
+ * model-provider preflight links to.
  *
- * Optional `provider`/`model` prefill the connect form so the user lands on the
- * exact provider to wire up. Returns null when any required piece is missing;
- * callers fall back to a non-linked message. The `/lobu` embedded-mode suffix is
+ * `model`/`reason`/`agentId` prefill the connect form and drive the agent
+ * explainer banner. Returns null when any required piece is missing; callers
+ * fall back to a non-linked message. The `/lobu` embedded-mode suffix is
  * stripped like the sibling builders.
  */
 export async function buildProviderConnectUrl(
@@ -127,18 +142,20 @@ export async function buildProviderConnectUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(`/${encodeURIComponent(slug)}/inference-providers/new`, `${webOrigin}/`);
-  if (prefill?.provider) url.searchParams.set('provider', prefill.provider);
-  if (prefill?.model) url.searchParams.set('model', prefill.model);
-  if (prefill?.reason) url.searchParams.set('reason', prefill.reason);
-  if (prefill?.agentId) url.searchParams.set('agentId', prefill.agentId);
+  const url = new URL(providerConnectorPath(slug, prefill?.provider), `${webOrigin}/`);
+  if (prefill?.provider) {
+    if (prefill.model) url.searchParams.set('model', prefill.model);
+    if (prefill.reason) url.searchParams.set('reason', prefill.reason);
+    if (prefill.agentId) url.searchParams.set('agentId', prefill.agentId);
+  }
   return url.toString();
 }
 
 /**
- * Build the org's existing-provider management URL. Provider failures should
- * land on the configured provider row, not the new-provider flow; provider and
- * model are non-secret targeting context carried from the worker.
+ * Build the org's existing-provider management URL — the same connector detail
+ * page as {@link buildProviderConnectUrl} (a connected provider renders its
+ * management body there). `model` is non-secret targeting context carried from
+ * the worker; it opens the provider's edit controls.
  */
 export async function buildProviderManagementUrl(
   publicGatewayUrl: string | undefined,
@@ -149,9 +166,8 @@ export async function buildProviderManagementUrl(
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
   const webOrigin = publicGatewayUrl.replace(/\/+$/, '').replace(/\/lobu$/, '');
-  const url = new URL(`/${encodeURIComponent(slug)}/connectors/providers`, `${webOrigin}/`);
-  if (target?.provider) url.searchParams.set('provider', target.provider);
-  if (target?.model) url.searchParams.set('model', target.model);
+  const url = new URL(providerConnectorPath(slug, target?.provider), `${webOrigin}/`);
+  if (target?.provider && target.model) url.searchParams.set('model', target.model);
   return url.toString();
 }
 

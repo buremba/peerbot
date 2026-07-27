@@ -275,7 +275,7 @@ export async function deleteMessage(
 
 export function createConversationTools(params: ConversationPluginParams) {
   const gateway: GatewayParams = params;
-  return [
+  const tools = [
     defineGatewayTool({
       name: "list_conversations",
       parameters: Type.Object({}),
@@ -341,28 +341,40 @@ export function createConversationTools(params: ConversationPluginParams) {
           onPosted: params.onAskUserPosted,
         }),
     }),
-    defineGatewayTool({
-      name: "suggest_actions",
-      parameters: Type.Object({
-        prompts: Type.Array(
-          Type.Object({
-            title: Type.String({
-              description: "Short chip label shown to the user (≤80 chars)",
-            }),
-            message: Type.String({
-              description:
-                "The full message sent verbatim as the user if the chip is tapped",
-            }),
-          }),
-          {
-            description:
-              "Up to 4 suggested next actions. Non-blocking — the turn continues.",
-          }
-        ),
-      }),
-      run: (args) => suggestActions(gateway, args),
-    }),
   ];
+
+  // Only the web (API) surface renders chips: the SPA embeds the conversation's
+  // current set on the terminal `complete` payload. The gateway rejects every
+  // other platform with a 400, so offering the tool on Slack/Telegram would show
+  // the agent a capability that always fails — it burns a tool call and can
+  // derail the turn. Withhold it instead of letting it be called and rejected.
+  if (params.platform === "api") {
+    tools.push(
+      defineGatewayTool({
+        name: "suggest_actions",
+        parameters: Type.Object({
+          prompts: Type.Array(
+            Type.Object({
+              title: Type.String({
+                description: "Short chip label shown to the user (≤80 chars)",
+              }),
+              message: Type.String({
+                description:
+                  "The full message sent verbatim as the user if the chip is tapped",
+              }),
+            }),
+            {
+              description:
+                "Up to 4 suggested next actions. Non-blocking — the turn continues.",
+            }
+          ),
+        }),
+        run: (args) => suggestActions(gateway, args),
+      })
+    );
+  }
+
+  return tools;
 }
 
 export function createConversationPlugin(params: ConversationPluginParams) {

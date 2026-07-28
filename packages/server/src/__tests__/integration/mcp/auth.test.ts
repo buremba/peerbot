@@ -517,15 +517,20 @@ describe('MCP Authentication', () => {
     });
 
     it('revokes an MCP client only within the current organization', async () => {
+      const revoker = await createTestUser({});
+      await addUserToOrganization(revoker.id, org.id, 'owner');
+      await addUserToOrganization(revoker.id, org2.id, 'owner');
+      const revokerSession = await createTestSession(revoker.id);
+
       const scopedClient = await createTestOAuthClient({
         client_name: 'Scoped Revoke Client',
       });
       const { token: orgToken } = await createTestAccessToken(
-        user.id,
+        revoker.id,
         org.id,
         scopedClient.client_id
       );
-      await createTestAccessToken(user.id, org2.id, scopedClient.client_id);
+      await createTestAccessToken(revoker.id, org2.id, scopedClient.client_id);
 
       const initResponse = await post('/mcp', {
         body: {
@@ -580,7 +585,7 @@ describe('MCP Authentication', () => {
           expires_at
         ) VALUES (
           'session-org-1',
-          ${user.id},
+          ${revoker.id},
           ${scopedClient.client_id},
           ${org.id},
           'owner',
@@ -591,7 +596,7 @@ describe('MCP Authentication', () => {
           NOW() + INTERVAL '1 hour'
         ), (
           'session-org-2',
-          ${user.id},
+          ${revoker.id},
           ${scopedClient.client_id},
           ${org2.id},
           'owner',
@@ -604,7 +609,7 @@ describe('MCP Authentication', () => {
       `;
 
       const response = await del(`/api/${org.slug}/clients/mcp/${scopedClient.client_id}`, {
-        cookie: sessionCookie,
+        cookie: revokerSession.cookieHeader,
       });
 
       expect(response.status).toBe(200);
@@ -652,6 +657,128 @@ describe('MCP Authentication', () => {
         WHERE id = ${scopedClient.client_id}
       `;
       expect(clientRows).toHaveLength(1);
+    });
+
+    it('revoking the displayed owner of a shared registration keeps the coworker connected', async () => {
+      const revoker = await createTestUser({});
+      await addUserToOrganization(revoker.id, org.id, 'owner');
+      const revokerSession = await createTestSession(revoker.id);
+
+      const alice = await createTestUser({});
+      await addUserToOrganization(alice.id, org.id);
+      const bob = await createTestUser({});
+      await addUserToOrganization(bob.id, org.id);
+
+      const sharedClient = await createTestOAuthClient({
+        client_name: 'Shared Registration Client',
+      });
+      const { token: bobToken } = await createTestAccessToken(
+        bob.id,
+        org.id,
+        sharedClient.client_id
+      );
+      const { token: aliceToken } = await createTestAccessToken(
+        alice.id,
+        org.id,
+        sharedClient.client_id
+      );
+      // Same-second created_at ties break on token id, so pin Alice as the
+      // newest grant — the owner the inventory row displays and the revoke
+      // must resolve.
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET created_at = NOW() + INTERVAL '1 minute'
+        WHERE client_id = ${sharedClient.client_id}
+          AND user_id = ${alice.id}
+      `;
+
+      const initMcpSession = async (token: string): Promise<string> => {
+        const initResponse = await post('/mcp', {
+          body: {
+            jsonrpc: '2.0',
+            id: '__test_init__',
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              clientInfo: { name: 'lobu-test', version: '1.0' },
+            },
+          },
+          token,
+        });
+        const sessionId = initResponse.headers.get('mcp-session-id');
+        expect(sessionId).toBeTruthy();
+        await post('/mcp', {
+          body: { jsonrpc: '2.0', method: 'notifications/initialized' },
+          headers: { 'mcp-session-id': sessionId! },
+          token,
+        });
+        return sessionId!;
+      };
+      const aliceSessionId = await initMcpSession(aliceToken);
+      const bobSessionId = await initMcpSession(bobToken);
+
+      const response = await del(
+        `/api/${org.slug}/clients/mcp/${sharedClient.client_id}`,
+        { cookie: revokerSession.cookieHeader }
+      );
+      expect(response.status).toBe(200);
+
+      const tokenRows = await getTestDb()`
+        SELECT user_id, revoked_at
+        FROM oauth_tokens
+        WHERE client_id = ${sharedClient.client_id}
+      `;
+      expect(tokenRows).toHaveLength(2);
+      const revokedByUser = new Map(
+        tokenRows.map((row) => [row.user_id as string, row.revoked_at as Date | null])
+      );
+      expect(revokedByUser.get(alice.id)).toBeTruthy();
+      expect(revokedByUser.get(bob.id)).toBeNull();
+
+      const sessionRows = await getTestDb()`
+        SELECT session_id
+        FROM mcp_sessions
+        WHERE client_id = ${sharedClient.client_id}
+      `;
+      expect(sessionRows.map((row) => row.session_id)).toEqual([bobSessionId]);
+
+      // Bob's session must survive a pod restart: the recovery path may only
+      // refresh his still-valid persisted row, never recreate Alice's.
+      clearInMemoryMcpSessionsForTests();
+
+      const bobCall = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: {
+            name: 'search_memory',
+            arguments: { query: 'shared-revoke-bob-probe' },
+          },
+        },
+        headers: { 'X-MCP-Format': 'json', 'mcp-session-id': bobSessionId },
+        token: bobToken,
+      });
+      expect(bobCall.status).toBe(200);
+      const bobBody = await bobCall.json();
+      expect(bobBody.error).toBeUndefined();
+      expect(bobBody.result?.isError).not.toBe(true);
+
+      const aliceCall = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: {
+            name: 'search_memory',
+            arguments: { query: 'shared-revoke-alice-probe' },
+          },
+        },
+        headers: { 'X-MCP-Format': 'json', 'mcp-session-id': aliceSessionId },
+        token: aliceToken,
+      });
+      expect(aliceCall.status).not.toBe(200);
     });
 
     it('rejects initialize when an authenticated client declares an unknown agent', async () => {

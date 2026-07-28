@@ -240,10 +240,18 @@ export class OAuthClientsStore {
   }
 
   /**
-   * Revoke a client's tokens and MCP sessions only within one organization.
-   * Keeps the client registration intact so other organizations are unaffected.
+   * Revoke a client's tokens and MCP sessions within one organization.
+   *
+   * A registration can hold grants for several people, so callers may scope
+   * the operation to the owner displayed in the connected-apps inventory.
+   * Omitting `userId` retains the org-wide operation used by administrative
+   * cleanup paths. The registration remains intact for other organizations.
    */
-  async revokeClientForOrganization(clientId: string, organizationId: string): Promise<boolean> {
+  async revokeClientForOrganization(
+    clientId: string,
+    organizationId: string,
+    userId?: string | null
+  ): Promise<boolean> {
     return this.sql.begin(async (tx) => {
       const revokedTokens = await tx`
         UPDATE oauth_tokens
@@ -251,6 +259,7 @@ export class OAuthClientsStore {
         WHERE client_id = ${clientId}
           AND organization_id = ${organizationId}
           AND revoked_at IS NULL
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
         RETURNING id
       `;
 
@@ -258,6 +267,7 @@ export class OAuthClientsStore {
         DELETE FROM mcp_sessions
         WHERE client_id = ${clientId}
           AND organization_id = ${organizationId}
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
         RETURNING session_id
       `;
 
@@ -288,28 +298,42 @@ export class OAuthClientsStore {
       metadata: Record<string, unknown>;
       user_name?: string;
       user_email?: string;
+      owner_user_id: string | null;
       active_token_count: number;
     })[]
   > {
     const result = await this.sql`
       SELECT
         oc.*,
-        tok_agg.user_name,
-        tok_agg.user_email,
-        COALESCE(tok_agg.active_token_count, 0)::int AS active_token_count
+        token_owner.user_name,
+        token_owner.user_email,
+        token_owner.token_user_id AS owner_user_id,
+        COALESCE(token_counts.active_token_count, 0)::int AS active_token_count
       FROM oauth_clients oc
-      INNER JOIN LATERAL (
-        SELECT
-          MAX(u.name) AS user_name,
-          MAX(u.email) AS user_email,
-          COUNT(*) FILTER (
-            WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
-          )::int AS active_token_count
+      LEFT JOIN LATERAL (
+        -- Prefer a live grant so a connected row names the person whose access
+        -- the revoke action can actually remove. Fall back to the newest stale
+        -- grant for disconnected registrations.
+        SELECT u.name AS user_name, u.email AS user_email, ot.user_id AS token_user_id
         FROM oauth_tokens ot
         LEFT JOIN "user" u ON u.id = ot.user_id
         WHERE ot.client_id = oc.id
           AND ot.organization_id = ${organizationId}
-      ) tok_agg ON true
+        ORDER BY
+          (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
+          ot.created_at DESC,
+          ot.id DESC
+        LIMIT 1
+      ) token_owner ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (
+            WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
+          )::int AS active_token_count
+        FROM oauth_tokens ot
+        WHERE ot.client_id = oc.id
+          AND ot.organization_id = ${organizationId}
+      ) token_counts ON true
       WHERE oc.organization_id = ${organizationId}
          OR EXISTS (
            SELECT 1 FROM oauth_tokens ot2
@@ -325,6 +349,8 @@ export class OAuthClientsStore {
         ...client,
         user_name: (row as Record<string, unknown>).user_name as string | undefined,
         user_email: (row as Record<string, unknown>).user_email as string | undefined,
+        owner_user_id:
+          ((row as Record<string, unknown>).owner_user_id as string | null) ?? null,
         active_token_count: (row as Record<string, unknown>).active_token_count as number,
       };
     });

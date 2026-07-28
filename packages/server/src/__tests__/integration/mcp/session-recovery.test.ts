@@ -14,8 +14,9 @@
  * server-generated id. The error message is human-friendly and actionable.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { McpSessionStore } from '../../../mcp-session-store';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -104,6 +105,70 @@ describe('MCP session recovery', () => {
     const body = await res.json();
     expect(body.error).toBeUndefined();
     expect(body.result?.tools?.length).toBeGreaterThan(0);
+  });
+
+  it('does not resurrect a row revoked while another replica is recovering it', async () => {
+    const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+    const sessionId = await initSession({ token, orgSlug: org.slug });
+    clearInMemoryMcpSessionsForTests();
+
+    const originalGetSession = McpSessionStore.prototype.getSession;
+    const getSessionSpy = vi
+      .spyOn(McpSessionStore.prototype, 'getSession')
+      .mockImplementationOnce(async function (id) {
+        const persisted = await originalGetSession.call(this, id);
+        await getTestDb()`DELETE FROM mcp_sessions WHERE session_id = ${id}`;
+        return persisted;
+      });
+
+    try {
+      const res = await toolsList(sessionId, { token, orgSlug: org.slug });
+      expect(res.status).toBe(404);
+      expect(await sessionRowExists(sessionId)).toBe(false);
+    } finally {
+      getSessionSpy.mockRestore();
+    }
+  });
+
+  it('persists an anonymous → authenticated upgrade', async () => {
+    // The reuse path refreshes the row BEFORE re-resolving auth, then upgrades
+    // `session.authCtx` IN PLACE (isAuthenticated, userId, clientId, role).
+    // Without a write after that upgrade the row keeps the anonymous binding,
+    // and a replica recovering this session enforces the stale identity — the
+    // upgraded user/client binding silently doesn't cross pods.
+    //
+    // A public workspace is the one place an anonymous session legitimately
+    // exists and can later present a token on the same session id.
+    const sessionId = await initSession({ orgSlug: publicOrg.slug });
+
+    const anonRow = (await getTestDb()`
+      SELECT is_authenticated FROM mcp_sessions WHERE session_id = ${sessionId}
+    `)[0] as { is_authenticated: boolean } | undefined;
+    expect(anonRow?.is_authenticated).toBe(false);
+
+    const { token } = await createTestAccessToken(user.id, publicOrg.id, client.client_id);
+    const res = await toolsList(sessionId, { token, orgSlug: publicOrg.slug });
+    expect(res.status).toBe(200);
+
+    const rows = await getTestDb()`
+      SELECT user_id, is_authenticated
+      FROM mcp_sessions WHERE session_id = ${sessionId}
+    `;
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as { user_id: string | null; is_authenticated: boolean };
+    expect(row.is_authenticated).toBe(true);
+    expect(row.user_id).toBe(user.id);
+  });
+
+  it('rejects a live local session whose persisted row was deleted by another replica', async () => {
+    const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+    const sessionId = await initSession({ token, orgSlug: org.slug });
+
+    await getTestDb()`DELETE FROM mcp_sessions WHERE session_id = ${sessionId}`;
+
+    const res = await toolsList(sessionId, { token, orgSlug: org.slug });
+    expect(res.status).toBe(404);
+    expect(await sessionRowExists(sessionId)).toBe(false);
   });
 
   it('returns 404 (not 200) for an authenticated caller whose session fully expired, and creates no phantom row', async () => {

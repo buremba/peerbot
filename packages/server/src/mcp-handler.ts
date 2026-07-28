@@ -99,14 +99,24 @@ export async function cleanupExpiredMcpSessions(): Promise<void> {
 // loading this file (and its `@lobu/connector-sdk`-dependent tool registry).
 export const clearInMemoryMcpSessionsForTests = clearInMemoryMcpSessionsForTestsShared;
 
+/**
+ * `userId` narrows the sweep to one person's sessions on this client — the
+ * same scoping `revokeClientForOrganization` applies to tokens. A shared
+ * registration can hold sessions for several people; without this, revoking
+ * for one of them closes everyone else's live transport too.
+ */
 export async function revokeInMemoryMcpSessionsForClient(
   clientId: string,
-  organizationId: string
+  organizationId: string,
+  userId?: string | null
 ): Promise<string[]> {
   const revokedSessionIds: string[] = [];
 
   for (const [sessionId, entry] of sessions.entries()) {
     if (entry.authCtx.clientId !== clientId || entry.authCtx.organizationId !== organizationId) {
+      continue;
+    }
+    if (userId && entry.authCtx.userId !== userId) {
       continue;
     }
 
@@ -483,6 +493,25 @@ async function persistSessionState(
 ): Promise<void> {
   if (!sessionId) return;
   await mcpSessionStore.upsertSession(buildPersistedSession(sessionId, authCtx, lastAccessedAt));
+}
+
+/**
+ * Refresh an already-established session's row, update-only.
+ *
+ * Returns false when the row is gone — i.e. another replica revoked the client
+ * — so the caller can tear the local transport down. Distinct from
+ * `persistSessionState`, which may CREATE the row and would otherwise
+ * resurrect a session a concurrent revoke just deleted.
+ */
+async function refreshSessionState(
+  sessionId: string | null | undefined,
+  authCtx: SessionAuthContext,
+  lastAccessedAt: number = Date.now()
+): Promise<boolean> {
+  if (!sessionId) return true;
+  return mcpSessionStore.refreshSession(
+    buildPersistedSession(sessionId, authCtx, lastAccessedAt)
+  );
 }
 
 async function deletePersistedSession(sessionId: string | null | undefined): Promise<void> {
@@ -922,6 +951,24 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     const session = sessions.get(sessionId)!;
     session.lastAccessedAt = Date.now();
 
+    // The persisted row is the cross-replica revocation signal: revoking on any
+    // pod DELETEs it. Refresh update-only and treat "no row" as revoked, so a
+    // live transport on another pod cannot keep serving a revoked client. This
+    // is deliberately a single atomic UPDATE rather than a check followed by an
+    // upsert — a revoke committing between those two would be undone by the
+    // write that follows it.
+    if (
+      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
+    ) {
+      sessions.delete(sessionId);
+      session.transport.close?.();
+      return buildJsonRpcErrorResponse(
+        'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+        null,
+        404
+      );
+    }
+
     const clearSession = () => {
       sessions.delete(sessionId);
       void deletePersistedSession(sessionId);
@@ -1002,7 +1049,23 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     }
 
     await recordMcpClientActivity(c.env, session.authCtx, req);
-    await persistSessionState(sessionId, session.authCtx, session.lastAccessedAt);
+
+    // `session.authCtx` may have been UPGRADED above (anonymous → authenticated,
+    // or a fresh org/role), so the row written by the refresh at the top of this
+    // branch is now stale — another replica recovering this session would use
+    // the old binding. Persist the upgrade, but update-only: an upsert here
+    // would re-INSERT a row deleted by a revoke that committed mid-request,
+    // resurrecting exactly the session the refresh exists to catch.
+    if (
+      !(await refreshSessionState(sessionId, session.authCtx, session.lastAccessedAt))
+    ) {
+      clearSession();
+      return buildJsonRpcErrorResponse(
+        'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+        null,
+        404
+      );
+    }
 
     // Anonymous root /mcp session: any follow-up GET or tool call must upgrade to auth.
     if (!session.authCtx.organizationId && !session.authCtx.isAuthenticated) {
@@ -1060,7 +1123,18 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
-          await persistSessionState(sessionId, recoveredAuthCtx);
+          // Recovery may only refresh the row that authorized it. A revoke can
+          // delete that row after recoverSessionAuthContext reads it; an upsert
+          // here would resurrect the revoked session.
+          if (!(await refreshSessionState(sessionId, recoveredAuthCtx))) {
+            sessions.delete(sessionId);
+            transport.close?.();
+            return buildJsonRpcErrorResponse(
+              'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+              null,
+              404
+            );
+          }
           await recordMcpClientActivity(c.env, recoveredAuthCtx, req);
           return handleAndMaybeConvert(transport, req, wantsSSE);
         }

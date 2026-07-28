@@ -25,6 +25,7 @@ export interface AuthStash {
   // gated by `requireSessionOrAdminPat` see a non-null value.
   authSource: 'session' | 'pat' | 'oauth' | null;
   mcpAuthInfo: { scopes: string[] } | null;
+  memberRole: string | null;
 }
 
 /** Mutable holder the mocked `mcpAuth` middleware copies onto the Hono context. */
@@ -33,6 +34,7 @@ export const authStash: AuthStash = {
   organizationId: 'org-a',
   authSource: 'session',
   mcpAuthInfo: null,
+  memberRole: 'owner',
 };
 
 /**
@@ -75,6 +77,7 @@ export function installRouteTestMocks(): void {
       c.set('organizationId', authStash.organizationId);
       c.set('authSource', authStash.authSource);
       c.set('mcpAuthInfo', authStash.mcpAuthInfo);
+      c.set('memberRole', authStash.memberRole);
       return next();
     },
     requireAuth: async (_c: any, next: any) => next(),

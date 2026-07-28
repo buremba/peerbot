@@ -281,9 +281,22 @@ describe("createEmbeddedBashOps", () => {
 
       const nixBin = path.join(workspace, "nix", "store", "iface", "bin");
       fs.mkdirSync(nixBin, { recursive: true });
-      const fakeNode = path.join(nixBin, "node");
-      fs.writeFileSync(fakeNode, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
-      fs.chmodSync(fakeNode, 0o755);
+      const gatedNames = [
+        "node",
+        "bunx",
+        "uvx",
+        "nix-store",
+        "nix-channel",
+        "nix-instantiate",
+        "nix-prefetch-url",
+        "nix-collect-garbage",
+        "nix-copy-closure",
+      ];
+      for (const name of gatedNames) {
+        const fake = path.join(nixBin, name);
+        fs.writeFileSync(fake, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
+        fs.chmodSync(fake, 0o755);
+      }
 
       process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
       delete process.env.LOBU_EXEC_SANDBOX;
@@ -292,14 +305,16 @@ describe("createEmbeddedBashOps", () => {
       delete process.env.LOBU_WORKSPACE_BACKEND;
 
       const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
-      const chunks: string[] = [];
-      const result = await ops.exec("node", "/", {
-        onData: (chunk) => chunks.push(chunk.toString()),
-        timeout: 5,
-      });
+      for (const name of gatedNames) {
+        const chunks: string[] = [];
+        const result = await ops.exec(name, "/", {
+          onData: (chunk) => chunks.push(chunk.toString()),
+          timeout: 5,
+        });
 
-      expect(chunks.join("")).not.toContain("interpreter ran");
-      expect(result.exitCode).not.toBe(0);
+        expect(chunks.join("")).not.toContain("interpreter ran");
+        expect(result.exitCode).not.toBe(0);
+      }
     }
   );
 

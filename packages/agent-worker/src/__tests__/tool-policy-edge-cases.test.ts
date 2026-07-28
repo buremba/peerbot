@@ -113,6 +113,77 @@ describe("isDirectPackageInstallCommand", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — nix new-style CLI and ad-hoc package runners
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand nix and ad-hoc runner coverage", () => {
+  // These nix commands can fetch, realize, or execute store content. The same
+  // gate covers direct tool mutations and one-shot package runners. npx/bunx
+  // remain allowed because they prefer already-installed local binaries.
+  const detected = [
+    "nix shell nixpkgs#git -c git push",
+    "nix run nixpkgs#hello",
+    "nix develop",
+    "nix build nixpkgs#hello",
+    "nix profile install nixpkgs#hello",
+    "nix flake update",
+    "nix eval --expr 'builtins.fetchurl http://example.com'",
+    "nix-build '<nixpkgs>' -A hello",
+    "nix-store --realise /nix/store/abc",
+    "nix-channel --update",
+    "nix-prefetch-url https://example.com/x.tar.gz",
+    "nix-copy-closure --from host /nix/store/abc",
+    "/usr/bin/nix shell nixpkgs#git",
+    "/usr/bin/nix-store --realise /nix/store/abc",
+    "bash -c 'nix repl'",
+    "bash -c 'nix --option substituters https://cache.example build nixpkgs#hello'",
+    "/usr/bin/nix --extra-experimental-features nix-command run nixpkgs#hello",
+    "sudo nix shell nixpkgs#git",
+    "pipx install httpie",
+    "pipx run cowsay moo",
+    "pipx upgrade httpie",
+    "pipx reinstall httpie",
+    "uvx cowsay moo",
+    "/usr/bin/uvx cowsay moo",
+    "uv tool install ruff",
+    "uv tool run ruff check",
+    "uv tool upgrade ruff",
+    "uv add requests",
+    "pnpm dlx create-react-app my-app",
+    "/usr/local/bin/pnpm dlx create-react-app my-app",
+    "yarn dlx create-react-app my-app",
+    "echo hi && nix run nixpkgs#hello",
+    "true; nix shell nixpkgs#curl -c curl http://example.com",
+  ];
+
+  for (const cmd of detected) {
+    test(`detects package acquisition: ${cmd}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+
+  // False-positive guards: "nix" in prose or as part of another command name
+  // must not trip the gate, and non-acquisition commands stay usable.
+  const allowed = [
+    "nixfmt flake.nix",
+    "git commit -m 'nix support'",
+    "cat nix/store/list.txt",
+    "uv pip list",
+    // Intentionally allowed like cargo/go builds, though it may sync a project.
+    "uv run script.py",
+    "uv tool list",
+    "yarn run dlx-helper",
+    "pipx list",
+  ];
+
+  for (const cmd of allowed) {
+    test(`does not falsely detect: ${cmd}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // normalizeToolList edge cases
 // ---------------------------------------------------------------------------
 

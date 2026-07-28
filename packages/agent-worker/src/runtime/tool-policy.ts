@@ -25,7 +25,38 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "brew ",
   "nix-shell ",
   "nix-env ",
-  "nix profile ",
+  // New-style nix CLI. `nix shell`/`nix run`/`nix develop` put arbitrary
+  // packages on PATH or fetch-and-execute them, and `nix build`/`nix-store`
+  // realise arbitrary derivations — the same capability the old-style commands
+  // above already denied. A bare `nix ` prefix covers every subcommand
+  // (conservative, like `brew `); `nixfmt` and friends are unaffected because
+  // the prefix requires the trailing space.
+  "nix ",
+  "nix-build ",
+  "nix-store ",
+  "nix-channel ",
+  "nix-instantiate ",
+  "nix-prefetch-url ",
+  "nix-collect-garbage ",
+  "nix-copy-closure ",
+  // Direct tool/dependency mutations and one-shot package runners.
+  // `npx`/`bunx` are deliberately absent — they prefer already-installed local
+  // binaries and denying them breaks legitimate repo workflows.
+  "uvx ",
+  "uv tool install ",
+  "uv tool run ",
+  "uv tool upgrade ",
+  "uv add ",
+  "pipx install ",
+  "pipx run ",
+  "pipx upgrade ",
+  "pipx upgrade-all ",
+  "pipx inject ",
+  "pipx reinstall ",
+  "pipx reinstall-all ",
+  "pipx runpip ",
+  "pnpm dlx ",
+  "yarn dlx ",
   "sudo apt ",
   "sudo apt-get ",
   "sudo yum ",
@@ -36,7 +67,14 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "sudo brew ",
   "sudo nix-shell ",
   "sudo nix-env ",
-  "sudo nix profile ",
+  "sudo nix ",
+  "sudo nix-build ",
+  "sudo nix-store ",
+  "sudo nix-channel ",
+  "sudo nix-instantiate ",
+  "sudo nix-prefetch-url ",
+  "sudo nix-collect-garbage ",
+  "sudo nix-copy-closure ",
   "pip install ",
   "pip3 install ",
   "uv pip install ",
@@ -57,13 +95,23 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
 
 const DIRECT_PACKAGE_INSTALL_PATTERNS = [
   /(^|[\s"'`;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?nix\s+profile\b/i,
+  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:[^\s"'`;|&()]+\/)?(?:nix-shell|nix-env)\b/i,
+  // High-risk new-style commands are recognized even through a shell wrapper
+  // or path-qualified binary. Leading `nix` invocations are denied wholesale
+  // by the prefix list above.
+  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:[^\s"'`;|&()]+\/)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|fmt|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
+  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:[^\s"'`;|&()]+\/)?nix\s+-/i,
+  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:[^\s"'`;|&()]+\/)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
   /(^|[\s"'`;|&()])(?:pip|pip3)\s+install\b/i,
-  /(^|[\s"'`;|&()])uv\s+pip\s+install\b/i,
+  // Direct dependency/tool acquisition is denied. `uv run` remains allowed,
+  // like cargo/go builds, even though it may sync a declared project env.
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?uv\s+pip\s+install\b/i,
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?uvx\b/i,
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
   /(^|[\s"'`;|&()])npm\s+(?:install|i)\b/i,
-  /(^|[\s"'`;|&()])pnpm\s+(?:install|add)\b/i,
-  /(^|[\s"'`;|&()])yarn\s+(?:install|add|global\s+add)\b/i,
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?pnpm\s+(?:install|add|dlx)\b/i,
+  /(^|[\s"'`;|&()])(?:[^\s"'`;|&()]+\/)?yarn\s+(?:install|add|global\s+add|dlx)\b/i,
   /(^|[\s"'`;|&()])bun\s+(?:install|add)\b/i,
   /(^|[\s"'`;|&()])cargo\s+install\b/i,
   /(^|[\s"'`;|&()])go\s+install\b/i,

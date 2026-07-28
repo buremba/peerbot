@@ -59,6 +59,10 @@ describe("buildToolPolicy", () => {
     expect(policy.bashPolicy.allowPrefixes).toEqual([]);
     expect(policy.bashPolicy.denyPrefixes).toContain("apt-get ");
     expect(policy.bashPolicy.denyPrefixes).toContain("nix-shell ");
+    expect(policy.bashPolicy.denyPrefixes).toContain("nix ");
+    expect(policy.bashPolicy.denyPrefixes).toContain("nix-store ");
+    expect(policy.bashPolicy.denyPrefixes).toContain("uvx ");
+    expect(policy.bashPolicy.denyPrefixes).toContain("pnpm dlx ");
   });
 
   test("merges toolsConfig with params", () => {
@@ -211,6 +215,57 @@ describe("enforceBashCommandPolicy", () => {
     expect(() =>
       enforceBashCommandPolicy("apt-get install -y ffmpeg", policy.bashPolicy)
     ).toThrow("Bash command denied by policy");
+  });
+
+  test("nix commands and store helpers are blocked by default prefixes", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    expect(() =>
+      enforceBashCommandPolicy("nix shell nixpkgs#git -c git push", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("git status && nix run nixpkgs#hello", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("nix-store --realise /nix/store/abc", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy(
+        "nix-copy-closure --from host /nix/store/abc",
+        policy
+      )
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("sudo nix shell nixpkgs#git", policy)
+    ).toThrow("Bash command denied by policy");
+  });
+
+  test("ad-hoc package runners are blocked by default prefixes", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    expect(() => enforceBashCommandPolicy("uvx cowsay moo", policy)).toThrow(
+      "Bash command denied by policy"
+    );
+    expect(() =>
+      enforceBashCommandPolicy("true && pipx run cowsay", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("yarn dlx create-react-app x", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("uv tool upgrade ruff", policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() =>
+      enforceBashCommandPolicy("uv tool list", policy)
+    ).not.toThrow();
+  });
+
+  test("quoted nix words are data, not commands, at the segment layer", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    expect(() =>
+      enforceBashCommandPolicy('echo "nix shell"', policy)
+    ).not.toThrow();
+    expect(() =>
+      enforceBashCommandPolicy("git commit -m 'nix support'", policy)
+    ).not.toThrow();
   });
 
   test("allows all when allowAll is true", () => {

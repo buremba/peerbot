@@ -119,10 +119,9 @@ describe("PUT /inference-providers/:slug/default", () => {
 		expect(res.status).toBe(400);
 		const { error } = (await res.json()) as { error: string };
 		expect(error).toContain("no text model configured");
-		// The remedy must name a real surface. An earlier revision pointed at
-		// `lobu providers set-capabilities`, which does not exist in the CLI —
-		// the capabilities writer is this route.
-		expect(error).toContain("/capabilities/text");
+		expect(error).toContain(
+			"lobu providers set-capability groq text --model <model>"
+		);
 	});
 
 	test("an oauth provider → 400 explaining the credential is per-user", async () => {

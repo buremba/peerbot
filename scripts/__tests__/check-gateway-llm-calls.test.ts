@@ -119,6 +119,22 @@ describe("check-gateway-llm-calls", () => {
     expect(runGuard()).toBe(1);
   });
 
+  it("ignores comments inside formatter-split statements", () => {
+    create(
+      `import {\n` +
+        `  // This local adapter is intentionally not "openai".\n` +
+        `  request,\n` +
+        `} from "./request";\n` +
+        `export async function probe(url: string) {\n` +
+        `  return fetch(\n` +
+        `    url, // This does not call /chat/completions.\n` +
+        `    { method: "GET" },\n` +
+        `  );\n` +
+        `}\n`
+    );
+    expect(runGuard()).toBe(0);
+  });
+
   it("still ignores prose that merely mentions a completions path", () => {
     create(
       `// Historical note: this used to POST to /chat/completions directly.\n` +

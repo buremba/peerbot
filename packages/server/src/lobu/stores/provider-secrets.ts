@@ -266,7 +266,7 @@ function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
 			r.created_at instanceof Date
 				? r.created_at.toISOString()
 				: String(r.created_at),
-		isDefault: r.is_default ?? false,
+		isDefault: r.is_default,
 	};
 }
 
@@ -651,7 +651,7 @@ export async function listInferenceProviders(
 			r.created_at instanceof Date
 				? r.created_at.toISOString()
 				: String(r.created_at),
-		isDefault: r.is_default ?? false,
+		isDefault: r.is_default,
 	}));
 }
 
@@ -666,13 +666,10 @@ interface OrgDefaultModelRow {
 /**
  * The row that currently is — or should become — the org default.
  *
- * The flagged default always wins (`is_default DESC`), whatever its ref: an
- * explicit `setInferenceProviderDefault` choice is a user decision this read
- * must never second-guess. The `OR` branch exists ONLY to find a promotion
- * candidate for an org that has no flag yet, so it applies exactly the filter
- * {@link promoteOldestRunnableProvider} does — including the `oauth://`
- * exclusion. Without that, a read would report an OAuth model as the org
- * default that promotion had deliberately declined to set.
+ * A flagged row sorts first so the caller can either return it or repair it
+ * when it is no longer eligible. The `OR` branch finds a promotion candidate
+ * for an org with no usable flag, using the same model and `oauth://` filters
+ * as {@link promoteOldestRunnableProvider}.
  */
 async function readOrgDefaultCandidate(
 	sql: DbClient,

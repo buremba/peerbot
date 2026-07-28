@@ -37,7 +37,7 @@ interface OrgProviderRow {
   hasCustomUpstream: boolean;
   status: string;
   createdAt: string;
-  isDefault?: boolean;
+  isDefault: boolean;
 }
 
 interface CatalogEntry {
@@ -196,7 +196,7 @@ export async function providersCreateCommand(
   // default" is NOT knowable from the flags alone — trust what it returned.
   // `--default` above issues an explicit PUT that throws on failure, so
   // reaching here with the flag set means that call succeeded.
-  const isDefault = options.default || (provider.isDefault ?? false);
+  const isDefault = options.default || provider.isDefault;
 
   if (options.json) {
     printJson({ ...provider, isDefault });

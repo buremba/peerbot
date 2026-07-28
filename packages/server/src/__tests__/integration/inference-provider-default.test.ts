@@ -318,11 +318,8 @@ describe('inference provider org default', () => {
     expect(await defaultSlug(org.id)).toBe('zed');
 
     // Signing in with OAuth converts the EXISTING api-key row in place. The
-    // row keeps its id and its is_default flag, but its credential becomes
-    // per-user — so it is no longer eligible to be the ORG default. Leaving
-    // the flag set would strand the org on a credential only one member can
-    // read, and promotion cannot fix it: the NOT EXISTS guard sees a default
-    // already present and no-ops.
+    // row keeps its id, but its credential becomes per-user — so the conversion
+    // must clear its default flag before promotion can choose a successor.
     await ensureOAuthInferenceProvider({
       organizationId: org.id,
       slug: 'zed',
@@ -488,10 +485,8 @@ describe('inference provider org default', () => {
     /**
      * The POSITIVE half of the invariant. (m)/(n) prove an unregistered
      * provider resolves nothing; without this, a resolver that returned null
-     * for EVERYTHING would still pass them. Prod is the reason this matters:
-     * every live `inference_providers` row carries `capabilities = {}` (an API
-     * key and nothing else), so the registry upstream — not the row — is what
-     * actually routes a gateway completion for a non-OpenAI provider.
+     * for EVERYTHING would still pass them. Provider rows need not define a
+     * `base_url`, so registered providers must inherit their catalog upstream.
      */
     /**
      * A guardrail's `model` was historically a RAW model id posted to one
@@ -635,7 +630,7 @@ describe('inference provider org default', () => {
       const org = await newOrg();
       await create(org.id, 'openai', 'gpt-4o-mini');
       await create(org.id, 'z-ai', 'glm-4.6');
-      // Force the legacy state every pre-fix org is in.
+      // Force the legacy state where an org has providers but no default.
       await getDb()`
         UPDATE inference_providers
         SET is_default = false

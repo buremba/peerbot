@@ -93,10 +93,19 @@ function isSuppressed(lines, idx) {
   return false;
 }
 
+function stripComments(line) {
+  return line
+    .replace(/\/\*\*?.*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/, "$1")
+    .replace(/^\s*\*.*$/, "")
+    .replace(/^\s*\/\*.*$/, "");
+}
+
 /**
- * Text of the statement that STARTS at `idx`, spanning however many physical
+ * Code in the statement that STARTS at `idx`, spanning however many physical
  * lines it takes to close — balanced `(`/`{` for a call or import clause, or a
- * terminating `;`.
+ * terminating `;`. Comments are removed so prose inside a multiline statement
+ * cannot become a violation.
  *
  * Why not just the one line: prettier/biome split any construct that exceeds
  * the print width, so the real-world violations are
@@ -117,9 +126,9 @@ function statementText(lines, idx) {
   let opened = false;
   const parts = [];
   for (let i = idx; i < lines.length && i < idx + MAX_STATEMENT_LINES; i++) {
-    const raw = lines[i];
-    parts.push(raw);
-    for (const ch of raw) {
+    const code = stripComments(lines[i]);
+    parts.push(code);
+    for (const ch of code) {
       if (ch === "(" || ch === "{") {
         depth++;
         opened = true;
@@ -130,7 +139,7 @@ function statementText(lines, idx) {
     // A statement with no bracket at all (`import "openai";`) ends at its
     // semicolon; one that opened brackets ends when they balance.
     if (opened && depth <= 0) break;
-    if (!opened && raw.includes(";")) break;
+    if (!opened && code.includes(";")) break;
   }
   return parts.join("\n");
 }
@@ -219,11 +228,7 @@ for (const file of files) {
     // `const u = "https:` and the literal URL — the most obvious way to
     // hand-roll a call — sails straight through. Require the `//` to be at
     // line start or preceded by something other than `:`.
-    const code = line
-      .replace(/\/\*\*?.*?\*\//g, "")
-      .replace(/(^|[^:])\/\/.*$/, "$1")
-      .replace(/^\s*\*.*$/, "")
-      .replace(/^\s*\/\*.*$/, "");
+    const code = stripComments(line);
     if (!code.trim()) continue;
     if (isSuppressed(lines, i)) continue;
 

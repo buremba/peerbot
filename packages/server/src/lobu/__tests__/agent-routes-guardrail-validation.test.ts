@@ -163,4 +163,27 @@ describe("validateGuardrailsInline", () => {
       ])
     ).toMatch(/domains must be an array of strings/);
   });
+
+  test("rejects a null kind (schema allows only judge/require-tool or absent)", () => {
+    expect(
+      validateGuardrailsInline([
+        { name: "g", enabled: true, stage: "input", policy: "x", kind: null },
+      ])
+    ).toMatch(/kind must be "judge" or "require-tool"/);
+  });
+
+  test("validates common optional fields on require-tool entries", () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: "must-suggest",
+          enabled: true,
+          stage: "output",
+          kind: "require-tool",
+          tools: ["suggest_actions"],
+          model: 42,
+        },
+      ])
+    ).toMatch(/model must be a string/);
+  });
 });

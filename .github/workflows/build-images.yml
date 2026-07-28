@@ -26,6 +26,13 @@ name: Build and Push Images
 # other (the timestamp-collision incident above), while a release — which is
 # rare, and never concurrent with another release — can never be evicted by
 # routine merges.
+#
+# The release group deliberately keeps GitHub's default `queue: single`.
+# `queue: max` (100 pending runs, no eviction) takes no expression, so it would
+# apply to the push group too and build every intermediate commit instead of
+# coalescing to the newest. Eviction here would need three `release: published`
+# events inside one build: release-please publishes exactly one `lobu-v*`
+# release per release PR, and mac-release/helm-chart only consume that event.
 concurrency:
   group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false

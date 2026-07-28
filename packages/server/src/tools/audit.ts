@@ -121,10 +121,17 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   if (params.ctx.tokenType !== 'oauth' && params.ctx.tokenType !== 'pat') {
     return null;
   }
-  const argsJson = JSON.stringify(params.args ?? {});
+  // Hash the REDACTED serialization: the raw one would persist an unsalted
+  // credential-derived digest whenever args carry a secret (manage_connections
+  // tokens etc.), letting a candidate secret be verified against the ledger.
+  // The hash identifies the call shape, so redacted input serves it fully.
   const redactedArgsJson = stringifyRedacted(params.args ?? {});
   const resultError = errorPayload(result.error, 'ToolError');
-  const reportedFailure = result.success === false || result.status === 'failed';
+  const reportedFailure =
+    result.success === false ||
+    result.status === 'failed' ||
+    result.status === 'error' ||
+    result.status === 'timeout';
   const softError =
     resultError ??
     (reportedFailure
@@ -135,7 +142,7 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
       : null);
   return {
     tool_name: params.toolName,
-    args_sha256: sha256(argsJson),
+    args_sha256: sha256(redactedArgsJson),
     args_preview_redacted: redactedArgsJson.slice(0, MAX_PREVIEW_CHARS),
     success: !(toolError || softError),
     error: toolError ?? softError,

@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { REDACTED_SENTINEL } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SCOPE_CHECK_NOT_APPLICABLE } from '../../../auth/tool-access';
+import { recordToolInvocationAudit } from '../../../tools/audit';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { type AuthContext, executeTool } from '../../../tools/execute';
@@ -164,6 +166,66 @@ describe('tool invocation audit coverage', () => {
     );
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
   });
+
+  it('args_sha256 is computed over REDACTED args — a secret value cannot be verified against the hash', async () => {
+    const argsWithSecretA = { action: 'nope', token: 'candidate-secret-A' };
+    const argsWithSecretB = { action: 'nope', token: 'candidate-secret-B' };
+    await expect(
+      executeTool('manage_connections', argsWithSecretA, {} as Env, authCtxFor('pat'))
+    ).rejects.toThrow();
+    await expect(
+      executeTool('manage_connections', argsWithSecretB, {} as Env, authCtxFor('pat'))
+    ).rejects.toThrow();
+
+    const sql = getDb();
+    const rows = await sql<Array<{ payload_data: Record<string, unknown> }>>`
+      SELECT payload_data FROM events
+      WHERE organization_id = ${orgId}
+        AND semantic_type = 'audit'
+        AND payload_data->>'tool_name' = 'manage_connections'
+        AND payload_data->>'args_preview_redacted' LIKE '%"action":"nope"%'
+      ORDER BY id DESC
+      LIMIT 2
+    `;
+    expect(rows).toHaveLength(2);
+    // Same call shape, different secret value → identical hash. If the raw
+    // args fed the hash, the two digests would differ and either could be
+    // used as an offline verifier for candidate secrets.
+    expect(rows[0].payload_data.args_sha256).toBe(rows[1].payload_data.args_sha256);
+    const rawHashA = createHash('sha256')
+      .update(JSON.stringify(argsWithSecretA))
+      .digest('hex');
+    expect(rows[0].payload_data.args_sha256).not.toBe(rawHashA);
+  });
+
+  it.each(['error', 'timeout'] as const)(
+    'records a result with status=%s as a failed invocation',
+    async (status) => {
+      const toolName = `probe_status_${status}`;
+      await recordToolInvocationAudit({
+        toolName,
+        args: { probe: true },
+        result: { status, message: `soft ${status} outcome` },
+        durationMs: 5,
+        ctx: {
+          organizationId: orgId,
+          userId: ownerId,
+          memberRole: 'owner',
+          isAuthenticated: true,
+          tokenType: 'pat',
+          scopedToOrg: false,
+          allowCrossOrg: false,
+        } as never,
+      });
+
+      const row = await latestAuditRow(orgId, toolName);
+      expect(row).not.toBeNull();
+      expect(row!.payload_data.success).toBe(false);
+      expect(row!.payload_data.error).toMatchObject({
+        message: `soft ${status} outcome`,
+      });
+    }
+  );
 
   it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {
     await executeTool('list_organizations', {}, {} as Env, authCtxFor('oauth'));

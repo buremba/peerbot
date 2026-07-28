@@ -66,6 +66,27 @@ describe("parseAgentTooling", () => {
     });
   });
 
+  test("drops domains that would widen egress beyond a hostname", () => {
+    // These reach the worker's deny-by-default allowlist verbatim, so a
+    // malformed entry must contribute nothing rather than everything.
+    expect(
+      parseAgentTooling({
+        domains: [
+          "api.github.com",
+          "*.github.com",
+          "*",
+          "*.com",
+          "localhost",
+          "https://evil.com/x",
+          "github.com/evil",
+          "github.com:443",
+          "a.com, b.com",
+          "  spaced.com  ",
+        ],
+      })
+    ).toEqual({ domains: ["api.github.com", "*.github.com", "spaced.com"] });
+  });
+
   test("drops an env entry with an unrecognized credential tier", () => {
     // Guessing a tier is unsafe in both directions: defaulting to 'placeholder'
     // would route a lease var through the secret store, and defaulting to

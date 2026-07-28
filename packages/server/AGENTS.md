@@ -28,6 +28,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Workers never see real credentials. The gateway secret/MCP proxies swap placeholders or inject OAuth/API credentials at egress.
 - MCP servers come from per-agent settings or `SKILL.md`; workers discover tools at startup and call them through the gateway proxy.
 - Device-pinned connectors are special: resolved connection credentials may be delivered only to the authorized device worker that owns that run.
+- Connector-contributed agent tooling (`gateway/agent-tooling/`) is the other carve-out, and only for **Tier-1 leases**: a short-lived provider-derived token (GitHub App installation tokens, ~1h) minted per deployment and injected as a real env var. It expires on its own and is revocable at the provider without touching the stored credential, which never leaves the gateway. Only env vars a connector declares as `credential: 'lease'` may take this path — `'placeholder'` stays on the `lobu_secret_<uuid>` proxy rails, and an unrecognized tier is dropped, not defaulted. Never widen this to a durable stored credential.
 
 ## Multi-replica correctness
 - Production can run N>1 replicas. Before claiming a feature works, ask: “does this hold with 3 replicas?” Correctness must not depend on session affinity.

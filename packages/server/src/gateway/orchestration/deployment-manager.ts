@@ -41,7 +41,7 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import type { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
+import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
   resolveAgentTooling,
   type ResolvedAgentTooling,
@@ -693,6 +693,13 @@ const SECRET_PLACEHOLDER_TTL_SECONDS = (() => {
  * memory growth for long-running gateways that see a large agent churn.
  */
 const GRANT_SYNC_CACHE_MAX = 1000;
+
+/**
+ * Stand-in used when no lease registry is wired. Registering nothing means
+ * `mintFor` always returns null, so agent tooling still contributes its
+ * packages and domains while every lease var is omitted.
+ */
+const EMPTY_LEASE_REGISTRY = new CredentialLeaseRegistry();
 
 /**
  * Nix binary-cache hosts auto-allowed while an agent has a Nix environment
@@ -1535,7 +1542,7 @@ export class DeploymentManager {
       domains: [],
     };
     const { agentId, organizationId } = messageData;
-    if (!agentId || !organizationId || !this.leaseRegistry) return empty;
+    if (!agentId || !organizationId) return empty;
 
     const secretStore = this.secretStore;
     try {
@@ -1543,7 +1550,10 @@ export class DeploymentManager {
         agentId,
         organizationId,
         deploymentName,
-        leaseRegistry: this.leaseRegistry,
+        // No registry wired (tests, or a gateway with no lease providers) still
+        // contributes packages and domains — an empty registry mints nothing,
+        // so lease vars are simply absent rather than the whole contribution.
+        leaseRegistry: this.leaseRegistry ?? EMPTY_LEASE_REGISTRY,
         runId: messageData.runId,
         // Tier 2: the stored credential goes into the secret store and the
         // worker gets an opaque placeholder the secret-proxy swaps at egress.

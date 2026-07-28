@@ -11,7 +11,11 @@
  * database, never connector code. Nothing here loads or executes a connector.
  */
 
-import { createLogger, parseJsonObject } from "@lobu/core";
+import {
+  createLogger,
+  isValidDomainPattern,
+  parseJsonObject,
+} from "@lobu/core";
 import type {
   ConnectorAgentTooling,
   ConnectorAgentToolingEnv,
@@ -101,10 +105,14 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
       })
     : [];
 
+  // A domain lands straight on the worker's deny-by-default egress allowlist,
+  // so it gets the same shape check the operator-facing settings API applies —
+  // `"*"`, `"*.com"`, `"https://evil.com/x"` and `"a.com, b.com"` must widen
+  // egress by nothing rather than by everything.
   const domains = Array.isArray(raw.domains)
-    ? (raw.domains as unknown[]).filter(
-        (d): d is string => typeof d === "string" && d.length > 0
-      )
+    ? (raw.domains as unknown[])
+        .filter(isValidDomainPattern)
+        .map((d) => d.trim())
     : [];
 
   if (packages.length === 0 && env.length === 0 && domains.length === 0) {

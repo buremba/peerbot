@@ -12,7 +12,7 @@
 - **Multi-replica correctness is mandatory.** Never put shared required state in an in-memory Map/singleton another replica must read or mutate. If a feature relies on cross-pod visibility, use Postgres-mediated state/signal.
 - **`events` is append-only.** Never `DELETE FROM events`; tombstone/supersede instead.
 - **Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are frequently real human signups. Surface them one at a time for confirmation.
-- **Workers never receive real credentials.** They may receive only placeholders/proxied access. The one exception is device-pinned connectors (see `packages/server/AGENTS.md`).
+- **Workers never receive real credentials.** They may receive only placeholders/proxied access. The only exceptions are device-pinned connectors and short-lived provider-derived credential leases (see `packages/server/AGENTS.md`); a durable stored credential is never one of them.
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
   - Node-version gate exceptions: `packages/cli/bin/lobu.js` defers the existing CLI graph without duplicating it, and `packages/server/src/server-entry.ts` adds an 842-byte gate in front of the 4.34 MB server graph (measured 2026-07-24). Both call sites must stay dependency-free until their checks pass.
 - Bug fixes require red→fix→green evidence, with both outputs pasted into the PR body. If you cannot reproduce, stop and report the dead end — do not ship a speculative fix.

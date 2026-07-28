@@ -324,6 +324,41 @@ describe('tool invocation audit coverage', () => {
     }
   });
 
+  it('query_sql preview redaction consumes complete credentials (the pattern path the generic sentinel does not cover)', async () => {
+    // The generic path sentinels everything before the regexes run; query_sql
+    // and run_sdk previews are where pattern redaction still carries the load.
+    const sql = [
+      "SELECT /* redaction-probe */ 'password=\"my secret value\"',",
+      "'authorization: Basic dXNlcjpwYXNz',",
+      '\'Digest username="mufasa", realm="testrealm", response="6629fae49393"\',',
+      "'token=part1,part2' FROM events",
+    ].join(' ');
+    await executeTool('query_sql', { sql, limit: 1 }, {} as Env, authCtxFor('oauth'));
+
+    const db = getDb();
+    const rows = await db<Array<{ payload_data: Record<string, unknown> }>>`
+      SELECT payload_data FROM events
+      WHERE organization_id = ${orgId}
+        AND semantic_type = 'audit'
+        AND payload_data->>'tool_name' = 'query_sql'
+        AND payload_data->>'sql_preview_redacted' LIKE '%redaction-probe%'
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    expect(rows).toHaveLength(1);
+    const preview = String(rows[0].payload_data.sql_preview_redacted);
+    for (const fragment of [
+      'my secret value',
+      'dXNlcjpwYXNz',
+      'mufasa',
+      'testrealm',
+      '6629fae49393',
+      'part2',
+    ]) {
+      expect(preview).not.toContain(fragment);
+    }
+  });
+
   it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {
     await executeTool('list_organizations', {}, {} as Env, authCtxFor('oauth'));
 

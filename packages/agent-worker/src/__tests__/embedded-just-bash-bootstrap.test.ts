@@ -639,3 +639,40 @@ describe("buildBinaryInvocation", () => {
     expect(r).toEqual({ command: "/bin/echo", args: ["hi"] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The REAL package-install boundary: a package manager that is not registered
+// as a runnable command in just-bash resolves to "command not found" (exit
+// 127) no matter how it is spelled or wrapped. isDirectPackageInstallCommand
+// is only an advisory hint; THIS is enforcement, and it is spelling-agnostic
+// because the lookup is on the resolved binary name. (PR #2259.)
+// ---------------------------------------------------------------------------
+describe("filtered package managers are not runnable however spelled", () => {
+  test("nix/npm/uvx resolve to exit 127 through quoting and wrappers", async () => {
+    // A bare just-bash with NO custom commands registered for these tools —
+    // exactly what discoverBinaries() yields after UNSANDBOXED_INTERPRETERS
+    // filtering. No OS sandbox needed: just-bash only runs its builtins plus
+    // registered commands, so an unregistered binary is "not found".
+    const { Bash, InMemoryFs } = await import("just-bash");
+    const bash = new Bash({ fs: new InMemoryFs() });
+
+    const evasions = [
+      "nix run nixpkgs#hello",
+      '"nix" run nixpkgs#hello',
+      'n"i"x run nixpkgs#hello',
+      "env nix run nixpkgs#hello",
+      'sh -c "nix run nixpkgs#hello"',
+      'echo "nix run nixpkgs#hello" | sh',
+      'git -c alias.x="!nix run x" x',
+      "npm install lodash",
+      "uvx cowsay",
+    ];
+    for (const cmd of evasions) {
+      const r = await bash.exec(cmd);
+      expect(r.exitCode).toBe(127);
+      expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toContain(
+        "command not found"
+      );
+    }
+  });
+});

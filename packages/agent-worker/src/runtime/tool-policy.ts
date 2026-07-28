@@ -121,30 +121,15 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 ];
 
 /**
- * Remove shell backslash-escaping so an escaped executable name is matched by
- * its real, canonical form. The shell drops a backslash before an ordinary
- * character (`n\ix` → `nix`, `u\vx` → `uvx`), so without this a single
- * backslash bypasses the whole package-install gate. We collapse `\<char>` to
- * `<char>` for every character; this is intentionally broad — it can only make
- * the detector match MORE, never introduce a false negative, and the segment
- * has already been split out of any quotes by the time we get here.
- */
-/**
  * Canonicalize a shell segment to the token string the shell would actually
  * execute: remove quote DELIMITERS while joining the fragments they wrap (so
- * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`), and drop backslash
- * escapes (`n\ix` → `nix`). This is the load-bearing step — the detector must
- * match against the canonical form, because the shell strips quoting/escaping
- * from executable names before running them, and matching the literal text
- * lets `"nix" run` / `n\ix run` slip past.
+ * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`) and drop backslash escapes
+ * (`n\ix` → `nix`). The detector matches against this canonical form so an
+ * honestly-typed package manager is recognized however it is spelled.
  *
- * Two forms are produced:
- *   - `code`: the full canonical command, for matching a segment that IS a
- *     command (the default, fail-closed).
- *   - `dataStripped`: the same but with the CONTENTS of quoted spans removed
- *     (not just the delimiters), for a segment whose leading command treats its
- *     quoted arguments as data (`echo`, `git`, …) — so a package name inside a
- *     commit message is not a false positive.
+ * `dataStripped` additionally removes the CONTENTS of quoted spans, for a
+ * segment whose leading command treats its quoted arguments as data (`echo`,
+ * `cat`) — so a package name inside an echoed string is not a false positive.
  */
 function canonicalizeSegment(segment: string): {
   code: string;
@@ -155,10 +140,6 @@ function canonicalizeSegment(segment: string): {
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
-    // Backslash escape: the next char is literal. Inside single quotes the
-    // backslash is itself literal (POSIX), but treating it as an escape here
-    // only ever removes a char from what we match, which cannot hide a command
-    // name — conservative in the safe direction.
     if (ch === "\\" && i + 1 < segment.length) {
       code += segment[i + 1];
       if (!quote) {
@@ -171,8 +152,6 @@ function canonicalizeSegment(segment: string): {
       if (ch === quote) {
         quote = null;
       } else {
-        // Quoted CONTENT is kept in `code` (it is part of the token / program)
-        // but dropped from `dataStripped` (it is a data argument there).
         code += ch;
       }
       continue;
@@ -191,67 +170,49 @@ function canonicalizeSegment(segment: string): {
 }
 
 /**
- * Leading commands whose quoted arguments are DATA, not code. Only for a
- * segment led by one of these — AND not feeding an interpreter via a pipe — do
- * we match the data-stripped form, so a package-manager phrase in a commit
- * message / echoed string is not a false positive. This is an ALLOWLIST on
- * purpose: any other leading word — `eval`, `xargs`, `sh`/`bash`, `awk`,
- * `command`, an unknown binary — is treated as a potential executor, so its
- * quoted content is STILL inspected (fail closed). A word not on this list can
- * only cost a false positive, never a bypass. Code-evaluating filters (`awk`,
- * `sed` with `e`, `perl`, …) are deliberately absent.
+ * Leading commands whose quoted arguments are purely passive DATA. For a
+ * segment led by one of these, the quoted content is dropped before matching so
+ * an echoed / concatenated package-manager phrase is not a false positive.
+ * Deliberately NARROW: only commands that cannot execute a string argument.
+ * Anything that can run code from an argument (`sh`/`bash`/`eval`, `git -c
+ * alias=!…`, `rg --pre`, `awk`, `find -exec`, an unknown binary) is NOT here,
+ * so its quoted content is still matched. A word missing from this list can
+ * only cost a false positive on the advisory hint, never weaken enforcement —
+ * see the header note on {@link isDirectPackageInstallCommand}.
  */
 const QUOTED_ARG_IS_DATA_COMMANDS = new Set<string>([
   "echo",
   "printf",
   "print",
   "cat",
-  "grep",
-  "egrep",
-  "fgrep",
-  "rg",
-  "ag",
-  "git",
   "test",
   "[",
-  "read",
-  "tr",
-  "cut",
   "head",
   "tail",
-  "sort",
-  "uniq",
   "wc",
-  "comm",
-  "diff",
-]);
-
-/** Shell interpreters that execute text piped into them or passed to them. */
-const SHELL_INTERPRETERS = new Set<string>([
-  "sh",
-  "bash",
-  "zsh",
-  "dash",
-  "ash",
-  "ksh",
-  "fish",
-  "csh",
-  "tcsh",
-  "eval",
-  "source",
-  ".",
-  "xargs",
 ]);
 
 /** The leading executable token of a canonical segment, path-stripped. */
 function leadingCommand(canonicalCode: string): string {
   const firstWord = canonicalCode.split(/\s+/)[0] ?? "";
-  // Strip a leading path so `/bin/sh` → `sh`, and drop a `sudo`/`command`
-  // /`builtin` prefix's effect by taking the first token (those prefixes are
-  // themselves not on the data-only list, so they already fail closed).
   return firstWord.split("/").pop() ?? "";
 }
 
+/**
+ * Best-effort detector for an honestly-typed package-manager install/acquire
+ * command, used ONLY to return a helpful "declare it in nixPackages instead"
+ * message (see {@link enforceBashPreflight}).
+ *
+ * This is NOT the security boundary and does not try to be airtight against
+ * shell-quoting evasion. Actual enforcement is the sandbox binary-discovery
+ * filter (`UNSANDBOXED_INTERPRETERS` in `just-bash-bootstrap.ts`): a package
+ * manager that is not registered as a runnable command resolves to
+ * "command not found" (exit 127) no matter how it is spelled or wrapped
+ * (`"nix" run`, `env nix`, `sh -c '…'`, `git -c alias=!nix`), because the
+ * lookup is on the RESOLVED binary name, which quoting cannot change. So this
+ * detector canonicalizes quoting for good coverage of the common cases but
+ * treats any miss as a UX gap, not a hole.
+ */
 export function isDirectPackageInstallCommand(command: string): boolean {
   if (!command.trim()) {
     return false;
@@ -260,25 +221,18 @@ export function isDirectPackageInstallCommand(command: string): boolean {
   const segments = splitShellCommands(command);
   const candidates = segments.length > 0 ? segments : [command];
 
-  // A pipeline that feeds an interpreter (`echo "npm install" | sh`) executes
-  // its upstream text, so the data-only exemption must NOT apply anywhere in a
-  // command that contains a bare interpreter. Detect that once for the whole
-  // command and, if present, treat every segment as code.
-  const hasInterpreterSink = candidates.some((seg) =>
-    SHELL_INTERPRETERS.has(leadingCommand(canonicalizeSegment(seg).code))
-  );
-
   return candidates.some((segment) => {
     const { code, dataStripped } = canonicalizeSegment(segment);
     if (!code) {
       return false;
     }
-    // Match the data-stripped form only for a data-only leading command in a
-    // command with no interpreter sink; otherwise match the full code form.
-    const useDataStripped =
-      !hasInterpreterSink &&
-      QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(code));
-    const target = useDataStripped ? dataStripped : code;
+    // Drop quoted content only for a leading command whose quoted args are
+    // purely passive data (`echo`, `cat`); otherwise match the full canonical
+    // command. Enforcement does not depend on getting this right — the sandbox
+    // binary filter blocks the resolved binary regardless (see the header).
+    const target = QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(code))
+      ? dataStripped
+      : code;
     if (!target) {
       return false;
     }

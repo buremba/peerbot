@@ -554,6 +554,12 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
           args: ["-lc", cachedProfileScript(marker)],
           cwd: REMOTE_WORKSPACE_DIR,
           timeoutMs: 10_000,
+          // Must match the provision path below: that call creates NIX_HOME as
+          // root, so selecting an existing profile (which relinks `profile` and
+          // rewrites the marker inside it) needs the same privilege. Without
+          // this, a cache hit fails on permissions once the nix hosts are
+          // denied — the exact path this branch is supposed to recover.
+          sudo: true,
         });
         if (cached.exitCode === 0) {
           return { installed: packages, failed: [], cached: true };

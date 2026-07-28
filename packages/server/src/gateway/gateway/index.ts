@@ -861,6 +861,9 @@ export class WorkerGateway {
         // (deny) and re-open denied hosts mid-turn.
         allowedDomains: tokenData.allowedDomains,
         deniedDomains: tokenData.deniedDomains,
+        // And the package claim with them — a long turn that rotates its token
+        // would otherwise stop provisioning the connector's CLI mid-run.
+        nixPackages: tokenData.nixPackages,
       }
     );
 

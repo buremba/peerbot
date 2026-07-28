@@ -38,6 +38,10 @@ function durableClaims(token: WorkerTokenData): DurableRunTokenClaims {
     sandboxId: token.sandboxId,
     allowedDomains: token.allowedDomains,
     deniedDomains: token.deniedDomains,
+    // Persist the package claim alongside the egress claims: a replayed run
+    // that keeps the domain grants but loses the packages provisions nothing,
+    // leaving an authenticated CLI that was never installed.
+    nixPackages: token.nixPackages,
   };
 }
 
@@ -97,6 +101,7 @@ export function attachFreshRunJobToken(
         sandboxId: token.sandboxId,
         allowedDomains: token.allowedDomains,
         deniedDomains: token.deniedDomains,
+        nixPackages: token.nixPackages,
       },
     ),
   };

@@ -880,6 +880,12 @@ describe("createRuntimeRoutes", () => {
     expect(commandScript(1)).toBe(
       'export PATH="/vercel/sandbox/.lobu-nix/profile/bin:$PATH"\ngh --version'
     );
+    // The cached-profile selector relinks `profile` and rewrites the marker
+    // inside a NIX_HOME the provision path created as root. Running it
+    // unprivileged fails on permissions, so this recovery path — the ONLY way
+    // a denied-host sandbox gets its packages — needs the same sudo the
+    // installer uses.
+    expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });
   });
 
   test("drops a package name the nix validator rejects before it reaches a command line", async () => {

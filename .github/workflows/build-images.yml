@@ -1,16 +1,19 @@
 name: Build and Push Images
 
-# Every run publishes images tagged `date -u +%Y%m%d-%H%M%S` (generate-tag
-# below), so concurrent runs — including manual dispatches from other refs —
-# can compute the SAME tag and overwrite each other. On 2026-07-22 five PRs
-# merged within 14s, all five runs stamped `20260722-121441`, and prod ended up
-# on whichever pushed last: two merged PRs never deployed, every workflow green.
+# Every run publishes images tagged `<date>-<time>-<run_number>` (generate-tag
+# below). The timestamp was the whole tag until this change, so concurrent runs
+# — including manual dispatches from other refs — could compute the SAME tag
+# and overwrite each other. On 2026-07-22 five PRs merged within 14s, all five
+# runs stamped `20260722-121441`, and prod ended up on whichever pushed last:
+# two merged PRs never deployed, every workflow green.
 #
-# Serializing makes the tag unique in practice (runs are minutes apart, not
-# milliseconds). The tag cannot simply carry the commit SHA instead: Flux's
-# ImagePolicy matches '^(\d{8})-(\d{6})$' and lives in the owletto submodule, so
-# changing the format needs a coordinated two-repo change and a mismatch stops
-# every deploy.
+# Serializing made the tag unique only in practice (runs are minutes apart, not
+# milliseconds); the run-number suffix makes it unique by construction. The tag
+# still cannot simply carry the commit SHA instead: Flux deploys the
+# highest-sorting tag, and a SHA carries no ordering. The matching ImagePolicy
+# lives in the owletto submodule (it accepts the old two-segment tags as well as
+# the new three-segment form), so any further format change needs the same
+# coordinated two-repo change, and a mismatch stops every deploy.
 #
 # cancel-in-progress stays false: a cancelled run can leave the chart pointing
 # at a tag whose sibling images were never pushed.

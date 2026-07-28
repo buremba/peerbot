@@ -746,16 +746,38 @@ describe("manage_agents — model config (#2047)", () => {
 	});
 
 	it("create WITHOUT default_model and no org default ⇒ not_runnable", async () => {
+		// Needs an org with NO provider at all: the shared `orgId` has a runnable
+		// `myco` row from beforeAll, so it resolves `org_default` rather than
+		// `none`.
+		const bareOrg = await createTestOrganization({ name: "no provider org" });
+		const bareOwner = await createTestUser({ email: "ma-bare-owner@test.com" });
+		await addUserToOrganization(bareOwner.id, bareOrg.id, "owner");
+
 		const res = (await executeTool(
 			"manage_agents",
 			{ action: "create", agent_id: "no-model-bot", name: "No Model" },
 			TEST_ENV,
-			ownerCtx,
+			baseCtx(bareOrg.id, bareOwner.id),
 		)) as { created: boolean; model: ModelInfo };
 		expect(res.created).toBe(true);
 		expect(res.model.source).toBe("none");
 		expect(res.model.not_runnable).toBe(true);
 		expect(res.model.effective_model).toBeNull();
+	});
+
+	it("create WITHOUT default_model but WITH an org default ⇒ runnable via org_default", async () => {
+		// The complement: the shared org has a runnable default provider, so a
+		// model-less agent inherits it.
+		const res = (await executeTool(
+			"manage_agents",
+			{ action: "create", agent_id: "inherit-model-bot", name: "Inherit" },
+			TEST_ENV,
+			ownerCtx,
+		)) as { created: boolean; model: ModelInfo };
+		expect(res.created).toBe(true);
+		expect(res.model.source).toBe("org_default");
+		expect(res.model.not_runnable).toBe(false);
+		expect(res.model.effective_model).toBe("myco/myco-large");
 	});
 
 	it("create WITH a valid default_model ⇒ pinned, runnable, source 'agent'", async () => {

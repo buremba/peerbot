@@ -84,8 +84,10 @@
 > provider in the web UI first — the exact step the demo is meant to eliminate.
 > Files: `packages/server/src/auth/builder-provisioning.ts:175-189` +
 > `packages/server/src/auth/system-provider-resolution.ts:55-105` (repair no-op);
-> existing link+form path to reuse: `packages/server/src/utils/url-builder.ts:84-107` +
-> `packages/owletto/src/app/$owner/inference-providers/new.tsx:8-16`. Fix: when the builder has no
+> current link+form path to reuse: `buildProviderConnectUrl` in
+> `packages/server/src/utils/url-builder.ts` +
+> `ProviderConnectorBody` in
+> `packages/owletto/src/app/$owner/connectors/$connectorKey.index.tsx`. Fix: when the builder has no
 > usable model, have the bot post the run-backed configure link (§16.2) instead of erroring; deliver
 > the §16.2/§21 flow in Phase 0.
 >
@@ -552,10 +554,10 @@ Every public action has one `ActionDefinition` (input/output schemas, access tie
 
 ## 16.1 Stateless prefill link
 > **CUT (low).** Query-param prefill without a run. Run-backed links (§16.2) cover the demo; this is a
-> nice-to-have. Note: no owletto route reads these params for runtime connections today, and the
-> environments form hardcodes Vercel's three fields client-side
-> (`packages/owletto/src/app/$owner/inference-providers/new.tsx:8-13`;
-> `.../environments/index.tsx:24-43`). Defer.
+> nice-to-have. Inference-provider CTAs already use stateless `model`/`reason`/`agentId` prefill on
+> `/$owner/connectors/inference-provider:<slug>`. The former `/$owner/environments` route was only a
+> redirect by the time this branch started and is now deleted; any remaining runtime prefill work must
+> target the current sandbox-provider connector flow. Defer the remaining runtime prefill.
 
 ## 16.2 Run-backed configuration link
 > **KEEP + GAP (high) — this is the demo's config mechanism; build it in Phase 0/1.** Correct design,

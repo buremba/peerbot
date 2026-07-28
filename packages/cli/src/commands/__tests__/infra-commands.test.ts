@@ -188,6 +188,17 @@ describe("providers", () => {
     });
   });
 
+  test("create reports an automatic default returned by the server", async () => {
+    responses = [{ provider: { slug: "z-ai", isDefault: true } }];
+
+    await providersCreateCommand("z-ai", {
+      kind: "z-ai",
+      key: "sk-literal",
+    });
+
+    expect(logLines.join("\n")).toContain("and set as org default");
+  });
+
   test("create --default reports partial success when the default PUT fails", async () => {
     responses = [{ provider: { slug: "p1" } }];
     failPathSuffix = "/p1/default";

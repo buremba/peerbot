@@ -634,6 +634,7 @@ async function ensureVisibleOAuthProvidersForUser(
 			slug: config.id,
 			kind: config.id,
 			displayName: config.name,
+			defaultModel: config.defaultModel,
 			createdBy: user.id,
 		});
 	}
@@ -827,6 +828,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			slug: config.id,
 			kind: config.id,
 			displayName: config.name,
+			defaultModel: config.defaultModel,
 			createdBy: user.id,
 		});
 		emitConfigChange(c, {
@@ -841,6 +843,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 				capabilities: provider.capabilities,
 				hasCustomUpstream: provider.hasCustomUpstream,
 				status: provider.status,
+				isDefault: provider.isDefault,
 			},
 		});
 
@@ -962,10 +965,13 @@ routes.post("/inference-providers", async (c) => {
 			capabilities: result.capabilities,
 			hasCustomUpstream: result.hasCustomUpstream,
 			status: result.status,
+			isDefault: result.isDefault,
 		},
 	});
 
 	// Never echo the key or the api_key_ref back to the caller.
+	// `isDefault` is load-bearing: the first runnable provider is auto-promoted,
+	// so a caller cannot infer it from its own request.
 	return c.json(
 		{
 			provider: {
@@ -977,6 +983,7 @@ routes.post("/inference-providers", async (c) => {
 				hasCustomUpstream: result.hasCustomUpstream,
 				status: result.status,
 				createdAt: result.createdAt,
+				isDefault: result.isDefault,
 			},
 		},
 		201
@@ -1049,8 +1056,35 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 	if (typeof orgId !== "string") return orgId;
 	const { slug } = c.req.param();
 
-	const ok = await setInferenceProviderDefault(orgId, slug);
-	if (!ok) return c.json({ error: "Provider not found" }, 404);
+	const result = await setInferenceProviderDefault(orgId, slug);
+	if (result === "not_found") {
+		return c.json({ error: "Provider not found" }, 404);
+	}
+	// Both rejections mean "this row cannot hold the org default", but for
+	// different reasons — and the fix differs, so the message must too.
+	if (result === "no_text_model") {
+		return c.json(
+			{
+				error:
+					`Provider '${slug}' has no text model configured, so it cannot be ` +
+					`the org default. Set one with: lobu providers set-capability ` +
+					`${slug} text --model <model>`,
+			},
+			400
+		);
+	}
+	if (result === "oauth_provider") {
+		return c.json(
+			{
+				error:
+					`Provider '${slug}' is signed in with OAuth, so its credential ` +
+					`belongs to one user. An org default is inherited by every member ` +
+					`and by headless Behavior runs, which cannot read that token. Use ` +
+					`a provider added with an API key instead.`,
+			},
+			400
+		);
+	}
 	emitConfigChange(c, {
 		resourceKind: "inference-provider",
 		resourceId: slug,

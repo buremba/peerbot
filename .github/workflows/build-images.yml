@@ -1,21 +1,23 @@
 name: Build and Push Images
 
-# Every run publishes images tagged `date -u +%Y%m%d-%H%M%S` (generate-tag
-# below), so concurrent runs — including manual dispatches from other refs —
-# can compute the SAME tag and overwrite each other. On 2026-07-22 five PRs
-# merged within 14s, all five runs stamped `20260722-121441`, and prod ended up
-# on whichever pushed last: two merged PRs never deployed, every workflow green.
+# GitHub keeps only one pending run per concurrency group. On 2026-07-28 the
+# `lobu-v14.4.0` release queued behind a main build, then a later main push
+# evicted it. The version images were not published until a manual rerun. Give
+# releases their own group so routine merges cannot evict them.
 #
-# Serializing makes the tag unique in practice (runs are minutes apart, not
-# milliseconds). The tag cannot simply carry the commit SHA instead: Flux's
-# ImagePolicy matches '^(\d{8})-(\d{6})$' and lives in the owletto submodule, so
-# changing the format needs a coordinated two-repo change and a mismatch stops
-# every deploy.
+# Pushes deliberately keep the default single-item queue so bursts coalesce to
+# the newest commit. `queue: max` is not conditional, so setting it here would
+# queue intermediate pushes instead. cancel-in-progress stays false because
+# cancelling a running build can leave only some of the shared image tags
+# published.
 #
-# cancel-in-progress stays false: a cancelled run can leave the chart pointing
-# at a tag whose sibling images were never pushed.
+# Separate groups let a release and push run in the same second. generate-tag
+# therefore appends a zero-padded run number to the timestamp; the timestamp
+# preserves Flux ordering across reruns and the run number breaks ties. The
+# matching ImagePolicy lives in the owletto submodule and accepts both the old
+# two-segment tags and the new three-segment form.
 concurrency:
-  group: build-images
+  group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
 
 on:
@@ -60,26 +62,23 @@ jobs:
   generate-tag:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
-      tag: ${{ steps.timestamp.outputs.tag }}
-      semver: ${{ steps.semver.outputs.semver }}
-      is_stable: ${{ steps.semver.outputs.is_stable }}
-      should_publish: ${{ steps.semver.outputs.should_publish }}
+      tag: ${{ steps.tags.outputs.tag }}
+      semver: ${{ steps.tags.outputs.semver }}
+      is_stable: ${{ steps.tags.outputs.is_stable }}
+      should_publish: ${{ steps.tags.outputs.should_publish }}
     steps:
-      - name: Generate shared timestamp tag
-        id: timestamp
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
-
       # Only this job needs the repo; the build jobs check out separately.
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # Derivation lives in scripts/derive-image-tags.mjs so it is unit-tested
-      # (scripts/__tests__/derive-image-tags.test.ts) — inline YAML shell can
-      # only be exercised by cutting a real release. Computed once here so
-      # app/worker/embeddings can never disagree about eligibility or version.
-      - name: Derive semver tag from the release
-        id: semver
+      # Every tag decision lives in scripts/derive-image-tags.mjs so it is
+      # covered by scripts/__tests__/derive-image-tags.test.ts. Computed once
+      # here so app/worker/embeddings cannot disagree about the tag,
+      # eligibility, or version.
+      - name: Derive image tags
+        id: tags
         env:
+          RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
           PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}

@@ -468,6 +468,131 @@ export class MessageHandlerBridge {
     );
   }
 
+  /**
+   * Strip the bot's own mention out of inbound text. Slack delivers raw
+   * `<@Uxxx>` tokens; the Chat SDK may strip the brackets, so we also catch the
+   * bare `@Uxxx` form. Every command-matching call site must run on the
+   * stripped text — `@mybot /link ABC123` is the normal way to address a bot in
+   * a mention-gated group chat, and the slash regex requires a leading `/`.
+   */
+  private stripBotMention(text: string): string {
+    const botMetadata = this.manager.getInstance(this.connection.id)?.connection
+      .metadata;
+    const botUsername = botMetadata?.botUsername as string | undefined;
+    const botUserId = botMetadata?.botUserId as string | undefined;
+    let stripped = text;
+    if (botUsername) {
+      stripped = stripped.replace(`@${botUsername}`, "").trim();
+    }
+    if (botUserId) {
+      // Provider-sourced metadata, so escape it before it reaches `RegExp`: a
+      // stray metacharacter would otherwise throw mid-message or over-strip.
+      // Real Slack ids (`U…`) carry none, so their stripping is unchanged.
+      const idPattern = botUserId.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+      stripped = stripped
+        .replace(new RegExp(`<@${idPattern}>`, "g"), "")
+        .replace(new RegExp(`@${idPattern}\\b`, "g"), "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    return stripped;
+  }
+
+  /**
+   * Reply at a routing dead end — an inbound message/interaction resolved to
+   * no channel Behavior and the connection has no owning agent — with a
+   * "link this chat" notice instead of dropping silently.
+   *
+   * Slack keeps its original gate: only a tenant's OAuth-installed workspace
+   * bot (`metadata.teamId`) gets the deep-linked notice. Every other platform
+   * gets the generic dashboard+CLI notice (#2230). Loop safety needs no extra
+   * state: the Chat SDK never re-delivers the bot's own posts (`isMe`), and a
+   * channel with a Behavior subscription never reaches this dead end (the
+   * planner-rejection guard in `handleMessage` drops it silently first).
+   *
+   * Returns true when a notice was posted (the caller should stop).
+   */
+  private async postUnlinkedChatNotice(
+    thread: { post: (content: unknown) => Promise<unknown> },
+    channelId: string,
+    teamId: string | undefined
+  ): Promise<boolean> {
+    const platform = this.connection.platform;
+    if (!this.connection.organizationId) return false;
+
+    let noticeChannel: {
+      channelId: string;
+      teamId?: string;
+      channelName?: string;
+      connectionId?: string;
+    } = { channelId, connectionId: this.connection.id };
+
+    if (platform === "slack") {
+      // A tenant's OAuth-installed Slack workspace bot has no owning agent —
+      // routing is via tagged Behaviors created by `/lobu link`. Before the
+      // tenant links a channel, a non-command message resolves to nothing.
+      // (Slash commands like `/lobu link` take the `onSlashCommand` path and
+      // never reach here.)
+      if (!this.connection.metadata?.teamId) return false;
+      // Fall back to the connection's stored team when the raw event omits
+      // team_id, so the deep-link stays team-scoped. The connection always
+      // carries it — it's the gate above.
+      const linkTeamId = teamId ?? this.connection.metadata?.teamId;
+      // Best-effort: resolve the channel's friendly name (#general) for the
+      // notice's deep-link label. Uses this connection's own bot token via
+      // conversations.info; any failure (no token, not-in-channel, rate limit)
+      // just drops to the channel id in the UI — never blocks the notice.
+      let channelName: string | undefined;
+      if (linkTeamId) {
+        try {
+          const slackWeb = createSlackWebApi();
+          const identity = await resolveSlackBotIdentity(
+            {
+              installStore: this.services.getAppInstallationStore(),
+              secretStore: this.services.getSecretStore(),
+              slackWeb,
+            },
+            {
+              organizationId: this.connection.organizationId,
+              teamId: linkTeamId,
+              connectionId: this.connection.id,
+            }
+          );
+          if (identity?.token) {
+            const info = await slackWeb.conversationInfo(
+              identity.token,
+              stripPlatformPrefix(platform, channelId)
+            );
+            channelName = info.name ?? undefined;
+          }
+        } catch (err) {
+          logger.debug(
+            { channelId, error: String(err) },
+            "unlinked-notice: channel name lookup failed (using id)"
+          );
+        }
+      }
+      noticeChannel = {
+        channelId,
+        teamId: linkTeamId,
+        channelName,
+        connectionId: this.connection.id,
+      };
+    }
+
+    const notice = await workspaceUnlinkedNotice(
+      platform,
+      this.connection.organizationId,
+      noticeChannel
+    );
+    logger.info(
+      { platform, channelId, teamId, connectionId: this.connection.id },
+      "Unlinked chat and connection has no owning agent — replying with link notice"
+    );
+    await thread.post(notice);
+    return true;
+  }
+
   async handleMessage(
     thread: any,
     message: any,
@@ -635,74 +760,36 @@ export class MessageHandlerBridge {
         return;
       }
 
-      // A tenant's OAuth-installed Slack workspace bot has no owning agent —
-      // routing is via tagged Behaviors created by `/lobu link`. Before the
-      // tenant links a channel, a non-command message resolves to nothing. Reply with a
-      // one-line "link your agent" notice instead of silently dropping so the
-      // install never dead-ends. (Slash commands like `/lobu link` take the
-      // `onSlashCommand` path and never reach here.)
-      if (
-        !isPreview &&
-        platform === "slack" &&
-        this.connection.metadata?.teamId &&
-        this.connection.organizationId
-      ) {
-        const linkTeamId = teamId ?? this.connection.metadata?.teamId;
-        // Best-effort: resolve the channel's friendly name (#general) for the
-        // notice's deep-link label. Uses this connection's own bot token via
-        // conversations.info; any failure (no token, not-in-channel, rate limit)
-        // just drops to the channel id in the UI — never blocks the notice.
-        let channelName: string | undefined;
-        if (linkTeamId) {
-          try {
-            const slackWeb = createSlackWebApi();
-            const identity = await resolveSlackBotIdentity(
-              {
-                installStore: this.services.getAppInstallationStore(),
-                secretStore: this.services.getSecretStore(),
-                slackWeb,
-              },
-              {
-                organizationId: this.connection.organizationId,
-                teamId: linkTeamId,
-                connectionId: this.connection.id,
-              }
-            );
-            if (identity?.token) {
-              const info = await slackWeb.conversationInfo(
-                identity.token,
-                stripPlatformPrefix(platform, channelId)
-              );
-              channelName = info.name ?? undefined;
-            }
-          } catch (err) {
-            logger.debug(
-              { channelId, error: String(err) },
-              "unlinked-notice: channel name lookup failed (using id)"
-            );
-          }
-        }
-        const notice = await workspaceUnlinkedNotice(
-          platform,
-          this.connection.organizationId,
-          // Fall back to the connection's stored team when the raw message omits
-          // team_id, so the deep-link stays team-scoped. The connection always
-          // carries it — it's the gate above.
+      // An unrouted chat still has to honor commands: the unlinked notice
+      // below tells the user to paste `/link <code>` (or `/lobu link <code>`)
+      // into this same chat. Slack delivers those natively via the
+      // `onSlashCommand` ingress, but every other platform delivers them as
+      // plain message text — which used to die in this dead end before the
+      // dispatcher ever saw it (#2230).
+      if (this.commandDispatcher) {
+        const handled = await this.commandDispatcher.tryHandleSlashText(
+          this.stripBotMention(
+            typeof message.text === "string" ? message.text : ""
+          ),
           {
+            platform,
+            userId,
             channelId,
-            teamId: linkTeamId,
-            channelName,
+            teamId,
+            isGroup,
+            conversationId,
             connectionId: this.connection.id,
+            organizationId: this.connection.organizationId,
+            reply: createChatReply((content) => thread.post(content)),
           }
         );
-        if (notice) {
-          logger.info(
-            { platform, channelId, teamId, connectionId: this.connection.id },
-            "Slack workspace connection: unlinked channel — replying with link notice"
-          );
-          await thread.post(notice);
-          return;
-        }
+        if (handled) return;
+      }
+      if (
+        !isPreview &&
+        (await this.postUnlinkedChatNotice(thread, channelId, teamId))
+      ) {
+        return;
       }
       logger.warn(
         { platform, channelId, teamId, connectionId: this.connection.id },
@@ -877,22 +964,9 @@ export class MessageHandlerBridge {
       }
     }
 
-    // Remove bot mention from text. Slack delivers raw `<@Uxxx>` tokens; the
-    // Chat SDK may strip the brackets, so we also catch the bare `@Uxxx` form.
-    const botMetadata = this.manager.getInstance(this.connection.id)?.connection
-      .metadata;
-    const botUsername = botMetadata?.botUsername as string | undefined;
-    const botUserId = botMetadata?.botUserId as string | undefined;
-    if (botUsername) {
-      messageText = messageText.replace(`@${botUsername}`, "").trim();
-    }
-    if (botUserId) {
-      messageText = messageText
-        .replace(new RegExp(`<@${botUserId}>`, "g"), "")
-        .replace(new RegExp(`@${botUserId}\\b`, "g"), "")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
+    // Remove bot mention from text — shared with the unrouted dead-end slash
+    // dispatch so both match commands addressed via an @-mention.
+    messageText = this.stripBotMention(messageText);
 
     // Intercept a `!`-bash message before slash dispatch. `!cmd` runs `cmd` as
     // shell in the conversation's pinned sandbox (LLM skipped); `!!cmd` runs it
@@ -1497,6 +1571,14 @@ export class MessageHandlerBridge {
       crossOrg: isPreview,
     });
     if (!resolved) {
+      // Same dead end as the message path: reply with the unlinked notice
+      // (Slack and non-Slack alike) instead of eating the click silently.
+      if (
+        !isPreview &&
+        (await this.postUnlinkedChatNotice(thread, channelId, teamId))
+      ) {
+        return;
+      }
       logger.warn(
         { platform, channelId, teamId, connectionId: this.connection.id },
         "No channel Behavior and connection has no owning agent — dropping interaction"

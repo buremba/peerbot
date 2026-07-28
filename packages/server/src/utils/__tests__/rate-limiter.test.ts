@@ -10,7 +10,7 @@
  * which is exactly the production topology.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import { getClientIP, getRateLimiter, RateLimiter, resetRateLimiterForTests } from '../rate-limiter';
 
@@ -20,7 +20,7 @@ function uniqueKey(label: string): string {
   return `test:${label}:${Date.now()}:${keySeq++}`;
 }
 
-/** Big window so a test can never straddle an epoch-aligned boundary. */
+/** Wide window; with the frozen clock below, a window can never roll mid-test. */
 const WIDE = { limit: 3, windowSeconds: 3600 };
 
 describe('RateLimiter (Postgres-backed fixed window)', () => {
@@ -30,9 +30,15 @@ describe('RateLimiter (Postgres-backed fixed window)', () => {
     await cleanupTestDatabase();
     resetRateLimiterForTests();
     limiter = getRateLimiter();
+    // The limiter derives its fixed window from Date.now(); on a slow runner a
+    // real-time test can straddle an epoch-aligned window boundary and the
+    // budget silently refills mid-test (#2073). Fake Date only (timers and DB
+    // I/O stay real) and drive window rollover explicitly via setSystemTime.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetRateLimiterForTests();
   });
 
@@ -104,15 +110,15 @@ describe('RateLimiter (Postgres-backed fixed window)', () => {
     const key = uniqueKey('window-roll');
     const config = { limit: 1, windowSeconds: 1 };
 
-    // Wait for the start of a fresh 1s window so both calls land inside it.
-    const msIntoWindow = Date.now() % 1000;
-    await new Promise((r) => setTimeout(r, 1000 - msIntoWindow + 10));
+    // Pin the clock to the start of a 1s window so both calls land inside it.
+    const windowStartMs = Math.ceil(Date.now() / 1000) * 1000;
+    vi.setSystemTime(windowStartMs);
 
     expect(limiter.checkLimit(key, config).allowed).toBe(true);
     expect(limiter.checkLimit(key, config).allowed).toBe(false);
 
     // Next fixed window → fresh budget.
-    await new Promise((r) => setTimeout(r, 1010));
+    vi.setSystemTime(windowStartMs + 1000);
     expect(limiter.checkLimit(key, config).allowed).toBe(true);
     await limiter.flushPendingWrites();
   });

@@ -685,8 +685,14 @@ export class ChatResponseBridge implements ResponseRenderer {
         // "pick a model" → the agent's settings tab.
         'agent-settings': () =>
           buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
-        // "connect a provider" → the org's connect-a-provider page.
-        'provider-connect': () => buildProviderConnectUrl(gatewayUrl, orgId),
+        // "connect a provider" → the provider's connector detail page, with
+        // the same provider/model targeting + agent context the pre-enqueue
+        // preflight passes (message-handler-bridge parity).
+        'provider-connect': () =>
+          buildProviderConnectUrl(gatewayUrl, orgId, {
+            ...payload.errorContext,
+            agentId,
+          }),
         // Provider auth/quota/routing → manage the exact existing provider.
         'provider-management': () =>
           buildProviderManagementUrl(gatewayUrl, orgId, payload.errorContext),

@@ -220,20 +220,22 @@ describe('buildAgentConversationUrl', () => {
 describe('buildProviderConnectUrl', () => {
   stubOrgSlug();
   // The "connect a provider" CTA target — distinct from buildAgentSettingsUrl.
-  // Its fix is wiring credentials, so it lands on /inference-providers/new, the
-  // live connect form, NOT the agent's model settings.
-  it('builds the connect-a-provider URL (distinct page from agent settings)', async () => {
+  // Its fix is wiring credentials, so it lands on the provider's connector
+  // detail page (which hosts the connect form while the provider is absent),
+  // NOT the agent's model settings. With no provider in scope there is no
+  // detail page to target, so it falls back to the connectors list.
+  it('falls back to the connectors list when no provider is in scope', async () => {
     const url = await buildProviderConnectUrl('https://app.lobu.com/lobu', 'org-1');
-    expect(url).toBe('https://app.lobu.com/acme/inference-providers/new');
+    expect(url).toBe('https://app.lobu.com/acme/connectors');
   });
 
-  it('prefills provider + model on the connect form when given', async () => {
+  it('targets the provider connector detail page and prefills the model', async () => {
     const url = await buildProviderConnectUrl('https://app.lobu.com', 'org-1', {
       provider: 'z-ai',
       model: 'z-ai/glm-5.2',
     });
     expect(url).toBe(
-      'https://app.lobu.com/acme/inference-providers/new?provider=z-ai&model=z-ai%2Fglm-5.2'
+      'https://app.lobu.com/acme/connectors/inference-provider%3Az-ai?model=z-ai%2Fglm-5.2'
     );
   });
 
@@ -245,8 +247,21 @@ describe('buildProviderConnectUrl', () => {
       agentId: 'agent/1',
     });
     expect(url).toBe(
-      'https://app.lobu.com/acme/inference-providers/new?provider=z-ai&model=z-ai%2Fglm-5.2&reason=model_provider_not_connected&agentId=agent%2F1'
+      'https://app.lobu.com/acme/connectors/inference-provider%3Az-ai?model=z-ai%2Fglm-5.2&reason=model_provider_not_connected&agentId=agent%2F1'
     );
+  });
+
+  // The prefixed key is one path segment containing `:`, so it MUST ship
+  // percent-encoded — a raw colon in the segment is what the SPA router would
+  // NOT round-trip. TanStack decodes `%3A` back to `:` on the client (pinned by
+  // owletto's provider-detail route test).
+  it('percent-encodes the prefixed connector key path segment', async () => {
+    const url = await buildProviderConnectUrl('https://app.lobu.com', 'org-1', {
+      provider: 'z-ai',
+    });
+    const { pathname } = new URL(url as string);
+    expect(pathname).toBe('/acme/connectors/inference-provider%3Az-ai');
+    expect(pathname).not.toContain(':');
   });
 
   it('returns null when org slug or gateway url is missing', async () => {
@@ -264,13 +279,34 @@ describe('buildProviderManagementUrl', () => {
       provider: 'z-ai',
       model: 'glm-5.2',
     });
-    expect(url).toBe('https://app.lobu.com/acme/infrastructure/models?provider=z-ai&model=glm-5.2');
+    expect(url).toBe(
+      'https://app.lobu.com/acme/connectors/inference-provider%3Az-ai?model=glm-5.2'
+    );
   });
 
   it('returns null when org slug or gateway url is missing', async () => {
     expect(await buildProviderManagementUrl(undefined, 'org-1')).toBeNull();
     expect(await buildProviderManagementUrl('https://x', undefined)).toBeNull();
     expect(await buildProviderManagementUrl('https://x', 'unknown-org')).toBeNull();
+  });
+
+  // This path is server-rendered into Slack/Telegram buttons, so it must match
+  // the admin UI's actual route. The frontend declares the same path in
+  // owletto's `agent-error-cta.ts` (and resolves it in the
+  // `/$owner/connectors/$connectorKey` file route); nothing links the two repos
+  // at compile time, so pin the exact segments here. A rename on either side
+  // that skips the other ships a 404 button to every chat surface.
+  it('points at the provider connector detail route, percent-encoded, no stale prefix', async () => {
+    const url = await buildProviderManagementUrl('https://app.lobu.com', 'org-1', {
+      provider: 'z-ai',
+    });
+    expect(new URL(url as string).pathname).toBe('/acme/connectors/inference-provider%3Az-ai');
+    expect(url).not.toContain('infrastructure');
+  });
+
+  it('falls back to the connectors list when no provider is in scope', async () => {
+    const url = await buildProviderManagementUrl('https://app.lobu.com', 'org-1');
+    expect(url).toBe('https://app.lobu.com/acme/connectors');
   });
 });
 

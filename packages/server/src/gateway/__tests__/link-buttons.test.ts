@@ -139,12 +139,12 @@ describe("buildCtaCardPayload", () => {
   test("loopback URL → text-only fallback (localhost can't be an inline button)", () => {
     const out = buildCtaCardPayload({
       text: "Connect a provider.",
-      url: "http://localhost:8787/acme/inference-providers/new",
+      url: "http://localhost:8787/acme/connectors/inference-provider%3Az-ai",
       label: "Connect a provider",
     });
     expect(typeof out).toBe("string");
     expect(out).toBe(
-      "Connect a provider.\n\nConnect a provider: http://localhost:8787/acme/inference-providers/new"
+      "Connect a provider.\n\nConnect a provider: http://localhost:8787/acme/connectors/inference-provider%3Az-ai"
     );
   });
 

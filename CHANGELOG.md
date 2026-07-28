@@ -1,5 +1,23 @@
 # Changelog
 
+## [14.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.4.1...lobu-v14.5.0) (2026-07-28)
+
+
+### Features
+
+* **ci:** audit that the newest stable release is actually served by ghcr ([#2256](https://github.com/lobu-ai/lobu/issues/2256)) ([f62d25b](https://github.com/lobu-ai/lobu/commit/f62d25bef495788103fbc94f898954a9ab7e8aa8))
+* **web:** fold agent config behind Configure tabs and preview an empty Activity feed ([#2264](https://github.com/lobu-ai/lobu/issues/2264)) ([bc76d85](https://github.com/lobu-ai/lobu/commit/bc76d85ffee2ca2754f1f0ff1b58ce003dd67cbb))
+
+
+### Bug Fixes
+
+* **ci:** stop main pushes from evicting a queued release build ([#2250](https://github.com/lobu-ai/lobu/issues/2250)) ([124bc14](https://github.com/lobu-ai/lobu/commit/124bc14854f13bd98cc2c1ff4b848586191f7c8a))
+* **docker:** ship the lobu CLI in the app image ([#2258](https://github.com/lobu-ai/lobu/issues/2258)) ([0a80acd](https://github.com/lobu-ai/lobu/commit/0a80acd3216974441d80b8f68c77dba1fa835beb))
+* **server:** keep an org's default inference provider populated ([#2240](https://github.com/lobu-ai/lobu/issues/2240)) ([db15b96](https://github.com/lobu-ai/lobu/commit/db15b964418c8fbb193405a24572483d1e1409d1))
+* **server:** one gateway LLM client, org-resolved credentials ([#2246](https://github.com/lobu-ai/lobu/issues/2246)) ([c1b324d](https://github.com/lobu-ai/lobu/commit/c1b324d272fb5a31b37ac0ae565cd7d938d81a87))
+* **server:** reply with an unlinked notice on non-Slack platforms instead of dropping ([#2257](https://github.com/lobu-ai/lobu/issues/2257)) ([5bc4590](https://github.com/lobu-ai/lobu/commit/5bc4590848032f21c0322896121f366bc0fa85fa))
+* **worker:** allowlist the agent environment and split the egress proxy credential ([#2263](https://github.com/lobu-ai/lobu/issues/2263)) ([ca4e737](https://github.com/lobu-ai/lobu/commit/ca4e737ad3ef1a9a9b06ade80eb2ab53bae62fac))
+
 ## [14.4.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.4.0...lobu-v14.4.1) (2026-07-28)
 
 

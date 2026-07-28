@@ -271,24 +271,43 @@ function packageNameFor(dir) {
   }
 }
 
-/** @lobu runtime and peer dependency names declared by a workspace package. */
-function lobuRuntimeDeps(dir) {
+/**
+ * @lobu runtime and peer dependency names a workspace package will PUBLISH.
+ *
+ * The publish transform is applied first, because the transformed manifest is
+ * what npm receives and therefore what a consumer has to be able to install.
+ * Reading the raw on-disk manifest instead would skip @lobu/worker whenever
+ * @lobu/core, plugin-api or plugin-host is unavailable — the worker still
+ * declares them on disk, but `transformWorkerPublish` deletes every @lobu
+ * dependency because the bundle inlines the whole graph. That is precisely the
+ * bootstrap wait this change removes.
+ *
+ * Callers may omit `transform` to ask what the package declares on disk.
+ */
+function lobuRuntimeDeps(dir, transform) {
+  let pkg;
   try {
-    const pkg = JSON.parse(
+    pkg = JSON.parse(
       readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
     );
-    return [
-      ...new Set(
-        [
-          ...Object.keys(pkg.dependencies ?? {}),
-          ...Object.keys(pkg.optionalDependencies ?? {}),
-          ...Object.keys(pkg.peerDependencies ?? {}),
-        ].filter((name) => name.startsWith("@lobu/"))
-      ),
-    ];
   } catch {
     return [];
   }
+  // Deliberately outside the catch: the transform runs `rewriteWorkspaceRefs`,
+  // which throws when a package declares an @lobu dependency this script does
+  // not publish. That is a release-stopping contract break, and swallowing it
+  // into an empty list would report the package as depending on nothing —
+  // publishing the exact broken manifest the guard exists to stop.
+  if (transform) pkg = transform(pkg);
+  return [
+    ...new Set(
+      [
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.optionalDependencies ?? {}),
+        ...Object.keys(pkg.peerDependencies ?? {}),
+      ].filter((name) => name.startsWith("@lobu/"))
+    ),
+  ];
 }
 
 function markUnavailablePackage(name, dependencies, unavailableNames) {
@@ -456,7 +475,7 @@ async function main() {
   for (const pkg of PACKAGES) {
     const skippedPackage = markUnavailablePackage(
       packageNameFor(pkg.dir),
-      lobuRuntimeDeps(pkg.dir),
+      lobuRuntimeDeps(pkg.dir, pkg.transform),
       unavailableNames
     );
     if (skippedPackage) {

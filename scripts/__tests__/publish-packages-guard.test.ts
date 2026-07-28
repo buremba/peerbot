@@ -230,6 +230,11 @@ describe("publish loop (subprocess, stub npm)", () => {
     // Packages with no runtime @lobu dependency are unaffected and still ship
     // — the guard must not turn one blocked package into a total outage.
     expect(attempted).toContain("@lobu/client");
+    // @lobu/worker still declares @lobu/core on disk, but publishes a manifest
+    // with zero @lobu dependencies because the bundle inlines the graph. The
+    // gate must read the transformed manifest: reading the raw one skipped the
+    // worker here, reinstating the bootstrap wait this change removes.
+    expect(attempted).toContain("@lobu/worker");
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain("skipped");

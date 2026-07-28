@@ -50,12 +50,15 @@ class NoopManager extends DeploymentManager {
   }
 }
 
-/** Exposes the protected fold. */
+/** Exposes the protected fold. Resolves to the tooling fingerprint. */
 class TestConsumer extends MessageConsumer {
-  fold(data: MessagePayload): Promise<void> {
+  fold(data: MessagePayload): Promise<string | null> {
     return (
       this as unknown as {
-        foldConnectorTooling(d: MessagePayload, t: string): Promise<void>;
+        foldConnectorTooling(
+          d: MessagePayload,
+          t: string
+        ): Promise<string | null>;
       }
     ).foldConnectorTooling(data, "trace-1");
   }
@@ -197,6 +200,10 @@ describe("connector tooling on the enqueue path", () => {
     // A payload with no org cannot resolve; the fold must still return cleanly.
     const orgless = { ...data, organizationId: undefined as unknown as string };
 
-    await expect(consumer.fold(orgless)).resolves.toBeUndefined();
+    // Resolves rather than rejects, and specifically to null: the fingerprint
+    // is what the warm path compares against a deployment's recorded one, and
+    // null is the "no evidence of change" reading that keeps a healthy worker
+    // instead of recycling it on every turn a transient DB error hits.
+    await expect(consumer.fold(orgless)).resolves.toBeNull();
   });
 });

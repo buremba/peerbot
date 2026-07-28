@@ -629,6 +629,7 @@ interface OrgDefaultModelRow {
 	slug: string;
 	capabilities: InferenceCapabilities;
 	is_default: boolean;
+	api_key_ref: string;
 }
 
 /**
@@ -647,7 +648,7 @@ async function readOrgDefaultCandidate(
 	organizationId: string,
 ): Promise<OrgDefaultModelRow | null> {
 	const rows = (await sql`
-		SELECT id, slug, capabilities, is_default
+		SELECT id, slug, capabilities, is_default, api_key_ref
 		FROM inference_providers
 		WHERE organization_id = ${organizationId}
 		  AND deleted_at IS NULL
@@ -664,9 +665,22 @@ async function readOrgDefaultCandidate(
 	return rows[0] ?? null;
 }
 
+/**
+ * Can this row serve as the ORG-wide default? One predicate, used by the read
+ * path and mirrored by the promotion SQL, so a read can never repair away what
+ * a write just accepted. Both halves are required: a model to resolve, and a
+ * credential every member (and every headless run) can actually read.
+ */
+function isOrgDefaultEligible(row: OrgDefaultModelRow | null): boolean {
+	if (!row?.slug) return false;
+	if (!row.capabilities?.text?.model?.trim()) return false;
+	return !isOAuthInferenceProviderRef(row.api_key_ref);
+}
+
 function modelRefFromDefaultRow(row: OrgDefaultModelRow | null): string | null {
-	const model = row?.capabilities?.text?.model?.trim();
-	if (!model || !row?.slug) return null;
+	if (!isOrgDefaultEligible(row) || !row) return null;
+	const model = row.capabilities?.text?.model?.trim();
+	if (!model) return null;
 	return model.startsWith(`${row.slug}/`) ? model : `${row.slug}/${model}`;
 }
 
@@ -685,10 +699,11 @@ function modelRefFromDefaultRow(row: OrgDefaultModelRow | null): string | null {
  * later soft-deleted) would otherwise stay default-less forever. Two repairs
  * happen under the org lock:
  *   - no flagged default at all ⇒ promote the oldest runnable provider;
- *   - a flagged default that is NOT runnable (no `capabilities.text.model`)
- *     ⇒ demote it, then promote a runnable one. Leaving it would keep
- *     returning null while the UI showed a default, which is the confusing
- *     half of the bug.
+ *   - a flagged default that is NOT eligible — no `capabilities.text.model`,
+ *     or an `oauth://` ref whose credential only one user can read ⇒ demote it,
+ *     then promote an eligible one. Leaving it would keep returning null while
+ *     the UI showed a default, which is the confusing half of the bug. The
+ *     OAuth case also repairs rows written before that rule existed.
  * The fast path (a runnable flagged default) never opens a transaction.
  */
 export async function getOrgDefaultModel(
@@ -727,14 +742,23 @@ export async function getOrgDefaultModel(
  * same transaction). The partial unique index guarantees at most one live
  * default per org; clearing first keeps the switch atomic.
  *
- * Rejects a target with no `capabilities.text.model` as `not_runnable` rather
- * than committing it. Such a row cannot serve as a default: `getOrgDefaultModel`
- * resolves it to null and then REPAIRS the org by demoting it and promoting a
- * runnable row. Accepting the write would report success for a selection that
- * silently reverts on the very next read — the API must not claim to have
- * stored something it will immediately undo. An OAuth row IS accepted here:
- * unlike automatic promotion, this is a deliberate act by a user who holds the
- * profile (see {@link promoteOldestRunnableProvider}).
+ * Rejects two kinds of target as `not_runnable` rather than committing them:
+ *
+ *  - no `capabilities.text.model`. Such a row cannot serve as a default:
+ *    `getOrgDefaultModel` resolves it to null and then REPAIRS the org by
+ *    demoting it and promoting a runnable row. Accepting the write would
+ *    report success for a selection that silently reverts on the very next
+ *    read — the API must not claim to have stored something it will undo.
+ *
+ *  - an `oauth://` row. Its credential lives in ONE user's `auth_profiles` and
+ *    is fetched with `getProviderProfiles(agentId, provider, context.userId)`,
+ *    so no other member of the org — and no headless Behavior run, which
+ *    carries a synthetic user id — can read it. An ORG-WIDE default backed by
+ *    one person's token hands everyone else a model they cannot authenticate.
+ *    Being a deliberate choice does not help: the chooser is not the only one
+ *    who has to run on it. Same reason automatic promotion skips these (see
+ *    {@link promoteOldestRunnableProvider}); the two paths must agree, or a
+ *    read repairs away what a write just accepted.
  */
 export type SetInferenceProviderDefaultResult =
 	| "ok"
@@ -753,14 +777,21 @@ export async function setInferenceProviderDefault(
 		// otherwise a missing slug would commit the clear and leave the org with
 		// no default at all.
 		const target = (await tx`
-			SELECT id, NULLIF(BTRIM(capabilities #>> '{text,model}'), '') AS text_model
+			SELECT id, api_key_ref,
+			       NULLIF(BTRIM(capabilities #>> '{text,model}'), '') AS text_model
 			FROM inference_providers
 			WHERE organization_id = ${organizationId}
 			  AND slug = ${slug} AND deleted_at IS NULL
 			LIMIT 1
-		`) as Array<{ id: string | number; text_model: string | null }>;
-		if (target.length === 0) return "not_found";
-		if (!target[0]?.text_model) return "not_runnable";
+		`) as Array<{
+			id: string | number;
+			api_key_ref: string;
+			text_model: string | null;
+		}>;
+		const row = target[0];
+		if (!row) return "not_found";
+		if (!row.text_model) return "not_runnable";
+		if (isOAuthInferenceProviderRef(row.api_key_ref)) return "not_runnable";
 
 		await tx`
 			UPDATE inference_providers

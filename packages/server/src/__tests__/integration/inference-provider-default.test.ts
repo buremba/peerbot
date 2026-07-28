@@ -260,7 +260,15 @@ describe('inference provider org default', () => {
     expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
   });
 
-  it('(j3) a user may still choose an OAuth provider explicitly', async () => {
+  /**
+   * An OAuth row is rejected as an EXPLICIT default too, not just an automatic
+   * one. Its credential lives in one user's `auth_profiles`
+   * (`getProviderProfiles(agentId, provider, context.userId)`), so no other
+   * member — and no headless Behavior run, which carries a synthetic user id —
+   * can read it. "The chooser holds the profile" is not enough: an org-wide
+   * default is inherited by everyone else too.
+   */
+  it('(j3) an OAuth provider is rejected as an EXPLICIT org default', async () => {
     const org = await newOrg();
     await create(org.id, 'openai', 'gpt-4o-mini');
     await ensureOAuthInferenceProvider({
@@ -270,11 +278,33 @@ describe('inference provider org default', () => {
       defaultModel: 'claude-sonnet-5',
     });
 
-    // Deliberate act by someone who holds the profile — allowed, and it must
-    // SURVIVE a subsequent resolution rather than being silently repaired away.
-    expect(await setInferenceProviderDefault(org.id, 'claude')).toBe('ok');
-    expect(await getOrgDefaultModel(org.id)).toBe('claude/claude-sonnet-5');
+    expect(await setInferenceProviderDefault(org.id, 'claude')).toBe(
+      'not_runnable',
+    );
+    // The prior, org-readable default is untouched.
+    expect(await defaultSlug(org.id)).toBe('openai');
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+  });
+
+  it('(j4) a LEGACY oauth default is demoted and replaced on read', async () => {
+    const org = await newOrg();
+    await create(org.id, 'openai', 'gpt-4o-mini');
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'claude',
+      kind: 'claude',
+      defaultModel: 'claude-sonnet-5',
+    });
+    // Simulate a row written before the oauth rule existed.
+    await getDb()`
+      UPDATE inference_providers SET is_default = (slug = 'claude')
+      WHERE organization_id = ${org.id}
+    `;
     expect(await defaultSlug(org.id)).toBe('claude');
+
+    // Reading repairs it rather than handing out an unauthenticatable model.
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+    expect(await defaultSlug(org.id)).toBe('openai');
   });
 
   it('(k) an explicit model resolves with a row key and static OpenAI URL', async () => {
@@ -358,15 +388,12 @@ describe('inference provider org default', () => {
         defaultModel: 'claude-sonnet-5',
       });
 
-      // Reached the default the only legitimate way for an OAuth row: an
-      // explicit user choice (auto-promotion declines these — see (j)).
-      expect(await setInferenceProviderDefault(org.id, 'claude')).toBe('ok');
-      expect(await getOrgDefaultModel(org.id)).toBe('claude/claude-sonnet-5');
-
-      // An oauth:// ref joins to no vault secret, so the gateway transport
-      // declines rather than sending a keyless request. Claude is also
-      // sdkCompat:"anthropic", the one non-OpenAI protocol in the registry.
-      expect(await resolveCompletionTarget(org.id)).toBeNull();
+      // Even asked for BY NAME, an oauth:// ref joins to no vault secret, so the
+      // gateway transport declines rather than sending a keyless request.
+      // Claude is also sdkCompat:"anthropic", the one non-OpenAI protocol.
+      expect(
+        await resolveCompletionTarget(org.id, 'claude/claude-sonnet-5'),
+      ).toBeNull();
     });
 
     /**
@@ -377,6 +404,50 @@ describe('inference provider org default', () => {
      * key and nothing else), so the registry upstream — not the row — is what
      * actually routes a gateway completion for a non-OpenAI provider.
      */
+    /**
+     * A guardrail's `model` was historically a RAW model id posted to one
+     * operator-configured base URL. Reinterpreting every override as
+     * `<slug>/<model>` silently disabled chips for every existing value, so
+     * both forms must resolve. The distinction cannot be "does it contain a
+     * slash" — provider-native ids do (`anthropic/claude-sonnet-5`).
+     */
+    it('(q1) a BARE model override runs on the org default provider', async () => {
+      const org = await newOrg();
+      await create(org.id, 'openai', 'gpt-4o-mini');
+
+      const target = await resolveCompletionTarget(org.id, 'gpt-4.1-mini');
+      expect(target).not.toBeNull();
+      expect(target?.model).toBe('gpt-4.1-mini');
+      expect(target?.apiKey).toBe('sk-openai');
+    });
+
+    it('(q2) a provider-native override containing "/" is kept whole', async () => {
+      const org = await newOrg();
+      await create(org.id, 'openai', 'gpt-4o-mini');
+
+      // `anthropic` is not a provider row in this org, so the whole string is
+      // the model — NOT slug=anthropic. Splitting it would resolve nothing.
+      const target = await resolveCompletionTarget(
+        org.id,
+        'anthropic/claude-sonnet-5',
+      );
+      expect(target?.model).toBe('anthropic/claude-sonnet-5');
+      expect(target?.apiKey).toBe('sk-openai');
+    });
+
+    it('(q3) a qualified override still routes to THAT provider', async () => {
+      const org = await newOrg();
+      // z-ai is created FIRST, so it holds the org default; the override must
+      // move both the model and the credentials to openai.
+      await create(org.id, 'z-ai', 'glm-4.6');
+      await create(org.id, 'openai', 'gpt-4o-mini');
+      expect(await defaultSlug(org.id)).toBe('z-ai');
+
+      const target = await resolveCompletionTarget(org.id, 'openai/gpt-4.1');
+      expect(target?.model).toBe('gpt-4.1');
+      expect(target?.apiKey).toBe('sk-openai');
+    });
+
     it('(q) a REGISTERED provider with no row base_url inherits its registry upstream', async () => {
       const org = await newOrg();
       await create(org.id, 'groq', 'llama-3.3-70b-versatile');

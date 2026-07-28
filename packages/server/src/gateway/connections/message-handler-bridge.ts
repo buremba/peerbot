@@ -485,9 +485,13 @@ export class MessageHandlerBridge {
       stripped = stripped.replace(`@${botUsername}`, "").trim();
     }
     if (botUserId) {
+      // Provider-sourced metadata, so escape it before it reaches `RegExp`: a
+      // stray metacharacter would otherwise throw mid-message or over-strip.
+      // Real Slack ids (`U…`) carry none, so their stripping is unchanged.
+      const idPattern = botUserId.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
       stripped = stripped
-        .replace(new RegExp(`<@${botUserId}>`, "g"), "")
-        .replace(new RegExp(`@${botUserId}\\b`, "g"), "")
+        .replace(new RegExp(`<@${idPattern}>`, "g"), "")
+        .replace(new RegExp(`@${idPattern}\\b`, "g"), "")
         .replace(/\s+/g, " ")
         .trim();
     }

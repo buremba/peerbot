@@ -76,6 +76,28 @@ describe("check-gateway-llm-calls", () => {
     expect(runGuard()).toBe(1);
   });
 
+  /**
+   * Regression: the comment stripper used to run `/\/\/.*$/`, which matches the
+   * `//` in `https://`. That truncated the line to `fetch("https:` and let the
+   * most obvious hand-rolled call — a hardcoded vendor URL — through untouched.
+   */
+  it("fails on a literal https:// completions URL", () => {
+    create(
+      `export async function probe() {\n` +
+        `  return fetch("https://api.example.test/chat/completions", { method: "POST" });\n` +
+        `}\n`
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("still ignores prose that merely mentions a completions path", () => {
+    create(
+      `// Historical note: this used to POST to /chat/completions directly.\n` +
+        `export const probe = 1;\n`
+    );
+    expect(runGuard()).toBe(0);
+  });
+
   it("honours a gateway-llm-ok suppression on the flagged line", () => {
     create(
       `export async function probe(u: string) {\n` +

@@ -171,9 +171,15 @@ for (const file of files) {
     // migration comment, a doc block naming the env var a module forwards)
     // does not trip the gate. Covers `// …`, a jsdoc continuation line `* …`,
     // and a single-line `/** … */`.
+    //
+    // The `//` rule must NOT fire on a scheme separator: stripping from the
+    // `//` in `https://api.example/chat/completions` truncates the line to
+    // `const u = "https:` and the literal URL — the most obvious way to
+    // hand-roll a call — sails straight through. Require the `//` to be at
+    // line start or preceded by something other than `:`.
     const code = line
       .replace(/\/\*\*?.*?\*\//g, "")
-      .replace(/\/\/.*$/, "")
+      .replace(/(^|[^:])\/\/.*$/, "$1")
       .replace(/^\s*\*.*$/, "")
       .replace(/^\s*\/\*.*$/, "");
     if (!code.trim()) continue;

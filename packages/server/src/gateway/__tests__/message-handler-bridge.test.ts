@@ -564,8 +564,10 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
   });
 });
 
-describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", () => {
+describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", () => {
   function makePreviewHarness(opts: {
+    /** Chat platform for the connection (default "slack"). */
+    platform?: string;
     linkedBehavior?: {
       agentId: string;
       organizationId?: string;
@@ -590,16 +592,17 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
   }) {
     const state = new InMemoryStateAdapter();
     const conversationState = new ConversationStateStore(state);
+    const platform = opts.platform ?? "slack";
     const connection: PlatformConnection = {
       id: CONN_ID,
-      platform: "slack",
+      platform,
       // Default to the template agent; tests for an OAuth-installed workspace
       // connection (no owning agent) pass `agentId: undefined` explicitly.
       agentId: "agentId" in opts ? opts.agentId : TEMPLATE_AGENT_ID,
       // The hosted preview connection lives in its OWN org; linked Behaviors may
       // live in OTHER orgs (see the cross-org test below).
       organizationId: "org-connection",
-      config: { platform: "slack" } as any,
+      config: { platform } as any,
       settings: {
         allowGroups: true,
         previewMode: opts.previewMode ?? true,
@@ -941,9 +944,9 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
   test("OAuth workspace connection (no agent, not preview): unlinked → link notice, no agent run", async () => {
     // A tenant's OAuth-installed bot has no owning agent and metadata.teamId.
-    // An unlinked non-command message must get a one-line "link your agent"
-    // notice instead of being silently dropped (the install dead-end we reverted
-    // for), and must NOT enqueue a worker turn against a non-existent agent.
+    // An unlinked non-command message must get a "link your agent" notice instead
+    // of being silently dropped, and must NOT enqueue a worker turn against a
+    // non-existent agent.
     const { bridge, enqueueMessage } = makePreviewHarness({
       linkedBehavior: null,
       previewMode: false,
@@ -956,6 +959,157 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
 
     expect(thread.post).toHaveBeenCalledTimes(1);
     expect(String(thread.post.mock.calls[0]?.[0])).toContain("/lobu link");
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("telegram unrouted message → generic link notice, no agent run (#2230)", async () => {
+    // Same dead end as the Slack OAuth test above, but on a non-Slack platform:
+    // no owning agent, no channel Behavior. Slack replies with a link notice;
+    // every other platform used to log a warn and drop the message silently.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "telegram",
+      linkedBehavior: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { botUsername: "testbot" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "hello, anyone there?" }),
+      "dm"
+    );
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    const posted = String(thread.post.mock.calls[0]?.[0]);
+    expect(posted).toContain("isn't linked");
+    // Platform-native command spelling — not Slack's `/lobu link` wrapper.
+    expect(posted).toContain("/link <code>");
+    expect(posted).not.toContain("/lobu link");
+  });
+
+  test("telegram unrouted button click → generic link notice, no turn (#2230)", async () => {
+    // The interaction drop site has the same shape as the message one.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "telegram",
+      linkedBehavior: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { botUsername: "testbot" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.ingestClick({
+      userId: "U_USER",
+      channelId: CHANNEL_ID,
+      conversationId: THREAD_ID,
+      value: "Approve",
+      thread,
+    });
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(String(thread.post.mock.calls[0]?.[0])).toContain("/link <code>");
+  });
+
+  test("slack OAuth workspace unrouted click → link notice (interaction parity)", async () => {
+    // Slack itself also used to drop unrouted interactions silently — only the
+    // message path had the notice. Both sites now share one helper.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      linkedBehavior: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { teamId: "T_WS", botUserId: "U_BOT" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.ingestClick({
+      userId: "U_USER",
+      channelId: CHANNEL_ID,
+      conversationId: THREAD_ID,
+      value: "Approve",
+      thread,
+    });
+
+    expect(enqueueMessage).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(String(thread.post.mock.calls[0]?.[0])).toContain("/lobu link");
+  });
+
+  test("`/link <code>` in an unrouted telegram chat reaches the dispatcher, not the notice (#2230)", async () => {
+    // The notice tells the user to paste `/link <code>` into this same chat.
+    // On Slack that arrives as a native slash command (its own ingress path);
+    // on every other platform it arrives as plain message text — so it must
+    // dispatch from the unrouted dead end instead of being dropped with it.
+    const tryHandleSlashText = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "telegram",
+      linkedBehavior: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { botUsername: "testbot" },
+      commandDispatcher: {
+        tryHandleSlashText,
+        tryHandle: mock(async () => false),
+      },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "/link crm-ABC123" }),
+      "dm"
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/link crm-ABC123");
+    expect(thread.post).not.toHaveBeenCalled();
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("telegram linked mention-only channel: ordinary chatter gets no notice spam", async () => {
+    // Mirror of the Slack loop-prevention semantics: a channel that HAS a
+    // Behavior subscription but whose trigger filters rejected this message
+    // must stay silent — the notice is only for genuinely unlinked chats.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "telegram",
+      previewMode: false,
+      agentId: undefined,
+      metadata: { botUsername: "testbot" },
+      behaviors: [
+        {
+          behaviorId: 74,
+          organizationId: "org-connection",
+          agentId: "tg-agent",
+          deviceWorkerId: null,
+          agentKind: null,
+          model: null,
+          instructions: "Only respond to mentions.",
+          trigger: {
+            kind: "event",
+            connector_key: "telegram",
+            connection_id: 42,
+            event_types: ["message.created"],
+            match: { channel_id: CHANNEL_ID, mention_only: true },
+            execution: "turn",
+            active_run: "queue",
+            output: "reply_to_source",
+            skip_if_unchanged: false,
+          },
+        },
+      ],
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "ordinary chatter", isMention: false }),
+      "subscribed"
+    );
+
+    expect(thread.post).not.toHaveBeenCalled();
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 

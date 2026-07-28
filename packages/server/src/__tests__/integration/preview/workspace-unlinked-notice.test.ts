@@ -1,10 +1,8 @@
 /**
- * `workspaceUnlinkedNotice` — the reply a tenant's own OAuth-installed Slack bot
- * sends in a channel that isn't bound to an agent yet. It must be actionable:
- * list the org's agents, deep-link each to a prefilled Behavior event trigger,
- * and give the CLI `/lobu link` compatibility path. It must
- * degrade gracefully when the public origin isn't configured or the org has no
- * agents, and never turn into a dead drop.
+ * `workspaceUnlinkedNotice` — the reply from a tenant connection with no owning
+ * agent when a chat is not bound to a Behavior. Slack gets agent deep links and
+ * `/lobu link`; other platforms get generic dashboard and `/link` instructions.
+ * The notice must remain available when the Slack agent lookup fails.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -38,9 +36,15 @@ describe("workspaceUnlinkedNotice", () => {
 		setOrigin(savedOrigin);
 	});
 
-	it("returns null for non-slack platforms", async () => {
+	it("returns a generic dashboard+CLI notice for Telegram (#2230)", async () => {
 		const org = await createTestOrganization();
-		expect(await workspaceUnlinkedNotice("telegram", org.id)).toBeNull();
+		const text = await workspaceUnlinkedNotice("telegram", org.id);
+		expect(text).toContain("isn't linked");
+		// The platform's own command spelling, not Slack's `/lobu link` wrapper…
+		expect(text).toContain("/link <code>");
+		expect(text).not.toContain("/lobu link");
+		// …and no Slack workspace/team deep links or mrkdwn inline links.
+		expect(text).not.toContain("<http");
 	});
 
 	it('deep-links each agent to the Behaviors "new" step with the channel prefilled', async () => {
@@ -57,14 +61,12 @@ describe("workspaceUnlinkedNotice", () => {
 			name: "Builder",
 		});
 
-		const notice = await workspaceUnlinkedNotice("slack", org.id, {
+		const text = await workspaceUnlinkedNotice("slack", org.id, {
 			channelId: "slack:C0ABC123",
 			teamId: "T0TEAM",
 			channelName: "general",
 			connectionId: "42",
 		});
-		expect(notice).not.toBeNull();
-		const text = notice as string;
 
 		// getConfiguredPublicOrigin() returns the URL *origin* (scheme+host), so the
 		// /lobu gateway mount is dropped — the SPA lives at the bare origin. The link
@@ -95,11 +97,11 @@ describe("workspaceUnlinkedNotice", () => {
 			name: "A&B <Co>",
 		});
 
-		const text = (await workspaceUnlinkedNotice("slack", org.id, {
+		const text = await workspaceUnlinkedNotice("slack", org.id, {
 			channelId: "slack:C0ABC123",
 			teamId: "T0TEAM",
 			channelName: "general",
-		})) as string;
+		});
 
 		// The label inside `<url|label>` is entity-escaped; the raw name never
 		// reaches Slack, so a `>` can't prematurely close the inline link.
@@ -116,7 +118,7 @@ describe("workspaceUnlinkedNotice", () => {
 			name: "Planner",
 		});
 
-		const text = (await workspaceUnlinkedNotice("slack", org.id)) as string;
+		const text = await workspaceUnlinkedNotice("slack", org.id);
 		expect(text).toContain("https://app.lobu.ai/acme/agents/planner/behaviors");
 		expect(text).not.toContain("/behaviors/new?");
 	});
@@ -130,7 +132,7 @@ describe("workspaceUnlinkedNotice", () => {
 			name: "Planner",
 		});
 
-		const text = (await workspaceUnlinkedNotice("slack", org.id)) as string;
+		const text = await workspaceUnlinkedNotice("slack", org.id);
 		expect(text).toContain("Planner");
 		expect(text).not.toContain("/agents/planner/behaviors");
 		expect(text).toContain("lobu run"); // CLI path still present
@@ -140,7 +142,7 @@ describe("workspaceUnlinkedNotice", () => {
 		setOrigin("https://app.lobu.ai");
 		const org = await createTestOrganization();
 
-		const text = (await workspaceUnlinkedNotice("slack", org.id)) as string;
+		const text = await workspaceUnlinkedNotice("slack", org.id);
 		expect(text).toContain("lobu run");
 		expect(text).toContain("/lobu link");
 		// No agent-list section.
@@ -149,11 +151,10 @@ describe("workspaceUnlinkedNotice", () => {
 
 	it("never throws / dead-drops for an unknown org (returns the CLI-only notice)", async () => {
 		setOrigin("https://app.lobu.ai");
-		const text = (await workspaceUnlinkedNotice(
+		const text = await workspaceUnlinkedNotice(
 			"slack",
 			"org_does_not_exist",
-		)) as string;
-		expect(text).not.toBeNull();
+		);
 		expect(text).toContain("/lobu link");
 	});
 });

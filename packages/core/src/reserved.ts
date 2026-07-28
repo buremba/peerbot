@@ -36,7 +36,7 @@ export const OWNER_ROUTE_SEGMENTS = [
 /**
  * Legacy page slugs removed from the UI router. Bookmarks and previously sent
  * chat messages can still contain URLs under these segments, so the segments
- * stay reserved: no entity type or org slug may ever claim a dead URL, and the
+ * stay reserved: new entity types and orgs cannot claim their names, and the
  * SPA's entity-type/splat guards notFound() them instead of resolving them as
  * entities.
  */
@@ -47,8 +47,9 @@ export const REMOVED_OWNER_SEGMENTS = [
   "sources",
   // Redirect-only shims deleted 2026-07-28: environments → connectors,
   // infrastructure/models + inference-providers(/new) → provider connector
-  // detail. Their URLs were emitted into Slack/Telegram messages (PRs #1766,
-  // #1847); old links now land on the router's global not-found page.
+  // detail. The provider URLs were emitted into chat messages (PRs #1766,
+  // #1847), while environments may remain in bookmarks; these old links now
+  // land on the router's global not-found page.
   "environments",
   "infrastructure",
   "inference-providers",

@@ -51,7 +51,7 @@ import {
   isWatcherConversationId,
   upsertConversation,
 } from "../services/conversations-store.js";
-import { resolveAgentToolingDomains } from "../agent-tooling/resolver.js";
+import { resolveAgentToolingDeclarations } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
 
@@ -257,6 +257,8 @@ export function buildRunJobToken(args: {
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
   deniedDomains?: string[];
+  /** Resolved nix package set for a remote runtime sandbox (signed claim). */
+  nixPackages?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -562,19 +564,35 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      // Connector domains must be present before the per-run token is minted:
-      // remote runtimes trust only the signed claim, never the payload body.
+      // Connector domains AND packages must be present before the per-run token
+      // is minted: remote runtimes trust only the signed claim, never the
+      // payload body. The package half is what makes a contributed CLI actually
+      // exist on a remote runtime — without it the sandbox gets an authenticated
+      // env var for a binary that was never installed.
       try {
-        const connectorDomains = await resolveAgentToolingDomains({
+        const declarations = await resolveAgentToolingDeclarations({
           organizationId: data.organizationId,
         });
-        if (connectorDomains.length > 0) {
+        if (declarations.domains.length > 0) {
           data.networkConfig = {
             ...data.networkConfig,
             allowedDomains: [
               ...new Set([
                 ...(data.networkConfig?.allowedDomains ?? []),
-                ...connectorDomains,
+                ...declarations.domains,
+              ]),
+            ],
+          };
+        }
+        if (declarations.packages.length > 0) {
+          // Union, never replace — the agent's own packages and its enabled
+          // skills' are hard requirements of code running in the same sandbox.
+          data.nixConfig = {
+            ...data.nixConfig,
+            packages: [
+              ...new Set([
+                ...(data.nixConfig?.packages ?? []),
+                ...declarations.packages,
               ]),
             ],
           };
@@ -586,7 +604,7 @@ export class MessageConsumer {
             agentId: data.agentId,
             error: getErrorMessage(error),
           },
-          "Failed to resolve connector tooling domains; continuing without them"
+          "Failed to resolve connector tooling declarations; continuing without them"
         );
       }
 
@@ -613,6 +631,9 @@ export class MessageConsumer {
         // deployment-token mint) — the runtime route reads them, never the body.
         allowedDomains: data.networkConfig?.allowedDomains,
         deniedDomains: data.networkConfig?.deniedDomains,
+        // Same rule for the package set: signed, so the remote runtime never
+        // takes a package list off the wire from the worker.
+        nixPackages: data.nixConfig?.packages,
       });
 
       logger.info(

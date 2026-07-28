@@ -113,6 +113,12 @@ export interface ConnectorAgentTooling {
    * Native tools the contributed CLI needs on PATH inside the agent sandbox, as
    * nixpkgs attribute references (e.g. `["gh"]`). Unioned with the agent's own
    * packages and its enabled skills' — never last-writer-wins.
+   *
+   * Portable across runtimes: the built-in runtime wraps the worker spawn in
+   * `nix-shell`, and remote runtimes provision the same set into the sandbox
+   * before the first command (nix profile install, PATH-prepended). Provisioning
+   * degrades honestly — if it fails, or a runtime cannot provision at all, the
+   * CLI is absent and the exec result says so rather than the turn failing.
    */
   nix?: { packages: string[] };
   /** Environment variables the contributed tooling authenticates with. */

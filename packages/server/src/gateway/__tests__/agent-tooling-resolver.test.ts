@@ -28,7 +28,7 @@ import {
 } from "../agent-tooling/credential-lease.js";
 import {
   resolveAgentTooling,
-  resolveAgentToolingDomains,
+  resolveAgentToolingDeclarations,
 } from "../agent-tooling/resolver.js";
 import { GitHubInstallationTokenProvider } from "../installation/github-installation-token-provider.js";
 import { InMemoryInstallationTokenCache } from "../installation/installation-token-provider.js";
@@ -320,11 +320,18 @@ describe("resolveAgentTooling", () => {
     expect(resolved.packages).toEqual(["gh"]);
     expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
     expect(resolved.domains).toEqual(["api.github.com", "github.com"]);
+    // The declaration-only resolver (used at per-run token mint time) must see
+    // BOTH halves: a signed domain list without the matching package list is
+    // exactly the asymmetry that left remote sandboxes with an authenticated
+    // `gh` that was never installed.
     expect(
-      await resolveAgentToolingDomains({
+      await resolveAgentToolingDeclarations({
         organizationId: ORG,
       })
-    ).toEqual(["api.github.com", "github.com"]);
+    ).toEqual({
+      packages: ["gh"],
+      domains: ["api.github.com", "github.com"],
+    });
   });
 
   test("a connector that declares no agentTooling contributes nothing", async () => {
@@ -539,6 +546,12 @@ describe("deployment env assembly", () => {
     );
 
     expect(env.NIX_PACKAGES?.split(",").sort()).toEqual(["gh", "ripgrep"]);
+    // The same union must ride the SIGNED token, or a REMOTE runtime provisions
+    // nothing: NIX_PACKAGES only reaches the LOCAL nix-shell spawn. This claim
+    // is what makes the contributed `gh` portable across backends.
+    expect(
+      verifyWorkerToken(env.WORKER_TOKEN)?.nixPackages?.slice().sort()
+    ).toEqual(["gh", "ripgrep"]);
   });
 
   test("contributed domains are granted on the worker's egress allowlist", async () => {

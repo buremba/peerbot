@@ -332,6 +332,41 @@ describe("worker auth token: explicit expiry", () => {
     expect(d.sandboxId).toBe("env-abc");
   });
 
+  test("verifyWorkerToken round-trips a nixPackages claim", () => {
+    const token = generateWorkerToken("u", "c", "d", {
+      channelId: "ch",
+      runtimeProviderId: "vercel",
+      nixPackages: ["gh", "ripgrep"],
+    });
+    const d = verifyWorkerToken(token) as WorkerTokenData;
+    expect(d).not.toBeNull();
+    expect(d.nixPackages).toEqual(["gh", "ripgrep"]);
+  });
+
+  test("verifyWorkerToken rejects a nixPackages claim that is not a string[]", () => {
+    // Each entry reaches a package-install command line in the remote runtime.
+    // The provider validates each NAME, but a non-array (or a nested object)
+    // would defeat that per-element check entirely, so reject rather than coerce.
+    for (const nixPackages of [
+      "gh",
+      { 0: "gh" },
+      ["gh", 42],
+      ["gh", { toString: () => "evil" }],
+    ]) {
+      const token = encrypt(
+        JSON.stringify({
+          userId: "u",
+          conversationId: "c",
+          channelId: "ch",
+          deploymentName: "d",
+          timestamp: Date.now(),
+          nixPackages,
+        })
+      );
+      expect(verifyWorkerToken(token)).toBeNull();
+    }
+  });
+
   test("verifyWorkerToken rejects a legacy `environmentId` claim (superseded by sandboxId)", () => {
     // A token minted just before the environments→sandboxes rename carries
     // `environmentId` instead of `sandboxId`. It must FAIL CLOSED (→ queue

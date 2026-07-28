@@ -193,19 +193,27 @@ async function loadToolingConnections(
 }
 
 /**
- * Resolve the declaration-only domain contribution before minting a per-run
- * worker token. Credentials remain deployment-only and never enter the queue
- * payload.
+ * Resolve the declaration-only contribution (packages + domains) before minting
+ * a per-run worker token. Credentials stay deployment-only and never enter the
+ * queue payload — leases are minted at deployment time, not here.
+ *
+ * Packages and domains are resolved TOGETHER because they are two halves of one
+ * fact: a remote runtime needs the package set as a signed claim for the same
+ * reason it needs the domain list as one (the worker must not name either), and
+ * resolving them from separate queries could disagree about which connections
+ * are active.
  */
-export async function resolveAgentToolingDomains(params: {
+export async function resolveAgentToolingDeclarations(params: {
   organizationId: string;
-}): Promise<string[]> {
+}): Promise<{ packages: string[]; domains: string[] }> {
+  const packages = new Set<string>();
   const domains = new Set<string>();
   for (const row of await loadToolingConnections(params.organizationId)) {
     const tooling = parseAgentTooling(row.agent_tooling);
+    for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
   }
-  return [...domains];
+  return { packages: [...packages], domains: [...domains] };
 }
 
 /**

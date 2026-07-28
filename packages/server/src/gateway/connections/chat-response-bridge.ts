@@ -210,6 +210,14 @@ export class ChatResponseBridge implements ResponseRenderer {
     replyText: string
   ): Promise<void> {
     if (!this.interactionService) return;
+    // No `persistSuggestion` here, unlike the API/SSE path: durable suggestion
+    // state exists so the web client can re-render chips on reload, and only
+    // API surfaces read it (`response-renderer`, `agent-history`). A chat chip
+    // is a native platform card that Slack/Telegram already persist, and its
+    // click-routing row is stashed by the interaction bridge's
+    // `suggestion:created` handler (`storePendingSuggestion`, 24h TTL).
+    // Persisting here would mint a second live row no chat surface reads.
+    //
     // An old worker cannot distinguish "no tool" from "not reported"; skip to
     // avoid duplicating a suggest_actions card during a rolling deployment.
     if (

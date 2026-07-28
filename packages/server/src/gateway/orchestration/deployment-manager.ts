@@ -47,6 +47,7 @@ import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
   isReservedAgentToolingEnvName,
   resolveAgentTooling,
+  resolveAgentToolingDeclaration,
   type ResolvedAgentTooling,
 } from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
@@ -925,6 +926,13 @@ export class DeploymentManager {
   private leaseMintedAtByDeployment = new Map<string, Date>();
 
   /**
+   * Org each deployment was built for. The deployment name is a hash of the
+   * conversation identity, so the org is not recoverable from it — but the
+   * reconcile loop needs it to re-resolve the CURRENT tooling fingerprint.
+   */
+  private organizationByDeployment = new Map<string, string>();
+
+  /**
    * True when a warm deployment holds a connector lease that has expired or is
    * about to. The caller tears the deployment down so the normal create path
    * re-mints — a worker reads its env once at process start, so refreshing the
@@ -981,6 +989,7 @@ export class DeploymentManager {
     this.leaseExpiryByDeployment.delete(deploymentName);
     this.leaseMintedAtByDeployment.delete(deploymentName);
     this.toolingFingerprintByDeployment.delete(deploymentName);
+    this.organizationByDeployment.delete(deploymentName);
   }
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
@@ -1863,11 +1872,18 @@ export class DeploymentManager {
     // keeps the worker rather than recycling it on a transient DB error.
     if (agentTooling.fingerprint === UNKNOWN_TOOLING_FINGERPRINT) {
       this.toolingFingerprintByDeployment.delete(deploymentName);
+      this.organizationByDeployment.delete(deploymentName);
     } else {
       this.toolingFingerprintByDeployment.set(
         deploymentName,
         agentTooling.fingerprint
       );
+      if (validated.organizationId) {
+        this.organizationByDeployment.set(
+          deploymentName,
+          validated.organizationId
+        );
+      }
     }
 
     // Include host-provided secret references when requested.
@@ -2100,6 +2116,37 @@ export class DeploymentManager {
    * Reconcile deployments: unified method for cleanup and resource management.
    */
   /**
+   * Whether the org's connector tooling has changed since `deploymentName` was
+   * built — a connection added, removed, or repointed at a different
+   * installation, or an installation revoked or transferred.
+   *
+   * The message path catches this only when the pod handling the message also
+   * owns the worker; with N replicas that is the minority case, so a revoked
+   * connection could otherwise keep executing with the old credential. That is
+   * a security-relevant staleness, not merely a missing capability, which is
+   * why the reconcile reaps for it and not only for expiry.
+   *
+   * Fails SAFE (reports "unchanged"): a lookup error must not reap a healthy
+   * worker, and the next cycle re-checks.
+   */
+  protected async hasStaleTooling(deploymentName: string): Promise<boolean> {
+    const organizationId = this.organizationByDeployment.get(deploymentName);
+    if (!organizationId) return false;
+    try {
+      const { fingerprint } = await resolveAgentToolingDeclaration({
+        organizationId,
+      });
+      return this.hasToolingChanged(deploymentName, fingerprint);
+    } catch (error) {
+      logger.warn(
+        { deploymentName, error: getErrorMessage(error) },
+        "Tooling-fingerprint refresh failed; leaving the deployment in place"
+      );
+      return false;
+    }
+  }
+
+  /**
    * Whether a turn is currently running on `deploymentName`, for teardown
    * decisions. Same rule as the message path: never SIGTERM a worker mid-turn.
    *
@@ -2153,7 +2200,8 @@ export class DeploymentManager {
         } else if (isIdle && replicas > 0) {
           toScaleDown.push(deploymentName);
         } else if (
-          this.hasExpiringLease(deploymentName) &&
+          (this.hasExpiringLease(deploymentName) ||
+            (await this.hasStaleTooling(deploymentName))) &&
           !(await this.isServingLiveTurn(deploymentName))
         ) {
           // Multi-replica backstop. The message path only recycles when the
@@ -2163,12 +2211,9 @@ export class DeploymentManager {
           // This loop runs on each pod over its OWN deployments, so the owner
           // always re-evaluates on its own schedule — no cross-pod state.
           //
-          // Only expiry, not tooling changes: a stale-tooling worker is
-          // functional, and the message path picks it up on the next
-          // owner-claimed turn. A dead credential is not functional.
           logger.info(
             { deploymentName },
-            "Reaping a deployment whose connector lease is expiring"
+            "Reaping a deployment whose connector tooling or lease is stale"
           );
           toDelete.push(deploymentName);
         }

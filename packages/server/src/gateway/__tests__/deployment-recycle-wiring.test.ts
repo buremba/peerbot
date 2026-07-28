@@ -253,8 +253,12 @@ describe("multi-replica backstop (reconcile loop)", () => {
 
   class ReconcilingManager extends RecordingManager {
     liveTurn = false;
+    staleTooling = false;
     protected async isServingLiveTurn(): Promise<boolean> {
       return this.liveTurn;
+    }
+    protected async hasStaleTooling(): Promise<boolean> {
+      return this.staleTooling;
     }
     // The reconcile classifies on these; keep the worker "in use" so it is
     // neither idle-scaled nor age-reaped, isolating the lease path.
@@ -284,6 +288,30 @@ describe("multi-replica backstop (reconcile loop)", () => {
 
   test("a healthy worker is not reaped", async () => {
     const manager = new ReconcilingManager(CONFIG);
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([]);
+  });
+
+  test("REGRESSION: a revoked connection is reaped even on a non-owner-claimed conversation", async () => {
+    // The message path never runs for this conversation: other replicas claim
+    // every message, enqueue to the owner's worker, and drop with
+    // ConversationOwnedElsewhereError. Without the reconcile checking tooling
+    // — not just expiry — a revoked or repointed GitHub connection would keep
+    // executing with the old GH_TOKEN for the rest of the credential's life.
+    const manager = new ReconcilingManager(CONFIG);
+    manager.staleTooling = true;
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("stale tooling still defers to an in-flight turn", async () => {
+    const manager = new ReconcilingManager(CONFIG);
+    manager.staleTooling = true;
+    manager.liveTurn = true;
 
     await manager.reconcileDeployments();
 

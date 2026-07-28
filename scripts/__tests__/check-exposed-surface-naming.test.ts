@@ -24,6 +24,10 @@ const CONTRACT_FILE = join(
   REPO_ROOT,
   "packages/core/src/contracts/tools/manage-entity.ts"
 );
+const PUBLIC_ACTIVITY_FILE = join(
+  REPO_ROOT,
+  "packages/server/src/tools/admin/manage_operations/activity-feed.ts"
+);
 /** Defines `AuthProfileKind`, which the auth-profiles namespace imports aliased. */
 const IMPORTED_TYPE_FILE = join(
   REPO_ROOT,
@@ -94,6 +98,15 @@ describe("check-exposed-surface-naming", () => {
       CONTRACT_FILE,
       "  behavior_source: Type.Optional(",
       "  watcherId: Type.Optional(Type.String()),\n"
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a banned key in a plain public response type", () => {
+    mutate(
+      PUBLIC_ACTIVITY_FILE,
+      "\tbehavior_id?: number;",
+      "\twatcher_id?: number;"
     );
     expect(runGuard()).toBe(1);
   });

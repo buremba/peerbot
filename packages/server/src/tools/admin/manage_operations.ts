@@ -1366,6 +1366,42 @@ async function handleListActivity(
 	};
 }
 
+function publicBehaviorFields(value: unknown): unknown {
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		Array.isArray(value)
+	) {
+		return value;
+	}
+	const {
+		watcher_id: behaviorId,
+		...publicRef
+	} = value as Record<string, unknown>;
+	return behaviorId == null
+		? publicRef
+		: { ...publicRef, behavior_id: behaviorId };
+}
+
+function publicRunRecord(
+	row: Record<string, unknown>,
+): Record<string, unknown> {
+	return {
+		...row,
+		input:
+			row.run_type === "internal" &&
+			ENTITY_CHANGE_ACTION_KEYS.some(
+				(actionKey) => actionKey === row.operation_key,
+			)
+				? publicBehaviorFields(row.input)
+				: row.input,
+		initiator_ref:
+			row.initiator_kind === "behavior"
+				? publicBehaviorFields(row.initiator_ref)
+				: row.initiator_ref,
+	};
+}
+
 async function handleListRuns(
 	args: Static<typeof ListRunsAction>,
 	ctx: ToolContext,
@@ -1448,7 +1484,7 @@ async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.watcher_id AS behavior_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,
@@ -1467,7 +1503,7 @@ async function handleListRuns(
 
   return {
 		action: "list_runs",
-    runs: rows,
+    runs: rows.map((row) => publicRunRecord(row)),
     total: Number(countResult[0]?.total ?? 0),
     limit,
     offset,
@@ -1489,7 +1525,7 @@ async function handleGetRun(
   // a run visible in the list is always fetchable here. Only the chat-message
   // transport lane (the list's default exclusion) stays unfetchable.
   const rows = await sql`
-    SELECT r.id, r.connection_id, r.connector_key,
+    SELECT r.id, r.watcher_id AS behavior_id, r.connection_id, r.connector_key,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.run_type,
            r.created_at, r.completed_at,
@@ -1501,7 +1537,10 @@ async function handleGetRun(
     LIMIT 1
   `;
 	if (rows.length === 0) return { error: "Run not found" };
-	return { action: "get_run", run: rows[0] };
+	return {
+		action: "get_run",
+		run: publicRunRecord(rows[0] as Record<string, unknown>),
+	};
 }
 
 /**

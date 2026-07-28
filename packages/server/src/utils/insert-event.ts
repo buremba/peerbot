@@ -63,6 +63,9 @@ interface InsertEventParams {
   attachments?: unknown[];
   authorName?: string | null;
   sourceUrl?: string | null;
+  /** Source-side timestamp. Defaults to insert time when omitted — a NULL
+   *  occurred_at is excluded by date windows and can prevent cursor pagination,
+   *  so "recorded now" is the better approximation. */
   occurredAt?: Date | string | null;
   semanticType: string;
   originType?: string | null;
@@ -192,8 +195,12 @@ function isSemanticallyEqual(
     stableJson(existing.attachments ?? []) === stableJson(params.attachments ?? []) &&
     (existing.author_name ?? null) === (params.authorName ?? null) &&
     (existing.source_url ?? null) === (params.sourceUrl ?? null) &&
-    normalizedTimestamp(existing.occurred_at ?? null) ===
-      normalizedTimestamp(params.occurredAt ?? null) &&
+    // Only compare occurred_at when the caller supplied one. Insert defaults a
+    // missing occurred_at to now(), so an occurredAt-less re-upsert comparing
+    // null against the stamped default would supersede on every re-sync.
+    (params.occurredAt == null ||
+      normalizedTimestamp(existing.occurred_at ?? null) ===
+        normalizedTimestamp(params.occurredAt)) &&
     existing.semantic_type === params.semanticType &&
     (existing.origin_type ?? null) === (params.originType ?? null) &&
     stableJson(existing.metadata ?? {}) === stableJson(params.metadata ?? {}) &&
@@ -362,7 +369,7 @@ export async function insertEvent(
       ${params.score ?? null},
       ${params.authorName ?? null},
       ${params.sourceUrl ?? null},
-      ${params.occurredAt ?? null},
+      ${params.occurredAt ?? new Date()},
       ${params.parentOriginId ?? null},
       ${params.originType ?? null},
       ${params.connectorKey ?? null},

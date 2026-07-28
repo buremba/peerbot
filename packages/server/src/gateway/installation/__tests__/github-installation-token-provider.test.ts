@@ -313,4 +313,18 @@ describe("InMemoryInstallationTokenCache", () => {
     cache.set("k", { token: "t", expiresAt: "not-a-date" });
     expect(cache.get("k")).toBeNull();
   });
+
+  test("a minTtlMs miss does not evict the entry for default-skew callers", () => {
+    const cache = new InMemoryInstallationTokenCache({ refreshSkewMs: 60_000 });
+    cache.set("k", {
+      token: "t",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    // A lease demands a longer runway than this entry has left: it misses...
+    expect(cache.get("k", 600_000)).toBeNull();
+    // ...but the entry is still serviceable to the egress proxy, so a lease
+    // mint must not have thrown away a token with 5 minutes of life left.
+    expect(cache.get("k")?.token).toBe("t");
+    expect(cache.size()).toBe(1);
+  });
 });

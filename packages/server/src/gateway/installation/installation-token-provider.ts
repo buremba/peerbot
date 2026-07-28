@@ -129,13 +129,19 @@ export class InMemoryInstallationTokenCache {
     const entry = this.entries.get(key);
     if (!entry) return null;
     const expMs = Date.parse(entry.expiresAt);
+    const now = Date.now();
     // An unparseable expiry is treated as already-stale: re-mint rather than
-    // trust a token we can't reason about the lifetime of.
-    const requiredTtl = Math.max(this.refreshSkewMs, minTtlMs ?? 0);
-    if (!Number.isFinite(expMs) || expMs - requiredTtl <= Date.now()) {
+    // trust a token we can't reason about the lifetime of. Only the default
+    // skew evicts, because that is the point past which the entry is useless
+    // to every caller.
+    if (!Number.isFinite(expMs) || expMs - this.refreshSkewMs <= now) {
       this.entries.delete(key);
       return null;
     }
+    // A caller demanding a longer runway than the default just misses: the
+    // entry is still perfectly serviceable to per-request callers, so evicting
+    // it here would make one lease mint invalidate the egress proxy's token.
+    if (minTtlMs != null && expMs - minTtlMs <= now) return null;
     return entry;
   }
 

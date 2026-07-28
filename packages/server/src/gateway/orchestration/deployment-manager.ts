@@ -2624,6 +2624,10 @@ export class DeploymentManager {
         `Embedded worker ${deploymentName} spawn error: ${err.message}`
       );
       this.workers.delete(deploymentName);
+      // The worker never existed, so its recorded lease/fingerprint state is
+      // stale the moment the entry goes. Leaving it would let the next create
+      // for this name see a "known" fingerprint it was never built with.
+      this.forgetLeaseExpiry(deploymentName);
       void releaseLockOnce();
       // A spawn error is never a deliberate stop. Fail any in-flight turn(s)
       // for this deployment so the client gets a terminal error instead of a
@@ -2696,6 +2700,14 @@ export class DeploymentManager {
         return;
       }
 
+      // Past the self-heal branch the worker is gone for good, so drop its
+      // lease/fingerprint state here — the single authoritative point, same as
+      // the intentional-exit flag above. deleteDeployment() already clears it,
+      // but a crash and an idle scale-to-0 (which calls killWorker directly)
+      // do not, and a stale expiry would arm a recycle for a worker that no
+      // longer exists. Safe against a rebuild: killWorker awaits the child's
+      // exit, and this runs synchronously after workers.delete().
+      this.forgetLeaseExpiry(deploymentName);
       void releaseLockOnce();
       if (signal) {
         logger.info(

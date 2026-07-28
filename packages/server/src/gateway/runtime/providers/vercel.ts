@@ -24,14 +24,13 @@ const logger = createLogger("vercel-runtime");
 const REMOTE_WORKSPACE_DIR = "/vercel/sandbox";
 
 /**
- * Where the single-user nix install and the agent's package profile live.
- * Under `$HOME` rather than `/nix` because the sandbox user is not root and a
- * daemon install would need one.
+ * Writable home for the single-user Nix profile and Lobu's package profiles.
+ * The Nix store itself remains at `/nix` inside the sandbox microVM.
  */
-const NIX_ROOT = "/vercel/sandbox/.lobu-nix";
-const NIX_PROFILE_BIN = `${NIX_ROOT}/profile/bin`;
+const NIX_HOME = "/vercel/sandbox/.lobu-nix";
+const NIX_PROFILE_BIN = `${NIX_HOME}/profile/bin`;
 /** Sandbox-side provisioning state — see `nixPackageSetHash`. Never a gateway Map. */
-const PACKAGE_MARKER_PATH = `${NIX_ROOT}/.lobu-packages`;
+const PACKAGE_MARKER_PATH = `${NIX_HOME}/.lobu-packages`;
 
 /** How long a cold nix bootstrap + install may take before we give up on it. */
 function provisionTimeoutMs(): number {
@@ -398,11 +397,11 @@ async function sandboxForRequest(ctx: RuntimeExecContext): Promise<Sandbox> {
 /**
  * Shell script that brings `packages` onto PATH inside the sandbox.
  *
- * Single-user nix (`--no-daemon`) into a sandbox-local prefix: the sandbox user
- * is not root, so the standard daemon install is unavailable. `nix profile
- * install` is used rather than `nix-shell -p` because the profile persists in
- * the sandbox filesystem across messages, which is what makes the marker-file
- * skip meaningful.
+ * Single-user Nix (`--no-daemon`) uses `/nix` inside the sandbox microVM and a
+ * writable HOME under the persistent workspace. Provisioning runs with the
+ * provider's `sudo` option because the standard installer creates `/nix`.
+ * `nix profile install` is used rather than `nix-shell -p` because the profile
+ * persists across messages, which is what makes the marker-file skip meaningful.
  *
  * Every interpolated package name has ALREADY been through `nixPackageAttrRef`
  * (twice: `sanitizeNixPackages`, then per-element below), so no shell
@@ -415,21 +414,28 @@ function provisionScript(packages: string[], marker: string): string {
   const attrs = packages.map((pkg) => `nixpkgs#${pkg}`).join(" ");
   return [
     "set -eu",
-    `export NIX_ROOT=${NIX_ROOT}`,
-    // Marker match → the exact same package set is already installed. This is
-    // the whole idempotence story and it lives in the sandbox, not the gateway.
-    `if [ "$(cat ${PACKAGE_MARKER_PATH} 2>/dev/null || true)" = "${marker}" ]; then echo "lobu-packages: cached"; exit 0; fi`,
-    `mkdir -p "$NIX_ROOT"`,
-    `export HOME="$NIX_ROOT"`,
-    `export NIX_CONF_DIR="$NIX_ROOT/etc"`,
+    `export NIX_HOME=${NIX_HOME}`,
+    `PROFILE="$NIX_HOME/profiles/${marker}"`,
+    // Marker + hash-addressed profile match → the exact set is installed. The
+    // profile existence check prevents a stale marker from hiding corruption.
+    `if [ "$(cat ${PACKAGE_MARKER_PATH} 2>/dev/null || true)" = "${marker}" ] && [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; echo "lobu-packages: cached"; exit 0; fi`,
+    `mkdir -p "$NIX_HOME/profiles"`,
+    `export HOME="$NIX_HOME"`,
+    `export NIX_CONF_DIR="$NIX_HOME/etc"`,
     `mkdir -p "$NIX_CONF_DIR"`,
     `printf 'experimental-features = nix-command flakes\\n' > "$NIX_CONF_DIR/nix.conf"`,
+    // A previously installed exact set can be selected without network access.
+    `if [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}; echo "lobu-packages: cached"; exit 0; fi`,
     // Bootstrap once; subsequent turns reuse the store already in the filesystem.
-    `if [ ! -x "$NIX_ROOT/nix/var/nix/profiles/default/bin/nix" ]; then`,
+    `if [ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]; then`,
     `  curl -fsSL ${nixInstallerUrl()} | sh -s -- --no-daemon --no-channel-add`,
     `fi`,
-    `. "$NIX_ROOT/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" 2>/dev/null || . "$NIX_ROOT/.nix-profile/etc/profile.d/nix.sh"`,
-    `nix profile install --profile "$NIX_ROOT/profile" ${attrs}`,
+    `. "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"`,
+    // One immutable profile per exact set: removed declarations disappear from
+    // PATH, and a failed partial attempt is deleted before the next retry.
+    `rm -f "$PROFILE"`,
+    `if ! nix profile install --profile "$PROFILE" ${attrs}; then rm -f "$PROFILE"; exit 1; fi`,
+    `ln -sfn "$PROFILE" "$NIX_HOME/profile"`,
     `printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}`,
     `echo "lobu-packages: installed"`,
   ].join("\n");
@@ -446,11 +452,17 @@ function provisionScript(packages: string[], marker: string): string {
  * be passed through as the string `$PATH` and break every command in the
  * sandbox. Under `bash -lc` the export below expands correctly.
  *
+ * Only when provisioning SUCCEEDED. The sandbox is persistent, so a failed
+ * install can leave a profile from an earlier, different package set; exposing
+ * it would contradict the `failed` list the same response reports and give the
+ * agent a tool the gateway just said it does not have.
+ *
  * `NIX_PROFILE_BIN` is a module constant, never request-derived, so nothing
  * attacker-influenced enters the command here.
  */
 function withProvisionedPath(ctx: RuntimeExecContext): string {
-  if (sanitizeNixPackages(ctx.nixPackages).length === 0) return ctx.command;
+  if (!ctx.provisioned || ctx.provisioned.failed.length > 0) return ctx.command;
+  if (ctx.provisioned.installed.length === 0) return ctx.command;
   return `export PATH="${NIX_PROFILE_BIN}:$PATH"\n${ctx.command}`;
 }
 
@@ -512,6 +524,9 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
         args: ["-lc", provisionScript(packages, marker)],
         cwd: REMOTE_WORKSPACE_DIR,
         timeoutMs: provisionTimeoutMs(),
+        // The official single-user installer creates `/nix`. Vercel's runtime
+        // grants root only when the SDK call explicitly opts into sudo.
+        sudo: true,
       });
       const stdout = await result.stdout();
       if (result.exitCode !== 0) {

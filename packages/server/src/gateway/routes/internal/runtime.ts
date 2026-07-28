@@ -144,7 +144,9 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         }
       }
 
-      const result = await provider.exec(execContext);
+      // Providers decide whether to expose their package profile based on what
+      // provisioning actually achieved — see `RuntimeExecContext.provisioned`.
+      const result = await provider.exec({ ...execContext, provisioned: packages });
 
       return c.json({
         stdout: result.stdout,

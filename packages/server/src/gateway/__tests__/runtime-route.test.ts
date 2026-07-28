@@ -749,6 +749,7 @@ describe("createRuntimeRoutes", () => {
     expect(runCommandMock).toHaveBeenCalledTimes(2);
     // Ordering matters: install first, then the agent's command.
     expect(commandScript(0)).toContain("nix profile install");
+    expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });
     expect(commandScript(1)).toBe(
       'export PATH="/vercel/sandbox/.lobu-nix/profile/bin:$PATH"\ngh auth status'
     );
@@ -764,6 +765,12 @@ describe("createRuntimeRoutes", () => {
         ],
       },
     });
+    // Provisioning and exec resolve the sandbox separately; both must ask for
+    // the SAME policy. A divergence would make `getOrCreate` reconcile — i.e.
+    // update the sandbox — on literally every command.
+    expect(getOrCreateMock.mock.calls[1]?.[0]?.networkPolicy).toEqual(
+      getOrCreateMock.mock.calls[0]?.[0]?.networkPolicy
+    );
   });
 
   test("does not touch PATH or the network policy when the claim has no packages", async () => {
@@ -858,6 +865,9 @@ describe("createRuntimeRoutes", () => {
     // ...and it says so rather than pretending the tool is there.
     expect(body.sandbox.packages.error).toContain("exited 1");
     expect(runCommandMock).toHaveBeenCalledTimes(2);
+    // A failed install must not expose an older profile left in the persistent
+    // sandbox. The command runs with the base-image PATH only.
+    expect(commandScript(1)).toBe("gh --version");
   });
 
   test("reports a marker-file hit as cached without reinstalling", async () => {
@@ -892,6 +902,10 @@ describe("createRuntimeRoutes", () => {
       installed: ["gh"],
       cached: true,
     });
+    // A cache hit is a SUCCESS — the profile is real, so PATH must expose it.
+    expect(commandScript(1)).toBe(
+      'export PATH="/vercel/sandbox/.lobu-nix/profile/bin:$PATH"\ngh --version'
+    );
   });
 
   test("a provider that cannot provision degrades instead of throwing", async () => {

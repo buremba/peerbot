@@ -204,12 +204,13 @@ describe('tool invocation audit coverage', () => {
     expect(rows[0].payload_data.args_sha256).not.toBe(rawHashA);
   });
 
-  it('sentinels every string and number leaf — numeric PINs and identifier-shaped values do not survive', async () => {
+  it('sentinels every caller-controlled leaf AND key — PINs, identifier-shaped values, credential-shaped keys', async () => {
     await recordToolInvocationAudit({
       toolName: 'probe_leaf_sanitization',
       args: {
         input: { pin: 123456 },
         kind: 'sk-live-credential-value',
+        'sk-live-secret-as-a-key': 1,
         dry_run: true,
       },
       result: { ok: true },
@@ -230,9 +231,11 @@ describe('tool invocation audit coverage', () => {
     const preview = String(row!.payload_data.args_preview_redacted);
     expect(preview).not.toContain('123456');
     expect(preview).not.toContain('sk-live-credential-value');
-    // Structure and booleans survive: keys are visible, one-bit values kept.
-    expect(preview).toContain('"pin"');
-    expect(preview).toContain('"dry_run":true');
+    expect(preview).not.toContain('sk-live-secret-as-a-key');
+    // This probe tool has no registered schema, so NO key is trusted: the
+    // whole preview collapses to sentinel structure with the boolean kept
+    // (repeated sentinel keys merge; first key position, last value wins).
+    expect(preview).toBe(`{"${REDACTED_SENTINEL}":true}`);
   });
 
   it.each(['error', 'timeout'] as const)(

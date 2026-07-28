@@ -3,7 +3,7 @@ import { REDACTED_SENTINEL } from '@lobu/core';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
-import type { ToolContext } from './registry';
+import { getTool, type ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
 // Redaction principle: consume the COMPLETE credential. Over-consumption is
@@ -52,19 +52,43 @@ function redactPreview(value: string): string {
 }
 
 /**
- * Generic audit entries persist the SHAPE of a call, never its content: keys,
- * structure, and booleans/nulls (provably structural — one bit) survive; every
- * string and number leaf becomes the sentinel. No key allowlist and no value
- * pattern can be trusted here — audit also fires on FAILED validation, so even
- * an enum-typed key like `action` can arrive carrying arbitrary pasted text,
- * and identifier-shaped secrets (`sk-live-…`) are indistinguishable from
- * slugs. Free text can hide a secret in shapes no pattern enumerates.
+ * Generic audit entries persist the SHAPE of a call, never its content.
+ * Nothing caller-controlled survives: values are sentineled except
+ * booleans/nulls (provably structural — one bit), and property NAMES are kept
+ * only when the tool's own input schema declares them at the top level —
+ * audit also fires on FAILED validation, so arbitrary pasted text can arrive
+ * as a value of an enum-typed key or even AS a key, and identifier-shaped
+ * secrets (`sk-live-…`) are indistinguishable from slugs. Repeated sentinel
+ * keys merge; that collapse is part of recording shape, not content.
  */
-function sanitizeArgLeaves(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => sanitizeArgLeaves(item));
+function schemaPropertyNames(toolName: string): Set<string> {
+  const schema = getTool(toolName)?.inputSchema as
+    | {
+        properties?: Record<string, unknown>;
+        anyOf?: Array<{ properties?: Record<string, unknown> } | undefined>;
+      }
+    | undefined;
+  const names = new Set<string>();
+  for (const props of [schema?.properties, ...(schema?.anyOf ?? []).map((v) => v?.properties)]) {
+    if (props) for (const key of Object.keys(props)) names.add(key);
+  }
+  return names;
+}
+
+function sanitizeArgLeaves(
+  value: unknown,
+  trustedKeys: ReadonlySet<string>,
+  topLevel: boolean
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeArgLeaves(item, trustedKeys, false));
+  }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, sanitizeArgLeaves(nested)])
+      Object.entries(value).map(([key, nested]) => [
+        topLevel && trustedKeys.has(key) ? key : REDACTED_SENTINEL,
+        sanitizeArgLeaves(nested, trustedKeys, false),
+      ])
     );
   }
   if (typeof value === 'boolean' || value === null || value === undefined) return value;
@@ -176,7 +200,9 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   // (and an unsalted credential-derived digest) whenever a secret hides in a
   // shape no pattern enumerates — the ledger records the call's shape, never
   // its content.
-  const sanitizedArgsJson = JSON.stringify(sanitizeArgLeaves(params.args ?? {}));
+  const sanitizedArgsJson = JSON.stringify(
+    sanitizeArgLeaves(params.args ?? {}, schemaPropertyNames(params.toolName), true)
+  );
   const reportedFailure =
     result.error != null ||
     result.success === false ||

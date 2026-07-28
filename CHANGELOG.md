@@ -1,5 +1,20 @@
 # Changelog
 
+## [14.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.5.0...lobu-v14.6.0) (2026-07-28)
+
+
+### Features
+
+* **owletto:** make the workspace schema map readable ([#2270](https://github.com/lobu-ai/lobu/issues/2270)) ([33390cc](https://github.com/lobu-ai/lobu/commit/33390cc98e018f84f41d5cdd71f4dc3772e81423))
+
+
+### Bug Fixes
+
+* **agent-worker:** forward NIX_PACKAGES so declared tooling resolves in agent bash ([#2274](https://github.com/lobu-ai/lobu/issues/2274)) ([f20f854](https://github.com/lobu-ai/lobu/commit/f20f8541f52efbfd6adea98e0f937fb73eba0c4b))
+* **ci:** apply biome formatting to the gateway LLM gate script ([#2265](https://github.com/lobu-ai/lobu/issues/2265)) ([73ebb49](https://github.com/lobu-ai/lobu/commit/73ebb49944d6ddc6f8cbf6400d08abb0bc381861))
+* **owletto:** keep the HTTP status on a failed request ([#2272](https://github.com/lobu-ai/lobu/issues/2272)) ([2373d5a](https://github.com/lobu-ai/lobu/commit/2373d5a2f54d9c42a93d0535870332302ce2cbe6))
+* **worker:** stop dead-credential and personal-connection failures from surfacing as raw crashes ([#2268](https://github.com/lobu-ai/lobu/issues/2268)) ([85720b7](https://github.com/lobu-ai/lobu/commit/85720b7bc76618f7803e3c4f767e00923574e9b7))
+
 ## [14.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.4.1...lobu-v14.5.0) (2026-07-28)
 
 

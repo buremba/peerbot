@@ -93,13 +93,32 @@ app:
   # the gateway's environment — verified, not theoretical. The pod boundary is
   # per-POD, and the tenants are inside it.
   #
-  # To enable contributed CLIs, give bubblewrap a seccomp profile that permits
-  # `unshare` — a localhostProfile derived from RuntimeDefault with the
-  # `unshare`/`clone` namespace calls allowed:
+  # To enable contributed CLIs, bubblewrap needs `unshare(CLONE_NEWUSER)`. Two
+  # supported ways, both of which keep a REAL per-exec sandbox (never disable it
+  # — see the isolation note above):
   #
-  #   seccompProfile:
-  #     type: Localhost
-  #     localhostProfile: profiles/bwrap-unshare.json
+  #  a) Preferred, no node changes: add SYS_ADMIN back so bwrap can create the
+  #     namespaces, keeping RuntimeDefault seccomp otherwise intact.
+  #
+  #       containerSecurityContext:
+  #         allowPrivilegeEscalation: false
+  #         capabilities:
+  #           drop: [ALL]
+  #           add: [SYS_ADMIN]
+  #         seccompProfile:
+  #           type: RuntimeDefault
+  #
+  #  b) Tighter, needs the file staged on every node: a Localhost profile
+  #     derived from RuntimeDefault that allows `unshare` and `clone` with
+  #     namespace flags.
+  #
+  #       seccompProfile:
+  #         type: Localhost
+  #         localhostProfile: profiles/bwrap-unshare.json
+  #
+  # Verify either with: `kubectl exec <app-pod> -- bwrap --unshare-user --ro-bind
+  # /usr /usr -- /usr/bin/true` — it must exit 0. If it does not, contributed
+  # CLIs will (correctly) keep exiting 127 rather than running unsandboxed.
   #
   # Do NOT reach for `type: Unconfined` (drops the whole filter) or for
   # LOBU_ALLOW_UNSANDBOXED_EXEC (skips the sandbox AND unlocks full

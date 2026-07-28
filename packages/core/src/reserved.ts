@@ -34,11 +34,11 @@ export const OWNER_ROUTE_SEGMENTS = [
 ] as const;
 
 /**
- * Legacy page slugs removed from the UI router. Chat history still contains
- * URLs under some of these segments (`events` is append-only — the links can
- * never be rewritten), so the segments stay reserved: no entity type or org
- * slug may ever claim a dead URL, and the SPA's entity-type/splat guards
- * notFound() them instead of resolving them as entities.
+ * Legacy page slugs removed from the UI router. Bookmarks and previously sent
+ * chat messages can still contain URLs under these segments, so the segments
+ * stay reserved: no entity type or org slug may ever claim a dead URL, and the
+ * SPA's entity-type/splat guards notFound() them instead of resolving them as
+ * entities.
  */
 export const REMOVED_OWNER_SEGMENTS = [
   "events",

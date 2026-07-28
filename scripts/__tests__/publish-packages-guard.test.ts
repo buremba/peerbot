@@ -350,6 +350,76 @@ describe("published @lobu/worker manifest", () => {
 });
 
 /**
+ * Scripts are checked across EVERY published package, not just @lobu/worker.
+ * The instance found in review was worker's `start` pointing at the excluded
+ * dist/index.js, but all ten manifests carried dev-loop scripts needing src/,
+ * tsc or scripts/ — none of which ship. A per-package assertion would only
+ * ever catch the next one.
+ */
+describe("published manifests ship no unrunnable scripts", () => {
+  const transformedManifests = __testing.PACKAGES.map(
+    (entry: { dir: string; transform?: (pkg: unknown) => unknown }) => {
+      const manifest = JSON.parse(
+        readFileSync(join(REPO_ROOT, entry.dir, "package.json"), "utf8")
+      );
+      return {
+        dir: entry.dir,
+        pkg: (entry.transform ? entry.transform(manifest) : manifest) as {
+          name: string;
+          files?: string[];
+          scripts?: Record<string, string>;
+        },
+      };
+    }
+  );
+
+  it("keeps only lifecycle scripts npm runs on install", () => {
+    for (const { dir, pkg } of transformedManifests) {
+      for (const name of Object.keys(pkg.scripts ?? {})) {
+        expect(
+          __testing.PUBLISHED_LIFECYCLE_SCRIPTS.has(name),
+          `${dir}: published manifest keeps non-lifecycle script "${name}"`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("never names a path the tarball excludes", () => {
+    // The actual failure mode: `npm start` on an installed @lobu/worker ran
+    // `node dist/index.js`, a file `files` omits. Any surviving script that
+    // references a path outside `files` reproduces it.
+    for (const { dir, pkg } of transformedManifests) {
+      const included = (pkg.files ?? []).filter((f) => !f.startsWith("!"));
+      for (const [name, command] of Object.entries(pkg.scripts ?? {})) {
+        for (const ref of command.match(
+          /(?:\.\/)?(?:src|dist|scripts|bin)\/[\w./-]+/g
+        ) ?? []) {
+          const normalized = ref.replace(/^\.\//, "");
+          expect(
+            included.some(
+              (f) => normalized === f || normalized.startsWith(`${f}/`)
+            ),
+            `${dir}: script "${name}" references ${normalized}, which "files" does not ship`
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("leaves the in-repo dev scripts untouched", () => {
+    // Publish-time only. Stripping the real manifests would break the dev loop.
+    const worker = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "packages/agent-worker/package.json"),
+        "utf8"
+      )
+    );
+    expect(worker.scripts.build).toContain("build-worker-bundle.mjs");
+    expect(worker.scripts.typecheck).toBe("tsc --noEmit");
+  });
+});
+
+/**
  * The server spawns the worker by resolving a path inside the INSTALLED
  * @lobu/worker package. If the publish transform stops shipping the file that
  * resolver names, every published-CLI worker start fails at runtime with a

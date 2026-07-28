@@ -123,6 +123,40 @@ function rewriteWorkspaceRefs(pkg) {
   rewriteSection(pkg.optionalDependencies, "optionalDependencies");
   rewriteSection(pkg.devDependencies, "devDependencies");
   rewriteSection(pkg.peerDependencies, "peerDependencies");
+  stripUnpublishableScripts(pkg);
+  return pkg;
+}
+
+/**
+ * Drop scripts that cannot run from the published tarball.
+ *
+ * Every manifest here carries dev-loop scripts (`build`, `dev`, `typecheck`,
+ * `test`, `clean`) that need `src/`, `tsc`, or `scripts/` — none of which are
+ * in `files`. Shipping them is not merely dead weight: `@lobu/worker`'s
+ * `start` pointed at `dist/index.js`, which transformWorkerPublish excludes,
+ * so `npm start` on an installed copy failed with MODULE_NOT_FOUND. Keeping a
+ * script that names a file the tarball omits is the same defect class as
+ * #2186 — a published manifest referencing something a consumer cannot get.
+ *
+ * `lifecycle` scripts are kept: npm runs those itself on install, and dropping
+ * one would silently change install behaviour. No script left here may
+ * reference a path outside `files`; the guard below enforces that.
+ */
+const PUBLISHED_LIFECYCLE_SCRIPTS = new Set([
+  "preinstall",
+  "install",
+  "postinstall",
+  "prepare",
+]);
+
+function stripUnpublishableScripts(pkg) {
+  if (!pkg.scripts) return pkg;
+  const kept = {};
+  for (const [name, command] of Object.entries(pkg.scripts)) {
+    if (PUBLISHED_LIFECYCLE_SCRIPTS.has(name)) kept[name] = command;
+  }
+  if (Object.keys(kept).length > 0) pkg.scripts = kept;
+  else delete pkg.scripts;
   return pkg;
 }
 
@@ -543,6 +577,7 @@ export { rewriteWorkspaceRefs };
 /** Internals exposed for the guard tests; not part of any published surface. */
 export const __testing = {
   PACKAGES,
+  PUBLISHED_LIFECYCLE_SCRIPTS,
   lobuRuntimeDeps,
   markUnavailablePackage,
   packageNameFor,

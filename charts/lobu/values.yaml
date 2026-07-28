@@ -106,8 +106,11 @@ app:
   #
   # Consequence: connector-contributed CLIs (`gh`) exit 127 on this cluster, by
   # design, and that is the SAFE outcome — see the isolation note above.
-  # Enabling them needs a runtime-level change (a userns-remap / RuntimeClass
-  # that permits uid_map writes), not a values.yaml edit.
+  # Enabling them needs a runtime-level change, not a values.yaml edit. Also
+  # measured: this cluster declares `crun` and `gvisor` RuntimeClasses, but
+  # neither handler is installed on the nodes ("no runtime for \"crun\" is
+  # configured" / "...\"runsc\"..."), so switching runtimeClassName is not an
+  # available workaround here either.
   #
   # Verify on any cluster before assuming otherwise:
   #   kubectl exec <app-pod> -- bwrap --unshare-user --unshare-pid --ro-bind \

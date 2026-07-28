@@ -1146,16 +1146,22 @@ export class MessageConsumer {
         // Expiry is graded so a busy conversation still renews. The 5-minute
         // margin wants a quiet worker; once the credential is genuinely at the
         // edge, recycling beats serving a turn whose `gh` will 401 mid-command.
+        // Gated on `!isNewThread` like `toolingChanged` above: there is no lease
+        // to expire before the create path below mints one, and the recycle
+        // branch never consults these on a cold start.
         const leaseExpiring =
+          !isNewThread &&
           this.deploymentManager.hasExpiringLease(deploymentName);
         // Rewinding `now` NARROWS the window: hasExpiringLease fires at
         // <=5min remaining, so evaluating it 4 minutes in the past only fires
         // at <=1min remaining. (Advancing it would widen to 9min and make the
         // override trigger BEFORE the quiet path, defeating the gate.)
-        const leaseCritical = this.deploymentManager.hasExpiringLease(
-          deploymentName,
-          new Date(Date.now() - LEASE_CRITICAL_LEAD_MS)
-        );
+        const leaseCritical =
+          !isNewThread &&
+          this.deploymentManager.hasExpiringLease(
+            deploymentName,
+            new Date(Date.now() - LEASE_CRITICAL_LEAD_MS)
+          );
 
         if (
           !isNewThread &&

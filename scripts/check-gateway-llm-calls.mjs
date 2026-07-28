@@ -27,7 +27,7 @@
 // No DB, no build — pure static text analysis.
 // Run: `node scripts/check-gateway-llm-calls.mjs`.
 
-import { existsSync, globSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -124,10 +124,30 @@ function findCredentialTriples(text) {
   return [...keys].filter((k) => siblings.has(k));
 }
 
+/**
+ * Walk for `.ts`/`.tsx` under `dir`.
+ *
+ * Hand-rolled rather than `fs.globSync`: that landed in Node 22.0 as
+ * experimental and this repo's CI pins Node 22, where importing it throws
+ * `does not provide an export named 'globSync'` — the gate then fails every
+ * run for a reason that has nothing to do with the code it guards. `readdirSync`
+ * with `withFileTypes` is stable across every version we support.
+ */
+function collectSourceFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectSourceFiles(full));
+    } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 let scannedCount = 0;
-const files = globSync("**/*.{ts,tsx}", { cwd: SERVER_SRC }).map((f) =>
-  resolve(SERVER_SRC, f)
-);
+const files = collectSourceFiles(SERVER_SRC);
 
 for (const file of files) {
   const rel = relative(REPO_ROOT, file);

@@ -85,16 +85,10 @@ function publishedPackageNames() {
  * rewrite them at publish time, so we do it explicitly here before `npm
  * publish` runs and restore the original package.json afterwards.
  *
- * Runtime dependencies and peer contracts are additionally gated on the
- * target actually being published. Without that gate this function faithfully
- * rewrote `"@lobu/plugin-mcp": "workspace:*"` to the placeholder version that
- * `private: true` packages carry (`0.0.0`) and shipped it in a public manifest
- * — a constraint no future release can satisfy. That is exactly how
- * @lobu/worker@14.3.0 went out with five private dependencies pinned to
- * `0.0.0`, breaking external installs (issue #2186).
- *
- * devDependencies are excluded because consumers do not install them, and a
- * private workspace package is a legitimate dev-only tool.
+ * Consumer-installed sections are additionally gated on the target actually
+ * being published: without that gate this rewrote a private package's `0.0.0`
+ * placeholder into a public manifest, a constraint no release can satisfy
+ * (#2186). devDependencies are exempt — consumers never install them.
  */
 function rewriteWorkspaceRefs(pkg) {
   const rewriteSection = (deps, section) => {
@@ -190,23 +184,12 @@ function transformCorePublish(pkg) {
 /**
  * @lobu/worker publishes the esbuild bundle, not the tsc output.
  *
- * In-repo, this package resolves through the `bun` export condition to
- * `src/index.ts`, and both src/ and the tsc dist/ import five `private: true`
- * plugin packages. Publishing that verbatim is what put six unresolvable
- * dependencies on the registry (#2186): the shipped src/ imports them, the CJS
- * dist/ requires them, and neither can ever resolve for an external consumer.
- *
- * `packages/agent-worker/scripts/build-worker-bundle.mjs` inlines exactly the
- * private plugins into `dist/index.bundle.mjs` (published @lobu packages stay
- * external), so the published entry points are repointed at the bundle here,
- * the private deps are dropped from the manifest, and src/ is no longer
- * shipped. The in-repo manifest keeps `bun`/src so local dev is unaffected —
- * the publish script restores it immediately after publishing.
- *
- * The bundle is ESM on purpose: agent-worker compiles to CommonJS, and
- * @mariozechner/pi-coding-agent is import-only, so a node require() of the CJS
- * dist throws ERR_PACKAGE_PATH_NOT_EXPORTED. That is why src/ was shipped in
- * the first place; the bundle is what finally makes the package Node-loadable.
+ * Both the shipped src/ and the tsc dist/ import `private: true` plugin
+ * packages, which is what put unresolvable dependencies on the registry
+ * (#2186). build-worker-bundle.mjs inlines the whole @lobu workspace graph
+ * into dist/index.bundle.mjs, so this repoints the published entry points at
+ * it and drops what the bundle no longer needs. The in-repo manifest keeps
+ * `bun`/src for local dev; the publish script restores it afterwards.
  */
 function transformWorkerPublish(pkg) {
   const BUNDLE = "./dist/index.bundle.mjs";
@@ -221,18 +204,10 @@ function transformWorkerPublish(pkg) {
     },
     "./package.json": "./package.json",
   };
-  // Ship ONLY the bundle and its type declarations. src/ is no longer an entry
-  // point, and the sibling tsc output in dist/ still carries the unresolvable
-  // `require("@lobu/plugin-mcp")` calls — nothing loads those files once the
-  // entry points move to the bundle, but shipping them would still break any
-  // consumer reaching a deep path, and leaves the defect visibly in the
-  // tarball. Verified by packing the tarball and grepping it.
-  // The published type surface is exactly `index.d.ts` (which re-exports only
-  // WorkerConfig) plus the `core/types.d.ts` it points at; both are free of
-  // private-plugin references. Shipping dist/**/*.d.ts instead would drag in
-  // sibling declarations like runtime/plugin-composition.d.ts that
-  // `import type ... from "@lobu/plugin-toolkit"` and would fail a consumer's
-  // typecheck. Verified by packing the tarball and grepping it.
+  // Exactly the bundle plus the real type surface (index.d.ts re-exports only
+  // WorkerConfig, from core/types.d.ts). Shipping src/ or dist/**/*.d.ts drags
+  // back in files that reference the private plugins — the sibling .d.ts
+  // `import type` from @lobu/plugin-toolkit and break a consumer's typecheck.
   pkg.files = [
     "dist/index.bundle.mjs",
     "dist/index.d.ts",
@@ -240,14 +215,10 @@ function transformWorkerPublish(pkg) {
     "!**/*.map",
   ];
 
-  // EVERY @lobu dependency is dropped, not just the private ones: the bundle
-  // inlines the whole workspace graph (core and plugin-host included, because
-  // they are CommonJS and this bundle is ESM — see build-worker-bundle.mjs).
-  // Nothing in the published artifact imports them, so declaring them would
-  // make consumers install packages they never load, and would keep the
-  // release blocked on @lobu/plugin-api and @lobu/plugin-host being
-  // bootstrap-published. Their npm dependencies are hoisted into
-  // agent-worker's own manifest, which the bundler enforces.
+  // EVERY @lobu dependency is dropped, not just the private ones — the bundle
+  // inlines them all, so declaring them would make consumers install packages
+  // nothing imports. It also means the release does not wait on plugin-api /
+  // plugin-host ever being published.
   for (const section of ["dependencies", "optionalDependencies"]) {
     const deps = pkg[section];
     if (!deps) continue;

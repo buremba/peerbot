@@ -37,21 +37,19 @@ function workerManifest() {
 }
 
 describe("rewriteWorkspaceRefs publishability guard", () => {
-  it("refuses a runtime dependency on a package the script does not publish", () => {
-    expect(() => rewriteWorkspaceRefs(workerManifest())).toThrow(
-      /@lobu\/plugin-mcp/
-    );
-  });
-
-  it("names the offending package and both remedies, not just 'failed'", () => {
+  it("refuses an unpublishable runtime dep, naming it and both remedies", () => {
     let message = "";
-    try {
-      rewriteWorkspaceRefs(workerManifest());
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
+    expect(() => {
+      try {
+        rewriteWorkspaceRefs(workerManifest());
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    }).toThrow(/@lobu\/plugin-mcp/);
+    // An actionable message is the point: "failed" would leave the next
+    // person guessing which of the two fixes applies.
     expect(message).toContain("@lobu/worker");
-    expect(message).toContain("@lobu/plugin-mcp");
     expect(message).toContain("bundling");
     expect(message).toContain("PACKAGES");
   });

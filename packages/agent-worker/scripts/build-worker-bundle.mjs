@@ -2,35 +2,18 @@
 /**
  * Bundle the @lobu/worker entrypoint into a standalone ESM file for publishing.
  *
- * Why this exists: @lobu/worker depends on five `private: true` workspace
- * packages (plugin-conversations, plugin-mcp, plugin-media, plugin-memory,
- * plugin-toolkit). Those are never published, but `tsc` only transpiles — it
- * leaves bare `require("@lobu/plugin-mcp")` calls in dist/ and the imports in
- * the shipped src/. @lobu/worker@14.3.0 therefore went to the registry
- * depending on packages that do not exist there, 404ing `npx @lobu/cli@latest`
- * for every external consumer (#2186). Inlining them at build time is what
- * makes the published package installable while keeping them private.
+ * Why: @lobu/worker imports `private: true` workspace packages, and `tsc` only
+ * transpiles — so both the tsc dist/ and the shipped src/ carried bare
+ * `@lobu/plugin-*` specifiers that no consumer can resolve (#2186). Inlining
+ * them keeps those packages private and the published one installable.
  *
- * Why ESM and not a patched dist/: the CJS dist is a genuine dead end.
- * agent-worker compiles with "module": "CommonJS", and
- * @mariozechner/pi-coding-agent is `type: module` exposing only an `import`
- * condition, so a node-loaded require() of dist/index.js throws
- * ERR_PACKAGE_PATH_NOT_EXPORTED. That is why the package shipped src/ plus a
- * `bun` exports condition at all — the server resolves `src/index.ts` in
- * preference to dist (see packages/server/src/gateway/config/index.ts). This
- * bundle replaces that src/ entry with something Node itself can load.
+ * Why ESM: agent-worker compiles to CommonJS and @mariozechner/pi-coding-agent
+ * is import-only, so a node require() of the CJS dist throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED — which is why src/ was shipped at all. This
+ * bundle is the first entry point Node itself can load.
  *
- * Resolution conditions: 'bun' first, so workspace packages resolve to their TS
- * source rather than a CJS dist barrel. esbuild compiles the TS inline.
- *
- * External vs inlined:
- *   - EVERY @lobu workspace package is inlined, published ones included.
- *     Keeping @lobu/core external seemed better (one shared copy) but does not
- *     work — see the note at the resolver below. Inlining them all also means
- *     the published manifest declares no @lobu dependencies at all, so the
- *     release no longer waits on plugin-api/plugin-host being bootstrapped.
- *   - Every npm dependency stays external, loaded from node_modules at runtime,
- *     and must be declared by this package — enforced at the bottom of this file.
+ * EVERY @lobu package is inlined (see the resolver note below); every npm
+ * dependency stays external and must be declared here, enforced at the bottom.
  */
 
 import esbuild from "esbuild";
@@ -63,18 +46,11 @@ const result = await esbuild.build({
           const id = args.path;
           // Relative/absolute imports are part of this package — bundle them.
           if (id.startsWith(".") || id.startsWith("/")) return null;
-          // ALL @lobu workspace packages are inlined, published ones included.
-          //
-          // Leaving @lobu/core external looked right (one shared copy from
-          // node_modules) but does not work: core, plugin-api and plugin-host
-          // are CommonJS, this bundle is ESM, and Node cannot reliably bind
-          // named imports across that boundary — a clean install died with
-          // "Named export 'sanitizeSuggestionPrompts' not found. The requested
-          // module '@lobu/core' is a CommonJS module". This is the same
-          // ESM↔CJS interop trap documented in
-          // packages/server/scripts/build-server-bundle.mjs (#430), and the
-          // same resolution: bundle the workspace graph, keep only npm
-          // dependencies external.
+          // Published @lobu packages are inlined too, not just the private
+          // ones: they are CommonJS and this bundle is ESM, so leaving them
+          // external made a clean install die on "Named export
+          // 'sanitizeSuggestionPrompts' not found". Same ESM↔CJS trap and same
+          // fix as packages/server/scripts/build-server-bundle.mjs (#430).
           if (id.startsWith("@lobu/")) return null;
           return { external: true };
         });
@@ -89,11 +65,9 @@ const result = await esbuild.build({
   },
 });
 
-// The publish transform ships exactly these declaration files as the package's
-// entire type surface. tsc is incremental: after `rm -rf dist` a stale
-// tsconfig.tsbuildinfo makes it exit 0 having emitted nothing, which would
-// publish a bundle with no types at all and no error anywhere. Assert they
-// exist rather than trusting tsc's exit code (fix: delete tsconfig.tsbuildinfo).
+// tsc is incremental: after `rm -rf dist` a stale tsconfig.tsbuildinfo makes it
+// exit 0 having emitted nothing, which would publish a typeless bundle with no
+// error anywhere. Don't trust tsc's exit code — check the files.
 for (const decl of ["dist/index.d.ts", "dist/core/types.d.ts"]) {
   if (!existsSync(join(pkgDir, decl))) {
     console.error(
@@ -116,10 +90,8 @@ if (!jsOutput) {
   process.exit(1);
 }
 const imports = jsOutput.imports ?? [];
-// No @lobu specifier may survive: the published manifest declares none, so any
-// that remained would be unresolvable for a consumer — the exact shape of
-// #2186. This is stricter than checking only the private ones, and it is what
-// lets the publish transform drop every @lobu dependency safely.
+// No @lobu specifier may survive: the published manifest declares none, so a
+// leftover would be unresolvable — the exact shape of #2186.
 const leaked = [
   ...new Set(imports.map((i) => i.path).filter((p) => p.startsWith("@lobu/"))),
 ];
@@ -131,13 +103,10 @@ if (leaked.length > 0) {
   process.exit(1);
 }
 
-// Every external the bundle keeps must be declared by THIS package, because
-// that is all a consumer installs. Inlining a private plugin pulls its own
-// dependencies into our import graph without pulling its manifest: bundling
-// plugin-media silently added `form-data`, which is declared by plugin-media
-// but was not a dependency of @lobu/worker, so a clean install imported the
-// bundle and died with ERR_MODULE_NOT_FOUND. Caught by installing the packed
-// tarball in an empty directory; this check makes it a build failure instead.
+// Every external must be declared by THIS package — that is all a consumer
+// installs. Inlining pulls in the inlined package's own dependencies without
+// its manifest (plugin-media brought `form-data`), so a clean install died with
+// ERR_MODULE_NOT_FOUND. This turns that into a build failure.
 const pkgManifest = JSON.parse(
   readFileSync(join(pkgDir, "package.json"), "utf8")
 );

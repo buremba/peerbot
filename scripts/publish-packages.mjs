@@ -27,8 +27,14 @@ const REPO_ROOT = path.resolve(
 
 const PACKAGES = [
   { dir: "packages/core", transform: transformCorePublish },
-  { dir: "packages/plugin-api", transform: transformCorePublish },
-  { dir: "packages/plugin-host", transform: transformCorePublish },
+  // @lobu/plugin-api and @lobu/plugin-host are NOT published. Their only
+  // consumer is @lobu/worker, whose publish transform inlines the entire
+  // @lobu graph into dist/index.bundle.mjs and declares no @lobu dependency
+  // at all — so nothing on npm can resolve them, and nothing needs to. They
+  // sat in this list without ever existing on the registry, which made every
+  // release report a first-publish failure (npm returns E404 when the CI
+  // granular token cannot name a package that does not exist yet) even though
+  // every package a consumer actually installs published fine.
   { dir: "packages/connector-sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/client", transform: rewriteWorkspaceRefs },
   // Publishes the esbuild bundle rather than the tsc output — see

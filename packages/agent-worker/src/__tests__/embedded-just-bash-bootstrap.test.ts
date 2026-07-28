@@ -20,6 +20,7 @@ const originalEnv = {
   JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
   HTTP_PROXY: process.env.HTTP_PROXY,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
+  NIX_PACKAGES: process.env.NIX_PACKAGES,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -43,6 +44,7 @@ afterEach(() => {
   restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
   restoreEnv("HTTP_PROXY");
   restoreEnv("HTTPS_PROXY");
+  restoreEnv("NIX_PACKAGES");
   resetSandboxProbeForTests();
 });
 
@@ -73,6 +75,79 @@ describe("createEmbeddedBashOps", () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(chunks.join("")).not.toContain("root:");
+  });
+
+  test("REGRESSION: a connector-contributed CLI outside /nix/store is runnable", async () => {
+    // The production image bakes `git` and `gh` into /usr/bin, which is on PATH
+    // but NOT under /nix/store — and discovery only scanned /nix/store plus a
+    // hardcoded ["lobu"]. So the contributed CLI sat on the filesystem and
+    // exited 127 through the agent's bash: the credential worked and the
+    // command did not, which is the whole feature failing on the image it
+    // ships on.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-contributed-"))
+    );
+    tempDirs.push(workspace);
+
+    // Deliberately NOT under /nix/store, mirroring the image layout.
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    // The production image ships bubblewrap, so spawned binaries register.
+    // Without an exec sandbox NOTHING registers, which is the other half of
+    // why `gh` was unreachable on the image.
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    // What the gateway sets from the connector's declaration.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain("gh version");
+  });
+
+  test("an undeclared PATH binary stays unavailable", async () => {
+    // The contributed-CLI discovery must widen to DECLARED tools only. If it
+    // registered whatever is on PATH, it would undo the sandbox property the
+    // first test in this file pins.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-undeclared-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const sneaky = path.join(usrBin, "sneakytool");
+    fs.writeFileSync(sneaky, '#!/bin/sh\necho "should not run"\n', "utf8");
+    fs.chmodSync(sneaky, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    // `gh` is declared; `sneakytool` is not.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("sneakytool", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(chunks.join("")).not.toContain("should not run");
   });
 
   // Built-in curl/wget are transport-only clients of the gateway egress

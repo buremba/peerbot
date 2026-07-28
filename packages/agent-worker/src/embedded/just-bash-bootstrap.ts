@@ -126,7 +126,9 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
 /**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
- * 2. Known CLI tools (lobu) from anywhere on PATH
+ * 2. `lobu`, plus every tool named in NIX_PACKAGES, from anywhere on PATH —
+ *    a connector-contributed CLI may be baked into the image rather than
+ *    provisioned by nix
  *
  * UNSANDBOXED_INTERPRETERS are filtered out unless the spawned worker has
  * LOBU_ALLOW_UNSANDBOXED_EXEC=1 in its env (set explicitly per-agent for
@@ -160,8 +162,24 @@ function discoverBinaries(): Map<string, string> {
     }
   }
 
-  // Discover known CLI tools from full PATH
-  for (const name of ["lobu"]) {
+  // Discover known CLI tools, plus every connector-contributed one, from the
+  // FULL PATH rather than only /nix/store.
+  //
+  // `NIX_PACKAGES` is the declared tooling for this deployment. A declared tool
+  // is not necessarily provisioned by nix: the production image bakes `git` and
+  // `gh` into /usr/bin (see docker/app/Dockerfile), which is on PATH but not
+  // under /nix/store, so the scan above never sees it. Without this the
+  // contributed CLI is present on the filesystem and still exits 127 through
+  // the agent's bash — the credential works and the command does not.
+  const contributed = (process.env.NIX_PACKAGES || "")
+    .split(",")
+    .map((name) => name.trim())
+    // A nix attribute path (`pkgs.gh`, `nixpkgs#gh`) names the package, and the
+    // binary is the last segment.
+    .map((name) => name.split(/[.#]/).pop() ?? "")
+    .filter(Boolean);
+
+  for (const name of ["lobu", ...contributed]) {
     if (binaries.has(name)) continue;
     if (!isAllowed(name)) continue;
     for (const dir of pathDirs) {

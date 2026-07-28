@@ -132,6 +132,79 @@ describe("signalError is once-per-turn", () => {
     expect(errors[0].error).toBe("second attempt");
   });
 
+  test("two OVERLAPPING signalError calls elect exactly one winner", async () => {
+    // `errorSignalled` is set only AFTER delivery (see the test above), so it
+    // cannot do the election by itself: two calls that both start before the
+    // first POST resolves would both read it as false and both reach the user.
+    // Hold the first request open so the second interleaves inside it.
+    const transport = new HttpWorkerTransport(baseConfig);
+
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let requests = 0;
+    globalThis.fetch = (async (
+      ...args: Parameters<typeof globalThis.fetch>
+    ) => {
+      requests += 1;
+      const init = args[1];
+      if (init?.body) sentPayloads.push(JSON.parse(init.body as string));
+      await firstInFlight;
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    // Both start before ANY response resolves.
+    const first = transport.signalError(new Error("winner"), "PROVIDER_AUTH");
+    const second = transport.signalError(new Error("loser"), "PROVIDER_AUTH");
+
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(requests).toBe(1);
+    const errors = errorPayloads();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].error).toBe("winner");
+  });
+
+  test("an overlapping loser does not latch a FAILED delivery", async () => {
+    // The claim must be released when delivery ultimately fails. Holding it
+    // (like latching too early) would suppress every later attempt and leave
+    // the user with NO terminal error.
+    const transport = new HttpWorkerTransport(baseConfig);
+
+    globalThis.fetch = (async () =>
+      new Response(null, { status: 500 })) as typeof globalThis.fetch;
+
+    const first = transport.signalError(
+      new Error("failed winner"),
+      "PROVIDER_AUTH"
+    );
+    const second = transport.signalError(
+      new Error("dropped loser"),
+      "PROVIDER_AUTH"
+    );
+
+    await expect(first).rejects.toThrow();
+    // The loser is dropped, not surfaced — the winner's caller owns the throw.
+    await second;
+
+    // Gateway recovers; a later signal must still get through.
+    globalThis.fetch = (async (
+      ...args: Parameters<typeof globalThis.fetch>
+    ) => {
+      const init = args[1];
+      if (init?.body) sentPayloads.push(JSON.parse(init.body as string));
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    await transport.signalError(new Error("retry"), "PROVIDER_AUTH");
+
+    const errors = errorPayloads();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].error).toBe("retry");
+  });
+
   test("a fresh transport (next turn) can signal an error again", async () => {
     const first = new HttpWorkerTransport(baseConfig);
     await first.signalError(new Error("turn-1 failure"), "PROVIDER_AUTH");

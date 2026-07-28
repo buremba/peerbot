@@ -181,10 +181,12 @@ export async function handleConnect(
   // a connection under the wrong stable identity, so fall through and create a
   // fresh row with the requested slug instead.
   const pendingRows = await sql`
-    SELECT c.id, c.slug, ct.token, ct.expires_at
+    SELECT c.id, c.slug, c.visibility, ap.profile_kind AS auth_profile_kind,
+           ct.token, ct.expires_at
     FROM connections c
     JOIN connect_tokens ct ON ct.connection_id = c.id
       AND ct.status = 'pending' AND ct.expires_at > NOW()
+    LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
     WHERE c.organization_id = ${organizationId}
       AND c.connector_key = ${args.connector_key}
       AND c.status = 'pending_auth'
@@ -199,10 +201,22 @@ export async function handleConnect(
     const pending = pendingRows[0] as {
       id: number;
       slug: string;
+      visibility: "org" | "private";
+      auth_profile_kind: string | null;
       token: string;
       expires_at: Date | string;
     };
     const connectUrl = `${getConnectBaseUrl(ctx)}/connect/${pending.token}/oauth/start`;
+    // Retrying connect on an existing personal connection must explain the
+    // agent-owner scope too, or the second call silently drops the warning the
+    // first one gave. Derived from what is PERSISTED, mirroring the creation
+    // path's kind expression: an unlinked pending OAuth row is heading for an
+    // `oauth_account` profile (the callback creates it), so absent a linked
+    // profile the kind is personal.
+    const pendingScopeWarning = personalConnectionScopeWarning({
+      visibility: pending.visibility,
+      profileKind: pending.auth_profile_kind ?? "oauth_account",
+    });
     return {
 			action: "connect",
       connection_id: pending.id,
@@ -212,7 +226,10 @@ export async function handleConnect(
       connect_url: connectUrl,
       connect_token: pending.token,
       expires_at: new Date(pending.expires_at).toISOString(),
-      instructions: `A pending connection already exists. Send the connect_url to the user to complete OAuth authorization. Poll with action='get' until status='active'.`,
+      instructions:
+        "A pending connection already exists. Send the connect_url to the user to complete OAuth authorization." +
+        (pendingScopeWarning ? ` ${pendingScopeWarning}` : "") +
+        ` Poll with action='get' until status='active'.`,
     };
   }
 

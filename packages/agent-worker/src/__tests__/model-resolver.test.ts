@@ -416,6 +416,7 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     // Routing itself is unchanged (the gateway owns that decision) and the ref
     // keeps its namespace — stripping a FOREIGN prefix here would break
     // OpenRouter-style refs like "anthropic/claude-sonnet-4".
+    expect(result.provider).toBe("openai");
     expect(result.modelId).toBe("gemini/gemini-2.5-flash");
   });
 

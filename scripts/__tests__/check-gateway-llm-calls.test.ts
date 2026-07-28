@@ -143,6 +143,18 @@ describe("check-gateway-llm-calls", () => {
     expect(runGuard()).toBe(0);
   });
 
+  it("ignores inline and multiline block comments inside statements", () => {
+    create(
+      `export async function probe(url: string) {\n` +
+        `  return fetch(\n` +
+        `    url, /* historical note: POST /chat/completions */\n` +
+        `    { method: "GET" },\n` +
+        `  );\n` +
+        `}\n`
+    );
+    expect(runGuard()).toBe(0);
+  });
+
   it("honours a gateway-llm-ok suppression on the flagged line", () => {
     create(
       `export async function probe(u: string) {\n` +

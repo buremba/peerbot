@@ -124,9 +124,33 @@ function statementText(lines, idx) {
   const MAX_STATEMENT_LINES = 40;
   let depth = 0;
   let opened = false;
+  let inBlockComment = false;
   const parts = [];
   for (let i = idx; i < lines.length && i < idx + MAX_STATEMENT_LINES; i++) {
-    const code = stripComments(lines[i]);
+    const line = lines[i];
+    let code = "";
+    let j = 0;
+    while (j < line.length) {
+      if (inBlockComment) {
+        const closeIdx = line.indexOf("*/", j);
+        if (closeIdx !== -1) {
+          inBlockComment = false;
+          j = closeIdx + 2;
+        } else {
+          break;
+        }
+      } else {
+        if (line.startsWith("/*", j)) {
+          inBlockComment = true;
+          j += 2;
+        } else if (line.startsWith("//", j) && (j === 0 || line[j - 1] !== ":")) {
+          break;
+        } else {
+          code += line[j];
+          j++;
+        }
+      }
+    }
     parts.push(code);
     for (const ch of code) {
       if (ch === "(" || ch === "{") {

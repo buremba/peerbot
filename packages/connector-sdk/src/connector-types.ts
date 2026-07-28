@@ -152,6 +152,13 @@ export interface ConnectorAgentToolingEnv {
    * env var would reach the provider verbatim. Providers without derived
    * tokens can contribute packages and domains but no credential until a
    * credential-aware relay exists.
+   *
+   * The lease is minted at deployment time, and a sandbox reads its env once at
+   * startup — so a WARM deployment keeps the credential it was born with. On a
+   * conversation continuously active past the token's life the CLI starts
+   * reporting itself unauthenticated, until the idle reaper rebuilds the worker
+   * (`WORKER_IDLE_CLEANUP_MINUTES`, default 60). Renewing before that point is
+   * deliberately out of scope here; see `packages/server/AGENTS.md`.
    */
   credential: 'lease';
 }

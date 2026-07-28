@@ -152,9 +152,13 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  * QUOTED argument as a command, so that body is a command position and must be
  * scanned. Everywhere else a quote introduces data (`git commit -m '…'`), which
  * is why the patterns above do not treat a quote character as a word boundary.
+ *
+ * The interpreter itself must be in COMMAND position — start of the string or
+ * just after a shell operator. Without that anchor, `echo sh -c 'nix run x'`
+ * would have its argument text scanned as if it were executed.
  */
 const INTERPRETER_DASH_C =
-  /\b(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
+  /(?:^|[;|&(])\s*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:
@@ -196,11 +200,12 @@ function blankQuotedSpans(text: string): string {
       out += ch;
       continue;
     }
-    // `#` opens a comment only at the START of a word. Mid-token it is an
-    // ordinary character, and must stay one — `nix run nixpkgs#hello` depends
-    // on it. Blank to end of line, keeping the newline so later lines are
-    // still scanned.
-    if (ch === "#" && (i === 0 || /\s/.test(text[i - 1] as string))) {
+    // `#` opens a comment only at the START of a word — after whitespace, a
+    // shell operator (`echo hi;# …`), or at the very beginning. Mid-token it is
+    // an ordinary character and must stay one, since `nix run nixpkgs#hello`
+    // depends on it. Blank to end of line, keeping the newline so later lines
+    // are still scanned.
+    if (ch === "#" && (i === 0 || /[\s;|&()]/.test(text[i - 1] as string))) {
       out += "#";
       i++;
       while (i < text.length && text[i] !== "\n") {

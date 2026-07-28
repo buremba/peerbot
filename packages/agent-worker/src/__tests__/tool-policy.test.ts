@@ -399,11 +399,30 @@ describe("enforceBashCommandPolicy", () => {
       "echo 'use uvx here'",
       "git commit -m 'we should apt install curl'",
       'git commit -m "then run pipx install black"',
-      // Text after an unquoted `#` is a comment, never executed.
+      // Text after an unquoted `#` is a comment, never executed. `#` opens one
+      // after an operator too, not just after whitespace.
       "echo done # nix run x",
       "ls # uvx cowsay",
+      "echo hi;# nix run x",
+      "echo hi ;# nix run x",
+      // An interpreter named in ARGUMENT position runs nothing; only a real
+      // command-position `sh -c` body is a command.
+      "echo sh -c 'nix run x'",
+      "printf 'sh -c nix run'",
+      "git commit -m \"sh -c 'nix run x'\"",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("a command-position `sh -c` body IS scanned (#2259)", () => {
+    for (const cmd of [
+      "bash -c 'nix run x'",
+      "sh -lc 'uvx cowsay'",
+      "true; bash -c 'nix run x'",
+      "(sh -c 'uvx x')",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }
   });
 

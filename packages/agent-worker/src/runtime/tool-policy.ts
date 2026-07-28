@@ -118,36 +118,6 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 ];
 
 /**
- * Advisory detector for an honestly-typed package-manager install/acquire
- * command, used to return a helpful "declare it in nixPackages instead" message
- * (see {@link enforceBashPreflight}).
- *
- * This is a conservative TEXT hint, not the security boundary, and it does NOT
- * try to out-parse the shell: a quoted or escaped executable name (`"nix" run`,
- * `n\ix run`, `$'n\x69x' run`), a path-qualified one (`/usr/bin/nix run`,
- * `/nix/store/<hash>/bin/nix run`), a package manager launched through an exec
- * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
- * is NOT recognized here. Trying to make this matcher airtight means
- * reimplementing bash's lexer and only produces false positives on honest
- * commands. It is advisory on BOTH bash backends, for different reasons:
- *
- *  - Local embedded just-bash (the default, and the unattended/scheduled path):
- *    enforcement is the binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in
- *    `just-bash-bootstrap.ts`). A package manager that is not registered as a
- *    runnable command resolves to "command not found" (exit 127) however it is
- *    spelled, quoted, or path-qualified, because the lookup is on the RESOLVED
- *    binary name. Declared `nixPackages` is the sanctioned way to get tooling.
- *
- *  - Remote runtime providers (opt-in, e.g. `vercel`): the runtime IS a sandbox
- *    — read-only base image rooted at its own workspace, egress governed by the
- *    provider's network policy. Package managers are intentionally usable there
- *    (`nix shell` working is the point of the tier), and nothing installed
- *    escapes into the worker or persists into a later scheduled run. There is
- *    no discovery filter on that path BY DESIGN; the sandbox is the boundary.
- *    Reaching a manager there is not a bypass of this hint — it is the tier
- *    behaving as intended.
- */
-/**
  * An interpreter invoked with `-c` (allowing bundled flags like `-lc`) runs its
  * QUOTED argument as a command, so that body is a command position and must be
  * scanned. Everywhere else a quote introduces data (`git commit -m '…'`), which
@@ -220,6 +190,38 @@ function blankQuotedSpans(text: string): string {
   return out;
 }
 
+/**
+ * Advisory detector for an honestly-typed package-manager install/acquire
+ * command, used to return a helpful "declare it in nixPackages instead" message
+ * (see {@link enforceBashPreflight}).
+ *
+ * This is a conservative TEXT hint, not the security boundary, and it does NOT
+ * try to out-parse the shell: a quoted or escaped executable name (`"nix" run`,
+ * `n\ix run`, `$'n\x69x' run`), a path-qualified one (`/usr/bin/nix run`,
+ * `/nix/store/<hash>/bin/nix run`), a package manager launched through an exec
+ * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
+ * is NOT recognized here. Trying to make this matcher airtight means
+ * reimplementing bash's lexer and only produces false positives on honest
+ * commands. It is advisory on BOTH bash backends, for different reasons:
+ *
+ *  - Local embedded just-bash (the default, and the unattended/scheduled path):
+ *    enforcement is the binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in
+ *    `just-bash-bootstrap.ts`). A package manager that is not registered as a
+ *    runnable command resolves to "command not found" (exit 127) however it is
+ *    spelled, quoted, or path-qualified, because the lookup is on the RESOLVED
+ *    binary name. Declared `nixPackages` is the sanctioned way to get tooling.
+ *
+ *  - Remote runtime providers (opt-in, e.g. `vercel`): the runtime is itself a
+ *    sandbox — read-only base image rooted at its own workspace, egress under
+ *    the provider's network policy — so an install there escapes neither into
+ *    the worker nor into a later scheduled run, and there is no discovery
+ *    filter on that path. The shared preflight still runs before dispatch,
+ *    though, so the deny prefixes below apply to remote execution too: this
+ *    hint is what keeps `nix`/`apt` from reaching the provider at all. That
+ *    predates this change (`apt `, `nix-shell `, `nix-env ` were already
+ *    denied); loosening it for the sandbox tier would be a deliberate,
+ *    separate decision, not a side effect of widening the nix entries.
+ */
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();
   if (!trimmed) {

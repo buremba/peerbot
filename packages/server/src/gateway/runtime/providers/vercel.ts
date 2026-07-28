@@ -55,7 +55,6 @@ const NIXPKGS_CHANNEL_FLAKE =
  * the loser of the race takes the cache-hit path instead of reinstalling.
  */
 const NIX_LOCK_PATH = `${NIX_HOME}/.lobu-provision.lock`;
-const NIX_PROFILE_BIN = `${NIX_HOME}/profile/bin`;
 /** Sandbox-side provisioning state — see `nixPackageSetHash`. Never a gateway Map. */
 const PACKAGE_MARKER_PATH = `${NIX_HOME}/.lobu-packages`;
 
@@ -535,13 +534,19 @@ function cachedProfileScript(marker: string): string {
  * it would contradict the `failed` list the same response reports and give the
  * agent a tool the gateway just said it does not have.
  *
- * `NIX_PROFILE_BIN` is a module constant, never request-derived, so nothing
- * attacker-influenced enters the command here.
+ * PATH names the HASH-ADDRESSED profile, never the mutable `profile` symlink:
+ * one sandbox serves every conversation for an (org, agent), so two execs with
+ * different signed `nixPackages` both resolve that one symlink and the later
+ * writer decides which tool set the earlier command sees. Addressing the exact
+ * set keeps each exec on the packages ITS token was signed for. The path is
+ * derived from `nixPackageSetHash` over route-validated names — a hex digest,
+ * so nothing attacker-influenced reaches the command line.
  */
 function withProvisionedPath(ctx: RuntimeExecContext): string {
   if (!ctx.provisioned || ctx.provisioned.failed.length > 0) return ctx.command;
   if (ctx.provisioned.installed.length === 0) return ctx.command;
-  return `export PATH="${NIX_PROFILE_BIN}:$PATH"\n${ctx.command}`;
+  const marker = nixPackageSetHash(ctx.nixPackages ?? []);
+  return `export PATH="${NIX_HOME}/profiles/${marker}/bin:$PATH"\n${ctx.command}`;
 }
 
 /**

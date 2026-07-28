@@ -753,7 +753,7 @@ describe("createRuntimeRoutes", () => {
     expect(commandScript(0)).toContain("nix profile install");
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });
     expect(commandScript(1)).toBe(
-      'export PATH="/opt/lobu-nix/profile/bin:$PATH"\ngh auth status'
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh auth status'
     );
     // The nix substituters must be in the policy the sandbox was created with,
     // or the install hangs against deny-by-default.
@@ -878,7 +878,7 @@ describe("createRuntimeRoutes", () => {
       cached: true,
     });
     expect(commandScript(1)).toBe(
-      'export PATH="/opt/lobu-nix/profile/bin:$PATH"\ngh --version'
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh --version'
     );
     // The cached-profile selector relinks `profile` and rewrites the marker
     // inside a NIX_HOME the provision path created as root. Running it
@@ -991,7 +991,7 @@ describe("createRuntimeRoutes", () => {
     });
     // A cache hit is a SUCCESS — the profile is real, so PATH must expose it.
     expect(commandScript(1)).toBe(
-      'export PATH="/opt/lobu-nix/profile/bin:$PATH"\ngh --version'
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh --version'
     );
   });
 

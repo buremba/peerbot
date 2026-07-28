@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { __testOnly, nixInstallerUrl } from "../runtime/providers/vercel.js";
 import { NIX_SUBSTITUTER_DOMAINS } from "../runtime/packages.js";
 
-const { networkPolicyFromDomains, provisionScript } = __testOnly;
+const { networkPolicyFromDomains, provisionScript, withProvisionedPath } =
+  __testOnly;
 
 describe("vercel networkPolicyFromDomains — deny subtraction", () => {
   test("no denies: wildcard stays allow-all, lists pass through", () => {
@@ -120,6 +121,33 @@ describe("vercel provisionScript", () => {
         NIX_SUBSTITUTER_DOMAINS.some((d) => host.endsWith(d));
       expect(granted, `ungranted host in provision script: ${host}`).toBe(true);
     }
+  });
+
+  test("PATH names the exact package set, not the shared profile symlink", () => {
+    // One sandbox serves every conversation for an (org, agent). Pointing PATH
+    // at the mutable `profile` symlink let two execs with DIFFERENT signed
+    // nixPackages resolve the same link — the later writer decided which tool
+    // set the earlier command saw, breaking per-token package isolation.
+    const ghCtx = {
+      command: "gh --version",
+      nixPackages: ["gh"],
+      provisioned: { installed: ["gh"], failed: [], cached: true },
+    } as never;
+    const jqCtx = {
+      command: "jq --version",
+      nixPackages: ["jq"],
+      provisioned: { installed: ["jq"], failed: [], cached: true },
+    } as never;
+
+    const gh = withProvisionedPath(ghCtx);
+    const jq = withProvisionedPath(jqCtx);
+
+    expect(gh).not.toContain("/profile/bin");
+    expect(jq).not.toContain("/profile/bin");
+    // Different package sets must resolve to different profile paths.
+    const pathOf = (s: string) => s.match(/export PATH="([^:]+)/)?.[1];
+    expect(pathOf(gh)).not.toBe(pathOf(jq));
+    expect(pathOf(gh)).toContain("/profiles/");
   });
 
   test("serializes the mutating section behind a sandbox-side lock", () => {

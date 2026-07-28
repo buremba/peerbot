@@ -959,7 +959,7 @@ describe("deployment env assembly", () => {
     expect(remainingMs).toBeGreaterThan(5 * 60_000);
   });
 
-  test("a born-expiring lease does not arm an unwinnable recycle loop", async () => {
+  test("a born-expiring lease is delivered and still renews", async () => {
     // If the provider issues a token that is already inside the recycle margin,
     // recycling cannot improve it — the same installation yields the same
     // short-lived token — so recording that expiry would recycle the
@@ -987,10 +987,46 @@ describe("deployment env assembly", () => {
       }),
     });
 
-    // The credential is still delivered — a short-lived token beats none.
+    // The credential is still delivered — a short life beats none — and its
+    // expiry IS recorded, so the deployment renews. What prevents a loop is
+    // the manager's minimum-age floor, not suppressing the expiry: suppressing
+    // it would leave the deployment unable to renew at all.
     expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
-    // But it must not become a recycle trigger.
-    expect(resolved.leaseExpiresAt).toBeNull();
+    expect(resolved.leaseExpiresAt).toBeInstanceOf(Date);
+  });
+
+  test("REGRESSION: a just-built deployment is never recycled, however short its lease", async () => {
+    // Without an age floor, a provider issuing tokens already inside the
+    // 5-minute margin would make every turn recycle: rebuild, still expiring,
+    // rebuild again, forever — each one a cold start.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    manager.setCredentialLeaseRegistry(
+      buildLeaseRegistry({
+        respond: () =>
+          new Response(
+            JSON.stringify({
+              token: MINTED_TOKEN,
+              expires_at: new Date(Date.now() + 2 * 60_000).toISOString(),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          ),
+      })
+    );
+
+    await manager.buildEnv(buildPayload());
+
+    // Expiring by the raw margin, but too young to recycle.
+    expect(manager.hasExpiringLease("deploy-1")).toBe(false);
+    // Past the floor, the normal expiry rule applies again.
+    expect(
+      manager.hasExpiringLease("deploy-1", new Date(Date.now() + 11 * 60_000))
+    ).toBe(true);
   });
 
   test("an unchanged org keeps its warm worker", async () => {

@@ -426,11 +426,13 @@ export async function resolveAgentTooling(params: {
       // Earliest wins: the deployment is only good until its FIRST credential
       // lapses, not its last.
       //
-      // A token that is ALREADY inside the recycle margin when freshly minted
-      // is deliberately not recorded. Recycling cannot fix it — the provider
-      // returns the same short-lived token for the same installation — so
-      // recording it would recycle the deployment on every turn and never
-      // converge. Run out its life instead, and say so.
+      // A freshly minted token that is ALREADY inside the recycle margin means
+      // the provider is issuing short-lived credentials (clock skew, or a
+      // fault). It is still delivered — a short life beats none — and its
+      // expiry is still recorded so renewal happens. The deployment manager's
+      // minimum-age floor is what prevents this from becoming a recycle loop;
+      // suppressing the expiry here instead would leave the deployment unable
+      // to renew at all.
       if (lease.expiresAt && isWithinRecycleMargin(lease.expiresAt)) {
         logger.warn(
           {
@@ -439,9 +441,10 @@ export async function resolveAgentTooling(params: {
             connection_id: connectionId,
             expires_at: lease.expiresAt.toISOString(),
           },
-          "Provider issued a lease that is already near expiry; the sandbox will lose this credential mid-conversation"
+          "Provider issued a lease that is already near expiry; the sandbox may lose this credential mid-conversation"
         );
-      } else if (
+      }
+      if (
         lease.expiresAt &&
         (!leaseExpiresAt || lease.expiresAt < leaseExpiresAt)
       ) {

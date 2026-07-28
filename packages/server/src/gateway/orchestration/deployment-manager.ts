@@ -908,10 +908,20 @@ export class DeploymentManager {
   private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
 
   /**
+   * A deployment is never recycled for expiry within this long of being built.
+   * Makes a recycle loop structurally impossible: one rebuild always buys at
+   * least this much quiet, however short-lived the credential turns out to be.
+   */
+  private static readonly MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS = 10 * 60 * 1000;
+
+  /**
    * Tooling fingerprint each deployment was BORN with, so a warm turn can tell
    * that the org's connections changed underneath it.
    */
   private toolingFingerprintByDeployment = new Map<string, string>();
+
+  /** When each deployment's lease was minted — see the recycle age floor. */
+  private leaseMintedAtByDeployment = new Map<string, Date>();
 
   /**
    * True when a warm deployment holds a connector lease that has expired or is
@@ -922,6 +932,23 @@ export class DeploymentManager {
   hasExpiringLease(deploymentName: string, now: Date = new Date()): boolean {
     const expiresAt = this.leaseExpiryByDeployment.get(deploymentName);
     if (!expiresAt) return false;
+
+    // A deployment built moments ago holds the freshest credential the provider
+    // will give us. If that is ALREADY inside the margin, the provider is
+    // issuing short-lived tokens (clock skew, or a fault) and recycling cannot
+    // improve it — re-minting returns the same token for the same
+    // installation. Without this floor the deployment would recycle on every
+    // turn and never converge; with it, the sandbox runs out the credential's
+    // real life and renews normally once a longer-lived token is issued.
+    const builtAt = this.leaseMintedAtByDeployment.get(deploymentName);
+    if (
+      builtAt &&
+      now.getTime() - builtAt.getTime() <
+        DeploymentManager.MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS
+    ) {
+      return false;
+    }
+
     return (
       expiresAt.getTime() - now.getTime() <=
       DeploymentManager.LEASE_RECYCLE_MARGIN_MS
@@ -951,6 +978,7 @@ export class DeploymentManager {
   /** Drop recorded lease state for a deployment that no longer exists. */
   protected forgetLeaseExpiry(deploymentName: string): void {
     this.leaseExpiryByDeployment.delete(deploymentName);
+    this.leaseMintedAtByDeployment.delete(deploymentName);
     this.toolingFingerprintByDeployment.delete(deploymentName);
   }
   /**
@@ -1824,6 +1852,7 @@ export class DeploymentManager {
         deploymentName,
         agentTooling.leaseExpiresAt
       );
+      this.leaseMintedAtByDeployment.set(deploymentName, new Date());
     } else {
       this.leaseExpiryByDeployment.delete(deploymentName);
     }

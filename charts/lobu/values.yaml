@@ -93,32 +93,31 @@ app:
   # the gateway's environment — verified, not theoretical. The pod boundary is
   # per-POD, and the tenants are inside it.
   #
-  # To enable contributed CLIs, bubblewrap needs `unshare(CLONE_NEWUSER)`. Two
-  # supported ways, both of which keep a REAL per-exec sandbox (never disable it
-  # — see the isolation note above):
+  # MEASURED on this cluster (k3s v1.32.8, containerd 2.0.5, Ubuntu 24.04 /
+  # kernel 6.8): bubblewrap CANNOT be enabled by any securityContext change.
+  # `unshare --user` succeeds once SYS_ADMIN is added, but bwrap then fails at
   #
-  #  a) Preferred, no node changes: add SYS_ADMIN back so bwrap can create the
-  #     namespaces, keeping RuntimeDefault seccomp otherwise intact.
+  #     bwrap: setting up uid map: Operation not permitted
   #
-  #       containerSecurityContext:
-  #         allowPrivilegeEscalation: false
-  #         capabilities:
-  #           drop: [ALL]
-  #           add: [SYS_ADMIN]
-  #         seccompProfile:
-  #           type: RuntimeDefault
+  # which still failed with SETUID+SETGID+SYS_CHROOT+MKNOD+DAC_OVERRIDE added,
+  # allowPrivilegeEscalation: true, AND seccomp removed entirely. Writing
+  # /proc/self/uid_map is restricted by the container runtime, not by seccomp or
+  # capabilities, so no chart-level knob reaches it.
   #
-  #  b) Tighter, needs the file staged on every node: a Localhost profile
-  #     derived from RuntimeDefault that allows `unshare` and `clone` with
-  #     namespace flags.
+  # Consequence: connector-contributed CLIs (`gh`) exit 127 on this cluster, by
+  # design, and that is the SAFE outcome — see the isolation note above.
+  # Enabling them needs a runtime-level change, not a values.yaml edit. Also
+  # measured: this cluster declares `crun` and `gvisor` RuntimeClasses, but
+  # neither handler is installed on the nodes ("no runtime for \"crun\" is
+  # configured" / "...\"runsc\"..."), so switching runtimeClassName is not an
+  # available workaround here either.
   #
-  #       seccompProfile:
-  #         type: Localhost
-  #         localhostProfile: profiles/bwrap-unshare.json
-  #
-  # Verify either with: `kubectl exec <app-pod> -- bwrap --unshare-user --ro-bind
-  # /usr /usr -- /usr/bin/true` — it must exit 0. If it does not, contributed
-  # CLIs will (correctly) keep exiting 127 rather than running unsandboxed.
+  # Verify on any cluster before assuming otherwise:
+  #   kubectl exec <app-pod> -- bwrap --unshare-user --unshare-pid --ro-bind \
+  #     /usr /usr --proc /proc --dev /dev -- /usr/bin/true
+  # Exit 0 means contributed CLIs will register; anything else means 127.
+  # Do NOT "fix" a non-zero result with LOBU_ALLOW_UNSANDBOXED_EXEC: workers and
+  # the gateway share this container, and /proc/1/environ is readable from it.
   #
   # Do NOT reach for `type: Unconfined` (drops the whole filter) or for
   # LOBU_ALLOW_UNSANDBOXED_EXEC (skips the sandbox AND unlocks full

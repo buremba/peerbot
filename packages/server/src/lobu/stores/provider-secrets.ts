@@ -376,12 +376,10 @@ function withPromotion(
  * `{ error: 'slug_conflict' }` rather than throwing.
  *
  * Why (d): the org default is the tail of the layered model fallback
- * (behavior → agent → org default), so an org with no default has no
- * resolvable model at all — `getOrgDefaultModel` returns null and every
- * org-scoped model consumer silently no-ops. Marking a provider default was a
- * SEPARATE explicit call (`PUT /inference-providers/:slug/default`) that
- * nothing chained to creation, so creating a provider could leave the org
- * without a model fallback.
+ * (behavior → agent → org default), so `getOrgDefaultModel` returns null when
+ * neither a behavior nor an agent supplies a model. Marking a provider default
+ * was a SEPARATE explicit call (`PUT /inference-providers/:slug/default`) that
+ * nothing chained to creation.
  *
  * "Runnable" is load-bearing — promotion only ever considers rows that carry a
  * `capabilities.text.model`. Promoting a model-less row would hand the org a
@@ -1100,11 +1098,10 @@ export async function rotateInferenceProviderKey(
  * Returns false when no live row exists for the slug.
  *
  * Deleting THE default promotes the oldest surviving runnable provider in the
- * same transaction. Without this, removing the default silently leaves the org
- * with none — `getOrgDefaultModel` starts returning null and every org-scoped
- * model consumer no-ops, with nothing in the UI to indicate why. Promotion is
- * skipped when the deleted row was not the default, and is a no-op when it was
- * the org's last runnable provider.
+ * same transaction. Without this, removing the default makes
+ * `getOrgDefaultModel` return null until another default is chosen. Promotion
+ * is skipped when the deleted row was not the default, and is a no-op when it
+ * was the org's last runnable provider.
  */
 export async function softDeleteInferenceProvider(
 	organizationId: string,

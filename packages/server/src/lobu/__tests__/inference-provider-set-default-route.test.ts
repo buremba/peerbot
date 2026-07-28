@@ -120,7 +120,7 @@ describe("PUT /inference-providers/:slug/default", () => {
 		const { error } = (await res.json()) as { error: string };
 		expect(error).toContain("no text model configured");
 		expect(error).toContain(
-			"lobu providers set-capability groq text --model <model>"
+			"lobu providers set-capability groq text --model <model>",
 		);
 	});
 

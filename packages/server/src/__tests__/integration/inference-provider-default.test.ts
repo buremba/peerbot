@@ -476,7 +476,7 @@ describe('inference provider org default', () => {
 
       // Even asked for BY NAME, an oauth:// ref joins to no vault secret, so the
       // gateway transport declines rather than sending a keyless request.
-      // Claude is also sdkCompat:"anthropic", the one non-OpenAI protocol.
+      // Claude also uses the non-OpenAI `anthropic` protocol.
       expect(
         await resolveCompletionTarget(org.id, 'claude/claude-sonnet-5'),
       ).toBeNull();

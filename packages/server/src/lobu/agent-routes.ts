@@ -1064,14 +1064,14 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 	// different reasons — and the fix differs, so the message must too.
 	if (result === "no_text_model") {
 		return c.json(
-				{
-					error:
-						`Provider '${slug}' has no text model configured, so it cannot be ` +
-						`the org default. Set one with: lobu providers set-capability ` +
-						`${slug} text --model <model>`,
-				},
-				400
-			);
+			{
+				error:
+					`Provider '${slug}' has no text model configured, so it cannot be ` +
+					`the org default. Set one with: lobu providers set-capability ` +
+					`${slug} text --model <model>`,
+			},
+			400
+		);
 	}
 	if (result === "oauth_provider") {
 		return c.json(

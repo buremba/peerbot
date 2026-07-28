@@ -1,10 +1,26 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
-import { attachFreshRunJobToken } from "../orchestration/agent-run-input.js";
+import * as dbClient from "../../db/client.js";
+import {
+  attachFreshRunJobToken,
+  recordAgentRunInput,
+} from "../orchestration/agent-run-input.js";
 
 // Same lazy-ENCRYPTION_KEY convention as worker-token-mint-parity.test.ts.
 process.env.ENCRYPTION_KEY ??=
   "0000000000000000000000000000000000000000000000000000000000000000";
+
+// Fake the DB at the `getDb` seam with `spyOn` (restored in afterAll), never
+// `mock.module`: this suite shares a process with every other gateway suite and
+// bun's `mock.module` is process-global and CANNOT be undone by
+// `mock.restore()`. A whole-module stub of `../../db/client.js` here leaks a
+// query function that returns [] into every co-running DB-backed suite
+// (agent-history-routes, connector-tooling-enqueue, instruction-service, …),
+// where seeds silently no-op and assertions fail far from the cause.
+const getDbSpy = spyOn(dbClient, "getDb");
+afterAll(() => {
+  getDbSpy.mockRestore();
+});
 
 /**
  * A per-run token is minted once, but it is RE-minted on two other paths:
@@ -43,27 +59,22 @@ describe("durable replay preserves every signed claim", () => {
     // agent_run_input.token_claims. A claim the mint signs but that mapper
     // omits is lost at the DATABASE boundary, before attachFreshRunJobToken
     // ever sees it — so capture what recordAgentRunInput actually writes.
-    let persisted: Record<string, unknown> | undefined;
+    const bound: Array<Record<string, unknown>> = [];
     const sql = Object.assign(
       async (..._args: unknown[]) => {
         return [];
       },
       {
         json: (value: Record<string, unknown>) => {
-          // The second json() call in recordAgentRunInput is the claim set.
-          if (value && "userId" in value) persisted = value;
+          bound.push(value);
           return value;
         },
       },
     );
-    mock.module("../../db/client.js", () => ({
-      getDb: () => sql,
-      pgTextArray: (v: string[]) => v,
-    }));
-
-    const { recordAgentRunInput } = await import(
-      "../orchestration/agent-run-input.js"
+    getDbSpy.mockImplementation(
+      () => sql as unknown as ReturnType<typeof dbClient.getDb>,
     );
+
     const runJobToken = generateWorkerToken(
       claims.userId,
       claims.conversationId,
@@ -78,6 +89,8 @@ describe("durable replay preserves every signed claim", () => {
       claims.deploymentName,
     );
 
+    // recordAgentRunInput binds the stored payload first, then the claim set.
+    const persisted = bound[1];
     expect(persisted?.allowedDomains).toEqual(["api.github.com"]);
     expect(persisted?.nixPackages).toEqual(["gh"]);
   });

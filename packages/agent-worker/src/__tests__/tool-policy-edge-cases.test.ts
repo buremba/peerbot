@@ -70,7 +70,8 @@ describe("isDirectPackageInstallCommand", () => {
   // Should NOT detect (false positive guard).
   // Note: "brew list" IS detected (brew prefix matches) — intentionally conservative.
   // Note: "apt-get update" IS detected (apt-get prefix matches) — intentionally conservative.
-  // Note: "echo npm install" IS detected via regex (embedded npm install) — intentionally conservative.
+  // A manager named as an ARGUMENT ("echo npm install") is NOT detected: the
+  // patterns match only at a command position.
   const allowed = [
     "",
     "   ",
@@ -106,9 +107,33 @@ describe("isDirectPackageInstallCommand", () => {
     expect(isDirectPackageInstallCommand("apt-get update")).toBe(true);
   });
 
-  test("echo npm install IS detected (regex matches embedded npm install)", () => {
-    // The DIRECT_PACKAGE_INSTALL_PATTERNS match npm install anywhere in the command
-    expect(isDirectPackageInstallCommand("echo npm install")).toBe(true);
+  test("a manager named as an argument is NOT detected", () => {
+    // The patterns match only at a command position — start of input, a
+    // newline, or just after a shell operator. `echo npm install` prints a
+    // string; it installs nothing, so blocking it only broke honest commands.
+    for (const cmd of [
+      "echo npm install",
+      "echo uvx cowsay",
+      "git log --grep nix run",
+      "man nix run",
+      "git commit -m fix-apt-install-docs",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("a real install at a command position is still detected", () => {
+    for (const cmd of [
+      "npm install lodash",
+      "  npm install lodash",
+      "true; npm install lodash",
+      "true && uvx cowsay",
+      "echo hi | uvx cowsay",
+      "(nix shell nixpkgs#hello)",
+      "true\nnix run x",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
   });
 });
 

@@ -164,6 +164,12 @@ describe("connector tooling on the enqueue path", () => {
       teamId: data.teamId,
       agentId: data.agentId,
       organizationId: data.organizationId,
+      platform: data.platform,
+      platformMetadata: data.platformMetadata,
+      // handleMessage mints with the id of the run row it just created; the
+      // fold under test does not touch either claim.
+      runId: 1,
+      messageId: data.messageId,
       allowedDomains: data.networkConfig?.allowedDomains,
     });
 

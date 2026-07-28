@@ -192,20 +192,33 @@ async function loadToolingConnections(
   `) as unknown as ToolingConnectionRow[];
 }
 
+/** The declaration-only half of the contribution: no credential is minted. */
+export interface ResolvedAgentToolingDeclaration {
+  packages: string[];
+  domains: string[];
+}
+
 /**
- * Resolve the declaration-only domain contribution before minting a per-run
- * worker token. Credentials remain deployment-only and never enter the queue
- * payload.
+ * Resolve the declaration-only contribution before minting a per-run worker
+ * token. Credentials remain deployment-only and never enter the queue payload.
+ *
+ * Packages are returned alongside domains because the warm path reconciles
+ * egress grants against this payload: `syncNetworkConfigGrants` derives the nix
+ * binary-cache hosts from `nixConfig.packages`, so a caller that folded domains
+ * but not packages would revoke the substituter hosts that the contributed
+ * packages need — including out from under an in-flight first-deploy download.
  */
-export async function resolveAgentToolingDomains(params: {
+export async function resolveAgentToolingDeclaration(params: {
   organizationId: string;
-}): Promise<string[]> {
+}): Promise<ResolvedAgentToolingDeclaration> {
+  const packages = new Set<string>();
   const domains = new Set<string>();
   for (const row of await loadToolingConnections(params.organizationId)) {
     const tooling = parseAgentTooling(row.agent_tooling);
+    for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
   }
-  return [...domains];
+  return { packages: [...packages], domains: [...domains] };
 }
 
 /**
@@ -240,9 +253,13 @@ export async function resolveAgentTooling(params: {
   for (const row of rows) {
     const tooling = parseAgentTooling(row.agent_tooling);
     if (!tooling) {
+      // Covers both a structurally malformed value and one whose every entry
+      // was filtered out (an unknown credential tier, an invalid package name,
+      // a domain that would have widened egress). Either way it contributes
+      // nothing, and the connector key is what identifies which to go look at.
       logger.warn(
         { connector_key: row.connector_key },
-        "Ignoring malformed agent_tooling declaration"
+        "Ignoring agent_tooling declaration with no usable contribution"
       );
       continue;
     }

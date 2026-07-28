@@ -28,7 +28,7 @@ import {
 } from "../agent-tooling/credential-lease.js";
 import {
   resolveAgentTooling,
-  resolveAgentToolingDomains,
+  resolveAgentToolingDeclaration,
 } from "../agent-tooling/resolver.js";
 import { GitHubInstallationTokenProvider } from "../installation/github-installation-token-provider.js";
 import { InMemoryInstallationTokenCache } from "../installation/installation-token-provider.js";
@@ -320,11 +320,17 @@ describe("resolveAgentTooling", () => {
     expect(resolved.packages).toEqual(["gh"]);
     expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
     expect(resolved.domains).toEqual(["api.github.com", "github.com"]);
+    // The declaration-only resolver (the queue path) must carry BOTH halves.
+    // Domains alone would let the warm-path grant reconcile revoke the nix
+    // binary-cache hosts that the contributed packages depend on.
     expect(
-      await resolveAgentToolingDomains({
+      await resolveAgentToolingDeclaration({
         organizationId: ORG,
       })
-    ).toEqual(["api.github.com", "github.com"]);
+    ).toEqual({
+      packages: ["gh"],
+      domains: ["api.github.com", "github.com"],
+    });
   });
 
   test("a connector that declares no agentTooling contributes nothing", async () => {
@@ -561,6 +567,47 @@ describe("deployment env assembly", () => {
       "api.github.com",
       "github.com",
     ]);
+  });
+
+  test("REGRESSION: the warm-path reconcile keeps the nix cache hosts a contributed package needs", async () => {
+    // The warm path (existing thread) re-runs syncNetworkConfigGrants against
+    // the QUEUE payload, which is built by the consumer — not by buildEnv. That
+    // reconcile derives the nix binary-cache hosts from nixConfig.packages and
+    // unconditionally revokes anything not in the expected set. So if the
+    // consumer folds contributed domains but NOT contributed packages, the
+    // second message of a conversation revokes cache.nixos.org — potentially
+    // out from under an in-flight first-deploy download of that very package.
+    //
+    // Mutation check: drop the `contribution.packages` fold in message-consumer
+    // and this test fails on the cache.nixos.org assertion.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    const grantStore = new GrantStore();
+    manager.setGrantStore(grantStore);
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    // Cold create: grants the connector domains AND the nix cache hosts.
+    await manager.buildEnv(buildPayload());
+    expect(await grantStore.hasGrant(AGENT, "cache.nixos.org", ORG)).toBe(true);
+
+    // Warm path: the agent declares no nix packages of its own, so the cache
+    // hosts survive only if the consumer folded the contributed package.
+    const contribution = await resolveAgentToolingDeclaration({
+      organizationId: ORG,
+    });
+    await manager.syncNetworkConfigGrants({
+      ...buildPayload(),
+      networkConfig: { allowedDomains: contribution.domains },
+      nixConfig: { packages: contribution.packages },
+    });
+
+    expect(await grantStore.hasGrant(AGENT, "cache.nixos.org", ORG)).toBe(true);
+    expect(await grantStore.hasGrant(AGENT, "api.github.com", ORG)).toBe(true);
   });
 
   test("a lease env var survives secret-placeholder injection", async () => {

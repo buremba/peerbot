@@ -51,7 +51,7 @@ import {
   isWatcherConversationId,
   upsertConversation,
 } from "../services/conversations-store.js";
-import { resolveAgentToolingDomains } from "../agent-tooling/resolver.js";
+import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
 
@@ -562,19 +562,35 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      // Connector domains must be present before the per-run token is minted:
-      // remote runtimes trust only the signed claim, never the payload body.
+      // The connector contribution must be folded before the per-run token is
+      // minted: remote runtimes trust only the signed claim, never the payload
+      // body. Packages are folded as well as domains — `syncNetworkConfigGrants`
+      // reconciles this payload against the grant store on the warm path, and it
+      // derives the nix binary-cache hosts from `nixConfig.packages`. Folding
+      // domains alone would let the warm-path reconcile revoke the substituter
+      // hosts an agent's contributed packages depend on.
       try {
-        const connectorDomains = await resolveAgentToolingDomains({
+        const contribution = await resolveAgentToolingDeclaration({
           organizationId: data.organizationId,
         });
-        if (connectorDomains.length > 0) {
+        if (contribution.domains.length > 0) {
           data.networkConfig = {
             ...data.networkConfig,
             allowedDomains: [
               ...new Set([
                 ...(data.networkConfig?.allowedDomains ?? []),
-                ...connectorDomains,
+                ...contribution.domains,
+              ]),
+            ],
+          };
+        }
+        if (contribution.packages.length > 0) {
+          data.nixConfig = {
+            ...data.nixConfig,
+            packages: [
+              ...new Set([
+                ...(data.nixConfig?.packages ?? []),
+                ...contribution.packages,
               ]),
             ],
           };
@@ -586,7 +602,7 @@ export class MessageConsumer {
             agentId: data.agentId,
             error: getErrorMessage(error),
           },
-          "Failed to resolve connector tooling domains; continuing without them"
+          "Failed to resolve connector tooling contribution; continuing without it"
         );
       }
 

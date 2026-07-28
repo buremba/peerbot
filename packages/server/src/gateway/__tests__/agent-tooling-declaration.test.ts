@@ -119,6 +119,26 @@ describe("parseAgentTooling", () => {
     ).toEqual({ domains: ["api.github.com", "*.github.com", "spaced.com"] });
   });
 
+  test("drops IP literals and non-resolvable infrastructure suffixes", () => {
+    // A connector declaration applies org-wide to every agent, so it must not
+    // be able to name a network location. 169.254.169.254 and
+    // metadata.google.internal are the cloud instance-metadata endpoints — a
+    // grant for either hands every agent in the org the instance credentials.
+    expect(
+      parseAgentTooling({
+        domains: [
+          "api.github.com",
+          "169.254.169.254",
+          "127.0.0.1",
+          "10.0.0.1",
+          "metadata.google.internal",
+          "*.internal",
+          "db.local",
+        ],
+      })
+    ).toEqual({ domains: ["api.github.com"] });
+  });
+
   test("drops an env entry with an unrecognized credential tier", () => {
     // Defaulting an unknown tier to 'lease' would try to mint for a provider
     // that cannot derive tokens; dropping it keeps the failure visible (the

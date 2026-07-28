@@ -37,15 +37,20 @@ export function normalizeDomainPatterns(
 }
 
 /**
- * Shape check for an egress allowlist/denylist entry, matching what the public
- * agent settings API accepts: a hostname, or a `*.suffix`/`.suffix` wildcard
- * that still names at least two labels. Rejects the bare wildcard, schemes,
- * paths, ports, and anything else that would silently widen egress (a
- * comma-joined `"a.com, b.com"` is one bogus host, not two grants).
+ * Shape check for an egress allowlist/denylist entry: a hostname, or a
+ * `*.suffix`/`.suffix` wildcard that still names at least two labels. Rejects
+ * the bare wildcard, schemes, paths, ports, IP literals, and anything else that
+ * would silently widen egress (a comma-joined `"a.com, b.com"` is one bogus
+ * host, not two grants).
+ *
+ * Stricter than the operator-facing agent settings contract, which types these
+ * as plain strings. That asymmetry is deliberate: an operator edits their own
+ * agent's allowlist, whereas a connector declaration is authored by a third
+ * party and applies org-wide to every agent, so it does not get to name a host
+ * an operator would have had to type out deliberately.
  *
  * Lives here beside {@link normalizeDomainPattern} so every producer of a
- * pattern validates it the same way — patterns reach the proxy from operator
- * settings AND from connector declarations.
+ * pattern validates it the same way.
  */
 export function isValidDomainPattern(pattern: unknown): pattern is string {
   if (typeof pattern !== "string") return false;
@@ -61,6 +66,17 @@ export function isValidDomainPattern(pattern: unknown): pattern is string {
     : trimmed.startsWith(".")
       ? trimmed.slice(1)
       : trimmed;
+
+  // An IPv4 literal passes the two-label test below (`169.254.169.254` is four
+  // labels) but names a network location rather than a service. Cloud metadata
+  // endpoints — 169.254.169.254, metadata.google.internal — are the reason: a
+  // grant for one hands every agent in the org the instance's credentials.
+  // Egress entries must be resolvable names, so IP literals are refused
+  // outright rather than the link-local range being special-cased.
+  if (/^\d+(\.\d+)*$/.test(host)) return false;
+  // `.internal`/`.local` are not publicly resolvable; a pattern ending in one
+  // only ever names infrastructure the proxy should not be reaching for.
+  if (/\.(internal|local|localdomain)$/.test(host)) return false;
   // Compare in punycode, the form patterns are stored and matched in, so an IDN
   // host is judged by the same rule as its ASCII equivalent.
   // Two labels minimum: a wildcard over a TLD (`*.com`) is not a grant anyone

@@ -77,6 +77,32 @@ export const RESERVED_PATHS = [
 
 export const RESERVED_PATHS_SET: ReadonlySet<string> = new Set(RESERVED_PATHS);
 
+// ── Connector-key namespace prefixes ────────────────────────────────────────
+
+/**
+ * Namespace prefixes for synthesized connectors-list rows whose underlying data
+ * lives outside the `connections` table. Model providers and remote sandboxes
+ * share the connectors list/map with real connectors, so each gets a reserved
+ * key prefix that keeps e.g. a provider named `slack` from colliding with the
+ * real Slack connector. The prefixed key IS the routable connector key: rows
+ * link to `/connectors/$connectorKey`, and the detail route strips the prefix to
+ * resolve the remainder as a provider / sandbox instead of a connector def.
+ *
+ * These live in core (not the SPA) because the server's chat-message URL
+ * builders emit the same prefixed keys into agent-error CTA links, and the SPA
+ * re-exports them so browser code keeps one import site. Keep these values in
+ * sync with the detail-route parsers (`inference-rows.ts`, `sandbox-rows.ts`).
+ */
+
+/** Model-provider row / CTA target: `inference-provider:<slug>`. */
+export const INFERENCE_ROW_KEY_PREFIX = "inference-provider:";
+
+/** Org sandbox-instance row: `sandbox:<id>`. */
+export const SANDBOX_ROW_KEY_PREFIX = "sandbox:";
+
+/** Sandbox provider-kind (catalog) row: `sandbox-provider:<kind>`. */
+export const SANDBOX_PROVIDER_KEY_PREFIX = "sandbox-provider:";
+
 // ── Entity type create denylist ─────────────────────────────────────────────
 
 /**

@@ -313,6 +313,78 @@ describe("isDirectPackageInstallCommand quoted-data false positives", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — shell quote-concatenation canonicalization
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand quote-concatenation bypass", () => {
+  // The shell glues adjacent quoted/unquoted fragments into one token:
+  // `"nix"`→`nix`, `n"i"x`→`nix`, `n'i'x`→`nix`. The detector must canonicalize
+  // the same way or a quoted executable name bypasses it. (Third review of #2259.)
+  const concatenated = [
+    '"nix" run nixpkgs#hello',
+    'n"i"x run nixpkgs#hello',
+    "n'i'x run nixpkgs#hello",
+    '"npm" install lodash',
+    'np"m" install x',
+    "'uvx' cowsay",
+    '"nix"-build x',
+    "'nix'\\ shell x",
+  ];
+  for (const cmd of concatenated) {
+    test(`canonicalizes quote-concat exec name: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — pipe into an interpreter executes upstream
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand pipe-to-interpreter bypass", () => {
+  // `echo "npm install" | sh` runs the echoed text; a command containing a bare
+  // interpreter sink must not exempt any segment as data. (Third review of #2259.)
+  const piped = [
+    'echo "nix run nixpkgs#hello" | sh',
+    'echo "npm install x" | bash',
+    'printf "uvx cowsay" | zsh',
+    'echo "pip install x"|sh',
+    'echo "nix build x" | /bin/sh',
+    'printf "%s" "pnpm dlx x" | dash',
+  ];
+  for (const cmd of piped) {
+    test(`inspects text piped to interpreter: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+
+  // Piping prose into a NON-interpreter is still data, not a command.
+  const benignPipes = [
+    'echo "nix docs" | grep nix',
+    "cat file.txt | wc -l",
+    'echo "npm install notes" | tee log.txt',
+  ];
+  for (const cmd of benignPipes) {
+    test(`does not falsely flag pipe to non-interpreter: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — code-evaluating filters are not data-only
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand code-evaluating filters", () => {
+  // `awk` executes code, so its quoted program is not exempt data. (#2259 r3.)
+  test("awk program that shells out is inspected", () => {
+    expect(
+      isDirectPackageInstallCommand('awk "BEGIN{system(\\"npm install x\\")}"')
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // normalizeToolList edge cases
 // ---------------------------------------------------------------------------
 

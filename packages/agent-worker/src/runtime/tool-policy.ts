@@ -129,29 +129,40 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  * the detector match MORE, never introduce a false negative, and the segment
  * has already been split out of any quotes by the time we get here.
  */
-function unescapeShellToken(segment: string): string {
-  return segment.replace(/\\(.)/g, "$1");
-}
-
 /**
- * Blank out single- and double-quoted spans so a package-manager phrase used
- * as DATA (a commit message, echoed help text) is not matched as a command.
- * Quoted text can never itself be a command, so replacing it with a space can
- * only remove false positives, never hide a real acquisition — a real command
- * lives OUTSIDE the quotes and survives untouched. Backslash-escaped quotes are
- * consumed as a pair so they don't spuriously open/close a span. Unbalanced
- * quotes leave the trailing text intact (conservative: still matched).
+ * Canonicalize a shell segment to the token string the shell would actually
+ * execute: remove quote DELIMITERS while joining the fragments they wrap (so
+ * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`), and drop backslash
+ * escapes (`n\ix` → `nix`). This is the load-bearing step — the detector must
+ * match against the canonical form, because the shell strips quoting/escaping
+ * from executable names before running them, and matching the literal text
+ * lets `"nix" run` / `n\ix run` slip past.
+ *
+ * Two forms are produced:
+ *   - `code`: the full canonical command, for matching a segment that IS a
+ *     command (the default, fail-closed).
+ *   - `dataStripped`: the same but with the CONTENTS of quoted spans removed
+ *     (not just the delimiters), for a segment whose leading command treats its
+ *     quoted arguments as data (`echo`, `git`, …) — so a package name inside a
+ *     commit message is not a false positive.
  */
-function stripQuotedSpans(segment: string): string {
-  let out = "";
+function canonicalizeSegment(segment: string): {
+  code: string;
+  dataStripped: string;
+} {
+  let code = "";
+  let dataStripped = "";
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
+    // Backslash escape: the next char is literal. Inside single quotes the
+    // backslash is itself literal (POSIX), but treating it as an escape here
+    // only ever removes a char from what we match, which cannot hide a command
+    // name — conservative in the safe direction.
     if (ch === "\\" && i + 1 < segment.length) {
-      // Preserve an escaped char outside quotes (unescapeShellToken handles the
-      // canonicalization); inside quotes it is dropped with the rest.
+      code += segment[i + 1];
       if (!quote) {
-        out += ch + segment[i + 1];
+        dataStripped += segment[i + 1];
       }
       i++;
       continue;
@@ -159,39 +170,36 @@ function stripQuotedSpans(segment: string): string {
     if (quote) {
       if (ch === quote) {
         quote = null;
-        out += " ";
+      } else {
+        // Quoted CONTENT is kept in `code` (it is part of the token / program)
+        // but dropped from `dataStripped` (it is a data argument there).
+        code += ch;
       }
       continue;
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
-      out += " ";
       continue;
     }
-    out += ch;
+    code += ch;
+    dataStripped += ch;
   }
-  return out;
+  return {
+    code: code.trim().toLowerCase(),
+    dataStripped: dataStripped.trim().toLowerCase(),
+  };
 }
 
 /**
- * Whether a command acquires a package/dependency (or fetches-and-executes
- * one) through a package manager. Enforced by {@link enforceBashPreflight}.
- *
- * The check runs per shell segment (via {@link splitShellCommands}) so that a
- * package-manager phrase inside a QUOTED argument — a commit message, echoed
- * help text — is treated as data, not a command; and each segment is
- * backslash-unescaped first so escaped executable names cannot slip past. A
- * segment matches if it starts with a denied prefix or matches an install
- * pattern.
- */
-/**
  * Leading commands whose quoted arguments are DATA, not code. Only for a
- * segment led by one of these do we drop quoted spans before matching, so a
- * package-manager phrase in a commit message / echoed string is not a false
- * positive. This is an ALLOWLIST on purpose: any other leading word — `eval`,
- * `xargs`, `sh`/`bash -c`, `command`, an unknown binary — is treated as a
- * potential executor, so its quoted content is STILL inspected (fail closed).
- * A word not on this list can only cost a false positive, never a bypass.
+ * segment led by one of these — AND not feeding an interpreter via a pipe — do
+ * we match the data-stripped form, so a package-manager phrase in a commit
+ * message / echoed string is not a false positive. This is an ALLOWLIST on
+ * purpose: any other leading word — `eval`, `xargs`, `sh`/`bash`, `awk`,
+ * `command`, an unknown binary — is treated as a potential executor, so its
+ * quoted content is STILL inspected (fail closed). A word not on this list can
+ * only cost a false positive, never a bypass. Code-evaluating filters (`awk`,
+ * `sed` with `e`, `perl`, …) are deliberately absent.
  */
 const QUOTED_ARG_IS_DATA_COMMANDS = new Set<string>([
   "echo",
@@ -203,12 +211,9 @@ const QUOTED_ARG_IS_DATA_COMMANDS = new Set<string>([
   "fgrep",
   "rg",
   "ag",
-  "sed",
-  "awk",
   "git",
   "test",
   "[",
-  "expr",
   "read",
   "tr",
   "cut",
@@ -221,10 +226,30 @@ const QUOTED_ARG_IS_DATA_COMMANDS = new Set<string>([
   "diff",
 ]);
 
-/** The leading executable token of a shell segment, unescaped and lowercased. */
-function leadingCommand(segment: string): string {
-  const firstWord = unescapeShellToken(segment).trim().split(/\s+/)[0] ?? "";
-  return firstWord.toLowerCase();
+/** Shell interpreters that execute text piped into them or passed to them. */
+const SHELL_INTERPRETERS = new Set<string>([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ash",
+  "ksh",
+  "fish",
+  "csh",
+  "tcsh",
+  "eval",
+  "source",
+  ".",
+  "xargs",
+]);
+
+/** The leading executable token of a canonical segment, path-stripped. */
+function leadingCommand(canonicalCode: string): string {
+  const firstWord = canonicalCode.split(/\s+/)[0] ?? "";
+  // Strip a leading path so `/bin/sh` → `sh`, and drop a `sudo`/`command`
+  // /`builtin` prefix's effect by taking the first token (those prefixes are
+  // themselves not on the data-only list, so they already fail closed).
+  return firstWord.split("/").pop() ?? "";
 }
 
 export function isDirectPackageInstallCommand(command: string): boolean {
@@ -232,26 +257,28 @@ export function isDirectPackageInstallCommand(command: string): boolean {
     return false;
   }
 
-  // Split on shell control operators / substitution boundaries so each
-  // sub-command is checked on its own (a real command chained after quoted data
-  // survives as its own segment). Quoted content is inspected as CODE by
-  // default — an executor like `eval`/`sh -c` runs its quoted argument — and is
-  // only dropped when the segment's leading command is a known data-only
-  // command (`echo`, `git`, …). Any other leading word fails closed: its quoted
-  // content is still matched.
   const segments = splitShellCommands(command);
   const candidates = segments.length > 0 ? segments : [command];
 
+  // A pipeline that feeds an interpreter (`echo "npm install" | sh`) executes
+  // its upstream text, so the data-only exemption must NOT apply anywhere in a
+  // command that contains a bare interpreter. Detect that once for the whole
+  // command and, if present, treat every segment as code.
+  const hasInterpreterSink = candidates.some((seg) =>
+    SHELL_INTERPRETERS.has(leadingCommand(canonicalizeSegment(seg).code))
+  );
+
   return candidates.some((segment) => {
-    const raw = unescapeShellToken(segment).trim().toLowerCase();
-    if (!raw) {
+    const { code, dataStripped } = canonicalizeSegment(segment);
+    if (!code) {
       return false;
     }
-    // For a known data-only leading command, quoted args are data: check the
-    // de-quoted form. Otherwise check the raw form so quoted CODE is inspected.
-    const target = QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(segment))
-      ? unescapeShellToken(stripQuotedSpans(segment)).trim().toLowerCase()
-      : raw;
+    // Match the data-stripped form only for a data-only leading command in a
+    // command with no interpreter sink; otherwise match the full code form.
+    const useDataStripped =
+      !hasInterpreterSink &&
+      QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(code));
+    const target = useDataStripped ? dataStripped : code;
     if (!target) {
       return false;
     }
@@ -517,10 +544,11 @@ export function enforceBashCommandPolicy(
 
   for (const segment of segments) {
     const normalizedSegment = segment.toLowerCase();
-    // Deny is checked against the backslash-unescaped form so an escaped
-    // executable name (`n\ix shell` → `nix shell`) cannot slip past. Unescaping
-    // can only make a deny prefix match MORE, so it is always safe here.
-    const denyTarget = unescapeShellToken(normalizedSegment);
+    // Deny is checked against the CANONICAL form (quoting/escaping collapsed to
+    // what the shell would execute), so `n\ix shell`, `"nix" shell`, and
+    // `n"i"x shell` all resolve to `nix shell` and cannot slip a deny prefix.
+    // Canonicalizing can only make a deny prefix match MORE, so it is safe.
+    const denyTarget = canonicalizeSegment(segment).code;
 
     const denied = policy.denyPrefixes.some((prefix) =>
       denyTarget.startsWith(prefix.toLowerCase())
@@ -530,9 +558,9 @@ export function enforceBashCommandPolicy(
     }
 
     if (hasAllowlist) {
-      // Allow is checked against the RAW segment: an escaped command that no
-      // longer matches an allow prefix must fall through to "not allowed",
-      // never be spuriously permitted by unescaping.
+      // Allow is checked against the RAW segment: a quoted/escaped command that
+      // no longer matches an allow prefix must fall through to "not allowed",
+      // never be spuriously permitted by canonicalizing.
       const allowed = policy.allowPrefixes.some((prefix) =>
         normalizedSegment.startsWith(prefix.toLowerCase())
       );

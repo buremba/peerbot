@@ -329,6 +329,53 @@ describe("multi-replica backstop (reconcile loop)", () => {
   });
 });
 
+describe("recorded lease state is dropped with the worker", () => {
+  test("a torn-down deployment leaves no recycle state behind", async () => {
+    // A crash, an idle scale-to-0, or a delete must clear EVERY recorded map.
+    // A leftover fingerprint makes the next deployment under the same name
+    // look "known" when it was never built with that tooling; a leftover
+    // expiry arms a recycle for a worker that no longer exists.
+    class Manager extends RecordingManager {
+      seed(name: string) {
+        const self = this as unknown as {
+          leaseExpiryByDeployment: Map<string, Date>;
+          leaseMintedAtByDeployment: Map<string, Date>;
+          toolingFingerprintByDeployment: Map<string, string>;
+          organizationByDeployment: Map<string, string>;
+        };
+        self.leaseExpiryByDeployment.set(name, new Date(Date.now() + 60_000));
+        self.leaseMintedAtByDeployment.set(name, new Date(Date.now() - 60_000));
+        self.toolingFingerprintByDeployment.set(name, "fp-old");
+        self.organizationByDeployment.set(name, "org-old");
+      }
+      forget(name: string) {
+        (this as unknown as { forgetLeaseExpiry(n: string): void })
+          .forgetLeaseExpiry(name);
+      }
+      mapSizes(): number[] {
+        const self = this as unknown as Record<string, Map<string, unknown>>;
+        return [
+          self.leaseExpiryByDeployment.size,
+          self.leaseMintedAtByDeployment.size,
+          self.toolingFingerprintByDeployment.size,
+          self.organizationByDeployment.size,
+        ];
+      }
+    }
+
+    const manager = new Manager(CONFIG);
+    manager.seed(DEPLOYMENT);
+    expect(manager.mapSizes()).toEqual([1, 1, 1, 1]);
+
+    manager.forget(DEPLOYMENT);
+
+    // Every map, not just the one whose bug prompted the cleanup.
+    expect(manager.mapSizes()).toEqual([0, 0, 0, 0]);
+    expect(manager.hasExpiringLease(DEPLOYMENT)).toBe(false);
+    expect(manager.hasToolingChanged(DEPLOYMENT, "fp-new")).toBe(false);
+  });
+});
+
 describe("deferral is retried, not lost", () => {
   test("a turn deferred by liveness recycles on the next turn", async () => {
     // The trigger is STATE, not an event: hasExpiringLease/hasToolingChanged

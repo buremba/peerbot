@@ -247,8 +247,14 @@ const EXEC_WRAPPERS = new Set<string>([
  * bare assignment-prefixed command both accept). Stops at the first token that is
  * neither a known wrapper, a flag, nor an assignment — that token is the real
  * command. Bounded so a pathological input can't loop.
+ *
+ * Returns `null` when nothing was peeled, so a caller can tell a genuinely
+ * wrapped command from a plain one. That distinction matters: the remainder
+ * of a wrapped command is matched at ANY token boundary (see
+ * {@link matchesDenyPrefixAtAnyToken}), which would be far too broad to
+ * apply to an unwrapped command's arguments.
  */
-function stripExecWrappers(canonicalCode: string): string {
+function stripExecWrappers(canonicalCode: string): string | null {
   const tokens = canonicalCode.split(/\s+/).filter(Boolean);
   let i = 0;
   let peeledWrapper = false;
@@ -263,6 +269,14 @@ function stripExecWrappers(canonicalCode: string): string {
       // `nice -n 10`, `env -i`, `xargs -I{}`). A flag starts with `-`; a bare
       // numeric/duration operand (timeout/nice) is also consumed. Stop at the
       // first token that looks like a command name.
+      //
+      // A flag whose value is a SEPARATE non-numeric word (`env -u PATH …`,
+      // `sudo -u nobody …`, `timeout -s KILL 5 …`) leaves that value at the
+      // head of the remainder, so this peel alone would not expose the
+      // wrapped command. Enumerating which flag takes an operand per wrapper
+      // is a treadmill; instead the remainder of a wrapped command is matched
+      // at every token boundary (see {@link matchesDenyPrefixAtAnyToken}),
+      // which is immune to unknown wrapper flags.
       while (i < tokens.length) {
         const t = tokens[i] ?? "";
         if (t.startsWith("-") || /^\d/.test(t)) {
@@ -282,7 +296,7 @@ function stripExecWrappers(canonicalCode: string): string {
     break;
   }
   if (!peeledWrapper) {
-    return canonicalCode;
+    return null;
   }
   return tokens.slice(i).join(" ");
 }
@@ -327,16 +341,28 @@ export function isDirectPackageInstallCommand(command: string): boolean {
     if (!base) {
       return false;
     }
-    // Match on both the raw canonical form and the exec-wrapper-peeled form
-    // (`env nix run` → `nix run`) so a wrapped install produces the "declare it
-    // in nixPackages" hint instead of silently missing.
-    const peeled = stripExecWrappers(base);
-    return [base, peeled].some(
-      (target) =>
-        DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-          target.startsWith(prefix.toLowerCase())
-        ) ||
-        DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(target))
+    // Match on the raw canonical form first, then on the exec-wrapper-peeled
+    // remainder (`env nix run` → `nix run`) so a wrapped install produces the
+    // "declare it in nixPackages" hint instead of silently missing. The
+    // remainder is matched at every token boundary, mirroring the deny check,
+    // so a wrapper flag's operand (`env -u PATH nix run …`) cannot hide it.
+    if (
+      DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+        base.startsWith(prefix.toLowerCase())
+      ) ||
+      DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(base))
+    ) {
+      return true;
+    }
+    const wrapped = stripExecWrappers(base);
+    if (wrapped === null) {
+      return false;
+    }
+    return (
+      DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+        matchesDenyPrefixAtAnyToken(wrapped, prefix)
+      ) ||
+      DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(wrapped))
     );
   });
 }
@@ -594,6 +620,47 @@ function matchesDenyPrefix(target: string, prefix: string): boolean {
   return trimmed !== p && target === trimmed;
 }
 
+/**
+ * {@link matchesDenyPrefix} applied at EVERY token boundary of `target`, i.e.
+ * the same answer as testing each whitespace-aligned suffix (`a b c` →
+ * `a b c`, `b c`, `c`) and denying if any matches.
+ *
+ * Used only on the remainder of an exec-wrapped command
+ * ({@link stripExecWrappers}), where the head may still be a wrapper flag's
+ * operand (`env -u PATH nix run …` → `path nix run …`) rather than the
+ * command. Checking every boundary is what makes the peel immune to wrapper
+ * flags we do not know about, without enumerating which of them take an
+ * operand.
+ *
+ * Positional `startsWith` rather than materialized suffixes: slicing every
+ * suffix is quadratic in command length, which a pathological command could
+ * turn into a self-inflicted stall.
+ */
+function matchesDenyPrefixAtAnyToken(target: string, prefix: string): boolean {
+  const p = prefix.toLowerCase();
+  const trimmed = p.trimEnd();
+  const wordForm = trimmed !== p ? trimmed : null;
+  for (let start = 0; start <= target.length; ) {
+    if (target.startsWith(p, start)) {
+      return true;
+    }
+    // The exact-word form only matches a suffix that IS the word (`… npm i`).
+    if (
+      wordForm !== null &&
+      target.length - start === wordForm.length &&
+      target.startsWith(wordForm, start)
+    ) {
+      return true;
+    }
+    const nextSpace = target.indexOf(" ", start);
+    if (nextSpace === -1) {
+      break;
+    }
+    start = nextSpace + 1;
+  }
+  return false;
+}
+
 export function enforceBashCommandPolicy(
   command: string,
   policy: BashCommandPolicy
@@ -618,13 +685,16 @@ export function enforceBashCommandPolicy(
     // Then peel leading exec wrappers (`env nix …`, `sudo nix …`, `timeout 5
     // nix …`) so a wrapped install is denied by the wrapped command, not the
     // wrapper word — the general form of the enumerated `sudo …` deny prefixes.
+    // The peeled remainder is matched at every token boundary, so a wrapper
+    // flag that takes a separate operand (`env -u PATH nix run …`) cannot
+    // leave that operand in front of the command and shift it out of range.
     const canonical = canonicalizeSegment(segment).code;
-    const denyTarget = stripExecWrappers(canonical);
+    const wrapped = stripExecWrappers(canonical);
 
     const denied = policy.denyPrefixes.some(
       (prefix) =>
         matchesDenyPrefix(canonical, prefix) ||
-        matchesDenyPrefix(denyTarget, prefix)
+        (wrapped !== null && matchesDenyPrefixAtAnyToken(wrapped, prefix))
     );
     if (denied) {
       throw new Error("Bash command denied by policy");

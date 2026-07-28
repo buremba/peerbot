@@ -289,6 +289,26 @@ describe("enforceBashCommandPolicy", () => {
     }
   });
 
+  test("a wrapper flag's separate operand cannot shift the command out of range", () => {
+    // `-u`/`-C`/`-s` take their value as a SEPARATE word, which the flag peel
+    // leaves at the head of the remainder (`env -u PATH nix run …` → `path
+    // nix run …`). A prefix-only check on that remainder misses the install,
+    // so the remainder is matched at every token boundary instead. (#2259 r6.)
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "env -u PATH nix run nixpkgs#hello",
+      "env -C /tmp nix run nixpkgs#hello",
+      "sudo -u nobody nix shell nixpkgs#git",
+      "timeout -s KILL 5 nix run nixpkgs#hello",
+      "env -i -u HOME LC_ALL=C uvx cowsay",
+      "xargs -a list.txt -I{} npm install",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
   test("wrapper word as plain data does not spuriously deny", () => {
     const policy = buildToolPolicy({}).bashPolicy;
     expect(() =>

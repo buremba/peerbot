@@ -30,9 +30,9 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   // derivations — the same capability the old-style commands above already
   // denied. A bare `nix ` prefix covers every subcommand (conservative, like
   // `brew `); `nixfmt` and friends keep working because the prefix needs the
-  // trailing space. This matcher is a hint for the honestly-typed leading
-  // command; the sandbox binary-discovery filter is the real gate for wrapped
-  // or quoted evasions (see the header on isDirectPackageInstallCommand).
+  // trailing space. This matcher only recognizes the honestly-typed leading
+  // command; what actually contains a package manager differs per backend —
+  // see the header on isDirectPackageInstallCommand.
   "nix ",
   "nix-build ",
   "nix-store ",

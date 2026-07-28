@@ -641,31 +641,24 @@ describe("buildBinaryInvocation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The AGENT-DIRECT package-install boundary: a package manager that is not
-// registered as a runnable command in just-bash resolves to "command not
-// found" (exit 127) when the agent invokes it directly through the shell, no
-// matter how the manager token is spelled or wrapped in shell syntax, because
-// the lookup is on the resolved binary name in just-bash's registry.
-// isDirectPackageInstallCommand is only an advisory hint on top of this.
+// The AGENT-DIRECT package-install boundary: an unregistered package manager
+// resolves to "command not found" (exit 127) when the agent invokes it through
+// the shell, however the token is spelled or wrapped, because the lookup is on
+// the resolved binary name. isDirectPackageInstallCommand is only a hint.
 //
-// SCOPE — this is NOT airtight against a registered INTERPRETER re-execing a
-// manager. A tool that discovery does register (e.g. `awk`, which is not in
-// UNSANDBOXED_INTERPRETERS) inherits the worker PATH, so `awk 'BEGIN{system(
-// "bunx x")}'` reaches the manager binary directly. That residual is
-// deliberately accepted: closing it at the child PATH (dropping dirs that host
-// a manager) also removed co-located node/git and could not gate an absolute
-// /nix/store re-exec, so the PATH-scrub was reverted. Hardening it belongs at
-// the process/mount boundary and is tracked separately. These tests pin only
-// the agent-direct guarantee. (PR #2259.)
+// SCOPE — not airtight against a registered INTERPRETER re-execing a manager:
+// `awk` is not in UNSANDBOXED_INTERPRETERS, so it registers, inherits the
+// worker PATH, and `awk 'BEGIN{system("bunx x")}'` reaches the binary. That
+// residual is accepted — closing it at the child PATH also removed co-located
+// node/git and could not gate an absolute /nix/store re-exec, so the scrub was
+// reverted. Hardening belongs at the process/mount boundary, tracked separately.
 // ---------------------------------------------------------------------------
 describe("filtered package managers are not runnable via the shell directly", () => {
   test("nix/npm/uvx resolve to exit 127 through quoting and wrappers", async () => {
     // A bare just-bash with NO custom commands registered for these tools —
     // exactly what discoverBinaries() yields after UNSANDBOXED_INTERPRETERS
-    // filtering. No OS sandbox needed: just-bash only runs its builtins plus
-    // registered commands, so an unregistered binary is "not found". This
-    // covers the agent typing the manager directly; a registered interpreter
-    // re-execing it via inherited PATH is the accepted residual noted above.
+    // filtering. just-bash only runs builtins plus registered commands, so an
+    // unregistered binary is "not found".
     const { Bash, InMemoryFs } = await import("just-bash");
     const bash = new Bash({ fs: new InMemoryFs() });
 
@@ -693,15 +686,12 @@ describe("filtered package managers are not runnable via the shell directly", ()
 // ---------------------------------------------------------------------------
 // Exec wrappers (env, xargs, find, timeout, …). just-bash ships SAFE builtins
 // for these: the builtin `env nix …` resolves `nix` through just-bash's own
-// command registry (builtins + registered customCommands), so a filtered `nix`
-// is "command not found" and the builtin never re-execs the host. The danger is
-// only when discovery REGISTERS a real /nix/store `env` as a custom command —
-// buildCustomCommands execFile's that host binary, which re-execs its argv with
-// the worker PATH and can reach a filtered interpreter. The wrappers are in
-// UNSANDBOXED_INTERPRETERS so discovery drops them by default, leaving the safe
-// builtin. These tests pin: (a) the host fixture env never runs by default, and
-// `env nix` cannot reach nix; (b) under the explicit opt-in the fixture IS
-// registered and runs — which is what makes (a) a real filter assertion. (r5.)
+// command registry, so a filtered `nix` is "command not found" and the builtin
+// never re-execs the host. The danger is only when discovery REGISTERS a real
+// /nix/store `env` as a custom command — buildCustomCommands execFile's that
+// host binary, which re-execs its argv with the worker PATH and can reach a
+// filtered interpreter. The wrappers are in UNSANDBOXED_INTERPRETERS so
+// discovery drops them by default, leaving the safe builtin.
 // ---------------------------------------------------------------------------
 describe("exec wrappers are filtered from discovery by default", () => {
   function seedFixtureWrapper(): { workspace: string; storeBin: string } {
@@ -726,7 +716,7 @@ describe("exec wrappers are filtered from discovery by default", () => {
   // it `registerSpawnedBinaries` is false, discoverBinaries() never runs, and
   // the fixture would be absent for the wrong reason — a vacuous pass. With a
   // real sandbox the fixture IS discovered and only UNSANDBOXED_INTERPRETERS
-  // keeps it out, which is the assertion we want. (Fourth review of #2259.)
+  // keeps it out, which is the assertion we want.
   (realSandboxAvailable ? test : test.skip)(
     "default: host env is not registered; env nix cannot reach nix",
     async () => {

@@ -18,8 +18,7 @@
     "!src/**/*.test.tsx",
     "!src/**/*.spec.ts",
     "!src/**/*.spec.tsx",
-    "!**/*.js.map",
-    "!**/*.d.ts.map"
+    "!**/*.map"
   ],
   "exports": {
     ".": {

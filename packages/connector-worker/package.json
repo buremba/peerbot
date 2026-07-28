@@ -40,8 +40,7 @@
   "files": [
     "dist",
     "README.md",
-    "!**/*.js.map",
-    "!**/*.d.ts.map"
+    "!**/*.map"
   ],
   "scripts": {
     "build": "tsc",

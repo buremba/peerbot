@@ -237,8 +237,7 @@ function transformWorkerPublish(pkg) {
     "dist/index.bundle.mjs",
     "dist/index.d.ts",
     "dist/core/types.d.ts",
-    "!**/*.js.map",
-    "!**/*.d.ts.map",
+    "!**/*.map",
   ];
 
   // EVERY @lobu dependency is dropped, not just the private ones: the bundle

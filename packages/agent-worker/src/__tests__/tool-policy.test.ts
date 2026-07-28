@@ -438,6 +438,18 @@ describe("enforceBashCommandPolicy", () => {
     }
   });
 
+  test("the `-c` scan does not backtrack exponentially (#2259, CodeQL 481)", () => {
+    // The option loop used to offer two overlapping alternatives, so a run of
+    // bare `-` words had exponentially many parses and a non-matching tail
+    // made the engine try all of them. The agent controls this string, so the
+    // blowup is reachable: the old spelling took 4.9ms at 26 repetitions,
+    // 232ms at 34 and 1.26s at 38, doubling with every further pair.
+    const pathological = `\nsh ${"- ".repeat(2000)}x`;
+    const started = performance.now();
+    expect(isDirectPackageInstallCommand(pathological)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("an interpreter named as an argument is still not a command (#2259)", () => {
     // The option-cluster widening must not start matching argument text.
     for (const cmd of [

@@ -132,9 +132,15 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  * given as separate words, so `-lc`, `-ce`, `-cx` and `bash -euo pipefail -c`
  * all reach the body. Matching only clusters that END in `c` missed every one
  * of those, including the very common `set -euo pipefail` idiom.
+ *
+ * The preceding-options loop keeps each word's role UNAMBIGUOUS: an option
+ * starts with `-`, its optional operand does not. An earlier spelling offered
+ * `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives, and since `\S+` also
+ * matches an option, `sh - - - - …` had exponentially many parses: a
+ * backtracking blowup on input the agent controls (CodeQL alert 481).
  */
 const INTERPRETER_DASH_C =
-  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*\s+|-[a-z]*\s+\S+\s+)*-[a-z]*c[a-z]*\s+(['"])([\s\S]*?)\1/gi;
+  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*\s+(?:[^-\s]\S*\s+)?)*-[a-z]*c[a-z]*\s+(['"])([\s\S]*?)\1/gi;
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:

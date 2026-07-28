@@ -546,6 +546,20 @@ jobs:
         # guard that stops catching regressions fails here instead of going quiet.
         run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
 
+      - name: Gateway LLM client gate
+        # packages/server speaks to model providers through ONE client
+        # (gateway/inference/gateway-completion.ts). A new per-feature
+        # <PREFIX>_API_KEY/_BASE_URL/_MODEL triple or a second vendor SDK is how
+        # suggest-followups and the query rewriter ended up reading env vars no
+        # environment set — dead on every request since launch.
+        run: node scripts/check-gateway-llm-calls.mjs
+
+      - name: Gateway LLM client gate fixtures
+        # Same reasoning as the naming-gate fixtures above: a guard that stops
+        # catching its violations is worse than no guard, because it reads as
+        # proof. These seed real violations and assert the exit code.
+        run: bun test scripts/__tests__/check-gateway-llm-calls.test.ts
+
       - name: Publish manifest gate fixtures
         # @lobu/worker@14.3.0 shipped five private workspace dependencies at
         # their `0.0.0` placeholder versions, so external installs failed

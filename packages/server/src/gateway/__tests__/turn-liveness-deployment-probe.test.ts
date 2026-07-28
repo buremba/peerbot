@@ -98,4 +98,15 @@ describe("hasLiveTurnForDeployment", () => {
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
+
+  test("a non-internal run_type is not a turn marker", async () => {
+    // `armTurnTimeout` writes markers on an `internal:` queue, which
+    // classifyQueue maps to run_type 'internal'. The predicate is what keeps
+    // this query on `runs_lobu_claim_idx`'s partial index, so dropping it would
+    // both widen the probe and turn an index probe into a scan of the 30-day
+    // retention.
+    await seedMarker({ runType: "chat_message" });
+
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
+  });
 });

@@ -186,7 +186,8 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
   // Accepted entries are normalized to the form grants are stored and matched
   // in, so a declaration spelling it `GitHub.COM` or `*.GitHub.COM` joins the
   // existing `github.com`/`.github.com` grant instead of adding a second row
-  // for the same host.
+  // for the same host — and the fingerprint (which digests this declaration)
+  // stops treating a re-cased spelling as a tooling change.
   const domains = Array.isArray(raw.domains)
     ? (raw.domains as unknown[])
         .filter(isValidDomainPattern)
@@ -225,7 +226,19 @@ async function loadToolingConnections(
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
     LEFT JOIN app_installations ai
-      ON ai.id = NULLIF(c.config->>'installation_ref', '')::bigint
+      -- connections.config is a jsonb blob written by the install path, not a
+      -- typed column, so a non-numeric installation_ref is representable. A bare
+      -- ::bigint cast on one raises invalid_text_representation, which aborts
+      -- this whole query — and both callers fail open to "no contribution", so
+      -- one malformed row would strip packages, domains and leases from every
+      -- connection in the org. Cast only what is provably numeric; anything
+      -- else joins to NULL, exactly like an absent ref.
+      ON ai.id = (
+           CASE
+             WHEN c.config->>'installation_ref' ~ '^[0-9]+$'
+               THEN (c.config->>'installation_ref')::bigint
+           END
+         )
      AND ai.organization_id = c.organization_id
     WHERE c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
@@ -401,8 +414,9 @@ export async function resolveAgentTooling(params: {
       // selection, which is a contract change, not a patch.
       // Own properties only: `env` is a plain object literal, so `in` would
       // report `toString`/`constructor`/`valueOf` as already claimed before
-      // anything is minted — all pass the identifier check and none is
-      // reserved, so such an entry would be dropped with a bogus collision.
+      // anything is minted — all of them pass the identifier check and none is
+      // reserved, so such an entry would be dropped with a bogus collision WARN
+      // naming an undefined `using_connection_id`.
       if (Object.hasOwn(env, entry.name)) {
         logger.warn(
           {

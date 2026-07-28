@@ -182,7 +182,7 @@ describe('inference provider org default', () => {
     await create(org.id, 'groq'); // no text model
 
     expect(await setInferenceProviderDefault(org.id, 'groq')).toBe(
-      'not_runnable',
+      'no_text_model',
     );
     // The prior default is untouched — a rejected write changes nothing.
     expect(await defaultSlug(org.id)).toBe('openai');
@@ -278,8 +278,11 @@ describe('inference provider org default', () => {
       defaultModel: 'claude-sonnet-5',
     });
 
+    // A DISTINCT reason from "no text model" — claude HAS one; the problem is
+    // that its credential belongs to a single user. The route turns each into
+    // its own message, because the fix differs.
     expect(await setInferenceProviderDefault(org.id, 'claude')).toBe(
-      'not_runnable',
+      'oauth_provider',
     );
     // The prior, org-readable default is untouched.
     expect(await defaultSlug(org.id)).toBe('openai');

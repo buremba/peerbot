@@ -313,9 +313,10 @@ async function lockInferenceProviderDefaults(
  *     because it fails at egress instead of falling back. (The gateway
  *     transport already refuses these; this keeps the run path honest too.)
  *
- * A user can still choose an OAuth provider explicitly via
- * {@link setInferenceProviderDefault} — that is a deliberate act by someone who
- * holds the profile. This guard only governs AUTOMATIC promotion.
+ * {@link setInferenceProviderDefault} rejects these for the SAME reason, so an
+ * explicit choice cannot reach a state automatic promotion refuses to create.
+ * (An earlier revision allowed the explicit path, reasoning the chooser holds
+ * the profile — but an ORG-WIDE default is inherited by everyone else too.)
  *
  * Oldest-first (`created_at`, ties broken by the monotonic identity id) keeps
  * the choice deterministic and identical across replicas.
@@ -742,7 +743,8 @@ export async function getOrgDefaultModel(
  * same transaction). The partial unique index guarantees at most one live
  * default per org; clearing first keeps the switch atomic.
  *
- * Rejects two kinds of target as `not_runnable` rather than committing them:
+ * Rejects two kinds of target rather than committing them, each with its own
+ * result so the caller can explain WHY:
  *
  *  - no `capabilities.text.model`. Such a row cannot serve as a default:
  *    `getOrgDefaultModel` resolves it to null and then REPAIRS the org by
@@ -763,7 +765,10 @@ export async function getOrgDefaultModel(
 export type SetInferenceProviderDefaultResult =
 	| "ok"
 	| "not_found"
-	| "not_runnable";
+	/** Live row, but no `capabilities.text.model` to resolve. */
+	| "no_text_model"
+	/** Live row with a model, but an `oauth://` ref only one user can read. */
+	| "oauth_provider";
 
 export async function setInferenceProviderDefault(
 	organizationId: string,
@@ -790,8 +795,8 @@ export async function setInferenceProviderDefault(
 		}>;
 		const row = target[0];
 		if (!row) return "not_found";
-		if (!row.text_model) return "not_runnable";
-		if (isOAuthInferenceProviderRef(row.api_key_ref)) return "not_runnable";
+		if (!row.text_model) return "no_text_model";
+		if (isOAuthInferenceProviderRef(row.api_key_ref)) return "oauth_provider";
 
 		await tx`
 			UPDATE inference_providers

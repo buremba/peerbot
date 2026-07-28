@@ -1060,16 +1060,27 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 	if (result === "not_found") {
 		return c.json({ error: "Provider not found" }, 404);
 	}
-	// A provider with no text model cannot hold the default: the next
-	// getOrgDefaultModel read would demote it and promote another row, so
-	// reporting success here would be a lie.
-	if (result === "not_runnable") {
+	// Both rejections mean "this row cannot hold the org default", but for
+	// different reasons — and the fix differs, so the message must too.
+	if (result === "no_text_model") {
 		return c.json(
 			{
 				error:
 					`Provider '${slug}' has no text model configured, so it cannot be ` +
 					`the org default. Set one with: lobu providers set-capabilities ` +
 					`${slug} text --model <model>`,
+			},
+			400
+		);
+	}
+	if (result === "oauth_provider") {
+		return c.json(
+			{
+				error:
+					`Provider '${slug}' is signed in with OAuth, so its credential ` +
+					`belongs to one user. An org default is inherited by every member ` +
+					`and by headless Behavior runs, which cannot read that token. Use ` +
+					`a provider added with an API key instead.`,
 			},
 			400
 		);

@@ -1123,7 +1123,18 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
           );
           await server.connect(transport);
           await initializeRecoveredSession(transport, sessionId, req.url);
-          await persistSessionState(sessionId, recoveredAuthCtx);
+          // Recovery may only refresh the row that authorized it. A revoke can
+          // delete that row after recoverSessionAuthContext reads it; an upsert
+          // here would resurrect the revoked session.
+          if (!(await refreshSessionState(sessionId, recoveredAuthCtx))) {
+            sessions.delete(sessionId);
+            transport.close?.();
+            return buildJsonRpcErrorResponse(
+              'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+              null,
+              404
+            );
+          }
           await recordMcpClientActivity(c.env, recoveredAuthCtx, req);
           return handleAndMaybeConvert(transport, req, wantsSSE);
         }

@@ -80,8 +80,8 @@ export class McpSessionStore {
    * a concurrent revoke just deleted — re-arming a session that was meant to
    * die. Checking existence first is not enough, because the revoke can commit
    * between the check and the write; making the write itself update-only
-   * collapses that window. Reserve `upsertSession` for initialize/recovery,
-   * where creating the row IS the intent.
+   * collapses that window. Reserve `upsertSession` for initialization, where
+   * creating the row is the intent.
    */
   async refreshSession(session: PersistedMcpSession): Promise<boolean> {
     const sql = getDb();

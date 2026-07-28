@@ -240,21 +240,12 @@ export class OAuthClientsStore {
   }
 
   /**
-   * Revoke a client's tokens and MCP sessions only within one organization.
-   * Keeps the client registration intact so other organizations are unaffected.
-   */
-  /**
-   * `userId` scopes the revocation to ONE person's grants on this client.
+   * Revoke a client's tokens and MCP sessions within one organization.
    *
-   * RFC 7591 registration is per-client, not per-user: a single
-   * `oauth_clients` row can hold tokens for several people in the same org
-   * (a shared registration, or a legacy row with no `user_id`). Revoking
-   * org-wide there takes out bystanders — Alice disconnects an app and Bob
-   * loses access too. Callers that resolved a specific owner MUST pass it so
-   * the blast radius matches the identity the decision was made on.
-   *
-   * Omitting it keeps the historical org-wide behavior for callers that
-   * genuinely mean "this client, everyone, this org".
+   * A registration can hold grants for several people, so callers may scope
+   * the operation to the owner displayed in the connected-apps inventory.
+   * Omitting `userId` retains the org-wide operation used by administrative
+   * cleanup paths. The registration remains intact for other organizations.
    */
   async revokeClientForOrganization(
     clientId: string,
@@ -314,42 +305,35 @@ export class OAuthClientsStore {
     const result = await this.sql`
       SELECT
         oc.*,
-        tok_agg.user_name,
-        tok_agg.user_email,
-        -- Owner IS the token the displayed name/email came from. Deliberately
-        -- NOT COALESCE(oc.user_id, ...): preferring the registration's user_id
-        -- while displaying the newest token's identity means a reused
-        -- registration shows Bob's row and revokes Alice's grant.
-        tok_agg.token_user_id AS owner_user_id,
-        COALESCE(tok_agg.active_token_count, 0)::int AS active_token_count
+        token_owner.user_name,
+        token_owner.user_email,
+        token_owner.token_user_id AS owner_user_id,
+        COALESCE(token_counts.active_token_count, 0)::int AS active_token_count
       FROM oauth_clients oc
-      INNER JOIN LATERAL (
+      LEFT JOIN LATERAL (
+        -- Prefer a live grant so a connected row names the person whose access
+        -- the revoke action can actually remove. Fall back to the newest stale
+        -- grant for disconnected registrations.
+        SELECT u.name AS user_name, u.email AS user_email, ot.user_id AS token_user_id
+        FROM oauth_tokens ot
+        LEFT JOIN "user" u ON u.id = ot.user_id
+        WHERE ot.client_id = oc.id
+          AND ot.organization_id = ${organizationId}
+        ORDER BY
+          (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
+          ot.created_at DESC,
+          ot.id DESC
+        LIMIT 1
+      ) token_owner ON true
+      LEFT JOIN LATERAL (
         SELECT
-          -- Owner identity must come from ONE token, picked the SAME way the
-          -- revoke path picks it (newest token for this client in this org).
-          -- Independent MAX() aggregates would let a shared registration
-          -- display one person's name, another's email, and revoke a third —
-          -- so the row you click would not be the grant you kill.
-          owner.user_name,
-          owner.user_email,
-          owner.token_user_id,
           COUNT(*) FILTER (
             WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
           )::int AS active_token_count
         FROM oauth_tokens ot
-        LEFT JOIN LATERAL (
-          SELECT u2.name AS user_name, u2.email AS user_email, ot2.user_id AS token_user_id
-          FROM oauth_tokens ot2
-          LEFT JOIN "user" u2 ON u2.id = ot2.user_id
-          WHERE ot2.client_id = oc.id
-            AND ot2.organization_id = ${organizationId}
-          ORDER BY ot2.created_at DESC, ot2.id DESC
-          LIMIT 1
-        ) owner ON true
         WHERE ot.client_id = oc.id
           AND ot.organization_id = ${organizationId}
-        GROUP BY owner.user_name, owner.user_email, owner.token_user_id
-      ) tok_agg ON true
+      ) token_counts ON true
       WHERE oc.organization_id = ${organizationId}
          OR EXISTS (
            SELECT 1 FROM oauth_tokens ot2

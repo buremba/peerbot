@@ -142,11 +142,8 @@ describe('shared OAuth registration', () => {
   });
 
   test('a registration owned by one user but last used by another revokes the user it displays', async () => {
-    // The gap every previous round missed: these tests only covered
-    // `oauth_clients.user_id IS NULL`. When the registration DOES name an
-    // owner (Bob) but the newest token belongs to someone else (Alice), a
-    // `COALESCE(oc.user_id, …)` owner pick revokes Bob while the row displays
-    // Alice — click one person, disconnect another.
+    // The registration owner and the person holding the displayed grant can
+    // differ when a registration is reused.
     const { getDb } = await import('../../db/client.js');
     await getDb()`
       UPDATE oauth_clients SET user_id = ${BOB} WHERE id = ${SHARED_CLIENT}
@@ -167,7 +164,62 @@ describe('shared OAuth registration', () => {
     expect(await liveTokenUsers()).toEqual([BOB]);
   });
 
+  test('prefers a live grant over a newer revoked grant', async () => {
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      UPDATE oauth_tokens SET revoked_at = now() WHERE id = ${`tok_${ALICE}`}
+    `;
+
+    const routes = await importClientRoutes();
+    const listRes = await routes.request('/');
+    const listed = (await listRes.json()) as {
+      clients: Array<{ id: string; linkedUserEmail: string | null; status: string }>;
+    };
+    const row = listed.clients.find((c) => c.id === SHARED_CLIENT);
+    expect(row?.status).toBe('connected');
+    expect(row?.linkedUserEmail).toBe('bob@test');
+
+    await routes.request(`/mcp/${SHARED_CLIENT}`, { method: 'DELETE' });
+    expect(await liveTokenUsers()).toEqual([]);
+  });
+
+  test('keeps an organization-owned registration with no tokens visible', async () => {
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      INSERT INTO oauth_clients (id, client_name, redirect_uris, organization_id)
+      VALUES ('mcp_registered_only', 'Registered Only', ARRAY['https://example.test/cb']::text[], ${ORG})
+    `;
+
+    const routes = await importClientRoutes();
+    const listRes = await routes.request('/');
+    const listed = (await listRes.json()) as {
+      clients: Array<{ id: string; status: string }>;
+    };
+    expect(listed.clients).toContainEqual(
+      expect.objectContaining({ id: 'mcp_registered_only', status: 'disconnected' })
+    );
+  });
+
   test('scope=all also stays within the resolved owner', async () => {
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      INSERT INTO oauth_clients (id, client_name, redirect_uris, user_id, organization_id)
+      VALUES (
+        'mcp_shared_sibling', 'Shared App',
+        ARRAY['https://example.test/cb']::text[], ${BOB}, ${ORG}
+      )
+    `;
+    await getDb()`
+      INSERT INTO oauth_tokens (
+        id, token_type, token_hash, client_id, user_id, organization_id,
+        scope, expires_at, created_at
+      ) VALUES (
+        'tok_shared_sibling', 'access', 'hash_shared_sibling',
+        'mcp_shared_sibling', ${ALICE}, ${ORG}, 'mcp:read',
+        now() + interval '1 hour', now()
+      )
+    `;
+
     const routes = await importClientRoutes();
     const res = await routes.request(`/mcp/${SHARED_CLIENT}?scope=all`, {
       method: 'DELETE',

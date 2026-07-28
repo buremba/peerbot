@@ -14,8 +14,9 @@
  * server-generated id. The error message is human-friendly and actionable.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import { McpSessionStore } from '../../../mcp-session-store';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -104,6 +105,29 @@ describe('MCP session recovery', () => {
     const body = await res.json();
     expect(body.error).toBeUndefined();
     expect(body.result?.tools?.length).toBeGreaterThan(0);
+  });
+
+  it('does not resurrect a row revoked while another replica is recovering it', async () => {
+    const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+    const sessionId = await initSession({ token, orgSlug: org.slug });
+    clearInMemoryMcpSessionsForTests();
+
+    const originalGetSession = McpSessionStore.prototype.getSession;
+    const getSessionSpy = vi
+      .spyOn(McpSessionStore.prototype, 'getSession')
+      .mockImplementationOnce(async function (id) {
+        const persisted = await originalGetSession.call(this, id);
+        await getTestDb()`DELETE FROM mcp_sessions WHERE session_id = ${id}`;
+        return persisted;
+      });
+
+    try {
+      const res = await toolsList(sessionId, { token, orgSlug: org.slug });
+      expect(res.status).toBe(404);
+      expect(await sessionRowExists(sessionId)).toBe(false);
+    } finally {
+      getSessionSpy.mockRestore();
+    }
   });
 
   it('persists an anonymous → authenticated upgrade', async () => {

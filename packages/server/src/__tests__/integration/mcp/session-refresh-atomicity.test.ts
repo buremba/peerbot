@@ -1,5 +1,5 @@
 /**
- * The follow-up session write must never CREATE a row.
+ * A write for an established session must never CREATE a row.
  *
  * The persisted `mcp_sessions` row is the cross-replica revocation signal: a
  * revoke on any pod DELETEs it, and a pod holding a live in-memory transport
@@ -9,9 +9,8 @@
  * access was just revoked.
  *
  * `refreshSession` is update-only, so a deleted row stays deleted no matter how
- * the two interleave. These tests pin that at the store, where the ordering can
- * be made deterministic (through HTTP the window is real but not reliably
- * reproducible).
+ * the two interleave. These tests pin the atomic store primitive; the recovery
+ * suite separately pins the handler interleaving.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -80,9 +79,8 @@ describe('mcp session refresh is update-only', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('upsertSession DOES create — which is why refresh must be used on reuse', async () => {
-    // Pins the contrast the fix depends on: the same call the reuse path used
-    // to make would have re-INSERTed the revoked row.
+  it('upsertSession creates rows only for initialization', async () => {
+    // Pins the contrast the established-session paths depend on.
     expect(await store.getSession(session.sessionId)).toBeNull();
     await store.upsertSession(session);
     expect(await store.getSession(session.sessionId)).not.toBeNull();

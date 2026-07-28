@@ -333,10 +333,6 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	      SELECT
 	        oc.id,
 	        oc.client_name,
-	        -- Must match listClientsByOrganization exactly: the newest org token,
-	        -- NOT COALESCE(oc.user_id, ...). Preferring the registration's owner
-	        -- here while the page displays the newest token's identity is how an
-	        -- admin ends up clicking Bob's row and revoking Alice's grant.
 	        org_token.user_id AS owner_user_id
 	      FROM oauth_clients oc
 	      LEFT JOIN LATERAL (
@@ -344,10 +340,12 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	        FROM oauth_tokens ot
 	        WHERE ot.client_id = oc.id
 	          AND ot.organization_id = ${organizationId}
-	        -- Same ordering as listClientsByOrganization's owner pick (id breaks
-	        -- created_at ties). If these two diverge, the page shows one owner
-	        -- and Revoke kills a different one's grant.
-	        ORDER BY ot.created_at DESC, ot.id DESC
+	        -- Keep this live-first ordering identical to the inventory query so
+	        -- the displayed identity and revoked grant cannot diverge.
+	        ORDER BY
+	          (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
+	          ot.created_at DESC,
+	          ot.id DESC
 	        LIMIT 1
 	      ) org_token ON true
 	      WHERE oc.id = ${clientId}
@@ -377,13 +375,14 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	          FROM oauth_tokens ot
 	          WHERE ot.client_id = sibling.id
 	            AND ot.organization_id = ${organizationId}
-	          -- Same tie-break as the primary owner pick and the listing, so a
-	          -- sibling with two same-second tokens resolves identically.
-	          ORDER BY ot.created_at DESC, ot.id DESC
+	          ORDER BY
+	            (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
+	            ot.created_at DESC,
+	            ot.id DESC
 	          LIMIT 1
 	        ) org_token ON true
 	        WHERE sibling.client_name = ${target.client_name}
-	          AND COALESCE(sibling.user_id, org_token.user_id) = ${target.owner_user_id}
+	          AND org_token.user_id = ${target.owner_user_id}
 	          AND (
 	            sibling.organization_id = ${organizationId}
 	            OR org_token.user_id IS NOT NULL
@@ -394,10 +393,8 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 			if (ids.length > 0) targetIds = ids;
 		}
 
-		// Scope the revocation to the owner we resolved and grouped on. One
-		// registration can carry tokens for several people (RFC 7591 registration
-		// is per-client, not per-user), so revoking org-wide would disconnect
-		// bystanders who happen to share the app's registration.
+		// A registration can carry grants for several people, so scope the
+		// operation to the owner represented by this inventory row.
 		const clientsStore = new OAuthClientsStore(sql);
 		for (const id of targetIds) {
 			await clientsStore.revokeClientForOrganization(

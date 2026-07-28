@@ -14,6 +14,8 @@
  * embedded YAML shell is only exercisable by cutting a real release.
  */
 
+import { appendFileSync } from "node:fs";
+
 /** release-please publishes lobu-vX.Y.Z; other repos' releases share this feed. */
 const LOBU_TAG_PREFIX = "lobu-v";
 
@@ -63,7 +65,6 @@ export function deriveImageTags({
 
 // Invoked from the workflow: writes GitHub Actions outputs.
 if (process.argv[1]?.endsWith("derive-image-tags.mjs")) {
-  const { appendFileSync } = await import("node:fs");
   let result;
   try {
     result = deriveImageTags({

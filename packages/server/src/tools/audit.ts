@@ -6,14 +6,24 @@ import { AUDIT_SEMANTIC_TYPE } from './constants';
 import type { ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
-// The value alternatives must consume the COMPLETE credential: a quoted string
-// up to its closing quote (spaces included), otherwise an unquoted run that
-// does not stop at commas — stopping early leaks the remainder into the
-// preview. Over-consumption is fine here (previews are display-only; identity
-// comes from the hash), partial redaction is not.
+// Redaction principle: consume the COMPLETE credential. Over-consumption is
+// fine (previews are display-only; identity comes from the hash of the
+// redacted form), partial redaction is not — a stop at the first space,
+// comma, or scheme word leaks the remainder.
+//
+// Header-named credentials carry STRUCTURED values (scheme + params, cookie
+// lists), so everything after the separator is credential material — consume
+// to the end of the string/line.
+const HEADER_CREDENTIAL_RE =
+  /\b(authorization|proxy-authorization|www-authenticate|set-cookie|cookie)\s*["']?\s*[:=]\s*[^\n]+/gi;
+// Bare scheme credentials: Digest takes a comma-delimited key=value list
+// (quoted values included); token schemes take a single blob.
+const AUTH_SCHEME_RE =
+  /\b(bearer|basic|digest)\s+(?:[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,]+)(?:\s*,\s*[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,]+))*|[a-z0-9._~+/=:-]+)/gi;
+// Denylisted key assignments: a quoted string up to its closing quote (spaces
+// included), otherwise an unquoted run that does not stop at commas.
 const SENSITIVE_ASSIGNMENT_RE =
-  /(api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
-const AUTH_SCHEME_RE = /\b(bearer|basic|digest)\s+[a-z0-9._~+/=:-]+/gi;
+  /(api[_-]?key|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
 
 interface ToolInvocationAuditParams {
   toolName: string;
@@ -30,12 +40,15 @@ function sha256(value: string): string {
 
 function redactSensitiveText(value: string): string {
   return value
+    .replace(HEADER_CREDENTIAL_RE, (_match, key: string) => `${key}=[redacted]`)
     .replace(AUTH_SCHEME_RE, (_match, scheme: string) => `${scheme} [redacted]`)
     .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`);
 }
 
 function redactPreview(value: string): string {
-  return redactSensitiveText(value.slice(0, MAX_PREVIEW_CHARS));
+  // Redact BEFORE truncating: slicing first can split a quoted credential and
+  // the unbalanced quote defeats the pattern, leaking the visible fragment.
+  return redactSensitiveText(value).slice(0, MAX_PREVIEW_CHARS);
 }
 
 function stringifyRedacted(value: unknown): string {

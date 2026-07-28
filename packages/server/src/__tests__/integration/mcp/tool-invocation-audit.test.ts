@@ -235,11 +235,17 @@ describe('tool invocation audit coverage', () => {
     await recordToolInvocationAudit({
       toolName: 'probe_freetext_redaction',
       args: {
+        // token= sits BEFORE authorization: the header pattern consumes the
+        // rest of the value, so a later position would not prove the
+        // comma-delimited assignment branch on its own.
         note: [
+          'token=part1,part2',
           'password="my secret value"',
           'authorization: Basic dXNlcjpwYXNz',
-          'token=part1,part2',
         ].join(' | '),
+        digest_header:
+          'authorization: Digest username="mufasa", realm="testrealm", nonce="dcd98b7102dd", response="6629fae49393"',
+        bare_digest: 'Digest username="scar", uri="/dir/index.html", response="abc9f8de77"',
       },
       result: { ok: true },
       durationMs: 3,
@@ -261,6 +267,18 @@ describe('tool invocation audit coverage', () => {
     expect(preview).not.toContain('secret value');
     expect(preview).not.toContain('dXNlcjpwYXNz');
     expect(preview).not.toContain('part2');
+    // Digest parameters are credential material end to end — none of the
+    // quoted values may survive, with or without the authorization: prefix.
+    for (const fragment of [
+      'mufasa',
+      'testrealm',
+      'dcd98b7102dd',
+      '6629fae49393',
+      'scar',
+      'abc9f8de77',
+    ]) {
+      expect(preview).not.toContain(fragment);
+    }
   });
 
   it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {

@@ -21,6 +21,7 @@ const originalEnv = {
   HTTP_PROXY: process.env.HTTP_PROXY,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
   NIX_PACKAGES: process.env.NIX_PACKAGES,
+  LOBU_POD_IS_SANDBOX: process.env.LOBU_POD_IS_SANDBOX,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -45,6 +46,7 @@ afterEach(() => {
   restoreEnv("HTTP_PROXY");
   restoreEnv("HTTPS_PROXY");
   restoreEnv("NIX_PACKAGES");
+  restoreEnv("LOBU_POD_IS_SANDBOX");
   resetSandboxProbeForTests();
 });
 
@@ -97,10 +99,10 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(fakeGh, 0o755);
 
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
-    // The production image ships bubblewrap, so spawned binaries register.
-    // Without an exec sandbox NOTHING registers, which is the other half of
-    // why `gh` was unreachable on the image.
-    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+    // Exactly the production posture: no usable exec sandbox (RuntimeDefault
+    // seccomp blocks bwrap's unshare), pod boundary declared as the isolation.
+    process.env.LOBU_POD_IS_SANDBOX = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
     process.env.LOBU_EXEC_SANDBOX = "off";
     // What the gateway sets from the connector's declaration.
     process.env.NIX_PACKAGES = "gh";
@@ -133,7 +135,8 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(sneaky, 0o755);
 
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
-    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+    process.env.LOBU_POD_IS_SANDBOX = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
     process.env.LOBU_EXEC_SANDBOX = "off";
     // `gh` is declared; `sneakytool` is not.
     process.env.NIX_PACKAGES = "gh";
@@ -148,6 +151,40 @@ describe("createEmbeddedBashOps", () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(chunks.join("")).not.toContain("should not run");
+  });
+
+  test("LOBU_POD_IS_SANDBOX does not unlock interpreters", async () => {
+    // The chart sets this fleet-wide, so it must NOT become a backdoor to
+    // node/bun/python. Those stay gated behind LOBU_ALLOW_UNSANDBOXED_EXEC,
+    // which is a per-agent decision, not a deployment default.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-interp-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeNode = path.join(usrBin, "node");
+    fs.writeFileSync(fakeNode, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
+    fs.chmodSync(fakeNode, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_POD_IS_SANDBOX = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    // Even DECLARING it must not be enough — interpreters are a separate grant.
+    process.env.NIX_PACKAGES = "node";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("node", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(chunks.join("")).not.toContain("interpreter ran");
+    expect(result.exitCode).not.toBe(0);
   });
 
   // Built-in curl/wget are transport-only clients of the gateway egress

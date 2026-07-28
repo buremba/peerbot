@@ -530,8 +530,20 @@ export async function createEmbeddedBashOps(
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
 
+  // A container that drops ALL capabilities and runs one tenant's workers is
+  // itself the isolation boundary, but RuntimeDefault seccomp blocks
+  // bubblewrap's user-namespace unshare — so probeSandboxStrategy reports
+  // "none" and, without this, no contributed CLI would ever register (`gh`
+  // exits 127 in production).
+  //
+  // Deliberately NOT `LOBU_ALLOW_UNSANDBOXED_EXEC`: that also unblocks full
+  // interpreters (node/bun/python/ruby/perl) via UNSANDBOXED_INTERPRETERS,
+  // which is a much larger grant than "let the declared CLI run".
+  const podIsSandbox =
+    process.env.LOBU_POD_IS_SANDBOX === "1" ||
+    process.env.LOBU_POD_IS_SANDBOX === "true";
   const registerSpawnedBinaries =
-    sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
+    sandboxStrategy.kind !== "none" || allowUnsandboxedExec || podIsSandbox;
 
   // Discover nix binaries and known CLI tools, register as custom commands.
   // Strip names claimed by MCP CLIs so the MCP-backed handler takes precedence.
@@ -557,8 +569,12 @@ export async function createEmbeddedBashOps(
   } else if (!allowUnsandboxedExec) {
     console.warn(
       `[embedded] Exec sandbox unavailable; not registering spawned binary ` +
-        `commands. Set LOBU_ALLOW_UNSANDBOXED_EXEC=1 to allow host-privileged ` +
-        `spawned binaries.`
+        `commands, so connector-contributed CLIs will exit 127. Set ` +
+        `LOBU_POD_IS_SANDBOX=1 when the container itself is the isolation ` +
+        `boundary (drops ALL capabilities, one tenant per pod) — this registers ` +
+        `DECLARED tools only. LOBU_ALLOW_UNSANDBOXED_EXEC=1 additionally ` +
+        `unlocks full interpreters (node/bun/python) and is a per-agent ` +
+        `decision, not a deployment default.`
     );
   }
 

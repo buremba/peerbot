@@ -69,47 +69,21 @@ jobs:
         id: timestamp
         run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
-      # Computed once here so app/worker/embeddings can never disagree about
-      # release eligibility or version.
+      # Only this job needs the repo; the build jobs check out separately.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Derivation lives in scripts/derive-image-tags.mjs so it is unit-tested
+      # (scripts/__tests__/derive-image-tags.test.ts) — inline YAML shell can
+      # only be exercised by cutting a real release. Computed once here so
+      # app/worker/embeddings can never disagree about eligibility or version.
       - name: Derive semver tag from the release
         id: semver
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
           PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
-        run: |
-          set -euo pipefail
-          semver=""
-          is_stable=false
-          should_publish=true
-
-          if [ "$EVENT_NAME" = "release" ]; then
-            case "$RELEASE_TAG" in
-              lobu-v*) semver="${RELEASE_TAG#lobu-v}" ;;
-              *) should_publish=false ;;
-            esac
-
-            if [ "$should_publish" = "true" ] \
-              && ! printf '%s' "$semver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::Refusing to use release tag '$RELEASE_TAG' — not a valid Lobu semver tag."
-              exit 1
-            fi
-          fi
-
-          # `latest` must track STABLE releases only. A prerelease still gets its
-          # own version tag (so it is installable) but must not become what a
-          # plain `docker pull ghcr.io/lobu-ai/lobu-app` resolves to. Checked
-          # against the semver string too, not just GitHub's prerelease flag,
-          # since release-please marks that flag only when it is told to.
-          if [ -n "$semver" ] && [[ "$semver" != *-* ]] && [ "$PRERELEASE" != "true" ]; then
-            is_stable=true
-          fi
-
-          {
-            echo "semver=$semver"
-            echo "is_stable=$is_stable"
-            echo "should_publish=$should_publish"
-          } >> "$GITHUB_OUTPUT"
+        run: node scripts/derive-image-tags.mjs
 
   # Connector-runtime parity smoke gate (main/deploy side). RUNS the built worker
   # artifact's self-check before any image is pushed, so the packaging/parity

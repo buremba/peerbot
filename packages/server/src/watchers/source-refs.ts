@@ -88,6 +88,21 @@ function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/**
+ * Default all-events source for a Behavior authored with no sources.
+ *
+ * Excludes the server's bookkeeping rows — `change` (config/lifecycle/entity
+ * audit trails) and `audit` (tool-invocation log). Historically these were
+ * invisible to Behavior windows by accident (they were inserted with
+ * occurred_at NULL, which no window matched); once insertEvent started
+ * stamping occurred_at, a Behavior's own creation bookkeeping would land in
+ * its first window and defeat `skip_if_unchanged`, and every config edit
+ * would read as new workspace content. Explicitly authored sources are
+ * untouched — a source that wants the audit trail can still select it.
+ */
+export const DEFAULT_BEHAVIOR_SOURCE_QUERY =
+  "SELECT * FROM events WHERE semantic_type NOT IN ('change', 'audit') ORDER BY occurred_at DESC";
+
 function eventSelect(where: string): string {
   return (
     'SELECT id, organization_id, entity_ids, origin_id, title, payload_type, payload_text, ' +

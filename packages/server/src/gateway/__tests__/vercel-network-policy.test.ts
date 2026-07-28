@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { __testOnly, nixInstallerUrl } from "../runtime/providers/vercel.js";
+import { NIX_SUBSTITUTER_DOMAINS } from "../runtime/packages.js";
 
 const { networkPolicyFromDomains, provisionScript } = __testOnly;
 
@@ -95,13 +96,58 @@ describe("vercel networkPolicyFromDomains — gateway-derived extra hosts", () =
 describe("vercel provisionScript", () => {
   test("installs each package from nixpkgs into the sandbox-local profile", () => {
     const script = provisionScript(["gh", "ripgrep"], "marker123");
-    expect(script).toContain("nixpkgs#gh");
-    expect(script).toContain("nixpkgs#ripgrep");
+    expect(script).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
+    expect(script).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#ripgrep`);
     expect(script).toContain(
-      'nix profile install --profile "$PROFILE" nixpkgs#gh nixpkgs#ripgrep'
+      `nix profile install --profile "$PROFILE" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#ripgrep"`
     );
     expect(script).toContain('PROFILE="$NIX_HOME/profiles/marker123"');
     expect(script).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
+  });
+
+  test("resolves packages only through hosts the egress policy grants", () => {
+    // A bare `nixpkgs#gh` is an INDIRECT flake ref: the registry resolves it
+    // via github.com, which is NOT in NIX_SUBSTITUTER_DOMAINS. A cold install
+    // then failed unless the agent happened to allow GitHub for its own
+    // reasons. Every host the script names must be one this module grants.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).not.toMatch(/["\s]nixpkgs#/);
+    for (const ref of script.matchAll(/https:\/\/([A-Za-z0-9.-]+)/g)) {
+      const host = ref[1];
+      const granted =
+        NIX_SUBSTITUTER_DOMAINS.includes(host) ||
+        // The pinned installer artifact is served from a substituter host too.
+        NIX_SUBSTITUTER_DOMAINS.some((d) => host.endsWith(d));
+      expect(granted, `ungranted host in provision script: ${host}`).toBe(true);
+    }
+  });
+
+  test("serializes the mutating section behind a sandbox-side lock", () => {
+    // Several execs can land on ONE sandbox concurrently. Without a lock, two
+    // cold paths bootstrap Nix twice, or one `rm -f "$PROFILE"` runs while the
+    // other is installing into it. The re-check after acquiring is what makes
+    // the loser take the cache-hit path instead of rebuilding.
+    const script = provisionScript(["gh"], "marker123");
+    const lockAt = script.indexOf("flock 9");
+    expect(lockAt).toBeGreaterThan(-1);
+
+    // Everything that MUTATES shared state must sit after the lock.
+    for (const mutation of [
+      "curl -fsSL",
+      'rm -f "$PROFILE"',
+      "nix profile install",
+    ]) {
+      expect(
+        script.indexOf(mutation),
+        `${mutation} must run under the lock`
+      ).toBeGreaterThan(lockAt);
+    }
+
+    // Re-check after acquiring, not only before waiting.
+    const cacheChecks = script
+      .split("\n")
+      .filter((l) => l.startsWith('if [ -d "$PROFILE/bin" ]'));
+    expect(cacheChecks.length).toBeGreaterThanOrEqual(2);
   });
 
   test("checks the actual single-user nix binary before bootstrapping", () => {
@@ -114,10 +160,10 @@ describe("vercel provisionScript", () => {
     const first = provisionScript(["gh"], "set-a");
     const second = provisionScript(["jq"], "set-b");
     expect(first).toContain('PROFILE="$NIX_HOME/profiles/set-a"');
-    expect(first).toContain("nixpkgs#gh");
+    expect(first).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
     expect(second).toContain('PROFILE="$NIX_HOME/profiles/set-b"');
-    expect(second).toContain("nixpkgs#jq");
-    expect(second).not.toContain("nixpkgs#gh");
+    expect(second).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#jq`);
+    expect(second).not.toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
     expect(second).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
   });
 
@@ -144,7 +190,7 @@ describe("vercel provisionScript", () => {
       'rm -f "$PROFILE" "$PROFILE"-*-link'
     );
     expect(script).toContain(
-      'if ! nix profile install --profile "$PROFILE" nixpkgs#gh; then rm -f "$PROFILE" "$PROFILE"-*-link; exit 1; fi'
+      `if ! nix profile install --profile "$PROFILE" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh"; then rm -f "$PROFILE" "$PROFILE"-*-link; exit 1; fi`
     );
   });
 

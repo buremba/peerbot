@@ -25,7 +25,7 @@ afterAll(() => {
 /**
  * A per-run token is minted once, but it is RE-minted on two other paths:
  * durable replay (`attachFreshRunJobToken`) and mid-turn refresh (the
- * `/worker-token/refresh` route). Both rebuild the claim set by hand, so any
+ * `/worker/token/refresh` route). Both rebuild the claim set by hand, so any
  * claim added to the mint without being added to those mappers is silently
  * dropped the moment a run replays or a long turn rotates its token.
  *
@@ -110,33 +110,4 @@ describe("durable replay preserves every signed claim", () => {
     expect(decoded?.nixPackages).toEqual(["gh"]);
   });
 
-  test("a refresh-shaped remint keeps nixPackages alongside the egress claims", () => {
-    // Mirrors the claim set the /worker-token/refresh route rebuilds. Minting
-    // through the same helper the route calls pins the contract without
-    // booting the gateway.
-    const refreshed = generateWorkerToken(
-      claims.userId,
-      claims.conversationId,
-      claims.deploymentName,
-      {
-        channelId: claims.channelId,
-        teamId: claims.teamId,
-        agentId: claims.agentId,
-        organizationId: claims.organizationId,
-        connectionId: claims.connectionId,
-        platform: claims.platform,
-        source: claims.source,
-        runId: claims.runId,
-        messageId: claims.messageId,
-        runtimeProviderId: claims.runtimeProviderId,
-        sandboxId: claims.sandboxId,
-        allowedDomains: claims.allowedDomains,
-        deniedDomains: claims.deniedDomains,
-        nixPackages: claims.nixPackages,
-      } as never,
-    );
-
-    const decoded = verifyWorkerToken(refreshed);
-    expect(decoded?.nixPackages).toEqual(["gh"]);
-  });
 });

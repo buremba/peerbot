@@ -718,9 +718,9 @@ describe("createRuntimeRoutes", () => {
     expect(res.status).toBe(200);
     // Provisioning ran for the TOKEN's set only.
     const provision = commandScript(0);
-    expect(provision).toContain("nixpkgs#gh");
+    expect(provision).toContain("#gh\"");
     expect(provision).not.toContain("socat");
-    expect(provision).not.toContain("nixpkgs#curl");
+    expect(provision).not.toContain("#curl\"");
     // The response reports what was actually provisioned.
     expect((await res.json()).sandbox.packages).toMatchObject({
       installed: ["gh"],
@@ -911,7 +911,7 @@ describe("createRuntimeRoutes", () => {
 
     expect(res.status).toBe(200);
     const provision = commandScript(0);
-    expect(provision).toContain("nixpkgs#gh");
+    expect(provision).toContain("#gh\"");
     expect(provision).not.toContain("touch /tmp/pwn");
     expect(provision).not.toContain("$(id)");
     expect((await res.json()).sandbox.packages.installed).toEqual(["gh"]);

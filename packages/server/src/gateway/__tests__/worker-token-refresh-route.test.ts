@@ -119,6 +119,7 @@ function mintToken(opts: { runId?: number; messageId?: string }): string {
     messageId: opts.messageId,
     allowedDomains: ["api.example.com"],
     deniedDomains: ["evil.example.com"],
+    nixPackages: ["gh"],
   });
 }
 
@@ -162,6 +163,10 @@ describe("POST /worker/token/refresh", () => {
     // silently re-opens denied hosts on remote runtimes.
     expect(data!.allowedDomains).toEqual(["api.example.com"]);
     expect(data!.deniedDomains).toEqual(["evil.example.com"]);
+    // The package claim rides with them: a turn that rotates its token would
+    // otherwise stop provisioning the connector's CLI mid-run, leaving an
+    // authenticated binary that is no longer installed.
+    expect(data!.nixPackages).toEqual(["gh"]);
   });
 
   test("REVOCATION: denied (403) once this turn has no live marker", async () => {

@@ -35,6 +35,26 @@ const REMOTE_WORKSPACE_DIR = "/vercel/sandbox";
  * only ever needs read+execute on the profile's `bin`.
  */
 const NIX_HOME = "/opt/lobu-nix";
+
+/**
+ * Package source for `nix profile install`. A `tarball+https://` flake ref
+ * pointing at the channel keeps resolution on hosts already granted by
+ * {@link NIX_SUBSTITUTER_DOMAINS}; the bare `nixpkgs#` indirect ref would
+ * resolve via github.com, which is not granted and made cold installs fail.
+ */
+const NIXPKGS_CHANNEL_FLAKE =
+  "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz";
+
+/**
+ * Sandbox-side mutex for the installer + profile + marker. Several execs can
+ * land on one sandbox concurrently (multi-replica), and each cold path
+ * bootstraps Nix and rewrites the shared profile symlink and marker file.
+ * Without serialization two of them interleave — one deleting `$PROFILE`
+ * while the other installs into it. `flock` is in util-linux, present in the
+ * sandbox image; the guarded block re-checks the profile after acquiring, so
+ * the loser of the race takes the cache-hit path instead of reinstalling.
+ */
+const NIX_LOCK_PATH = `${NIX_HOME}/.lobu-provision.lock`;
 const NIX_PROFILE_BIN = `${NIX_HOME}/profile/bin`;
 /** Sandbox-side provisioning state — see `nixPackageSetHash`. Never a gateway Map. */
 const PACKAGE_MARKER_PATH = `${NIX_HOME}/.lobu-packages`;
@@ -432,7 +452,15 @@ async function sandboxForRequest(ctx: RuntimeExecContext): Promise<Sandbox> {
  */
 function provisionScript(packages: string[], marker: string): string {
   for (const pkg of packages) nixPackageAttrRef(pkg);
-  const attrs = packages.map((pkg) => `nixpkgs#${pkg}`).join(" ");
+  // `nixpkgs#pkg` is an INDIRECT flake ref: the registry resolves it through
+  // github.com, which is not in NIX_SUBSTITUTER_DOMAINS — a cold install died
+  // unless the agent happened to allow GitHub for its own reasons. The channel
+  // tarball is the same package set from a host the sandbox is already granted
+  // (channels.nixos.org 302s to releases.nixos.org, both in the allow list),
+  // so provisioning depends only on hosts this module itself guarantees.
+  const attrs = packages
+    .map((pkg) => `"${NIXPKGS_CHANNEL_FLAKE}#${pkg}"`)
+    .join(" ");
   return [
     "set -eu",
     // Without pipefail the installer masks a failed download: `sh` reads the
@@ -450,6 +478,15 @@ function provisionScript(packages: string[], marker: string): string {
     `mkdir -p "$NIX_CONF_DIR"`,
     `printf 'experimental-features = nix-command flakes\\n' > "$NIX_CONF_DIR/nix.conf"`,
     // A previously installed exact set can be selected without network access.
+    `if [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}; echo "lobu-packages: cached"; exit 0; fi`,
+    // Everything below MUTATES shared sandbox state (the Nix installation, the
+    // profile, the marker). Serialize it: concurrent execs would otherwise
+    // bootstrap twice, or one would `rm -f "$PROFILE"` while the other was
+    // installing into it. The whole critical section runs under one flock.
+    `exec 9>"${NIX_LOCK_PATH}"`,
+    `flock 9`,
+    // Re-check after acquiring: the holder we waited on may have installed the
+    // exact set already, in which case this exec is a cache hit, not a rebuild.
     `if [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}; echo "lobu-packages: cached"; exit 0; fi`,
     // Bootstrap once; subsequent turns reuse the store already in the filesystem.
     `if [ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]; then`,

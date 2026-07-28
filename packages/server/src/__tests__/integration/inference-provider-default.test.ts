@@ -3,7 +3,7 @@
  * OAuth defaults, and promotion after deletion.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetEncryptionKeyCacheForTests } from '@lobu/core';
 import {
   createInferenceProvider,

@@ -1,5 +1,13 @@
 # Changelog
 
+## [14.4.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.4.0...lobu-v14.4.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* **scripts:** stop attempting to publish the two inline-only plugin packages ([#2252](https://github.com/lobu-ai/lobu/issues/2252)) ([097cd64](https://github.com/lobu-ai/lobu/commit/097cd6489dd025c4de4f13e64a20f92d0c023ae6))
+* **server:** declare the subdomain zone to the SPA at runtime ([#2247](https://github.com/lobu-ai/lobu/issues/2247)) ([70145d2](https://github.com/lobu-ai/lobu/commit/70145d2253f6fdc9b4005cb5e2abc54d3f22b9a8))
+
 ## [14.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.3.0...lobu-v14.4.0) (2026-07-28)
 
 

@@ -223,8 +223,17 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 	// cases below pin both halves of the contract.
 
 	it("saveMetadata seeds provisioning defaults on a FRESH insert", async () => {
+		// Own org: this pins the NO-org-default branch of
+		// resolveNewAgentProvisioningDefaults (seed the system-key models list).
+		// The shared `orgId` can't be used — an earlier test in this file creates
+		// an `inference_providers` row there, and an org's first provider becomes
+		// its default, which correctly switches provisioning to the seed-nothing
+		// branch ("already runnable via the documented fallback").
+		const freshOrg = await createTestOrganization({
+			name: "store fresh insert",
+		});
 		const store = createPostgresAgentConfigStore();
-		await orgContext.run({ organizationId: orgId }, async () => {
+		await orgContext.run({ organizationId: freshOrg.id }, async () => {
 			await store.saveMetadata("store-fresh-bot", {
 				agentId: "store-fresh-bot",
 				name: "Store Fresh Bot",
@@ -236,10 +245,42 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 		const sql = getTestDb();
 		const rows = await sql`
 			SELECT models, pre_approved_tools FROM agents
-			WHERE organization_id = ${orgId} AND id = 'store-fresh-bot'
+			WHERE organization_id = ${freshOrg.id} AND id = 'store-fresh-bot'
 		`;
 		expect(rows[0]?.models).toContain("claude/claude-sonnet-5");
 		expect(rows[0]?.pre_approved_tools).toContain("/mcp/lobu-memory/tools/*");
+	});
+
+	it("an org WITH a default seeds no models list (inherits the fallback)", async () => {
+		// The other branch, made explicit rather than left to test ordering:
+		// once an org has a default provider the agent is already runnable, so
+		// baking a redundant models list would just pin a stale snapshot.
+		const orgWithDefault = await createTestOrganization({
+			name: "store org default",
+		});
+		await createInferenceProvider({
+			organizationId: orgWithDefault.id,
+			slug: "myco",
+			kind: "openai",
+			apiKey: "sk-test",
+			capabilities: { text: { model: "myco-large" } },
+		});
+		const store = createPostgresAgentConfigStore();
+		await orgContext.run({ organizationId: orgWithDefault.id }, async () => {
+			await store.saveMetadata("store-inherit-bot", {
+				agentId: "store-inherit-bot",
+				name: "Store Inherit Bot",
+				owner: { platform: "external", userId: "u-store" },
+				createdAt: Date.now(),
+			});
+		});
+
+		const sql = getTestDb();
+		const rows = await sql`
+			SELECT models FROM agents
+			WHERE organization_id = ${orgWithDefault.id} AND id = 'store-inherit-bot'
+		`;
+		expect(rows[0]?.models).toEqual([]);
 	});
 
 	it("a re-save does NOT clobber a curated models list or pre-approvals", async () => {

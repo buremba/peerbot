@@ -266,9 +266,26 @@ function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
  * Create one inference-provider credential for an org. Atomic: a single
  * transaction (a) mints the row id via the identity sequence, (b) derives the
  * row-unique `api_key_ref = secret://<org>/<slug>-<id>`, (c) INSERTs the row
- * with the explicit id, and (d) encrypts the api key into `agent_secrets` under
+ * with the explicit id — as the org default when it is the org's FIRST live
+ * provider — and (d) encrypts the api key into `agent_secrets` under
  * `<slug>-<id>`. On a live slug collision returns a typed
  * `{ error: 'slug_conflict' }` rather than throwing.
+ *
+ * First-provider-is-default: the org default is the tail of the layered model
+ * fallback (behavior → agent → org default), so an org with no default has no
+ * resolvable model at all — `getOrgDefaultModel` returns null and every
+ * org-scoped model consumer silently no-ops. Marking a provider default was a
+ * SEPARATE explicit call (`PUT /inference-providers/:slug/default`) that
+ * nothing chains to creation, so in practice orgs connected a provider and
+ * never got a default: as of 2026-07-28 no live prod row had `is_default`.
+ * Defaulting the first one removes a required manual step that had no sensible
+ * alternative answer — with one provider, it IS the default.
+ *
+ * Safe under concurrency: the partial unique index
+ * `inference_providers_org_default_live (organization_id) WHERE is_default AND
+ * deleted_at IS NULL` lets Postgres, not this read, be the arbiter. Two
+ * simultaneous first-creates make one commit and the other fail the index,
+ * which the caller already surfaces as a conflict — never two defaults.
  */
 export async function createInferenceProvider(args: {
 	organizationId: string;
@@ -303,12 +320,21 @@ export async function createInferenceProvider(args: {
 			const secretName = inferenceProviderSecretName(slug, id);
 			const apiKeyRef = `secret://${organizationId}/${secretName}`;
 
+			// Is this the org's first live provider? Read inside the txn; the
+			// partial unique index is the real arbiter under a concurrent race.
+			const existing = (await tx`
+				SELECT 1 FROM inference_providers
+				WHERE organization_id = ${organizationId} AND deleted_at IS NULL
+				LIMIT 1
+			`) as Array<{ "?column?": number }>;
+			const isFirstProvider = existing.length === 0;
+
 			const rows = (await tx`
 				INSERT INTO inference_providers
-					(id, organization_id, slug, kind, display_name, api_key_ref, capabilities, created_by)
+					(id, organization_id, slug, kind, display_name, api_key_ref, capabilities, created_by, is_default)
 				VALUES (
 					${id}, ${organizationId}, ${slug}, ${kind}, ${displayName},
-					${apiKeyRef}, ${sql.json(capabilities)}, ${createdBy}
+					${apiKeyRef}, ${sql.json(capabilities)}, ${createdBy}, ${isFirstProvider}
 				)
 				RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
 				          capabilities, has_custom_upstream, status, created_at
@@ -741,20 +767,46 @@ export async function rotateInferenceProviderKey(
  * api_key_ref unique index keeps the `<slug>-<id>` name reserved, and a
  * recreate mints a fresh id so it never inherits this row's ciphertext.
  * Returns false when no live row exists for the slug.
+ *
+ * Deleting THE default promotes the oldest surviving live provider in the same
+ * transaction. Without this, removing the default silently leaves the org with
+ * none — `getOrgDefaultModel` starts returning null and every org-scoped model
+ * consumer no-ops, with nothing in the UI to indicate why. Prod shows this is
+ * the real failure mode, not a hypothetical: the only `is_default` row found
+ * there (2026-07-28) was soft-deleted, leaving every org default-less.
+ * Promotion is skipped when the deleted row was not the default, and is a no-op
+ * when it was the org's last provider.
  */
 export async function softDeleteInferenceProvider(
 	organizationId: string,
 	slug: string,
 ): Promise<boolean> {
 	const sql = getDb();
-	const rows = (await sql`
-		UPDATE inference_providers
-		SET deleted_at = now(), updated_at = now()
-		WHERE organization_id = ${organizationId} AND slug = ${slug}
-		  AND deleted_at IS NULL
-		RETURNING id
-	`) as Array<{ id: string | number }>;
-	return rows.length > 0;
+	return await sql.begin(async (tx) => {
+		const rows = (await tx`
+			UPDATE inference_providers
+			SET deleted_at = now(), updated_at = now()
+			WHERE organization_id = ${organizationId} AND slug = ${slug}
+			  AND deleted_at IS NULL
+			RETURNING id, is_default
+		`) as Array<{ id: string | number; is_default: boolean }>;
+		if (rows.length === 0) return false;
+		if (!rows[0]?.is_default) return true;
+
+		// Oldest-first so promotion is deterministic and stable across replicas
+		// (`created_at` ties broken by the monotonic identity id).
+		await tx`
+			UPDATE inference_providers
+			SET is_default = true, updated_at = now()
+			WHERE id = (
+				SELECT id FROM inference_providers
+				WHERE organization_id = ${organizationId} AND deleted_at IS NULL
+				ORDER BY created_at, id
+				LIMIT 1
+			)
+		`;
+		return true;
+	});
 }
 
 /**

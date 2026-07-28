@@ -10,6 +10,13 @@ const logger = createLogger("worker-auth");
  */
 
 export interface WorkerTokenData {
+  /**
+   * Separates the bearer accepted by worker-facing gateway routes from the
+   * credential exposed to agent subprocesses through HTTP_PROXY.
+   *
+   * Absent means "worker" for tokens minted before this discriminator existed.
+   */
+  tokenKind?: "worker" | "egress-proxy";
   userId: string;
   conversationId: string;
   channelId: string;
@@ -108,56 +115,61 @@ export interface WorkerTokenData {
   deniedDomains?: string[];
 }
 
-export function generateWorkerToken(
+export interface WorkerTokenOptions {
+  channelId: string;
+  teamId?: string;
+  agentId?: string;
+  organizationId?: string;
+  connectionId?: string;
+  /** Full trusted Chat SDK thread id. See WorkerTokenData.responseThreadId. */
+  responseThreadId?: string;
+  platform?: string;
+  /** Headless run origin — see WorkerTokenData.source. */
+  source?: string;
+  sessionKey?: string;
+  traceId?: string;
+  /**
+   * Bind the token to a single `runs.id`. Set only by the runs-queue
+   * dispatcher's per-job token mint (MessageConsumer.handleMessage on
+   * the gateway side). Long-lived deployment tokens must NOT pass this
+   * — they'd be wrong for subsequent runs. See WorkerTokenData.runId
+   * for the consumption contract.
+   */
+  runId?: number;
+  /**
+   * Per-turn message id, set alongside `runId` by the runs-queue dispatcher.
+   * Binds token refresh to this turn's own liveness marker. See
+   * WorkerTokenData.messageId.
+   */
+  messageId?: string;
+  /**
+   * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
+   */
+  adminTools?: string[];
+  /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
+  runtimeProviderId?: string;
+  /** Selected sandbox id backing the runtime credential. See WorkerTokenData.sandboxId. */
+  sandboxId?: string;
+  /** Resolved egress allowlist for a remote runtime sandbox. See WorkerTokenData.allowedDomains. */
+  allowedDomains?: string[];
+  /** Resolved egress denylist for a remote runtime sandbox. See WorkerTokenData.deniedDomains. */
+  deniedDomains?: string[];
+}
+
+function generateToken(
   userId: string,
   conversationId: string,
   deploymentName: string,
-  options: {
-    channelId: string;
-    teamId?: string;
-    agentId?: string;
-    organizationId?: string;
-    connectionId?: string;
-    /** Full trusted Chat SDK thread id. See WorkerTokenData.responseThreadId. */
-    responseThreadId?: string;
-    platform?: string;
-    /** Headless run origin — see WorkerTokenData.source. */
-    source?: string;
-    sessionKey?: string;
-    traceId?: string;
-    /**
-     * Bind the token to a single `runs.id`. Set only by the runs-queue
-     * dispatcher's per-job token mint (MessageConsumer.handleMessage on
-     * the gateway side). Long-lived deployment tokens must NOT pass this
-     * — they'd be wrong for subsequent runs. See WorkerTokenData.runId
-     * for the consumption contract.
-     */
-    runId?: number;
-    /**
-     * Per-turn message id, set alongside `runId` by the runs-queue dispatcher.
-     * Binds token refresh to this turn's own liveness marker. See
-     * WorkerTokenData.messageId.
-     */
-    messageId?: string;
-    /**
-     * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
-     */
-    adminTools?: string[];
-    /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
-    runtimeProviderId?: string;
-    /** Selected sandbox id backing the runtime credential. See WorkerTokenData.sandboxId. */
-    sandboxId?: string;
-    /** Resolved egress allowlist for a remote runtime sandbox. See WorkerTokenData.allowedDomains. */
-    allowedDomains?: string[];
-    /** Resolved egress denylist for a remote runtime sandbox. See WorkerTokenData.deniedDomains. */
-    deniedDomains?: string[];
-  }
+  options: WorkerTokenOptions,
+  tokenKind: "worker" | "egress-proxy",
+  jti = randomUUID()
 ): string {
   if (!options.channelId) {
     throw new Error("channelId is required for worker token generation");
   }
 
   const payload: WorkerTokenData = {
+    tokenKind,
     userId,
     conversationId,
     channelId: options.channelId,
@@ -172,7 +184,7 @@ export function generateWorkerToken(
     source: options.source,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
-    jti: randomUUID(),
+    jti,
     runId: options.runId,
     messageId: options.messageId,
     adminTools: options.adminTools,
@@ -183,6 +195,52 @@ export function generateWorkerToken(
   };
 
   return encrypt(JSON.stringify(payload));
+}
+
+export function generateWorkerToken(
+  userId: string,
+  conversationId: string,
+  deploymentName: string,
+  options: WorkerTokenOptions
+): string {
+  return generateToken(
+    userId,
+    conversationId,
+    deploymentName,
+    options,
+    "worker"
+  );
+}
+
+/**
+ * Mint deployment-lifetime worker and proxy credentials with one revocation
+ * identity. Revoking the deployment token must also stop its egress.
+ */
+export function generateWorkerTokenPair(
+  userId: string,
+  conversationId: string,
+  deploymentName: string,
+  options: WorkerTokenOptions
+): { workerToken: string; egressProxyToken: string } {
+  const jti = randomUUID();
+  return {
+    workerToken: generateToken(
+      userId,
+      conversationId,
+      deploymentName,
+      options,
+      "worker",
+      jti
+    ),
+    egressProxyToken: generateToken(
+      userId,
+      conversationId,
+      deploymentName,
+      options,
+      "egress-proxy",
+      jti
+    ),
+  };
 }
 
 function parsePositiveIntEnv(
@@ -199,7 +257,10 @@ function parsePositiveIntEnv(
 /**
  * Verify and decrypt a worker authentication token
  */
-export function verifyWorkerToken(token: string): WorkerTokenData | null {
+function verifyToken(
+  token: string,
+  expectedKind: "worker" | "egress-proxy"
+): WorkerTokenData | null {
   try {
     const parsed: unknown = JSON.parse(decrypt(token));
 
@@ -212,6 +273,15 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       return null;
     }
     const data = parsed as WorkerTokenData;
+
+    const tokenKind = data.tokenKind ?? "worker";
+    if (
+      (tokenKind !== "worker" && tokenKind !== "egress-proxy") ||
+      tokenKind !== expectedKind
+    ) {
+      logger.error(`Token rejected: expected ${expectedKind} credential`);
+      return null;
+    }
 
     if (
       typeof data.conversationId !== "string" ||
@@ -320,4 +390,12 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
     );
     return null;
   }
+}
+
+export function verifyWorkerToken(token: string): WorkerTokenData | null {
+  return verifyToken(token, "worker");
+}
+
+export function verifyEgressProxyToken(token: string): WorkerTokenData | null {
+  return verifyToken(token, "egress-proxy");
 }

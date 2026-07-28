@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import { domainToASCII } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { createLogger, verifyEgressProxyToken } from "@lobu/core";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import {
   isUnrestrictedMode,
@@ -429,8 +429,9 @@ interface ValidatedProxy {
 }
 
 /**
- * Validate proxy authentication by verifying the encrypted worker token
- * and cross-checking the claimed deployment name.
+ * Validate proxy authentication using the egress-only token exposed through
+ * HTTP_PROXY, then cross-check the claimed deployment name. Worker-facing
+ * gateway routes reject this token kind.
  *
  * Revocation is checked against the synchronous in-memory cache only, so the DB
  * never blocks egress. Under N>1 replicas a token revoked on pod A is initially
@@ -447,7 +448,7 @@ async function validateProxyAuth(
     return null;
   }
 
-  const tokenData = verifyWorkerToken(creds.token);
+  const tokenData = verifyEgressProxyToken(creds.token);
   if (!tokenData) {
     logger.warn(
       `Proxy auth failed: invalid token (claimed deployment: ${creds.deploymentName})`
@@ -683,7 +684,7 @@ async function handleConnect(
     }
   });
 
-  // Validate worker token
+  // Validate the egress-only proxy token.
   const auth = await validateProxyAuth(req);
   if (!auth) {
     logger.warn(`Proxy auth required for CONNECT to ${hostname}`);
@@ -826,7 +827,7 @@ async function handleProxyRequest(
 
   const hostname = parsedUrl.hostname;
 
-  // Validate worker token
+  // Validate the egress-only proxy token.
   const auth = await validateProxyAuth(req);
   if (!auth) {
     logger.warn(`Proxy auth required for ${req.method} ${hostname}`);
@@ -1018,7 +1019,7 @@ async function handleConnectRequestFallback(
  * Workers identify themselves via Proxy-Authorization Basic auth:
  *   HTTP_PROXY=http://<deploymentName>:<token>@gateway:8118
  *
- * The proxy validates the encrypted worker token, cross-checks the
+ * The proxy validates the encrypted egress token, cross-checks the
  * claimed deployment name, and looks up per-deployment network config.
  * Returns 407 if authentication fails.
  *

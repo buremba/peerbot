@@ -24,6 +24,7 @@ const TOUCHED = [
   "JWT_SECRET",
   "DATABASE_URL",
   "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
   "LOBU_AGENT_ENV_GREETING",
 ] as const;
 const original = Object.fromEntries(
@@ -85,6 +86,11 @@ describe("gateway secrets are not readable from agent bash", () => {
       "hello-agent"
     );
   });
+
+  test("the connector-contributed GH_TOKEN lease reaches agent tooling", async () => {
+    process.env.GH_TOKEN = "ghs_short_lived_lease";
+    expect(await echoFromAgentBash("GH_TOKEN")).toBe("ghs_short_lived_lease");
+  });
 });
 
 describe("buildAgentEnv", () => {
@@ -92,11 +98,19 @@ describe("buildAgentEnv", () => {
     const out = buildAgentEnv({
       PATH: "/usr/bin",
       HOME: "/home/agent",
+      GH_TOKEN: "ghs_short_lived_lease",
+      NO_PROXY: "gateway,localhost",
+      NIX_PACKAGES: "gh",
+      JUST_BASH_ALLOWED_DOMAINS: '["github.com"]',
       ENCRYPTION_KEY: "nope",
       SOME_FUTURE_SECRET: "also nope",
     });
     expect(out.PATH).toBe("/usr/bin");
     expect(out.HOME).toBe("/home/agent");
+    expect(out.GH_TOKEN).toBe("ghs_short_lived_lease");
+    expect(out).not.toHaveProperty("NO_PROXY");
+    expect(out).not.toHaveProperty("NIX_PACKAGES");
+    expect(out).not.toHaveProperty("JUST_BASH_ALLOWED_DOMAINS");
     expect(out).not.toHaveProperty("ENCRYPTION_KEY");
     // The property that a denylist cannot have: a secret nobody has heard of
     // yet is excluded by default rather than included by default.
@@ -113,19 +127,20 @@ describe("buildAgentEnv", () => {
   });
 
   test("`extra` passes through unfiltered — it is what the call site intends", () => {
-    // A connector's contributed lease var (GH_TOKEN) is meant for the agent and
-    // is not an ambient worker secret, so it must survive.
     const out = buildAgentEnv(
       { ENCRYPTION_KEY: "nope" },
-      { GH_TOKEN: "ghs_leased" }
+      { XDG_CONFIG_HOME: "/runtime/.config" }
     );
-    expect(out.GH_TOKEN).toBe("ghs_leased");
+    expect(out.XDG_CONFIG_HOME).toBe("/runtime/.config");
     expect(out).not.toHaveProperty("ENCRYPTION_KEY");
   });
 
   test("undefined values never materialise as empty strings", () => {
-    const out = buildAgentEnv({ PATH: undefined }, { GH_TOKEN: undefined });
+    const out = buildAgentEnv(
+      { PATH: undefined },
+      { XDG_CONFIG_HOME: undefined }
+    );
     expect(out).not.toHaveProperty("PATH");
-    expect(out).not.toHaveProperty("GH_TOKEN");
+    expect(out).not.toHaveProperty("XDG_CONFIG_HOME");
   });
 });

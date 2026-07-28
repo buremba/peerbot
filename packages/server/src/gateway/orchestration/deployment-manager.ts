@@ -10,6 +10,7 @@ import {
 	ErrorCode,
 	extractTraceId,
 	generateWorkerToken,
+	generateWorkerTokenPair,
 	getErrorMessage,
 	type MessagePayload,
 	normalizeDomainPattern,
@@ -660,15 +661,32 @@ export function buildDeploymentWorkerToken(args: {
     args.userId,
     args.conversationId,
     args.deploymentName,
-    {
-      // Shared routing claims — kept in lockstep with the per-run mint via
-      // `buildWorkerTokenClaims` so a worker that falls back to this
-      // deployment-lifetime token carries the same connectionId/source and
-      // doesn't dead-letter its interaction cards (#1274).
-      ...buildWorkerTokenClaims(args),
-      // Deployment-token-specific claim.
-      traceId: args.traceId,
-    }
+    buildDeploymentTokenOptions(args)
+  );
+}
+
+function buildDeploymentTokenOptions(
+  args: Parameters<typeof buildDeploymentWorkerToken>[0]
+) {
+  return {
+    // Shared routing claims — kept in lockstep with the per-run mint via
+    // `buildWorkerTokenClaims` so a worker that falls back to this
+    // deployment-lifetime token carries the same connectionId/source and
+    // doesn't dead-letter its interaction cards (#1274).
+    ...buildWorkerTokenClaims(args),
+    // Deployment-token-specific claim.
+    traceId: args.traceId,
+  };
+}
+
+function buildDeploymentTokenPair(
+  args: Parameters<typeof buildDeploymentWorkerToken>[0]
+): { workerToken: string; egressProxyToken: string } {
+  return generateWorkerTokenPair(
+    args.userId,
+    args.conversationId,
+    args.deploymentName,
+    buildDeploymentTokenOptions(args)
   );
 }
 
@@ -1649,7 +1667,7 @@ export class DeploymentManager {
       };
     }
 
-    const workerToken = buildDeploymentWorkerToken({
+    const deploymentTokenArgs = {
       userId,
       conversationId,
       deploymentName,
@@ -1666,7 +1684,12 @@ export class DeploymentManager {
       // the runtime route reads it off the signed token, not the worker's body.
       allowedDomains: validated.networkConfig?.allowedDomains,
       deniedDomains: validated.networkConfig?.deniedDomains,
-    });
+    };
+    const { workerToken, egressProxyToken } =
+      buildDeploymentTokenPair(deploymentTokenArgs);
+    // Agent subprocesses can read HTTP_PROXY. Give the proxy a separately
+    // typed credential that carries the same egress-policy claims but is
+    // rejected by every worker-facing gateway auth path.
 
     // Sync network domains (allow + deny + nix caches), pre-approved MCP
     // tool patterns, and the egress judge policy — single-sourced with the
@@ -1675,7 +1698,7 @@ export class DeploymentManager {
 
     const proxyUrl = this.buildProxyUrl(
       deploymentName,
-      workerToken,
+      egressProxyToken,
       dispatcherHost
     );
 

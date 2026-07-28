@@ -12,8 +12,8 @@
  * gateway later is exposed until someone remembers to name it here.
  *
  * Adding an entry grants the agent read access to that value. Prefer passing a
- * value explicitly through the call site (see `remoteEnv` / contributed lease
- * vars) over widening this list.
+ * value explicitly through the call site (see `remoteEnv`) over widening this
+ * list.
  */
 
 /** Exact names forwarded verbatim. */
@@ -25,6 +25,7 @@ export const WORKER_ENV_ALLOWLIST = [
   "TMPDIR",
   "TEMP",
   "TMP",
+  "XDG_CACHE_HOME",
   "SHELL",
   "USER",
   "LOGNAME",
@@ -37,26 +38,24 @@ export const WORKER_ENV_ALLOWLIST = [
   "TERM",
   "TZ",
   // Egress. Spawned binaries reach the network through the gateway proxy, which
-  // enforces the per-agent domain allowlist; without these they bypass it or
-  // fail outright. Both cases are honoured by curl/git/gh.
+  // enforces the per-agent domain allowlist. NO_PROXY is deliberately absent:
+  // letting agent commands inherit it would create a direct-connect bypass.
   "HTTP_PROXY",
   "HTTPS_PROXY",
-  "NO_PROXY",
   "ALL_PROXY",
   "http_proxy",
   "https_proxy",
-  "no_proxy",
   "all_proxy",
-  // Read by the worker's own bootstrap: the declared tooling contribution and
-  // the just-bash domain allowlist.
-  "NIX_PACKAGES",
-  "JUST_BASH_ALLOWED_DOMAINS",
   // Nix needs these to resolve a provisioned package's store paths.
   "NIX_PATH",
   "NIX_PROFILES",
   "NIX_SSL_CERT_FILE",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
+  // The only real credential workers may give agent tooling: a short-lived,
+  // provider-derived GitHub App installation lease. The gateway never puts a
+  // durable GitHub credential here.
+  "GH_TOKEN",
 ] as const;
 
 /**
@@ -73,9 +72,9 @@ export const WORKER_ENV_ALLOWLIST_PREFIXES = ["LOBU_AGENT_ENV_"] as const;
  * allowlisted names.
  *
  * `extra` is merged AFTER filtering and is not itself filtered — it carries
- * values the call site means to pass (a connector's contributed lease var, a
- * runtime provider's `remoteEnv`), which are by definition intended for the
- * agent and are not the worker's ambient secrets.
+ * values the call site means to pass (for example a runtime provider's
+ * `remoteEnv`), which are by definition intended for the agent and are not the
+ * worker's ambient secrets.
  */
 export function buildAgentEnv(
   env: Record<string, string | undefined>,

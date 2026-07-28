@@ -88,9 +88,9 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * Background: pi's `createAgentSession({ tools })` uses the `tools` option only
  * to derive the active tool NAMES — it rebuilds the underlying built-in tools
  * internally via `createAllTools(cwd, { bash: { commandPrefix } })`, whose bash
- * uses `getShellEnv()` = `{ ...process.env }` with no env strip and no custom
+ * uses `getShellEnv()` = `{ ...process.env }` with no env filter and no custom
  * BashOperations. That silently discards the worker's hardened bash (the
- * spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and the embedded
+ * spawnHook that builds an allowlisted agent environment and the embedded
  * BashOperations), so the agent's general bash would inherit the worker's real
  * gateway credentials.
  *
@@ -1050,7 +1050,7 @@ export async function runAISession(
     });
   // The bash tool returned here carries the FULL hardened policy by construction
   // (prefix allow/deny + gateway-access + package-install blocks, plus
-  // credential-strip), and the `!`-bash intercept reuses the same guards (via
+  // environment allowlist), and the `!`-bash intercept reuses the same guards (via
   // enforceBashPreflight) rather than a second raw path. The filter then removes
   // bash entirely when the agent policy disallows it (strict / disallowedTools).
   const tools = createLobuTools(workspaceDir, {
@@ -1603,7 +1603,7 @@ user references earlier discussion or you need prior context.`);
     // command runs through the SAME hardened path the agent's own bash tool uses
     // (enforceBashPreflight → the pinned embeddedBashOps), so it inherits the
     // prefix policy, gateway-access block, package-install block, and
-    // credential-strip; it crosses no boundary the agent couldn't already. pi's
+    // environment allowlist; it crosses no boundary the agent couldn't already. pi's
     // `executeBash` records a `bashExecution` transcript entry synchronously and
     // honors `excludeFromContext` (the `!!` form).
     const bangBash = readBangBashCommand(platformMetadata);

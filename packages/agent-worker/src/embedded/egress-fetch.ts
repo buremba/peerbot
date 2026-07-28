@@ -346,7 +346,8 @@ export function buildEgressFetch(
   NetworkAccessDeniedError: NetworkAccessDeniedErrorCtor
 ): SecureFetch {
   // Captured once from the worker's own env (bash scripts only ever see a
-  // scrubbed copy, so agents cannot repoint the proxy).
+  // filtered copy with an egress-only credential, so agents cannot repoint
+  // the transport or reuse its credential against worker-facing APIs).
   const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
   const httpsProxy =
     process.env.HTTPS_PROXY || process.env.https_proxy || httpProxy;

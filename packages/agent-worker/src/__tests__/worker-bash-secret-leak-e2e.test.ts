@@ -5,7 +5,7 @@
  * This drives the SAME wiring production uses: the worker captures
  * WORKER_TOKEN / DISPATCHER_URL from process.env for its OWN gateway calls,
  * builds the agent's built-in tools via createLobuTools (carrying the
- * env-strip spawnHook), and hands them to buildAgentSession. We then invoke
+ * env-allowlisting spawnHook), and hands them to buildAgentSession. We then invoke
  * the resulting agent bash tool DIRECTLY with `printenv WORKER_TOKEN` /
  * `printenv DISPATCHER_URL` and assert both come back EMPTY — using a real
  * subprocess (no mocked BashOperations) so the assertion is about the actual

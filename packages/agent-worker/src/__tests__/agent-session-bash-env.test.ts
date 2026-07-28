@@ -134,8 +134,8 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
     });
 
     // Every built-in the agent can run must be the exact Lobu instance, not
-    // pi's rebuilt one — that is what carries the env-strip spawnHook and the
-    // embedded BashOperations.
+    // pi's rebuilt one — that is what carries the env-allowlisting spawnHook
+    // and the embedded BashOperations.
     for (const tool of session.agent.state.tools) {
       const lobuTool = lobuByName.get(tool.name);
       if (lobuTool) {

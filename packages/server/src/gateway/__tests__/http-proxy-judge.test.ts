@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as crypto from "node:crypto";
 import type * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerTokenPair } from "@lobu/core";
 import type { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
@@ -92,12 +92,12 @@ function makeBasicAuth(username: string, password: string): string {
 }
 
 function createValidToken(deploymentName: string): string {
-  return generateWorkerToken("test-user", "test-conv", deploymentName, {
+  return generateWorkerTokenPair("test-user", "test-conv", deploymentName, {
     channelId: "test-channel",
     platform: "test",
     agentId: "agent-a",
     organizationId: "org-a",
-  });
+  }).egressProxyToken;
 }
 
 function rawProxyRequest(

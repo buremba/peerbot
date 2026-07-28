@@ -35,11 +35,8 @@ name: Build and Push Images
 #
 # That does mean a release and a push can now run at the same time, so
 # serialization no longer guarantees a unique timestamp tag on its own.
-# `generate-tag` therefore claims a tag the registry does not already carry
-# rather than trusting runs to be seconds apart. Dropping the timestamp from
-# release runs would have been simpler but breaks deploys outright: Flux's
-# ImagePolicy matches ONLY '^(\d{8})-(\d{6})$', so semver/latest never roll
-# prod.
+# `generate-tag` therefore appends a run-number suffix — see the note there
+# for why the clock alone, a registry probe, and run_number alone all fail.
 concurrency:
   group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
@@ -91,30 +88,43 @@ jobs:
       is_stable: ${{ steps.semver.outputs.is_stable }}
       should_publish: ${{ steps.semver.outputs.should_publish }}
     steps:
-      # `{date}-{run_number}`, not a wall-clock time. Serialization alone no
-      # longer guarantees uniqueness now that a release can run beside a push,
-      # and a clock is the wrong tool: two runs starting in the same second
-      # produce the same value. Asking the registry first does not fix it
-      # either — that is check-then-act, and concurrent runs both observe the
-      # tag free before either has pushed.
+      # `{date}-{time}-{run_number}`. Both halves are load-bearing, and each
+      # replaces something that failed:
       #
-      # run_number is unique and monotonic per workflow, so equal tags are
-      # impossible by construction rather than unlikely. Zero-padded to six
-      # digits to satisfy Flux's ImagePolicy `^(\d{8})-(\d{6})$` — semver and
-      # latest are invisible to it, so this tag is what actually deploys — and
-      # its numerical `${date}${time}` extract still orders ascending, so the
-      # newest build still wins. Hard-fails past 999999 rather than silently
-      # emitting an unmatched tag that would freeze deploys.
+      # The timestamp ORDERS. Flux picks the numerically highest tag, so the
+      # key has to track when a build actually ran. Ordering by run_number
+      # alone breaks recovery: re-running an earlier failed release after a
+      # later push republishes a LOWER number, and the recovered release never
+      # deploys — which is exactly the rerun that unstuck `lobu-v14.4.0`.
+      #
+      # run_number BREAKS TIES. A release can now run beside a push (see the
+      # concurrency note above), so two builds can reach this step in the same
+      # second and stamp the same time. Probing the registry first does not
+      # help — that is check-then-act, and concurrent runs both see the tag
+      # free before either has pushed. run_number is unique and monotonic per
+      # workflow, so equal tags are impossible by construction.
+      #
+      # Zero-padded to a fixed width: the numerical extract concatenates the
+      # groups, so a variable-width component would misorder.
+      #
+      # The matching pattern lives in the owletto submodule
+      # (deploy/k8s/infrastructure/image-automation/image-policies.yaml) and
+      # accepts the old two-segment tags too, so the two repos can land in
+      # either order without a gap where nothing matches.
       - name: Generate shared image tag
         id: timestamp
         run: |
           set -euo pipefail
+          # The WHOLE run number, never truncated. Taking it modulo anything
+          # reintroduces collisions: a rerun reuses an OLD run_number, so
+          # re-running 1562 beside a fresh 1662 yields the same suffix in the
+          # same second. Reruns are not hypothetical — one published v14.4.0.
           run_number="${{ github.run_number }}"
           if [ "$run_number" -gt 999999 ]; then
             echo "::error::run_number $run_number exceeds the 6 digits the tag format allows."
             exit 1
           fi
-          tag="$(date -u +'%Y%m%d')-$(printf '%06d' "$run_number")"
+          tag="$(date -u +'%Y%m%d-%H%M%S')-$(printf '%06d' "$run_number")"
           echo "Using image tag: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 

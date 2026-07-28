@@ -17,7 +17,7 @@
  */
 
 import esbuild from "esbuild";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,7 +68,8 @@ const result = await esbuild.build({
 // tsc is incremental: after `rm -rf dist` a stale tsconfig.tsbuildinfo makes it
 // exit 0 having emitted nothing, which would publish a typeless bundle with no
 // error anywhere. Don't trust tsc's exit code — check the files.
-for (const decl of ["dist/index.d.ts", "dist/core/types.d.ts"]) {
+const TYPES_SRC = "dist/core/types.d.ts";
+for (const decl of ["dist/index.d.ts", TYPES_SRC]) {
   if (!existsSync(join(pkgDir, decl))) {
     console.error(
       `\n[build-worker-bundle] FAILED: ${decl} missing — tsc emitted no declarations.\n` +
@@ -78,6 +79,34 @@ for (const decl of ["dist/index.d.ts", "dist/core/types.d.ts"]) {
     process.exit(1);
   }
 }
+
+// Emit ONE self-contained declaration beside the bundle.
+//
+// The published package declares no @lobu dependencies, so shipping tsc's
+// dist/core/types.d.ts verbatim left `import type { WorkerTransport } from
+// "@lobu/core"` dangling and every consumer tsc failed with TS2307. Only
+// WorkerConfig is exported from the entry and it does not reference @lobu/core
+// — that import serves sibling interfaces outside the public surface — so the
+// declaration is rebuilt from just that type.
+const typesSource = readFileSync(join(pkgDir, TYPES_SRC), "utf8");
+const workerConfig = typesSource.match(
+  /export interface WorkerConfig \{[\s\S]*?\n\}/
+)?.[0];
+if (!workerConfig) {
+  console.error(
+    `\n[build-worker-bundle] FAILED: could not extract WorkerConfig from ${TYPES_SRC}.\n` +
+      "  The published type surface is generated from it; check whether it was renamed."
+  );
+  process.exit(1);
+}
+if (/@lobu\//.test(workerConfig)) {
+  console.error(
+    "\n[build-worker-bundle] FAILED: generated declaration references an @lobu package.\n" +
+      "  The published manifest declares none, so a consumer's tsc would fail with TS2307."
+  );
+  process.exit(1);
+}
+writeFileSync(join(pkgDir, "dist/index.bundle.d.ts"), `${workerConfig}\n`);
 
 // Select the JS output explicitly — outputs also contains the .map entry, and
 // picking [0] silently read the sourcemap's (empty) import list instead, which

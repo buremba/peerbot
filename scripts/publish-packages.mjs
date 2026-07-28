@@ -198,22 +198,16 @@ function transformWorkerPublish(pkg) {
   pkg.bin = { "lobu-worker": BUNDLE };
   pkg.exports = {
     ".": {
-      types: "./dist/index.d.ts",
+      types: "./dist/index.bundle.d.ts",
       import: BUNDLE,
       default: BUNDLE,
     },
     "./package.json": "./package.json",
   };
-  // Exactly the bundle plus the real type surface (index.d.ts re-exports only
-  // WorkerConfig, from core/types.d.ts). Shipping src/ or dist/**/*.d.ts drags
-  // back in files that reference the private plugins — the sibling .d.ts
-  // `import type` from @lobu/plugin-toolkit and break a consumer's typecheck.
-  pkg.files = [
-    "dist/index.bundle.mjs",
-    "dist/index.d.ts",
-    "dist/core/types.d.ts",
-    "!**/*.map",
-  ];
+  // Exactly the bundle plus the self-contained declaration the bundler emits.
+  // Shipping src/ or tsc's dist/**/*.d.ts drags back in files that reference
+  // @lobu packages this manifest no longer declares, failing consumer tsc.
+  pkg.files = ["dist/index.bundle.mjs", "dist/index.bundle.d.ts", "!**/*.map"];
 
   // EVERY @lobu dependency is dropped, not just the private ones — the bundle
   // inlines them all, so declaring them would make consumers install packages

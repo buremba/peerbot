@@ -292,6 +292,22 @@ describe("published @lobu/worker manifest", () => {
     expect(lobuDeps).toEqual([]);
   });
 
+  it("ships a self-contained declaration, not one importing @lobu", () => {
+    // tsc's dist/core/types.d.ts imports @lobu/core, which the published
+    // manifest no longer declares — shipping it verbatim failed every
+    // consumer's tsc with TS2307. The bundler emits a standalone declaration.
+    const decl = readFileSync(
+      join(REPO_ROOT, "packages/agent-worker/dist/index.bundle.d.ts"),
+      "utf8"
+    );
+    expect(decl).toContain("WorkerConfig");
+    expect(decl).not.toContain("@lobu/");
+    expect(transformed.files).toContain("dist/index.bundle.d.ts");
+    expect(JSON.stringify(transformed.exports)).not.toContain(
+      "dist/index.d.ts"
+    );
+  });
+
   it("points every entry at the bundle and ships no src/", () => {
     expect(transformed.main).toBe("./dist/index.bundle.mjs");
     expect(transformed.bin["lobu-worker"]).toBe("./dist/index.bundle.mjs");
@@ -413,7 +429,11 @@ describe("bump-version input validation (subprocess)", () => {
     if (bad !== "") expect(result.status).not.toBe(0);
   });
 
-  it.each(["9.9.9", "9.9.9-beta.1"])("accepts explicit semver %p", (good) => {
+  it.each([
+    "9.9.9",
+    "9.9.9-beta.1",
+    "1.0.0-alpha.1+build.7",
+  ])("accepts explicit semver %p", (good) => {
     const { result, wrote } = runBump(good);
     expect(result.status).toBe(0);
     expect(wrote).toBe(true);

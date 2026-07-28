@@ -10,14 +10,27 @@ import type { Guardrail } from "@lobu/core";
 const REPLY =
   "I looked at the connector and it polls every 15 minutes. The rate limit is 100 requests per hour, so the current schedule leaves plenty of headroom.";
 
-function env(over: Record<string, string | undefined> = {}) {
-  return {
-    SUGGESTION_GENERATOR_API_KEY: "sk-test",
-    SUGGESTION_GENERATOR_BASE_URL: "https://api.example.com/v1",
-    SUGGESTION_GENERATOR_MODEL: "gpt-test",
+const ORG = "org-test";
+const ORG_DEFAULT_MODEL = "gpt-test";
+
+/**
+ * Stub target resolution so unit tests stay DB-free. Injected via
+ * `options.resolveTarget` rather than `mock.module`, which is process-global in
+ * Bun and corrupts sibling suites.
+ */
+function target(
+  over: Partial<{ baseUrl: string; apiKey: string; model: string }> = {}
+) {
+  return async () => ({
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "sk-test",
+    model: ORG_DEFAULT_MODEL,
     ...over,
-  };
+  });
 }
+
+/** Resolution that finds nothing — the org has no provider row. */
+const noTarget = async () => null;
 
 /** Stub `fetch` with a canned chat-completion body. */
 function stubFetch(content: string | null, ok = true): () => void {
@@ -87,7 +100,7 @@ describe("generateSuggestFollowups", () => {
         ],
       })
     );
-    const out = await generateSuggestFollowups(REPLY, env());
+    const out = await generateSuggestFollowups(REPLY, ORG, { resolveTarget: target() });
     expect(out).toHaveLength(2);
     expect(out[0]).toEqual({
       title: "Raise the interval",
@@ -99,11 +112,11 @@ describe("generateSuggestFollowups", () => {
     restore = stubFetch(
       '```json\n{"prompts":[{"title":"T","message":"M"}]}\n```'
     );
-    const out = await generateSuggestFollowups(REPLY, env());
+    const out = await generateSuggestFollowups(REPLY, ORG, { resolveTarget: target() });
     expect(out).toEqual([{ title: "T", message: "M" }]);
   });
 
-  test("returns [] when unconfigured rather than calling out", async () => {
+  test("returns [] when the org resolves no model, without calling out", async () => {
     let called = false;
     const original = globalThis.fetch;
     globalThis.fetch = (async () => {
@@ -114,10 +127,9 @@ describe("generateSuggestFollowups", () => {
       globalThis.fetch = original;
     };
 
-    const out = await generateSuggestFollowups(
-      REPLY,
-      env({ SUGGESTION_GENERATOR_API_KEY: undefined })
-    );
+    const out = await generateSuggestFollowups(REPLY, ORG, {
+      resolveTarget: noTarget,
+    });
     expect(out).toEqual([]);
     expect(called).toBe(false);
   });
@@ -133,21 +145,21 @@ describe("generateSuggestFollowups", () => {
       globalThis.fetch = original;
     };
 
-    const out = await generateSuggestFollowups("ok", env());
+    const out = await generateSuggestFollowups("ok", ORG, { resolveTarget: target() });
     expect(out).toEqual([]);
     expect(called).toBe(false);
   });
 
   test("returns [] when the model HTTP-errors", async () => {
     restore = stubFetch("{}", false);
-    const out = await generateSuggestFollowups(REPLY, env());
+    const out = await generateSuggestFollowups(REPLY, ORG, { resolveTarget: target() });
     expect(out).toEqual([]);
   });
 
-  // A per-agent `model` is the one override worth having: the credentials are
-  // an operator secret, but model choice decides whether chips arrive at all
-  // (a slow reasoning model times out and silently yields none).
-  test("a per-guardrail model overrides the env model", async () => {
+  // A per-agent `model` is the one override worth having: credentials come from
+  // the org's provider row either way, but model choice decides whether chips
+  // arrive at all (a slow reasoning model times out and silently yields none).
+  test("a per-guardrail model ref overrides the org default", async () => {
     let sentModel: string | undefined;
     const original = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init: RequestInit) => {
@@ -168,14 +180,15 @@ describe("generateSuggestFollowups", () => {
       globalThis.fetch = original;
     };
 
-    const out = await generateSuggestFollowups(REPLY, env(), {
-      model: "per-agent-model",
+    const out = await generateSuggestFollowups(REPLY, ORG, {
+      model: "prov/per-agent-model",
+      resolveTarget: target({ model: "per-agent-model" }),
     });
     expect(sentModel).toBe("per-agent-model");
     expect(out).toEqual([{ title: "T", message: "M" }]);
   });
 
-  test("falls back to the env model when the guardrail sets none", async () => {
+  test("falls back to the org default model when the guardrail sets none", async () => {
     let sentModel: string | undefined;
     const original = globalThis.fetch;
     globalThis.fetch = (async (_url: string, init: RequestInit) => {
@@ -190,8 +203,8 @@ describe("generateSuggestFollowups", () => {
       globalThis.fetch = original;
     };
 
-    await generateSuggestFollowups(REPLY, env(), {});
-    expect(sentModel).toBe(env().SUGGESTION_GENERATOR_MODEL);
+    await generateSuggestFollowups(REPLY, ORG, { resolveTarget: target() });
+    expect(sentModel).toBe(ORG_DEFAULT_MODEL);
   });
 
   test("an elapsed timeout yields [] rather than throwing", async () => {
@@ -206,7 +219,10 @@ describe("generateSuggestFollowups", () => {
       globalThis.fetch = original;
     };
 
-    const out = await generateSuggestFollowups(REPLY, env(), { timeoutMs: 10 });
+    const out = await generateSuggestFollowups(REPLY, ORG, {
+      timeoutMs: 10,
+      resolveTarget: target(),
+    });
     expect(out).toEqual([]);
   });
 });

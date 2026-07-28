@@ -52,7 +52,6 @@
           "upstreamBaseUrl": "https://chatgpt.com/backend-api",
           "apiKeyInstructions": "Sign in with ChatGPT Plus/Pro, or paste an OpenAI API key",
           "apiKeyPlaceholder": "sk-...",
-          "sdkCompat": "openai",
           "modalities": ["text"],
           "oauth": {
             "clientId": "app_EMoamEEZ73f0CkXaXp7hrann",

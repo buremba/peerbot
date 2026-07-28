@@ -12,12 +12,10 @@
  * secret-bearing reply never reaches this LLM call. See
  * {@link isEnrichmentGuardrail}.
  *
- * Opt-in transport: process env `SUGGESTION_GENERATOR_API_KEY` +
- * `SUGGESTION_GENERATOR_BASE_URL` + `SUGGESTION_GENERATOR_MODEL` (OpenAI-
- * compatible chat/completions). Incomplete config or any failure fails open
- * (no chips) — same state as before this guardrail existed. Lives in the
- * gateway (not `@lobu/core`) so the generation pipeline stays a server
- * concern next to the other built-ins.
+ * Transport: the shared {@link gatewayCompletion} client, resolving an
+ * org-owned OpenAI-compatible provider key. OAuth-only and non-OpenAI
+ * providers are not callable through this transport. An unsupported provider,
+ * unresolvable model, or any failure fails open (no chips).
  */
 
 import {
@@ -27,6 +25,10 @@ import {
   type Guardrail,
   type SuggestedPrompt,
 } from "@lobu/core";
+import {
+  gatewayCompletion,
+  resolveCompletionTarget,
+} from "../inference/gateway-completion.js";
 
 const logger = createLogger("suggest-followups");
 
@@ -55,10 +57,12 @@ const MAX_INPUT_CHARS = 6_000;
  * (MCP_PROXY_FETCH_TIMEOUT_MS, TRANSCRIPTION_FETCH_TIMEOUT_MS) rather than like
  * the blocking judges, which fail fast because a turn is stalled behind them.
  *
- * Do not trim this without measuring the configured model: reasoning-tier
- * models are slow here (glm-4.7 measured 19-26s, glm-4.6 16.7s, glm-4.5-air
- * 21.9s on 2026-07-28), and a timeout below the model's real latency yields
- * zero chips on every turn while still paying for the call.
+ * Do not trim this without measuring the org's model: reasoning-tier models are
+ * slow here (glm-4.7 measured 19-26s, glm-4.6 16.7s, glm-4.5-air 21.9s on
+ * 2026-07-28), and a timeout below the model's real latency yields zero chips
+ * on every turn while still paying for the call. Since the model comes from the
+ * org's provider row it can be ANY tier, so sizing for the slow end is the safe
+ * default.
  */
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MIN_REPLY_CHARS = 40;
@@ -77,18 +81,6 @@ const SYSTEM_PROMPT = [
   "Do not offer an action the assistant already completed in the reply.",
   'Return STRICT JSON {"prompts":[{"title":"...","message":"..."}]} only.',
 ].join("\n");
-
-interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: { content?: string | null } | null;
-  } | null> | null;
-}
-
-export interface SuggestFollowupsEnv {
-  SUGGESTION_GENERATOR_API_KEY?: string;
-  SUGGESTION_GENERATOR_BASE_URL?: string;
-  SUGGESTION_GENERATOR_MODEL?: string;
-}
 
 /**
  * Built-in registration stub. The actual generation runs out-of-band after
@@ -110,79 +102,60 @@ export function createSuggestFollowupsGuardrail(): Guardrail<"output"> {
 }
 
 /** Per-guardrail overrides, from the agent's `suggest-followups` entry. */
-export interface SuggestFollowupsOptions {
-  /** `model` on the guardrail entry — wins over SUGGESTION_GENERATOR_MODEL. */
+interface SuggestFollowupsOptions {
+  /**
+   * `model` on the guardrail entry. Wins over the org default — the one knob
+   * worth varying, since a slow reasoning model yields nothing under any sane
+   * timeout and chip quality differs sharply by tier. Mirrors how a judge
+   * guardrail's `model` field already works.
+   *
+   * Accepts EITHER form. `<slug>/<model>` routes to that provider row;
+   * anything else is treated as a bare model id and runs on the org's default
+   * provider — which is what this field always meant before credentials moved
+   * to `inference_providers`, so existing values keep working. See
+   * {@link resolveCompletionTarget}.
+   */
   model?: string;
   /** Abort budget; defaults to {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /**
+   * Test seam for target resolution, which otherwise reads Postgres. Injected
+   * rather than mocked because Bun's `mock.module` is process-global and
+   * corrupts sibling suites (see connector-discovery.test.ts).
+   */
+  resolveTarget?: typeof resolveCompletionTarget;
 }
 
 /**
  * Derive follow-up chips from the (already scanned) agent reply. Returns []
- * when unconfigured, on short replies, or on any failure.
- *
- * The credentials stay env-scoped (an operator secret, not agent-editable), but
- * `model` is per-agent: it is the one knob worth varying — a slow reasoning
- * model yields nothing under any sane timeout, and chip quality differs sharply
- * by tier. It mirrors how a judge guardrail's `model` field already works.
+ * when no model resolves for the org, on short replies, or on any failure —
+ * this guardrail never blocks a turn, so every path fails open.
  */
 export async function generateSuggestFollowups(
   replyText: string,
-  env: SuggestFollowupsEnv = process.env as SuggestFollowupsEnv,
+  organizationId: string,
   options: SuggestFollowupsOptions = {}
 ): Promise<SuggestedPrompt[]> {
-  const apiKey = env.SUGGESTION_GENERATOR_API_KEY?.trim();
-  const configuredBaseUrl = env.SUGGESTION_GENERATOR_BASE_URL?.trim();
-  const model =
-    options.model?.trim() || env.SUGGESTION_GENERATOR_MODEL?.trim();
-  // Keep provider selection explicit — no silent hardcoding of a base URL or
-  // model outside the operator-configured env.
-  if (!apiKey || !configuredBaseUrl || !model) return [];
-
   const trimmed = replyText.trim();
   // A one-word reply ("Done.") gives the model no material and yields filler.
   if (trimmed.length < MIN_REPLY_CHARS) return [];
 
-  const baseUrl = configuredBaseUrl.replace(/\/+$/, "");
   const input =
     trimmed.length > MAX_INPUT_CHARS ? trimmed.slice(-MAX_INPUT_CHARS) : trimmed;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  );
-
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.3,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: input },
-        ],
-      }),
-      signal: controller.signal,
+    const resolve = options.resolveTarget ?? resolveCompletionTarget;
+    const target = await resolve(organizationId, options.model);
+    // No supported target means enrichment stays off for this turn.
+    if (!target) return [];
+
+    const content = await gatewayCompletion({
+      target,
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt: input,
+      temperature: 0.3,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-
-    if (!response.ok) {
-      logger.warn(
-        { status: response.status },
-        "suggest-followups completion failed; turn ends without chips"
-      );
-      return [];
-    }
-
-    const data = (await response.json()) as ChatCompletionResponse;
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) return [];
-
     return parsePrompts(content);
   } catch (error) {
     logger.warn(
@@ -190,8 +163,6 @@ export async function generateSuggestFollowups(
       "suggest-followups generation failed; turn ends without chips"
     );
     return [];
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

@@ -318,6 +318,53 @@ describe("published @lobu/worker manifest", () => {
 });
 
 /**
+ * The server spawns the worker by resolving a path inside the INSTALLED
+ * @lobu/worker package. If the publish transform stops shipping the file that
+ * resolver names, every published-CLI worker start fails at runtime with a
+ * missing entry point — invisible to typecheck and to any in-repo test, because
+ * in-repo the src/ path wins. This pins the two together.
+ */
+describe("installed worker entry point is actually published", () => {
+  const RESOLVER = join(
+    REPO_ROOT,
+    "packages/server/src/gateway/config/index.ts"
+  );
+
+  /** dist/... paths the resolver can hand back for an installed package. */
+  function resolverInstalledEntries() {
+    const source = readFileSync(RESOLVER, "utf8");
+    return [
+      ...source.matchAll(/workerPackageRoot,\s*\n?\s*"(dist\/[^"]+)"/g),
+    ].map((m) => m[1]);
+  }
+
+  it("ships every dist entry the server can resolve to", () => {
+    const entry = __testing.PACKAGES.find(
+      (p: { dir: string }) => p.dir === "packages/agent-worker"
+    );
+    const published = entry.transform(
+      JSON.parse(
+        readFileSync(
+          join(REPO_ROOT, "packages/agent-worker/package.json"),
+          "utf8"
+        )
+      )
+    ) as { files: string[] };
+
+    const candidates = resolverInstalledEntries();
+    // Guard the guard: if the resolver is refactored so this regex stops
+    // matching, an empty list would vacuously pass.
+    expect(candidates.length).toBeGreaterThan(0);
+
+    // EVERY dist path the resolver can name must be shipped. Asserting only
+    // the first is too weak — source order is not resolution order, so a
+    // resolver that fell back to an unshipped path would still pass.
+    const unshipped = candidates.filter((c) => !published.files.includes(c));
+    expect(unshipped).toEqual([]);
+  });
+});
+
+/**
  * `bump-version.mjs` used to accept any string as an explicit version, so a
  * stray flag rewrote every package.json in the workspace to a nonsense value
  * (`node scripts/bump-version.mjs --help` → `"version": "--help"`). These run

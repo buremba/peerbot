@@ -68,7 +68,7 @@ export async function fetchAuditedRelease({ repo, token, fetchImpl = fetch }) {
       `https://api.github.com/repos/${repo}/releases?per_page=${RELEASES_PER_PAGE}&page=${page}`,
       {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
-      },
+      }
     );
     if (!response.ok) {
       throw new Error(`listing releases failed: HTTP ${response.status}`);
@@ -116,17 +116,17 @@ export function auditRelease({ release, now, digests }) {
     const { semver = null, latest = null } = digests[image] ?? {};
     if (!semver) {
       problems.push(
-        `${image}: tag ${release.version} is not anonymously pullable from ghcr — the release build never published it, or the package went private`,
+        `${image}: tag ${release.version} is not anonymously pullable from ghcr — the release build never published it, or the package went private`
       );
       continue;
     }
     if (!latest) {
       problems.push(
-        `${image}: tag latest is not anonymously pullable from ghcr`,
+        `${image}: tag latest is not anonymously pullable from ghcr`
       );
     } else if (latest !== semver) {
       problems.push(
-        `${image}: latest (${latest}) is not the ${release.version} build (${semver}) — latest was left on an older image`,
+        `${image}: latest (${latest}) is not the ${release.version} build (${semver}) — latest was left on an older image`
       );
     }
   }
@@ -163,7 +163,7 @@ async function fetchDigest(image, tag) {
           "application/vnd.docker.distribution.manifest.v2+json",
         ].join(","),
       },
-    },
+    }
   );
   if (!res.ok) return null;
   return res.headers.get("docker-content-digest");
@@ -199,7 +199,7 @@ if (process.argv[1] && isMainModule()) {
   }
   if (verdict.status === "ok") {
     console.log(
-      `ghcr serves ${release.version} (and latest matches) for: ${IMAGES.join(", ")}`,
+      `ghcr serves ${release.version} (and latest matches) for: ${IMAGES.join(", ")}`
     );
     process.exit(0);
   }

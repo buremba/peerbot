@@ -44,7 +44,7 @@ describe("pickAuditedRelease", () => {
           published_at: "2026-07-28T12:00:00Z",
         },
         { tag_name: "lobu-v14.4.0", published_at: "2026-07-28T11:00:00Z" },
-      ]),
+      ])
     ).toEqual({ version: "14.4.0", publishedAt: "2026-07-28T11:00:00Z" });
   });
 
@@ -56,7 +56,7 @@ describe("pickAuditedRelease", () => {
           tag_name: "owletto-mac-v2.1.0",
           published_at: "2026-07-28T15:00:00Z",
         },
-      ]),
+      ])
     ).toBeNull();
   });
 });
@@ -83,7 +83,7 @@ describe("fetchAuditedRelease", () => {
       fetchImpl: async (url: string | URL | Request, init?: RequestInit) => {
         requests.push(String(url));
         expect(new Headers(init?.headers).get("authorization")).toBe(
-          "Bearer test-token",
+          "Bearer test-token"
         );
         return Response.json(pages[requests.length - 1]);
       },
@@ -113,7 +113,7 @@ describe("fetchAuditedRelease", () => {
       fetchAuditedRelease({
         repo: "lobu-ai/lobu",
         fetchImpl: async () => new Response(null, { status: 503 }),
-      }),
+      })
     ).rejects.toThrow("listing releases failed: HTTP 503");
   });
 });
@@ -126,7 +126,7 @@ describe("auditRelease", () => {
     // One minute inside the grace period: flagging here would page on every
     // normal release, which is how alerts get muted and then missed.
     const justUnder = new Date(
-      new Date(release.publishedAt).getTime() + (GRACE_MINUTES - 1) * 60000,
+      new Date(release.publishedAt).getTime() + (GRACE_MINUTES - 1) * 60000
     );
     const verdict = auditRelease({
       release,

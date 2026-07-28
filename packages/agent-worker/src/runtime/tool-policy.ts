@@ -339,18 +339,56 @@ const EXEC_WRAPPERS = new Set<string>([
 ]);
 
 /**
+ * Short options that take a SEPARATE-WORD value for each exec wrapper (`env -u
+ * PATH`, `sudo -u nobody`, `timeout -s KILL`, `xargs -I {}`). The value must be
+ * consumed with its flag, or it would sit in front of the wrapped command and
+ * hide it (`env -u PATH nix run` → the peel must land on `nix`, not `PATH`).
+ * `--flag=value` needs no entry (its value is attached). Only options that can
+ * realistically precede a wrapped command are listed; a missing one costs at
+ * most a false-negative on an exotic invocation, backstopped by the sandbox
+ * discovery filter.
+ *
+ * Entries are lowercased because the canonical segment is lowercased before
+ * matching (`env -C /tmp` → `env -c /tmp`). Case-distinct GNU flags (`-C`/`-c`)
+ * therefore collapse; consuming a value for either spelling is safe here — the
+ * worst case is over-consuming one token, which only risks a false-negative
+ * that the sandbox discovery filter still catches.
+ */
+const EXEC_WRAPPER_OPTIONS_WITH_VALUES: Record<string, ReadonlySet<string>> = {
+  sudo: new Set(["-u", "-g", "-h", "-p", "-r", "-t", "-c"]),
+  env: new Set(["-u", "-c", "-s"]),
+  nice: new Set(["-n"]),
+  ionice: new Set(["-c", "-n", "-p", "-u"]),
+  stdbuf: new Set(["-i", "-o", "-e"]),
+  timeout: new Set(["-s", "-k"]),
+  xargs: new Set(["-i", "-l", "-n", "-p", "-s", "-e", "-d", "-a"]),
+  time: new Set(["-f", "-o"]),
+  chrt: new Set(["-t", "-p"]),
+};
+
+/**
+ * Number of REQUIRED positional operands a wrapper consumes before the command
+ * (`timeout 5s cmd`, `chrt 1 cmd`, `taskset 0x1 cmd`). Options are handled by
+ * {@link EXEC_WRAPPER_OPTIONS_WITH_VALUES}; these are the bare positionals.
+ */
+const EXEC_WRAPPER_POSITIONAL_VALUES: Record<string, number> = {
+  timeout: 1,
+  chrt: 1,
+  taskset: 1,
+};
+
+/**
  * Strip leading exec-wrapper tokens from a canonical segment so the deny/advisory
- * match sees the command the wrapper will actually run. Peels wrapper words, any
- * `-flag` tokens that follow them, and `VAR=value` assignments (which `env` and a
- * bare assignment-prefixed command both accept). Stops at the first token that is
- * neither a known wrapper, a flag, nor an assignment — that token is the real
- * command. Bounded so a pathological input can't loop.
+ * match sees the command the wrapper will actually run. Peels wrapper words,
+ * their options (including a separate-word flag value per
+ * {@link EXEC_WRAPPER_OPTIONS_WITH_VALUES} and required positionals per
+ * {@link EXEC_WRAPPER_POSITIONAL_VALUES}), and `VAR=value` assignments. Stops at
+ * the first token that is none of those — that token is the resolved command
+ * head. Bounded so a pathological input can't loop.
  *
  * Returns `null` when nothing was peeled, so a caller can tell a genuinely
- * wrapped command from a plain one. That distinction matters: the remainder
- * of a wrapped command is matched at ANY token boundary (see
- * {@link matchesDenyPrefixAtAnyToken}), which would be far too broad to
- * apply to an unwrapped command's arguments.
+ * wrapped command from a plain one and match only at the resolved head rather
+ * than treating an unwrapped command's arguments as candidate commands.
  */
 function stripExecWrappers(canonicalCode: string): string | null {
   const tokens = canonicalCode.split(/\s+/).filter(Boolean);
@@ -359,34 +397,42 @@ function stripExecWrappers(canonicalCode: string): string | null {
   // Cap iterations at token count; each pass consumes at least one token.
   while (i < tokens.length) {
     const token = tokens[i] ?? "";
-    const bare = token.split("/").pop() ?? "";
+    const bare = (token.split("/").pop() ?? "").toLowerCase();
     if (EXEC_WRAPPERS.has(bare)) {
       peeledWrapper = true;
       i++;
-      // Consume this wrapper's own flags / operands (e.g. `timeout 5s`,
-      // `nice -n 10`, `env -i`, `xargs -I{}`). A flag starts with `-`; a bare
-      // numeric/duration operand (timeout/nice) is also consumed. Stop at the
-      // first token that looks like a command name.
-      //
-      // A flag whose value is a SEPARATE non-numeric word (`env -u PATH …`,
-      // `sudo -u nobody …`, `timeout -s KILL 5 …`) leaves that value at the
-      // head of the remainder, so this peel alone would not expose the
-      // wrapped command. Enumerating which flag takes an operand per wrapper
-      // is a treadmill; instead the remainder of a wrapped command is matched
-      // at every token boundary (see {@link matchesDenyPrefixAtAnyToken}),
-      // which is immune to unknown wrapper flags.
+      // Consume this wrapper's own options. A separate-word flag value
+      // (`env -u PATH`, `sudo -u nobody`, `timeout -s KILL`, `xargs -I {}`) must
+      // be consumed with its flag, or that value would sit in front of the
+      // wrapped command and hide it. `--flag=value` carries its own value.
+      // `--` ends option parsing. Anything else is the command head.
+      const optionsWithValues = EXEC_WRAPPER_OPTIONS_WITH_VALUES[bare];
       while (i < tokens.length) {
         const t = tokens[i] ?? "";
-        if (t.startsWith("-") || /^\d/.test(t)) {
+        if (t === "--") {
           i++;
-          continue;
+          break;
         }
-        break;
+        if (!t.startsWith("-") || t === "-") {
+          break;
+        }
+        const equals = t.indexOf("=");
+        const option = equals === -1 ? t : t.slice(0, equals);
+        i++;
+        if (equals === -1 && optionsWithValues?.has(option)) {
+          i++; // consume the separate-word value
+        }
+      }
+      // A few wrappers take REQUIRED positional operands before the command
+      // (`timeout 5s cmd`, `chrt 1 cmd`, `taskset 0x1 cmd`).
+      const positional = EXEC_WRAPPER_POSITIONAL_VALUES[bare] ?? 0;
+      for (let n = 0; n < positional && i < tokens.length; n++) {
+        i++;
       }
       continue;
     }
     // `VAR=value` assignment prefix (env-style or shell-style) — skip it.
-    if (/^[a-z_][a-z0-9_]*=/.test(token)) {
+    if (/^[a-z_][a-z0-9_]*=/i.test(token)) {
       peeledWrapper = true;
       i++;
       continue;
@@ -440,10 +486,10 @@ export function isDirectPackageInstallCommand(command: string): boolean {
       return false;
     }
     // Match on the raw canonical form first, then on the exec-wrapper-peeled
-    // remainder (`env nix run` → `nix run`) so a wrapped install produces the
-    // "declare it in nixPackages" hint instead of silently missing. The
-    // remainder is matched at every token boundary, mirroring the deny check,
-    // so a wrapper flag's operand (`env -u PATH nix run …`) cannot hide it.
+    // remainder (`env nix run` → `nix run`, `env -u PATH nix run` → `nix run`)
+    // so a wrapped install produces the "declare it in nixPackages" hint
+    // instead of silently missing. The wrapper peel resolves the command head
+    // past flag operands, so the head-based match sees the real command.
     if (
       DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
         matchesDenyPrefixAtCommandHead(base, prefix)
@@ -458,7 +504,7 @@ export function isDirectPackageInstallCommand(command: string): boolean {
     }
     return (
       DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-        matchesDenyPrefixAtAnyToken(wrapped, prefix)
+        matchesDenyPrefixAtCommandHead(wrapped, prefix)
       ) ||
       DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(wrapped))
     );
@@ -729,6 +775,33 @@ function matchesDenyPrefixAt(
 }
 
 /**
+ * A leading `VAR=value` assignment (env-style, e.g. `NIX_BIN=/usr/bin/nix cmd …`)
+ * sets an environment variable for the command that follows — the value is DATA,
+ * not the executable. Matching a deny prefix inside that value (`/usr/bin/nix`)
+ * falsely denies an otherwise-harmless command. Return the offset of the first
+ * token that is NOT such an assignment — the real command head. The command
+ * that follows the assignments is still matched from there, so
+ * `NIX_BIN=x nix run …` stays denied on the actual `nix run`.
+ */
+function skipLeadingAssignments(target: string): number {
+  let start = 0;
+  while (start < target.length) {
+    const space = target.indexOf(" ", start);
+    const tokenEnd = space === -1 ? target.length : space;
+    const token = target.slice(start, tokenEnd);
+    // `VAR=value` (name before `=`, value may be empty or path-qualified).
+    if (!/^[a-z_][a-z0-9_]*=/i.test(token)) {
+      break;
+    }
+    if (space === -1) {
+      return target.length;
+    }
+    start = space + 1;
+  }
+  return start;
+}
+
+/**
  * Offset just past the last `/` of the token starting at `tokenStart`, or
  * `null` when that token carries no path. A path-qualified executable
  * (`/usr/bin/nix run …`, `/nix/store/…/bin/npm install …`) runs exactly the
@@ -746,51 +819,19 @@ function commandNameOffset(target: string, tokenStart: number): number | null {
 
 /**
  * {@link matchesDenyPrefixAt} applied where the LEADING command name can start:
- * offset 0, and past the path of a path-qualified executable.
+ * the first token past any `VAR=value` assignments (whose values are data, not
+ * the executable), and past the path of a path-qualified executable.
  */
 function matchesDenyPrefixAtCommandHead(
   target: string,
   prefix: string
 ): boolean {
-  if (matchesDenyPrefixAt(target, prefix, 0)) {
+  const head = skipLeadingAssignments(target);
+  if (matchesDenyPrefixAt(target, prefix, head)) {
     return true;
   }
-  const afterPath = commandNameOffset(target, 0);
+  const afterPath = commandNameOffset(target, head);
   return afterPath !== null && matchesDenyPrefixAt(target, prefix, afterPath);
-}
-
-/**
- * {@link matchesDenyPrefixAtCommandHead} applied at EVERY token boundary of
- * `target`, i.e. the same answer as testing each whitespace-aligned suffix
- * (`a b c` → `a b c`, `b c`, `c`) and denying if any matches.
- *
- * Used only on the remainder of an exec-wrapped command
- * ({@link stripExecWrappers}), where the head may still be a wrapper flag's
- * operand (`env -u PATH nix run …` → `path nix run …`) rather than the
- * command. Checking every boundary is what makes the peel immune to wrapper
- * flags we do not know about, without enumerating which of them take an
- * operand.
- *
- * Positional `startsWith` rather than materialized suffixes: slicing every
- * suffix is quadratic in command length, which a pathological command could
- * turn into a self-inflicted stall.
- */
-function matchesDenyPrefixAtAnyToken(target: string, prefix: string): boolean {
-  for (let start = 0; start <= target.length; ) {
-    if (matchesDenyPrefixAt(target, prefix, start)) {
-      return true;
-    }
-    const afterPath = commandNameOffset(target, start);
-    if (afterPath !== null && matchesDenyPrefixAt(target, prefix, afterPath)) {
-      return true;
-    }
-    const nextSpace = target.indexOf(" ", start);
-    if (nextSpace === -1) {
-      break;
-    }
-    start = nextSpace + 1;
-  }
-  return false;
 }
 
 export function enforceBashCommandPolicy(
@@ -810,23 +851,25 @@ export function enforceBashCommandPolicy(
 
   for (const segment of segments) {
     const normalizedSegment = segment.toLowerCase();
-    // Deny is checked against the CANONICAL form (quoting/escaping collapsed to
-    // what the shell would execute), so `n\ix shell`, `"nix" shell`, and
-    // `n"i"x shell` all resolve to `nix shell` and cannot slip a deny prefix.
-    // Canonicalizing can only make a deny prefix match MORE, so it is safe.
-    // Then peel leading exec wrappers (`env nix …`, `sudo nix …`, `timeout 5
-    // nix …`) so a wrapped install is denied by the wrapped command, not the
-    // wrapper word — the general form of the enumerated `sudo …` deny prefixes.
-    // The peeled remainder is matched at every token boundary, so a wrapper
-    // flag that takes a separate operand (`env -u PATH nix run …`) cannot
-    // leave that operand in front of the command and shift it out of range.
+    // Deny keys on the COMMAND HEAD — the executable the shell actually runs —
+    // in the CANONICAL form (quoting/escaping/ANSI-C collapsed to what the shell
+    // would execute), so `n\ix shell`, `"nix" shell`, `n"i"x shell`, and
+    // `$'n\x69x' shell` all resolve to `nix shell`. Two heads are checked: the
+    // segment as typed (past leading `VAR=value` assignments, see
+    // {@link matchesDenyPrefixAtCommandHead}), and the segment with leading exec
+    // wrappers peeled (`env nix …`/`sudo -u root nix …`/`timeout 5 nix …` →
+    // `nix …`), so a wrapped install is denied by the wrapped command, not the
+    // wrapper word. Because only the resolved head is matched — never an
+    // argument — a data-only command's quoted argument (`printf "nix run"`) and
+    // an assignment's value (`NIX_BIN=/usr/bin/nix echo`) are not false denials.
     const canonical = canonicalizeSegment(segment).code;
-    const wrapped = stripExecWrappers(canonical);
+    const wrappedHead = stripExecWrappers(canonical);
 
     const denied = policy.denyPrefixes.some(
       (prefix) =>
         matchesDenyPrefixAtCommandHead(canonical, prefix) ||
-        (wrapped !== null && matchesDenyPrefixAtAnyToken(wrapped, prefix))
+        (wrappedHead !== null &&
+          matchesDenyPrefixAtCommandHead(wrappedHead, prefix))
     );
     if (denied) {
       throw new Error("Bash command denied by policy");

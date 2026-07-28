@@ -290,10 +290,10 @@ describe("enforceBashCommandPolicy", () => {
   });
 
   test("a wrapper flag's separate operand cannot shift the command out of range", () => {
-    // `-u`/`-C`/`-s` take their value as a SEPARATE word, which the flag peel
-    // leaves at the head of the remainder (`env -u PATH nix run …` → `path
-    // nix run …`). A prefix-only check on that remainder misses the install,
-    // so the remainder is matched at every token boundary instead. (#2259 r6.)
+    // `-u`/`-C`/`-s` take their value as a SEPARATE word. The wrapper peel knows
+    // which options consume a value (EXEC_WRAPPER_OPTIONS_WITH_VALUES) and
+    // resolves the real command head past them (`env -u PATH nix run …` →
+    // `nix run …`), so the operand cannot hide the install. (#2259 r6/r7.)
     const policy = buildToolPolicy({}).bashPolicy;
     for (const cmd of [
       "env -u PATH nix run nixpkgs#hello",
@@ -302,6 +302,43 @@ describe("enforceBashCommandPolicy", () => {
       "timeout -s KILL 5 nix run nixpkgs#hello",
       "env -i -u HOME LC_ALL=C uvx cowsay",
       "xargs -a list.txt -I{} npm install",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("assignment values and quoted data are not mistaken for the command", () => {
+    // Two false-denial classes caught by review (#2259 r7):
+    //   - a leading `VAR=value` whose value is a path to a package manager is an
+    //     ENV assignment, not the executable (`NIX_BIN=/usr/bin/nix echo hi`
+    //     runs `echo`);
+    //   - a data-only command's quoted argument is DATA, not a wrapped command
+    //     (`printf "nix run docs"`, even behind an exec wrapper).
+    // Both must be ALLOWED; the deny check keys on the resolved command head and
+    // drops a data-only command's quoted args.
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "NIX_BIN=/usr/bin/nix echo configured",
+      "PACKAGER=npm echo using $PACKAGER",
+      'printf "nix run docs"',
+      'env printf "nix run docs"',
+      'env -u PATH printf "nix run docs"',
+      'echo "npm install is blocked"',
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+  });
+
+  test("an assignment still cannot hide the real command", () => {
+    // Skipping the assignment must not skip the command that FOLLOWS it — the
+    // command past the assignments is matched from there. (#2259 r7.)
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "NIX_BIN=x nix run nixpkgs#hello",
+      "FOO=bar sudo -u root npm install lodash",
+      "A=1 B=2 uvx cowsay",
     ]) {
       expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
         "Bash command denied by policy"

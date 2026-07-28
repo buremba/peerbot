@@ -24,12 +24,26 @@
  *     stale membership. Once a connection is graphed, it never falls back to the
  *     legacy per-connection fence — a stalled sync hides data, it does not leak it.
  *
- * Fail-closed: a headless/null principal, an enforced-connection event linked to
- * no resource the requester belongs to, or any event on a stale connection is
- * dropped. Generic across sources — GitHub repos and Linear teams gate
- * identically; a new source needs only a registry entry (`./sources`) plus its
- * connector stamping the resource identity on its events so they link to the
- * resource entity.
+ * Fail-closed: a headless/null principal on an enforced connection, a
+ * non-interaction event linked to no resource the requester belongs to, or any
+ * event on a stale connection is dropped.
+ *
+ * Interaction events (`interaction_type <> 'none'`: approvals, suggestions)
+ * are instead readable by any ORGANIZATION member, in every graph state.
+ * They are server-authored workflow state, not synced resource content: an
+ * operation's approval card is stamped with the connection it acts THROUGH but
+ * may have no resource entity link, so the membership branch could never match
+ * and the gate hid pending approvals from everyone, org admins included (prod
+ * run 757649). The arm is deliberately freshness-independent — hiding an
+ * approval because the ACL sync stalled would silently wedge the operation it
+ * gates, and the `member`-row check it relies on is live data, not the synced
+ * graph. It still requires an organization membership row, so headless and
+ * public non-member reads gain nothing, and connector sync never writes
+ * `interaction_type`, so no synced resource content can ride the exemption.
+ * The per-connection visibility gate always still applies in front. Generic
+ * across sources — GitHub repos and Linear teams gate identically; a new
+ * source needs only a registry entry (`./sources`) plus its connector stamping
+ * the resource identity on its events so they link to the resource entity.
  */
 
 import { ACL_RESOURCE_TYPE_SLUG } from '@lobu/connector-sdk';
@@ -62,14 +76,23 @@ export function compileResourceVisibility(
   // Three-state split (mirrors `getConnectionEnforcement`), NOT a bare
   // `NOT IN (enforced)`:
   //   1. no ACL row for the connection → passthrough (never graphed → legacy fence);
-  //   2. row is enforced (in the fresh-enforced set) → require the member_of EXISTS;
+  //   2. row is enforced (in the fresh-enforced set) → require resource membership;
   //   3. row exists but is NOT enforced (stale/partial/failed/aged-out) → neither
   //      branch matches → FAIL CLOSED. A bare `NOT IN (enforced)` would make (3)
   //      true and leak stale-connection events to non-members — the hole this fix
   //      closes, matching the channel gate.
+  // Server-authored interaction events sit OUTSIDE the split: any organization
+  // member may read them in every graph state (see module doc).
   const sql = `AND (
       ${tableAlias}.connection_id IS NULL
       OR ${tableAlias}.connection_id::text NOT IN (${aclStateExistsSelectSql(orgParam)})
+      OR (${tableAlias}.interaction_type <> 'none'
+      AND EXISTS (
+        SELECT 1
+        FROM public."member" om
+        WHERE om."organizationId" = ${orgParam}
+          AND om."userId" = ${userParam}
+      ))
       OR (${tableAlias}.connection_id::text IN (${enforcedConnectionsSelectSql(orgParam)})
       AND EXISTS (
         SELECT 1

@@ -175,6 +175,35 @@ export async function readCurrentSuggestion(
 }
 
 /**
+ * The completing turn's run id from `agent_run_input`, keyed by the message ids
+ * the turn processed. A row exists for EVERY turn (including one that emitted no
+ * suggestion event of its own) and rows are marked 'completed' rather than
+ * deleted, so the id is still readable at terminal time. Returns null when no
+ * message ids are supplied or none match (older workers, unstamped turns) — the
+ * ordering guard that consumes it treats a null run id as "unknown, don't block".
+ *
+ * Always read on the caller's transaction: `finalizeTurnSuggestions` needs the
+ * id inside its advisory lock so the value cannot change under the guard.
+ */
+async function readTurnRunId(
+  organizationId: string,
+  conversationId: string,
+  turnMessageIds: string[],
+  sql: DbClient
+): Promise<number | null> {
+  const owned = turnMessageIds.filter(Boolean);
+  if (owned.length === 0) return null;
+  const rows = (await sql`
+    SELECT max(run_id) AS run_id
+    FROM public.agent_run_input
+    WHERE organization_id = ${organizationId}
+      AND conversation_id = ${conversationId}
+      AND message_id = ANY(${pgTextArray(owned)}::text[])
+  `) as Array<{ run_id: number | null }>;
+  return rows[0]?.run_id ?? null;
+}
+
+/**
  * Finalize the conversation's suggestion set at a turn's terminal boundary.
  *
  * Runs on the gateway for EVERY terminal row — before the SSE owner-gate, so it
@@ -220,20 +249,14 @@ export async function finalizeTurnSuggestions(args: {
     // This turn's run id, from `agent_run_input` — it has a row for EVERY turn
     // keyed by the message ids this finalizer already holds, including a turn
     // that emitted no suggestions (which leaves no suggestion event of its own
-    // to read a run id from). Rows are marked 'completed', never deleted, so
-    // the id is still readable at terminal time. Used two ways: the
+    // to read a run id from). Read inside the lock on `tx`. Used two ways: the
     // out-of-order-terminal guard below, and the run stamp on the clear marker.
-    let turnRunId: number | null = null;
-    if (owned.size > 0) {
-      const mine = (await tx`
-        SELECT max(run_id) AS run_id
-        FROM public.agent_run_input
-        WHERE organization_id = ${organizationId}
-          AND conversation_id = ${conversationId}
-          AND message_id = ANY(${pgTextArray([...owned])}::text[])
-      `) as Array<{ run_id: number | null }>;
-      turnRunId = mine[0]?.run_id ?? null;
-    }
+    const turnRunId = await readTurnRunId(
+      organizationId,
+      conversationId,
+      [...owned],
+      tx
+    );
     // Unlike persistSuggestion, this DOES filter on status='current': it asks
     // "is there a visible set to clear?", and only a 'current' row is visible to
     // the renderer. Widening this to any live row would make each clear observe

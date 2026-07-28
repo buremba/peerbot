@@ -286,6 +286,17 @@ export class LobuAgentWorker implements WorkerExecutor {
                 if (update.data.name === "file-uploaded") {
                   sawUploadedFileEvent = true;
                 }
+                // Stamp tool names for output require-tool guardrails. The
+                // tool_use payload carries `name` (see tool-use-events.ts).
+                if (
+                  update.data.name === "tool_use" &&
+                  this.workerTransport instanceof HttpWorkerTransport
+                ) {
+                  const toolName = update.data.payload?.name;
+                  if (typeof toolName === "string") {
+                    this.workerTransport.recordToolUsed(toolName);
+                  }
+                }
                 await this.workerTransport.sendCustomEvent(
                   update.data.name,
                   update.data.payload

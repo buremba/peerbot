@@ -280,6 +280,12 @@ export interface ThreadResponsePayload {
    */
   finalText?: string;
   /**
+   * Distinct tool names invoked this turn (`tool_execution_end`), stamped by
+   * the worker on the terminal completion row so output guardrails (e.g.
+   * require-tool) can enforce "must call X this turn" without a second ledger.
+   */
+  toolsUsed?: string[];
+  /**
    * Raw error message. For provider errors this is relayed verbatim as the
    * user-facing body (the provider's own text already says the useful thing,
    * e.g. the quota reset time); `errorCode` only selects the CTA link.

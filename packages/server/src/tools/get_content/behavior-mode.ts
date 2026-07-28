@@ -21,6 +21,7 @@ import { getAvailableOperations, getPastReactionsSummary } from '../../utils/wat
 import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
 import { computePendingWindow, foldUnprocessedRanges } from '../../utils/window-utils';
 import {
+  DEFAULT_BEHAVIOR_SOURCE_QUERY,
   type NormalizedWatcherSource,
   normalizeWatcherSources,
 } from '../../watchers/source-refs';
@@ -377,7 +378,7 @@ export async function handleBehaviorMode(
   if (watcherSources.length > 0) {
     sources = watcherSources;
   } else {
-    sources = [{ name: 'content', query: 'SELECT * FROM events ORDER BY occurred_at DESC' }];
+    sources = [{ name: 'content', query: DEFAULT_BEHAVIOR_SOURCE_QUERY }];
   }
 
   // Fetch classifiers attached to this watcher

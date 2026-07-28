@@ -519,6 +519,7 @@ export class UnifiedThreadResponseConsumer {
               userId: data.userId,
               conversationId: data.conversationId,
               platform: "api",
+              toolsUsed: data.toolsUsed,
             });
             if (trip) {
               const blockMsg = `Message blocked by guardrail: ${
@@ -530,6 +531,30 @@ export class UnifiedThreadResponseConsumer {
                 error: data.error != null ? blockMsg : data.error,
               };
             }
+            // NOTE: `suggest-followups` enrichment deliberately does NOT run on
+            // this API path — only on chat platforms (ChatResponseBridge).
+            //
+            // The SPA opens one EventSource per send and closes it in a
+            // `finally` as soon as `complete` arrives, so chips are only live if
+            // they are already durable when ApiResponseRenderer embeds them on
+            // that event. Enrichment needs an up-to-15s model call, which leaves
+            // two bad options: await it (adds that latency to every enrichment
+            // turn, putting a decorative feature on the critical path) or
+            // fire-and-forget it (the write lands after the socket is gone, so
+            // the chips are generated, persisted, and never delivered).
+            //
+            // Chat has neither problem: a native card is posted out-of-band and
+            // the platform itself persists it.
+            //
+            // If web chips are wanted later, the tractable design is to
+            // generate them WORKER-SIDE before `signalCompletion`, so they are
+            // already durable when `resolveTerminalSuggestions` embeds them on
+            // `complete` — no new channel and no SPA change. Note two dead
+            // ends: the SPA hydrates chips from history exactly once
+            // (`hydratedRef`, lobu-chat-store.tsx), so invalidating the history
+            // query does NOT re-render them; and the org invalidation stream is
+            // backed by a per-pod in-process emitter (events/emitter.ts), so it
+            // cannot signal a browser pinned to another replica.
           }
         }
       }

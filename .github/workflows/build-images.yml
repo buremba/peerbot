@@ -22,6 +22,11 @@ on:
   push:
     branches:
       - main
+  # release-please publishes `lobu-vX.Y.Z`. Building on that too is what gives
+  # the images a semver tag and repoints `latest` at a release instead of an
+  # arbitrary commit (#2184). Unrelated releases are ignored.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       platforms:
@@ -56,10 +61,29 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.timestamp.outputs.tag }}
+      semver: ${{ steps.semver.outputs.semver }}
+      is_stable: ${{ steps.semver.outputs.is_stable }}
+      should_publish: ${{ steps.semver.outputs.should_publish }}
     steps:
       - name: Generate shared timestamp tag
         id: timestamp
         run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      # Only this job needs the repo; the build jobs check out separately.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Derivation lives in scripts/derive-image-tags.mjs so it is unit-tested
+      # (scripts/__tests__/derive-image-tags.test.ts) — inline YAML shell can
+      # only be exercised by cutting a real release. Computed once here so
+      # app/worker/embeddings can never disagree about eligibility or version.
+      - name: Derive semver tag from the release
+        id: semver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+          PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
+        run: node scripts/derive-image-tags.mjs
 
   # Connector-runtime parity smoke gate (main/deploy side). RUNS the built worker
   # artifact's self-check before any image is pushed, so the packaging/parity
@@ -74,6 +98,8 @@ jobs:
   # buildx cache scope as `build-worker` so this doesn't double the build cost.
   connector-parity-smoke:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: [generate-tag]
+    if: needs.generate-tag.outputs.should_publish == 'true'
     timeout-minutes: 25
     # Builds + runs the image locally (push: false), so it never needs the
     # top-level `packages: write`. Drop to read-only for least privilege.
@@ -103,6 +129,7 @@ jobs:
 
   build-app:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    if: needs.generate-tag.outputs.should_publish == 'true'
     # Push the app image LAST. Flux's ImageUpdateAutomation only watches
     # the app image policy, but the chart applies one shared tag to app,
     # worker, AND embeddings. If app pushed before worker or embeddings,
@@ -149,7 +176,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_APP }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push App image
         uses: useblacksmith/build-push-action@v2
@@ -182,6 +210,7 @@ jobs:
     # Gate the worker push (and transitively the app push, which `needs:
     # build-worker`) on the parity smoke passing.
     needs: [generate-tag, connector-parity-smoke]
+    if: needs.generate-tag.outputs.should_publish == 'true'
     permissions:
       contents: read
       packages: write
@@ -210,7 +239,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_WORKER }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push Worker image
         uses: useblacksmith/build-push-action@v2
@@ -236,6 +266,7 @@ jobs:
   build-embeddings-service:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [generate-tag]
+    if: needs.generate-tag.outputs.should_publish == 'true'
     permissions:
       contents: read
       packages: write
@@ -264,7 +295,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_EMBEDDINGS }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push Embeddings Service image
         uses: useblacksmith/build-push-action@v2
@@ -286,10 +318,11 @@ jobs:
             -d '{"visibility":"public"}' || true
 
   # Failure notification. The chart applies one shared tag to app + worker +
-  # embeddings, so if any of the three build/push jobs fails on main, the next
-  # ImageUpdateAutomation cycle either rolls a tag that does not exist for one
-  # service (half-rolled prod) or — when app fails after worker/embeddings
-  # already pushed — silently leaves prod on the previous app tag while the
+  # embeddings, so if any of the three build/push jobs fails on main or a Lobu
+  # release, sibling tags may be incomplete. On timestamped runs the next
+  # ImageUpdateAutomation cycle can either roll a tag that does not exist for
+  # one service (half-rolled prod) or — when app fails after worker/embeddings
+  # already pushed — silently leave prod on the previous app tag while the
   # other two move forward. Both modes were caught only by manual inspection
   # before this notifier existed (PR #1116 build-app disk-full incident).
   #
@@ -300,7 +333,10 @@ jobs:
   notify-failure:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app]
-    if: failure() && github.ref == 'refs/heads/main'
+    if: >-
+      failure()
+      && needs.generate-tag.outputs.should_publish == 'true'
+      && (github.ref == 'refs/heads/main' || github.event_name == 'release')
     permissions:
       contents: read
     steps:
@@ -309,7 +345,8 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          RUN_SUMMARY: ${{ github.event.head_commit.message || github.event.release.name || github.ref_name }}
+          REF_NAME: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
           SHA_SHORT: ${{ github.sha }}
         run: |
@@ -317,9 +354,9 @@ jobs:
             echo "SLACK_DEPLOY_WEBHOOK_URL not set; skipping notification."
             exit 0
           fi
-          # First line of commit message only, JSON-escaped via jq.
-          first_line=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          # First line of commit/release summary only, JSON-escaped via jq.
+          first_line=$(printf '%s' "$RUN_SUMMARY" | head -n1)
           payload=$(jq -nc \
-            --arg text "<@U09513HH1N1> :rotating_light: build-images failed on \`main\` — prod will roll half (or not at all). <${RUN_URL}|run> · <${COMMIT_URL}|${SHA_SHORT:0:7}> by ${ACTOR}\n> ${first_line}" \
+            --arg text "<@U09513HH1N1> :rotating_light: build-images failed on \`${REF_NAME}\` — sibling image tags may be incomplete. <${RUN_URL}|run> · <${COMMIT_URL}|${SHA_SHORT:0:7}> by ${ACTOR}\n> ${first_line}" \
             '{text: $text}')
           curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

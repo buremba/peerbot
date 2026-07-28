@@ -552,6 +552,13 @@ jobs:
         # (#2186). These fixtures exercise the publish transform's guard.
         run: bun test scripts/__tests__/publish-packages-guard.test.ts
 
+      - name: Image tag derivation
+        # Decides which docker tags a build publishes. `latest` used to follow
+        # every main commit (#2184); the logic that stopped that lives in a
+        # script precisely so it is testable — as embedded workflow shell it
+        # could only be exercised by cutting a real release.
+        run: bun test scripts/__tests__/derive-image-tags.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

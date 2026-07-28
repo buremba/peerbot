@@ -74,7 +74,7 @@ The Dockerfile lives at `docker/app/Dockerfile`. Three notable details:
 
 ## Bumping versions
 
-The `:latest` tag tracks the most recent merged `main` build. For pinned deploys, use a version tag from the [GitHub Releases page](https://github.com/lobu-ai/lobu/releases) — they follow `lobu-vX.Y.Z` and match release-please commits on `main`.
+Main-branch builds publish timestamp tags but no longer move `:latest`. Publishing a stable [GitHub Release](https://github.com/lobu-ai/lobu/releases) named `lobu-vX.Y.Z` publishes image tag `:X.Y.Z` and moves `:latest`; prereleases publish only their version tag. For reproducible deploys, pin a published version. Releases from before versioned image publishing was enabled are not backfilled automatically.
 
 Migrations are applied at boot. If you roll back to an older image whose migrations dir is a strict prefix of what's already applied, set `SKIP_SCHEMA_VERSION_CHECK=1` once to get past the version assertion.
 

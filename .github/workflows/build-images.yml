@@ -94,7 +94,8 @@ jobs:
       # `{date}-{time}-{run_number}`. Both halves are load-bearing, and each
       # replaces something that failed:
       #
-      # The timestamp ORDERS. Flux picks the numerically highest tag, so the
+      # The timestamp ORDERS. Flux picks the lexicographically highest
+      # extracted value (every component fixed-width, zero-padded), so the
       # key has to track when a build actually ran. Ordering by run_number
       # alone breaks recovery: re-running an earlier failed release after a
       # later push republishes a LOWER number, and the recovered release never
@@ -107,13 +108,15 @@ jobs:
       # free before either has pushed. run_number is unique and monotonic per
       # workflow, so equal tags are impossible by construction.
       #
-      # Zero-padded to a fixed width: the numerical extract concatenates the
-      # groups, so a variable-width component would misorder.
+      # Zero-padded to a fixed width: the extract concatenates the groups for
+      # lexicographic comparison, so a variable-width component would misorder.
       #
       # The matching pattern lives in the owletto submodule
-      # (deploy/k8s/infrastructure/image-automation/image-policies.yaml) and
-      # accepts the old two-segment tags too, so the two repos can land in
-      # either order without a gap where nothing matches.
+      # (deploy/k8s/infrastructure/image-automation/image-policies.yaml). It
+      # landed FIRST (owletto #616) and still accepts the old two-segment
+      # tags, so there was no window where published tags matched nothing.
+      # The reverse order would have frozen deploys: the old pattern anchors
+      # on two segments and ignores three-segment tags.
       - name: Generate shared image tag
         id: timestamp
         run: |

@@ -17,7 +17,15 @@
  */
 
 import { createHmac } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	setSystemTime,
+	test,
+} from "bun:test";
 import {
 	ensureDbForGatewayTests,
 	ensureEncryptionKey,
@@ -614,6 +622,20 @@ describe("handleWebhookIngest idempotency", () => {
 });
 
 describe("handleWebhookIngest rate limiting", () => {
+	// The limiter derives its fixed window from Date.now(), so on a slow runner
+	// the 60s window can roll over mid-loop, refill the budget, and no request
+	// ever 429s (#2073). Freeze the clock at a window start so every request in
+	// a limit+1 loop deterministically lands in one window, regardless of how
+	// long the loop takes in real time.
+	beforeEach(() => {
+		const nowSec = Math.floor(Date.now() / 1000);
+		setSystemTime(new Date((nowSec - (nowSec % 60)) * 1000));
+	});
+
+	afterEach(() => {
+		setSystemTime(); // restore real time for the rest of the process
+	});
+
 	test("429 once the authenticated per-connection budget is exhausted", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const { WEBHOOK_INGEST_RATE_LIMIT } = await import(

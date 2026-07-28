@@ -360,6 +360,72 @@ describe("worker model fallback (real DB, both channels)", () => {
     expect(pc.defaultProviderServesModel).toBe(true);
   });
 
+  test("CTA attribution: a FALLBACK-picked provider publishes defaultProviderServesModel=false", async () => {
+    // The live wrong-provider shape. The agent pins NO models, so the policy is
+    // ALLOW-ALL (`allowedRefs === null`) and `enforceModelAllowList` returns the
+    // requested ref VERBATIM with no routability check — the one path where an
+    // unroutable model survives to resolveProviderConfig instead of being
+    // replaced or failing closed.
+    //
+    // The org default names "gemini", which has no installed module here, so
+    // findProviderForModel matches nothing and the credentialed-fallback scan
+    // publishes byo2 — a provider that does NOT serve the requested model.
+    // Without the false, the worker would pin the failure CTA on byo2 and tell
+    // the user to reconnect a provider they never asked for.
+    const sql = getDb();
+    await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "byo2",
+      kind: "openai",
+      apiKey: "sk-byo2",
+      capabilities: {
+        text: { base_url: "https://api.byo2.example.com", model: "byo2-model" },
+      },
+    });
+    // A SECOND org row whose slug is "gemini" with NO custom text upstream:
+    // synthesizeOrgProviderModule returns null for it, so it contributes no
+    // module — yet it IS the org default, so it supplies the requested ref.
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "gemini",
+      kind: "gemini",
+      apiKey: "sk-gemini",
+      capabilities: { text: { model: "gemini-2.5-flash" } },
+    });
+    await setInferenceProviderDefault(ORG, "gemini");
+
+    // models: [] ⇒ allow-all. The org default supplies the requested ref.
+    const settings = { getSettings: async () => ({ models: [] }) } as any;
+    const catalog = new ProviderCatalogService(
+      settings,
+      { getBestProfile: async () => null } as any,
+      (org: string) => listInferenceProviders(org),
+      () => {},
+    );
+    const gateway = new WorkerGateway(
+      { send: async () => undefined } as any,
+      "https://gateway.example.com",
+      { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
+      {
+        getSessionContext: async () => ({
+          agentInstructions: "",
+          platformInstructions: "",
+          networkInstructions: "",
+          skillsInstructions: "",
+          mcpStatus: [],
+        }),
+      } as any,
+      undefined,
+      catalog,
+      settings,
+    );
+
+    const pc = await sessionContextProviderConfig(gateway);
+    expect(pc.defaultProvider).toBe("byo2");
+    expect(pc.defaultProviderServesModel).toBe(false);
+  });
+
   test("R5 #4: an ORGLESS worker token publishes NO model for a db-backed shared id (no cross-org read)", async () => {
     // A shared id (lobu-builder) exists in many orgs. An orgless token must NOT
     // cause session-context to id-only read ANOTHER org's models[0] and PUBLISH

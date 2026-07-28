@@ -46,6 +46,12 @@ export interface AuthContext {
   baseUrl: string;
   scopedToOrg: boolean;
   allowCrossOrg: boolean;
+  /**
+   * Persistent MCP session id (`mcp-session-id` header) when the call arrived
+   * through an MCP transport session; null for REST-proxy and internal calls.
+   * Audit rows carry it so a client's activity can be grouped per session.
+   */
+  mcpSessionId?: string | null;
   instructions?: string;
   /** `x-lobu-apply-id` when the call belongs to a `lobu apply` run. */
   applyId?: string | null;
@@ -326,5 +332,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     requestUrl: authCtx.requestUrl,
     baseUrl: authCtx.baseUrl,
     applyId: authCtx.applyId ?? null,
+    mcpSessionId: authCtx.mcpSessionId ?? null,
   };
 }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { deepRedactSecrets } from '@lobu/core';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
@@ -6,7 +7,7 @@ import type { ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
 const SENSITIVE_ASSIGNMENT_RE =
-  /(api[_-]?key|apikey|authorization|cookie|credential|password|private[_-]?key|secret|token)\s*[:=]\s*[^\s,'"}]+/gi;
+  /(api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*["']?[^\s,'"}]+/gi;
 const BEARER_TOKEN_RE = /bearer\s+[a-z0-9._~+\/-]+/gi;
 
 interface ToolInvocationAuditParams {
@@ -22,14 +23,20 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function redactPreview(value: string): string {
+function redactSensitiveText(value: string): string {
   return value
-    .slice(0, MAX_PREVIEW_CHARS)
     .replace(BEARER_TOKEN_RE, 'Bearer [redacted]')
-    .replace(SENSITIVE_ASSIGNMENT_RE, (match) => {
-      const prefix = match.match(/^[^:=]+/)?.[0]?.trim() ?? 'secret';
-      return `${prefix}=[redacted]`;
-    });
+    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`);
+}
+
+function redactPreview(value: string): string {
+  return redactSensitiveText(value.slice(0, MAX_PREVIEW_CHARS));
+}
+
+function stringifyRedacted(value: unknown): string {
+  return JSON.stringify(deepRedactSecrets(value), (_key, nestedValue) =>
+    typeof nestedValue === 'string' ? redactSensitiveText(nestedValue) : nestedValue
+  );
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -38,19 +45,25 @@ function asObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function errorPayload(error: unknown): Record<string, unknown> | null {
+function errorPayload(
+  error: unknown,
+  fallbackName: string = 'Error'
+): Record<string, unknown> | null {
   if (!error) return null;
   if (error instanceof Error) {
-    return { name: error.name, message: error.message };
+    return { name: error.name, message: redactPreview(error.message) };
   }
   if (typeof error === 'object') {
     const record = error as Record<string, unknown>;
     return {
-      name: typeof record.name === 'string' ? record.name : 'Error',
-      message: typeof record.message === 'string' ? record.message : JSON.stringify(record),
+      name: typeof record.name === 'string' ? record.name : fallbackName,
+      message:
+        typeof record.message === 'string'
+          ? redactPreview(record.message)
+          : stringifyRedacted(record).slice(0, MAX_PREVIEW_CHARS),
     };
   }
-  return { name: 'Error', message: String(error) };
+  return { name: fallbackName, message: redactPreview(String(error)) };
 }
 
 function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown> | null {
@@ -81,11 +94,16 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
 
   if (params.toolName === 'query_sql') {
     const sql = typeof params.args.sql === 'string' ? params.args.sql : '';
-    const resultError = typeof result.error === 'string' ? { name: 'QuerySqlError', message: result.error } : null;
+    const resultError =
+      typeof result.error === 'string'
+        ? { name: 'QuerySqlError', message: redactPreview(result.error) }
+        : null;
     return {
       tool_name: params.toolName,
       sql_sha256: sql ? sha256(sql) : null,
       sql_preview_redacted: sql ? redactPreview(sql) : null,
+      // The event stays in the bound org, so retain the requested target.
+      org_slug: typeof params.args.org_slug === 'string' ? params.args.org_slug : null,
       sort_by: typeof params.args.sort_by === 'string' ? params.args.sort_by : null,
       sort_order: params.args.sort_order === 'desc' ? 'desc' : 'asc',
       limit: typeof params.args.limit === 'number' ? params.args.limit : null,
@@ -98,16 +116,39 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
     };
   }
 
-  return null;
+  // Browser-session and anonymous reads would generate an event per page view;
+  // only externally authenticated calls belong in the client activity ledger.
+  if (params.ctx.tokenType !== 'oauth' && params.ctx.tokenType !== 'pat') {
+    return null;
+  }
+  const argsJson = JSON.stringify(params.args ?? {});
+  const redactedArgsJson = stringifyRedacted(params.args ?? {});
+  const resultError = errorPayload(result.error, 'ToolError');
+  const reportedFailure = result.success === false || result.status === 'failed';
+  const softError =
+    resultError ??
+    (reportedFailure
+      ? errorPayload(
+          result.error_message ?? result.message ?? 'Tool reported failure',
+          'ToolError'
+        )
+      : null);
+  return {
+    tool_name: params.toolName,
+    args_sha256: sha256(argsJson),
+    args_preview_redacted: redactedArgsJson.slice(0, MAX_PREVIEW_CHARS),
+    success: !(toolError || softError),
+    error: toolError ?? softError,
+    duration_ms: params.durationMs,
+  };
 }
 
 export async function recordToolInvocationAudit(
   params: ToolInvocationAuditParams
 ): Promise<void> {
-  const payload = buildPayload(params);
-  if (!payload) return;
-
   try {
+    const payload = buildPayload(params);
+    if (!payload) return;
     const success = payload.success === true;
     await insertEvent({
       entityIds: [],
@@ -124,6 +165,7 @@ export async function recordToolInvocationAudit(
         tool_name: params.toolName,
         token_type: params.ctx.tokenType,
         agent_id: params.ctx.agentId ?? null,
+        mcp_session_id: params.ctx.mcpSessionId ?? null,
       },
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,

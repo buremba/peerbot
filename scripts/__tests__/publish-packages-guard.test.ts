@@ -235,23 +235,80 @@ describe("publish loop (subprocess, stub npm)", () => {
     expect(`${result.stdout}${result.stderr}`).toContain("skipped");
   });
 
-  it("aborts the run when a manifest fails the publishability guard", () => {
-    // Nothing is blocked by npm, but @lobu/worker currently declares private
-    // plugin packages this script does not publish (#2186). The guard must
-    // stop the release rather than let the remaining packages go out around a
-    // known-broken manifest.
+  it("publishes the whole fleet when every manifest is publishable", () => {
+    // With @lobu/worker's private plugins now inlined into its bundle, no
+    // manifest declares an unpublishable dependency, so a release run should
+    // complete. Before that fix this aborted at @lobu/worker (#2186).
     writeStubNpm([]);
     const result = runPublishScript();
     const attempted = existsSync(logFile)
       ? readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean)
       : [];
 
-    expect(result.status).not.toBe(0);
-    expect(`${result.stdout}${result.stderr}`).toContain(
-      "@lobu/plugin-conversations"
+    expect(result.status).toBe(0);
+    expect(attempted.length).toBe(__testing.PACKAGES.length);
+    expect(attempted).toContain("@lobu/worker");
+    expect(attempted).toContain("@lobu/cli");
+  });
+});
+
+/**
+ * The published @lobu/worker manifest is the artifact consumers actually
+ * install, and it diverges from the in-repo one on purpose (bundle entry, no
+ * src/, no @lobu deps). These lock that shape in — verified end to end by
+ * packing the tarball and installing it into an empty directory, where it
+ * imports and the `lobu-worker` bin runs.
+ */
+describe("published @lobu/worker manifest", () => {
+  const transformed = (() => {
+    const entry = __testing.PACKAGES.find(
+      (p: { dir: string }) => p.dir === "packages/agent-worker"
     );
-    // Packages ordered after the failure never reached npm publish.
-    expect(attempted).not.toContain("@lobu/cli");
+    const manifest = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "packages/agent-worker/package.json"),
+        "utf8"
+      )
+    );
+    return entry.transform(manifest) as {
+      main: string;
+      bin: Record<string, string>;
+      files: string[];
+      exports: Record<string, unknown>;
+      dependencies: Record<string, string>;
+    };
+  })();
+
+  it("declares no @lobu dependencies — the whole workspace graph is inlined", () => {
+    // The exact defect from #2186. @lobu/core, plugin-api and plugin-host are
+    // CommonJS while the bundle is ESM, so they are inlined too; declaring
+    // them would also keep the release blocked on a bootstrap publish.
+    const lobuDeps = Object.keys(transformed.dependencies ?? {}).filter((d) =>
+      d.startsWith("@lobu/")
+    );
+    expect(lobuDeps).toEqual([]);
+  });
+
+  it("points every entry at the bundle and ships no src/", () => {
+    expect(transformed.main).toBe("./dist/index.bundle.mjs");
+    expect(transformed.bin["lobu-worker"]).toBe("./dist/index.bundle.mjs");
+    // Shipping src/ would reintroduce the unresolvable private-plugin imports,
+    // and the `bun` export condition pointed straight at it.
+    expect(transformed.files).not.toContain("src");
+    expect(JSON.stringify(transformed.exports)).not.toContain("src/");
+  });
+
+  it("keeps the in-repo manifest on the src/ dev path", () => {
+    // The transform is publish-time only. The server resolves @lobu/worker's
+    // src/index.ts in-repo, so mutating the real manifest would break dev.
+    const inRepo = JSON.parse(
+      readFileSync(
+        join(REPO_ROOT, "packages/agent-worker/package.json"),
+        "utf8"
+      )
+    );
+    expect(inRepo.files).toContain("src");
+    expect(inRepo.exports["."].bun).toBe("./src/index.ts");
   });
 });
 

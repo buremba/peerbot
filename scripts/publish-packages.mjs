@@ -31,7 +31,9 @@ const PACKAGES = [
   { dir: "packages/plugin-host", transform: transformCorePublish },
   { dir: "packages/connector-sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/client", transform: rewriteWorkspaceRefs },
-  { dir: "packages/agent-worker", transform: rewriteWorkspaceRefs },
+  // Publishes the esbuild bundle rather than the tsc output — see
+  // transformWorkerPublish for why (#2186).
+  { dir: "packages/agent-worker", transform: transformWorkerPublish },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
   // @lobu/pgvector-embedded is NOT published: it's `private` and ships its
   // prebuilt native binaries inside the @lobu/cli tarball (build.cjs copies it
@@ -182,6 +184,79 @@ function transformCorePublish(pkg) {
       }
     }
   }
+  return rewriteWorkspaceRefs(pkg);
+}
+
+/**
+ * @lobu/worker publishes the esbuild bundle, not the tsc output.
+ *
+ * In-repo, this package resolves through the `bun` export condition to
+ * `src/index.ts`, and both src/ and the tsc dist/ import five `private: true`
+ * plugin packages. Publishing that verbatim is what put six unresolvable
+ * dependencies on the registry (#2186): the shipped src/ imports them, the CJS
+ * dist/ requires them, and neither can ever resolve for an external consumer.
+ *
+ * `packages/agent-worker/scripts/build-worker-bundle.mjs` inlines exactly the
+ * private plugins into `dist/index.bundle.mjs` (published @lobu packages stay
+ * external), so the published entry points are repointed at the bundle here,
+ * the private deps are dropped from the manifest, and src/ is no longer
+ * shipped. The in-repo manifest keeps `bun`/src so local dev is unaffected —
+ * the publish script restores it immediately after publishing.
+ *
+ * The bundle is ESM on purpose: agent-worker compiles to CommonJS, and
+ * @mariozechner/pi-coding-agent is import-only, so a node require() of the CJS
+ * dist throws ERR_PACKAGE_PATH_NOT_EXPORTED. That is why src/ was shipped in
+ * the first place; the bundle is what finally makes the package Node-loadable.
+ */
+function transformWorkerPublish(pkg) {
+  const BUNDLE = "./dist/index.bundle.mjs";
+
+  pkg.main = BUNDLE;
+  pkg.bin = { "lobu-worker": BUNDLE };
+  pkg.exports = {
+    ".": {
+      types: "./dist/index.d.ts",
+      import: BUNDLE,
+      default: BUNDLE,
+    },
+    "./package.json": "./package.json",
+  };
+  // Ship ONLY the bundle and its type declarations. src/ is no longer an entry
+  // point, and the sibling tsc output in dist/ still carries the unresolvable
+  // `require("@lobu/plugin-mcp")` calls — nothing loads those files once the
+  // entry points move to the bundle, but shipping them would still break any
+  // consumer reaching a deep path, and leaves the defect visibly in the
+  // tarball. Verified by packing the tarball and grepping it.
+  // The published type surface is exactly `index.d.ts` (which re-exports only
+  // WorkerConfig) plus the `core/types.d.ts` it points at; both are free of
+  // private-plugin references. Shipping dist/**/*.d.ts instead would drag in
+  // sibling declarations like runtime/plugin-composition.d.ts that
+  // `import type ... from "@lobu/plugin-toolkit"` and would fail a consumer's
+  // typecheck. Verified by packing the tarball and grepping it.
+  pkg.files = [
+    "dist/index.bundle.mjs",
+    "dist/index.d.ts",
+    "dist/core/types.d.ts",
+    "!**/*.js.map",
+    "!**/*.d.ts.map",
+  ];
+
+  // EVERY @lobu dependency is dropped, not just the private ones: the bundle
+  // inlines the whole workspace graph (core and plugin-host included, because
+  // they are CommonJS and this bundle is ESM — see build-worker-bundle.mjs).
+  // Nothing in the published artifact imports them, so declaring them would
+  // make consumers install packages they never load, and would keep the
+  // release blocked on @lobu/plugin-api and @lobu/plugin-host being
+  // bootstrap-published. Their npm dependencies are hoisted into
+  // agent-worker's own manifest, which the bundler enforces.
+  for (const section of ["dependencies", "optionalDependencies"]) {
+    const deps = pkg[section];
+    if (!deps) continue;
+    for (const name of Object.keys(deps)) {
+      if (name.startsWith("@lobu/")) delete deps[name];
+    }
+  }
+
   return rewriteWorkspaceRefs(pkg);
 }
 

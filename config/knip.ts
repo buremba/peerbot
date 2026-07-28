@@ -69,6 +69,11 @@ const config: KnipConfig = {
       // those, so they don't need explicit entries.
       entry: ["src/index.ts", "src/server.ts", "src/**/*.test.ts"],
     },
+    "packages/agent-worker": {
+      // The publish bundler is invoked from the package's `build` script, not
+      // imported, so knip can't reach it through the module graph.
+      entry: ["src/index.ts", "scripts/build-worker-bundle.mjs"],
+    },
     "packages/server": {
       entry: [
         // Bundle entry (esbuild). server-entry.ts is the Node-version gate that

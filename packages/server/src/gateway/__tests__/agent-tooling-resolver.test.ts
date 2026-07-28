@@ -960,11 +960,13 @@ describe("deployment env assembly", () => {
   });
 
   test("a born-expiring lease is delivered and still renews", async () => {
-    // If the provider issues a token that is already inside the recycle margin,
-    // recycling cannot improve it — the same installation yields the same
-    // short-lived token — so recording that expiry would recycle the
-    // deployment on every single turn and never converge. It is reported and
-    // left unrecorded instead.
+    // A provider issuing a token already inside the recycle margin (clock
+    // skew, or a fault) still gets its credential delivered — a short life
+    // beats none — and its expiry IS recorded so the deployment renews. An
+    // earlier draft suppressed the expiry to avoid a recycle loop; that was
+    // wrong on both counts: the loop is prevented structurally by the
+    // manager's age floor, and suppressing left the deployment unable to
+    // renew at all.
     const installId = await seedInstall();
     await seedConnectorDef({
       key: "github",

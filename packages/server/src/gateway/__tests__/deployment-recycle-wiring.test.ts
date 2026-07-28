@@ -30,6 +30,7 @@ const CONFIG: OrchestratorConfig = {
 /** Records what the consumer asked of the manager, and what it tore down. */
 class RecordingManager extends DeploymentManager {
   deleted: string[] = [];
+  lowLevelDeleted: string[] = [];
   expiringLeaseFor: string | null = null;
   changedFingerprint: string | null = null;
   /** Deployments this manager reports as existing. */
@@ -55,7 +56,16 @@ class RecordingManager extends DeploymentManager {
   }
 
   async deleteDeployment(name: string): Promise<void> {
+    this.lowLevelDeleted.push(name);
+  }
+  /**
+   * The recycle must go through here, not `deleteDeployment`: this is the path
+   * that also clears secret placeholder mappings and the backing deployment
+   * secrets. Calling the low-level one leaks both on every recycle.
+   */
+  async deleteWorkerDeployment(name: string): Promise<void> {
     this.deleted.push(name);
+    await this.deleteDeployment(name);
   }
   hasExpiringLease(name: string): boolean {
     return this.expiringLeaseFor === name;
@@ -206,10 +216,23 @@ describe("stale-deployment recycling", () => {
     expect(recycleAt).toBeLessThan(enqueueAt);
   });
 
+  test("REGRESSION: recycling cleans up deployment secrets", async () => {
+    // The low-level deleteDeployment leaves secret placeholder mappings and
+    // the backing `deployments/{name}/` entries behind. A recycle fires about
+    // once per credential lifetime per conversation, so that leaks steadily —
+    // and AWS Secrets Manager entries would leak permanently.
+    const { manager, consumer } = build();
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
   test("a teardown failure never propagates", async () => {
     const { manager, consumer } = build();
     manager.expiringLeaseFor = DEPLOYMENT;
-    manager.deleteDeployment = async () => {
+    manager.deleteWorkerDeployment = async () => {
       throw new Error("kill failed");
     };
 
@@ -217,5 +240,31 @@ describe("stale-deployment recycling", () => {
     await expect(
       consumer.recycle(DEPLOYMENT, "fp-unchanged")
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("deferral is retried, not lost", () => {
+  test("a turn deferred by liveness recycles on the next turn", async () => {
+    // The trigger is STATE, not an event: hasExpiringLease/hasToolingChanged
+    // are recomputed every turn, so a deferral costs one turn of staleness
+    // rather than disabling the recycle until the idle reaper.
+    const manager = new RecordingManager(CONFIG);
+    let live = true;
+    const consumer = new TestConsumer(
+      CONFIG,
+      manager,
+      NOOP_QUEUE,
+      async () => {},
+      async () => live
+    );
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+    expect(manager.deleted).toEqual([]);
+
+    // The prior turn finishes; the next message re-evaluates and recycles.
+    live = false;
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
   });
 });

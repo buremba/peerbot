@@ -1121,6 +1121,11 @@ export class MessageConsumer {
       // message 1's reply. The durable turn marker is the authority here —
       // Postgres-backed, so it sees a turn started by another replica too.
       if (await this.hasLiveTurn(deploymentName)) {
+        // This turn runs against the stale worker. That is the deliberate
+        // trade: interrupting a live turn loses a reply outright, whereas one
+        // turn on a slightly-stale credential is recoverable. The deferral is
+        // not lost either — the trigger is recomputed STATE, not an event, so
+        // the next turn after the worker goes quiet recycles.
         logger.info(
           { traceId, deploymentName, tooling_changed: toolingChanged },
           "Deferring deployment recycle: a turn is still in flight"
@@ -1134,7 +1139,12 @@ export class MessageConsumer {
           ? "Connector tooling changed — recycling deployment to pick it up"
           : "Connector lease expiring — recycling deployment to re-mint"
       );
-      await this.deploymentManager.deleteDeployment(deploymentName);
+      // deleteWorkerDeployment, not the low-level deleteDeployment: it also
+      // clears the secret placeholder mappings and the backing
+      // `deployments/{name}/` secret entries. A recycle can fire once per
+      // credential lifetime per conversation, so leaking those would
+      // accumulate (and AWS Secrets Manager entries would leak permanently).
+      await this.deploymentManager.deleteWorkerDeployment(deploymentName);
     } catch (error) {
       logger.warn(
         { traceId, deploymentName, error: getErrorMessage(error) },

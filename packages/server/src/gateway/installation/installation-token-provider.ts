@@ -86,15 +86,6 @@ function isMintableStatus(status: AppInstallationRow["status"]): boolean {
   return status === "active";
 }
 
-/**
- * Per-pod, in-memory token cache shared by provider implementations.
- *
- * Per-pod by design (mirrors `secret-proxy`'s `PlaceholderCache`): a token
- * minted on pod A is never read by pod B — each replica self-serves. No
- * cross-pod coordination, so it holds under N replicas behind ClientIP
- * affinity. Entries refresh proactively `refreshSkewMs` before the provider's
- * stated expiry so an in-flight request never races the boundary.
- */
 /** Per-call minting constraints. */
 export interface MintTokenOptions {
   /**
@@ -105,6 +96,15 @@ export interface MintTokenOptions {
   minTtlMs?: number;
 }
 
+/**
+ * Per-pod, in-memory token cache shared by provider implementations.
+ *
+ * Per-pod by design (mirrors `secret-proxy`'s `PlaceholderCache`): a token
+ * minted on pod A is never read by pod B — each replica self-serves. No
+ * cross-pod coordination, so it holds under N replicas behind ClientIP
+ * affinity. Entries refresh proactively `refreshSkewMs` before the provider's
+ * stated expiry so an in-flight request never races the boundary.
+ */
 export class InMemoryInstallationTokenCache {
   private readonly entries = new Map<string, MintedInstallationToken>();
   private readonly refreshSkewMs: number;

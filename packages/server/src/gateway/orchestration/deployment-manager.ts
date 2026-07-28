@@ -722,16 +722,16 @@ const GRANT_SYNC_CACHE_MAX = 1000;
 const EMPTY_LEASE_REGISTRY = new CredentialLeaseRegistry();
 
 /**
- * Nix binary-cache hosts auto-allowed while an agent has a Nix environment
- * configured. Config-derived like `networkConfig` domains: granted by the
- * sync while `nixConfig` is present, reconciled away when it is removed.
- */
-/**
  * Marks a tooling resolution that did not happen (missing ids, or a thrown
  * lookup). Never compared as a real digest — see `hasToolingChanged`.
  */
 const UNKNOWN_TOOLING_FINGERPRINT = "";
 
+/**
+ * Nix binary-cache hosts auto-allowed while an agent has a Nix environment
+ * configured. Config-derived like `networkConfig` domains: granted by the
+ * sync while `nixConfig` is present, reconciled away when it is removed.
+ */
 const NIX_CACHE_DOMAINS = [
   "cache.nixos.org",
   "channels.nixos.org",

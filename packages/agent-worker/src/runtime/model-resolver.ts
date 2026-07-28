@@ -343,7 +343,7 @@ export function resolveModelRef(
       explicitProvider !== defaultProvider &&
       explicitProvider !== defaultProviderSlug &&
       modelId === modelRef &&
-      !!overrides?.installedProviderRoutes?.[explicitProvider]
+      overrides?.installedProviderRoutes?.[explicitProvider]
         ? explicitProvider
         : undefined;
 

@@ -157,14 +157,19 @@ const INTERPRETER_DASH_C =
   /\b(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
 
 /**
- * Replace the contents of every quoted span with spaces, preserving offsets and
- * the quote characters themselves. A word boundary inside quoted data then
- * cannot open a command position, so a message that merely mentions a package
- * manager (`git commit -m 'document nix shell support'`) no longer matches
- * while the surrounding real command is still scanned normally.
+ * Replace non-command text with spaces, preserving offsets and delimiters:
+ * the contents of quoted spans, and anything after an unquoted `#` comment.
+ * A word boundary inside either then cannot open a command position, so
+ * `git commit -m 'document nix shell support'` and `echo done # nix run x`
+ * no longer match while the surrounding real command is scanned normally.
  *
  * Offsets are preserved rather than the span deleted so that `foo'a'bar` does
  * not collapse into a new adjacent token.
+ *
+ * A heredoc body (`cat <<EOF … EOF`) is NOT stripped: recognizing one means
+ * tracking the delimiter across lines, which is the bash-lexer rabbit hole this
+ * matcher deliberately stays out of. A heredoc that quotes an install command
+ * is therefore still flagged — an over-denial on an unusual command, not a hole.
  */
 function blankQuotedSpans(text: string): string {
   let out = "";
@@ -189,6 +194,20 @@ function blankQuotedSpans(text: string): string {
     if (ch === "'" || ch === '"') {
       quote = ch;
       out += ch;
+      continue;
+    }
+    // `#` opens a comment only at the START of a word. Mid-token it is an
+    // ordinary character, and must stay one — `nix run nixpkgs#hello` depends
+    // on it. Blank to end of line, keeping the newline so later lines are
+    // still scanned.
+    if (ch === "#" && (i === 0 || /\s/.test(text[i - 1] as string))) {
+      out += "#";
+      i++;
+      while (i < text.length && text[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      if (i < text.length) out += "\n";
       continue;
     }
     out += ch;

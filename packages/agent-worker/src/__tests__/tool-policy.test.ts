@@ -399,9 +399,25 @@ describe("enforceBashCommandPolicy", () => {
       "echo 'use uvx here'",
       "git commit -m 'we should apt install curl'",
       'git commit -m "then run pipx install black"',
+      // Text after an unquoted `#` is a comment, never executed.
+      "echo done # nix run x",
+      "ls # uvx cowsay",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(false);
     }
+  });
+
+  test("a mid-token '#' is not a comment (#2259)", () => {
+    // `#` opens a comment only at the start of a word. Mid-token it is data
+    // (`nixpkgs#hello`), so a package manager AFTER such a token must still be
+    // seen — treating the first `#` as a comment would blank the rest of the
+    // line and hide it.
+    expect(
+      isDirectPackageInstallCommand("echo nixpkgs#hello; nix run x")
+    ).toBe(true);
+    expect(isDirectPackageInstallCommand("nix run nixpkgs#hello")).toBe(true);
+    // …while a real comment still hides what follows it.
+    expect(isDirectPackageInstallCommand("echo hi # nix run x")).toBe(false);
   });
 
   test("a real install still trips the hint, including after an operator (#2259)", () => {

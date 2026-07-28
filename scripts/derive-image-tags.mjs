@@ -14,7 +14,8 @@
  * embedded YAML shell is only exercisable by cutting a real release.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** release-please publishes lobu-vX.Y.Z; other repos' releases share this feed. */
 const LOBU_TAG_PREFIX = "lobu-v";
@@ -63,8 +64,27 @@ export function deriveImageTags({
   return { semver, is_stable, should_publish: true };
 }
 
+/** True when this file was run directly rather than imported. */
+function isMainModule() {
+  try {
+    return (
+      realpathSync(fileURLToPath(import.meta.url)) ===
+      realpathSync(process.argv[1])
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Invoked from the workflow: writes GitHub Actions outputs.
-if (process.argv[1]?.endsWith("derive-image-tags.mjs")) {
+//
+// Compares real paths, not filenames and not raw URLs. A filename check
+// no-ops if the file is renamed or copied; a raw URL compare no-ops when the
+// path contains a symlink, because import.meta.url is already resolved while
+// argv[1] is not (macOS /tmp -> /private/tmp is the everyday case). Either
+// way the failure is silent — the workflow reads empty tag outputs rather
+// than seeing an error — so resolve both sides.
+if (process.argv[1] && isMainModule()) {
   let result;
   try {
     result = deriveImageTags({

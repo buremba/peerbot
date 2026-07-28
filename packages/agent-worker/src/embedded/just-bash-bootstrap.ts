@@ -39,10 +39,6 @@ interface SandboxContext {
   allowNet?: boolean;
   /** Per-invocation cwd inside bwrap's /workspace namespace. */
   bwrapCwd?: string;
-  /** PATH handed to spawned tools, with package-manager directories removed so a
-   * registered program cannot re-exec a filtered manager by name (see
-   * {@link scrubPackageManagerDirs}). */
-  childPath?: string;
 }
 
 export function buildBinaryInvocation(
@@ -169,89 +165,6 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "strace",
   "ltrace",
 ]);
-
-/**
- * Package managers whose RE-EXECUTION is the runtime-install threat. Filtering
- * them from discovery ({@link UNSANDBOXED_INTERPRETERS}) stops the AGENT from
- * running them directly, but a REGISTERED program that shells out
- * (`awk 'BEGIN{system("npm i x")}'`, `find … -exec npm …`, any interpreter's
- * `system()`) resolves them by name through the child's PATH — the bwrap
- * sandbox binds `/nix` read-only into the namespace, so the store binaries are
- * right there. A name blacklist cannot enumerate every program that can spawn a
- * subprocess, so the boundary is enforced on the child's PATH instead: any
- * directory that contains one of these is removed from the PATH handed to a
- * spawned tool (see {@link scrubPackageManagerDirs}). The tool still runs (it is
- * invoked by absolute path and finds its own libs via RPATH), but a package
- * manager it tries to launch by name is "not found".
- *
- * Scoped to package managers, NOT every filtered interpreter: a registered tool
- * legitimately shells out to a general tool by name (`gh` runs `git`), and
- * scrubbing those dirs would break it. Package managers are never a tool's
- * required runtime dependency, so removing their dirs is safe.
- *
- * Known residual gap: this closes NAME-based re-execution only. `/nix` is bound
- * read-only but executable, so a registered tool that hardcodes or globs
- * `/nix/store/…/bin/npm` still reaches it. Closing that means binding only an
- * allowlisted store closure into the namespace, which is a change to the bwrap
- * mount plan rather than to the child PATH, and is tracked separately.
- */
-const PACKAGE_MANAGER_BINARIES = new Set<string>([
-  "nix",
-  "nix-build",
-  "nix-shell",
-  "nix-env",
-  "nix-store",
-  "nix-channel",
-  "nix-instantiate",
-  "nix-prefetch-url",
-  "nix-collect-garbage",
-  "nix-copy-closure",
-  "npm",
-  "npx",
-  "pnpm",
-  "yarn",
-  "pip",
-  "pip3",
-  "pipx",
-  "uv",
-  "uvx",
-  "bunx",
-  "poetry",
-  "gem",
-  "cargo",
-  "go",
-  "apt",
-  "apt-get",
-  "yum",
-  "dnf",
-  "apk",
-  "pacman",
-  "zypper",
-  "brew",
-]);
-
-/**
- * Remove every PATH directory that contains a {@link PACKAGE_MANAGER_BINARIES}
- * executable, so a spawned tool cannot resolve a package manager by name. This
- * is the enforcement half of the runtime-install boundary: the discovery filter
- * stops the agent from running the manager directly; this stops a registered
- * program from re-execing it. Computed once from the worker PATH.
- */
-export function scrubPackageManagerDirs(pathValue: string): string {
-  const dirs = pathValue.split(":").filter(Boolean);
-  const kept = dirs.filter((dir) => {
-    for (const bin of PACKAGE_MANAGER_BINARIES) {
-      try {
-        fs.accessSync(path.join(dir, bin), fs.constants.X_OK);
-        return false; // dir hosts a package manager → drop it
-      } catch {
-        // not here; keep checking
-      }
-    }
-    return true;
-  });
-  return kept.join(":");
-}
 
 /**
  * Executables installed by a declared nix package, for the packages whose CLI
@@ -459,14 +372,6 @@ async function buildCustomCommands(
           envRecord.https_proxy = process.env.https_proxy;
         delete envRecord.NO_PROXY;
         delete envRecord.no_proxy;
-
-        // Force the package-manager-scrubbed PATH last, so an agent cannot
-        // restore a manager's directory via `export PATH=…` through ctx.env. A
-        // spawned tool that shells out to `npm`/`nix` by name now gets "not
-        // found"; the tool itself is invoked by absolute path and unaffected.
-        if (sandbox.childPath !== undefined) {
-          envRecord.PATH = sandbox.childPath;
-        }
 
         let hostCwd: string;
         let bwrapCwd: string | undefined;
@@ -719,15 +624,6 @@ export async function createEmbeddedBashOps(
     // already enforces the per-agent domain allowlist. Letting the OS network
     // namespace stay open lets curl/git/gh respect HTTP_PROXY normally.
     allowNet: true,
-    // Package managers are dropped from the PATH given to spawned tools, so a
-    // registered program that shells out (awk system(), find -exec, any
-    // interpreter) cannot re-exec a filtered manager by name. Skipped when the
-    // agent has explicitly opted out of the exec sandbox — that mode already
-    // grants full interpreters, so the PATH scrub would be theatre. Computed
-    // once here, not per invocation.
-    childPath: allowUnsandboxedExec
-      ? process.env.PATH
-      : scrubPackageManagerDirs(process.env.PATH || ""),
   };
   const binaryCommands =
     binaries.size > 0 ? await buildCustomCommands(binaries, sandboxCtx) : [];

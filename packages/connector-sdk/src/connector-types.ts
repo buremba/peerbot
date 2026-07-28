@@ -113,6 +113,15 @@ export interface ConnectorAgentTooling {
    * Native tools the contributed CLI needs on PATH inside the agent sandbox, as
    * nixpkgs attribute references (e.g. `["gh"]`). Unioned with the agent's own
    * packages and its enabled skills' — never last-writer-wins.
+   *
+   * Provisioned on the BUILT-IN runtime only, where the gateway spawns the
+   * worker and can wrap it in `nix-shell`. A conversation pinned to a remote
+   * runtime (e.g. a Vercel sandbox) still receives the credential and the
+   * egress grants, but gets only the tools its sandbox image ships — the
+   * remote path executes commands through the provider SDK and has no
+   * provisioning step yet. Declare tools the image is likely to carry, and
+   * expect an agent there to report the binary as missing rather than to
+   * silently misbehave.
    */
   nix?: { packages: string[] };
   /** Environment variables the contributed tooling authenticates with. */

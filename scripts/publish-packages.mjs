@@ -131,16 +131,18 @@ function rewriteWorkspaceRefs(pkg) {
  * Drop scripts that cannot run from the published tarball.
  *
  * Every manifest here carries dev-loop scripts (`build`, `dev`, `typecheck`,
- * `test`, `clean`) that need `src/`, `tsc`, or `scripts/` — none of which are
- * in `files`. Shipping them is not merely dead weight: `@lobu/worker`'s
- * `start` pointed at `dist/index.js`, which transformWorkerPublish excludes,
- * so `npm start` on an installed copy failed with MODULE_NOT_FOUND. Keeping a
- * script that names a file the tarball omits is the same defect class as
- * #2186 — a published manifest referencing something a consumer cannot get.
+ * `test`, `clean`) needing `src/`, `tsc` or `scripts/` — none of which ship.
+ * Shipping them is not merely dead weight: `@lobu/worker`'s `start` pointed at
+ * `dist/index.js`, which transformWorkerPublish excludes from `files`, so
+ * `npm start` on an installed copy died with MODULE_NOT_FOUND. That is the
+ * same defect class as #2186 — a published manifest naming something the
+ * consumer cannot get.
  *
- * `lifecycle` scripts are kept: npm runs those itself on install, and dropping
- * one would silently change install behaviour. No script left here may
- * reference a path outside `files`; the guard below enforces that.
+ * Runnability is decided by `files`, not by a name allowlist: a script whose
+ * referenced paths all ship is kept (@lobu/connector-worker's
+ * `start: node dist/bin.js` is real and still works), and one that reaches
+ * outside `files` is dropped. Lifecycle scripts are kept unconditionally —
+ * npm runs those itself on install, so dropping one changes install behaviour.
  */
 const PUBLISHED_LIFECYCLE_SCRIPTS = new Set([
   "preinstall",
@@ -149,11 +151,46 @@ const PUBLISHED_LIFECYCLE_SCRIPTS = new Set([
   "prepare",
 ]);
 
+/** Paths a script command references, e.g. `node dist/bin.js` → ["dist/bin.js"]. */
+const SCRIPT_PATH_REF = /(?:\.\/)?(?:src|dist|scripts|bin)\/[\w./-]+/g;
+
+/** A tool that must be a devDependency, so it cannot exist in a consumer install. */
+const DEV_TOOL =
+  /^(?:tsc|tsx|bun|biome|vitest|jest|esbuild|rimraf|openapi-ts)\b/;
+
+/**
+ * `clean: rm -rf dist` passes the path check — dist IS shipped — but running it
+ * in an installed package deletes the package's own code. Runnable is not the
+ * same as safe to expose, so drop the dev-loop names outright.
+ */
+const DEV_ONLY_SCRIPT_NAMES = new Set(["clean", "dev", "watch"]);
+
+function scriptRunsFromTarball(command, files, name) {
+  // No `files` means npm ships the whole directory — everything resolves.
+  const included = files?.filter((f) => !f.startsWith("!"));
+  if (DEV_ONLY_SCRIPT_NAMES.has(name)) return false;
+  if (DEV_TOOL.test(command.trim())) return false;
+  if (!included || included.length === 0) return true;
+  for (const ref of command.match(SCRIPT_PATH_REF) ?? []) {
+    const normalized = ref.replace(/^\.\//, "");
+    const shipped = included.some(
+      (f) => normalized === f || normalized.startsWith(`${f}/`)
+    );
+    if (!shipped) return false;
+  }
+  return true;
+}
+
 function stripUnpublishableScripts(pkg) {
   if (!pkg.scripts) return pkg;
   const kept = {};
   for (const [name, command] of Object.entries(pkg.scripts)) {
-    if (PUBLISHED_LIFECYCLE_SCRIPTS.has(name)) kept[name] = command;
+    if (
+      PUBLISHED_LIFECYCLE_SCRIPTS.has(name) ||
+      scriptRunsFromTarball(command, pkg.files, name)
+    ) {
+      kept[name] = command;
+    }
   }
   if (Object.keys(kept).length > 0) pkg.scripts = kept;
   else delete pkg.scripts;
@@ -577,7 +614,6 @@ export { rewriteWorkspaceRefs };
 /** Internals exposed for the guard tests; not part of any published surface. */
 export const __testing = {
   PACKAGES,
-  PUBLISHED_LIFECYCLE_SCRIPTS,
   lobuRuntimeDeps,
   markUnavailablePackage,
   packageNameFor,

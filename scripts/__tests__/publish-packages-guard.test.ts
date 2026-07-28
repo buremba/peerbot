@@ -373,15 +373,32 @@ describe("published manifests ship no unrunnable scripts", () => {
     }
   );
 
-  it("keeps only lifecycle scripts npm runs on install", () => {
+  it("drops dev-loop scripts a consumer install cannot run", () => {
+    // tsc/tsx/biome are devDependencies, absent from a consumer install; the
+    // dev-loop names are dropped by name because "runnable" is not the same as
+    // "safe" — `clean: rm -rf dist` would delete the installed package's code.
     for (const { dir, pkg } of transformedManifests) {
-      for (const name of Object.keys(pkg.scripts ?? {})) {
+      for (const [name, command] of Object.entries(pkg.scripts ?? {})) {
         expect(
-          __testing.PUBLISHED_LIFECYCLE_SCRIPTS.has(name),
-          `${dir}: published manifest keeps non-lifecycle script "${name}"`
-        ).toBe(true);
+          ["clean", "dev", "watch", "build", "typecheck", "test"],
+          `${dir}: published manifest keeps dev-loop script "${name}"`
+        ).not.toContain(name);
+        expect(
+          command,
+          `${dir}: script "${name}" invokes a devDependency-only tool`
+        ).not.toMatch(/^(?:tsc|tsx|biome|vitest|jest|esbuild)\b/);
       }
     }
+  });
+
+  it("keeps a start script that genuinely runs from the tarball", () => {
+    // The counter-case to the strip: @lobu/connector-worker ships dist/, so
+    // `node dist/bin.js` resolves for a consumer. Over-stripping it would
+    // remove a working entry point, so this pins it in place.
+    const connectorWorker = transformedManifests.find(
+      (m) => m.dir === "packages/connector-worker"
+    );
+    expect(connectorWorker?.pkg.scripts?.start).toBe("node dist/bin.js");
   });
 
   it("never names a path the tarball excludes", () => {

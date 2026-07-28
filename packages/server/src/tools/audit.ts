@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { deepRedactSecrets } from '@lobu/core';
+import { REDACTED_SENTINEL } from '@lobu/core';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
@@ -51,10 +51,47 @@ function redactPreview(value: string): string {
   return redactSensitiveText(value).slice(0, MAX_PREVIEW_CHARS);
 }
 
-function stringifyRedacted(value: unknown): string {
-  return JSON.stringify(deepRedactSecrets(value), (_key, nestedValue) =>
-    typeof nestedValue === 'string' ? redactSensitiveText(nestedValue) : nestedValue
-  );
+/**
+ * Structural keys whose string values are safe to persist in the generic audit
+ * preview: enum-ish discriminators and resource references, never user
+ * content. Everything else defaults to the sentinel — free text can carry a
+ * secret in shapes no pattern enumerates (`curl --token sk-live-…`), so the
+ * ledger keeps the SHAPE of a call, not its content.
+ */
+const SAFE_ARG_KEYS = new Set([
+  'action',
+  'agent_id',
+  'connection',
+  'dry_run',
+  'entity_type',
+  'feed',
+  'key',
+  'kind',
+  'org_slug',
+  'semantic_type',
+  'slug',
+  'sort_by',
+  'sort_order',
+  'status',
+  'type',
+]);
+const MAX_SAFE_VALUE_CHARS = 120;
+
+function sanitizeArgLeaves(value: unknown, parentKey?: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeArgLeaves(item, parentKey));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, sanitizeArgLeaves(nested, key)])
+    );
+  }
+  if (typeof value === 'string') {
+    return parentKey !== undefined &&
+      SAFE_ARG_KEYS.has(parentKey) &&
+      value.length <= MAX_SAFE_VALUE_CHARS
+      ? redactSensitiveText(value)
+      : REDACTED_SENTINEL;
+  }
+  return value;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -78,10 +115,27 @@ function errorPayload(
       message:
         typeof record.message === 'string'
           ? redactPreview(record.message)
-          : stringifyRedacted(record).slice(0, MAX_PREVIEW_CHARS),
+          : fallbackName,
     };
   }
   return { name: fallbackName, message: redactPreview(String(error)) };
+}
+
+/**
+ * Error shape for GENERIC audit entries: the class name (and `code` when the
+ * error carries one) only. Handler-supplied message text can echo user values
+ * in shapes no pattern enumerates, so it never reaches the append-only ledger
+ * — the caller already received the full error on the live response.
+ */
+function errorNameOnly(error: unknown, fallbackName: string): Record<string, unknown> | null {
+  if (!error) return null;
+  const record =
+    typeof error === 'object' ? (error as Record<string, unknown>) : ({} as Record<string, unknown>);
+  const name =
+    error instanceof Error ? error.name
+    : typeof record.name === 'string' ? record.name
+    : fallbackName;
+  return typeof record.code === 'string' ? { name, code: record.code } : { name };
 }
 
 function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown> | null {
@@ -139,31 +193,27 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   if (params.ctx.tokenType !== 'oauth' && params.ctx.tokenType !== 'pat') {
     return null;
   }
-  // Hash the REDACTED serialization: the raw one would persist an unsalted
-  // credential-derived digest whenever args carry a secret (manage_connections
-  // tokens etc.), letting a candidate secret be verified against the ledger.
-  // The hash identifies the call shape, so redacted input serves it fully.
-  const redactedArgsJson = stringifyRedacted(params.args ?? {});
-  const resultError = errorPayload(result.error, 'ToolError');
+  // The preview and hash are built from the SANITIZED args: every string leaf
+  // becomes the sentinel unless its key is a known structural discriminator.
+  // A raw or pattern-redacted serialization would persist free-text values
+  // (and an unsalted credential-derived digest) whenever a secret hides in a
+  // shape no pattern enumerates — the ledger records the call's shape, never
+  // its content.
+  const sanitizedArgsJson = JSON.stringify(sanitizeArgLeaves(params.args ?? {}));
   const reportedFailure =
+    result.error != null ||
     result.success === false ||
     result.status === 'failed' ||
     result.status === 'error' ||
     result.status === 'timeout';
-  const softError =
-    resultError ??
-    (reportedFailure
-      ? errorPayload(
-          result.error_message ?? result.message ?? 'Tool reported failure',
-          'ToolError'
-        )
-      : null);
+  const softError = reportedFailure ? errorNameOnly(result.error, 'ToolError') ?? { name: 'ToolError' } : null;
+  const thrownError = errorNameOnly(params.error, 'Error');
   return {
     tool_name: params.toolName,
-    args_sha256: sha256(redactedArgsJson),
-    args_preview_redacted: redactedArgsJson.slice(0, MAX_PREVIEW_CHARS),
-    success: !(toolError || softError),
-    error: toolError ?? softError,
+    args_sha256: sha256(sanitizedArgsJson),
+    args_preview_redacted: sanitizedArgsJson.slice(0, MAX_PREVIEW_CHARS),
+    success: !(thrownError || softError),
+    error: thrownError ?? softError,
     duration_ms: params.durationMs,
   };
 }

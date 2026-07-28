@@ -99,7 +99,11 @@ describe('tool invocation audit coverage', () => {
     expect(row).not.toBeNull();
     expect(row!.payload_data.success).toBe(true);
     expect(row!.payload_data.args_sha256).toEqual(expect.any(String));
-    expect(row!.payload_data.args_preview_redacted).toContain('audit coverage probe');
+    // The preview keeps the call SHAPE (keys), never free-text values — a
+    // search query is user content and could carry a pasted secret.
+    expect(row!.payload_data.args_preview_redacted).toContain('"query"');
+    expect(row!.payload_data.args_preview_redacted).not.toContain('audit coverage probe');
+    expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
     expect(row!.payload_data).not.toHaveProperty('content');
     expect(row!.metadata.mcp_session_id).toBe(sessionId);
   });
@@ -221,9 +225,8 @@ describe('tool invocation audit coverage', () => {
       const row = await latestAuditRow(orgId, toolName);
       expect(row).not.toBeNull();
       expect(row!.payload_data.success).toBe(false);
-      expect(row!.payload_data.error).toMatchObject({
-        message: `soft ${status} outcome`,
-      });
+      // Name only — handler-supplied error text never reaches the ledger.
+      expect(row!.payload_data.error).toEqual({ name: 'ToolError' });
     }
   );
 
@@ -242,6 +245,8 @@ describe('tool invocation audit coverage', () => {
           'token=part1,part2',
           'password="my secret value"',
           'authorization: Basic dXNlcjpwYXNz',
+          'curl --token sk-live-1234567890',
+          'the token is sk-live-abcdef',
         ].join(' | '),
         digest_header:
           'authorization: Digest username="mufasa", realm="testrealm", nonce="dcd98b7102dd", response="6629fae49393"',
@@ -276,6 +281,8 @@ describe('tool invocation audit coverage', () => {
       '6629fae49393',
       'scar',
       'abc9f8de77',
+      'sk-live-1234567890',
+      'sk-live-abcdef',
     ]) {
       expect(preview).not.toContain(fragment);
     }
@@ -301,8 +308,7 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'manage_classifiers');
     expect(row).not.toBeNull();
     expect(row!.payload_data.success).toBe(false);
-    expect(row!.payload_data.error).toMatchObject({
-      message: 'Missing required field: classifier_id',
-    });
+    expect(row!.payload_data.error).toMatchObject({ name: expect.any(String) });
+    expect(row!.payload_data.error).not.toHaveProperty('message');
   });
 });

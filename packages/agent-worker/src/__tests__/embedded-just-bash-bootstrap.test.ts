@@ -11,6 +11,7 @@ import {
 import {
   buildBinaryInvocation,
   createEmbeddedBashOps,
+  scrubPackageManagerDirs,
 } from "../embedded/just-bash-bootstrap";
 
 const tempDirs: string[] = [];
@@ -762,5 +763,79 @@ describe("exec wrappers are filtered from discovery by default", () => {
       timeout: 5,
     });
     expect(chunks.join("")).toContain("HOST-ENV-RAN");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Package-manager PATH scrub. The interpreter blacklist stops the AGENT from
+// running a package manager, but a registered program that shells out
+// (`awk system("npm …")`, `find -exec npm …`, any interpreter) resolves it by
+// name through the child PATH — bwrap binds /nix into the namespace, so the
+// store binaries are reachable. The boundary is enforced on the child PATH:
+// any directory containing a package manager is removed. A basename blacklist
+// cannot enumerate every shell-capable program, so this closes the class. (r8.)
+// ---------------------------------------------------------------------------
+describe("scrubPackageManagerDirs", () => {
+  function seed(): {
+    root: string;
+    pmDir: string;
+    toolDir: string;
+  } {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-pathscrub-"))
+    );
+    tempDirs.push(root);
+    // One dir holds a package manager (npm); another holds only a general tool
+    // (git) that a registered program legitimately shells out to.
+    const pmDir = path.join(root, "nix", "store", "pm", "bin");
+    const toolDir = path.join(root, "nix", "store", "tool", "bin");
+    fs.mkdirSync(pmDir, { recursive: true });
+    fs.mkdirSync(toolDir, { recursive: true });
+    for (const [dir, bin] of [
+      [pmDir, "npm"],
+      [pmDir, "nix"],
+      [toolDir, "git"],
+      [toolDir, "rg"],
+    ] as const) {
+      const p = path.join(dir, bin);
+      fs.writeFileSync(p, "#!/bin/sh\ntrue\n");
+      fs.chmodSync(p, 0o755);
+    }
+    return { root, pmDir, toolDir };
+  }
+
+  test("removes a directory that hosts a package manager", () => {
+    const { pmDir, toolDir } = seed();
+    const scrubbed = scrubPackageManagerDirs(`${pmDir}:${toolDir}`);
+    expect(scrubbed.split(":")).not.toContain(pmDir);
+  });
+
+  test("keeps a directory that hosts only general tools (gh→git interop)", () => {
+    const { pmDir, toolDir } = seed();
+    const scrubbed = scrubPackageManagerDirs(`${pmDir}:${toolDir}`);
+    expect(scrubbed.split(":")).toContain(toolDir);
+  });
+
+  test("drops a dir even if the manager is one of several binaries there", () => {
+    const { root } = seed();
+    // A single dir holding both a manager and a tool is dropped whole — the
+    // manager's reachability is what matters; the tool stays available via its
+    // own dir (a nix profile never co-locates unrelated CLIs in one bin dir).
+    const mixed = path.join(root, "nix", "store", "mixed", "bin");
+    fs.mkdirSync(mixed, { recursive: true });
+    for (const bin of ["uvx", "jq"]) {
+      const p = path.join(mixed, bin);
+      fs.writeFileSync(p, "#!/bin/sh\ntrue\n");
+      fs.chmodSync(p, 0o755);
+    }
+    expect(scrubPackageManagerDirs(mixed).split(":").filter(Boolean)).toEqual(
+      []
+    );
+  });
+
+  test("empty and manager-free PATHs are returned intact", () => {
+    const { toolDir } = seed();
+    expect(scrubPackageManagerDirs("")).toBe("");
+    expect(scrubPackageManagerDirs(toolDir)).toBe(toolDir);
   });
 });

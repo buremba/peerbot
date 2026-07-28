@@ -676,3 +676,82 @@ describe("filtered package managers are not runnable however spelled", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exec wrappers (env, xargs, find, timeout, …). just-bash ships SAFE builtins
+// for these: the builtin `env nix …` resolves `nix` through just-bash's own
+// command registry (builtins + registered customCommands), so a filtered `nix`
+// is "command not found" and the builtin never re-execs the host. The danger is
+// only when discovery REGISTERS a real /nix/store `env` as a custom command —
+// buildCustomCommands execFile's that host binary, which re-execs its argv with
+// the worker PATH and can reach a filtered interpreter. The wrappers are in
+// UNSANDBOXED_INTERPRETERS so discovery drops them by default, leaving the safe
+// builtin. These tests pin: (a) the host fixture env never runs by default, and
+// `env nix` cannot reach nix; (b) under the explicit opt-in the fixture IS
+// registered and runs — which is what makes (a) a real filter assertion. (r5.)
+// ---------------------------------------------------------------------------
+describe("exec wrappers are filtered from discovery by default", () => {
+  function seedFixtureWrapper(): { workspace: string; storeBin: string } {
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-wrapper-"))
+    );
+    tempDirs.push(workspace);
+    // A /nix/store-shaped dir is required: discoverBinaries only scans PATH
+    // entries containing "/nix/store/".
+    const storeBin = path.join(workspace, "nix", "store", "aaaa-env", "bin");
+    fs.mkdirSync(storeBin, { recursive: true });
+    const fakeEnv = path.join(storeBin, "env");
+    // Prints a sentinel if the HOST binary ever runs, so a re-exec is
+    // observable versus the safe builtin (which never prints it).
+    fs.writeFileSync(fakeEnv, '#!/bin/sh\necho "HOST-ENV-RAN"\n', "utf8");
+    fs.chmodSync(fakeEnv, 0o755);
+    return { workspace, storeBin };
+  }
+
+  test("default: host env is not registered; env nix cannot reach nix", async () => {
+    const { workspace, storeBin } = seedFixtureWrapper();
+    process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
+    // Opt-in OFF is the point: the discovery filter drops the host `env`, so the
+    // safe builtin handles it. (The opt-in would bypass the filter.)
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    delete process.env.LOBU_EXEC_SANDBOX;
+    resetSandboxProbeForTests();
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+
+    // The host fixture env must never run — the builtin handles `env`.
+    const passthru: string[] = [];
+    await ops.exec("env true", "/", {
+      onData: (chunk) => passthru.push(chunk.toString()),
+      timeout: 5,
+    });
+    expect(passthru.join("")).not.toContain("HOST-ENV-RAN");
+
+    // And `env nix run` cannot reach a nix — the builtin resolves `nix` in the
+    // just-bash registry, where it is filtered → command not found.
+    const chunks: string[] = [];
+    const nixResult = await ops.exec("env nix run nixpkgs#hello", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+    expect(nixResult.exitCode).toBe(127);
+    expect(chunks.join("")).toContain("command not found");
+  });
+
+  test("opt-in ON: the same fixture env IS registered and runs (filter is real)", async () => {
+    const { workspace, storeBin } = seedFixtureWrapper();
+    process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
+    // Opt-in bypasses the filter, so the host `env` is registered and takes
+    // precedence over the builtin; this proves the default suppression above is
+    // the FILTER at work, not a missing fixture.
+    registerWithoutOsSandbox();
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    await ops.exec("env true", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+    expect(chunks.join("")).toContain("HOST-ENV-RAN");
+  });
+});

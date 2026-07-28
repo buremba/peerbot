@@ -268,6 +268,37 @@ describe("enforceBashCommandPolicy", () => {
     ).not.toThrow();
   });
 
+  test("exec wrappers around a denied command are peeled and denied", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "env nix run nixpkgs#hello",
+      "sudo env nix shell nixpkgs#git",
+      "timeout 5s nix run nixpkgs#hello",
+      "timeout 5 uvx cowsay",
+      "nice -n 10 npm install lodash",
+      "nohup pnpm dlx create-react-app y",
+      "env FOO=bar nix run nixpkgs#hello",
+      "command env nix run nixpkgs#hello",
+      "/usr/bin/env nix run nixpkgs#hello",
+      "setsid uvx cowsay",
+      "xargs npm install",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("wrapper word as plain data does not spuriously deny", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    expect(() =>
+      enforceBashCommandPolicy('echo "run env nix later"', policy)
+    ).not.toThrow();
+    expect(() =>
+      enforceBashCommandPolicy("git commit -m 'add env config'", policy)
+    ).not.toThrow();
+  });
+
   test("allows all when allowAll is true", () => {
     const policy: BashCommandPolicy = {
       allowAll: true,

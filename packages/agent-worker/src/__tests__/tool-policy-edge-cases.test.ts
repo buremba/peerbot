@@ -340,28 +340,54 @@ describe("isDirectPackageInstallCommand quote-concatenation bypass", () => {
 // isDirectPackageInstallCommand — advisory hint, NOT the security boundary
 // ---------------------------------------------------------------------------
 
-describe("isDirectPackageInstallCommand is advisory, sandbox enforces", () => {
-  // The detector deliberately does NOT chase shell evasion that hides the
-  // package manager behind an executor (pipe into sh, `env`, `git -c alias=!…`).
-  // Those resolve the real binary at runtime, which the sandbox binary-discovery
-  // filter blocks (exit 127) regardless of spelling — see the enforcement test
-  // in embedded-just-bash-bootstrap.test.ts ("filtered package managers are not
-  // runnable however spelled"). The hint only needs to catch the honest cases,
-  // so a miss here is a UX gap, not a hole. These are documented as NOT flagged.
-  const evasions = [
+describe("isDirectPackageInstallCommand peels exec wrappers", () => {
+  // Prepending an exec wrapper (`env`, `sudo`, `timeout`, `xargs`, `nice`…) runs
+  // the package manager under the caller's PATH — the segment's leading token is
+  // the wrapper, but the command it execs is the install. The detector peels
+  // those wrappers so the wrapped install is caught, not missed. (#2259 r5.)
+  const wrapped = [
+    "env nix run nixpkgs#hello",
+    "sudo env npm install x",
+    "timeout 5s nix run nixpkgs#hello",
+    "timeout 5 uvx cowsay",
+    "nice -n 10 npm install x",
+    "nohup pnpm dlx create-react-app y",
+    "env FOO=bar nix run nixpkgs#hello",
+    "command env nix run nixpkgs#hello",
+    "/usr/bin/env nix run nixpkgs#hello",
+    "setsid uvx cowsay",
+  ];
+  for (const cmd of wrapped) {
+    test(`flags wrapped install: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+
+  // Interpreter script bodies still route through the sandbox filter, not this
+  // text pass — `sh -c` / `awk` take a SCRIPT string, not an argv, so the
+  // package manager there is not a leading token to peel. Enforcement is the
+  // binary-discovery filter (exit 127); see embedded-just-bash-bootstrap.test.ts
+  // ("filtered package managers are not runnable however spelled").
+  const interpreterBodies = [
     'echo "nix run nixpkgs#hello" | sh',
     'echo "npm install x" | bash',
-    "env nix run nixpkgs#hello",
-    'git -c alias.x="!nix run nixpkgs#hello" x',
   ];
-  for (const cmd of evasions) {
-    test(`does not chase executor-hidden evasion: ${JSON.stringify(cmd)}`, () => {
-      // Not asserting true/false hard here beyond documenting current behavior:
-      // enforcement is the sandbox, so either outcome is acceptable for the hint.
-      // We pin the current behavior to catch unintended changes.
+  for (const cmd of interpreterBodies) {
+    test(`interpreter body is backstopped by the sandbox, not this pass: ${JSON.stringify(cmd)}`, () => {
       expect(typeof isDirectPackageInstallCommand(cmd)).toBe("boolean");
     });
   }
+
+  // A wrapper word used as a plain argument (not the leading command) must NOT
+  // trigger peeling into a false positive.
+  test("wrapper word as data is not peeled", () => {
+    expect(isDirectPackageInstallCommand('echo "run env nix later"')).toBe(
+      false
+    );
+    expect(
+      isDirectPackageInstallCommand("git commit -m 'add env config'")
+    ).toBe(false);
+  });
 
   // The honest, un-hidden cases still get the helpful message, including quoted
   // and escaped executable names (canonicalization).

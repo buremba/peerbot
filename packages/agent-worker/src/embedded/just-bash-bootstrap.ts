@@ -128,6 +128,28 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "gem",
   "cargo",
   "go",
+  // Exec wrappers: they run an arbitrary trailing argv as a new process with the
+  // worker's PATH, so a registered wrapper re-execs any /nix/store binary —
+  // including one deliberately filtered above (`env sh`, `env nix`, `xargs npm`,
+  // `find … -exec …`). Gating `sh`/`nix` while leaving these registerable would
+  // be a hole: the wrapper is the same arbitrary-code capability by proxy. They
+  // join the same default-off tier and are re-enabled per-agent by
+  // LOBU_ALLOW_UNSANDBOXED_EXEC=1, exactly like the interpreters above.
+  "env",
+  "command",
+  "xargs",
+  "find",
+  "nice",
+  "ionice",
+  "nohup",
+  "setsid",
+  "stdbuf",
+  "timeout",
+  "time",
+  "chrt",
+  "taskset",
+  "watch",
+  "flock",
 ]);
 
 /**

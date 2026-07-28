@@ -199,19 +199,98 @@ function leadingCommand(canonicalCode: string): string {
 }
 
 /**
- * Best-effort detector for an honestly-typed package-manager install/acquire
- * command, used ONLY to return a helpful "declare it in nixPackages instead"
- * message (see {@link enforceBashPreflight}).
+ * Exec wrappers that run their trailing argument as a new command with the
+ * caller's PATH. `env nix run …`, `sudo nix …`, `timeout 5 nix …`,
+ * `xargs nix …` all invoke `nix` even though the segment's leading token is the
+ * wrapper, not `nix`. To keep the deny check from being trivially side-stepped
+ * by prepending a wrapper, we peel any run of these wrappers (and their own
+ * flags / `env` VAR=val assignments) off the front of a canonical segment
+ * before matching, so the check sees the wrapped command. This is the general
+ * form of the `sudo …` entries the deny list already enumerated.
  *
- * This is NOT the security boundary and does not try to be airtight against
- * shell-quoting evasion. Actual enforcement is the sandbox binary-discovery
- * filter (`UNSANDBOXED_INTERPRETERS` in `just-bash-bootstrap.ts`): a package
- * manager that is not registered as a runnable command resolves to
- * "command not found" (exit 127) no matter how it is spelled or wrapped
- * (`"nix" run`, `env nix`, `sh -c '…'`, `git -c alias=!nix`), because the
- * lookup is on the RESOLVED binary name, which quoting cannot change. So this
- * detector canonicalizes quoting for good coverage of the common cases but
- * treats any miss as a UX gap, not a hole.
+ * Deliberately scoped to wrappers whose semantics are "exec argv as a command":
+ * an interpreter (`sh -c`) is NOT here — its argument is a script string, not an
+ * argv, and is handled by the segment/quote layer instead.
+ */
+const EXEC_WRAPPERS = new Set<string>([
+  "sudo",
+  "env",
+  "command",
+  "nice",
+  "ionice",
+  "nohup",
+  "setsid",
+  "stdbuf",
+  "timeout",
+  "xargs",
+  "time",
+  "chrt",
+  "taskset",
+]);
+
+/**
+ * Strip leading exec-wrapper tokens from a canonical segment so the deny/advisory
+ * match sees the command the wrapper will actually run. Peels wrapper words, any
+ * `-flag` tokens that follow them, and `VAR=value` assignments (which `env` and a
+ * bare assignment-prefixed command both accept). Stops at the first token that is
+ * neither a known wrapper, a flag, nor an assignment — that token is the real
+ * command. Bounded so a pathological input can't loop.
+ */
+function stripExecWrappers(canonicalCode: string): string {
+  const tokens = canonicalCode.split(/\s+/).filter(Boolean);
+  let i = 0;
+  let peeledWrapper = false;
+  // Cap iterations at token count; each pass consumes at least one token.
+  while (i < tokens.length) {
+    const token = tokens[i] ?? "";
+    const bare = token.split("/").pop() ?? "";
+    if (EXEC_WRAPPERS.has(bare)) {
+      peeledWrapper = true;
+      i++;
+      // Consume this wrapper's own flags / operands (e.g. `timeout 5s`,
+      // `nice -n 10`, `env -i`, `xargs -I{}`). A flag starts with `-`; a bare
+      // numeric/duration operand (timeout/nice) is also consumed. Stop at the
+      // first token that looks like a command name.
+      while (i < tokens.length) {
+        const t = tokens[i] ?? "";
+        if (t.startsWith("-") || /^\d/.test(t)) {
+          i++;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    // `VAR=value` assignment prefix (env-style or shell-style) — skip it.
+    if (/^[a-z_][a-z0-9_]*=/.test(token)) {
+      peeledWrapper = true;
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (!peeledWrapper) {
+    return canonicalCode;
+  }
+  return tokens.slice(i).join(" ");
+}
+
+/**
+ * Detector for a package-manager install/acquire command, used to return a
+ * helpful "declare it in nixPackages instead" message (see
+ * {@link enforceBashPreflight}). It canonicalizes shell quoting/escaping and
+ * peels leading exec wrappers, so `"nix" run`, `n\ix run`, and `env nix run`
+ * are all recognized alongside a bare `nix run`.
+ *
+ * It is a text-layer gate, not the last line of defense: an interpreter script
+ * body (`sh -c '…'`, `awk 'BEGIN{system(…)}'`) can still name a package manager
+ * that this pass does not decompose. Those are backstopped by the sandbox
+ * binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in
+ * `just-bash-bootstrap.ts`): a package manager that is not registered as a
+ * runnable command resolves to "command not found" (exit 127) no matter how it
+ * is spelled or wrapped, because the lookup is on the RESOLVED binary name,
+ * which quoting cannot change. This detector closes the common typed/wrapped
+ * cases; the sandbox filter closes the rest.
  */
 export function isDirectPackageInstallCommand(command: string): boolean {
   if (!command.trim()) {
@@ -230,17 +309,22 @@ export function isDirectPackageInstallCommand(command: string): boolean {
     // purely passive data (`echo`, `cat`); otherwise match the full canonical
     // command. Enforcement does not depend on getting this right — the sandbox
     // binary filter blocks the resolved binary regardless (see the header).
-    const target = QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(code))
+    const base = QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(code))
       ? dataStripped
       : code;
-    if (!target) {
+    if (!base) {
       return false;
     }
-    return (
-      DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-        target.startsWith(prefix.toLowerCase())
-      ) ||
-      DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(target))
+    // Match on both the raw canonical form and the exec-wrapper-peeled form
+    // (`env nix run` → `nix run`) so a wrapped install produces the "declare it
+    // in nixPackages" hint instead of silently missing.
+    const peeled = stripExecWrappers(base);
+    return [base, peeled].some(
+      (target) =>
+        DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+          target.startsWith(prefix.toLowerCase())
+        ) ||
+        DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(target))
     );
   });
 }
@@ -481,6 +565,23 @@ function splitShellCommands(command: string): string[] {
   return segments;
 }
 
+/**
+ * A canonical (lowercased) target matches a deny prefix when it starts with the
+ * prefix, OR equals the prefix with its trailing space trimmed. Deny prefixes
+ * carry a trailing space (`"npm install "`) so `npm installfoo` does not match;
+ * that would also miss the bare command with no argument (`xargs npm install`,
+ * where xargs supplies the package from stdin), so the exact-word form is
+ * accepted too.
+ */
+function matchesDenyPrefix(target: string, prefix: string): boolean {
+  const p = prefix.toLowerCase();
+  if (target.startsWith(p)) {
+    return true;
+  }
+  const trimmed = p.trimEnd();
+  return trimmed !== p && target === trimmed;
+}
+
 export function enforceBashCommandPolicy(
   command: string,
   policy: BashCommandPolicy
@@ -502,10 +603,16 @@ export function enforceBashCommandPolicy(
     // what the shell would execute), so `n\ix shell`, `"nix" shell`, and
     // `n"i"x shell` all resolve to `nix shell` and cannot slip a deny prefix.
     // Canonicalizing can only make a deny prefix match MORE, so it is safe.
-    const denyTarget = canonicalizeSegment(segment).code;
+    // Then peel leading exec wrappers (`env nix …`, `sudo nix …`, `timeout 5
+    // nix …`) so a wrapped install is denied by the wrapped command, not the
+    // wrapper word — the general form of the enumerated `sudo …` deny prefixes.
+    const canonical = canonicalizeSegment(segment).code;
+    const denyTarget = stripExecWrappers(canonical);
 
-    const denied = policy.denyPrefixes.some((prefix) =>
-      denyTarget.startsWith(prefix.toLowerCase())
+    const denied = policy.denyPrefixes.some(
+      (prefix) =>
+        matchesDenyPrefix(canonical, prefix) ||
+        matchesDenyPrefix(denyTarget, prefix)
     );
     if (denied) {
       throw new Error("Bash command denied by policy");

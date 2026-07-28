@@ -47,6 +47,11 @@ export const WORKER_ENV_ALLOWLIST = [
   "https_proxy",
   "all_proxy",
   // Nix needs these to resolve a provisioned package's store paths.
+  // `NIX_PACKAGES` is the deployment's declared tooling (a comma-separated list
+  // of package names, never a secret). `discoverBinaries()` reads it to decide
+  // which contributed CLIs to register; without it a connector's declared `gh`
+  // is provisioned into the sandbox but never resolvable from agent bash.
+  "NIX_PACKAGES",
   "NIX_PATH",
   "NIX_PROFILES",
   "NIX_SSL_CERT_FILE",

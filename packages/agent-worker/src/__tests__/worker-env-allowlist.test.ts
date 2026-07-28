@@ -108,13 +108,28 @@ describe("buildAgentEnv", () => {
     expect(out.PATH).toBe("/usr/bin");
     expect(out.HOME).toBe("/home/agent");
     expect(out.GH_TOKEN).toBe("ghs_short_lived_lease");
+    expect(out.NIX_PACKAGES).toBe("gh");
     expect(out).not.toHaveProperty("NO_PROXY");
-    expect(out).not.toHaveProperty("NIX_PACKAGES");
     expect(out).not.toHaveProperty("JUST_BASH_ALLOWED_DOMAINS");
     expect(out).not.toHaveProperty("ENCRYPTION_KEY");
     // The property that a denylist cannot have: a secret nobody has heard of
     // yet is excluded by default rather than included by default.
     expect(out).not.toHaveProperty("SOME_FUTURE_SECRET");
+  });
+
+  test("forwards NIX_PACKAGES so declared tooling is discoverable", () => {
+    // Regression: the allowlist originally omitted NIX_PACKAGES. The gateway
+    // set it correctly from the connector's declared packages, but the filter
+    // dropped it before `discoverBinaries()` could read it — so a connector's
+    // CLI was never registered and agent bash answered "gh: command not found"
+    // while holding a perfectly good GH_TOKEN lease. Verified in production:
+    // the credential arrived, the tool to spend it did not.
+    const out = buildAgentEnv({
+      NIX_PACKAGES: "gh,ripgrep",
+      GH_TOKEN: "ghs_short_lived_lease",
+    });
+    expect(out.NIX_PACKAGES).toBe("gh,ripgrep");
+    expect(out.GH_TOKEN).toBe("ghs_short_lived_lease");
   });
 
   test("drops the previously-denylisted keys too", () => {

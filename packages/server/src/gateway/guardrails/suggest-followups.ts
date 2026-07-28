@@ -128,10 +128,9 @@ export interface SuggestFollowupsOptions {
  */
 export async function generateSuggestFollowups(
   replyText: string,
-  env: SuggestFollowupsEnv | undefined = process.env as SuggestFollowupsEnv,
+  env: SuggestFollowupsEnv = process.env as SuggestFollowupsEnv,
   options: SuggestFollowupsOptions = {}
 ): Promise<SuggestedPrompt[]> {
-  env ??= process.env as SuggestFollowupsEnv;
   const apiKey = env.SUGGESTION_GENERATOR_API_KEY?.trim();
   const configuredBaseUrl = env.SUGGESTION_GENERATOR_BASE_URL?.trim();
   const model =

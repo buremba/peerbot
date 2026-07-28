@@ -184,73 +184,84 @@ function stripQuotedSpans(segment: string): string {
  * segment matches if it starts with a denied prefix or matches an install
  * pattern.
  */
+/**
+ * Leading commands whose quoted arguments are DATA, not code. Only for a
+ * segment led by one of these do we drop quoted spans before matching, so a
+ * package-manager phrase in a commit message / echoed string is not a false
+ * positive. This is an ALLOWLIST on purpose: any other leading word — `eval`,
+ * `xargs`, `sh`/`bash -c`, `command`, an unknown binary — is treated as a
+ * potential executor, so its quoted content is STILL inspected (fail closed).
+ * A word not on this list can only cost a false positive, never a bypass.
+ */
+const QUOTED_ARG_IS_DATA_COMMANDS = new Set<string>([
+  "echo",
+  "printf",
+  "print",
+  "cat",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "sed",
+  "awk",
+  "git",
+  "test",
+  "[",
+  "expr",
+  "read",
+  "tr",
+  "cut",
+  "head",
+  "tail",
+  "sort",
+  "uniq",
+  "wc",
+  "comm",
+  "diff",
+]);
+
+/** The leading executable token of a shell segment, unescaped and lowercased. */
+function leadingCommand(segment: string): string {
+  const firstWord = unescapeShellToken(segment).trim().split(/\s+/)[0] ?? "";
+  return firstWord.toLowerCase();
+}
+
 export function isDirectPackageInstallCommand(command: string): boolean {
   if (!command.trim()) {
     return false;
   }
 
-  // Two views of the command are checked:
-  //   1. The de-quoted command — quoted spans blanked to a space — so a phrase
-  //      used as a plain ARGUMENT (`echo "nix shell"`, a commit message) is
-  //      data, not a command, and does not trip the gate.
-  //   2. The quoted bodies of interpreter wrappers (`sh -c '…'`, `bash -c "…"`)
-  //      — there the quoted text IS a command, so it must be inspected. This is
-  //      the one place quoted content is executable rather than data.
-  // A real command chained after quoted data (`echo "x"; nix run …`) lives
-  // outside the quotes and survives view 1's split, so it is still caught.
-  const bodies = [
-    stripQuotedSpans(command),
-    ...extractInterpreterBodies(command),
-  ];
+  // Split on shell control operators / substitution boundaries so each
+  // sub-command is checked on its own (a real command chained after quoted data
+  // survives as its own segment). Quoted content is inspected as CODE by
+  // default — an executor like `eval`/`sh -c` runs its quoted argument — and is
+  // only dropped when the segment's leading command is a known data-only
+  // command (`echo`, `git`, …). Any other leading word fails closed: its quoted
+  // content is still matched.
+  const segments = splitShellCommands(command);
+  const candidates = segments.length > 0 ? segments : [command];
 
-  return bodies.some((body) => {
-    const segments = splitShellCommands(body);
-    // Fall back to the whole body if the lexer yields nothing, so a malformed
-    // input can never silently skip the check.
-    const candidates = segments.length > 0 ? segments : [body];
-    return candidates.some((segment) => {
-      // Unescape backslash escapes so an escaped executable name (`n\ix`)
-      // matches its real form (`nix`).
-      const normalized = unescapeShellToken(segment).trim().toLowerCase();
-      if (!normalized) {
-        return false;
-      }
-      return (
-        DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-          normalized.startsWith(prefix.toLowerCase())
-        ) ||
-        DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) =>
-          pattern.test(normalized)
-        )
-      );
-    });
-  });
-}
-
-/**
- * Extract the quoted program bodies of shell interpreter wrappers so the code
- * they would execute is checked as a command (not skipped as quoted data).
- * Matches `sh`/`bash`/`zsh`/`dash`/`ash -c '<body>'` (single or double quoted),
- * anywhere in the command including after a chain operator. The body is
- * returned with its wrapping quotes removed; nested quoting inside it is left
- * for the recursive split/strip on the returned string.
- */
-function extractInterpreterBodies(command: string): string[] {
-  const bodies: string[] = [];
-  // `-c` may be bundled with other flag letters in one token (`-lc`, `-xc`) or
-  // preceded by separate flags (`-l -c`); both forms hand the quoted arg to the
-  // interpreter as its program.
-  const wrapper =
-    /(?:^|[\s;|&()`])(?:sudo\s+)?(?:ba|z|da|a)?sh\s+(?:-[a-z]*\s+)*-[a-z]*c\s+(['"])([\s\S]*?)\1/gi;
-  let match: RegExpExecArray | null;
-  match = wrapper.exec(command);
-  while (match !== null) {
-    if (match[2]) {
-      bodies.push(match[2]);
+  return candidates.some((segment) => {
+    const raw = unescapeShellToken(segment).trim().toLowerCase();
+    if (!raw) {
+      return false;
     }
-    match = wrapper.exec(command);
-  }
-  return bodies;
+    // For a known data-only leading command, quoted args are data: check the
+    // de-quoted form. Otherwise check the raw form so quoted CODE is inspected.
+    const target = QUOTED_ARG_IS_DATA_COMMANDS.has(leadingCommand(segment))
+      ? unescapeShellToken(stripQuotedSpans(segment)).trim().toLowerCase()
+      : raw;
+    if (!target) {
+      return false;
+    }
+    return (
+      DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+        target.startsWith(prefix.toLowerCase())
+      ) ||
+      DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(target))
+    );
+  });
 }
 
 function normalizeToolName(name: string): string {
@@ -410,10 +421,13 @@ function splitShellCommands(command: string): string[] {
     const next = command[i + 1];
 
     if (inSingle) {
+      // Quote delimiters are RETAINED in the segment so downstream consumers can
+      // still see quoting (the package-install detector distinguishes quoted
+      // data from quoted code). Prefix/allow checks key on the leading command
+      // word, which quoting the delimiter never changes.
+      current += ch;
       if (ch === "'") {
         inSingle = false;
-      } else {
-        current += ch;
       }
       continue;
     }
@@ -423,6 +437,7 @@ function splitShellCommands(command: string): string[] {
       // everything else (including `;`, `&&`, `|`) is literal data.
       if (ch === '"') {
         inDouble = false;
+        current += ch;
       } else if (ch === "$" && next === "(") {
         push();
         i++; // consume "("
@@ -436,10 +451,12 @@ function splitShellCommands(command: string): string[] {
 
     if (ch === "'") {
       inSingle = true;
+      current += ch;
       continue;
     }
     if (ch === '"') {
       inDouble = true;
+      current += ch;
       continue;
     }
 

@@ -276,6 +276,40 @@ describe("isDirectPackageInstallCommand quoted-data false positives", () => {
       expect(isDirectPackageInstallCommand(cmd)).toBe(false);
     });
   }
+
+  // Fail-closed generalization: ANY leading command that is not a known
+  // data-only command has its quoted content inspected as code — not just the
+  // sh/bash/-c family. `eval`, path-qualified interpreters, and command
+  // wrappers all execute their quoted argument. (Second review of PR #2259.)
+  const executorBodies = [
+    "eval 'npm install lodash'",
+    'eval "nix run nixpkgs#hello"',
+    "eval 'uvx cowsay'",
+    "sudo eval 'pipx run x'",
+    "/bin/sh -c 'npm install'",
+    "/usr/bin/bash -c 'nix build x'",
+    "command eval 'npm install x'",
+    "builtin eval 'npm install x'",
+    "xargs -I{} nix run {}", // no quotes, but the acquisition is unquoted anyway
+    "echo safe; eval 'nix run x'", // chained after benign data-only command
+  ];
+  for (const cmd of executorBodies) {
+    test(`inspects non-sh executor quoted body: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+
+  // Benign executor bodies are still not falsely flagged.
+  const benignExecutorBodies = [
+    "eval 'echo hello'",
+    'eval "$(some-cmd)"',
+    "/bin/sh -c 'ls -la'",
+  ];
+  for (const cmd of benignExecutorBodies) {
+    test(`does not falsely flag benign executor body: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 import { getDb, pgTextArray } from "../../../db/client";
 import { listNotifications } from "../../../notifications/service";
 import { buildResourcePermalink } from "../../../utils/url-builder";
+import { ENTITY_CHANGE_ACTION_KEYS } from "../entity-field-approval";
 
 const USER_FACING_RUN_TYPES = ["behavior", "sync", "action", "internal"] as const;
 
@@ -24,9 +25,30 @@ export type ActivityCard = {
 	unread?: boolean;
 	notification_id?: number;
 	run_id?: number;
+	/**
+	 * Kind of pending interaction behind this notification (events
+	 * `interaction_type` vocabulary — 'approval' today). Clients pick the UI
+	 * for the type; new interaction kinds extend this value, not the card shape.
+	 */
+	interaction_type?: string;
+	/**
+	 * LIVE interaction state, resolved from the interaction's authoritative
+	 * per-type source — for 'approval' that is runs.approval_status
+	 * ('pending' | 'approved' | 'rejected'), NOT the proposal event's own
+	 * interaction_status, which stays 'pending' forever because the events
+	 * chain supersedes instead of mutating. A decided interaction therefore
+	 * stops rendering as actionable everywhere.
+	 */
+	interaction_status?: string;
+	/**
+	 * Server-side policy: this interaction can be completed inline from the
+	 * feed. For 'approval': the action_key has a known-safe one-click web
+	 * executor (entity change kinds); other kinds keep their review-page CTA.
+	 */
+	interaction_inline?: boolean;
 	member_run_ids?: number[];
 	connection_id?: number;
-	watcher_id?: number;
+	behavior_id?: number;
 };
 
 type RawCard = ActivityCard & {
@@ -46,7 +68,6 @@ function resolveNotifHref(
 	n: {
 		type?: unknown;
 		resource_url?: unknown;
-		resource_type?: unknown;
 		resource_id?: unknown;
 	},
 ): string | null {
@@ -81,14 +102,6 @@ function resolveNotifHref(
 	}
 	if (n.type === "invitation_received" && typeof n.resource_id === "string") {
 		return `/auth/accept-invitation?invitationId=${encodeURIComponent(n.resource_id.trim())}`;
-	}
-	if (n.resource_type === "run" && n.resource_id) {
-		const runId = Number(n.resource_id);
-		if (Number.isFinite(runId) && runId > 0) {
-			return (
-				buildResourcePermalink(ownerSlug, { kind: "run", runId }) ?? null
-			);
-		}
 	}
 	if (
 		n.type === "connection_permission_request" ||
@@ -308,10 +321,27 @@ export async function listOrgActivity(opts: {
 				const type = String(n.type ?? "generic");
 				const created = String(n.created_at ?? new Date().toISOString());
 				const atMs = new Date(created).getTime();
-				const runIdFromResource =
-					n.resource_type === "run" && n.resource_id != null
-						? Number(n.resource_id)
-						: NaN;
+				const approvalRunId =
+					n.approval_run_id != null ? Number(n.approval_run_id) : NaN;
+				const interactionType =
+					typeof n.interaction_type === "string" && n.interaction_type !== ""
+						? n.interaction_type
+						: undefined;
+				// Per-type live-state resolution: 'approval' reads the run's state
+				// machine. A future interaction kind plugs its own source in here —
+				// the card contract (interaction_*) does not change.
+				const interactionStatus =
+					interactionType === "approval" &&
+					typeof n.approval_status === "string" &&
+					n.approval_status !== ""
+						? n.approval_status
+						: undefined;
+				const interactionInline =
+					interactionType === "approval" &&
+					interactionStatus != null &&
+					(ENTITY_CHANGE_ACTION_KEYS as readonly string[]).includes(
+						String(n.approval_action_key ?? ""),
+					);
 				raw.push({
 					id: `n:${n.id}`,
 					kind: "notification",
@@ -324,9 +354,10 @@ export async function listOrgActivity(opts: {
 					href: resolveNotifHref(opts.ownerSlug, n),
 					unread: n.is_read === false || n.is_read === "f",
 					notification_id: Number(n.id),
-					run_id: Number.isFinite(runIdFromResource)
-						? runIdFromResource
-						: undefined,
+					run_id: Number.isFinite(approvalRunId) ? approvalRunId : undefined,
+					interaction_type: interactionStatus != null ? interactionType : undefined,
+					interaction_status: interactionStatus,
+					interaction_inline: interactionInline || undefined,
 					collapseKey: null,
 					itemsCollected: null,
 				});
@@ -413,7 +444,7 @@ export async function listOrgActivity(opts: {
 					href: runHref(opts.ownerSlug, r),
 					run_id: r.id,
 					connection_id: r.connection_id ?? undefined,
-					watcher_id: r.watcher_id ?? undefined,
+					behavior_id: r.watcher_id ?? undefined,
 					collapseKey: collapseKeyForRun(r),
 					itemsCollected: r.items_collected,
 				});

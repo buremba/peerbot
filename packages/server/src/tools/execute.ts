@@ -46,6 +46,12 @@ export interface AuthContext {
   baseUrl: string;
   scopedToOrg: boolean;
   allowCrossOrg: boolean;
+  /**
+   * Persistent MCP session id (`mcp-session-id` header) when the call arrived
+   * through an MCP transport session; null for REST-proxy and internal calls.
+   * Audit rows carry it so a client's activity can be grouped per session.
+   */
+  mcpSessionId?: string | null;
   instructions?: string;
   /** `x-lobu-apply-id` when the call belongs to a `lobu apply` run. */
   applyId?: string | null;
@@ -223,12 +229,34 @@ export async function executeTool(
       throw new Error('User context required.');
     }
     if (toolName === 'list_organizations') {
-      return trackMCPToolCall(toolName, args, () =>
-        listOrganizations(args as any, env, {
-          userId: authCtx.userId!,
-          currentOrganizationId: authCtx.organizationId,
-        })
-      );
+      // This early return sits BEFORE the shared audit seam below, so it must
+      // audit its own invocation. The event needs an owning org: use the bound
+      // org when there is one; a session with no bound org has no ledger to
+      // write into, and toToolContext would throw on it anyway.
+      const startTime = Date.now();
+      const auditIfOrgBound = (outcome: { result?: unknown; error?: unknown }) =>
+        authCtx.organizationId
+          ? recordToolInvocationAudit({
+              toolName,
+              args,
+              ...outcome,
+              durationMs: Date.now() - startTime,
+              ctx: toToolContext(authCtx),
+            })
+          : Promise.resolve();
+      try {
+        const result = await trackMCPToolCall(toolName, args, () =>
+          listOrganizations(args as any, env, {
+            userId: authCtx.userId!,
+            currentOrganizationId: authCtx.organizationId,
+          })
+        );
+        await auditIfOrgBound({ result });
+        return result;
+      } catch (error) {
+        await auditIfOrgBound({ error });
+        throw error;
+      }
     }
   }
 
@@ -326,5 +354,6 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     requestUrl: authCtx.requestUrl,
     baseUrl: authCtx.baseUrl,
     applyId: authCtx.applyId ?? null,
+    mcpSessionId: authCtx.mcpSessionId ?? null,
   };
 }

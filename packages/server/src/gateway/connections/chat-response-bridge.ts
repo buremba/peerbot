@@ -29,7 +29,9 @@ import {
   OutputGuardrailScanner,
   type OutputGuardrailTrip,
 } from "../guardrails/output-scan.js";
+import { generateSuggestFollowups } from "../guardrails/suggest-followups.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
+import type { InteractionService } from "../interactions.js";
 import {
   buildCtaCardPayload,
   extractSettingsLinkButtons,
@@ -98,6 +100,7 @@ interface ResponseContext {
  */
 export class ChatResponseBridge implements ResponseRenderer {
   private streams = new Map<string, StreamState>();
+  private interactionService?: InteractionService;
   /**
    * Output-stage guardrails. Shared with the API/SSE path
    * (UnifiedThreadResponseConsumer) so both surfaces enforce ONE policy:
@@ -121,6 +124,10 @@ export class ChatResponseBridge implements ResponseRenderer {
     settingsStore?: AgentSettingsStore
   ): void {
     this.outputGuardrail.setGuardrails(registry, settingsStore);
+  }
+
+  setInteractionService(interactionService: InteractionService): void {
+    this.interactionService = interactionService;
   }
 
   /**
@@ -193,7 +200,66 @@ export class ChatResponseBridge implements ResponseRenderer {
       userId: payload.userId,
       conversationId: payload.conversationId,
       platform: ctx.platform,
+      toolsUsed: payload.toolsUsed,
     });
+  }
+
+  private async maybeEnrichSuggestFollowups(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext,
+    replyText: string
+  ): Promise<void> {
+    if (!this.interactionService) return;
+    // No `persistSuggestion` here: durable suggestion state exists so the web
+    // client can re-render chips on reload, and only API surfaces read it
+    // (`response-renderer`, `agent-history`). A chat chip is a native platform
+    // card that Slack/Telegram already persist, and its click-routing row is
+    // stashed by the interaction bridge's `suggestion:created` handler
+    // (`storePendingSuggestion`, 24h TTL). Persisting here would mint a second
+    // live row no chat surface reads.
+    //
+    // An old worker cannot distinguish "no tool" from "not reported"; skip to
+    // avoid duplicating a suggest_actions card during a rolling deployment.
+    if (
+      payload.toolsUsed === undefined ||
+      payload.toolsUsed.includes("suggest_actions")
+    ) {
+      return;
+    }
+    const agentId = this.resolveAgentId(payload, ctx);
+    const organizationId = this.resolveOrganizationId(payload, ctx);
+    if (!agentId || !organizationId) return;
+
+    try {
+      const config = await this.outputGuardrail.getSuggestFollowupsConfig(
+        agentId,
+        organizationId
+      );
+      if (!config) return;
+      const prompts = await generateSuggestFollowups(replyText, undefined, {
+        model: config.model,
+      });
+      if (prompts.length === 0) return;
+      await this.interactionService.postSuggestion(
+        organizationId,
+        payload.userId,
+        payload.conversationId,
+        ctx.channelId,
+        payload.teamId,
+        ctx.connectionId,
+        ctx.platform,
+        prompts
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          connectionId: ctx.connectionId,
+          conversationId: payload.conversationId,
+          error: String(error),
+        },
+        "suggest-followups chat enrichment failed"
+      );
+    }
   }
 
   private extractResponseContext(
@@ -527,6 +593,20 @@ export class ChatResponseBridge implements ResponseRenderer {
       }
     }
 
+    if (
+      !blockedAtCompletion &&
+      !completionMd.sessionReset &&
+      historyText?.trim()
+    ) {
+      // Fire-and-forget: the `thread_response` worker runs at concurrency 1
+      // (runs-queue.ts DEFAULT_WORKER_CONCURRENCY), so awaiting an up-to-15s
+      // model call here would head-of-line block every other conversation's
+      // delivery on this pod. Nothing below needs the result, the chips are
+      // posted out-of-band as their own card, and the method catches all of
+      // its own errors.
+      void this.maybeEnrichSuggestFollowups(payload, ctx, historyText);
+    }
+
     logger.info(
       {
         connectionId,
@@ -605,8 +685,14 @@ export class ChatResponseBridge implements ResponseRenderer {
         // "pick a model" → the agent's settings tab.
         'agent-settings': () =>
           buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
-        // "connect a provider" → the org's connect-a-provider page.
-        'provider-connect': () => buildProviderConnectUrl(gatewayUrl, orgId),
+        // "connect a provider" → the provider's connector detail page, with
+        // the same provider/model targeting + agent context the pre-enqueue
+        // preflight passes (message-handler-bridge parity).
+        'provider-connect': () =>
+          buildProviderConnectUrl(gatewayUrl, orgId, {
+            ...payload.errorContext,
+            agentId,
+          }),
         // Provider auth/quota/routing → manage the exact existing provider.
         'provider-management': () =>
           buildProviderManagementUrl(gatewayUrl, orgId, payload.errorContext),

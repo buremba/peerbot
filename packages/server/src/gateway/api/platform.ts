@@ -83,6 +83,19 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
+    // Suggested follow-up chips use the same owner-routed queue as every other
+    // API card. The consumer re-reads the durable current set immediately
+    // before broadcasting, so a delayed card cannot replay stale prompts over a
+    // newer turn's terminal state.
+    interactionService.on("suggestion:created", (event: any) => {
+      if (event.platform !== "api") return;
+      // No prompts here on purpose — the consumer fills them from durable state
+      // at broadcast time, so this row carries only routing.
+      this.enqueueInteractionCard(queue, event, "suggestion", {
+        type: "suggestion",
+      });
+    });
+
     interactionService.on("tool:approval-needed", (event: any) => {
       if (event.platform !== "api") return;
       this.enqueueInteractionCard(queue, event, "tool-approval", {
@@ -128,14 +141,6 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    interactionService.on("suggestion:created", (event: any) => {
-      if (event.platform !== "api") return;
-      this.enqueueInteractionCard(queue, event, "suggestion", {
-        type: "suggestion",
-        prompts: event.prompts,
-      });
-    });
-
     logger.debug("✅ API platform initialized");
   }
 
@@ -147,7 +152,12 @@ export class ApiPlatform implements PlatformAdapter {
    */
   private enqueueInteractionCard(
     queue: IMessageQueue,
-    event: { conversationId: string; userId?: string; source?: string },
+    event: {
+      conversationId: string;
+      organizationId?: string;
+      userId?: string;
+      source?: string;
+    },
     name: string,
     data: Record<string, unknown>
   ): void {
@@ -157,6 +167,7 @@ export class ApiPlatform implements PlatformAdapter {
       // For the API platform channelId == conversationId == the SSE key.
       channelId: event.conversationId,
       userId: event.userId ?? "api",
+      organizationId: event.organizationId,
       platform: "api",
       teamId: "api",
       timestamp: Date.now(),

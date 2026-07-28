@@ -124,7 +124,10 @@ describe("UnifiedThreadResponseConsumer customEvent broadcast", () => {
 });
 
 describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
-  function makeInteractionConsumer(hasActiveConnection: boolean) {
+  function makeInteractionConsumer(
+    hasActiveConnection: boolean,
+    readSuggestion = mock(async () => null)
+  ) {
     const queue = {
       start: mock(async () => undefined),
       stop: mock(async () => undefined),
@@ -147,9 +150,10 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
     const consumer = new UnifiedThreadResponseConsumer(
       queue as any,
       platformRegistry as any,
-      sseManager as any
+      sseManager as any,
+      readSuggestion
     ) as any;
-    return { consumer, broadcast, sseManager };
+    return { consumer, broadcast, readSuggestion, sseManager };
   }
 
   const interactionPayload = {
@@ -223,6 +227,46 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
       messageId: "m-int-1",
       timestamp: 1234,
     });
+  });
+
+  test("refreshes a delayed suggestion card from the durable current set", async () => {
+    const readSuggestion = mock(async () => ({
+      id: 22,
+      prompts: [{ title: "New", message: "Use the newer turn" }],
+      turnMessageId: "m-new",
+    }));
+    const { consumer, broadcast } = makeInteractionConsumer(
+      true,
+      readSuggestion
+    );
+
+    await consumer.handleThreadResponse({
+      id: "job-suggestion",
+      data: {
+        ...interactionPayload,
+        organizationId: "org-1",
+        customEvent: {
+          name: "suggestion",
+          data: {
+            type: "suggestion",
+            suggestionId: "stale-card",
+            prompts: [{ title: "Old", message: "Use the older turn" }],
+          },
+          requireSseOwner: true,
+        },
+      },
+    });
+
+    expect(readSuggestion).toHaveBeenCalledWith("org-1", "api:conv-1");
+    const suggestionBroadcast = broadcast.mock.calls.find(
+      (call: any[]) => call[1] === "suggestion"
+    );
+    expect(suggestionBroadcast?.[2]).toMatchObject({
+      prompts: [{ title: "New", message: "Use the newer turn" }],
+    });
+    // The card carries prompts only, exactly like the terminal `complete`
+    // embed and history replay. A stale enqueued id must not ride along.
+    expect(suggestionBroadcast?.[2]).not.toHaveProperty("suggestionId");
   });
 });
 

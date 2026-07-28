@@ -14,6 +14,7 @@ import type {
   InteractionService,
   PostedLinkButton,
   PostedQuestion,
+  PostedSuggestion,
   PostedToolApproval,
 } from "../interactions.js";
 import type { GrantStore } from "../permissions/grant-store.js";
@@ -21,7 +22,9 @@ import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
   claimPendingQuestion,
   deletePendingQuestion,
+  readPendingSuggestion,
   storePendingQuestion,
+  storePendingSuggestion,
 } from "./pending-interaction-store.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
@@ -565,7 +568,59 @@ export function registerInteractionBridge(
     },
   );
 
+  const onSuggestionCreated = withResolvedThread<PostedSuggestion>(
+    "suggestion:created",
+    async (event, thread) => {
+      if (event.prompts.length === 0) return;
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, suggestionId: event.id },
+          "Skipping suggestion:created — connection has no organizationId",
+        );
+        return;
+      }
+
+      // Stash the ROUTING row before posting (same durable-before-card policy
+      // as questions). A click must route with the conversation the card was
+      // posted for — rebuilding routing from the click event's thread forks a
+      // Slack DM (the card posts channel-level, so the click's thread id keys
+      // to the card's own ts) and loses history/teamId. The buttons therefore
+      // carry only `suggestion:<id>:<i>`; the prompt text and routing live in
+      // this row, which also keeps Telegram's 64-byte callback_data budget.
+      // Read-not-claim on click: chips stay multi-clickable by design. A row
+      // that is never tapped is swept with the shared 24h TTL.
+      await storePendingSuggestion(
+        event.id,
+        organizationId,
+        connectionId,
+        event.userId,
+        { suggestion: event },
+      );
+
+      const buttons = event.prompts.map((prompt, i) =>
+        Button({
+          id: `suggestion:${event.id}:${i}`,
+          label: prompt.title,
+        })
+      );
+      const card = Card({ children: [Actions(buttons)] });
+      // Platforms without card support get a numbered list. Each line shows the
+      // title only — the message can be a full sentence and would bury the list.
+      const fallbackText = event.prompts
+        .map((prompt, i) => `${i + 1}. ${prompt.title}`)
+        .join("\n");
+      await postWithFallback(
+        thread,
+        { card, fallbackText },
+        connectionId,
+        "suggestion interaction"
+      );
+    }
+  );
+
   interactionService.on("question:created", onQuestionCreated);
+  interactionService.on("suggestion:created", onSuggestionCreated);
   interactionService.on("tool:approval-needed", onToolApprovalNeeded);
   interactionService.on("link-button:created", onLinkButtonCreated);
 
@@ -682,12 +737,85 @@ export function registerInteractionBridge(
     },
     async (channelId, conversationId) =>
 			resolveThread(manager, connectionId, channelId, conversationId),
+    async (suggestionId, promptIndex, thread, author) => {
+      // A suggestion click is just a new user message — no claim, no receipt,
+      // no card edit. The chips intentionally stay clickable: nothing is
+      // suspended on their response, so a second tap is a legitimate follow-up
+      // question rather than a double-submit against a blocked turn.
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, suggestionId },
+					"Suggestion click on connection with no organizationId — ignoring",
+        );
+        return;
+      }
+      if (!author?.userId) {
+        logger.debug(
+          { connectionId, suggestionId },
+					"Suggestion click without author.userId — ignoring",
+        );
+        return;
+      }
+
+      // Route with the PERSISTED conversation context, never the click event's
+      // thread: a Slack DM card posts channel-level, so the click's thread id
+      // keys to the card's own ts — using it would enqueue the turn with zero
+      // history and fork the agent's reply into a thread under the card. The
+      // stored row carries the same conversationId/channelId/teamId the
+      // original turn ran under. Row gone (swept after 24h) → the chip is
+      // inert, matching expired approvals.
+      const stored = await readPendingSuggestion(
+        suggestionId,
+        organizationId,
+        connectionId,
+      ).catch(() => null);
+      const prompt = stored?.suggestion.prompts[promptIndex];
+      if (!stored || !prompt) {
+        logger.debug(
+          { connectionId, suggestionId, promptIndex },
+					"Suggestion click with no routable row — likely expired",
+        );
+        return;
+      }
+
+      const instance = manager.getInstance(connectionId);
+      if (!instance) {
+        logger.warn(
+          { connectionId },
+					"Suggestion click: no instance for connection",
+        );
+        return;
+      }
+      const { suggestion } = stored;
+      const routedThread = await resolveThread(
+        manager,
+        connectionId,
+        suggestion.channelId,
+        suggestion.conversationId,
+      ).catch(() => null);
+      // Routed with the CLICKER's userId, unlike question clicks. A question
+      // resumes a specific suspended session keyed on the original asker; a
+      // suggestion starts a fresh turn, so whoever tapped it is the author.
+      await instance.messageBridge.ingestClick({
+        userId: author.userId,
+        channelId: suggestion.channelId,
+        conversationId: suggestion.conversationId,
+        teamId: suggestion.teamId,
+        authorName: author?.fullName,
+        authorUsername: author?.userName,
+        value: prompt.message,
+        thread: routedThread ?? thread,
+        responseThreadId: suggestion.conversationId,
+      });
+    },
   );
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
 
   return () => {
     interactionService.off("question:created", onQuestionCreated);
+    interactionService.off("suggestion:created", onSuggestionCreated);
     interactionService.off("tool:approval-needed", onToolApprovalNeeded);
     interactionService.off("link-button:created", onLinkButtonCreated);
     for (const timer of activeTimers) {
@@ -720,6 +848,19 @@ type OnQuestionClickFn = (
 ) => Promise<void>;
 
 /**
+ * Dispatches a `suggestion:<id>:<i>` click. The button carries NO value — the
+ * prompt text and the conversation routing both live in the pending row stashed
+ * at card-post time (see `onSuggestionCreated`), so the handler receives the
+ * parsed id + prompt index and resolves everything else from the row.
+ */
+type OnSuggestionClickFn = (
+  suggestionId: string,
+  promptIndex: number,
+  thread: any,
+	author: { userId?: string; userName?: string; fullName?: string } | undefined,
+) => Promise<void>;
+
+/**
  * Exported for testing. Wires chat.onAction to tool-approval and question flows.
  *
  * `claimApprovalCard` (optional) returns the SentMessage for a given
@@ -728,6 +869,9 @@ type OnQuestionClickFn = (
  * away. Absent in tests.
  *
  * `onQuestionClick` (optional) handles the `question:*` click path. Absent
+ * in tests that only exercise tool-approval flows.
+ *
+ * `onSuggestionClick` (optional) handles the `suggestion:*` click path. Absent
  * in tests that only exercise tool-approval flows.
  */
 export function registerActionHandlers(
@@ -741,6 +885,7 @@ export function registerActionHandlers(
     channelId: string,
 		conversationId: string,
 	) => Promise<any | null>,
+  onSuggestionClick?: OnSuggestionClickFn,
 ): void {
 	chat.onAction(async (event: any) => {
 		const actionId: string = event.actionId ?? "";
@@ -1035,7 +1180,45 @@ export function registerActionHandlers(
       return;
     }
 
-    // Handle question responses — Button value carries the option text on all platforms
+    if (actionId.startsWith("suggestion:")) {
+      // The button carries only `suggestion:<id>:<i>` — no value. The prompt
+      // text and routing live in the pending row (kept out of the button so
+      // Telegram's 64-byte callback_data budget holds), so all this branch
+      // does is parse and dispatch. A malformed id means the platform mangled
+      // the payload and there is nothing safe to send.
+      const parts = actionId.split(":");
+      const suggestionId = parts[1] ?? "";
+      // `Number("")` is 0 — an explicit empty-segment check keeps a truncated
+      // `suggestion:<id>:` from dispatching as prompt index 0.
+      const promptIndex = parts[2] ? Number(parts[2]) : Number.NaN;
+      if (
+        parts.length !== 3 ||
+        !suggestionId ||
+        !Number.isInteger(promptIndex) ||
+        promptIndex < 0
+      ) {
+        logger.debug(
+          { connectionId: connection.id, actionId },
+					"Suggestion click with malformed action id — ignoring",
+        );
+        return;
+      }
+      if (!onSuggestionClick) {
+        // Tests / minimal registrations without a click pipeline — nothing to
+        // post either, since the prompt text lives in the pending row.
+        return;
+      }
+      try {
+        await onSuggestionClick(suggestionId, promptIndex, thread, event.user);
+      } catch (error) {
+        logger.error(
+          { connectionId: connection.id, error: String(error) },
+					"Failed to handle suggestion click",
+        );
+      }
+      return;
+    }
+
     if (actionId.startsWith("question:")) {
       const parts = actionId.split(":");
       const questionId = parts[1] ?? "";

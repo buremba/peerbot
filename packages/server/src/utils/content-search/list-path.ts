@@ -269,10 +269,17 @@ export async function listContentInternal(
         baseParamIndex: baseParams.length - link.params.length + 1,
       }).sql;
     } else if (organizationId) {
-      baseParams.push(organizationId);
-      baseConditions.push(
-        `f.entity_ids && ARRAY(SELECT id FROM entities WHERE organization_id = $${baseParams.length})::bigint[]`
-      );
+      // Keep classification-filtered listings on the same direct/entity/
+      // connection org scope as the standard listing path.
+      const orgScope = buildOrgScopeWhere({
+        organization_id: organizationId,
+        baseParamIndex: baseParams.length + 1,
+      });
+      baseConditions.push(orgScope.sql.replace(/^AND\s+/, ''));
+      baseParams.push(...orgScope.params);
+      // Avoid treating the organization id in $1 as a bigint entity id while
+      // walking parent threads.
+      threadEntityLinkSql = 'TRUE';
     }
 
     baseConditions.push(connectionFilterClause);

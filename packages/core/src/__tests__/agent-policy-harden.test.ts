@@ -107,6 +107,12 @@ describe("getCustomToolDescription", () => {
     expect(desc.length).toBeGreaterThan(0);
   });
 
+  test("describes when and how to use suggest_actions", () => {
+    const desc = getCustomToolDescription("suggest_actions");
+    expect(desc).toContain("follow-up");
+    expect(desc).toContain("user's next turn");
+  });
+
   test("falls back to the tool name for unknown tools", () => {
     expect(getCustomToolDescription("UnknownTool")).toBe("UnknownTool");
   });

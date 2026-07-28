@@ -24,12 +24,16 @@ export function isSystemEntityType(et: { slug?: string | null }): boolean {
  * must never collide with these.
  */
 export const OWNER_ROUTE_SEGMENTS = [
+  "activity",
   "agents",
   "connectors",
   "devices",
-  // Legacy redirect path /$owner/environments → infrastructure/sandboxes.
+  // Legacy redirect path /$owner/environments → connectors.
   // Keep reserved so an org/entity slug never collides with the redirect.
   "environments",
+  // Redirect-only segment for immutable chat-message links: /$owner/
+  // infrastructure/models URLs were emitted into Slack/Telegram messages
+  // (PR #1847) and cannot be rewritten, so the segment must keep routing.
   "infrastructure",
   "memory",
   "members",
@@ -104,3 +108,34 @@ export function isReservedEntityTypeSlug(slug: string): boolean {
   if (s.startsWith("$")) return true;
   return (RESERVED_ENTITY_TYPE_SLUGS as readonly string[]).includes(s);
 }
+
+// ── Inference-provider connector keys ───────────────────────────────────────
+
+/**
+ * Namespace prefix for a model provider's connector key. Provider slugs and
+ * connector keys share one list and one detail route, so the prefix keeps a
+ * provider named e.g. `slack` from colliding with the real Slack connector.
+ * The prefixed key IS the routable connector key: `/$owner/connectors/
+ * <prefix><slug>` renders the provider through the shared connector detail
+ * page. Lives in core because both sides compose it — the server's URL
+ * builders emit these links into chat messages, and the web app parses the
+ * prefix back off the route param.
+ */
+export const INFERENCE_ROW_KEY_PREFIX = "inference-provider:";
+
+/**
+ * Namespace prefix for a remote-sandbox *instance* connector key. Sandboxes
+ * live in their own table (vault-bound provider credentials) and are
+ * synthesized into the connectors list the same way model providers are — a
+ * read-layer union, not a data move. The remainder after the prefix is the
+ * sandbox id.
+ */
+export const SANDBOX_ROW_KEY_PREFIX = "sandbox:";
+
+/**
+ * Namespace prefix for a sandbox *provider kind* (e.g. vercel). The kind is a
+ * catalog entry — pick Vercel, fill its credentials, done. No second
+ * "which provider?" step. The remainder is the provider id from the gateway
+ * runtime registry (`listGatewayRuntimeProviderIds`).
+ */
+export const SANDBOX_PROVIDER_KEY_PREFIX = "sandbox-provider:";

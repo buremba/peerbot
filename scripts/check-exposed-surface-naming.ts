@@ -7,6 +7,7 @@
  *   - MCP tool schemas, names, descriptions, or titles
  *   - ClientSDK discovery metadata, aliases, or namespace method names
  *   - the connector-sdk public reaction contract
+ *   - server and web-client response types for shared public tool payloads
  *
  * TypeBox schema initializers are scanned under the core tool contracts and the
  * server's tool/type sources. Other source scans are deliberately limited to
@@ -445,6 +446,23 @@ for (const file of collectTsFiles(namespacesDir)) {
   scanNamespaceSurface(file, violations);
 }
 
+// Plain TypeScript response types are not TypeBox initializers, but they still
+// describe public tool payloads. Keep the server projection and the trusted web
+// client's wire models under the same vocabulary gate so a generic
+// Type.Record result cannot hide a stale key from the schema scan.
+for (const file of [
+  join(
+    REPO_ROOT,
+    "packages/server/src/tools/admin/manage_operations/activity-feed.ts"
+  ),
+  join(REPO_ROOT, "packages/owletto/src/lib/api/activity.ts"),
+  join(REPO_ROOT, "packages/owletto/src/lib/api/behaviors.ts"),
+  join(REPO_ROOT, "packages/owletto/src/lib/api/content.ts"),
+  join(REPO_ROOT, "packages/owletto/src/lib/api/runs.ts"),
+]) {
+  scanNamespaceSurface(file, violations);
+}
+
 const seen = new Set<string>();
 const unique = violations.filter((violation) => {
   const key = `${violation.file}:${violation.line}:${violation.excerpt}`;
@@ -466,7 +484,7 @@ if (unique.length > 0) {
   }
   console.error(
     `\nScope: MCP tool schemas/descriptions, ClientSDK discovery and callable ` +
-      `method names, and the public reaction client types. Internal engine ` +
+      `method names, public response types, and the reaction client types. Internal engine ` +
       `names outside exposed schema constructs remain allowed.`
   );
   process.exit(1);

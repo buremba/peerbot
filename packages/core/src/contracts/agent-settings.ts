@@ -69,12 +69,40 @@ type _StageCheck = GuardrailStage extends (typeof GUARDRAIL_STAGES)[number]
 const _stageCheck: _StageCheck = true;
 void _stageCheck;
 
+/**
+ * Operator-authored guardrail on an agent.
+ *
+ * - `kind: "judge"` (default when omitted) — LLM text judge; needs `policy`.
+ * - `kind: "require-tool"` — pure lookup against this turn's `toolsUsed`;
+ *   needs `tools` (manual tool names). Fixed policy: missing tool trips;
+ *   an unreported toolsUsed value passes. No model call.
+ */
+/**
+ * NOTE: this is a permissive object, not a discriminated union — `policy` and
+ * `tools` are optional here even though each variant requires one of them.
+ * Narrowing the shape would force every one of the ~37 read sites to discriminate
+ * before touching a field, for no safety gain: `guardrailsInline` is only ever
+ * written through `validateGuardrailsInline` (server/src/lobu/agent-routes.ts),
+ * which rejects a judge with no policy AND a require-tool with no tools before
+ * anything is persisted. Keep that validator as the enforcement point; if a
+ * second write path is ever added, it must call the same validator.
+ */
 export const AgentInlineGuardrailSchema = Type.Object({
   name: Type.String(),
   enabled: Type.Boolean(),
   stage: GuardrailStageSchema,
-  policy: Type.String(),
+  /** Defaults to `"judge"` when omitted (backward compatible). */
+  kind: Type.Optional(
+    Type.Union([Type.Literal("judge"), Type.Literal("require-tool")])
+  ),
+  /** Required for `kind: "judge"` (enforced by validateGuardrailsInline). */
+  policy: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  /**
+   * For `judge` pre-tool: optional tool-name filter (run only for these tools).
+   * For `require-tool`: the tool name(s) that must appear in this turn's
+   * `toolsUsed` (manual, e.g. `["suggest_actions"]`).
+   */
   tools: Type.Optional(Type.Array(Type.String())),
   domains: Type.Optional(Type.Array(Type.String())),
 });

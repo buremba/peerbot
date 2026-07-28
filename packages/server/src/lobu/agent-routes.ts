@@ -1608,17 +1608,23 @@ export function validateGuardrailsInline(value: unknown): string | null {
 		if (typeof g.stage !== "string" || !GUARDRAIL_STAGES.has(g.stage)) {
 			return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool, egress`;
 		}
-		if (typeof g.policy !== "string" || g.policy.trim() === "") {
-			return `guardrailsInline[${i}].policy must be a non-empty string`;
+		// Only `undefined` defaults to "judge" (backward compatible with rows
+		// written before `kind` existed). `null` is not a valid value in the
+		// Core `AgentInlineGuardrailSchema`, so reject it rather than coercing.
+		if (
+			g.kind !== undefined &&
+			g.kind !== "judge" &&
+			g.kind !== "require-tool"
+		) {
+			return `guardrailsInline[${i}].kind must be "judge" or "require-tool"`;
 		}
+		const kind = g.kind === undefined ? "judge" : g.kind;
+		// Common optional fields are typed the same way for every kind in the
+		// Core schema, so validate them whenever present regardless of kind.
+		// Otherwise a malformed `require-tool` row (e.g. `model: 42`) would be
+		// persisted here yet rejected by `AgentInlineGuardrailSchema`.
 		if (g.model !== undefined && typeof g.model !== "string") {
 			return `guardrailsInline[${i}].model must be a string`;
-		}
-		if (
-			g.tools !== undefined &&
-			(!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== "string"))
-		) {
-			return `guardrailsInline[${i}].tools must be an array of strings`;
 		}
 		if (
 			g.domains !== undefined &&
@@ -1626,6 +1632,34 @@ export function validateGuardrailsInline(value: unknown): string | null {
 				g.domains.some((d) => typeof d !== "string"))
 		) {
 			return `guardrailsInline[${i}].domains must be an array of strings`;
+		}
+		if (kind === "require-tool") {
+			if (g.stage !== "output") {
+				return `guardrailsInline[${i}]: require-tool only supports stage "output"`;
+			}
+			if (
+				!Array.isArray(g.tools) ||
+				g.tools.length === 0 ||
+				g.tools.some((t) => typeof t !== "string" || t.trim() === "")
+			) {
+				return `guardrailsInline[${i}].tools must be a non-empty array of tool names for require-tool`;
+			}
+			// `policy` is ignored for require-tool, but must still match the
+			// schema's type when the operator supplies it.
+			if (g.policy !== undefined && typeof g.policy !== "string") {
+				return `guardrailsInline[${i}].policy must be a string`;
+			}
+		} else {
+			// judge (default)
+			if (typeof g.policy !== "string" || g.policy.trim() === "") {
+				return `guardrailsInline[${i}].policy must be a non-empty string`;
+			}
+			if (
+				g.tools !== undefined &&
+				(!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== "string"))
+			) {
+				return `guardrailsInline[${i}].tools must be an array of strings`;
+			}
 		}
 	}
 	return null;
@@ -1654,20 +1688,28 @@ routes.patch("/:agentId/config", async (c) => {
 		);
 	}
 
-	// Custom guardrails are LLM judges and need a model. With no gateway default
-	// (`EGRESS_JUDGE_MODEL` unset), every inline guardrail must carry its own
+	// Judge-kind custom guardrails need a model. With no gateway default
+	// (`EGRESS_JUDGE_MODEL` unset), every judge entry must carry its own
 	// `model` — otherwise it would fail closed at runtime with no model to call.
+	// require-tool entries never call a model.
 	const judgeDefault = process.env.EGRESS_JUDGE_MODEL?.trim();
 	if (
 		!judgeDefault &&
 		Array.isArray((updates as { guardrailsInline?: unknown }).guardrailsInline)
 	) {
 		const inline = (
-			updates as { guardrailsInline: Array<{ name?: string; model?: string }> }
+			updates as {
+				guardrailsInline: Array<{
+					name?: string;
+					model?: string;
+					kind?: string;
+				}>;
+			}
 		).guardrailsInline;
-		const missing = inline.find(
-			(g) => typeof g?.model !== "string" || g.model.trim() === ""
-		);
+		const missing = inline.find((g) => {
+			if (g?.kind === "require-tool") return false;
+			return typeof g?.model !== "string" || g.model.trim() === "";
+		});
 		if (missing) {
 			return c.json(
 				{

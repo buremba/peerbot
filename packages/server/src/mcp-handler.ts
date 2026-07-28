@@ -875,6 +875,10 @@ function createSessionTransport(
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator,
     onsessioninitialized: (id) => {
+      // The per-session authCtx object is shared by every request on this
+      // session, so stamping once here threads the session id into each
+      // tool call's ToolContext (audit rows group client activity by it).
+      authCtx.mcpSessionId = id;
       sessions.set(id, {
         transport,
         server,

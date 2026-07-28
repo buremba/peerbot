@@ -18,6 +18,10 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
+import {
+  finalizeTurnSuggestions,
+  readCurrentSuggestion,
+} from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
 const logger = createLogger("unified-thread-consumer");
@@ -96,7 +100,8 @@ export class UnifiedThreadResponseConsumer {
   constructor(
     private queue: IMessageQueue,
     private platformRegistry: PlatformRegistry,
-    private sseManager: SseManager
+    private sseManager: SseManager,
+    private readSuggestion = readCurrentSuggestion
   ) {}
 
   setChatResponseBridge(bridge: ChatResponseBridge): void {
@@ -294,6 +299,7 @@ export class UnifiedThreadResponseConsumer {
    * synchronously at the top of each bridge handler, before any await, so even a
    * concurrent local-emit + re-emit cannot both render.
    */
+
   private async handleChatInteraction(
     data: ThreadResponsePayload
   ): Promise<void> {
@@ -390,6 +396,42 @@ export class UnifiedThreadResponseConsumer {
     const isApiRow =
       (data.platform || data.teamId) === "api" &&
       !data.platformMetadata?.connectionId;
+
+    // Finalize the conversation's suggestion set at the terminal boundary,
+    // BEFORE the SSE owner-gate below. This must run whether or not any pod
+    // holds the client's socket (a disconnected client leaves no owner, and the
+    // owner-gate would otherwise re-queue → dead-letter, dropping the clear and
+    // replaying stale chips on reload forever). It supersedes a prior turn's
+    // set when this turn emitted none, and keeps this turn's own for the
+    // renderer to embed. Idempotent under the re-queue-to-owner retry. Skipped
+    // on error turns so they do not alter durable suggestion state.
+    if (isApiRow && !data.error && data.processedMessageIds?.length) {
+      const organizationId =
+        data.organizationId ??
+        (typeof data.platformMetadata?.organizationId === "string"
+          ? data.platformMetadata.organizationId
+          : undefined);
+      if (organizationId) {
+        try {
+          await finalizeTurnSuggestions({
+            organizationId,
+            conversationId: data.conversationId,
+            turnMessageIds: [
+              ...(data.messageId ? [data.messageId] : []),
+              ...(data.processedMessageIds ?? []),
+            ],
+          });
+        } catch (err) {
+          // Never let suggestion finalization break terminal delivery.
+          logger.warn(
+            `Failed to finalize suggestions for ${data.conversationId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+    }
+
     if (isApiRow) {
       const isTerminal = !!(
         data.error ||
@@ -477,6 +519,7 @@ export class UnifiedThreadResponseConsumer {
               userId: data.userId,
               conversationId: data.conversationId,
               platform: "api",
+              toolsUsed: data.toolsUsed,
             });
             if (trip) {
               const blockMsg = `Message blocked by guardrail: ${
@@ -488,14 +531,77 @@ export class UnifiedThreadResponseConsumer {
                 error: data.error != null ? blockMsg : data.error,
               };
             }
+            // NOTE: `suggest-followups` enrichment deliberately does NOT run on
+            // this API path — only on chat platforms (ChatResponseBridge).
+            //
+            // The SPA opens one EventSource per send and closes it in a
+            // `finally` as soon as `complete` arrives, so chips are only live if
+            // they are already durable when ApiResponseRenderer embeds them on
+            // that event. Enrichment needs an up-to-15s model call, which leaves
+            // two bad options: await it (adds that latency to every enrichment
+            // turn, putting a decorative feature on the critical path) or
+            // fire-and-forget it (the write lands after the socket is gone, so
+            // the chips are generated, persisted, and never delivered).
+            //
+            // Chat has neither problem: a native card is posted out-of-band and
+            // the platform itself persists it.
+            //
+            // If web chips are wanted later, the tractable design is to
+            // generate them WORKER-SIDE before `signalCompletion`, so they are
+            // already durable when `resolveTerminalSuggestions` embeds them on
+            // `complete` — no new channel and no SPA change. Note two dead
+            // ends: the SPA hydrates chips from history exactly once
+            // (`hydratedRef`, lobu-chat-store.tsx), so invalidating the history
+            // query does NOT re-render them; and the org invalidation stream is
+            // backed by a per-pod in-process emitter (events/emitter.ts), so it
+            // cannot signal a browser pinned to another replica.
           }
         }
       }
     }
 
     if (data.customEvent) {
+      let customEventData = data.customEvent.data;
+      if (isApiRow && data.customEvent.name === "suggestion") {
+        const organizationId =
+          data.organizationId ??
+          (typeof data.platformMetadata?.organizationId === "string"
+            ? data.platformMetadata.organizationId
+            : undefined);
+        if (!organizationId) {
+          logger.warn(
+            `Skipping suggestion card for ${data.conversationId}: missing organization context`
+          );
+          return;
+        }
+        try {
+          const current = await this.readSuggestion(
+            organizationId,
+            data.conversationId
+          );
+          // Rebuild rather than spread: the enqueued row is stale by
+          // construction, so nothing on it may survive into the broadcast. The
+          // shape matches the terminal `complete` embed and history replay —
+          // prompts only. (`readCurrentSuggestion` returns the events row id,
+          // not the `s_…` interaction id, so there is no id worth echoing.)
+          customEventData = {
+            type: "suggestion",
+            prompts: current?.prompts ?? [],
+          };
+        } catch (err) {
+          // The terminal completion remains the authoritative delivery path.
+          // Dropping this best-effort mid-turn card is safer than broadcasting
+          // a suggestion event that could not be refreshed.
+          logger.warn(
+            `Failed to refresh suggestion card for ${data.conversationId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+          return;
+        }
+      }
       const eventPayload = {
-        ...data.customEvent.data,
+        ...customEventData,
         timestamp: data.timestamp,
         messageId: data.messageId,
       };
@@ -571,6 +677,7 @@ export class UnifiedThreadResponseConsumer {
  */
 const CHAT_INTERACTION_CHANNELS = [
   "question:created",
+  "suggestion:created",
   "tool:approval-needed",
   "link-button:created",
 ] as const;

@@ -386,6 +386,21 @@ export const ManageOperationsResultSchema = Type.Union([
         unread: Type.Optional(Type.Boolean()),
         notification_id: Type.Optional(Type.Integer()),
         run_id: Type.Optional(Type.Integer()),
+        /**
+         * Kind of pending interaction behind this notification (events
+         * `interaction_type` vocabulary — 'approval' today).
+         */
+        interaction_type: Type.Optional(Type.String()),
+        /**
+         * Live interaction state, from the interaction's authoritative
+         * per-type source. For 'approval' it is passed through verbatim from
+         * the run's approval_status (e.g. 'pending', 'approved', 'rejected',
+         * 'expired', 'auto'). Not a fixed enum — treat any value not
+         * explicitly handled as non-actionable.
+         */
+        interaction_status: Type.Optional(Type.String()),
+        /** This interaction can be completed inline from the feed. */
+        interaction_inline: Type.Optional(Type.Boolean()),
         member_run_ids: Type.Optional(Type.Array(Type.Integer())),
         connection_id: Type.Optional(Type.Integer()),
         behavior_id: Type.Optional(Type.Integer()),

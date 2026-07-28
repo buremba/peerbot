@@ -24,6 +24,10 @@ import {
   resolveAgentGuardrails,
 } from "./aggregator.js";
 import { recordGuardrailTrip } from "./audit.js";
+import {
+  isEnrichmentGuardrail,
+  SUGGEST_FOLLOWUPS_NAME,
+} from "./suggest-followups.js";
 
 const logger = createLogger("output-guardrail");
 
@@ -33,6 +37,8 @@ export interface OutputScanContext {
   userId: string;
   conversationId?: string;
   platform: string;
+  /** Tool names this turn (from the worker's terminal `toolsUsed` stamp). */
+  toolsUsed?: string[];
 }
 
 export interface OutputGuardrailTrip {
@@ -70,7 +76,12 @@ export async function runOutputGuardrailScan(
       registry,
       { inline: enabledInlineGuardrails(settings) }
     );
-    const list = resolved.byStage.output;
+    // Enrichment guardrails (e.g. suggest-followups) never trip and must not
+    // see the reply until blocking scans have passed — exclude them here.
+    // Generation is invoked explicitly by the terminal consumer after a pass.
+    const list = resolved.byStage.output.filter(
+      (g) => !isEnrichmentGuardrail(g)
+    );
     if (list.length === 0) return null;
 
     const outcome = await runGuardrailInstances("output", list, {
@@ -79,6 +90,7 @@ export async function runOutputGuardrailScan(
       text: scanText,
       platform: ctx.platform,
       conversationId: ctx.conversationId,
+      toolsUsed: ctx.toolsUsed,
     });
     if (!outcome.tripped) return null;
 
@@ -163,7 +175,9 @@ export class OutputGuardrailScanner {
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );
-      return resolved.byStage.output.length > 0;
+      // Only blocking output guardrails force withhold-stream. Enrichment
+      // alone (suggest-followups) does not need to suppress token streaming.
+      return resolved.byStage.output.some((g) => !isEnrichmentGuardrail(g));
     } catch {
       return false;
     }
@@ -179,5 +193,42 @@ export class OutputGuardrailScanner {
     ctx: OutputScanContext
   ): Promise<OutputGuardrailTrip | null> {
     return runOutputGuardrailScan(this.registry, this.settingsStore, text, ctx);
+  }
+
+  /**
+   * The agent's `suggest-followups` enrichment config, or null when the
+   * guardrail is not enabled. Used by the chat bridge after a blocking scan
+   * pass. Returns the entry's overrides (rather than a bare boolean) so the
+   * generator can honour a per-agent `model`, the same field a judge guardrail
+   * already uses — an operator who configures a slow model here would
+   * otherwise get silent empty chips with no way to change it.
+   */
+  async getSuggestFollowupsConfig(
+    agentId: string,
+    organizationId?: string
+  ): Promise<{ model?: string } | null> {
+    if (!this.enabled || !agentId) return null;
+    try {
+      const settings = await this.settingsStore!.getSettings(agentId, {
+        organizationId,
+      });
+      const resolved = resolveAgentGuardrails(
+        settings ?? { guardrails: [] },
+        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+        this.registry!,
+        { inline: enabledInlineGuardrails(settings) }
+      );
+      if (!resolved.byStage.output.some((g) => isEnrichmentGuardrail(g))) {
+        return null;
+      }
+      // The resolved instance is the built-in stub; per-agent overrides live on
+      // the inline settings entry of the same name.
+      const entry = enabledInlineGuardrails(settings).find(
+        (g) => g.name === SUGGEST_FOLLOWUPS_NAME
+      );
+      return { model: entry?.model };
+    } catch {
+      return null;
+    }
   }
 }

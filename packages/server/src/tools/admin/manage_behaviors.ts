@@ -747,6 +747,7 @@ async function queueWatcherWriteForApproval(
       run_id: runId,
       input_schema: inputSchema,
       action_input: displayInput,
+      mcp_session_id: ctx.mcpSessionId ?? null,
     },
     authorName: ctx.clientId ?? 'agent',
   });

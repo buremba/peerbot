@@ -67,6 +67,7 @@ import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
 import { clientRoutes } from "./lobu/client-routes";
+import { clientSessionRoutes } from "./lobu/client-session-routes";
 import { deploymentRoutes } from "./lobu/deployment-routes";
 import { sandboxRoutes } from "./lobu/sandbox-routes";
 import {
@@ -2345,6 +2346,7 @@ app.route("/api/:orgSlug/installed", orgInstalledRoutes);
 app.route("/api/:orgSlug/agents", agentRoutes);
 app.route("/api/:orgSlug/deployments", deploymentRoutes);
 app.route("/api/:orgSlug/sandboxes", sandboxRoutes);
+app.route("/api/:orgSlug/clients/sessions", clientSessionRoutes);
 app.route("/api/:orgSlug/clients", clientRoutes);
 
 // ============================================

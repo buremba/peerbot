@@ -95,7 +95,7 @@ COPY packages/server/ packages/server/
 COPY packages/cli/ packages/cli/
 # Bundled into the CLI dist by packages/cli/scripts/build.cjs: the starter
 # skill and the embedded-DB migrations.
-COPY skills/ skills/
+COPY skills/lobu/ skills/lobu/
 COPY db/migrations db/migrations
 # Copy the private frontend submodule when present.
 COPY packages/owletto packages/owletto
@@ -125,21 +125,19 @@ RUN cd packages/server && bun run build:server
 
 # Build the CLI (#2231). It must build after build:server because
 # packages/cli/scripts/build.cjs copies the server bundles + catalog manifests
-# into the CLI dist, and @lobu/worker dist must exist for the CLI's tsc. It
-# runs *before* the owletto web build, so the CLI dist intentionally carries
-# no second copy of the SPA — the container already serves the web UI from
-# packages/owletto/dist, and `lobu run` inside the container stays headless.
-RUN cd packages/agent-worker && bunx tsc \
-    && cd ../cli && bun run build
+# into the CLI dist. It runs *before* the owletto web build, so the CLI dist
+# intentionally carries no second copy of the SPA — the container already
+# serves the web UI from packages/owletto/dist, which the bundled server finds
+# through its monorepo-relative fallback.
+RUN cd packages/cli && bun run build
 
 # Prune the embedded-Postgres runtime (~145MB platform binary) before it reaches
 # the runtime image. Prod always uses an external DATABASE_URL (postgres://), so
 # server.ts never loads embedded-postgres or the pgvector injector — both are
 # reached only via await import() on the file:// path. The builder needs them
 # for the type-check + bundle above, so we drop them only afterward. This also
-# means the in-image `lobu` CLI cannot boot an embedded database — in the
-# container every CLI workflow talks to the external DATABASE_URL, which is
-# the only supported mode here.
+# means the in-image `lobu run` cannot boot an embedded database; it must use
+# the container's external DATABASE_URL.
 RUN rm -rf node_modules/embedded-postgres node_modules/@embedded-postgres
 
 # Build frontend static assets (production only)

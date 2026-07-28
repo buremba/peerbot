@@ -52,46 +52,23 @@ function redactPreview(value: string): string {
 }
 
 /**
- * Structural keys whose string values are safe to persist in the generic audit
- * preview: enum-ish discriminators and resource references, never user
- * content. Everything else defaults to the sentinel — free text can carry a
- * secret in shapes no pattern enumerates (`curl --token sk-live-…`), so the
- * ledger keeps the SHAPE of a call, not its content.
+ * Generic audit entries persist the SHAPE of a call, never its content: keys,
+ * structure, and booleans/nulls (provably structural — one bit) survive; every
+ * string and number leaf becomes the sentinel. No key allowlist and no value
+ * pattern can be trusted here — audit also fires on FAILED validation, so even
+ * an enum-typed key like `action` can arrive carrying arbitrary pasted text,
+ * and identifier-shaped secrets (`sk-live-…`) are indistinguishable from
+ * slugs. Free text can hide a secret in shapes no pattern enumerates.
  */
-const SAFE_ARG_KEYS = new Set([
-  'action',
-  'agent_id',
-  'connection',
-  'dry_run',
-  'entity_type',
-  'feed',
-  'key',
-  'kind',
-  'org_slug',
-  'semantic_type',
-  'slug',
-  'sort_by',
-  'sort_order',
-  'status',
-  'type',
-]);
-const MAX_SAFE_VALUE_CHARS = 120;
-
-function sanitizeArgLeaves(value: unknown, parentKey?: string): unknown {
-  if (Array.isArray(value)) return value.map((item) => sanitizeArgLeaves(item, parentKey));
+function sanitizeArgLeaves(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeArgLeaves(item));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, sanitizeArgLeaves(nested, key)])
+      Object.entries(value).map(([key, nested]) => [key, sanitizeArgLeaves(nested)])
     );
   }
-  if (typeof value === 'string') {
-    return parentKey !== undefined &&
-      SAFE_ARG_KEYS.has(parentKey) &&
-      value.length <= MAX_SAFE_VALUE_CHARS
-      ? redactSensitiveText(value)
-      : REDACTED_SENTINEL;
-  }
-  return value;
+  if (typeof value === 'boolean' || value === null || value === undefined) return value;
+  return REDACTED_SENTINEL;
 }
 
 function asObject(value: unknown): Record<string, unknown> {

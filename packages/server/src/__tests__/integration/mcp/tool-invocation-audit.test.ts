@@ -171,14 +171,17 @@ describe('tool invocation audit coverage', () => {
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
   });
 
-  it('args_sha256 is computed over REDACTED args — a secret value cannot be verified against the hash', async () => {
-    const argsWithSecretA = { action: 'nope', token: 'candidate-secret-A' };
-    const argsWithSecretB = { action: 'nope', token: 'candidate-secret-B' };
+  it('args_sha256 is computed over SANITIZED args — a secret value cannot be verified against the hash', async () => {
+    const argsWithSecretA = { query: 'probe', token: 'candidate-secret-A' };
+    const argsWithSecretB = { query: 'probe', token: 'candidate-secret-B' };
+    // `token` is not a search_sdk argument: validation rejects both calls, and
+    // the audit fires on the catch path with the raw args — the exact moment a
+    // raw-args hash would persist a credential-derived verifier.
     await expect(
-      executeTool('manage_connections', argsWithSecretA, {} as Env, authCtxFor('pat'))
+      executeTool('search_sdk', argsWithSecretA, {} as Env, authCtxFor('pat'))
     ).rejects.toThrow();
     await expect(
-      executeTool('manage_connections', argsWithSecretB, {} as Env, authCtxFor('pat'))
+      executeTool('search_sdk', argsWithSecretB, {} as Env, authCtxFor('pat'))
     ).rejects.toThrow();
 
     const sql = getDb();
@@ -186,8 +189,7 @@ describe('tool invocation audit coverage', () => {
       SELECT payload_data FROM events
       WHERE organization_id = ${orgId}
         AND semantic_type = 'audit'
-        AND payload_data->>'tool_name' = 'manage_connections'
-        AND payload_data->>'args_preview_redacted' LIKE '%"action":"nope"%'
+        AND payload_data->>'tool_name' = 'search_sdk'
       ORDER BY id DESC
       LIMIT 2
     `;
@@ -200,6 +202,37 @@ describe('tool invocation audit coverage', () => {
       .update(JSON.stringify(argsWithSecretA))
       .digest('hex');
     expect(rows[0].payload_data.args_sha256).not.toBe(rawHashA);
+  });
+
+  it('sentinels every string and number leaf — numeric PINs and identifier-shaped values do not survive', async () => {
+    await recordToolInvocationAudit({
+      toolName: 'probe_leaf_sanitization',
+      args: {
+        input: { pin: 123456 },
+        kind: 'sk-live-credential-value',
+        dry_run: true,
+      },
+      result: { ok: true },
+      durationMs: 2,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+
+    const row = await latestAuditRow(orgId, 'probe_leaf_sanitization');
+    expect(row).not.toBeNull();
+    const preview = String(row!.payload_data.args_preview_redacted);
+    expect(preview).not.toContain('123456');
+    expect(preview).not.toContain('sk-live-credential-value');
+    // Structure and booleans survive: keys are visible, one-bit values kept.
+    expect(preview).toContain('"pin"');
+    expect(preview).toContain('"dry_run":true');
   });
 
   it.each(['error', 'timeout'] as const)(

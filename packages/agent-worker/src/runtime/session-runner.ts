@@ -1247,10 +1247,11 @@ user references earlier discussion or you need prior context.`);
       // = {...process.env}, no env strip, no embedded BashOperations).
       // buildAgentSession() swaps those rebuilt built-ins back to these
       // Lobu instances (via `builtinOverrides`) after construction so the
-      // agent's bash actually runs with the spawnHook that strips
-      // WORKER_TOKEN/DISPATCHER_URL and with the embedded BashOperations + tool
-      // policy wired in above. `tools` (names) activates exactly this set;
-      // `builtinOverrides` supplies the instances the swap installs.
+      // agent's bash actually runs with the spawnHook that replaces the
+      // inherited environment with the `buildAgentEnv` allowlist and with the
+      // embedded BashOperations + tool policy wired in above. `tools` (names)
+      // activates exactly this set; `builtinOverrides` supplies the instances
+      // the swap installs.
       // Wrap built-ins with the synchronous runaway guard so the per-turn
       // tool-call cap and identical-call guard bound bash/read/edit/write
       // too. The guard runs inside execute (before the tool body), so the

@@ -469,6 +469,32 @@ export class MessageHandlerBridge {
   }
 
   /**
+   * Strip the bot's own mention out of inbound text. Slack delivers raw
+   * `<@Uxxx>` tokens; the Chat SDK may strip the brackets, so we also catch the
+   * bare `@Uxxx` form. Every command-matching call site must run on the
+   * stripped text — `@mybot /link ABC123` is the normal way to address a bot in
+   * a mention-gated group chat, and the slash regex requires a leading `/`.
+   */
+  private stripBotMention(text: string): string {
+    const botMetadata = this.manager.getInstance(this.connection.id)?.connection
+      .metadata;
+    const botUsername = botMetadata?.botUsername as string | undefined;
+    const botUserId = botMetadata?.botUserId as string | undefined;
+    let stripped = text;
+    if (botUsername) {
+      stripped = stripped.replace(`@${botUsername}`, "").trim();
+    }
+    if (botUserId) {
+      stripped = stripped
+        .replace(new RegExp(`<@${botUserId}>`, "g"), "")
+        .replace(new RegExp(`@${botUserId}\\b`, "g"), "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    return stripped;
+  }
+
+  /**
    * Reply at a routing dead end — an inbound message/interaction resolved to
    * no channel Behavior and the connection has no owning agent — with a
    * "link this chat" notice instead of dropping silently.
@@ -738,7 +764,9 @@ export class MessageHandlerBridge {
       // dispatcher ever saw it (#2230).
       if (this.commandDispatcher) {
         const handled = await this.commandDispatcher.tryHandleSlashText(
-          typeof message.text === "string" ? message.text : "",
+          this.stripBotMention(
+            typeof message.text === "string" ? message.text : ""
+          ),
           {
             platform,
             userId,
@@ -932,22 +960,9 @@ export class MessageHandlerBridge {
       }
     }
 
-    // Remove bot mention from text. Slack delivers raw `<@Uxxx>` tokens; the
-    // Chat SDK may strip the brackets, so we also catch the bare `@Uxxx` form.
-    const botMetadata = this.manager.getInstance(this.connection.id)?.connection
-      .metadata;
-    const botUsername = botMetadata?.botUsername as string | undefined;
-    const botUserId = botMetadata?.botUserId as string | undefined;
-    if (botUsername) {
-      messageText = messageText.replace(`@${botUsername}`, "").trim();
-    }
-    if (botUserId) {
-      messageText = messageText
-        .replace(new RegExp(`<@${botUserId}>`, "g"), "")
-        .replace(new RegExp(`@${botUserId}\\b`, "g"), "")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
+    // Remove bot mention from text — shared with the unrouted dead-end slash
+    // dispatch so both match commands addressed via an @-mention.
+    messageText = this.stripBotMention(messageText);
 
     // Intercept a `!`-bash message before slash dispatch. `!cmd` runs `cmd` as
     // shell in the conversation's pinned sandbox (LLM skipped); `!!cmd` runs it

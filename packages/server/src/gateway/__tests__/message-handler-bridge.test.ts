@@ -1069,6 +1069,37 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
+  test("`@bot /link <code>` in an unrouted chat dispatches on mention-stripped text", async () => {
+    // Addressing the bot by mention is the normal way to reach it in a
+    // mention-gated group chat, and the slash regex requires a leading `/` — so
+    // the dead-end dispatch must run on the same mention-stripped text every
+    // other command call site uses, not the raw message.
+    const tryHandleSlashText = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      platform: "telegram",
+      linkedBehavior: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { botUsername: "testbot", botUserId: "U_BOT" },
+      commandDispatcher: {
+        tryHandleSlashText,
+        tryHandle: mock(async () => false),
+      },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "@testbot <@U_BOT> /link crm-ABC123" }),
+      "mention"
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(tryHandleSlashText.mock.calls[0]?.[0]).toBe("/link crm-ABC123");
+    expect(thread.post).not.toHaveBeenCalled();
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
   test("telegram linked mention-only channel: ordinary chatter gets no notice spam", async () => {
     // Mirror of the Slack loop-prevention semantics: a channel that HAS a
     // Behavior subscription but whose trigger filters rejected this message

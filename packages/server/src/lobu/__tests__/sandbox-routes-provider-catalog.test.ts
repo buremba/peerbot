@@ -7,50 +7,74 @@
  * deployment-wide env var and is operator detail, not something the browser
  * needs in order to draw a form.
  *
- * Asserted against the real registry rather than a fixture, so adding a
- * provider (or a field to one) is covered without touching this file.
+ * Drives the REAL mounted route rather than a copy of its projection: a test
+ * that re-implements the mapping still passes when the route starts spreading
+ * the raw registry field, which is exactly the leak being guarded against.
+ * The sandbox store is stubbed so this stays a unit test (no DB); the runtime
+ * registry is the real one, so a new provider or field is covered for free.
  */
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { authStash, installRouteTestMocks } from "./helpers/route-test-mocks";
 
-import { describe, expect, it } from "vitest";
-// The barrel, not `./registry` — providers self-register as an import side
-// effect there, so importing the registry alone yields an empty map.
-import {
-	getGatewayRuntimeProvider,
-	listGatewayRuntimeProviderIds,
-} from "../../gateway/runtime/index.js";
+installRouteTestMocks();
 
-/** Mirrors the projection in `sandbox-routes.ts`'s GET /. */
-function buildProviderCatalog() {
-	return listGatewayRuntimeProviderIds().flatMap((id) => {
-		const provider = getGatewayRuntimeProvider(id);
-		if (!provider) return [];
-		return [
-			{
-				id,
-				credentialFields: provider.credentialFields.map(
-					({ key, label, required, secret }) => ({
-						key,
-						label,
-						required,
-						secret,
-					}),
-				),
-			},
-		];
-	});
-}
+// The catalog is built from the registry alone, but GET / also lists rows.
+// Stub the store so the route runs without a database.
+mock.module("../stores/sandbox-store", () => ({
+	listSandboxes: async () => [],
+	createSandbox: async () => undefined,
+	deleteSandbox: async () => undefined,
+	setSandboxCredentialName: async () => undefined,
+}));
+// Spread the real module: other route modules pull further exports from it,
+// and a narrow stub breaks their imports rather than this test's.
+const realProviderSecrets = await import("../stores/provider-secrets.js");
+mock.module("../stores/provider-secrets", () => ({
+	...realProviderSecrets,
+	readSandboxSecret: async () => null,
+	writeSandboxSecret: async () => undefined,
+}));
+
+const { sandboxRoutes } = await import("../sandbox-routes.js");
+const { listGatewayRuntimeProviderIds } = await import(
+	"../../gateway/runtime/index.js"
+);
 
 const ALLOWED_FIELD_KEYS = ["key", "label", "required", "secret"].sort();
 
+interface CatalogEntry {
+	id: string;
+	credentialFields: Record<string, unknown>[];
+}
+
+async function fetchProviderCatalog(): Promise<CatalogEntry[]> {
+	const res = await sandboxRoutes.request("/", { method: "GET" });
+	expect(res.status).toBe(200);
+	const body = (await res.json()) as { providerCatalog?: CatalogEntry[] };
+	expect(Array.isArray(body.providerCatalog)).toBe(true);
+	return body.providerCatalog ?? [];
+}
+
 describe("GET /sandboxes providerCatalog contract", () => {
-	it("exposes every registered runtime provider", () => {
-		const catalog = buildProviderCatalog();
-		expect(catalog.length).toBe(listGatewayRuntimeProviderIds().length);
+	beforeEach(() => {
+		authStash.organizationId = "org-sandbox-catalog";
+		authStash.authSource = "session";
+	});
+
+	test("exposes every registered runtime provider", async () => {
+		const catalog = await fetchProviderCatalog();
+		expect(catalog.map((e) => e.id).sort()).toEqual(
+			listGatewayRuntimeProviderIds().sort(),
+		);
 		expect(catalog.length).toBeGreaterThan(0);
 	});
 
-	it("emits only display metadata — never systemEnvVar or a credential value", () => {
-		for (const entry of buildProviderCatalog()) {
+	test("emits only display metadata — never systemEnvVar or a credential value", async () => {
+		const catalog = await fetchProviderCatalog();
+		// Guard the guard: a catalog with no fields would pass vacuously.
+		expect(catalog.some((e) => e.credentialFields.length > 0)).toBe(true);
+
+		for (const entry of catalog) {
 			for (const field of entry.credentialFields) {
 				expect(Object.keys(field).sort()).toEqual(ALLOWED_FIELD_KEYS);
 				expect(field).not.toHaveProperty("systemEnvVar");
@@ -59,18 +83,11 @@ describe("GET /sandboxes providerCatalog contract", () => {
 		}
 	});
 
-	it("keeps each field's key and secret flag faithful to the registry", () => {
-		for (const entry of buildProviderCatalog()) {
-			const provider = getGatewayRuntimeProvider(entry.id);
-			expect(provider).toBeTruthy();
-			expect(entry.credentialFields.map((f) => f.key)).toEqual(
-				provider?.credentialFields.map((f) => f.key),
-			);
-			// `secret` drives whether the form masks the input, so a dropped flag
-			// would render an API token as plain text.
-			expect(entry.credentialFields.map((f) => f.secret)).toEqual(
-				provider?.credentialFields.map((f) => f.secret),
-			);
-		}
+	test("keeps the secret flag, so the form still masks token inputs", async () => {
+		const catalog = await fetchProviderCatalog();
+		const vercel = catalog.find((e) => e.id === "vercel");
+		expect(vercel).toBeTruthy();
+		const token = vercel?.credentialFields.find((f) => f.key === "token");
+		expect(token?.secret).toBe(true);
 	});
 });

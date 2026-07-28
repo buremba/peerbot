@@ -4,8 +4,14 @@ import {
 	type DbClient,
 	getDb,
 	pgBigintArray,
+	pgTextArray,
 	tsTime,
 } from "../../db/client.js";
+import {
+	type ChatWorkspaceAliasSet,
+	resolveChatWorkspaceAliases,
+	resolveWorkspaceAliasSlugs,
+} from "../../lobu/stores/chat-workspace-identity.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId } from "../../lobu/stores/org-context.js";
 import { getNextNumericId } from "../../tools/admin/helpers/db-helpers.js";
@@ -159,7 +165,12 @@ async function loadChatBehaviorSubscriptions(
 		agentId?: string;
 		connectionId?: string;
 		connectionOrganizationId?: string;
-		connectionSlug?: string;
+		/**
+		 * The routed connection's slug plus its same-workspace sibling slugs
+		 * (#2148). Resolution is identity-first with connection-id fallback: a
+		 * single-element array reproduces the historical exact-slug behavior.
+		 */
+		connectionSlugs?: string[];
 		channelId?: string;
 		limit?: number;
 		oldestFirst?: boolean;
@@ -180,9 +191,10 @@ async function loadChatBehaviorSubscriptions(
 	const connectionOrgFilter = filters.connectionOrganizationId
 		? sql`AND s.connection_organization_id = ${filters.connectionOrganizationId}`
 		: sql``;
-	const connectionSlugFilter = filters.connectionSlug
-		? sql`AND s.connection_slug = ${filters.connectionSlug}`
-		: sql``;
+	const connectionSlugFilter =
+		filters.connectionSlugs && filters.connectionSlugs.length > 0
+			? sql`AND s.connection_slug = ANY(${pgTextArray(filters.connectionSlugs)}::text[])`
+			: sql``;
 	const channelFilter = filters.channelId
 		? sql`AND (
 			s.channel_id = ${filters.channelId}
@@ -240,7 +252,14 @@ export class BehaviorSubscriptionService {
 		const rows = await loadChatBehaviorSubscriptions(sql, {
 			behaviorOrganizationId: crossOrg ? undefined : connectionOrganizationId,
 			connectionOrganizationId,
-			connectionSlug: runtimeConnectionIdToSlug(connectionId),
+			// Identity-first (#2148): match subscriptions anchored on ANY
+			// same-workspace sibling of the routed connection, so a binding
+			// written against the other Slack Grid tenant key still resolves.
+			connectionSlugs: await resolveWorkspaceAliasSlugs(
+				sql,
+				connectionOrganizationId,
+				runtimeConnectionIdToSlug(connectionId),
+			),
 			channelId,
 			limit: 1,
 		});
@@ -264,7 +283,11 @@ export class BehaviorSubscriptionService {
 		const rows = await loadChatBehaviorSubscriptions(sql, {
 			behaviorOrganizationId: crossOrg ? undefined : connectionOrganizationId,
 			connectionOrganizationId,
-			connectionSlug: runtimeConnectionIdToSlug(connectionId),
+			connectionSlugs: await resolveWorkspaceAliasSlugs(
+				sql,
+				connectionOrganizationId,
+				runtimeConnectionIdToSlug(connectionId),
+			),
 			channelId,
 			limit: 1,
 		});
@@ -279,7 +302,14 @@ export class BehaviorSubscriptionService {
 	): Promise<void> {
 		if (!realTeamId.trim()) return;
 		const sql = getDb();
-		const slug = runtimeConnectionIdToSlug(connectionId);
+		// Heal across the workspace alias set (#2148): the team-less trigger may
+		// be anchored on the sibling connection row (`E…` vs `T…` tenant key)
+		// while the message that carries the real `T…` routed through this one.
+		const aliases = await resolveChatWorkspaceAliases(sql, organizationId, {
+			slug: runtimeConnectionIdToSlug(connectionId),
+		});
+		if (!aliases || aliases.anchorConnectorKey !== "slack") return;
+		const aliasIds = pgBigintArray(aliases.connectionIds);
 		const native = nativeChannelId("slack", channelId);
 		await sql`
 			UPDATE watchers w
@@ -287,12 +317,9 @@ export class BehaviorSubscriptionService {
 				SELECT jsonb_agg(
 					CASE
 						WHEN trigger->>'kind' = 'event'
-						 AND trigger->>'connector_key' = c.connector_key
-						 AND c.id = CASE
-							WHEN jsonb_typeof(trigger->'connection_id') = 'number'
-								THEN (trigger->>'connection_id')::bigint
-							ELSE NULL
-						 END
+						 AND trigger->>'connector_key' = 'slack'
+						 AND jsonb_typeof(trigger->'connection_id') = 'number'
+						 AND (trigger->>'connection_id')::bigint = ANY(${aliasIds}::bigint[])
 						 AND trigger->'match'->>'channel_id' = ${native}
 						 AND COALESCE(trigger->'match'->>'team_id', '') = ''
 							THEN jsonb_set(
@@ -309,20 +336,16 @@ export class BehaviorSubscriptionService {
 					WITH ORDINALITY AS item(trigger, ordinal)
 			),
 			updated_at = current_timestamp
-			FROM connections c
 			WHERE w.organization_id = ${organizationId}
 			  AND w.status = 'active'
 			  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
-			  AND c.slug = ${slug}
-			  AND c.connector_key = 'slack'
-			  AND c.deleted_at IS NULL
 			  AND EXISTS (
 				SELECT 1
 				FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) existing
 				WHERE existing->>'kind' = 'event'
-				  AND existing->>'connector_key' = c.connector_key
+				  AND existing->>'connector_key' = 'slack'
 				  AND jsonb_typeof(existing->'connection_id') = 'number'
-				  AND (existing->>'connection_id')::bigint = c.id
+				  AND (existing->>'connection_id')::bigint = ANY(${aliasIds}::bigint[])
 				  AND existing->'event_types' ? 'message.created'
 				  AND existing->'match'->>'channel_id' = ${native}
 				  AND COALESCE(existing->'match'->>'team_id', '') = ''
@@ -407,15 +430,39 @@ export class BehaviorSubscriptionService {
 			channelId,
 			teamId,
 		});
+		// Workspace alias set (#2148): a chat-link covering this channel may be
+		// anchored on a same-workspace sibling connection (Slack Grid `E…` vs
+		// `T…` tenant keys). Dedupe/relink across the whole set so a link made
+		// through the new row updates the existing Behavior instead of creating
+		// a second one that would double-reply. Null (e.g. the hosted preview
+		// connection living in another org) falls back to the exact connection,
+		// which reproduces the historical behavior byte-for-byte.
+		const aliases: ChatWorkspaceAliasSet | null =
+			await resolveChatWorkspaceAliases(sql, organizationId, {
+				connectionId: options.connectionId,
+			});
+		const aliasIdList = aliases?.connectionIds ?? [options.connectionId];
+		const aliasIdSet = new Set(aliasIdList);
+		const workspaceKey = aliases?.workspaceKey ?? String(options.connectionId);
 
 		const write = async (tx: DbClient): Promise<void> => {
-			// Serialize concurrent create/relink for the same org+connection+channel.
-			await tx`
-				SELECT pg_advisory_xact_lock(
-					hashtext('behavior_chat_link'),
-					hashtext(${`${organizationId}:${options.connectionId}:${channelId}`})
-				)
-			`;
+			// Serialize concurrent create/relink for the same org+workspace+channel.
+			// The workspace-keyed lock makes two writers arriving through DIFFERENT
+			// sibling connections serialize; the legacy connection-keyed lock is
+			// still taken (second, same order everywhere — no cycle) so replicas
+			// running the previous release keep serializing with this one during
+			// a rolling deploy.
+			const lockKeys = [`${organizationId}:${workspaceKey}:${channelId}`];
+			const legacyLockKey = `${organizationId}:${options.connectionId}:${channelId}`;
+			if (!lockKeys.includes(legacyLockKey)) lockKeys.push(legacyLockKey);
+			for (const lockKey of lockKeys) {
+				await tx`
+					SELECT pg_advisory_xact_lock(
+						hashtext('behavior_chat_link'),
+						hashtext(${lockKey})
+					)
+				`;
+			}
 			const connectionRows = await tx`
 				SELECT 1
 				FROM connections
@@ -439,7 +486,7 @@ export class BehaviorSubscriptionService {
 				  AND trigger->>'kind' = 'event'
 				  AND trigger->>'connector_key' = ${platform}
 				  AND jsonb_typeof(trigger->'connection_id') = 'number'
-				  AND (trigger->>'connection_id')::bigint = ${options.connectionId}
+				  AND (trigger->>'connection_id')::bigint = ANY(${pgBigintArray(aliasIdList)}::bigint[])
 				  AND trigger->'event_types' ? 'message.created'
 				  AND trigger->'match'->>'channel_id' = ${nativeChannelId(platform, channelId)}
 				  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
@@ -454,7 +501,10 @@ export class BehaviorSubscriptionService {
 				if (options.createOnly) return;
 				// Relink must not wipe user-added triggers (schedule, extra events)
 				// on the same Behavior — only replace the chat message.created
-				// trigger for this connection+channel.
+				// trigger for this workspace+channel. The filter spans the alias
+				// set so a relink through the sibling connection re-anchors the
+				// old trigger instead of leaving both (which would still run once
+				// per message, but rot as a stale anchor).
 				const [row] = await tx<{ triggers: unknown }>`
 					SELECT triggers FROM watchers WHERE id = ${existing[0].behavior_id}
 				`;
@@ -465,7 +515,7 @@ export class BehaviorSubscriptionService {
 					const t = candidate as Record<string, unknown>;
 					if (t.kind !== "event") return true;
 					if (t.connector_key !== platform) return true;
-					if (Number(t.connection_id) !== options.connectionId) return true;
+					if (!aliasIdSet.has(Number(t.connection_id))) return true;
 					const eventTypes = t.event_types;
 					if (
 						!Array.isArray(eventTypes) ||
@@ -557,9 +607,23 @@ export class BehaviorSubscriptionService {
 			organizationId,
 			"BehaviorSubscriptionService.archiveChatBehavior",
 		);
+		// Unlink across the workspace alias set (#2148): the chat-link may be
+		// anchored on the sibling connection row of the same workspace, and an
+		// unlink issued through the currently-routing row must still find it.
+		const aliases = await resolveChatWorkspaceAliases(sql, orgId, {
+			connectionId,
+		});
+		const aliasIdList = aliases?.connectionIds ?? [connectionId];
 		const write = async (tx: DbClient): Promise<boolean> => {
-			const rows = await tx<{ id: number; platform: string }>`
-				SELECT w.id, trigger->>'connector_key' AS platform
+			const rows = await tx<{
+				id: number;
+				platform: string;
+				trigger_connection_id: string;
+			}>`
+				SELECT
+					w.id,
+					trigger->>'connector_key' AS platform,
+					trigger->>'connection_id' AS trigger_connection_id
 				FROM watchers w
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
@@ -567,7 +631,7 @@ export class BehaviorSubscriptionService {
 				  AND w.agent_id = ${agentId}
 				  AND trigger->>'kind' = 'event'
 				  AND jsonb_typeof(trigger->'connection_id') = 'number'
-				  AND (trigger->>'connection_id')::bigint = ${connectionId}
+				  AND (trigger->>'connection_id')::bigint = ANY(${pgBigintArray(aliasIdList)}::bigint[])
 				  AND trigger->'event_types' ? 'message.created'
 				  AND trigger->'match'->>'channel_id' = ${nativeChannelIdFromAny(channelId)}
 				  AND w.tags @> ARRAY[${CHAT_LINK_TAG}]::text[]
@@ -581,19 +645,34 @@ export class BehaviorSubscriptionService {
 				WHERE id = ANY(${pgBigintArray(rows.map((row) => row.id))}::bigint[])
 			`;
 			const native = nativeChannelIdFromAny(channelId);
-			const canonicalChannelId = `${archived.platform}:${native}`;
-			if (
-				!(await hasChannelSubscription(
-					tx,
-					String(connectionId),
-					canonicalChannelId,
-				))
-			) {
-				await softDeleteStreamingChannelFeed({
-					connectionId: String(connectionId),
-					channelKey: canonicalChannelId,
-					sql: tx,
+			// Clean each anchored connection's streaming feed, not the caller's:
+			// the feed projection was materialized against the connection id the
+			// trigger is anchored on, which may be the workspace sibling.
+			const feedAnchors = new Map<
+				string,
+				{ connectionId: string; platform: string }
+			>();
+			for (const row of rows) {
+				feedAnchors.set(`${row.trigger_connection_id}:${row.platform}`, {
+					connectionId: row.trigger_connection_id,
+					platform: row.platform,
 				});
+			}
+			for (const anchor of feedAnchors.values()) {
+				const canonicalChannelId = `${anchor.platform}:${native}`;
+				if (
+					!(await hasChannelSubscription(
+						tx,
+						anchor.connectionId,
+						canonicalChannelId,
+					))
+				) {
+					await softDeleteStreamingChannelFeed({
+						connectionId: anchor.connectionId,
+						channelKey: canonicalChannelId,
+						sql: tx,
+					});
+				}
 			}
 			return true;
 		};

@@ -16,7 +16,8 @@
  * stops duplicates. Self-healing.
  */
 
-import { getDb } from '../db/client';
+import { getDb, pgBigintArray } from '../db/client';
+import { resolveChatWorkspaceAliases } from '../lobu/stores/chat-workspace-identity';
 import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection';
 import { nextRunAt as nextCronTickAt } from '../utils/cron';
 import logger from '../utils/logger';
@@ -107,12 +108,20 @@ export async function validateDeliveryAuthorization(params: {
   // a teamId matches either the trigger team or the resolved COALESCE team_id
   // (so team-scoped deliveries keep working via the connection fallback).
   const deliveryTeamId = delivery.teamId ?? null;
+  // Identity-first binding check (#2148): the channel's chat-link may be
+  // anchored on a same-workspace sibling connection (Slack Grid `E…` vs `T…`
+  // tenant keys), so accept a binding on any alias of the delivering
+  // connection. Non-Slack connections resolve to themselves only.
+  const aliases = await resolveChatWorkspaceAliases(sql, organizationId, {
+    connectionId: Number(connection.id),
+  });
+  const aliasIds = aliases?.connectionIds ?? [Number(connection.id)];
   const bindingRows = await sql`
     SELECT agent_id
     FROM behavior_message_subscriptions
     WHERE organization_id = ${organizationId}
       AND platform = ${delivery.platform}
-      AND connection_id = ${connection.id}
+      AND connection_id = ANY(${pgBigintArray(aliasIds)}::bigint[])
       AND (
         channel_id = ${delivery.channelId}
         OR native_channel_id = ${delivery.channelId}

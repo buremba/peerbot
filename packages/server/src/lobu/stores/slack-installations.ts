@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, decrypt, encrypt } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { getDb, pgTextArray } from "../../db/client.js";
+import { linkChatUserIdentity } from "./chat-identity.js";
 import type { WritableSecretStore } from "../../gateway/secrets/index.js";
 import {
   deleteSecretsByPrefix,
@@ -334,8 +335,11 @@ export async function upsertSlackInstallByTeam(
     // own advisory lock (keyed on the chat tenant tuple) keeps one active row per
     // (org, slack, team) on the partial-unique `connections_active_chat_tenant`
     // index. Separate transaction from the app_installations upsert above; a
-    // crash between them is covered by the runtime's read-fallback to
-    // `getSlackInstallById`, so a missing projection only costs one fallback.
+    // crash between them leaves the install WITHOUT a live projection — the
+    // runtime message path resolves `connections` rows only (there is no
+    // read-fallback to `getSlackInstallById`; its sole external consumer is
+    // the ACL sync), so the workspace stays unroutable until the next
+    // install/claim re-runs this write-through.
     const projection: StoredConnection = {
       id: slackRow.id,
       platform: SLACK_PROVIDER,
@@ -372,8 +376,179 @@ export async function upsertSlackInstallByTeam(
       );
     });
 
+    // Post-activation guards (#2148), deliberately OUTSIDE the projection
+    // transaction above: plain reads plus at most a single-row identity
+    // insert, taking no locks — nothing here may add a new interleaving with
+    // the tenant advisory/row locks that transaction holds. Both are
+    // best-effort and never fail the install.
+    await healSlackInstallerIdentityLink({
+      organizationId,
+      teamId,
+      enterpriseId: data.enterpriseId ?? null,
+      installerUserId: data.installerUserId ?? null,
+    });
+    await detectSlackDualActiveEnterpriseInstalls(organizationId);
+
     return slackRow;
   });
+}
+
+/**
+ * Self-heal guard (#2148): an ACTIVE install whose installer has no
+ * `chat_user_identities` link under the install's tenant keys silently loses
+ * Builder admin tools and owner routing for that installer. The claim flow
+ * writes the link since #2136, but an install claimed before that — or a
+ * straight OAuth reinstall that never re-enters the claim flow — can miss it.
+ *
+ * Heals ONLY by copying between the install's OWN two keys (its tenant key and
+ * its Grid `enterprise_id`): both name the same install, and a Slack user id
+ * is enterprise-global in Grid, mirroring the claim flow's own rule. It never
+ * invents a Lobu user — with no existing link under either key it logs loudly
+ * instead (there is nobody to safely map the U… to). `linkChatUserIdentity`
+ * additionally refuses to re-bind an already-linked key to a different user,
+ * so a conflicting existing row is a no-op, never a takeover.
+ */
+export async function healSlackInstallerIdentityLink(args: {
+  organizationId: string;
+  /** The install's tenant key — the workspace `T…`, or `E…` for org-wide. */
+  teamId: string;
+  enterpriseId?: string | null;
+  installerUserId?: string | null;
+}): Promise<void> {
+  const installer = args.installerUserId?.trim().toUpperCase();
+  if (!installer) return;
+  try {
+    const sql = getDb();
+    const keys = [
+      ...new Set(
+        [args.teamId, ...(args.enterpriseId ? [args.enterpriseId] : [])].map(
+          (key) => key.toUpperCase()
+        )
+      ),
+    ];
+    const rows = (await sql`
+      SELECT team_id, lobu_user_id
+      FROM chat_user_identities
+      WHERE platform = ${SLACK_PROVIDER}
+        AND team_id = ANY(${pgTextArray(keys)}::text[])
+        AND platform_user_id = ${installer}
+    `) as Array<{ team_id: string; lobu_user_id: string }>;
+    const linked = new Set(rows.map((row) => row.team_id));
+    const missing = keys.filter((key) => !linked.has(key));
+    if (missing.length === 0) return;
+    if (rows.length === 0) {
+      logger.warn(
+        {
+          organizationId: args.organizationId,
+          teamId: args.teamId,
+          enterpriseId: args.enterpriseId ?? undefined,
+          installerUserId: installer,
+        },
+        "Slack install is ACTIVE but its installer has no chat identity link under any of its tenant keys — Builder admin tools and owner routing will not recognize the installer until they claim the workspace or link (#2148)"
+      );
+      return;
+    }
+    const lobuUserId = rows[0]!.lobu_user_id;
+    if (rows.some((row) => row.lobu_user_id !== lobuUserId)) {
+      logger.warn(
+        {
+          organizationId: args.organizationId,
+          teamId: args.teamId,
+          enterpriseId: args.enterpriseId ?? undefined,
+          installerUserId: installer,
+        },
+        "Slack installer identity links disagree across the install's tenant keys — refusing to self-heal (#2148)"
+      );
+      return;
+    }
+    for (const key of missing) {
+      await linkChatUserIdentity({
+        platform: SLACK_PROVIDER,
+        teamId: key,
+        platformUserId: installer,
+        lobuUserId,
+      });
+    }
+    logger.info(
+      {
+        organizationId: args.organizationId,
+        installerUserId: installer,
+        healedKeys: missing,
+      },
+      "Self-healed Slack installer identity link across the install's tenant keys (#2148)"
+    );
+  } catch (err) {
+    logger.warn(
+      {
+        organizationId: args.organizationId,
+        teamId: args.teamId,
+        error: String(err),
+      },
+      "Slack installer identity self-heal failed (non-fatal)"
+    );
+  }
+}
+
+/**
+ * Read-side detector (#2148): one org holding MULTIPLE ACTIVE Slack installs
+ * that share a Grid `enterprise_id` — the `E…` org-wide + `T…` per-workspace
+ * pair that fragments connection-id-anchored bindings. Reads
+ * `app_installations.metadata->>'enterprise_id'` (populated at install/claim
+ * time); the projection's `config->'chatMetadata'->>'enterpriseId'` is empty
+ * on pre-existing prod rows and is deliberately not consulted. Visibility
+ * ONLY — no write-path mutation: routing precedence (exact-team → org-wide →
+ * sole-active) already delivers deterministically, and bindings resolve by
+ * workspace identity, so coexistence is tolerated but worth an operator's eye.
+ */
+export async function detectSlackDualActiveEnterpriseInstalls(
+  organizationId: string
+): Promise<void> {
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT
+        ai.metadata->>'enterprise_id' AS enterprise_id,
+        count(*)::int AS active_installs,
+        bool_or((ai.metadata->'is_enterprise_install') = 'true'::jsonb)
+          AS has_org_wide,
+        string_agg(
+          COALESCE(ai.metadata->>'external_id', '?') || '=' || ai.external_tenant_id,
+          ', ' ORDER BY ai.id
+        ) AS installs
+      FROM app_installations ai
+      WHERE ai.provider = ${SLACK_PROVIDER}
+        AND ai.provider_app_id = ${SLACK_PROVIDER_APP_ID}
+        AND ai.status = 'active'
+        AND ai.organization_id = ${organizationId}
+        AND ai.metadata->>'enterprise_id' IS NOT NULL
+      GROUP BY 1
+      HAVING count(*) > 1
+    `) as Array<{
+      enterprise_id: string;
+      active_installs: number;
+      has_org_wide: boolean;
+      installs: string;
+    }>;
+    for (const row of rows) {
+      logger.warn(
+        {
+          organizationId,
+          enterpriseId: row.enterprise_id,
+          activeInstalls: row.active_installs,
+          hasOrgWide: row.has_org_wide,
+          installs: row.installs,
+        },
+        row.has_org_wide
+          ? "Slack Grid: org holds an org-wide (E…) AND per-workspace (T…) ACTIVE install for one enterprise — bindings resolve by workspace identity, routing precedence disambiguates (#2148)"
+          : "Slack Grid: org holds multiple per-workspace ACTIVE installs sharing one enterprise — expected for multi-workspace Grids, listed for visibility (#2148)"
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { organizationId, error: String(err) },
+      "Slack dual-active enterprise install detector failed (non-fatal)"
+    );
+  }
 }
 
 /** Resolve a Slack install by its stable `slackinst-<uuid>` external id. */
@@ -694,9 +869,10 @@ export async function deleteSlackInstall(
   const row = await store.resolveByExternalId(SLACK_PROVIDER, id);
   const orgId = row?.organizationId;
   await store.deleteByExternalId(SLACK_PROVIDER, id);
-  // Soft-delete the connections projection so the runtime stops reading it (a
-  // connections HIT would otherwise shadow the now-deleted install — the
-  // read-fallback only covers a MISS). Slug-scoped: slackinst- ids are unique.
+  // Soft-delete the connections projection so the runtime stops reading it —
+  // the chat runtime resolves `connections` rows only (no install
+  // read-fallback exists), so a still-live projection would keep routing
+  // events to the deleted install. Slug-scoped: slackinst- ids are unique.
   await getDb()`
     UPDATE connections SET deleted_at = now(), updated_at = now()
     WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'

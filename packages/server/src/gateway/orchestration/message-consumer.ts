@@ -43,7 +43,11 @@ import {
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
-import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections-projection.js";
+import { resolveSlackConnectionEnterpriseId } from "../../lobu/stores/chat-workspace-identity.js";
+import {
+  resolveActiveChatConnectionTenant,
+  runtimeConnectionIdToSlug,
+} from "../../lobu/stores/connections-projection.js";
 import { getDb } from "../../db/client.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
@@ -110,12 +114,14 @@ export async function resolveBuilderAdminTools(args: {
    */
   teamId?: string;
   /**
-   * Optional second team key to try when the first miss (e.g. Slack connection
-   * `external_tenant_id` = Grid enterprise `E…` while the event carries a
-   * workspace `T…`). Only an exact row under that key counts — never a
-   * cross-team unique-user collapse.
+   * Optional further team keys to try when the first misses — the Slack
+   * connection's `external_tenant_id` and its install's Grid enterprise id
+   * (`E…`), which is where identity rows land when the workspace was claimed
+   * through an org-wide install while events carry the workspace `T…`. Each is
+   * an exact row lookup under that key only — never a cross-team unique-user
+   * collapse.
    */
-  alternateTeamId?: string;
+  alternateTeamIds?: readonly string[];
 }): Promise<string[] | undefined> {
   if (!args.agentId || !args.organizationId || !args.userId) return undefined;
   try {
@@ -129,17 +135,16 @@ export async function resolveBuilderAdminTools(args: {
     let lobuUserId: string | null | undefined = isChatPlatform
       ? await resolveChatUserIdentity(platform, args.teamId, args.userId)
       : args.userId;
-    if (
-      !lobuUserId &&
-      isChatPlatform &&
-      args.alternateTeamId &&
-      args.alternateTeamId !== args.teamId
-    ) {
-      lobuUserId = await resolveChatUserIdentity(
-        platform,
-        args.alternateTeamId,
-        args.userId,
-      );
+    if (!lobuUserId && isChatPlatform) {
+      for (const alternateTeamId of args.alternateTeamIds ?? []) {
+        if (alternateTeamId === args.teamId) continue;
+        lobuUserId = await resolveChatUserIdentity(
+          platform,
+          alternateTeamId,
+          args.userId,
+        );
+        if (lobuUserId) break;
+      }
     }
     if (!lobuUserId) return undefined;
     const sql = getDb();
@@ -176,12 +181,16 @@ export async function resolveBuilderAdminTools(args: {
  *   E…). `routingTeamId` is a ROUTING key (platform name for DMs, channel id
  *   for groups — see message-handler-bridge `payloadTeamId`), NOT a workspace
  *   id, so it is only the fallback that keeps non-Slack callers working.
- * - `alternateTeamId`: Grid enterprise installs key connections + some identity
- *   rows on E… while events carry the workspace T…. The connection's tenant is
- *   offered as an exact second key only — never a global U… collapse — and is
- *   omitted when it would duplicate `teamId`.
+ * - `alternateTeamIds`: Grid enterprise installs key connections + some
+ *   identity rows on E… while events carry the workspace T…. Two exact second
+ *   keys are offered — the connection's own tenant, and the ACTIVE install's
+ *   `enterprise_id` from `app_installations.metadata` (#2148: when the
+ *   workspace also has a per-workspace `T…` row routing the message, the
+ *   connection tenant equals the event team and only the install metadata
+ *   still names the `E…` the identity row was claimed under). Exact keys
+ *   only — never a global U… collapse — and never duplicating `teamId`.
  *
- * Fails OPEN on the alternate only (undefined ⇒ the grant just falls back to
+ * Fails OPEN on the alternates only (empty ⇒ the grant just falls back to
  * the primary key); it never invents a team, so it cannot over-grant.
  */
 export async function resolveGrantTeamKeys(args: {
@@ -189,7 +198,7 @@ export async function resolveGrantTeamKeys(args: {
   organizationId?: string;
   routingTeamId?: string;
   platformMetadata?: Record<string, unknown>;
-}): Promise<{ teamId?: string; alternateTeamId?: string }> {
+}): Promise<{ teamId?: string; alternateTeamIds: string[] }> {
   const teamId =
     platformMetadataString(args.platformMetadata, "teamId") ?? args.routingTeamId;
   const connectionId = platformMetadataString(
@@ -197,29 +206,38 @@ export async function resolveGrantTeamKeys(args: {
     "connectionId",
   );
   if (args.platform !== "slack" || !args.organizationId || !connectionId) {
-    return { teamId };
+    return { teamId, alternateTeamIds: [] };
   }
   try {
-    // Scoped + fail-closed in the store (see `resolveActiveChatConnectionTenant`):
-    // org + runtime connection id + connector, and active chat rows only, so a
-    // reused slug or a paused install can never supply the alternate team for
-    // this privilege grant.
+    // Scoped + fail-closed in the stores (see `resolveActiveChatConnectionTenant`
+    // and `resolveSlackConnectionEnterpriseId`): org + runtime connection id +
+    // connector, and active rows only, so a reused slug or a paused install can
+    // never supply an alternate team for this privilege grant.
     const tenant = await resolveActiveChatConnectionTenant(
       getDb(),
       args.organizationId,
       connectionId,
       "slack",
     );
-    return {
-      teamId,
-      alternateTeamId: tenant && tenant !== teamId ? tenant : undefined,
-    };
+    const enterpriseId = await resolveSlackConnectionEnterpriseId(
+      getDb(),
+      args.organizationId,
+      runtimeConnectionIdToSlug(connectionId),
+    );
+    const alternateTeamIds = [
+      ...new Set(
+        [tenant, enterpriseId].filter(
+          (key): key is string => typeof key === "string" && key !== teamId,
+        ),
+      ),
+    ];
+    return { teamId, alternateTeamIds };
   } catch (err) {
     logger.warn(
       { err, organizationId: args.organizationId, connectionId },
       "Failed to resolve alternate Slack tenant for Builder admin grant",
     );
-    return { teamId };
+    return { teamId, alternateTeamIds: [] };
   }
 }
 
@@ -513,7 +531,7 @@ export class MessageConsumer {
       // Builder admin-tool grant: only the org's system agent, only when the
       // human driving this turn is an owner/admin. Fails closed.
       //
-      const { teamId: workspaceTeamId, alternateTeamId } =
+      const { teamId: workspaceTeamId, alternateTeamIds } =
         await resolveGrantTeamKeys({
           platform: data.platform,
           organizationId: data.organizationId,
@@ -526,7 +544,7 @@ export class MessageConsumer {
         userId: data.userId,
         platform: data.platform,
         teamId: workspaceTeamId,
-        alternateTeamId,
+        alternateTeamIds,
       });
 
       // Resolve THIS CONVERSATION's pinned runtime provider from its sandbox.

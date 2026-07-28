@@ -2,6 +2,7 @@ import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
 import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
+import { resolveChatWorkspaceAliases } from "../lobu/stores/chat-workspace-identity";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
 import {
   type BehaviorEventRunResult,
@@ -70,7 +71,17 @@ export async function findMatchingBehaviorActivations(
   organizationId: string,
   signal: ConnectorTriggerSignal,
   db: DbClient = getDb(),
-  options?: { crossOrganization?: boolean },
+  options?: {
+    crossOrganization?: boolean;
+    /**
+     * Same-workspace sibling connection ids for the signal's connection
+     * (#2148, `lobu/stores/chat-workspace-identity`). A trigger anchored on
+     * any of them matches too, so a binding survives its workspace being
+     * re-recorded under the other Slack Grid tenant key. Omitted by
+     * webhook/poller callers — exact-connection behavior is unchanged.
+     */
+    connectionIdAliases?: readonly number[];
+  },
 ): Promise<MatchingBehaviorActivation[]> {
   // Coarse GIN needle: kind + connector_key. When the signal carries a
   // connection_id, match that connection's triggers OR connector-wide triggers
@@ -85,10 +96,24 @@ export async function findMatchingBehaviorActivations(
     ? db``
     : db`AND w.organization_id = ${organizationId}`;
   const connectionId = signal.connection_id;
-  const triggerFilter =
+  const connectionIdArms =
     connectionId != null
+      ? [
+          ...new Set<number>([
+            connectionId,
+            ...(options?.connectionIdAliases ?? []),
+          ]),
+        ]
+      : [];
+  const triggerFilter =
+    connectionIdArms.length > 0
       ? db`(
-          w.triggers @> ${db.json([{ ...baseNeedle, connection_id: connectionId }])}::jsonb
+          ${connectionIdArms
+            .map(
+              (id) =>
+                db`w.triggers @> ${db.json([{ ...baseNeedle, connection_id: id }])}::jsonb`,
+            )
+            .reduce((acc, arm) => db`${acc} OR ${arm}`)}
           OR EXISTS (
             SELECT 1
             FROM jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) t
@@ -125,6 +150,7 @@ export async function findMatchingBehaviorActivations(
           candidate.kind === "event",
       ),
       signal,
+      { connectionIdAliases: options?.connectionIdAliases },
     );
     if (!trigger) continue;
     matches.push({
@@ -146,28 +172,38 @@ export async function findMatchingBehaviorActivations(
  * Resolve a Chat SDK runtime id to the integer connection id used by Behavior
  * triggers, then perform the normal connector-neutral match. Runtime ids are
  * deliberately stable slugs (for example `slackinst-…`), not database ids.
+ *
+ * Matching is workspace-identity-first (#2148): the routed connection's
+ * same-workspace siblings (a Slack Grid `E…` org-wide row coexisting with a
+ * `T…` per-workspace row) are offered as alias anchors, so a binding written
+ * against either sibling keeps matching whichever row currently routes the
+ * workspace. `signal.connection_id` stays the ROUTED connection's id — only
+ * trigger matching widens, never routing.
  */
 export async function planBehaviorActivationsForRuntimeConnection(
   args: RuntimeConnectionBehaviorLookup,
   db: DbClient = getDb(),
 ): Promise<BehaviorActivationPlan> {
-  const connections = await db<{ id: number }>`
-		SELECT id
-		FROM connections
-		WHERE organization_id = ${args.connectionOrganizationId}
-		  AND slug = ${runtimeConnectionIdToSlug(args.runtimeConnectionId)}
-		  AND connector_key = ${args.signal.connector_key}
-		  AND deleted_at IS NULL
-		LIMIT 1
-  `;
-  const connectionId = connections[0]?.id;
-  if (connectionId == null) return planBehaviorActivations(args.signal, []);
-  const signal = { ...args.signal, connection_id: Number(connectionId) };
+  const aliases = await resolveChatWorkspaceAliases(
+    db,
+    args.connectionOrganizationId,
+    { slug: runtimeConnectionIdToSlug(args.runtimeConnectionId) },
+  );
+  if (
+    aliases == null ||
+    aliases.anchorConnectorKey !== args.signal.connector_key
+  ) {
+    return planBehaviorActivations(args.signal, []);
+  }
+  const signal = { ...args.signal, connection_id: aliases.anchorId };
   const matches = await findMatchingBehaviorActivations(
     args.connectionOrganizationId,
     signal,
     db,
-    { crossOrganization: args.crossOrganization },
+    {
+      crossOrganization: args.crossOrganization,
+      connectionIdAliases: aliases.connectionIds,
+    },
   );
   return planBehaviorActivations(signal, matches);
 }

@@ -11,12 +11,20 @@ import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 function matchesTrigger(
   trigger: BehaviorEventTrigger,
   signal: ConnectorTriggerSignal,
+  options?: MatchingBehaviorTriggerOptions,
 ): boolean {
   if (trigger.connector_key !== signal.connector_key) return false;
   if (signal.unchanged && trigger.skip_if_unchanged !== false) return false;
   if (
     trigger.connection_id !== undefined &&
-    trigger.connection_id !== signal.connection_id
+    trigger.connection_id !== signal.connection_id &&
+    // Workspace-identity aliases (#2148): a Slack Grid workspace may be served
+    // by an `E…`-keyed org-wide row AND a `T…`-keyed per-workspace row at
+    // once. A trigger anchored on either sibling connection id still belongs
+    // to this workspace's messages. Identity-first with connection-id
+    // fallback: the exact-id check above stays authoritative when no alias
+    // set is supplied, so non-chat callers are byte-for-byte unchanged.
+    !options?.connectionIdAliases?.includes(trigger.connection_id)
   ) {
     return false;
   }
@@ -45,10 +53,21 @@ function matchesTrigger(
   });
 }
 
+/**
+ * Options for {@link matchingBehaviorTriggers}. `connectionIdAliases` is the
+ * routed connection's same-workspace sibling ids (see
+ * `lobu/stores/chat-workspace-identity`); a trigger anchored on any of them
+ * matches in addition to the signal's own `connection_id`.
+ */
+export interface MatchingBehaviorTriggerOptions {
+  connectionIdAliases?: readonly number[];
+}
+
 /** Select event activations independently from a Behavior's context sources. */
 export function matchingBehaviorTriggers(
   triggers: BehaviorEventTrigger[],
   signal: ConnectorTriggerSignal,
+  options?: MatchingBehaviorTriggerOptions,
 ): BehaviorEventTrigger[] {
-  return triggers.filter((trigger) => matchesTrigger(trigger, signal));
+  return triggers.filter((trigger) => matchesTrigger(trigger, signal, options));
 }

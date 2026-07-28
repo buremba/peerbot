@@ -6,6 +6,7 @@
  */
 
 import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
+import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
 
 export interface ConnectorMetadata {
@@ -30,6 +31,13 @@ export interface ConnectorMetadata {
     platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
     scopes?: string[];
   } | null;
+  /**
+   * What a connection of this connector contributes to the AGENT sandbox (nix
+   * packages, credential-backed env vars, egress domains). Persisted verbatim to
+   * `connector_definitions.agent_tooling`; the deployment resolver reads it from
+   * there, never from connector code.
+   */
+  agentTooling?: ConnectorAgentTooling | null;
   /**
    * Whether the concrete runtime class OVERRIDES `execute()` (i.e. owns its own
    * `execute` on its prototype rather than inheriting the base class's rejecting
@@ -114,6 +122,7 @@ async function main() {
       openapiConfig: def.openapiConfig || null,
       requiredCapability: def.requiredCapability || null,
       runtime: def.runtime || null,
+      agentTooling: def.agentTooling || null,
       supportsExecute,
     };
 

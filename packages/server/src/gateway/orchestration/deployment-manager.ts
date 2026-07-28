@@ -41,6 +41,12 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
+import {
+  isReservedAgentToolingEnvName,
+  resolveAgentTooling,
+  type ResolvedAgentTooling,
+} from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { getInternalGatewayUrl } from "../config/index.js";
 
@@ -689,6 +695,13 @@ const SECRET_PLACEHOLDER_TTL_SECONDS = (() => {
 const GRANT_SYNC_CACHE_MAX = 1000;
 
 /**
+ * Stand-in used when no lease registry is wired. Registering nothing means
+ * `mintFor` always returns null, so agent tooling still contributes its
+ * packages and domains while every lease var is omitted.
+ */
+const EMPTY_LEASE_REGISTRY = new CredentialLeaseRegistry();
+
+/**
  * Nix binary-cache hosts auto-allowed while an agent has a Nix environment
  * configured. Config-derived like `networkConfig` domains: granted by the
  * sync while `nixConfig` is present, reconciled away when it is removed.
@@ -835,6 +848,12 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
+   * Mints credential leases for connector-contributed agent tooling.
+   * Unset (tests, or a gateway with no lease providers wired) means connections
+   * contribute their packages and domains but no credentials.
+   */
+  protected leaseRegistry?: CredentialLeaseRegistry;
+  /**
    * Per-(org, agent) cache of the last-synced `preApprovedTools` patterns,
    * used to diff tool grants/revokes (domains reconcile against Postgres
    * instead — see syncNetworkConfigGrants). Keyed by `org|agent` — agent
@@ -912,6 +931,14 @@ export class DeploymentManager {
    */
   setPolicyStore(store: PolicyStore): void {
     this.policyStore = store;
+  }
+
+  /**
+   * Inject the credential-lease registry used to mint credentials for
+   * connector-contributed agent tooling.
+   */
+  setCredentialLeaseRegistry(registry: CredentialLeaseRegistry): void {
+    this.leaseRegistry = registry;
   }
 
   protected getDispatcherHost(): string {
@@ -1404,12 +1431,19 @@ export class DeploymentManager {
    * (`/a/{agentId}`) and the provider slug.
    *
    * Non-provider secrets use UUID placeholders stored in the secret-proxy.
+   *
+   * `preMaterializedSecrets` contains connector-tooling values that are already
+   * safe for the worker: short-lived credential leases that expire on their own.
+   * The value comparison matters because an operator override with the same env
+   * name is still a durable secret and must go through normal placeholder
+   * injection.
    */
   private async injectSecretPlaceholders(
     envVars: Record<string, string>,
     agentId: string,
     deploymentName: string,
-    context?: ProviderCredentialContext
+    context?: ProviderCredentialContext,
+    preMaterializedSecrets?: Readonly<Record<string, string>>
   ): Promise<Record<string, string>> {
     // Tests that exercise deployment lifecycle without a secret store can
     // skip placeholder injection (no secrets to swap).
@@ -1427,6 +1461,7 @@ export class DeploymentManager {
     for (const [key, value] of Object.entries(envVars)) {
       if (!value || !isSecretEnvVar(key, this.providerModules)) continue;
       if (key === "WORKER_TOKEN") continue;
+      if (preMaterializedSecrets?.[key] === value) continue;
       // Some providers (e.g. Bedrock) authenticate workers by JWT and
       // legitimately put the worker's own WORKER_TOKEN into the credential
       // env var — the gateway verifies it on the incoming request. In that
@@ -1490,6 +1525,46 @@ export class DeploymentManager {
   }
 
   /**
+   * Resolve what the org's connections contribute to this agent's sandbox.
+   *
+   * Fails soft by design: connector tooling is an enhancement, so a resolution
+   * error (DB blip, malformed declaration, provider outage) must degrade to "no
+   * contribution" rather than block the deployment. The agent then runs without
+   * the CLI and says so, instead of the user seeing a worker that never starts.
+   */
+  private async resolveConnectorAgentTooling(
+    messageData: MessagePayload,
+    deploymentName: string
+  ): Promise<ResolvedAgentTooling> {
+    const empty: ResolvedAgentTooling = {
+      packages: [],
+      env: {},
+      domains: [],
+    };
+    const { agentId, organizationId } = messageData;
+    if (!agentId || !organizationId) return empty;
+
+    try {
+      return await resolveAgentTooling({
+        agentId,
+        organizationId,
+        deploymentName,
+        // No registry wired (tests, or a gateway with no lease providers) still
+        // contributes packages and domains — an empty registry mints nothing,
+        // so lease vars are simply absent rather than the whole contribution.
+        leaseRegistry: this.leaseRegistry ?? EMPTY_LEASE_REGISTRY,
+        runId: messageData.runId,
+      });
+    } catch (error) {
+      logger.warn(
+        { agentId, organizationId, deploymentName, error },
+        "Failed to resolve connector-contributed agent tooling — deploying without it"
+      );
+      return empty;
+    }
+  }
+
+  /**
    * Generate environment variables common to all deployment types.
    * Orchestrates the focused helpers above.
    */
@@ -1537,6 +1612,43 @@ export class DeploymentManager {
           })
         : {};
 
+    const dispatcherHost = this.getDispatcherHost();
+
+    // Connector-contributed agent tooling: an active connection whose connector
+    // declares `agentTooling` puts its CLI on PATH, its credential in the env,
+    // and its hosts on the egress allowlist. Resolved BEFORE the grant sync and
+    // folded into `networkConfig.allowedDomains` — that sync reconciles domains
+    // against Postgres and revokes anything outside the expected set, so a
+    // domain granted after it would be revoked on the very next message.
+    const agentTooling = await this.resolveConnectorAgentTooling(
+      validated,
+      deploymentName
+    );
+    if (agentTooling.domains.length > 0) {
+      validated.networkConfig = {
+        ...validated.networkConfig,
+        allowedDomains: [
+          ...new Set([
+            ...(validated.networkConfig?.allowedDomains ?? []),
+            ...agentTooling.domains,
+          ]),
+        ],
+      };
+    }
+    if (agentTooling.packages.length > 0) {
+      // Union, never replace: the agent's own packages and its enabled skills'
+      // are hard requirements of code that will run in the same sandbox.
+      validated.nixConfig = {
+        ...validated.nixConfig,
+        packages: [
+          ...new Set([
+            ...(validated.nixConfig?.packages ?? []),
+            ...agentTooling.packages,
+          ]),
+        ],
+      };
+    }
+
     const workerToken = buildDeploymentWorkerToken({
       userId,
       conversationId,
@@ -1552,11 +1664,10 @@ export class DeploymentManager {
       sandboxId: runtimeSelection.sandboxId,
       // Same allowlist synced to the grant store / JUST_BASH_ALLOWED_DOMAINS — so
       // the runtime route reads it off the signed token, not the worker's body.
-      allowedDomains: messageData?.networkConfig?.allowedDomains,
-      deniedDomains: messageData?.networkConfig?.deniedDomains,
+      allowedDomains: validated.networkConfig?.allowedDomains,
+      deniedDomains: validated.networkConfig?.deniedDomains,
     });
 
-    const dispatcherHost = this.getDispatcherHost();
     // Sync network domains (allow + deny + nix caches), pre-approved MCP
     // tool patterns, and the egress judge policy — single-sourced with the
     // per-message refresh path so create and update can never diverge.
@@ -1578,6 +1689,26 @@ export class DeploymentManager {
       proxyUrl,
       dispatcherHost
     );
+
+    // Connector-contributed credentials. Set before the module/config layers so
+    // an operator-configured value for the same name still wins — an explicit
+    // override must beat an implicit contribution.
+    //
+    // The reserved-name check is defense in depth: the resolver already drops
+    // these, but this merge writes over an ALREADY-BUILT base env, so a name
+    // that slipped through would replace gateway-owned runtime state
+    // (WORKER_TOKEN, the proxy vars, PATH…) rather than merely add to it.
+    for (const [key, value] of Object.entries(agentTooling.env)) {
+      if (isReservedAgentToolingEnvName(key)) {
+        logger.error(
+          { agentId, deploymentName, env_name: key },
+          "Refusing to overwrite a reserved worker env var with connector-contributed tooling"
+        );
+        delete agentTooling.env[key];
+        continue;
+      }
+      envVars[key] = value;
+    }
 
     // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {
@@ -1646,7 +1777,8 @@ export class DeploymentManager {
       envVars,
       agentId,
       deploymentName,
-      providerContext
+      providerContext,
+      agentTooling.env
     );
 
     // Inject provider metadata into agentOptions so the worker can configure

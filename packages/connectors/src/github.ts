@@ -337,9 +337,19 @@ export default class GitHubConnector extends ConnectorRuntime {
     key: 'github',
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
-    version: '1.2.0',
+    version: '1.3.0',
     behaviorEvents: GITHUB_BEHAVIOR_EVENTS,
     faviconDomain: 'github.com',
+    // A GitHub connection gives the agent's sandbox an authenticated `gh`.
+    // GH_TOKEN is a LEASE: the App installation token is derived per deployment
+    // and expires (~1h), so the real value may be injected without ever handing
+    // the worker a durable credential. `gh` also shells out to `git` over HTTPS,
+    // and both hosts are deny-by-default on the worker proxy without these grants.
+    agentTooling: {
+      nix: { packages: ['gh'] },
+      env: [{ name: 'GH_TOKEN', credential: 'lease' }],
+      domains: ['api.github.com', 'github.com'],
+    },
     webhook: {
       signatureHeader: 'x-hub-signature-256',
       algorithm: 'sha256',

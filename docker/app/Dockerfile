@@ -140,9 +140,16 @@ FROM node:22-slim AS runtime
 
 WORKDIR /app
 
-# curl for health checks, bun for tsx-equivalent, Chromium deps for connectors
+# curl for health checks, git/gh for GitHub connector agent tooling, bun for
+# tsx-equivalent, Chromium deps for connectors.
+#
+# bubblewrap is what makes the contributed CLIs REACHABLE: the embedded worker
+# registers spawned binaries only when it has an exec sandbox (probeSandbox ->
+# bwrap) or an explicit unsandboxed opt-in. Without it `gh` sits in /usr/bin and
+# every agent invocation exits 127 — the credential works and the command does
+# not.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates unzip \
+      curl ca-certificates git gh unzip bubblewrap \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
       libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
       libgbm1 libpango-1.0-0 libcairo2 libasound2 libwayland-client0 \

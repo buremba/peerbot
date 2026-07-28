@@ -124,9 +124,34 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
 ]);
 
 /**
+ * Executables installed by a declared nix package, for the packages whose CLI
+ * is baked into the runtime image (docker/app/Dockerfile) instead of being
+ * provisioned under /nix/store.
+ *
+ * A package attribute does NOT name its commands (`ripgrep` installs `rg`), so
+ * this listing is explicit. Inferring the command from the attribute registers
+ * a name that does not exist (`ripgrep`) and leaves the real binary
+ * unregistered.
+ * Nix-provisioned packages need no entry: the /nix/store scan in
+ * `discoverBinaries` already finds their real binaries whatever they are named.
+ * A package with no entry contributes nothing outside /nix/store, which fails
+ * closed — baking a new CLI into the image is already an image change, so it
+ * lands here in the same commit.
+ */
+const IMAGE_BAKED_EXECUTABLES: ReadonlyMap<string, readonly string[]> = new Map(
+  [
+    ["git", ["git"]],
+    ["gh", ["gh"]],
+    ["ripgrep", ["rg"]],
+  ]
+);
+
+/**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
- * 2. Known CLI tools (lobu) from anywhere on PATH
+ * 2. `lobu`, plus the executables of the NIX_PACKAGES entries listed in
+ *    IMAGE_BAKED_EXECUTABLES, from anywhere on PATH — a connector-contributed
+ *    CLI may be baked into the image rather than provisioned by nix
  *
  * UNSANDBOXED_INTERPRETERS are filtered out unless the spawned worker has
  * LOBU_ALLOW_UNSANDBOXED_EXEC=1 in its env (set explicitly per-agent for
@@ -160,8 +185,25 @@ function discoverBinaries(): Map<string, string> {
     }
   }
 
-  // Discover known CLI tools from full PATH
-  for (const name of ["lobu"]) {
+  // Discover known CLI tools, plus the commands of the declared image-baked
+  // packages, from the FULL PATH rather than only /nix/store.
+  //
+  // `NIX_PACKAGES` is the declared tooling for this deployment. A declared tool
+  // is not necessarily provisioned by nix: the production image bakes `git` and
+  // `gh` into /usr/bin (see docker/app/Dockerfile), which is on PATH but not
+  // under /nix/store, so the scan above never sees it. Without this the
+  // contributed CLI is present on the filesystem and still exits 127 through
+  // the agent's bash — the credential works and the command does not.
+  const contributed = (process.env.NIX_PACKAGES || "")
+    .split(",")
+    .map((name) => name.trim())
+    // A nix attribute path (`pkgs.gh`, `nixpkgs#gh`) names the package; the
+    // commands it installs are NOT derivable from that name, so they come from
+    // the explicit listing above.
+    .map((name) => name.split(/[.#]/).pop() ?? "")
+    .flatMap((pkg) => IMAGE_BAKED_EXECUTABLES.get(pkg) ?? []);
+
+  for (const name of ["lobu", ...contributed]) {
     if (binaries.has(name)) continue;
     if (!isAllowed(name)) continue;
     for (const dir of pathDirs) {
@@ -512,6 +554,17 @@ export async function createEmbeddedBashOps(
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
 
+  // A REAL per-exec sandbox is required. The app container hosts every worker
+  // and the gateway as the same user, so a shell-capable CLI (gh runs
+  // extensions and aliases) would otherwise read sibling `workspaces/{agentId}`
+  // directories and the gateway's own environment — reproduced: a registered
+  // tool read another tenant's workspace file.
+  //
+  // An earlier revision of this branch added a `LOBU_POD_IS_SANDBOX` bypass on
+  // the theory that the pod boundary was isolation enough. It is not: the
+  // boundary is per-POD, and the tenants share the pod. Deployments that need
+  // contributed CLIs must give bubblewrap a seccomp profile that permits
+  // `unshare` (see charts/lobu/values.yaml), not disable the sandbox.
   const registerSpawnedBinaries =
     sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
 
@@ -539,8 +592,11 @@ export async function createEmbeddedBashOps(
   } else if (!allowUnsandboxedExec) {
     console.warn(
       `[embedded] Exec sandbox unavailable; not registering spawned binary ` +
-        `commands. Set LOBU_ALLOW_UNSANDBOXED_EXEC=1 to allow host-privileged ` +
-        `spawned binaries.`
+        `commands, so connector-contributed CLIs will exit 127. Give ` +
+        `bubblewrap a seccomp profile permitting unshare (workers share this ` +
+        `container, so the pod boundary is NOT per-tenant isolation). ` +
+        `LOBU_ALLOW_UNSANDBOXED_EXEC=1 skips the sandbox entirely and is a ` +
+        `per-agent decision for trusted agents, never a deployment default.`
     );
   }
 

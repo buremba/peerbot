@@ -51,6 +51,7 @@ import {
   isWatcherConversationId,
   upsertConversation,
 } from "../services/conversations-store.js";
+import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
 
@@ -561,6 +562,8 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
+      await this.foldConnectorTooling(data, traceId);
+
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
         conversationId: effectiveConversationId,
@@ -991,6 +994,58 @@ export class MessageConsumer {
    * Uses shared retry utility with linear backoff + jitter
    * Uses an advisory lock to prevent concurrent duplicate deployment creation
    */
+  /**
+   * Fold the org's connector-contributed packages and domains into the queue
+   * payload, in place.
+   *
+   * MUST run before the per-run worker token is minted: a remote runtime trusts
+   * only the signed claim, never the payload body. Packages are folded as well
+   * as domains because `syncNetworkConfigGrants` reconciles this payload against
+   * the grant store on the warm path and derives the nix binary-cache hosts from
+   * `nixConfig.packages` — folding domains alone lets that reconcile revoke the
+   * substituter hosts the contributed packages depend on.
+   *
+   * Never throws: a resolution failure leaves the payload untouched and the
+   * sandbox runs without the contribution, rather than failing the turn.
+   */
+  protected async foldConnectorTooling(
+    data: MessagePayload,
+    traceId: string
+  ): Promise<void> {
+    try {
+      const contribution = await resolveAgentToolingDeclaration({
+        organizationId: data.organizationId,
+      });
+      if (contribution.domains.length > 0) {
+        data.networkConfig = {
+          ...data.networkConfig,
+          allowedDomains: [
+            ...new Set([
+              ...(data.networkConfig?.allowedDomains ?? []),
+              ...contribution.domains,
+            ]),
+          ],
+        };
+      }
+      if (contribution.packages.length > 0) {
+        data.nixConfig = {
+          ...data.nixConfig,
+          packages: [
+            ...new Set([
+              ...(data.nixConfig?.packages ?? []),
+              ...contribution.packages,
+            ]),
+          ],
+        };
+      }
+    } catch (error) {
+      logger.warn(
+        { traceId, agentId: data.agentId, error: getErrorMessage(error) },
+        "Failed to resolve connector tooling contribution; continuing without it"
+      );
+    }
+  }
+
   private async ensureWorkerExists(
     deploymentName: string,
     data: MessagePayload,

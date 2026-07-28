@@ -4,7 +4,10 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { resetSandboxProbeForTests } from "../embedded/exec-sandbox";
+import {
+  probeSandboxStrategy,
+  resetSandboxProbeForTests,
+} from "../embedded/exec-sandbox";
 import {
   buildBinaryInvocation,
   createEmbeddedBashOps,
@@ -20,6 +23,7 @@ const originalEnv = {
   JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
   HTTP_PROXY: process.env.HTTP_PROXY,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
+  NIX_PACKAGES: process.env.NIX_PACKAGES,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -30,6 +34,47 @@ function restoreEnv(name: keyof typeof originalEnv): void {
     process.env[name] = value;
   }
 }
+
+/**
+ * Turn spawned-binary registration on without relying on an OS sandbox.
+ *
+ * `createEmbeddedBashOps` registers spawned binaries only when a real per-exec
+ * sandbox is present OR the explicit unsandboxed opt-in is set. Neither real
+ * sandbox can run a *fixture* binary: bwrap (Linux) binds only /usr, /bin, /lib
+ * and /nix from the host, so a fake CLI in a temp dir does not exist inside the
+ * namespace, and sandbox-exec is macOS-only. Naming sandbox-exec via
+ * LOBU_EXEC_SANDBOX on Linux is a hard error by design, which is exactly how
+ * these tests used to break CI.
+ *
+ * The opt-in flips registration on without touching discovery, which is the
+ * behaviour the tests below pin. The sandbox gate itself is pinned separately by
+ * the SECURITY test in this file.
+ */
+function registerWithoutOsSandbox(): void {
+  process.env.LOBU_EXEC_SANDBOX = "off";
+  process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+}
+
+/**
+ * Whether this host has a real per-exec sandbox (bwrap on Linux, sandbox-exec on
+ * macOS). Probed once at module load, before any test mutates the environment.
+ */
+const realSandboxAvailable = ((): boolean => {
+  const saved = process.env.LOBU_EXEC_SANDBOX;
+  delete process.env.LOBU_EXEC_SANDBOX;
+  try {
+    return probeSandboxStrategy().kind !== "none";
+  } catch {
+    return false;
+  } finally {
+    if (saved === undefined) {
+      delete process.env.LOBU_EXEC_SANDBOX;
+    } else {
+      process.env.LOBU_EXEC_SANDBOX = saved;
+    }
+    resetSandboxProbeForTests();
+  }
+})();
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -43,6 +88,7 @@ afterEach(() => {
   restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
   restoreEnv("HTTP_PROXY");
   restoreEnv("HTTPS_PROXY");
+  restoreEnv("NIX_PACKAGES");
   resetSandboxProbeForTests();
 });
 
@@ -74,6 +120,188 @@ describe("createEmbeddedBashOps", () => {
     expect(result.exitCode).not.toBe(0);
     expect(chunks.join("")).not.toContain("root:");
   });
+
+  test("REGRESSION: a connector-contributed CLI outside /nix/store is runnable", async () => {
+    // The production image bakes `git` and `gh` into /usr/bin, which is on PATH
+    // but NOT under /nix/store — and discovery only scanned /nix/store plus a
+    // hardcoded ["lobu"]. So the contributed CLI sat on the filesystem and
+    // exited 127 through the agent's bash: the credential worked and the
+    // command did not, which is the whole feature failing on the image it
+    // ships on.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-contributed-"))
+    );
+    tempDirs.push(workspace);
+
+    // Deliberately NOT under /nix/store, mirroring the image layout.
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    registerWithoutOsSandbox();
+    // What the gateway sets from the connector's declaration.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain("gh version");
+  });
+
+  test("REGRESSION: a declared package registers its command, not its name", async () => {
+    // A nix attribute does not name the command it installs: `ripgrep` installs
+    // `rg`. Deriving the command from the attribute registered `ripgrep` (which
+    // does not exist) and left `rg` unregistered, so a declared tool baked into
+    // the image was still unusable.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-pkgname-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeRg = path.join(usrBin, "rg");
+    fs.writeFileSync(fakeRg, '#!/bin/sh\necho "ripgrep 14.1.0"\n', "utf8");
+    fs.chmodSync(fakeRg, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    registerWithoutOsSandbox();
+    process.env.NIX_PACKAGES = "ripgrep";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("rg --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain("ripgrep 14.1.0");
+  });
+
+  test("an undeclared PATH binary stays unavailable", async () => {
+    // The contributed-CLI discovery must widen to DECLARED tools only. If it
+    // registered whatever is on PATH, it would undo the sandbox property the
+    // first test in this file pins.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-undeclared-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const sneaky = path.join(usrBin, "sneakytool");
+    fs.writeFileSync(sneaky, '#!/bin/sh\necho "should not run"\n', "utf8");
+    fs.chmodSync(sneaky, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    // Registration is deliberately ON here: if discovery widened to whatever is
+    // on PATH, `sneakytool` would run and print, so this stays a real assertion
+    // rather than one that passes because nothing was registered at all.
+    registerWithoutOsSandbox();
+    // `gh` is declared; `sneakytool` is not.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("sneakytool", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(chunks.join("")).not.toContain("should not run");
+  });
+
+  test("SECURITY: a declared binary stays unavailable without a real sandbox", async () => {
+    // Every worker and the gateway share the app container as the same user, so
+    // a shell-capable CLI (gh runs extensions and aliases) with no per-exec
+    // sandbox can read sibling workspaces/{agentId} directories and the
+    // gateway's environment. An earlier revision of this branch added a
+    // "the pod boundary is isolation enough" bypass; it was not — a registered
+    // tool read another tenant's workspace file. Exiting 127 is the correct,
+    // safe outcome until the deployment supplies a bwrap-capable profile.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-nosandbox-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    // Declared, and still must not run: declaration is not authorization.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(chunks.join("")).not.toContain("gh version 2.23.0");
+  });
+
+  // The one test here that genuinely needs a real sandbox: the interpreter gate
+  // and the registration gate read the same LOBU_ALLOW_UNSANDBOXED_EXEC, so the
+  // opt-in shortcut used above would unlock the very thing under test. Let the
+  // probe auto-detect instead of naming a backend, since pinning one fails
+  // closed on the other platform. This skip cannot hide a broken sandbox in CI:
+  // exec-sandbox.test.ts fails the same job under LOBU_REQUIRE_EXEC_SANDBOX=1
+  // when bwrap is missing.
+  (realSandboxAvailable ? test : test.skip)(
+    "interpreters stay gated even when declared",
+    async () => {
+      // Kept from the bot's revision: LOBU_ALLOW_UNSANDBOXED_EXEC is what unlocks
+      // node/bun/python, and DECLARING an interpreter must not substitute for it.
+      // Placed under /nix/store so discovery genuinely reaches it and rejects it.
+      const workspace = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "lobu-interp-"))
+      );
+      tempDirs.push(workspace);
+
+      const nixBin = path.join(workspace, "nix", "store", "iface", "bin");
+      fs.mkdirSync(nixBin, { recursive: true });
+      const fakeNode = path.join(nixBin, "node");
+      fs.writeFileSync(fakeNode, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
+      fs.chmodSync(fakeNode, 0o755);
+
+      process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
+      delete process.env.LOBU_EXEC_SANDBOX;
+      delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+      process.env.NIX_PACKAGES = "nodejs";
+      delete process.env.LOBU_WORKSPACE_BACKEND;
+
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+      const chunks: string[] = [];
+      const result = await ops.exec("node", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 5,
+      });
+
+      expect(chunks.join("")).not.toContain("interpreter ran");
+      expect(result.exitCode).not.toBe(0);
+    }
+  );
 
   // Built-in curl/wget are transport-only clients of the gateway egress
   // proxy: URL policy lives in the proxy (grants/denylist/SSRF/judge), not in

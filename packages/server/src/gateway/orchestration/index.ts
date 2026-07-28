@@ -13,6 +13,7 @@ import {
   getModelProviderModules,
   type ModelProviderModule,
 } from "../modules/module-system.js";
+import { getCredentialLeaseRegistry } from "../agent-tooling/registry.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import type { WritableSecretStore } from "../secrets/index.js";
@@ -62,6 +63,12 @@ export class Orchestrator {
     agentSettingsStore?: AgentSettingsStore
   ): Promise<void> {
     this.deploymentManager.setSecretStore(secretStore);
+    // Lets a connection contribute an authenticated CLI to the agent sandbox
+    // (connector `agentTooling`). Per-pod, stateless minting — no cross-replica
+    // lease state.
+    this.deploymentManager.setCredentialLeaseRegistry(
+      getCredentialLeaseRegistry()
+    );
 
     if (grantStore) {
       this.deploymentManager.setGrantStore(grantStore);

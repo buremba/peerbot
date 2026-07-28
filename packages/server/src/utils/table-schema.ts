@@ -658,7 +658,8 @@ export const QUERYABLE_SCHEMA = {
         'required_capability',
         'runtime',
         'behavior_events',
-        'supports_execute'
+        'supports_execute',
+        'agent_tooling'
       ),
     },
     // entity_relationships — org-scoped, live graph edges.

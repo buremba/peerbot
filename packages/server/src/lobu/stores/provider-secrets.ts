@@ -528,6 +528,24 @@ export async function ensureOAuthInferenceProvider(args: {
 						`) as RawInferenceProviderRow[];
 						row = updated[0] ?? existingRow;
 					}
+					// A row that is ALREADY `oauth://` can still carry `is_default`:
+					// rows predating the demote below landed that way, and this
+					// branch returns before reaching it. Clearing here is the same
+					// load-bearing repair for the same reason — an `oauth://`
+					// credential belongs to ONE user, and promotion cannot fix the
+					// flag on its own because the NOT EXISTS guard sees a default
+					// already present and no-ops, stranding the org on a model no
+					// other member and no headless run can authenticate.
+					if (row.is_default) {
+						const demoted = (await tx`
+							UPDATE inference_providers
+							SET is_default = false, updated_at = now()
+							WHERE id = ${row.id}
+							RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
+							          capabilities, has_custom_upstream, status, created_at, is_default
+						`) as RawInferenceProviderRow[];
+						row = demoted[0] ?? row;
+					}
 					const promotedId = await promoteOldestRunnableProvider(
 						tx,
 						organizationId,

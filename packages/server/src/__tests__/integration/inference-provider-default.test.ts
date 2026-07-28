@@ -352,6 +352,50 @@ describe('inference provider org default', () => {
     expect(await getOrgDefaultModel(org.id)).toBeNull();
   });
 
+  it('(j7) a row ALREADY oauth and still flagged default is repaired, not skipped', async () => {
+    const org = await newOrg();
+    await create(org.id, 'zed', 'zed-model');
+    await create(org.id, 'openai', 'gpt-4o-mini');
+
+    // First sign-in converts and demotes correctly (covered by j5).
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'zed',
+      kind: 'zed',
+      defaultModel: 'zed-model',
+    });
+    expect(await defaultSlug(org.id)).toBe('openai');
+
+    // Now recreate the legacy state this branch has to survive: an `oauth://`
+    // row that is STILL flagged default. Rows predating the demote landed this
+    // way, and a second ensureOAuthInferenceProvider call takes the
+    // already-oauth path — which returns early. If that path does not clear the
+    // flag, promotion cannot repair it either: the NOT EXISTS guard sees a
+    // default present and no-ops, stranding the org on a credential only one
+    // member can read.
+    // Two statements: `inference_providers_org_default_live` is a partial
+    // unique index, so a single UPDATE flipping both rows trips it mid-write.
+    await getDb()`
+      UPDATE inference_providers SET is_default = false
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+    `;
+    await getDb()`
+      UPDATE inference_providers SET is_default = true
+      WHERE organization_id = ${org.id} AND slug = 'zed' AND deleted_at IS NULL
+    `;
+    expect(await defaultSlug(org.id)).toBe('zed');
+
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'zed',
+      kind: 'zed',
+      defaultModel: 'zed-model',
+    });
+
+    expect(await defaultSlug(org.id)).toBe('openai');
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+  });
+
   it('(k) an explicit model resolves with a row key and static OpenAI URL', async () => {
     const org = await newOrg();
     await create(org.id, 'openai');

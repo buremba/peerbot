@@ -1,0 +1,38 @@
+name: Release Image Audit
+
+# A release that publishes no image is invisible from inside the pipeline: a
+# build-images run evicted from its concurrency queue (lobu-v14.4.0,
+# 2026-07-28) fails nothing — the version tag just never appears in ghcr and
+# `latest` stays on an older build. No job inside build-images can catch a run
+# that never executes, so this audits from OUTSIDE on a schedule: the newest
+# stable GitHub release must be anonymously pullable from ghcr and `latest`
+# must be that same build. A red run here IS the alert — the same idiom as
+# supply-chain.yml and providers-live.yml. Logic lives in
+# scripts/audit-release-images.mjs so the decision table is unit-tested.
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer scheduled audit supersedes a stuck older one.
+concurrency:
+  group: release-image-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Compare the newest stable release against ghcr
+        env:
+          # Only for listing releases without rate-limit flakes; the ghcr
+          # probes are deliberately anonymous — the self-hoster pull path.
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/audit-release-images.mjs

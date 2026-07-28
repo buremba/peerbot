@@ -629,16 +629,6 @@ async function listOrgAgentsForNotice(organizationId: string): Promise<{
 }
 
 /**
- * Reply for a tenant's own OAuth-installed workspace bot (a connection with a
- * `metadata.teamId` but no owning agent) when a non-command message arrives in
- * a channel that isn't bound to one of the tenant's agents yet. Unlike a
- * preview connection there are no demo agents to offer — the tenant links their
- * own agents. Lists the org's agents and, when the public origin is configured,
- * deep-links each to its Behaviors page (where a channel is added as a Listen
- * source); also gives the CLI `lobu run` / `/lobu link <code>` path. Returns
- * null for non-Slack platforms (OAuth install is Slack-only today).
- */
-/**
  * Escape the Slack mrkdwn chars that break an inline `<url|label>` link label.
  * Agent names are user-controlled; a `>`, `<`, or `&` in a name would otherwise
  * terminate/mangle the link (Slack reads `text` as mrkdwn, and `&` is the entity
@@ -652,6 +642,20 @@ function escapeMrkdwnLabel(text: string): string {
 		.replace(/>/g, "&gt;");
 }
 
+/**
+ * Reply for a tenant's own workspace bot (a connection with no owning agent)
+ * when a non-command message arrives in a chat that isn't bound to one of the
+ * tenant's agents yet. Unlike a preview connection there are no demo agents to
+ * offer — the tenant links their own agents.
+ *
+ * Slack: lists the org's agents and, when the public origin is configured,
+ * deep-links each to its Behaviors page (where a channel is added as a Listen
+ * source); also gives the CLI `lobu run` / `/lobu link <code>` path.
+ *
+ * Every other platform (Telegram, …) gets a generic dashboard+CLI notice —
+ * there is no workspace/team concept to deep-link, and dropping silently left
+ * the user with no signal at all (#2230).
+ */
 export async function workspaceUnlinkedNotice(
 	platform: string,
 	organizationId: string,
@@ -661,8 +665,20 @@ export async function workspaceUnlinkedNotice(
 		channelName?: string;
 		connectionId?: string;
 	},
-): Promise<string | null> {
-	if (platform !== "slack") return null;
+): Promise<string> {
+	// Non-Slack platforms have no workspace/team deep links, so the notice is
+	// generic: the dashboard path plus the platform's own link command.
+	// Deliberately static — no DB/origin lookups whose failure could turn the
+	// reply back into a dead drop.
+	if (platform !== "slack") {
+		return [
+			"👋 This chat isn't linked to a Lobu agent yet.",
+			"",
+			"Link it two ways:",
+			"• In the dashboard — open an agent's Behaviors page and add this chat as a Listen source.",
+			`• From the CLI — run \`lobu run\`, then paste the \`${linkCommand(platform)} <code>\` it prints here.`,
+		].join("\n");
+	}
 
 	const header =
 		"👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.";

@@ -448,6 +448,24 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
+  test("attribution follows the RESOLVED model when the run carries no explicit ref", () => {
+    // The common shape: the run has no per-turn model, so the ref comes from
+    // `defaultModel`. Attribution must read the RESOLVED ref — deriving it from
+    // the raw (empty) argument silently skipped reattribution and reproduced the
+    // exact wrong-provider CTA this fix exists to prevent.
+    const result = resolveModelRef("", {
+      defaultModel: "gemini/gemini-2.5-flash",
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+      defaultProviderServesModel: false,
+      installedProviderRoutes: { openai: "openai", gemini: "gemini" },
+    });
+
+    expect(result.providerSlug).toBe("gemini");
+    // Routing still belongs to the gateway's published provider.
+    expect(result.provider).toBe("openai");
+  });
+
   test("an UNINSTALLED aggregator namespace never owns the CTA", () => {
     // Both gateway facts are required. Here the model was NOT matched
     // (`serves: false`, so the fallback scan picked OpenRouter), but the

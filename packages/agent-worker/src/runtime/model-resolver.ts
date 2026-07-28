@@ -319,45 +319,39 @@ export function resolveModelRef(
       modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
     // `providerSlug` targets the failure CTA ("Reconnect provider"), so it must
-    // name the provider the RUN ACTUALLY ASKED FOR, not whichever module the
-    // gateway happened to publish as `defaultProvider`. When the gateway can't
-    // match a module to the requested model it falls back to the first
-    // credentialed one (`gateway/index.ts`, the `if (!primaryProvider)` scan),
-    // so an agent pinned to `gemini/gemini-2.5-flash` on a deployment where only
-    // OpenAI is credentialed emitted a CTA pointing at
-    // `inference-provider:openai` while `?model=` correctly said `gemini/…` —
-    // sending the user to connect the WRONG provider.
+    // name the provider the run ASKED FOR — not whichever module the gateway
+    // published as `defaultProvider` via its credentialed-fallback scan
+    // (`gateway/index.ts`, `if (!primaryProvider)`). Routing (`provider`) and
+    // `modelId` are untouched.
     //
-    // Only the CTA attribution changes: `provider` (the routing decision) and
-    // `modelId` (the self-prefix strip above) are untouched, so OpenRouter-style
-    // foreign namespaces still route to the configured provider.
+    // Reattribute only when all three hold, because each alone misfires:
+    //   1. `modelId === modelRef` — the self-prefix strip above did not consume
+    //      the prefix, so the name is genuinely foreign.
+    //   2. `defaultProviderServesModel === false` — the gateway did not match
+    //      the model to `defaultProvider`. Without it, OpenRouter's own vendor
+    //      namespace ("openai/gpt-4o") would blame `openai`.
+    //   3. the prefix names an INSTALLED provider — otherwise it is an
+    //      aggregator namespace ("anthropic/…" with no Anthropic installed) and
+    //      the CTA would point at a provider absent from this deployment.
     //
-    // `modelId === modelRef` means the strip above did NOT consume the prefix,
-    // so the name is genuinely foreign rather than the provider's own id.
-    //
-    // Reattributing needs BOTH gateway facts, because each alone misfires:
-    //
-    // - `defaultProviderServesModel === false` — the gateway did not match this
-    //   model to `defaultProvider`; the credentialed-fallback scan picked it.
-    //   Without this, OpenRouter's vendor namespace ("openai/gpt-4o" while
-    //   OpenRouter serves it) would blame `openai`.
-    // - the prefix names an INSTALLED provider — otherwise the prefix is just a
-    //   namespace inside an aggregator ("anthropic/claude-sonnet-4" on a
-    //   deployment with no Anthropic provider) and the CTA would point at a
-    //   provider that does not exist here.
-    //
-    // Only when both hold is the prefix a real, reachable provider the user
-    // actually asked for. Absent `defaultProviderServesModel` (older gateway)
-    // keeps the pre-existing attribution rather than acquiring a new one.
+    // Absent `defaultProviderServesModel` (older gateway) keeps the
+    // pre-existing attribution rather than acquiring a new misattribution.
+    // Derived from the RESOLVED `modelRef`, not `normalizedRaw`: when the run
+    // carries no explicit model the ref comes from `defaultModel`, and
+    // `explicitParts` (which exists to gate behavior-override ROUTING on an
+    // explicit request) is empty — so attribution would silently fall back to
+    // the serving provider and reproduce the very bug this fixes.
+    const attributionParts = modelRef.split("/").filter(Boolean);
+    const attributionProvider = attributionParts[0];
     const requestedForeignSlug =
-      explicitParts.length >= 2 &&
-      explicitProvider &&
-      explicitProvider !== defaultProvider &&
-      explicitProvider !== defaultProviderSlug &&
+      attributionParts.length >= 2 &&
+      attributionProvider &&
+      attributionProvider !== defaultProvider &&
+      attributionProvider !== defaultProviderSlug &&
       modelId === modelRef &&
       overrides?.defaultProviderServesModel === false &&
-      overrides?.installedProviderRoutes?.[explicitProvider]
-        ? explicitProvider
+      overrides?.installedProviderRoutes?.[attributionProvider]
+        ? attributionProvider
         : undefined;
 
     return {

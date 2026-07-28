@@ -49,6 +49,8 @@ export type {
   AuthContext,
   AuthResult,
   Connection,
+  ConnectorAgentTooling,
+  ConnectorAgentToolingEnv,
   ConnectorAuthAppInstallation,
   ConnectorAuthBrowser,
   ConnectorAuthEnvField,

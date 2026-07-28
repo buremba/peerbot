@@ -51,6 +51,7 @@ import {
   isWatcherConversationId,
   upsertConversation,
 } from "../services/conversations-store.js";
+import { resolveAgentToolingDomains } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
 
@@ -560,6 +561,34 @@ export class MessageConsumer {
       // pinned to different realms). The REMOTE runtime route still reads the
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
+
+      // Connector domains must be present before the per-run token is minted:
+      // remote runtimes trust only the signed claim, never the payload body.
+      try {
+        const connectorDomains = await resolveAgentToolingDomains({
+          organizationId: data.organizationId,
+        });
+        if (connectorDomains.length > 0) {
+          data.networkConfig = {
+            ...data.networkConfig,
+            allowedDomains: [
+              ...new Set([
+                ...(data.networkConfig?.allowedDomains ?? []),
+                ...connectorDomains,
+              ]),
+            ],
+          };
+        }
+      } catch (error) {
+        logger.warn(
+          {
+            traceId,
+            agentId: data.agentId,
+            error: getErrorMessage(error),
+          },
+          "Failed to resolve connector tooling domains; continuing without them"
+        );
+      }
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,

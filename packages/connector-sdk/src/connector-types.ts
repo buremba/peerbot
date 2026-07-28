@@ -88,6 +88,61 @@ export interface ConnectorDefinition {
    * to serve this connector's runs.
    */
   runtime?: ConnectorRuntimeInfo;
+  /**
+   * What a CONNECTION of this connector contributes to the AGENT sandbox — the
+   * CLI, the env var it authenticates with, and the hosts it must reach. An
+   * App-installation-backed GitHub connection gives the sandbox an authenticated
+   * `gh`; other GitHub auth methods contribute the binary without a credential.
+   *
+   * Distinct from {@link runtime}.`nix`, which provisions the CONNECTOR WORKER's
+   * own execution environment. The two never merge: a connector may need
+   * `ffmpeg` to sync while contributing `gh` to the agent, or contribute agent
+   * tooling while running on the default fleet with no runtime deps at all.
+   */
+  agentTooling?: ConnectorAgentTooling;
+}
+
+/**
+ * Agent-sandbox contribution of a connector's connections. Resolved per
+ * deployment by the gateway: packages join the agent's nix union, `env` entries
+ * are materialized per {@link ConnectorAgentToolingEnv.credential}, and
+ * `domains` are granted on the worker's egress allowlist.
+ */
+export interface ConnectorAgentTooling {
+  /**
+   * Native tools the contributed CLI needs on PATH inside the agent sandbox, as
+   * nixpkgs attribute references (e.g. `["gh"]`). Unioned with the agent's own
+   * packages and its enabled skills' — never last-writer-wins.
+   */
+  nix?: { packages: string[] };
+  /** Environment variables the contributed tooling authenticates with. */
+  env?: ConnectorAgentToolingEnv[];
+  /**
+   * Hosts the contributed tooling must reach, added to the agent's egress
+   * grants for the lifetime of the deployment (e.g.
+   * `["api.github.com", "github.com"]`). Worker egress is deny-by-default, so a
+   * CLI with no domain grant authenticates and then hangs on the proxy.
+   */
+  domains?: string[];
+}
+
+export interface ConnectorAgentToolingEnv {
+  /** Env var name set inside the agent sandbox, e.g. `GH_TOKEN`. */
+  name: string;
+  /**
+   * How the gateway materializes the value — the two delivery tiers of the
+   * workers-never-receive-durable-credentials invariant:
+   *
+   * - `'lease'` — the provider can derive short-lived scoped tokens, so the
+   *   gateway mints one per deployment and injects the REAL token. Safe because
+   *   it expires on its own (GitHub installation tokens: ~1h). Requires the
+   *   connection to resolve to a mintable installation; without one the var is
+   *   simply absent (the CLI reports unauthenticated — never a durable secret).
+   * - `'placeholder'` — no derived-token support, so the worker gets an opaque
+   *   `lobu_secret_<uuid>` the secret-proxy swaps at egress. The stored
+   *   credential never enters the sandbox.
+   */
+  credential: 'lease' | 'placeholder';
 }
 
 export interface ConnectorRuntimeInfo {

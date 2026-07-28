@@ -1,45 +1,21 @@
 name: Build and Push Images
 
-# Every run publishes images tagged `<date>-<time>-<run_number>` (generate-tag
-# below). The timestamp was the whole tag until this change, so concurrent runs
-# — including manual dispatches from other refs — could compute the SAME tag
-# and overwrite each other. On 2026-07-22 five PRs merged within 14s, all five
-# runs stamped `20260722-121441`, and prod ended up on whichever pushed last:
-# two merged PRs never deployed, every workflow green.
+# GitHub keeps only one pending run per concurrency group. On 2026-07-28 the
+# `lobu-v14.4.0` release queued behind a main build, then a later main push
+# evicted it. The version images were not published until a manual rerun. Give
+# releases their own group so routine merges cannot evict them.
 #
-# Serializing made the tag unique only in practice (runs are minutes apart, not
-# milliseconds); the run-number suffix makes it unique by construction. The tag
-# still cannot simply carry the commit SHA instead: Flux deploys the
-# highest-sorting tag, and a SHA carries no ordering. The matching ImagePolicy
-# lives in the owletto submodule (it accepts the old two-segment tags as well as
-# the new three-segment form), so any further format change needs the same
-# coordinated two-repo change, and a mismatch stops every deploy.
+# Pushes deliberately keep the default single-item queue so bursts coalesce to
+# the newest commit. `queue: max` is not conditional, so setting it here would
+# queue intermediate pushes instead. cancel-in-progress stays false because
+# cancelling a running build can leave only some of the shared image tags
+# published.
 #
-# cancel-in-progress stays false: a cancelled run can leave the chart pointing
-# at a tag whose sibling images were never pushed.
-#
-# Release runs get their OWN group. GitHub keeps only one *pending* run per
-# group, so a third arrival evicts the queued second — on 2026-07-28 the
-# `lobu-v14.4.0` release run was cancelled while queued behind two main pushes
-# that landed within the same two minutes, and `14.4.0` was never published
-# while `latest` stayed on a pre-release build. A cancelled queued run reports
-# no failure, so the release silently did not happen.
-#
-# Splitting only the release event keeps push runs serialized against each
-# other, while a release — which is rare, and never concurrent with another
-# release — can never be evicted by routine merges.
-#
-# The release group deliberately keeps GitHub's default `queue: single`.
-# `queue: max` (100 pending runs, no eviction) takes no expression, so it would
-# apply to the push group too and build every intermediate commit instead of
-# coalescing to the newest. Eviction here would need three `release: published`
-# events inside one build: release-please publishes exactly one `lobu-v*`
-# release per release PR, and mac-release/helm-chart only consume that event.
-#
-# That does mean a release and a push can now run at the same time, so
-# serialization no longer guarantees a unique timestamp tag on its own.
-# `generate-tag` therefore appends a run-number suffix — see the note there
-# for why the clock alone, a registry probe, and run_number alone all fail.
+# Separate groups let a release and push run in the same second. generate-tag
+# therefore appends a zero-padded run number to the timestamp; the timestamp
+# preserves Flux ordering across reruns and the run number breaks ties. The
+# matching ImagePolicy lives in the owletto submodule and accepts both the old
+# two-segment tags and the new three-segment form.
 concurrency:
   group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
@@ -86,65 +62,23 @@ jobs:
   generate-tag:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
-      tag: ${{ steps.timestamp.outputs.tag }}
-      semver: ${{ steps.semver.outputs.semver }}
-      is_stable: ${{ steps.semver.outputs.is_stable }}
-      should_publish: ${{ steps.semver.outputs.should_publish }}
+      tag: ${{ steps.tags.outputs.tag }}
+      semver: ${{ steps.tags.outputs.semver }}
+      is_stable: ${{ steps.tags.outputs.is_stable }}
+      should_publish: ${{ steps.tags.outputs.should_publish }}
     steps:
-      # `{date}-{time}-{run_number}`. Both halves are load-bearing, and each
-      # replaces something that failed:
-      #
-      # The timestamp ORDERS. Flux picks the lexicographically highest
-      # extracted value (every component fixed-width, zero-padded), so the
-      # key has to track when a build actually ran. Ordering by run_number
-      # alone breaks recovery: re-running an earlier failed release after a
-      # later push republishes a LOWER number, and the recovered release never
-      # deploys — which is exactly the rerun that unstuck `lobu-v14.4.0`.
-      #
-      # run_number BREAKS TIES. A release can now run beside a push (see the
-      # concurrency note above), so two builds can reach this step in the same
-      # second and stamp the same time. Probing the registry first does not
-      # help — that is check-then-act, and concurrent runs both see the tag
-      # free before either has pushed. run_number is unique and monotonic per
-      # workflow, so equal tags are impossible by construction.
-      #
-      # Zero-padded to a fixed width: the extract concatenates the groups for
-      # lexicographic comparison, so a variable-width component would misorder.
-      #
-      # The matching pattern lives in the owletto submodule
-      # (deploy/k8s/infrastructure/image-automation/image-policies.yaml). It
-      # landed FIRST (owletto #616) and still accepts the old two-segment
-      # tags, so there was no window where published tags matched nothing.
-      # The reverse order would have frozen deploys: the old pattern anchors
-      # on two segments and ignores three-segment tags.
-      - name: Generate shared image tag
-        id: timestamp
-        run: |
-          set -euo pipefail
-          # The WHOLE run number, never truncated. Taking it modulo anything
-          # reintroduces collisions: a rerun reuses an OLD run_number, so
-          # re-running 1562 beside a fresh 1662 yields the same suffix in the
-          # same second. Reruns are not hypothetical — one published v14.4.0.
-          run_number="${{ github.run_number }}"
-          if [ "$run_number" -gt 999999 ]; then
-            echo "::error::run_number $run_number exceeds the 6 digits the tag format allows."
-            exit 1
-          fi
-          tag="$(date -u +'%Y%m%d-%H%M%S')-$(printf '%06d' "$run_number")"
-          echo "Using image tag: $tag"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
       # Only this job needs the repo; the build jobs check out separately.
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # Derivation lives in scripts/derive-image-tags.mjs so it is unit-tested
-      # (scripts/__tests__/derive-image-tags.test.ts) — inline YAML shell can
-      # only be exercised by cutting a real release. Computed once here so
-      # app/worker/embeddings can never disagree about eligibility or version.
-      - name: Derive semver tag from the release
-        id: semver
+      # Every tag decision lives in scripts/derive-image-tags.mjs so it is
+      # covered by scripts/__tests__/derive-image-tags.test.ts. Computed once
+      # here so app/worker/embeddings cannot disagree about the tag,
+      # eligibility, or version.
+      - name: Derive image tags
+        id: tags
         env:
+          RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
           PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}

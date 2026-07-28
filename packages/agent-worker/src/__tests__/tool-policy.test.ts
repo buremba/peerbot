@@ -3,6 +3,7 @@ import {
   type BashCommandPolicy,
   buildToolPolicy,
   enforceBashCommandPolicy,
+  isDirectPackageInstallCommand,
   isToolAllowedByPolicy,
   normalizeToolList,
 } from "../runtime/tool-policy";
@@ -351,6 +352,49 @@ describe("enforceBashCommandPolicy", () => {
       "git commit -m 'nix shell support'", // package phrase as quoted data
     ]) {
       expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+  });
+
+  // The preflight hint runs on EVERY bash command, so a package-manager phrase
+  // appearing inside quoted argument data must not be read as a command. The
+  // pattern boundary class deliberately excludes quote characters: only a real
+  // shell operator (start, whitespace, `;`, `|`, `&`, parens) opens a command
+  // position. Before this, `git commit -m 'apt install docs'` threw DIRECT
+  // PACKAGE INSTALL BLOCKED and the new nix entries widened that to the much
+  // likelier `nix shell` phrasing.
+  test("package phrases inside quoted data are not install commands (#2259)", () => {
+    for (const cmd of [
+      "git commit -m 'nix shell support'",
+      'git commit -m "nix shell support"',
+      "git commit -m 'apt install docs'",
+      "echo 'pip install foo'",
+      "echo 'nix run docs'",
+      "grep -r 'uvx' .",
+      "nixfmt file.nix",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("a real install still trips the hint, including after an operator (#2259)", () => {
+    for (const cmd of [
+      "nix shell nixpkgs#hello",
+      "nix run nixpkgs#hello",
+      "nix build .#pkg",
+      "nix-shell -p hello",
+      "uvx cowsay",
+      "pipx run black",
+      "pnpm dlx cowsay",
+      "uv tool install ruff",
+      "apt install curl",
+      "sudo nix run x",
+      "true; nix run nixpkgs#hello",
+      "(nix shell nixpkgs#hello)",
+      // An interpreter's `-c` body IS a command position, unlike `-m` data.
+      "bash -c 'nix shell nixpkgs#hello'",
+      "sh -lc 'uvx cowsay'",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }
   });
 });

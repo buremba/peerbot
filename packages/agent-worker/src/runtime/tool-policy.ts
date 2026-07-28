@@ -95,26 +95,26 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
 ];
 
 const DIRECT_PACKAGE_INSTALL_PATTERNS = [
-  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
   // New-style nix subcommands and the nix-* helpers, recognized after a shell
   // operator or `sudo` (leading forms are already covered by the prefix list).
-  /(^|[\s"'`;|&()])(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
-  /(^|[\s"'`;|&()])(?:pip|pip3)\s+install\b/i,
-  /(^|[\s"'`;|&()])uv\s+pip\s+install\b/i,
-  /(^|[\s"'`;|&()])uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
-  /(^|[\s"'`;|&()])uvx\b/i,
-  /(^|[\s"'`;|&()])pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
-  /(^|[\s"'`;|&()])npm\s+(?:install|i)\b/i,
-  /(^|[\s"'`;|&()])pnpm\s+(?:install|add|dlx)\b/i,
-  /(^|[\s"'`;|&()])yarn\s+(?:install|add|global\s+add|dlx)\b/i,
-  /(^|[\s"'`;|&()])bun\s+(?:install|add)\b/i,
-  /(^|[\s"'`;|&()])cargo\s+install\b/i,
-  /(^|[\s"'`;|&()])go\s+install\b/i,
-  /(^|[\s"'`;|&()])gem\s+install\b/i,
-  /(^|[\s"'`;|&()])poetry\s+add\b/i,
-  /(^|[\s"'`;|&()])composer\s+require\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
+  /(^|[\s;|&()])(?:pip|pip3)\s+install\b/i,
+  /(^|[\s;|&()])uv\s+pip\s+install\b/i,
+  /(^|[\s;|&()])uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
+  /(^|[\s;|&()])uvx\b/i,
+  /(^|[\s;|&()])pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
+  /(^|[\s;|&()])npm\s+(?:install|i)\b/i,
+  /(^|[\s;|&()])pnpm\s+(?:install|add|dlx)\b/i,
+  /(^|[\s;|&()])yarn\s+(?:install|add|global\s+add|dlx)\b/i,
+  /(^|[\s;|&()])bun\s+(?:install|add)\b/i,
+  /(^|[\s;|&()])cargo\s+install\b/i,
+  /(^|[\s;|&()])go\s+install\b/i,
+  /(^|[\s;|&()])gem\s+install\b/i,
+  /(^|[\s;|&()])poetry\s+add\b/i,
+  /(^|[\s;|&()])composer\s+require\b/i,
 ];
 
 /**
@@ -147,18 +147,41 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  *    Reaching a manager there is not a bypass of this hint — it is the tier
  *    behaving as intended.
  */
+/**
+ * An interpreter invoked with `-c` (allowing bundled flags like `-lc`) runs its
+ * QUOTED argument as a command, so that body is a command position and must be
+ * scanned. Everywhere else a quote introduces data (`git commit -m '…'`), which
+ * is why the patterns above do not treat a quote character as a word boundary.
+ */
+const INTERPRETER_DASH_C =
+  /\b(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
+
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();
   if (!trimmed) {
     return false;
   }
 
-  return (
+  const matches = (text: string): boolean =>
     DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-      trimmed.startsWith(prefix.toLowerCase())
-    ) ||
-    DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(trimmed))
-  );
+      text.startsWith(prefix.toLowerCase())
+    ) || DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(text));
+
+  if (matches(trimmed)) {
+    return true;
+  }
+
+  // Recurse into `sh -c '…'` bodies: the quoted text there is a command, not
+  // data, and the patterns deliberately stop at the quote.
+  INTERPRETER_DASH_C.lastIndex = 0;
+  for (const m of trimmed.matchAll(INTERPRETER_DASH_C)) {
+    const body = m[2]?.trim();
+    if (body && matches(body)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function normalizeToolName(name: string): string {

@@ -156,6 +156,46 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 const INTERPRETER_DASH_C =
   /\b(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
 
+/**
+ * Replace the contents of every quoted span with spaces, preserving offsets and
+ * the quote characters themselves. A word boundary inside quoted data then
+ * cannot open a command position, so a message that merely mentions a package
+ * manager (`git commit -m 'document nix shell support'`) no longer matches
+ * while the surrounding real command is still scanned normally.
+ *
+ * Offsets are preserved rather than the span deleted so that `foo'a'bar` does
+ * not collapse into a new adjacent token.
+ */
+function blankQuotedSpans(text: string): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    if (quote) {
+      // A backslash escape inside double quotes keeps the next char quoted.
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+        out += "  ";
+        i++;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        out += ch;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();
   if (!trimmed) {
@@ -167,16 +207,17 @@ export function isDirectPackageInstallCommand(command: string): boolean {
       text.startsWith(prefix.toLowerCase())
     ) || DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(text));
 
-  if (matches(trimmed)) {
+  // Scan the command with quoted DATA blanked out, so only real command
+  // positions can match.
+  if (matches(blankQuotedSpans(trimmed))) {
     return true;
   }
 
-  // Recurse into `sh -c '…'` bodies: the quoted text there is a command, not
-  // data, and the patterns deliberately stop at the quote.
+  // Then scan `sh -c '…'` bodies, where the quoted text IS a command.
   INTERPRETER_DASH_C.lastIndex = 0;
   for (const m of trimmed.matchAll(INTERPRETER_DASH_C)) {
     const body = m[2]?.trim();
-    if (body && matches(body)) {
+    if (body && matches(blankQuotedSpans(body))) {
       return true;
     }
   }
@@ -365,10 +406,19 @@ function splitShellCommands(command: string): string[] {
       continue;
     }
 
-    // Outside quotes a backslash escapes the next character, making an escaped
-    // metacharacter literal data — `echo foo\; nix run` is ONE `echo`, not two
-    // commands. Consume both so the escaped `;`/`|`/`&`/newline is not read as a
-    // segment boundary.
+    // Backslash-newline is LINE CONTINUATION: the shell deletes both characters
+    // before tokenizing, so `r\<newline>m -rf /` runs as `rm -rf /`. Drop both
+    // rather than keeping them as text, or a deny prefix can be split in half
+    // and evaded.
+    if (ch === "\\" && next === "\n") {
+      i++;
+      continue;
+    }
+
+    // Any other outside-quote backslash escapes the next character, making an
+    // escaped metacharacter literal data — `echo foo\; nix run` is ONE `echo`,
+    // not two commands. Consume both so the escaped `;`/`|`/`&` is not read as
+    // a segment boundary.
     if (ch === "\\" && next !== undefined) {
       current += ch + next;
       i++;

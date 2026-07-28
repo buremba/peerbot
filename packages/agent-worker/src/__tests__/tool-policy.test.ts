@@ -332,6 +332,28 @@ describe("enforceBashCommandPolicy", () => {
     ).toThrow("Bash command denied by policy");
   });
 
+  test("backslash-newline is line continuation, not literal text (#2259)", () => {
+    // The shell removes backslash-newline before tokenizing, so `r\<nl>m -rf /`
+    // executes as `rm -rf /`. Treating the pair as text would let it split a
+    // deny prefix in half and slip past the policy.
+    const bs = String.fromCharCode(92);
+    const policy = {
+      allowAll: false,
+      allowPrefixes: [] as string[],
+      denyPrefixes: ["rm "],
+    };
+    expect(() =>
+      enforceBashCommandPolicy(`r${bs}\nm -rf /tmp/x`, policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() => enforceBashCommandPolicy("rm -rf /tmp/x", policy)).toThrow(
+      "Bash command denied by policy"
+    );
+    // A continuation inside an allowed command is still harmless.
+    expect(() =>
+      enforceBashCommandPolicy(`echo ${bs}\nhello`, policy)
+    ).not.toThrow();
+  });
+
   test("the matcher is a hint, not a lexer: quoted/escaped/wrapped forms are the sandbox's job (#2259 r8)", () => {
     // These evasions are deliberately NOT caught by the text matcher — matching
     // them means reimplementing bash's lexer and only yields false positives on
@@ -371,6 +393,12 @@ describe("enforceBashCommandPolicy", () => {
       "echo 'nix run docs'",
       "grep -r 'uvx' .",
       "nixfmt file.nix",
+      // The phrase mid-quote is the same data: the whitespace in front of it
+      // is inside the quote and must not open a command position.
+      "git commit -m 'document nix shell support'",
+      "echo 'use uvx here'",
+      "git commit -m 'we should apt install curl'",
+      'git commit -m "then run pipx install black"',
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(false);
     }

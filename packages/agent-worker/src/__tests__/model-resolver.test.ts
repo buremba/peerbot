@@ -448,6 +448,24 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
+  test("an UNINSTALLED aggregator namespace never owns the CTA", () => {
+    // Both gateway facts are required. Here the model was NOT matched
+    // (`serves: false`, so the fallback scan picked OpenRouter), but the
+    // "anthropic" prefix is an OpenRouter vendor namespace — there is no
+    // Anthropic provider installed. Attributing the CTA to it would send the
+    // user to reconnect a provider that does not exist in this deployment.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      defaultProviderServesModel: false,
+      installedProviderRoutes: { openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
   test("an older gateway (field absent) keeps the pre-existing attribution", () => {
     // Back-compat: a gateway that predates `defaultProviderServesModel` sends
     // nothing. Absent must mean "serves" so a stale gateway keeps today's

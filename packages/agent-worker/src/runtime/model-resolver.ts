@@ -335,30 +335,28 @@ export function resolveModelRef(
     // `modelId === modelRef` means the strip above did NOT consume the prefix,
     // so the name is genuinely foreign rather than the provider's own id.
     //
-    // A slash prefix alone cannot decide this, and neither can the installed
-    // provider list: with OpenRouter configured and standalone OpenAI also
-    // installed, "openai/gpt-4o" is OpenRouter's VENDOR NAMESPACE, yet the
-    // prefix does name an installed provider. Blaming `openai` there would send
-    // the user to reconnect a provider that is not even serving the request.
+    // Reattributing needs BOTH gateway facts, because each alone misfires:
     //
-    // Only the gateway can tell the two apart, and it already knows:
-    // `findProviderForModel` either MATCHED the model to `defaultProvider`
-    // (OpenRouter serves "openai/gpt-4o" → blame OpenRouter) or returned
-    // nothing, leaving the credentialed-fallback scan to pick an unrelated
-    // provider ("gemini/gemini-2.5-flash" with a fallback-selected openai →
-    // blame gemini, the provider actually requested). It publishes that fact as
-    // `defaultProviderServesModel`.
+    // - `defaultProviderServesModel === false` — the gateway did not match this
+    //   model to `defaultProvider`; the credentialed-fallback scan picked it.
+    //   Without this, OpenRouter's vendor namespace ("openai/gpt-4o" while
+    //   OpenRouter serves it) would blame `openai`.
+    // - the prefix names an INSTALLED provider — otherwise the prefix is just a
+    //   namespace inside an aggregator ("anthropic/claude-sonnet-4" on a
+    //   deployment with no Anthropic provider) and the CTA would point at a
+    //   provider that does not exist here.
     //
-    // Older gateways omit the field. Treat absent as "serves" — that is the
-    // pre-existing attribution, so a stale gateway keeps today's behavior
-    // rather than acquiring a new misattribution.
+    // Only when both hold is the prefix a real, reachable provider the user
+    // actually asked for. Absent `defaultProviderServesModel` (older gateway)
+    // keeps the pre-existing attribution rather than acquiring a new one.
     const requestedForeignSlug =
       explicitParts.length >= 2 &&
       explicitProvider &&
       explicitProvider !== defaultProvider &&
       explicitProvider !== defaultProviderSlug &&
       modelId === modelRef &&
-      overrides?.defaultProviderServesModel === false
+      overrides?.defaultProviderServesModel === false &&
+      overrides?.installedProviderRoutes?.[explicitProvider]
         ? explicitProvider
         : undefined;
 

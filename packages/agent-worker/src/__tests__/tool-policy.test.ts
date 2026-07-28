@@ -309,6 +309,49 @@ describe("enforceBashCommandPolicy", () => {
     }
   });
 
+  test("ANSI-C escaped executable names are decoded and denied", () => {
+    // Inside `$'…'` bash DECODES `\x69`/`\151`/`\u0069` to `i`, so these all
+    // exec `nix`/`uvx`. Treating the escape as literal text yields `nx69x` and
+    // misses the real name — a hole, not a conservative over-match. (#2259 r7.)
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "$'n\\x69x' run nixpkgs#hello",
+      "$'n\\151x' run nixpkgs#hello",
+      "n$'\\151'x run nixpkgs#hello",
+      "$'\\x6e\\x69\\x78' shell nixpkgs#git",
+      "$'n\\u0069x' run nixpkgs#hello",
+      "$'\\165vx' cowsay",
+      "env $'n\\x69x' run nixpkgs#hello",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("a path-qualified executable is denied by its command name", () => {
+    // `/usr/bin/nix` and `/nix/store/…/bin/npm` run exactly the binary the deny
+    // prefix names, so the prefix is tried past the path too. (#2259 r7.)
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "/usr/bin/nix run nixpkgs#hello",
+      "/nix/store/abc/bin/npm install lodash",
+      "env -u PATH /usr/bin/nix run nixpkgs#hello",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+    // A path as an ARGUMENT is still just data: only the command name position
+    // is matched, so reading or listing the store stays allowed.
+    expect(() =>
+      enforceBashCommandPolicy("cat /usr/bin/nix", policy)
+    ).not.toThrow();
+    expect(() =>
+      enforceBashCommandPolicy("ls /nix/store", policy)
+    ).not.toThrow();
+  });
+
   test("wrapper word as plain data does not spuriously deny", () => {
     const policy = buildToolPolicy({}).bashPolicy;
     expect(() =>

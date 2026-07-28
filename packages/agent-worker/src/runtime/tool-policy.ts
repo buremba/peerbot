@@ -120,13 +120,98 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
   /(^|[\s"'`;|&()])composer\s+require\b/i,
 ];
 
+/** Single-character ANSI-C (`$'…'`) escapes, per the bash manual. */
+const ANSI_C_SIMPLE_ESCAPES: Record<string, string> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  E: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+  "?": "?",
+};
+
+/**
+ * Numeric ANSI-C escape shapes: `\nnn` octal, `\xHH` hex, `\uHHHH` and
+ * `\UHHHHHHHH` unicode.
+ */
+function ansiCNumericEscape(
+  lead: string,
+  at: number
+): { radix: number; maxDigits: number; from: number } | null {
+  if (lead === "x") return { radix: 16, maxDigits: 2, from: at + 1 };
+  if (lead === "u") return { radix: 16, maxDigits: 4, from: at + 1 };
+  if (lead === "U") return { radix: 16, maxDigits: 8, from: at + 1 };
+  // Octal has no introducer letter, so the digit itself is the first digit.
+  if (lead >= "0" && lead <= "7") return { radix: 8, maxDigits: 3, from: at };
+  return null;
+}
+
+/**
+ * Decode one ANSI-C escape sequence, where `at` indexes the character AFTER the
+ * backslash. Returns the character bash would produce and the index just past
+ * the sequence.
+ *
+ * This is the difference between text and execution: inside `$'…'` bash decodes
+ * `\x69` / `\151` to `i`, so `$'n\x69x' run …` runs `nix`. Collapsing the
+ * escape to its literal characters (`nx69x`) is not a conservative over-match,
+ * it is a MISS — the deny rules never see the real executable name.
+ *
+ * An unrecognized escape keeps its backslash, exactly as bash does.
+ */
+function decodeAnsiCEscape(
+  segment: string,
+  at: number
+): { text: string; next: number } {
+  const lead = segment[at] ?? "";
+  const simple = ANSI_C_SIMPLE_ESCAPES[lead];
+  if (simple !== undefined) {
+    return { text: simple, next: at + 1 };
+  }
+  const numeric = ansiCNumericEscape(lead, at);
+  if (numeric) {
+    const isDigit = (c: string): boolean =>
+      numeric.radix === 8 ? c >= "0" && c <= "7" : /^[0-9a-f]$/i.test(c);
+    let end = numeric.from;
+    while (
+      end < segment.length &&
+      end - numeric.from < numeric.maxDigits &&
+      isDigit(segment[end] ?? "")
+    ) {
+      end++;
+    }
+    const digits = segment.slice(numeric.from, end);
+    const value = Number.parseInt(digits, numeric.radix);
+    // No digits at all (`$'\x'`) or an out-of-range code point: bash emits the
+    // sequence literally, so keep it rather than throwing.
+    if (end > numeric.from && Number.isFinite(value) && value <= 0x10ffff) {
+      return { text: String.fromCodePoint(value), next: end };
+    }
+  }
+  // `\cX` — the control character for X.
+  if (lead === "c" && at + 1 < segment.length) {
+    return {
+      text: String.fromCharCode(segment.charCodeAt(at + 1) & 0x1f),
+      next: at + 2,
+    };
+  }
+  return { text: `\\${lead}`, next: at + 1 };
+}
+
 /**
  * Canonicalize a shell segment to the token string the shell would actually
  * execute: remove quote DELIMITERS while joining the fragments they wrap (so
- * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`, `$'nix'` → `nix`) and drop
- * backslash escapes (`n\ix` → `nix`). The detector matches against this
- * canonical form so an honestly-typed package manager is recognized however it
- * is spelled.
+ * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`, `$'nix'` → `nix`), decode
+ * ANSI-C escapes inside `$'…'` (`$'n\x69x'` → `nix`, `n$'\151'x` → `nix`), and
+ * drop plain backslash escapes (`n\ix` → `nix`). The detector matches against
+ * this canonical form so an honestly-typed package manager is recognized
+ * however it is spelled.
  *
  * `dataStripped` additionally removes the CONTENTS of quoted spans, for a
  * segment whose leading command treats its quoted arguments as data (`echo`,
@@ -139,9 +224,18 @@ function canonicalizeSegment(segment: string): {
   let code = "";
   let dataStripped = "";
   let quote: '"' | "'" | null = null;
+  // Whether the open span is ANSI-C quoting (`$'…'`), whose body bash decodes.
+  let ansiC = false;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (ch === "\\" && i + 1 < segment.length) {
+      if (ansiC) {
+        const decoded = decodeAnsiCEscape(segment, i + 1);
+        code += decoded.text;
+        // The loop's own `i++` advances onto the first unconsumed character.
+        i = decoded.next - 1;
+        continue;
+      }
       code += segment[i + 1];
       if (!quote) {
         dataStripped += segment[i + 1];
@@ -152,6 +246,7 @@ function canonicalizeSegment(segment: string): {
     if (quote) {
       if (ch === quote) {
         quote = null;
+        ansiC = false;
       } else {
         code += ch;
       }
@@ -169,6 +264,9 @@ function canonicalizeSegment(segment: string): {
     const next = segment[i + 1];
     if (ch === "$" && (next === '"' || next === "'")) {
       quote = next;
+      // Only `$'…'` decodes escapes; `$"…"` is locale translation, whose body
+      // follows double-quote rules and is handled by the generic branch above.
+      ansiC = next === "'";
       i++;
       continue;
     }
@@ -348,7 +446,7 @@ export function isDirectPackageInstallCommand(command: string): boolean {
     // so a wrapper flag's operand (`env -u PATH nix run …`) cannot hide it.
     if (
       DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-        base.startsWith(prefix.toLowerCase())
+        matchesDenyPrefixAtCommandHead(base, prefix)
       ) ||
       DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(base))
     ) {
@@ -611,19 +709,60 @@ function splitShellCommands(command: string): string[] {
  * where xargs supplies the package from stdin), so the exact-word form is
  * accepted too.
  */
-function matchesDenyPrefix(target: string, prefix: string): boolean {
+function matchesDenyPrefixAt(
+  target: string,
+  prefix: string,
+  start: number
+): boolean {
   const p = prefix.toLowerCase();
-  if (target.startsWith(p)) {
+  if (target.startsWith(p, start)) {
     return true;
   }
   const trimmed = p.trimEnd();
-  return trimmed !== p && target === trimmed;
+  // The exact-word form only matches when the rest of the target IS the word
+  // (`xargs npm install`, where xargs supplies the package from stdin).
+  return (
+    trimmed !== p &&
+    target.length - start === trimmed.length &&
+    target.startsWith(trimmed, start)
+  );
 }
 
 /**
- * {@link matchesDenyPrefix} applied at EVERY token boundary of `target`, i.e.
- * the same answer as testing each whitespace-aligned suffix (`a b c` →
- * `a b c`, `b c`, `c`) and denying if any matches.
+ * Offset just past the last `/` of the token starting at `tokenStart`, or
+ * `null` when that token carries no path. A path-qualified executable
+ * (`/usr/bin/nix run …`, `/nix/store/…/bin/npm install …`) runs exactly the
+ * same binary as the bare name, so the deny prefixes are tried there too.
+ */
+function commandNameOffset(target: string, tokenStart: number): number | null {
+  const space = target.indexOf(" ", tokenStart);
+  const tokenEnd = space === -1 ? target.length : space;
+  const slash = target.lastIndexOf("/", tokenEnd - 1);
+  if (slash < tokenStart) {
+    return null;
+  }
+  return slash + 1;
+}
+
+/**
+ * {@link matchesDenyPrefixAt} applied where the LEADING command name can start:
+ * offset 0, and past the path of a path-qualified executable.
+ */
+function matchesDenyPrefixAtCommandHead(
+  target: string,
+  prefix: string
+): boolean {
+  if (matchesDenyPrefixAt(target, prefix, 0)) {
+    return true;
+  }
+  const afterPath = commandNameOffset(target, 0);
+  return afterPath !== null && matchesDenyPrefixAt(target, prefix, afterPath);
+}
+
+/**
+ * {@link matchesDenyPrefixAtCommandHead} applied at EVERY token boundary of
+ * `target`, i.e. the same answer as testing each whitespace-aligned suffix
+ * (`a b c` → `a b c`, `b c`, `c`) and denying if any matches.
  *
  * Used only on the remainder of an exec-wrapped command
  * ({@link stripExecWrappers}), where the head may still be a wrapper flag's
@@ -637,19 +776,12 @@ function matchesDenyPrefix(target: string, prefix: string): boolean {
  * turn into a self-inflicted stall.
  */
 function matchesDenyPrefixAtAnyToken(target: string, prefix: string): boolean {
-  const p = prefix.toLowerCase();
-  const trimmed = p.trimEnd();
-  const wordForm = trimmed !== p ? trimmed : null;
   for (let start = 0; start <= target.length; ) {
-    if (target.startsWith(p, start)) {
+    if (matchesDenyPrefixAt(target, prefix, start)) {
       return true;
     }
-    // The exact-word form only matches a suffix that IS the word (`… npm i`).
-    if (
-      wordForm !== null &&
-      target.length - start === wordForm.length &&
-      target.startsWith(wordForm, start)
-    ) {
+    const afterPath = commandNameOffset(target, start);
+    if (afterPath !== null && matchesDenyPrefixAt(target, prefix, afterPath)) {
       return true;
     }
     const nextSpace = target.indexOf(" ", start);
@@ -693,7 +825,7 @@ export function enforceBashCommandPolicy(
 
     const denied = policy.denyPrefixes.some(
       (prefix) =>
-        matchesDenyPrefix(canonical, prefix) ||
+        matchesDenyPrefixAtCommandHead(canonical, prefix) ||
         (wrapped !== null && matchesDenyPrefixAtAnyToken(wrapped, prefix))
     );
     if (denied) {

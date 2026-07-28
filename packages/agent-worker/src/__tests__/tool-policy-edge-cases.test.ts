@@ -334,6 +334,13 @@ describe("isDirectPackageInstallCommand quote-concatenation bypass", () => {
     "n$'i'x run nixpkgs#hello",
     '$"nix" run nixpkgs#hello',
     "$'uvx' cowsay",
+    // …and bash DECODES escapes inside `$'…'`, so the hex/octal/unicode forms
+    // name the same executable. (Fifth review of #2259.)
+    "$'n\\x69x' run nixpkgs#hello",
+    "$'n\\151x' run nixpkgs#hello",
+    "n$'\\151'x run nixpkgs#hello",
+    "$'n\\u0069x' run nixpkgs#hello",
+    "$'\\165vx' cowsay",
   ];
   for (const cmd of concatenated) {
     test(`canonicalizes quote-concat exec name: ${JSON.stringify(cmd)}`, () => {

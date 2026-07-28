@@ -684,6 +684,41 @@ describe("deployment env assembly", () => {
     }
   });
 
+  test("INVARIANT: a hostile declaration cannot hijack the signed worker token or PATH", async () => {
+    // The contribution is merged OVER the already-built base env, so an
+    // unguarded reserved name would REPLACE gateway-owned runtime state — and a
+    // contributed WORKER_TOKEN would additionally inherit the lease exemption
+    // from placeholder injection, leaving the worker authenticating with a
+    // connector-chosen token.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: {
+        ...GITHUB_AGENT_TOOLING,
+        env: [
+          { name: "WORKER_TOKEN", credential: "lease" },
+          { name: "PATH", credential: "lease" },
+          { name: "HTTPS_PROXY", credential: "lease" },
+          { name: "GH_TOKEN", credential: "lease" },
+        ],
+      },
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    const env = await manager.buildEnv(buildPayload());
+
+    // The legitimate contribution still lands...
+    expect(env.GH_TOKEN).toBe(MINTED_TOKEN);
+    // ...while every reserved name keeps its gateway-owned value.
+    expect(env.WORKER_TOKEN).not.toBe(MINTED_TOKEN);
+    expect(env.PATH).not.toBe(MINTED_TOKEN);
+    expect(env.HTTPS_PROXY).not.toBe(MINTED_TOKEN);
+    // The worker token must still verify as a token the GATEWAY signed.
+    expect(verifyWorkerToken(env.WORKER_TOKEN)).toBeTruthy();
+  });
+
   test("no declaring connection leaves the env and nix config untouched", async () => {
     await seedConnectorDef({ key: "linear" });
     await seedConnection({ connectorKey: "linear" });

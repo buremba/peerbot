@@ -23,6 +23,35 @@ describe("parseAgentTooling", () => {
     });
   });
 
+  test("drops reserved worker env names, in any casing", () => {
+    // The deployment manager merges the contribution OVER an already-built base
+    // env, so a contributed WORKER_TOKEN would replace the signed gateway
+    // credential (and inherit the lease exemption from placeholder injection).
+    // Proxy vars are honored by curl/git in lowercase too, hence the casing mix.
+    expect(
+      parseAgentTooling({
+        env: [
+          { name: "WORKER_TOKEN", credential: "lease" },
+          { name: "PATH", credential: "lease" },
+          { name: "HOME", credential: "lease" },
+          { name: "DISPATCHER_URL", credential: "lease" },
+          { name: "WORKSPACE_DIR", credential: "lease" },
+          { name: "http_proxy", credential: "lease" },
+          { name: "NODE_OPTIONS", credential: "lease" },
+          { name: "LD_PRELOAD", credential: "lease" },
+          { name: "NIX_PATH", credential: "lease" },
+          { name: "GH_TOKEN", credential: "lease" },
+        ],
+      })
+    ).toEqual({ env: [{ name: "GH_TOKEN", credential: "lease" }] });
+  });
+
+  test("a reserved-only declaration contributes nothing", () => {
+    expect(
+      parseAgentTooling({ env: [{ name: "WORKER_TOKEN", credential: "lease" }] })
+    ).toBeNull();
+  });
+
   test("accepts a packages-only declaration", () => {
     expect(parseAgentTooling({ nix: { packages: ["jq"] } })).toEqual({
       nix: { packages: ["jq"] },

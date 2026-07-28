@@ -43,6 +43,7 @@ import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
+  isReservedAgentToolingEnvName,
   resolveAgentTooling,
   type ResolvedAgentTooling,
 } from "../agent-tooling/resolver.js";
@@ -1692,7 +1693,20 @@ export class DeploymentManager {
     // Connector-contributed credentials. Set before the module/config layers so
     // an operator-configured value for the same name still wins — an explicit
     // override must beat an implicit contribution.
+    //
+    // The reserved-name check is defense in depth: the resolver already drops
+    // these, but this merge writes over an ALREADY-BUILT base env, so a name
+    // that slipped through would replace gateway-owned runtime state
+    // (WORKER_TOKEN, the proxy vars, PATH…) rather than merely add to it.
     for (const [key, value] of Object.entries(agentTooling.env)) {
+      if (isReservedAgentToolingEnvName(key)) {
+        logger.error(
+          { agentId, deploymentName, env_name: key },
+          "Refusing to overwrite a reserved worker env var with connector-contributed tooling"
+        );
+        delete agentTooling.env[key];
+        continue;
+      }
       envVars[key] = value;
     }
 

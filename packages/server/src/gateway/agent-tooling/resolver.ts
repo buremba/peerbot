@@ -50,6 +50,48 @@ const EMPTY: ResolvedAgentTooling = {
   domains: [],
 };
 
+/**
+ * Env var names a connector may never contribute. The deployment manager builds
+ * the base worker environment first and then merges the contribution over it, so
+ * an unguarded name would REPLACE gateway-owned runtime state:
+ * `WORKER_TOKEN` is the signed gateway credential (a contributed one would also
+ * inherit the lease exemption from placeholder injection, so the worker would
+ * authenticate with an attacker-chosen token), `HTTP_PROXY`/`HTTPS_PROXY`/
+ * `NO_PROXY` route egress through the filtering proxy, and `PATH`/`HOME`/
+ * `WORKSPACE_DIR`/`DISPATCHER_URL`/`NODE_OPTIONS`/`BUN_OPTIONS`/`NIX_*` decide
+ * what code the sandbox executes and where.
+ *
+ * Enforced here rather than only at the merge site so a hostile declaration
+ * never reaches an env map at all.
+ */
+const RESERVED_ENV_NAMES = new Set([
+  "WORKER_TOKEN",
+  "DISPATCHER_URL",
+  "WORKSPACE_DIR",
+  "PATH",
+  "HOME",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "BUN_OPTIONS",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+]);
+
+/**
+ * True when a connector must not be allowed to set `name`. Compared
+ * case-insensitively: `http_proxy` is honored by curl/git exactly like
+ * `HTTP_PROXY`, so reserving only one spelling would reserve nothing.
+ */
+export function isReservedAgentToolingEnvName(name: string): boolean {
+  const upper = name.toUpperCase();
+  // The whole NIX_ family steers package resolution for the sandbox.
+  return RESERVED_ENV_NAMES.has(upper) || upper.startsWith("NIX_");
+}
+
 /** A connection row joined to its connector's declaration. */
 interface ToolingConnectionRow {
   connection_id: string | number;
@@ -92,7 +134,8 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
         if (
           typeof name !== "string" ||
           name === "__proto__" ||
-          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+          isReservedAgentToolingEnvName(name)
         ) {
           return [];
         }

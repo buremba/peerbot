@@ -77,6 +77,16 @@ void _stageCheck;
  *   needs `tools` (manual tool names). Fixed policy: missing tool trips;
  *   an unreported toolsUsed value passes. No model call.
  */
+/**
+ * NOTE: this is a permissive object, not a discriminated union — `policy` and
+ * `tools` are optional here even though each variant requires one of them.
+ * Narrowing the shape would force every one of the ~37 read sites to discriminate
+ * before touching a field, for no safety gain: `guardrailsInline` is only ever
+ * written through `validateGuardrailsInline` (server/src/lobu/agent-routes.ts),
+ * which rejects a judge with no policy AND a require-tool with no tools before
+ * anything is persisted. Keep that validator as the enforcement point; if a
+ * second write path is ever added, it must call the same validator.
+ */
 export const AgentInlineGuardrailSchema = Type.Object({
   name: Type.String(),
   enabled: Type.Boolean(),
@@ -85,7 +95,7 @@ export const AgentInlineGuardrailSchema = Type.Object({
   kind: Type.Optional(
     Type.Union([Type.Literal("judge"), Type.Literal("require-tool")])
   ),
-  /** Required for `kind: "judge"`. Ignored for `require-tool`. */
+  /** Required for `kind: "judge"` (enforced by validateGuardrailsInline). */
   policy: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
   /**

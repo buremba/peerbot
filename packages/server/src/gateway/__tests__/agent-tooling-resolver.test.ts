@@ -959,6 +959,40 @@ describe("deployment env assembly", () => {
     expect(remainingMs).toBeGreaterThan(5 * 60_000);
   });
 
+  test("a born-expiring lease does not arm an unwinnable recycle loop", async () => {
+    // If the provider issues a token that is already inside the recycle margin,
+    // recycling cannot improve it — the same installation yields the same
+    // short-lived token — so recording that expiry would recycle the
+    // deployment on every single turn and never converge. It is reported and
+    // left unrecorded instead.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+
+    const resolved = await resolve({
+      registry: buildLeaseRegistry({
+        respond: () =>
+          new Response(
+            JSON.stringify({
+              token: MINTED_TOKEN,
+              // 2 minutes: inside the 5-minute recycle margin.
+              expires_at: new Date(Date.now() + 2 * 60_000).toISOString(),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          ),
+      }),
+    });
+
+    // The credential is still delivered — a short-lived token beats none.
+    expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
+    // But it must not become a recycle trigger.
+    expect(resolved.leaseExpiresAt).toBeNull();
+  });
+
   test("an unchanged org keeps its warm worker", async () => {
     const installId = await seedInstall();
     await seedConnectorDef({

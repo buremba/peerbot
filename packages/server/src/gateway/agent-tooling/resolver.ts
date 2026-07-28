@@ -36,6 +36,17 @@ import type {
 
 const logger = createLogger("agent-tooling-resolver");
 
+/**
+ * Mirrors `DeploymentManager.LEASE_RECYCLE_MARGIN_MS`. A lease minted with less
+ * life than this cannot be improved by recycling, so it is reported rather than
+ * recorded as a recycle trigger.
+ */
+const RECYCLE_MARGIN_MS = 5 * 60_000;
+
+function isWithinRecycleMargin(expiresAt: Date): boolean {
+  return expiresAt.getTime() - Date.now() <= RECYCLE_MARGIN_MS;
+}
+
 /** The sandbox contribution of every eligible connection, already unioned. */
 export interface ResolvedAgentTooling {
   /** Nix packages to union into the agent's `nixConfig.packages`. */
@@ -414,7 +425,23 @@ export async function resolveAgentTooling(params: {
       envSource.set(entry.name, connectionId);
       // Earliest wins: the deployment is only good until its FIRST credential
       // lapses, not its last.
-      if (
+      //
+      // A token that is ALREADY inside the recycle margin when freshly minted
+      // is deliberately not recorded. Recycling cannot fix it — the provider
+      // returns the same short-lived token for the same installation — so
+      // recording it would recycle the deployment on every turn and never
+      // converge. Run out its life instead, and say so.
+      if (lease.expiresAt && isWithinRecycleMargin(lease.expiresAt)) {
+        logger.warn(
+          {
+            env_name: entry.name,
+            connector_key: row.connector_key,
+            connection_id: connectionId,
+            expires_at: lease.expiresAt.toISOString(),
+          },
+          "Provider issued a lease that is already near expiry; the sandbox will lose this credential mid-conversation"
+        );
+      } else if (
         lease.expiresAt &&
         (!leaseExpiresAt || lease.expiresAt < leaseExpiresAt)
       ) {

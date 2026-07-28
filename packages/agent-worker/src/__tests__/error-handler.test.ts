@@ -211,6 +211,43 @@ describe("classifyError", () => {
     expect(classifyError("not an error")).toBeUndefined();
   });
 
+  test("recognizes a credit/billing-exhausted 400 as quota, not a raw crash", () => {
+    // Observed live: the Anthropic key was present but out of credits. This is
+    // a BILLING-class failure, functionally identical to quota exhaustion, but
+    // it carries no "quota"/"rate limit"/429 token so it fell through to
+    // `undefined` → a raw `💥 Worker crashed: 400 {…}` blob in the user's chat.
+    const raw =
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}';
+    expect(classifyError(new Error(raw))).toBe("PROVIDER_QUOTA_EXHAUSTED");
+
+    // Sibling phrasings from other providers.
+    expect(
+      classifyError(new Error("402 Payment Required: insufficient credits"))
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(
+      classifyError(new Error("Your account has insufficient balance."))
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(classifyError(new Error("billing_hard_limit_reached"))).toBe(
+      "PROVIDER_QUOTA_EXHAUSTED"
+    );
+  });
+
+  test("recognizes Gemini MALFORMED_FUNCTION_CALL as a provider tool-call failure", () => {
+    expect(
+      classifyError(
+        new Error(
+          "Provider finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL"
+        )
+      )
+    ).toBe("PROVIDER_TOOL_CALL_FAILED");
+    expect(
+      classifyError(new Error("Provider finish_reason: content_filter"))
+    ).toBeUndefined();
+    expect(
+      classifyError(new Error("Provider finish_reason: length"))
+    ).toBeUndefined();
+  });
+
   test("SESSION_TIMEOUT and NO_MODEL_CONFIGURED still classify", () => {
     expect(classifyError(new Error("SESSION_TIMEOUT"))).toBe("SESSION_TIMEOUT");
     expect(classifyError(new Error("No model configured"))).toBe(

@@ -606,6 +606,36 @@ export function isPersonalCredentialKind(profileKind?: string | null): boolean {
   return profileKind === 'oauth_account';
 }
 
+/**
+ * Explain the agent-ownership boundary of a personal connection.
+ *
+ * Chat-triggered runs resolve connections as the AGENT OWNER, never the message
+ * sender (`workspace/multi-tenant.ts` selects `owner_user_id FROM agents`), and
+ * a private connection is visible only via `created_by = principal`
+ * (`authz/connection-visibility.ts`). So when a member connects their own
+ * Gmail/calendar and then DMs an agent someone ELSE owns, the credential
+ * lookup returns ZERO ROWS — not an error. The agent simply behaves as if the
+ * connection does not exist, which is indistinguishable from "the agent chose
+ * not to use it".
+ *
+ * Forcing personal credentials to `private` is correct and is NOT changed here
+ * (org-visible would expose that user's inbox org-wide). This only makes the
+ * consequence legible at connect time instead of silent at run time.
+ */
+export function personalConnectionScopeWarning(params: {
+  visibility: 'org' | 'private';
+  profileKind?: string | null;
+}): string | undefined {
+  if (params.visibility !== 'private') return undefined;
+  if (!isPersonalCredentialKind(params.profileKind)) return undefined;
+  return (
+    'This personal connection is private to you. Agent runs resolve connections as ' +
+    'the AGENT OWNER, not the person who sent the message — so only agents YOU own ' +
+    'can use it. When you message an agent owned by another member, the lookup ' +
+    'returns nothing and the agent behaves as if this connection does not exist.'
+  );
+}
+
 /** The message the DB guard trigger raises when a personal-credential connection
  * is written with visibility='org'. Matched to translate the raw DB exception
  * into a clean tool error. Kept in sync with the migration

@@ -68,12 +68,35 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   // Exhausted", generic rate-limit/quota phrasings, and a bare 429. Placed
   // before PROVIDER_AUTH because a rate-limited request can also echo auth-ish
   // words; the quota shape is the more specific, more actionable signal.
+  // Billing/credit exhaustion belongs to the same actionable class as a quota
+  // trip: the key is VALID, the account just can't spend. Anthropic returns it
+  // as a 400 `invalid_request_error` ("Your credit balance is too low…"), which
+  // carries none of the quota vocabulary below — so without this clause it fell
+  // through to `undefined` and surfaced as a raw `💥 Worker crashed: 400 {…}`
+  // JSON blob in the user's chat.
+  if (
+    /credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b/i.test(
+      message
+    )
+  )
+    return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
+
   if (
     /weekly\/monthly limit exhausted|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
       message
     )
   )
     return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
+
+  // Gemini can end a turn with this provider-side tool-call rejection instead
+  // of a usable stop reason. Keep the match specific: other finish reasons can
+  // describe different failures and must not inherit this remediation text.
+  if (
+    /^Provider finish_reason:\s*function_call_filter:\s*MALFORMED_FUNCTION_CALL\b/i.test(
+      message
+    )
+  )
+    return AgentErrorCode.PROVIDER_TOOL_CALL_FAILED;
 
   if (
     message.includes("No model configured") ||

@@ -394,6 +394,61 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
   });
 });
 
+describe("resolveModelRef — providerSlug must describe the REQUESTED model", () => {
+  test("an explicitly-prefixed model keeps its OWN slug, not the default provider's", () => {
+    // Observed live: agent models = ["gemini/gemini-2.5-flash"], but the
+    // session context published defaultProvider="openai" (the gateway's
+    // "first credentialed module" scan). The old code took the
+    // `if (defaultProvider)` branch and returned providerSlug="openai", so the
+    // failure CTA linked to `inference-provider:openai` while the `?model=`
+    // param correctly said `gemini/gemini-2.5-flash` — sending the user to
+    // connect the WRONG provider.
+    const result = resolveModelRef("gemini/gemini-2.5-flash", {
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+    });
+
+    // The CTA must name the provider the run ASKED for.
+    expect(result.providerSlug).toBe("gemini");
+    // Routing itself is unchanged (the gateway owns that decision) and the ref
+    // keeps its namespace — stripping a FOREIGN prefix here would break
+    // OpenRouter-style refs like "anthropic/claude-sonnet-4".
+    expect(result.modelId).toBe("gemini/gemini-2.5-flash");
+  });
+
+  test("a bare model id still inherits the configured default provider", () => {
+    // No slug in the ref → nothing to contradict the default. Unchanged.
+    const result = resolveModelRef("gpt-4.1", {
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+    });
+    expect(result.providerSlug).toBe("openai");
+    expect(result.modelId).toBe("gpt-4.1");
+  });
+
+  test("a foreign namespace slug still routes to the configured provider", () => {
+    // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
+    // model", NOT "switch to the anthropic provider". Routing is preserved —
+    // only the CTA slug attribution changed.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("the configured provider's own prefix is still stripped", () => {
+    const result = resolveModelRef("claude/claude-opus-4-8", {
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+    });
+    expect(result.provider).toBe("anthropic");
+    expect(result.providerSlug).toBe("claude");
+    expect(result.modelId).toBe("claude-opus-4-8");
+  });
+});
+
 describe("DEFAULT_PROVIDER_BASE_URL_ENV — gateway-slug keying", () => {
   test("gemini base-URL env is keyed by the 'gemini' slug, not 'google'", () => {
     // The gateway emits the provider slug "gemini" (config id) as

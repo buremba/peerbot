@@ -312,9 +312,35 @@ export function resolveModelRef(
     ) {
       modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
+    // `providerSlug` targets the failure CTA ("Reconnect provider"), so it must
+    // name the provider the RUN ACTUALLY ASKED FOR, not whichever module the
+    // gateway happened to publish as `defaultProvider`. When the gateway can't
+    // match a module to the requested model it falls back to the first
+    // credentialed one (`gateway/index.ts`, the `if (!primaryProvider)` scan),
+    // so an agent pinned to `gemini/gemini-2.5-flash` on a deployment where only
+    // OpenAI is credentialed emitted a CTA pointing at
+    // `inference-provider:openai` while `?model=` correctly said `gemini/…` —
+    // sending the user to connect the WRONG provider.
+    //
+    // Only the CTA attribution changes: `provider` (the routing decision) and
+    // `modelId` (the self-prefix strip above) are untouched, so OpenRouter-style
+    // foreign namespaces still route to the configured provider.
+    //
+    // `modelId === modelRef` means the strip above did NOT consume the prefix,
+    // so the name is genuinely foreign rather than the provider's own id.
+    const requestedForeignSlug =
+      explicitParts.length >= 2 &&
+      explicitProvider &&
+      explicitProvider !== defaultProvider &&
+      explicitProvider !== defaultProviderSlug &&
+      modelId === modelRef
+        ? explicitProvider
+        : undefined;
+
     return {
       provider: defaultProvider,
-      providerSlug: defaultProviderSlug || defaultProvider,
+      providerSlug:
+        requestedForeignSlug ?? (defaultProviderSlug || defaultProvider),
       modelId,
     };
   }

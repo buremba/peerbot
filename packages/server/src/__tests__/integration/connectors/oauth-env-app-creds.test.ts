@@ -264,6 +264,40 @@ describe('connector OAuth connect — env-backed app credentials (DB-backed)', (
     expect(resolved.clientSecret).toBe('env-client-secret');
   });
 
+  it('creates a new OAuth connection private from the start and explains its agent-owner scope', async () => {
+    process.env[CLIENT_ID_KEY] = 'env-client-id';
+    process.env[CLIENT_SECRET_KEY] = 'env-client-secret';
+
+    const org = await createTestOrganization({ name: 'OAuth Scope Org' });
+    const user = await createTestUser({ name: 'OAuth Scope User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+    await makeOAuthConnector(org.id);
+
+    const result = await manageConnections(
+      { action: 'connect', connector_key: 'demoenv.oauth' },
+      TEST_ENV,
+      ctx
+    );
+
+    expect(result).toMatchObject({
+      action: 'connect',
+      status: 'pending_auth',
+      auth_type: 'oauth',
+      instructions: expect.stringContaining('AGENT OWNER'),
+    });
+    const connectionId =
+      'connection_id' in result ? Number(result.connection_id) : 0;
+    expect(connectionId).toBeGreaterThan(0);
+
+    const [row] = (await getTestDb()`
+      SELECT status, visibility
+      FROM connections
+      WHERE id = ${connectionId}
+    `) as Array<{ status: string; visibility: string }>;
+    expect(row).toEqual({ status: 'pending_auth', visibility: 'private' });
+  });
+
   it('still requires an app profile when NO env client creds are set (no silent bypass)', async () => {
     // Ensure the env vars are absent for this case.
     delete process.env[CLIENT_ID_KEY];

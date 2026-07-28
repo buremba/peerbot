@@ -24,6 +24,7 @@ import {
   getConnectBaseUrl,
 	getGatewayBaseUrl,
 	getInteractiveMethods,
+  personalConnectionScopeWarning,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
   resolveConnectionVisibility,
@@ -373,11 +374,21 @@ export async function handleConnect(
       : null,
   });
 
+  // A newly authorized OAuth account is personal even though its profile does
+  // not exist yet. Apply the private scope from creation rather than waiting
+  // for the OAuth callback to downgrade it.
+  const connectionProfileKind =
+    authSelection.authProfile?.profile_kind ??
+    (needsConnectFlow ? "oauth_account" : undefined);
   const connectVisibility = await resolveConnectionVisibility(
     organizationId,
     userId,
-		authSelection?.authProfile?.profile_kind,
+		connectionProfileKind,
   );
+  const personalScopeWarning = personalConnectionScopeWarning({
+    visibility: connectVisibility,
+    profileKind: connectionProfileKind,
+  });
   const connectorFeedsSchema = (connector.feeds_schema ?? null) as Record<
     string,
     FeedDefinition
@@ -570,7 +581,9 @@ export async function handleConnect(
       connection_id: connection.id,
       slug: connection.slug,
 			status: "active",
-			message: "Connection created and active.",
+			message: personalScopeWarning
+        ? `Connection created and active. Note: ${personalScopeWarning}`
+        : "Connection created and active.",
       view_url: buildSetupUrl({ connectorKey: args.connector_key }),
     };
   }
@@ -703,6 +716,9 @@ export async function handleConnect(
     connect_url: connectUrl,
     connect_token: connectToken.token,
     expires_at: new Date(connectToken.expires_at).toISOString(),
-    instructions: `Send the connect_url to the user to complete OAuth authorization with ${oauthMethod.provider}. Poll this connection with action='get' until status='active'.`,
+    instructions:
+      `Send the connect_url to the user to complete OAuth authorization with ${oauthMethod.provider}.` +
+      (personalScopeWarning ? ` ${personalScopeWarning}` : "") +
+      ` Poll this connection with action='get' until status='active'.`,
   };
 }

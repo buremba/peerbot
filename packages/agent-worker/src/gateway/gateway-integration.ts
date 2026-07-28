@@ -50,6 +50,17 @@ export class HttpWorkerTransport implements WorkerTransport {
    * tool without a separate durable ledger.
    */
   private toolsUsed = new Set<string>();
+  /**
+   * Once-per-turn latch for user-facing errors. Three uncoordinated emitters
+   * can report the SAME failed turn — `worker.ts`'s result-false branch,
+   * `worker.ts`'s catch branch, and `sse-client.ts`'s outer catch — and every
+   * `signalError` is a terminal POST the gateway turns into its own chat
+   * message. That is how one Telegram question produced a 401 CTA, an answer,
+   * and a crash blob. The FIRST error wins: it carries the real classification
+   * (later re-signals are typically code-less). This transport is per-turn, so
+   * a new turn starts unlatched.
+   */
+  private errorSignalled = false;
 
   constructor(config: WorkerTransportConfig) {
     this.gatewayUrl = config.gatewayUrl;
@@ -207,6 +218,19 @@ export class HttpWorkerTransport implements WorkerTransport {
     errorCode?: string,
     errorContext?: AgentErrorContext
   ): Promise<void> {
+    // Drop every error after the first for this turn. Keep the detail in the
+    // logs — the suppressed one is often the more specific provider string, and
+    // losing it silently is what made these turns undiagnosable.
+    if (this.errorSignalled) {
+      logger.warn(
+        `[WORKER-HTTP] Suppressing duplicate error signal for this turn (code=${
+          errorCode ?? "none"
+        }): ${error.message}`
+      );
+      return;
+    }
+    this.errorSignalled = true;
+
     await this.sendResponse(
       this.buildBaseResponse({
         error: error.message,

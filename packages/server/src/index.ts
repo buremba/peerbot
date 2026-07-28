@@ -94,6 +94,7 @@ import {
 	buildSitemapEntries,
 	buildSitemapXml,
 	PUBLIC_XML_CACHE,
+	injectRuntimeConfig,
 	renderPublicPageTemplate,
 } from "./public-pages";
 import {
@@ -384,6 +385,9 @@ async function serveStaticFile(
 			? "public, max-age=0, s-maxage=60, stale-while-revalidate=300"
 			: "public, max-age=31536000, immutable",
 	);
+	if (isHtml) {
+		return c.html(injectRuntimeConfig(body.toString("utf-8")));
+	}
 	// Hono's Data type expects Uint8Array<ArrayBuffer>; copy into a fresh
 	// ArrayBuffer since fs.readFile returns Buffer<ArrayBufferLike>.
 	const ab = new ArrayBuffer(body.byteLength);
@@ -2824,9 +2828,11 @@ app.get("*", async (c) => {
 			const template = await loadAnySpaHtmlTemplate();
 			if (template) {
 				const rendered = renderPublicPageTemplate(template, publicPageModel);
-				const html = viteDev
-					? await viteDev.transformIndexHtml(c.req.path, rendered)
-					: rendered;
+				const html = injectRuntimeConfig(
+					viteDev
+						? await viteDev.transformIndexHtml(c.req.path, rendered)
+						: rendered,
+				);
 				c.header("Cache-Control", publicPageModel.cacheControl);
 				c.header("Vary", "Accept, Cookie");
 				return c.html(html, publicPageModel.status as 200 | 404);
@@ -2841,7 +2847,9 @@ app.get("*", async (c) => {
 				path.resolve(viteDev.config.root, "index.html"),
 				"utf-8",
 			);
-			const html = await viteDev.transformIndexHtml(c.req.path, raw);
+			const html = injectRuntimeConfig(
+				await viteDev.transformIndexHtml(c.req.path, raw),
+			);
 			return c.html(html);
 		}
 		return c.notFound();

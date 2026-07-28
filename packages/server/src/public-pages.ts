@@ -10,7 +10,10 @@ import {
 } from './utils/entity-management';
 import { entityLinkMatchSql } from './utils/content-search';
 import { escapeHtml } from './utils/html';
-import { getConfiguredPublicOrigin } from './utils/public-origin';
+import {
+  getConfiguredPublicOrigin,
+  getConfiguredSubdomainZone,
+} from './utils/public-origin';
 import { RESERVED_PATHS_SET } from './utils/reserved';
 
 interface PublicOrganization {
@@ -1094,6 +1097,26 @@ export async function buildPublicPageModel(
 
 export function renderPublicPageTemplate(templateHtml: string, model: PublicPageModel): string {
   return injectIntoTemplate(templateHtml, model);
+}
+
+/**
+ * Injects deployment config before the first script so it is available when
+ * the SPA bundle starts. This is runtime data because Docker serves a prebuilt
+ * frontend, and it is separate from the public-page-only bootstrap payload.
+ */
+export function injectRuntimeConfig(templateHtml: string): string {
+  const zone = getConfiguredSubdomainZone();
+  const script = `<script>window.__LOBU_RUNTIME_CONFIG__=${serializeForScript({
+    subdomainZone: zone,
+  })};</script>`;
+
+  const firstScript = templateHtml.search(/<script\b/i);
+  if (firstScript !== -1) {
+    return `${templateHtml.slice(0, firstScript)}${script}\n${templateHtml.slice(firstScript)}`;
+  }
+  return /<\/head>/i.test(templateHtml)
+    ? templateHtml.replace(/<\/head>/i, `${script}\n</head>`)
+    : `${script}${templateHtml}`;
 }
 
 export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[]> {

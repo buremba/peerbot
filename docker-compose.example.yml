@@ -50,7 +50,20 @@ services:
       ENCRYPTION_KEY: REPLACE_ME_openssl_rand_base64_32
       # 32-byte base64 — generate with: openssl rand -base64 32
       BETTER_AUTH_SECRET: REPLACE_ME_openssl_rand_base64_32
+      # Your EXTERNAL url, as the browser sees it. Behind a reverse proxy this
+      # must be the public address (https://lobu.example.com/lobu), not
+      # localhost — links and redirects are built from it.
       PUBLIC_GATEWAY_URL: http://localhost:8787/lobu
+
+      # ---- Per-org subdomains (optional) -----------------------------------
+      # Leave AUTH_COOKIE_DOMAIN unset for path-based routing
+      # (lobu.example.com/your-org) — the right default behind a single
+      # reverse proxy, and no wildcard DNS required.
+      #
+      # Set it only if you want each org on its own host
+      # (your-org.lobu.example.com); that needs wildcard DNS plus a matching
+      # proxy/cert. The value is the shared parent zone:
+      #   AUTH_COOKIE_DOMAIN: .lobu.example.com
 
       # ---- Recommended -----------------------------------------------------
       NODE_ENV: production

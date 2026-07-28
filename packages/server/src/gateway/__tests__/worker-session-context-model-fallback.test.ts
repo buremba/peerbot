@@ -93,6 +93,32 @@ async function sessionContextModel(
   return body.providerConfig?.defaultModel;
 }
 
+/**
+ * Full providerConfig from /session-context. `sessionContextModel` above reads
+ * only `defaultModel`; CTA attribution needs the provider fields too.
+ */
+async function sessionContextProviderConfig(gateway: WorkerGateway): Promise<{
+  defaultProvider?: string;
+  defaultProviderServesModel?: boolean;
+}> {
+  const token = generateWorkerToken("user-1", "conv-1", "worker-a", {
+    channelId: "channel-1",
+    agentId: AGENT,
+    organizationId: ORG,
+  });
+  const res = await gateway.getApp().request("/session-context", {
+    headers: { authorization: `Bearer ${token}`, host: "gateway.example.com" },
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as {
+    providerConfig?: {
+      defaultProvider?: string;
+      defaultProviderServesModel?: boolean;
+    };
+  };
+  return body.providerConfig ?? {};
+}
+
 describe("worker model fallback (real DB, both channels)", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
@@ -270,6 +296,68 @@ describe("worker model fallback (real DB, both channels)", () => {
 
     // The real routable ref is published — NOT undefined, NOT the sentinel.
     expect(await sessionContextModel(gateway)).toBe("byo2/byo2-model");
+  });
+
+  test("CTA attribution: a model-MATCHED provider publishes defaultProviderServesModel=true", async () => {
+    // `defaultProviderServesModel` tells the worker whether the published
+    // `defaultProvider` was MATCHED to the model (findProviderForModel) or
+    // merely picked by the credentialed-fallback scan. The worker gates failure
+    // CTA attribution on it: true means this provider genuinely serves the ref,
+    // so the CTA stays here even when the model's prefix names some OTHER
+    // installed provider (OpenRouter's "openai/gpt-4o" vendor namespace).
+    //
+    // NOTE on the false branch: no fixture here reaches it, and that appears to
+    // be by design rather than a coverage gap. `resolveDispatchModel` fails
+    // closed — an unroutable ref is either replaced by the first routable one
+    // or resolves to undefined, in which case resolveProviderConfig returns {}
+    // and publishes NO provider at all. So via /session-context the gateway
+    // does not appear to publish a defaultProvider that fails to serve its
+    // model. The worker still handles `false` (older-gateway/other-caller
+    // safety, covered in model-resolver.test.ts), but asserting it here would
+    // require a state this endpoint does not seem to produce.
+    const sql = getDb();
+    await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "byo2",
+      kind: "openai",
+      apiKey: "sk-byo2",
+      capabilities: {
+        text: { base_url: "https://api.byo2.example.com", model: "byo2-model" },
+      },
+    });
+    await setInferenceProviderDefault(ORG, "byo2");
+
+    const settings = {
+      getSettings: async () => ({ models: ["byo2/byo2-model"] }),
+    } as any;
+    const catalog = new ProviderCatalogService(
+      settings,
+      { getBestProfile: async () => null } as any,
+      (org: string) => listInferenceProviders(org),
+      () => {},
+    );
+    const gateway = new WorkerGateway(
+      { send: async () => undefined } as any,
+      "https://gateway.example.com",
+      { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
+      {
+        getSessionContext: async () => ({
+          agentInstructions: "",
+          platformInstructions: "",
+          networkInstructions: "",
+          skillsInstructions: "",
+          mcpStatus: [],
+        }),
+      } as any,
+      undefined,
+      catalog,
+      settings,
+    );
+
+    const pc = await sessionContextProviderConfig(gateway);
+    expect(pc.defaultProvider).toBe("byo2");
+    expect(pc.defaultProviderServesModel).toBe(true);
   });
 
   test("R5 #4: an ORGLESS worker token publishes NO model for a db-backed shared id (no cross-org read)", async () => {

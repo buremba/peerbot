@@ -37,6 +37,10 @@ COPY packages/connector-sdk/package.json packages/connector-sdk/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/embeddings/package.json packages/embeddings/
 COPY packages/connector-worker/package.json packages/connector-worker/
+# The CLI ships in this image so self-hosters can run
+# `docker exec <container> lobu ...` (#2231). Real manifest, not a stub, so
+# bun install resolves its dependencies below.
+COPY packages/cli/package.json packages/cli/
 # server depends on @lobu/pgvector-embedded (workspace:*); its manifest must be
 # present for bun install to resolve the workspace member and for tsc to find
 # its types. Prod never loads it at runtime (external Postgres) — it's pruned
@@ -48,11 +52,16 @@ COPY packages/owletto/package.jso[n] packages/owletto/
 
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
-RUN mkdir -p packages/cli packages/lobu-cli packages/browser-extension packages/mcpsandbox \
-    && for p in cli browser-extension mcpsandbox; do \
+RUN mkdir -p packages/lobu-cli packages/browser-extension packages/mcpsandbox \
+    && for p in browser-extension mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json
+
+# The CLI depends on playwright (npm:patchright) and playwright-vanilla
+# (npm:playwright). Neither may download browser binaries during install — the
+# runtime stage installs the single patchright Chromium this image uses.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # Hoisted layout (npm-style flat node_modules) is required so the bundled
 # server.bundle.mjs (built below) can resolve transitive npm deps via Node's
@@ -83,6 +92,11 @@ COPY packages/embeddings/ packages/embeddings/
 COPY packages/connector-worker/ packages/connector-worker/
 COPY packages/pgvector-embedded/ packages/pgvector-embedded/
 COPY packages/server/ packages/server/
+COPY packages/cli/ packages/cli/
+# Bundled into the CLI dist by packages/cli/scripts/build.cjs: the starter
+# skill and the embedded-DB migrations.
+COPY skills/ skills/
+COPY db/migrations db/migrations
 # Copy the private frontend submodule when present.
 COPY packages/owletto packages/owletto
 
@@ -109,11 +123,23 @@ RUN cd packages/server && bunx tsc --noEmit
 # for the full rationale.
 RUN cd packages/server && bun run build:server
 
+# Build the CLI (#2231). It must build after build:server because
+# packages/cli/scripts/build.cjs copies the server bundles + catalog manifests
+# into the CLI dist, and @lobu/worker dist must exist for the CLI's tsc. It
+# runs *before* the owletto web build, so the CLI dist intentionally carries
+# no second copy of the SPA — the container already serves the web UI from
+# packages/owletto/dist, and `lobu run` inside the container stays headless.
+RUN cd packages/agent-worker && bunx tsc \
+    && cd ../cli && bun run build
+
 # Prune the embedded-Postgres runtime (~145MB platform binary) before it reaches
 # the runtime image. Prod always uses an external DATABASE_URL (postgres://), so
 # server.ts never loads embedded-postgres or the pgvector injector — both are
 # reached only via await import() on the file:// path. The builder needs them
-# for the type-check + bundle above, so we drop them only afterward.
+# for the type-check + bundle above, so we drop them only afterward. This also
+# means the in-image `lobu` CLI cannot boot an embedded database — in the
+# container every CLI workflow talks to the external DATABASE_URL, which is
+# the only supported mode here.
 RUN rm -rf node_modules/embedded-postgres node_modules/@embedded-postgres
 
 # Build frontend static assets (production only)
@@ -178,6 +204,11 @@ COPY --from=builder /app/packages/connectors ./packages/connectors
 COPY --from=builder /app/packages/embeddings ./packages/embeddings
 COPY --from=builder /app/packages/connector-worker ./packages/connector-worker
 COPY --from=builder /app/packages/server ./packages/server
+# The lobu CLI (#2231): self-hosters run `docker exec <container> lobu ...`.
+# bin/lobu.js resolves ../dist relative to its realpath and walks up to the
+# hoisted /app/node_modules, so a symlink onto PATH is all it needs.
+COPY --from=builder /app/packages/cli ./packages/cli
+RUN ln -s /app/packages/cli/bin/lobu.js /usr/local/bin/lobu
 COPY --from=builder /app/packages/owletto ./packages/owletto
 
 # Database migrations (+ statement-at-a-time runner for transaction:false)

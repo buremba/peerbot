@@ -645,6 +645,59 @@ describe("deployment env assembly", () => {
     ]);
   });
 
+  test("INVARIANT: cold create and a warm turn give the sandbox the same tooling", async () => {
+    // Both reviewers circled this: the two paths must single-source their
+    // contribution. If they diverge, a warm turn silently drops a package or
+    // has its egress reconciled away, and the failure surfaces to the user as
+    // "the agent could do this a minute ago and now it can't".
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    const grantStore = new GrantStore();
+    manager.setGrantStore(grantStore);
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    const listAllowed = async () =>
+      (await grantStore.listGrants(AGENT, ORG))
+        .filter((g) => g.kind === "domain" && !g.denied)
+        .map((g) => g.pattern)
+        .sort();
+
+    // Cold: the manager resolves and folds the contribution itself.
+    const coldEnv = await manager.buildEnv(buildPayload());
+    const coldPackages = (coldEnv.NIX_PACKAGES ?? "").split(",").sort();
+    const coldGrants = await listAllowed();
+
+    // Warm: the CONSUMER folds into the payload, then the reconcile runs.
+    const contribution = await resolveAgentToolingDeclaration({
+      organizationId: ORG,
+    });
+    const warmPayload = buildPayload({
+      networkConfig: { allowedDomains: contribution.domains },
+      nixConfig: { packages: contribution.packages },
+    });
+    await manager.syncNetworkConfigGrants(warmPayload);
+    // Sampled HERE, immediately after the reconcile — `buildEnv` re-resolves
+    // the contribution through the cold path and would re-grant whatever the
+    // reconcile just revoked, hiding the divergence being tested.
+    const warmGrants = await listAllowed();
+    const warmEnv = await manager.buildEnv(warmPayload);
+    const warmPackages = (warmEnv.NIX_PACKAGES ?? "").split(",").sort();
+
+    expect(coldPackages).toContain("gh");
+    // What the CONSUMER folded is what reaches the spawn: NIX_PACKAGES is read
+    // off the payload, so a package missing from the fold is missing from PATH.
+    expect(contribution.packages).toContain("gh");
+    expect(warmPackages).toEqual(coldPackages);
+    // Identical sets, so grant rows do not flap revoke/re-grant per turn.
+    expect(warmGrants).toEqual(coldGrants);
+    expect(warmEnv.GH_TOKEN).toBe(MINTED_TOKEN);
+  });
+
   test("REGRESSION: the warm-path reconcile keeps the nix cache hosts a contributed package needs", async () => {
     // The warm path (existing thread) re-runs syncNetworkConfigGrants against
     // the QUEUE payload, which is built by the consumer — not by buildEnv. That

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 // @ts-expect-error — plain .mjs script, no type declarations by design.
-import { deriveImageTags } from "../derive-image-tags.mjs";
+import { buildImageTag, deriveImageTags } from "../derive-image-tags.mjs";
 
 const SCRIPT = fileURLToPath(
   new URL("../derive-image-tags.mjs", import.meta.url)
@@ -100,6 +100,68 @@ describe("deriveImageTags", () => {
 });
 
 /**
+ * Flux's ImagePolicy (owletto: deploy/k8s/infrastructure/image-automation/
+ * image-policies.yaml) filters on this pattern and orders tags by the
+ * concatenated groups, compared as strings (`alphabetical` policy). Mirror that
+ * contract here to prove generated tags are accepted and ordered as intended.
+ */
+const FLUX_PATTERN = /^(\d{8})-(\d{6})(?:-(\d{6}))?$/;
+const fluxExtract = (tag: string) => {
+  const match = FLUX_PATTERN.exec(tag);
+  if (!match) throw new Error(`tag '${tag}' does not match the Flux pattern`);
+  return `${match[1]}${match[2]}${match[3] ?? ""}`;
+};
+
+describe("buildImageTag", () => {
+  const at = (iso: string, runNumber: number | string) =>
+    buildImageTag({ now: new Date(iso), runNumber });
+
+  it("formats UTC fixed-width and zero-pads the run number", () => {
+    expect(at("2026-07-28T13:51:24Z", 1662)).toBe("20260728-135124-001662");
+    expect(at("2026-01-02T03:04:05Z", 7)).toBe("20260102-030405-000007");
+  });
+
+  it("keeps two same-second builds distinct — including a lower-numbered rerun", () => {
+    // The race the split concurrency groups create: a release beside a push.
+    const now = "2026-07-28T13:51:24Z";
+    const fresh = at(now, 1662);
+    for (const other of [1663, 1562]) {
+      expect(at(now, other)).not.toBe(fresh);
+      expect(fluxExtract(at(now, other))).not.toBe(fluxExtract(fresh));
+    }
+  });
+
+  it("lets a later rerun of a lower run number win Flux's ordering", () => {
+    // Re-running an earlier failed release AFTER a later push must still
+    // deploy — the recovery that unstuck lobu-v14.4.0. Timestamp orders;
+    // run number only breaks ties.
+    const pushAt1359 = at("2026-07-28T13:59:59Z", 1662);
+    const rerunAt1400 = at("2026-07-28T14:00:00Z", 1562);
+    expect(fluxExtract(rerunAt1400) > fluxExtract(pushAt1359)).toBe(true);
+  });
+
+  it("sorts above the retired two-segment format at the same second", () => {
+    // The policy accepts both formats. The old extract is a strict prefix of a
+    // same-second new tag, while its timestamp still wins in the next second.
+    const oldFormat = fluxExtract("20260728-135124");
+    const newFormat = fluxExtract(at("2026-07-28T13:51:24Z", 1));
+    expect(newFormat > oldFormat).toBe(true);
+    expect(fluxExtract("20260728-135125") > newFormat).toBe(true);
+  });
+
+  it("rejects run numbers the fixed-width format cannot carry", () => {
+    const now = "2026-07-28T13:51:24Z";
+    expect(at(now, 999999)).toBe("20260728-135124-999999");
+    for (const bad of [1000000, 0, -1, 1.5, "", "abc", undefined]) {
+      expect(
+        () => buildImageTag({ now: new Date(now), runNumber: bad }),
+        `run number ${JSON.stringify(bad)} must be rejected`
+      ).toThrow();
+    }
+  });
+});
+
+/**
  * The workflow consumes this script as a subprocess, so the CLI half needs its
  * own coverage: the exported function can be perfect while the main block never
  * runs. That is not hypothetical — a `process.argv[1].endsWith(name)` guard, and
@@ -133,13 +195,26 @@ describe("derive-image-tags CLI", () => {
       EVENT_NAME: "release",
       RELEASE_TAG: "lobu-v14.4.0",
       PRERELEASE: "false",
+      RUN_NUMBER: "1662",
     });
     expect(status).toBe(0);
     // The workflow keys `latest` and the version tag off these exact names;
     // a missing line reads as "no release" rather than as a failure.
+    expect(output).toMatch(/tag=\d{8}-\d{6}-001662\n/);
     expect(output).toContain("semver=14.4.0");
     expect(output).toContain("is_stable=true");
     expect(output).toContain("should_publish=true");
+  });
+
+  it("fails the job when RUN_NUMBER is missing", () => {
+    const { status, output } = run({
+      EVENT_NAME: "push",
+      RELEASE_TAG: "",
+      PRERELEASE: "false",
+      RUN_NUMBER: "",
+    });
+    expect(status).toBe(1);
+    expect(output).toBe("");
   });
 
   it("still runs when invoked through a symlink with a different name", () => {
@@ -154,7 +229,7 @@ describe("derive-image-tags CLI", () => {
       writeFileSync(real, readFileSync(SCRIPT, "utf8"));
       symlinkSync(real, link);
       const { status, output } = run(
-        { EVENT_NAME: "release", RELEASE_TAG: "lobu-v14.4.0" },
+        { EVENT_NAME: "release", RELEASE_TAG: "lobu-v14.4.0", RUN_NUMBER: "7" },
         link
       );
       expect(status).toBe(0);

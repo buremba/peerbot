@@ -1067,8 +1067,8 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 			{
 				error:
 					`Provider '${slug}' has no text model configured, so it cannot be ` +
-					`the org default. Set one with: lobu providers set-capabilities ` +
-					`${slug} text --model <model>`,
+					`the org default. Set one with: PUT /inference-providers/${slug}` +
+					`/capabilities/text {"block":{"model":"<model>"}}`,
 			},
 			400
 		);

@@ -28,24 +28,31 @@ export const OWNER_ROUTE_SEGMENTS = [
   "agents",
   "connectors",
   "devices",
-  // Legacy redirect path /$owner/environments → connectors.
-  // Keep reserved so an org/entity slug never collides with the redirect.
-  "environments",
-  // Redirect-only segment for immutable chat-message links: /$owner/
-  // infrastructure/models URLs were emitted into Slack/Telegram messages
-  // (PR #1847) and cannot be rewritten, so the segment must keep routing.
-  "infrastructure",
   "memory",
   "members",
   "settings",
 ] as const;
 
-/** Legacy page slugs removed from the UI router. */
+/**
+ * Legacy page slugs removed from the UI router. Bookmarks and previously sent
+ * chat messages can still contain URLs under these segments, so the segments
+ * stay reserved: new entity types and orgs cannot claim their names, and the
+ * SPA's entity-type/splat guards notFound() them instead of resolving them as
+ * entities.
+ */
 export const REMOVED_OWNER_SEGMENTS = [
   "events",
   "watchers",
   "connections",
   "sources",
+  // Redirect-only shims deleted 2026-07-28: environments → connectors,
+  // infrastructure/models + inference-providers(/new) → provider connector
+  // detail. The provider URLs were emitted into chat messages (PRs #1766,
+  // #1847), while environments may remain in bookmarks; these old links now
+  // land on the router's global not-found page.
+  "environments",
+  "infrastructure",
+  "inference-providers",
 ] as const;
 
 /**
@@ -91,6 +98,13 @@ export const RESERVED_PATHS_SET: ReadonlySet<string> = new Set(RESERVED_PATHS);
 export const RESERVED_ENTITY_TYPE_SLUGS = [
   ...OWNER_ROUTE_SEGMENTS,
   ...REMOVED_OWNER_SEGMENTS,
+  // Live /$owner/<segment> route that is NOT an owner-nav segment (so it is
+  // absent from OWNER_ROUTE_SEGMENTS): an entity type with this slug would get
+  // its list page permanently shadowed by the static route. Create-time
+  // hygiene only — deliberately not added to OWNER_ROUTE_SEGMENTS, which also
+  // feeds the SPA's entity-splat routing guard and would break any existing
+  // entity type already using the slug.
+  "entity-types",
   "organization",
   "user",
   "watcher",

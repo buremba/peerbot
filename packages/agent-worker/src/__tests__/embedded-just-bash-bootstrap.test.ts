@@ -641,18 +641,31 @@ describe("buildBinaryInvocation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The REAL package-install boundary: a package manager that is not registered
-// as a runnable command in just-bash resolves to "command not found" (exit
-// 127) no matter how it is spelled or wrapped. isDirectPackageInstallCommand
-// is only an advisory hint; THIS is enforcement, and it is spelling-agnostic
-// because the lookup is on the resolved binary name. (PR #2259.)
+// The AGENT-DIRECT package-install boundary: a package manager that is not
+// registered as a runnable command in just-bash resolves to "command not
+// found" (exit 127) when the agent invokes it directly through the shell, no
+// matter how the manager token is spelled or wrapped in shell syntax, because
+// the lookup is on the resolved binary name in just-bash's registry.
+// isDirectPackageInstallCommand is only an advisory hint on top of this.
+//
+// SCOPE — this is NOT airtight against a registered INTERPRETER re-execing a
+// manager. A tool that discovery does register (e.g. `awk`, which is not in
+// UNSANDBOXED_INTERPRETERS) inherits the worker PATH, so `awk 'BEGIN{system(
+// "bunx x")}'` reaches the manager binary directly. That residual is
+// deliberately accepted: closing it at the child PATH (dropping dirs that host
+// a manager) also removed co-located node/git and could not gate an absolute
+// /nix/store re-exec, so the PATH-scrub was reverted. Hardening it belongs at
+// the process/mount boundary and is tracked separately. These tests pin only
+// the agent-direct guarantee. (PR #2259.)
 // ---------------------------------------------------------------------------
-describe("filtered package managers are not runnable however spelled", () => {
+describe("filtered package managers are not runnable via the shell directly", () => {
   test("nix/npm/uvx resolve to exit 127 through quoting and wrappers", async () => {
     // A bare just-bash with NO custom commands registered for these tools —
     // exactly what discoverBinaries() yields after UNSANDBOXED_INTERPRETERS
     // filtering. No OS sandbox needed: just-bash only runs its builtins plus
-    // registered commands, so an unregistered binary is "not found".
+    // registered commands, so an unregistered binary is "not found". This
+    // covers the agent typing the manager directly; a registered interpreter
+    // re-execing it via inherited PATH is the accepted residual noted above.
     const { Bash, InMemoryFs } = await import("just-bash");
     const bash = new Bash({ fs: new InMemoryFs() });
 

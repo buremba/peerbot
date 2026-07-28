@@ -74,6 +74,15 @@ export function buildBinaryInvocation(
  * arbitrary code through them. They are excluded by default; an agent that
  * genuinely needs them must opt in via
  * `LOBU_ALLOW_UNSANDBOXED_EXEC=1` (set per-agent in lobu.config.ts).
+ *
+ * This filter blocks the AGENT from invoking a listed binary DIRECTLY through
+ * the shell: an unregistered name is "command not found". It does NOT stop a
+ * binary that IS registered (a tool not on this list, e.g. `awk`, `sed`) from
+ * re-execing a listed one — a registered command inherits the worker PATH, so
+ * `awk 'BEGIN{system("bunx x")}'` can still reach the manager. Closing that
+ * residual at the child PATH was tried and reverted (it removed co-located
+ * node/git and could not gate an absolute /nix/store re-exec); it belongs at
+ * the process/mount boundary and is tracked separately.
  */
 const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "node",

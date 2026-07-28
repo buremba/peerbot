@@ -328,12 +328,22 @@ export function resolveModelRef(
     //
     // `modelId === modelRef` means the strip above did NOT consume the prefix,
     // so the name is genuinely foreign rather than the provider's own id.
+    //
+    // The prefix must ALSO name a real INSTALLED provider. Without that check a
+    // provider-internal namespace is misread as a provider request:
+    // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
+    // model", not "the Anthropic provider", and attributing the CTA to
+    // `anthropic` would point the user at a provider this deployment may not
+    // even have. `installedProviderRoutes` is the gateway's own list of
+    // installed provider slugs, so it is the authority on that distinction —
+    // absent it we cannot tell the two apart and keep the default attribution.
     const requestedForeignSlug =
       explicitParts.length >= 2 &&
       explicitProvider &&
       explicitProvider !== defaultProvider &&
       explicitProvider !== defaultProviderSlug &&
-      modelId === modelRef
+      modelId === modelRef &&
+      !!overrides?.installedProviderRoutes?.[explicitProvider]
         ? explicitProvider
         : undefined;
 

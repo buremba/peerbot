@@ -102,6 +102,34 @@ describe("signalError is once-per-turn", () => {
     expect(sentPayloads.length).toBeGreaterThan(0);
   });
 
+  test("a FAILED first delivery does not suppress the retry", async () => {
+    // The latch must not swallow the terminal error when the first send never
+    // reached the gateway. `sendResponse` retries internally and throws on
+    // ultimate failure; latching before delivery would leave the user with NO
+    // terminal error at all — worse than the duplicate the latch prevents.
+    const transport = new HttpWorkerTransport(baseConfig);
+
+    globalThis.fetch = (async () =>
+      new Response(null, { status: 500 })) as typeof globalThis.fetch;
+
+    await expect(
+      transport.signalError(new Error("first attempt"), "PROVIDER_AUTH")
+    ).rejects.toThrow();
+
+    // Gateway recovers; the caller's retry must still get through.
+    globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+      const init = args[1];
+      if (init?.body) sentPayloads.push(JSON.parse(init.body as string));
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    await transport.signalError(new Error("second attempt"), "PROVIDER_AUTH");
+
+    const errors = errorPayloads();
+    expect(errors).toHaveLength(1);
+    expect(errors[0].error).toBe("second attempt");
+  });
+
   test("a fresh transport (next turn) can signal an error again", async () => {
     const first = new HttpWorkerTransport(baseConfig);
     await first.signalError(new Error("turn-1 failure"), "PROVIDER_AUTH");

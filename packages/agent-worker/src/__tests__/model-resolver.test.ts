@@ -406,6 +406,9 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     const result = resolveModelRef("gemini/gemini-2.5-flash", {
       defaultProvider: "openai",
       defaultProviderSlug: "openai",
+      // gemini IS installed here — it just has no usable key, which is why the
+      // gateway fell back to publishing openai as defaultProvider.
+      installedProviderRoutes: { openai: "openai", gemini: "gemini" },
     });
 
     // The CTA must name the provider the run ASKED for.
@@ -426,16 +429,31 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     expect(result.modelId).toBe("gpt-4.1");
   });
 
-  test("a foreign namespace slug still routes to the configured provider", () => {
+  test("a provider-INTERNAL namespace keeps the configured provider's slug", () => {
     // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
-    // model", NOT "switch to the anthropic provider". Routing is preserved —
-    // only the CTA slug attribution changed.
+    // model", NOT "switch to the anthropic provider". `anthropic` is not an
+    // installed provider here, so the CTA must stay on openrouter — pointing
+    // it at `anthropic` would send the user to a provider this deployment
+    // does not even have.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      installedProviderRoutes: { openrouter: "openrouter" },
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("no installedProviderRoutes → keep the default attribution (cannot tell them apart)", () => {
+    // Without the gateway's installed-provider list we cannot distinguish a
+    // real provider request from a provider-internal namespace, so fail safe.
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
       defaultProviderSlug: "openrouter",
     });
     expect(result.provider).toBe("openrouter");
-    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+    expect(result.providerSlug).toBe("openrouter");
   });
 
   test("the configured provider's own prefix is still stripped", () => {

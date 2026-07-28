@@ -229,8 +229,11 @@ export class HttpWorkerTransport implements WorkerTransport {
       );
       return;
     }
-    this.errorSignalled = true;
-
+    // Latch only AFTER the terminal response is actually delivered.
+    // `sendResponse` retries internally and throws when it ultimately fails;
+    // latching before it would make a failed first delivery permanently
+    // suppress every later attempt, so the user would get NO terminal error at
+    // all — strictly worse than the duplicate this latch exists to prevent.
     await this.sendResponse(
       this.buildBaseResponse({
         error: error.message,
@@ -240,6 +243,7 @@ export class HttpWorkerTransport implements WorkerTransport {
         ...(errorContext && { errorContext }),
       })
     );
+    this.errorSignalled = true;
   }
 
   async sendStatusUpdate(elapsedSeconds: number, state: string): Promise<void> {

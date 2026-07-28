@@ -35,6 +35,7 @@
 
 import esbuild from "esbuild";
 import { existsSync, readFileSync } from "node:fs";
+import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -149,7 +150,12 @@ const externals = [
     imports
       .filter((i) => i.external)
       .map((i) => i.path)
-      .filter((p) => !p.startsWith("node:"))
+      // Node builtins are not npm packages. The resolver above externalises
+      // every bare specifier, so an unprefixed `path`/`fs`/`crypto` anywhere in
+      // the inlined graph would otherwise be reported as an undeclared
+      // dependency. isBuiltin covers both spellings and subpaths
+      // (`fs`, `node:fs`, `node:fs/promises`).
+      .filter((p) => !isBuiltin(p))
       // Bare specifier → package name (@scope/name or name).
       .map((p) =>
         p.startsWith("@") ? p.split("/").slice(0, 2).join("/") : p.split("/")[0]

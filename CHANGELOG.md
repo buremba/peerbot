@@ -1,5 +1,44 @@
 # Changelog
 
+## [14.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.3.0...lobu-v14.4.0) (2026-07-28)
+
+
+### Features
+
+* **approvals:** expire undecided approvals and add scoped bulk decisions ([#2193](https://github.com/lobu-ai/lobu/issues/2193)) ([728e5d1](https://github.com/lobu-ai/lobu/commit/728e5d10446cc1a23002d21a51cfa58b8f9398ea))
+* **chat:** suggested actions across web, Slack, and Telegram ([#2201](https://github.com/lobu-ai/lobu/issues/2201)) ([c29deba](https://github.com/lobu-ai/lobu/commit/c29deba5d5d0bf6ccde6a3b98fe0b0e9eedb9832))
+* **client:** agent config UI cleanup — Permissions into Guardrails, Goal label (owletto[#612](https://github.com/lobu-ai/lobu/issues/612)) ([#2228](https://github.com/lobu-ai/lobu/issues/2228)) ([040623b](https://github.com/lobu-ai/lobu/commit/040623be342aedfba1eb037cd8c7d3cfb6324575))
+* **guardrails:** require-tool + suggest-followups enrichment ([#2226](https://github.com/lobu-ai/lobu/issues/2226)) ([fc4df6f](https://github.com/lobu-ai/lobu/commit/fc4df6fad904bf96b891aca98c146b128ff005a0))
+* **memory:** show entity types as an ERD instead of a flat list ([#2190](https://github.com/lobu-ai/lobu/issues/2190)) ([e79e559](https://github.com/lobu-ai/lobu/commit/e79e5590217727c620066ed8310b29ece952668c))
+* **server:** audit every external tool invocation with its MCP session id ([#2233](https://github.com/lobu-ai/lobu/issues/2233)) ([eedb135](https://github.com/lobu-ai/lobu/commit/eedb1352095ba02f48dc71c5e18f6e9a5b604225))
+* **server:** Connected apps inventory with owner-scoped MCP revocation ([#2219](https://github.com/lobu-ai/lobu/issues/2219)) ([2e50529](https://github.com/lobu-ai/lobu/commit/2e505295edd9fed8caa001b3211171eed3122a9f))
+* **server:** connector-contributed agent tooling with credential leases ([#2243](https://github.com/lobu-ai/lobu/issues/2243)) ([932ccf5](https://github.com/lobu-ai/lobu/commit/932ccf51cb748950080d0c81d6894573c1296b79))
+* **server:** org-level MCP session activity endpoint + session-stamped approval events ([#2239](https://github.com/lobu-ai/lobu/issues/2239)) ([c1af191](https://github.com/lobu-ai/lobu/commit/c1af1912eeb9608533f939bbcb038fc6be1adaf5))
+* **server:** resolve approval notifications to live run state via their proposal-event pointer ([#2216](https://github.com/lobu-ai/lobu/issues/2216)) ([93ff79b](https://github.com/lobu-ai/lobu/commit/93ff79b92690c4c2985ff6832027d8a2e54568f2))
+* **server:** surface runtime credential fields and route provider CTAs at connector detail ([#2236](https://github.com/lobu-ai/lobu/issues/2236)) ([1da1404](https://github.com/lobu-ai/lobu/commit/1da14045c40b7fcfae94c54b64458e8a2206b434))
+
+
+### Bug Fixes
+
+* **agent-history:** scope platform conversation reads to the ambient org too ([#2181](https://github.com/lobu-ai/lobu/issues/2181)) ([4a0dfbe](https://github.com/lobu-ai/lobu/commit/4a0dfbe097f9619c71d912a571913ddf2452c075))
+* **agents:** make every agent-create path produce a runnable agent ([#2192](https://github.com/lobu-ai/lobu/issues/2192)) ([abbe5e7](https://github.com/lobu-ai/lobu/commit/abbe5e78695ad7b2b60fdd607dc7027de28dd4a9))
+* **api:** expose behavior IDs in operation responses ([#2227](https://github.com/lobu-ai/lobu/issues/2227)) ([c08185b](https://github.com/lobu-ai/lobu/commit/c08185b8a9a9a5cd0615dab545a612db47815376))
+* **chat:** materialize chat-link on connection-owner fallback so grid channels are visible ([#2188](https://github.com/lobu-ai/lobu/issues/2188)) ([a2fcbec](https://github.com/lobu-ai/lobu/commit/a2fcbec0a9d723d39c121bff0ac69a5bfc26c23b))
+* **ci:** tag docker images to releases instead of every main push ([#2241](https://github.com/lobu-ai/lobu/issues/2241)) ([8d6146e](https://github.com/lobu-ai/lobu/commit/8d6146e7853fe3ef09147a1893bc548577723f70))
+* **connections:** carry fallback agent_id across a Slack Grid enterprise supersede ([#2189](https://github.com/lobu-ai/lobu/issues/2189)) ([c025018](https://github.com/lobu-ai/lobu/commit/c025018f60fd73ab72db7a5d21dd5beab2a490fb))
+* **scripts:** refuse to publish a package whose [@lobu](https://github.com/lobu) dependency is unpublished ([#2235](https://github.com/lobu-ai/lobu/issues/2235)) ([debf9e4](https://github.com/lobu-ai/lobu/commit/debf9e46ab90811a730a71b60e4d33eb9ad85b14))
+* **search:** gate search_memory connections on the shared visibility predicate ([#2191](https://github.com/lobu-ai/lobu/issues/2191)) ([8cd1fd8](https://github.com/lobu-ai/lobu/commit/8cd1fd8c1c33f8087cddd8bda1f18f14751d7b17))
+* **security:** encrypt env auth-profile credentials at rest ([#2198](https://github.com/lobu-ai/lobu/issues/2198)) ([53f1e50](https://github.com/lobu-ai/lobu/commit/53f1e50279645d58490a91ecdfdb84e662db4ede))
+* **security:** stop leaking connection/feed config secrets on every read path ([#2195](https://github.com/lobu-ai/lobu/issues/2195)) ([bc24c50](https://github.com/lobu-ai/lobu/commit/bc24c50e926d225c87dcf94576456aa1da4ad8a2))
+* **server:** archive device connector definitions the fleet no longer serves ([#2213](https://github.com/lobu-ai/lobu/issues/2213)) ([fc62394](https://github.com/lobu-ai/lobu/commit/fc62394d36c6d15bde2af22ba654090208bd6fdb))
+* **server:** escape notification bodies per surface, not with Slack entities ([#2210](https://github.com/lobu-ai/lobu/issues/2210)) ([0dd712b](https://github.com/lobu-ai/lobu/commit/0dd712b7411679c0428fbd91b0aa5703ffd0ef59))
+* **server:** filter events by OAuth client id, and stop dropping filters on the score path ([#2211](https://github.com/lobu-ai/lobu/issues/2211)) ([7d41b71](https://github.com/lobu-ai/lobu/commit/7d41b710fc554d9d579b5b72a3bf9b866b7df7c5))
+* **server:** stop classification_filters dropping entity-less events ([#2215](https://github.com/lobu-ai/lobu/issues/2215)) ([7ccce4e](https://github.com/lobu-ai/lobu/commit/7ccce4ea4b356b1f404cf497e4d8fbe71d3f6e4e))
+* **server:** surface pending approvals hidden by the ACL resource gate + stop persisting NULL occurred_at ([#2229](https://github.com/lobu-ai/lobu/issues/2229)) ([50bd1ab](https://github.com/lobu-ai/lobu/commit/50bd1abaa3a362654cb2ff60f3b4f744e9ebd1e4))
+* **server:** surface query_sql unknown-table errors instead of an empty result ([#2203](https://github.com/lobu-ai/lobu/issues/2203)) ([b089cd5](https://github.com/lobu-ai/lobu/commit/b089cd56aa092d2d63ce8b8007eb4a13d441c0ee))
+* **server:** union nix packages at resolve time so skill/request deps reach the worker ([#2218](https://github.com/lobu-ai/lobu/issues/2218)) ([f9771ab](https://github.com/lobu-ai/lobu/commit/f9771ab155a732637b7b277cb522478109e505bd))
+* **web:** make connector detail usable when empty, and fix App install URL ([#2204](https://github.com/lobu-ai/lobu/issues/2204)) ([2c557aa](https://github.com/lobu-ai/lobu/commit/2c557aa613e048b4908d004d2535f6f4a55fdeef))
+
 ## [14.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.2.0...lobu-v14.3.0) (2026-07-24)
 
 

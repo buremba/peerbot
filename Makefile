@@ -293,22 +293,24 @@ review-fix:
 # NOT a substitute for the DB-backed suites (make test-integration) when you
 # touch server/runtime code — but it catches the cheap, common misses.
 pre-pr:
-	@echo "🔎 [1/5] Build workspace packages (fresh dist)..."
+	@echo "🔎 [1/6] Build workspace packages (fresh dist)..."
 	@# Typecheck resolves @lobu/* against built dist, not src. Without this a
 	@# stale core dist yields PHANTOM errors on any contract change (e.g. a new
 	@# field the dist predates) — the exact trap CI avoids by building first.
 	@make build-packages
-	@echo "🔎 [2/5] Strict typecheck (root + excluded packages)..."
+	@echo "🔎 [2/6] Strict typecheck (root + excluded packages)..."
 	@bun run typecheck
 	@for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do \
 		echo "   typecheck packages/$$pkg..."; \
 		( cd "packages/$$pkg" && bunx tsc --noEmit ) || exit $$?; \
 	done
-	@echo "🔎 [3/5] Dead-code gate (knip --include files)..."
+	@echo "🔎 [3/6] Dead-code gate (knip --include files)..."
 	@bun run knip --include files
-	@echo "🔎 [4/5] Lint/format (biome)..."
+	@echo "🔎 [4/6] Lint/format (biome)..."
 	@bun run check
-	@echo "🔎 [5/5] Exposed surface naming (no agent-facing 'watcher')..."
+	@echo "🔎 [5/6] Exposed surface naming (no agent-facing 'watcher')..."
 	@bun scripts/check-exposed-surface-naming.ts
+	@echo "🔎 [6/6] Gateway LLM calls (no unapproved one-off clients)..."
+	@node scripts/check-gateway-llm-calls.mjs
 	@echo "✅ pre-pr gates clean. NOTE: confirm your fix is in 'git show HEAD:<file>',"
 	@echo "   not just the working tree — a fix that isn't committed won't reach CI."

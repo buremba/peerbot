@@ -1,3 +1,6 @@
+// gateway-llm-ok: pending migration to gateway-completion.ts. This judge fails
+// closed, so changing its credential and transport path needs separate
+// red→green coverage. See scripts/check-gateway-llm-calls.mjs.
 import Anthropic from "@anthropic-ai/sdk";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
 import { getErrorMessage } from "@lobu/core";

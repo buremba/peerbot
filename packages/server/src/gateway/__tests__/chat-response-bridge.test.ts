@@ -521,7 +521,11 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
       organizationId: "org-1",
       publicGatewayUrl: "",
     });
-    const bridge = new ChatResponseBridge(manager as any);
+    const bridge = new ChatResponseBridge(manager as any, async () => ({
+      baseUrl: "https://example.test/v1",
+      apiKey: "test-key",
+      model: "test-model",
+    }));
     const registry = new GuardrailRegistry();
     registerBuiltinGuardrails(registry);
     bridge.setGuardrails(
@@ -536,14 +540,6 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
     bridge.setInteractionService({ postSuggestion } as any);
 
     const originalFetch = globalThis.fetch;
-    const previousEnv = {
-      key: process.env.SUGGESTION_GENERATOR_API_KEY,
-      baseUrl: process.env.SUGGESTION_GENERATOR_BASE_URL,
-      model: process.env.SUGGESTION_GENERATOR_MODEL,
-    };
-    process.env.SUGGESTION_GENERATOR_API_KEY = "test-key";
-    process.env.SUGGESTION_GENERATOR_BASE_URL = "https://example.test/v1";
-    process.env.SUGGESTION_GENERATOR_MODEL = "test-model";
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
@@ -581,15 +577,6 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
       await waitFor(() => postSuggestion.mock.calls.length > 0);
     } finally {
       globalThis.fetch = originalFetch;
-      if (previousEnv.key === undefined)
-        delete process.env.SUGGESTION_GENERATOR_API_KEY;
-      else process.env.SUGGESTION_GENERATOR_API_KEY = previousEnv.key;
-      if (previousEnv.baseUrl === undefined)
-        delete process.env.SUGGESTION_GENERATOR_BASE_URL;
-      else process.env.SUGGESTION_GENERATOR_BASE_URL = previousEnv.baseUrl;
-      if (previousEnv.model === undefined)
-        delete process.env.SUGGESTION_GENERATOR_MODEL;
-      else process.env.SUGGESTION_GENERATOR_MODEL = previousEnv.model;
     }
 
     expect(postSuggestion).toHaveBeenCalledTimes(1);

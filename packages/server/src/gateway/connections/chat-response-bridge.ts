@@ -30,6 +30,7 @@ import {
   type OutputGuardrailTrip,
 } from "../guardrails/output-scan.js";
 import { generateSuggestFollowups } from "../guardrails/suggest-followups.js";
+import { resolveCompletionTarget } from "../inference/gateway-completion.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import {
@@ -113,7 +114,10 @@ export class ChatResponseBridge implements ResponseRenderer {
    */
   private readonly outputGuardrail = new OutputGuardrailScanner();
 
-  constructor(private manager: ChatInstanceManager) {}
+  constructor(
+    private manager: ChatInstanceManager,
+    private readonly resolveCompletionTargetFn = resolveCompletionTarget
+  ) {}
 
   /**
    * Wire output-stage guardrails. Both must be set for guardrails to run;
@@ -236,8 +240,9 @@ export class ChatResponseBridge implements ResponseRenderer {
         organizationId
       );
       if (!config) return;
-      const prompts = await generateSuggestFollowups(replyText, undefined, {
+      const prompts = await generateSuggestFollowups(replyText, organizationId, {
         model: config.model,
+        resolveTarget: this.resolveCompletionTargetFn,
       });
       if (prompts.length === 0) return;
       await this.interactionService.postSuggestion(

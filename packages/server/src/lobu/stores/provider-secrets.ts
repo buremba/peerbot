@@ -868,3 +868,56 @@ export async function readOrgSharedProviderApiKey(
 		return null;
 	}
 }
+
+interface ResolvedInferenceProviderCredential {
+	kind: string;
+	baseUrl?: string;
+	apiKey?: string;
+}
+
+/**
+ * Resolve a provider row's credential even when it has no modality override.
+ * The base URL and ciphertext come from one read so a concurrent capability
+ * edit cannot pair a tenant URL with a key read from a different row state.
+ */
+export async function resolveInferenceProviderCredential(
+	organizationId: string,
+	slug: string,
+	modality: InferenceModality,
+): Promise<ResolvedInferenceProviderCredential | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT p.kind, p.capabilities -> ${modality} AS block, s.ciphertext
+		FROM inference_providers p
+		LEFT JOIN agent_secrets s
+		  ON s.organization_id = p.organization_id
+		 AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
+		 AND (s.expires_at IS NULL OR s.expires_at > now())
+		WHERE p.organization_id = ${organizationId} AND p.slug = ${slug}
+		  AND p.deleted_at IS NULL
+		LIMIT 1
+	`) as Array<{
+		kind: string;
+		block: InferenceCapabilityBlock | null;
+		ciphertext: string | null;
+	}>;
+	const row = rows[0];
+	if (!row) return null;
+
+	let apiKey: string | undefined;
+	if (row.ciphertext) {
+		try {
+			apiKey = decrypt(row.ciphertext);
+		} catch (error) {
+			logger.warn(
+				`Failed to decrypt inference-provider key for ${organizationId}/${slug}: ${getErrorMessage(error)}`,
+			);
+		}
+	}
+
+	return {
+		kind: row.kind,
+		baseUrl: row.block?.base_url,
+		apiKey,
+	};
+}

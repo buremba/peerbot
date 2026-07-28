@@ -10,7 +10,10 @@
  * is the behaviour this file pins down:
  *   - miss  → rewriter consulted, variant hits recovered
  *   - hit   → rewriter NEVER consulted (no fetch), result unchanged
- *   - no key / date sort / offset>0 → rescue skipped, graceful
+ *   - no provider row / date sort / offset>0 → rescue skipped, graceful
+ *
+ * Credentials come from an org-owned OpenAI-compatible provider row, so the
+ * configured case exercises row-key resolution rather than an env flag.
  *
  * Harness: vitest + embedded Postgres (real PG18 + pgvector), mirroring
  * get-content-visibility.test.ts. The LLM is stubbed at the FETCH boundary: we
@@ -35,16 +38,13 @@ import {
   createTestUser,
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
+import {
+  createInferenceProvider,
+  setInferenceProviderDefault,
+} from '../../../lobu/stores/provider-secrets';
+import { __resetEncryptionKeyCacheForTests } from '@lobu/core';
 
-const REWRITER_ENV: Env = {
-  ENVIRONMENT: 'test',
-  QUERY_REWRITER_API_KEY: 'test-key',
-  QUERY_REWRITER_MODEL: 'gpt-4o-mini',
-} as Env;
-
-const NO_KEY_ENV: Env = {
-  ENVIRONMENT: 'test',
-} as Env;
+const ENV: Env = { ENVIRONMENT: 'test' } as Env;
 
 // The variants the stubbed LLM "rewrites" the raw query into.
 let cannedVariants: string[] = [];
@@ -83,10 +83,16 @@ describe('getContent > auto on-miss recall rescue', () => {
   let dermatologistEventId: number;
   let entEventId: number;
   let specialistEventId: number;
+  // A second org holding the SAME fixtures but no provider row — the
+  // unconfigured case. Splitting orgs (rather than toggling an env) is what the
+  // org-scoped credential model requires.
+  let bareOrg: Awaited<ReturnType<typeof createTestOrganization>>;
+  let bareEntity: Awaited<ReturnType<typeof createTestEntity>>;
+  let originalEncryptionKey: string | undefined;
 
-  function ctx(): ToolContext {
+  function ctx(organizationId: string = org.id): ToolContext {
     return {
-      organizationId: org.id,
+      organizationId,
       userId: user.id,
       memberRole: 'owner',
       isAuthenticated: true,
@@ -98,6 +104,14 @@ describe('getContent > auto on-miss recall rescue', () => {
   }
 
   beforeAll(async () => {
+    // The provider row stores its key encrypted at rest, so this suite needs a
+    // key like any credential-touching path. Set (and restore) it locally
+    // rather than depending on ambient env, so the file runs standalone.
+    originalEncryptionKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY =
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    __resetEncryptionKeyCacheForTests();
+
     await initWorkspaceProvider();
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
@@ -106,6 +120,32 @@ describe('getContent > auto on-miss recall rescue', () => {
     user = await createTestUser({ email: 'rescue@example.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
     entity = await createTestEntity({ name: 'Rescue Entity', organization_id: org.id });
+
+    // The org's provider row IS the rewriter's configuration now.
+    const provider = await createInferenceProvider({
+      organizationId: org.id,
+      slug: 'openai',
+      kind: 'openai',
+      apiKey: 'test-key',
+      capabilities: {
+        text: { model: 'gpt-4o-mini', base_url: 'https://api.example.test/v1' },
+      },
+    });
+    if ('conflict' in provider) throw new Error('provider fixture conflicted');
+    await setInferenceProviderDefault(org.id, 'openai');
+
+    // Unconfigured org: same content, no provider row.
+    bareOrg = await createTestOrganization({ name: 'No Provider Org' });
+    await addUserToOrganization(user.id, bareOrg.id, 'owner');
+    bareEntity = await createTestEntity({
+      name: 'Bare Entity',
+      organization_id: bareOrg.id,
+    });
+    await createTestEvent({
+      organization_id: bareOrg.id,
+      entity_id: bareEntity.id,
+      content: 'The dermatologist recommended a new prescription for my skin condition.',
+    });
 
     dermatologistEventId = (
       await createTestEvent({
@@ -134,6 +174,12 @@ describe('getContent > auto on-miss recall rescue', () => {
 
   afterAll(() => {
     global.fetch = realFetch;
+    if (originalEncryptionKey !== undefined) {
+      process.env.ENCRYPTION_KEY = originalEncryptionKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
+    __resetEncryptionKeyCacheForTests();
   });
 
   beforeEach(() => {
@@ -144,19 +190,19 @@ describe('getContent > auto on-miss recall rescue', () => {
   it('(a) a total miss triggers the rescue and recovers a variant-only session', async () => {
     // Confirm the trigger: the raw query "physician" matches nothing.
     const miss = await getContent(
-      { entity_id: entity.id, query: 'physician', limit: 50 } as never,
-      NO_KEY_ENV as never,
-      ctx()
+      { entity_id: bareEntity.id, query: 'physician', limit: 50 } as never,
+      ENV as never,
+      ctx(bareOrg.id)
     );
     expect(miss.content.length).toBe(0);
     expect(fetchCalls.length).toBe(0); // text-only path, no fetch at all
 
-    // With a rewriter key present, the same raw miss expands "physician" →
+    // With a provider row present, the same raw miss expands "physician" →
     // ["dermatologist"] and the previously-unreachable session is recovered.
     cannedVariants = ['dermatologist'];
     const rescued = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 50 } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     const ids = new Set(rescued.content.map((c) => c.id));
@@ -172,7 +218,7 @@ describe('getContent > auto on-miss recall rescue', () => {
     cannedVariants = ['specialist', 'ENT'];
     const result = await getContent(
       { entity_id: entity.id, query: 'dermatologist', limit: 50 } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     const ids = new Set(result.content.map((c) => c.id));
@@ -181,15 +227,15 @@ describe('getContent > auto on-miss recall rescue', () => {
     expect(rewriteCalls().length).toBe(0);
   });
 
-  it('(c) miss with no API key is graceful: empty result, no crash, no fetch', async () => {
+  it('(c) miss in an org with no provider row is graceful: empty, no crash, no fetch', async () => {
     cannedVariants = ['dermatologist']; // would recover IF the rewriter ran
     const result = await getContent(
-      { entity_id: entity.id, query: 'physician', limit: 50 } as never,
-      NO_KEY_ENV as never,
-      ctx()
+      { entity_id: bareEntity.id, query: 'physician', limit: 50 } as never,
+      ENV as never,
+      ctx(bareOrg.id)
     );
     expect(result.content.length).toBe(0);
-    // rewriteQueries() short-circuits on the missing key before any fetch.
+    // resolveCompletionTarget() returns null before any fetch is attempted.
     expect(fetchCalls.length).toBe(0);
   });
 
@@ -197,7 +243,7 @@ describe('getContent > auto on-miss recall rescue', () => {
     cannedVariants = ['dermatologist', 'ENT', 'specialist'];
     const result = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 2 } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     expect(result.content.length).toBe(2);
@@ -209,7 +255,7 @@ describe('getContent > auto on-miss recall rescue', () => {
     cannedVariants = ['dermatologist', 'ENT', 'specialist'];
     const wide = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 50 } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     const wideIds = new Set(wide.content.map((c) => c.id));
@@ -224,7 +270,7 @@ describe('getContent > auto on-miss recall rescue', () => {
     cannedVariants = ['dermatologist'];
     const result = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 50, sort_by: 'date' } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     expect(rewriteCalls().length).toBe(0);
@@ -237,7 +283,7 @@ describe('getContent > auto on-miss recall rescue', () => {
     cannedVariants = ['dermatologist'];
     const result = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 2, offset: 2 } as never,
-      REWRITER_ENV as never,
+      ENV as never,
       ctx()
     );
     expect(result.content.length).toBe(0);

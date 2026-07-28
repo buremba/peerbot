@@ -480,7 +480,9 @@ async function getContentImpl(
         !args.after_occurred_at &&
         offset === 0 &&
         limit <= FALLBACK_FETCH_CAP;
-      const variants = fallbackEligible ? await rewriteQueries(args.query as string, env) : [];
+      const variants = fallbackEligible
+        ? await rewriteQueries(args.query as string, ctx.organizationId)
+        : [];
 
       if (variants.length > 0 && args.query) {
         // Over-fetch per variant so fusion has a real candidate pool to re-rank

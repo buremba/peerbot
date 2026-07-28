@@ -1071,9 +1071,37 @@ export class MessageConsumer {
         // Check if this is truly a new thread by looking for existing deployment
         const existingDeployments =
           await this.deploymentManager.listDeployments();
-        const isNewThread = !existingDeployments.some(
+        let isNewThread = !existingDeployments.some(
           (d) => d.deploymentName === deploymentName
         );
+
+        // A warm deployment holding a connector lease that is expiring gets
+        // torn down so the create path below re-mints. A worker reads its env
+        // once at startup, so a live one cannot be handed a fresh credential —
+        // without this, a deployment that never goes idle (idle cleanup is 60m,
+        // GitHub installation tokens last ~60m) keeps serving a sandbox whose
+        // `gh` has started 401ing.
+        if (!isNewThread && this.deploymentManager.hasExpiringLease(deploymentName)) {
+          logger.info(
+            { traceId, deploymentName },
+            "Connector lease expiring — recycling deployment to re-mint"
+          );
+          try {
+            await this.deploymentManager.deleteDeployment(deploymentName);
+            isNewThread = true;
+          } catch (error) {
+            // Keep serving the warm worker: a stale credential still beats a
+            // failed turn, and the next idle reap will clear it.
+            logger.warn(
+              {
+                traceId,
+                deploymentName,
+                error: getErrorMessage(error),
+              },
+              "Failed to recycle deployment for lease renewal; continuing with the existing worker"
+            );
+          }
+        }
 
         if (isNewThread) {
           const acquired = this.acquireDeploymentLock(deploymentName);

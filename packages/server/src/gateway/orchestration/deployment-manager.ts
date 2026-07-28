@@ -882,6 +882,44 @@ export class DeploymentManager {
    * writes.
    */
   private grantSyncCache = new Map<string, Set<string>>();
+
+  /**
+   * Earliest connector-lease expiry per deployment, recorded at env-build time.
+   *
+   * Pod-local by design, and NOT the multi-replica trap: the entry describes a
+   * worker THIS pod spawned and only this pod can recycle. A different replica
+   * serving the same conversation spawns its own worker and mints its own
+   * lease, so it has no need to read this one — nothing is shared state.
+   */
+  private leaseExpiryByDeployment = new Map<string, Date>();
+
+  /**
+   * Seconds before a lease's stated expiry at which the deployment stops being
+   * reusable. A turn that starts inside this window could still be running when
+   * the credential dies, so recycle early rather than hand the sandbox a token
+   * that expires mid-command.
+   */
+  private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
+
+  /**
+   * True when a warm deployment holds a connector lease that has expired or is
+   * about to. The caller tears the deployment down so the normal create path
+   * re-mints — a worker reads its env once at process start, so refreshing the
+   * credential in place is not possible.
+   */
+  hasExpiringLease(deploymentName: string, now: Date = new Date()): boolean {
+    const expiresAt = this.leaseExpiryByDeployment.get(deploymentName);
+    if (!expiresAt) return false;
+    return (
+      expiresAt.getTime() - now.getTime() <=
+      DeploymentManager.LEASE_RECYCLE_MARGIN_MS
+    );
+  }
+
+  /** Drop recorded lease state for a deployment that no longer exists. */
+  protected forgetLeaseExpiry(deploymentName: string): void {
+    this.leaseExpiryByDeployment.delete(deploymentName);
+  }
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
    * concurrent calls within a single gateway process so the orchestrator-
@@ -1560,6 +1598,7 @@ export class DeploymentManager {
       packages: [],
       env: {},
       domains: [],
+      leaseExpiresAt: null,
     };
     const { agentId, organizationId } = messageData;
     if (!agentId || !organizationId) return empty;
@@ -1736,6 +1775,20 @@ export class DeploymentManager {
         continue;
       }
       envVars[key] = value;
+    }
+
+    // Remember when this deployment's credential dies. A worker reads its env
+    // once at process start, so the only way to hand it a fresh token is to
+    // recycle it — `hasExpiringLease` lets the warm path do that on the turn
+    // BEFORE the credential lapses instead of serving a sandbox whose `gh`
+    // has started 401ing.
+    if (agentTooling.leaseExpiresAt) {
+      this.leaseExpiryByDeployment.set(
+        deploymentName,
+        agentTooling.leaseExpiresAt
+      );
+    } else {
+      this.leaseExpiryByDeployment.delete(deploymentName);
     }
 
     // Include host-provided secret references when requested.
@@ -2592,6 +2645,7 @@ export class DeploymentManager {
   }
 
   async deleteDeployment(deploymentName: string): Promise<void> {
+    this.forgetLeaseExpiry(deploymentName);
     const entry = this.workers.get(deploymentName);
     if (entry) {
       await this.killWorker(entry, deploymentName);

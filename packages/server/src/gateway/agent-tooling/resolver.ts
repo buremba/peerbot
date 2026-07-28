@@ -43,12 +43,19 @@ export interface ResolvedAgentTooling {
   env: Record<string, string>;
   /** Domains to grant on the worker's egress allowlist. */
   domains: string[];
+  /**
+   * Earliest expiry across every minted lease, or null when nothing minted (or
+   * no provider reported one). The deployment stores this so the warm path can
+   * recycle the worker before its credential lapses.
+   */
+  leaseExpiresAt: Date | null;
 }
 
 const EMPTY: ResolvedAgentTooling = {
   packages: [],
   env: {},
   domains: [],
+  leaseExpiresAt: null,
 };
 
 /**
@@ -255,6 +262,9 @@ export async function resolveAgentTooling(params: {
   const packages = new Set<string>();
   const domains = new Set<string>();
   const env: Record<string, string> = {};
+  /** env name → the connection whose lease is in `env`, for collision logging. */
+  const envSource = new Map<string, number>();
+  let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
     const tooling = parseAgentTooling(row.agent_tooling);
@@ -287,21 +297,34 @@ export async function resolveAgentTooling(params: {
     };
 
     for (const entry of tooling.env) {
-      // First successfully minted value wins. Two connections of the same
-      // connector (e.g. two GitHub orgs) would otherwise fight over one env var
-      // and the sandbox would silently use whichever sorted last.
+      // One env var, one credential: a sandbox has a single $GH_TOKEN, so when
+      // two connections of the same connector (two GitHub installations, say)
+      // both claim it, someone loses. Lowest connection id wins — arbitrary,
+      // but STABLE, so the agent does not silently swap identity between turns
+      // as rows are added.
+      //
+      // This is a real limitation, not a resolved case: the agent can only see
+      // what the winning installation can see, so a repo that lives only under
+      // the other one is invisible to it. Logged at WARN with both connection
+      // ids because the symptom an operator hits ("gh says 404 on a repo I can
+      // see in the browser") is otherwise undiagnosable from the sandbox.
+      // Fixing it properly means per-connection env naming or repo-aware
+      // selection, which is a contract change, not a patch.
       // Own properties only: `env` is a plain object literal, so `in` would
       // report `toString`/`constructor`/`valueOf` as already claimed before
       // anything is minted — all pass the identifier check and none is
       // reserved, so such an entry would be dropped with a bogus collision.
       if (Object.hasOwn(env, entry.name)) {
-        logger.info(
+        logger.warn(
           {
             env_name: entry.name,
             connector_key: row.connector_key,
             connection_id: connectionId,
+            using_connection_id: envSource.get(entry.name),
+            organization_id: organizationId,
+            agent_id: agentId,
           },
-          "Agent-tooling env var already contributed by an earlier connection — skipping"
+          "Two connections claim the same agent-tooling env var; keeping the lower connection id. Repositories reachable only by the skipped connection will not be visible to the agent."
         );
         continue;
       }
@@ -310,6 +333,15 @@ export async function resolveAgentTooling(params: {
       const lease = await params.leaseRegistry.mintFor(subject, scope);
       if (!lease) continue;
       env[entry.name] = lease.token;
+      envSource.set(entry.name, connectionId);
+      // Earliest wins: the deployment is only good until its FIRST credential
+      // lapses, not its last.
+      if (
+        lease.expiresAt &&
+        (!leaseExpiresAt || lease.expiresAt < leaseExpiresAt)
+      ) {
+        leaseExpiresAt = lease.expiresAt;
+      }
     }
   }
 
@@ -317,6 +349,7 @@ export async function resolveAgentTooling(params: {
     packages: [...packages],
     env,
     domains: [...domains],
+    leaseExpiresAt,
   };
 }
 

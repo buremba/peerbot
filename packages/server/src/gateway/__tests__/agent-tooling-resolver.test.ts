@@ -337,6 +337,67 @@ describe("resolveAgentTooling", () => {
     });
   });
 
+  test("surfaces the earliest lease expiry so the deployment can be recycled", async () => {
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+
+    const before = Date.now();
+    const resolved = await resolve({ registry: buildLeaseRegistry() });
+
+    // Without this the deployment has no idea when its credential dies, and a
+    // never-idle worker keeps serving an expired token.
+    expect(resolved.leaseExpiresAt).toBeInstanceOf(Date);
+    expect(resolved.leaseExpiresAt!.getTime()).toBeGreaterThan(before);
+  });
+
+  test("no lease minted means no expiry to track", async () => {
+    // Packages/domains still contribute, but there is nothing to recycle for.
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: { nix: { packages: ["gh"] }, domains: ["github.com"] },
+    });
+    await seedConnection({ connectorKey: "github" });
+
+    const resolved = await resolve({ registry: buildLeaseRegistry() });
+
+    expect(resolved.packages).toEqual(["gh"]);
+    expect(resolved.leaseExpiresAt).toBeNull();
+  });
+
+  test("two connections claiming one env var resolve to the lower connection id", async () => {
+    // A sandbox has a single $GH_TOKEN. The choice is arbitrary but must be
+    // STABLE — an agent that swapped identity between turns as rows were added
+    // would be far worse than one that consistently sees the first install.
+    const installA = await seedInstall(ORG, "44556677");
+    const installB = await seedInstall(ORG, "99887766");
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    const first = await seedConnection({
+      connectorKey: "github",
+      installationRef: installA,
+    });
+    const second = await seedConnection({
+      connectorKey: "github",
+      installationRef: installB,
+    });
+    expect(Number(second)).toBeGreaterThan(Number(first));
+
+    const resolved = await resolve({ registry: buildLeaseRegistry() });
+
+    expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
+    // Exactly one credential is contributed — the collision is dropped, not
+    // merged into some ambiguous combined value.
+    expect(Object.keys(resolved.env)).toEqual(["GH_TOKEN"]);
+  });
+
   test("a connector that declares no agentTooling contributes nothing", async () => {
     await seedConnectorDef({ key: "linear" });
     await seedConnection({ connectorKey: "linear" });
@@ -623,6 +684,50 @@ describe("deployment env assembly", () => {
 
     expect(await grantStore.hasGrant(AGENT, "cache.nixos.org", ORG)).toBe(true);
     expect(await grantStore.hasGrant(AGENT, "api.github.com", ORG)).toBe(true);
+  });
+
+  test("REGRESSION: a warm deployment whose lease is expiring is flagged for recycling", async () => {
+    // Worker env is read once at process start, so a live worker cannot be
+    // handed a fresh token. Idle cleanup defaults to 60m and GitHub
+    // installation tokens last ~60m, so a deployment that never goes idle
+    // would otherwise serve a sandbox whose `gh` has started 401ing.
+    //
+    // Mutation check: drop the leaseExpiryByDeployment.set() in
+    // deployment-manager and the "expiring" assertion below fails.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    await manager.buildEnv(buildPayload());
+
+    // The harness mints a token valid for 1h. Fresh now...
+    expect(manager.hasExpiringLease("deploy-1")).toBe(false);
+    // ...and inside the recycle margin as its expiry approaches.
+    expect(
+      manager.hasExpiringLease("deploy-1", new Date(Date.now() + 58 * 60_000))
+    ).toBe(true);
+    // An unknown deployment has no lease to expire and must never be recycled.
+    expect(manager.hasExpiringLease("deploy-unknown")).toBe(false);
+  });
+
+  test("a deployment with no minted lease is never recycled for expiry", async () => {
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: { nix: { packages: ["gh"] }, domains: ["github.com"] },
+    });
+    await seedConnection({ connectorKey: "github" });
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    await manager.buildEnv(buildPayload());
+
+    expect(
+      manager.hasExpiringLease("deploy-1", new Date(Date.now() + 86_400_000))
+    ).toBe(false);
   });
 
   test("a lease env var survives secret-placeholder injection", async () => {

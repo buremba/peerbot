@@ -14,9 +14,11 @@
  *
  * Multi-replica: minting is STATELESS per deployment. No lease is persisted and
  * no replica reads another's lease; two pods minting for the same connection
- * simply hold two independently valid tokens. Expiry is the provider's, so a
- * deployment outliving its lease re-mints on restart; mid-run refresh is
- * deliberately out of scope for v1.
+ * simply hold two independently valid tokens. Expiry is the provider's: the
+ * deployment records its earliest lease expiry and the warm path recycles the
+ * worker before that point, so a re-mint happens on the next turn rather than
+ * mid-run. Refreshing a credential INSIDE a running sandbox is still out of
+ * scope — the env var is read at process start.
  */
 
 import { createLogger } from "@lobu/core";
@@ -60,6 +62,13 @@ export interface LeaseScopeHints {
 /** A minted lease value injected into the sandbox. */
 export interface CredentialLease {
   token: string;
+  /**
+   * When the provider says this token stops working, or null when the provider
+   * does not say. The deployment records the EARLIEST expiry across its leases
+   * so the warm path can redeploy before a sandbox's `gh` starts 401ing —
+   * without it, a deployment that never goes idle outlives its credential.
+   */
+  expiresAt: Date | null;
 }
 
 /**
@@ -234,7 +243,10 @@ export class GitHubCredentialLeaseProvider implements CredentialLeaseProvider {
       "Minted agent-tooling credential lease"
     );
 
-    return { token: minted.token };
+    return {
+      token: minted.token,
+      expiresAt: minted.expiresAt ? new Date(minted.expiresAt) : null,
+    };
   }
 }
 

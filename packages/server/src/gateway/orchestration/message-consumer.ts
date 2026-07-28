@@ -1096,6 +1096,20 @@ export class MessageConsumer {
     toolingFingerprint: string | null,
     traceId: string
   ): Promise<void> {
+    // The same per-deployment lock the create path uses, so teardown and
+    // create are mutually exclusive. Without it two handlers can both pass the
+    // liveness check, both tear down, and the SECOND delete lands on the
+    // REPLACEMENT worker — killing a turn that was already enqueued to it.
+    // Losing the lock means another handler is already recycling or creating;
+    // this turn simply proceeds, and the trigger is recomputed state so
+    // nothing is missed.
+    if (!this.acquireDeploymentLock(deploymentName)) {
+      logger.info(
+        { traceId, deploymentName },
+        "Skipping deployment recycle: another handler holds the deployment lock"
+      );
+      return;
+    }
     try {
       // Establish there IS a warm deployment before reading any lease state.
       // On a cold start nothing has been minted yet, so those reads are
@@ -1150,6 +1164,8 @@ export class MessageConsumer {
         { traceId, deploymentName, error: getErrorMessage(error) },
         "Failed to recycle a stale deployment; continuing with the existing worker"
       );
+    } finally {
+      this.releaseDeploymentLock(deploymentName);
     }
   }
 

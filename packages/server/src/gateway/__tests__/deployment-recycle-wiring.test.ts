@@ -376,6 +376,55 @@ describe("recorded lease state is dropped with the worker", () => {
   });
 });
 
+describe("concurrent recycles are serialized", () => {
+  test("REGRESSION: two handlers cannot both tear down the same deployment", async () => {
+    // Without the per-deployment lock both handlers pass the liveness check and
+    // both delete. The SECOND delete lands after the first has already been
+    // replaced, so it kills the replacement worker — and a turn was already
+    // enqueued to it. Reproduced by codex with an inline two-handler probe.
+    const manager = new RecordingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    let inFlight = 0;
+    let sawOverlap = false;
+    manager.deleteWorkerDeployment = async (name: string) => {
+      inFlight += 1;
+      if (inFlight > 1) sawOverlap = true;
+      // Yield, so a racing handler would interleave here.
+      await new Promise((r) => setTimeout(r, 5));
+      manager.deleted.push(name);
+      inFlight -= 1;
+    };
+    const consumer = new TestConsumer(
+      CONFIG,
+      manager,
+      NOOP_QUEUE,
+      async () => {},
+      async () => false
+    );
+
+    await Promise.all([
+      consumer.recycle(DEPLOYMENT, "fp-unchanged"),
+      consumer.recycle(DEPLOYMENT, "fp-unchanged"),
+    ]);
+
+    expect(sawOverlap).toBe(false);
+    // Exactly one teardown, so no delete can land on a replacement worker.
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("the lock is released, so a later turn can still recycle", async () => {
+    // A lock leaked on the success path would disable recycling for the rest
+    // of the process's life.
+    const { manager, consumer } = build();
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    expect(manager.deleted).toEqual([DEPLOYMENT, DEPLOYMENT]);
+  });
+});
+
 describe("deferral is retried, not lost", () => {
   test("a turn deferred by liveness recycles on the next turn", async () => {
     // The trigger is STATE, not an event: hasExpiringLease/hasToolingChanged

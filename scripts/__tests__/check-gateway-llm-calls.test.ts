@@ -90,6 +90,35 @@ describe("check-gateway-llm-calls", () => {
     expect(runGuard()).toBe(1);
   });
 
+  /**
+   * Regression: the guard used to inspect single physical lines, but
+   * prettier/biome split any call over the print width — so the most likely
+   * real-world shape put `fetch(` and the URL on different lines, and no line
+   * held both. The merged gate returned exit 0 on exactly these two fixtures
+   * (verified against origin/main before `statementText()` landed).
+   */
+  it("fails on a formatter-split completions fetch", () => {
+    create(
+      `export async function probe(u: string) {\n` +
+        `  return fetch(\n` +
+        `    \`\${u}/chat/completions\`,\n` +
+        `    { method: "POST" },\n` +
+        `  );\n` +
+        `}\n`
+    );
+    expect(runGuard()).toBe(1);
+  });
+
+  it("fails on a formatter-split vendor SDK import", () => {
+    create(
+      `import {\n` +
+        `  Anthropic,\n` +
+        `} from "@anthropic-ai/sdk";\n` +
+        `export default Anthropic;\n`
+    );
+    expect(runGuard()).toBe(1);
+  });
+
   it("still ignores prose that merely mentions a completions path", () => {
     create(
       `// Historical note: this used to POST to /chat/completions directly.\n` +

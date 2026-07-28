@@ -21,7 +21,6 @@ const originalEnv = {
   HTTP_PROXY: process.env.HTTP_PROXY,
   HTTPS_PROXY: process.env.HTTPS_PROXY,
   NIX_PACKAGES: process.env.NIX_PACKAGES,
-  LOBU_POD_IS_SANDBOX: process.env.LOBU_POD_IS_SANDBOX,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -46,7 +45,6 @@ afterEach(() => {
   restoreEnv("HTTP_PROXY");
   restoreEnv("HTTPS_PROXY");
   restoreEnv("NIX_PACKAGES");
-  restoreEnv("LOBU_POD_IS_SANDBOX");
   resetSandboxProbeForTests();
 });
 
@@ -99,11 +97,10 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(fakeGh, 0o755);
 
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
-    // Exactly the production posture: no usable exec sandbox (RuntimeDefault
-    // seccomp blocks bwrap's unshare), pod boundary declared as the isolation.
-    process.env.LOBU_POD_IS_SANDBOX = "1";
+    // A real per-exec sandbox is the precondition for registering ANY spawned
+    // binary. sandbox-exec is the macOS strategy; bwrap is the Linux one.
+    process.env.LOBU_EXEC_SANDBOX = "sandbox-exec";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
-    process.env.LOBU_EXEC_SANDBOX = "off";
     // What the gateway sets from the connector's declaration.
     process.env.NIX_PACKAGES = "gh";
     delete process.env.LOBU_WORKSPACE_BACKEND;
@@ -136,9 +133,9 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(fakeRg, 0o755);
 
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
-    process.env.LOBU_POD_IS_SANDBOX = "1";
+    // A real sandbox is the precondition for registering anything at all.
+    process.env.LOBU_EXEC_SANDBOX = "sandbox-exec";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
-    process.env.LOBU_EXEC_SANDBOX = "off";
     process.env.NIX_PACKAGES = "ripgrep";
     delete process.env.LOBU_WORKSPACE_BACKEND;
 
@@ -169,9 +166,8 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(sneaky, 0o755);
 
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
-    process.env.LOBU_POD_IS_SANDBOX = "1";
+    process.env.LOBU_EXEC_SANDBOX = "sandbox-exec";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
-    process.env.LOBU_EXEC_SANDBOX = "off";
     // `gh` is declared; `sneakytool` is not.
     process.env.NIX_PACKAGES = "gh";
     delete process.env.LOBU_WORKSPACE_BACKEND;
@@ -187,17 +183,52 @@ describe("createEmbeddedBashOps", () => {
     expect(chunks.join("")).not.toContain("should not run");
   });
 
-  test("LOBU_POD_IS_SANDBOX does not unlock interpreters", async () => {
-    // The chart sets this fleet-wide, so it must NOT become a backdoor to
-    // node/bun/python. Those stay gated behind LOBU_ALLOW_UNSANDBOXED_EXEC,
-    // which is a per-agent decision, not a deployment default.
+  test("SECURITY: a declared binary stays unavailable without a real sandbox", async () => {
+    // Every worker and the gateway share the app container as the same user, so
+    // a shell-capable CLI (gh runs extensions and aliases) with no per-exec
+    // sandbox can read sibling workspaces/{agentId} directories and the
+    // gateway's environment. An earlier revision of this branch added a
+    // "the pod boundary is isolation enough" bypass; it was not — a registered
+    // tool read another tenant's workspace file. Exiting 127 is the correct,
+    // safe outcome until the deployment supplies a bwrap-capable profile.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-nosandbox-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    // Declared, and still must not run: declaration is not authorization.
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(chunks.join("")).not.toContain("gh version 2.23.0");
+  });
+
+  test("interpreters stay gated even when declared", async () => {
+    // Kept from the bot's revision: LOBU_ALLOW_UNSANDBOXED_EXEC is what unlocks
+    // node/bun/python, and DECLARING an interpreter must not substitute for it.
+    // Placed under /nix/store so discovery genuinely reaches it and rejects it.
     const workspace = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "lobu-interp-"))
     );
     tempDirs.push(workspace);
 
-    // Under /nix/store so discovery genuinely reaches it and has to reject it:
-    // interpreters are filtered on BOTH discovery paths.
     const nixBin = path.join(workspace, "nix", "store", "iface", "bin");
     fs.mkdirSync(nixBin, { recursive: true });
     const fakeNode = path.join(nixBin, "node");
@@ -205,10 +236,8 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(fakeNode, 0o755);
 
     process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
-    process.env.LOBU_POD_IS_SANDBOX = "1";
+    process.env.LOBU_EXEC_SANDBOX = "sandbox-exec";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
-    process.env.LOBU_EXEC_SANDBOX = "off";
-    // Even DECLARING it must not be enough — interpreters are a separate grant.
     process.env.NIX_PACKAGES = "nodejs";
     delete process.env.LOBU_WORKSPACE_BACKEND;
 

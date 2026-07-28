@@ -64,12 +64,6 @@ app:
     # Bounded wait for in-flight HTTP responses (incl. SSE/MCP streams) to drain
     # before process exit. Keep below the remaining grace-period budget.
     HTTP_CLOSE_TIMEOUT_MS: "10000"
-    # See the containerSecurityContext note above: RuntimeDefault seccomp blocks
-    # bubblewrap's user-namespace unshare, so the pod boundary is the isolation
-    # and this lets the worker register the DECLARED connector CLIs. Does NOT
-    # unlock interpreters. Remove it if you ship a bwrap-compatible seccomp
-    # profile — the worker prefers a real sandbox whenever the probe succeeds.
-    LOBU_POD_IS_SANDBOX: "1"
 
   # Graceful-shutdown budget. Must comfortably exceed the sum of the readiness
   # drain + in-flight HTTP close + gateway/worker teardown, or the kubelet
@@ -87,25 +81,29 @@ app:
   # currently has no non-root USER (docker/app/Dockerfile) — enable it once the
   # image ships a non-root user. The defaults below are safe to apply even as
   # root and drop a meaningful amount of attack surface.
-  # `bwrap` is what makes connector-contributed CLIs (e.g. `gh`) reachable: the
-  # embedded worker registers spawned binaries only when it has a working exec
-  # sandbox. bubblewrap needs `unshare(CLONE_NEWUSER)` for that, and the
-  # RuntimeDefault seccomp profile filters it on most runtimes — so with the
-  # hardened default below, probeSandboxStrategy falls back to "none" and every
-  # contributed CLI exits 127.
+  # NOTE on connector-contributed CLIs (e.g. `gh`): the embedded worker registers
+  # spawned binaries ONLY when it has a working per-exec sandbox. bubblewrap
+  # needs `unshare(CLONE_NEWUSER)`, which the RuntimeDefault profile below
+  # filters on most runtimes — so as shipped, probeSandboxStrategy reports
+  # "none" and a contributed CLI exits 127.
   #
-  # Unconfined is NOT the answer (it would drop the whole syscall filter for a
-  # single call). Instead the worker is told the pod boundary IS its isolation:
-  # the container already drops ALL capabilities, forbids privilege escalation,
-  # and runs one tenant's workers. `LOBU_POD_IS_SANDBOX` permits registering
-  # spawned binaries on that basis WITHOUT unlocking full interpreters — unlike
-  # `LOBU_ALLOW_UNSANDBOXED_EXEC`, which also allows node/bun/python/ruby/perl.
-  # Only DECLARED tools are registered either way (see discoverBinaries), so an
-  # undeclared binary on PATH stays unreachable.
+  # That is the SAFE default and is deliberate. Every worker and the gateway
+  # share this container as the same user, so without a per-exec sandbox a
+  # shell-capable CLI can read sibling `workspaces/{agentId}` directories and
+  # the gateway's environment — verified, not theoretical. The pod boundary is
+  # per-POD, and the tenants are inside it.
   #
-  # Operators who can supply a bwrap-compatible seccomp profile (localhostProfile
-  # allowing unshare) should do that instead and drop the env var; the worker
-  # prefers a real sandbox whenever the probe succeeds.
+  # To enable contributed CLIs, give bubblewrap a seccomp profile that permits
+  # `unshare` — a localhostProfile derived from RuntimeDefault with the
+  # `unshare`/`clone` namespace calls allowed:
+  #
+  #   seccompProfile:
+  #     type: Localhost
+  #     localhostProfile: profiles/bwrap-unshare.json
+  #
+  # Do NOT reach for `type: Unconfined` (drops the whole filter) or for
+  # LOBU_ALLOW_UNSANDBOXED_EXEC (skips the sandbox AND unlocks full
+  # interpreters); the latter is a per-agent decision for trusted agents.
   containerSecurityContext:
     allowPrivilegeEscalation: false
     capabilities:

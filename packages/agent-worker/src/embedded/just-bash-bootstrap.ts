@@ -554,20 +554,19 @@ export async function createEmbeddedBashOps(
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
     process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
 
-  // A container that drops ALL capabilities and runs one tenant's workers is
-  // itself the isolation boundary, but RuntimeDefault seccomp blocks
-  // bubblewrap's user-namespace unshare — so probeSandboxStrategy reports
-  // "none" and, without this, no contributed CLI would ever register (`gh`
-  // exits 127 in production).
+  // A REAL per-exec sandbox is required. The app container hosts every worker
+  // and the gateway as the same user, so a shell-capable CLI (gh runs
+  // extensions and aliases) would otherwise read sibling `workspaces/{agentId}`
+  // directories and the gateway's own environment — reproduced: a registered
+  // tool read another tenant's workspace file.
   //
-  // Deliberately NOT `LOBU_ALLOW_UNSANDBOXED_EXEC`: that also unblocks full
-  // interpreters (node/bun/python/ruby/perl) via UNSANDBOXED_INTERPRETERS,
-  // which is a much larger grant than "let the declared CLI run".
-  const podIsSandbox =
-    process.env.LOBU_POD_IS_SANDBOX === "1" ||
-    process.env.LOBU_POD_IS_SANDBOX === "true";
+  // An earlier revision of this branch added a `LOBU_POD_IS_SANDBOX` bypass on
+  // the theory that the pod boundary was isolation enough. It is not: the
+  // boundary is per-POD, and the tenants share the pod. Deployments that need
+  // contributed CLIs must give bubblewrap a seccomp profile that permits
+  // `unshare` (see charts/lobu/values.yaml), not disable the sandbox.
   const registerSpawnedBinaries =
-    sandboxStrategy.kind !== "none" || allowUnsandboxedExec || podIsSandbox;
+    sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
 
   // Discover nix binaries and known CLI tools, register as custom commands.
   // Strip names claimed by MCP CLIs so the MCP-backed handler takes precedence.
@@ -593,12 +592,11 @@ export async function createEmbeddedBashOps(
   } else if (!allowUnsandboxedExec) {
     console.warn(
       `[embedded] Exec sandbox unavailable; not registering spawned binary ` +
-        `commands, so connector-contributed CLIs will exit 127. Set ` +
-        `LOBU_POD_IS_SANDBOX=1 when the container itself is the isolation ` +
-        `boundary (drops ALL capabilities, one tenant per pod) — this registers ` +
-        `DECLARED tools only. LOBU_ALLOW_UNSANDBOXED_EXEC=1 additionally ` +
-        `unlocks full interpreters (node/bun/python) and is a per-agent ` +
-        `decision, not a deployment default.`
+        `commands, so connector-contributed CLIs will exit 127. Give ` +
+        `bubblewrap a seccomp profile permitting unshare (workers share this ` +
+        `container, so the pod boundary is NOT per-tenant isolation). ` +
+        `LOBU_ALLOW_UNSANDBOXED_EXEC=1 skips the sandbox entirely and is a ` +
+        `per-agent decision for trusted agents, never a deployment default.`
     );
   }
 

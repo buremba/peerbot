@@ -434,6 +434,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
 					coreServices.getGuardrailRegistry(),
 					coreServices.getAgentSettingsStore(),
 				);
+				bridge.setInteractionService(coreServices.getInteractionService());
 				unifiedConsumer.setChatResponseBridge(bridge);
 				// Cross-pod fan-out for chat-platform interaction cards (ask_user,
 				// tool-approval, link-button, status). The worker posts a card into

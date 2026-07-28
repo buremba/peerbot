@@ -82,7 +82,7 @@ export class HttpWorkerTransport implements WorkerTransport {
 
   /** Record a tool name finished this turn (from `tool_execution_end`). */
   recordToolUsed(toolName: string): void {
-    const name = toolName?.trim();
+    const name = toolName.trim();
     if (name) this.toolsUsed.add(name);
   }
 

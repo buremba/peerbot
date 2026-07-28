@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { GuardrailRegistry } from "@lobu/core";
 import * as workspaceModule from "../../workspace/index.js";
 import { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
+import { registerBuiltinGuardrails } from "../guardrails/builtins.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 
 /**
@@ -496,6 +498,86 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
       chatId: "slack:C123",
     },
   };
+
+  test("suggest-followups posts a chat card after the terminal output passes", async () => {
+    const target = createStreamingTarget().target;
+    const slackPostMessage = mock(async () => ({ ts: "1" }));
+    const { manager } = createHarness(target, "slack", slackPostMessage, {
+      agentId: "agent-1",
+      organizationId: "org-1",
+      publicGatewayUrl: "",
+    });
+    const bridge = new ChatResponseBridge(manager as any);
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    bridge.setGuardrails(
+      registry,
+      {
+        getSettings: async () => ({
+          guardrails: ["suggest-followups"],
+        }),
+      } as any
+    );
+    const postSuggestion = mock(async () => ({ id: "s_1" }));
+    bridge.setInteractionService({ postSuggestion } as any);
+
+    const originalFetch = globalThis.fetch;
+    const previousEnv = {
+      key: process.env.SUGGESTION_GENERATOR_API_KEY,
+      baseUrl: process.env.SUGGESTION_GENERATOR_BASE_URL,
+      model: process.env.SUGGESTION_GENERATOR_MODEL,
+    };
+    process.env.SUGGESTION_GENERATOR_API_KEY = "test-key";
+    process.env.SUGGESTION_GENERATOR_BASE_URL = "https://example.test/v1";
+    process.env.SUGGESTION_GENERATOR_MODEL = "test-model";
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"prompts":[{"title":"Show details","message":"Show me the details"}]}',
+              },
+            },
+          ],
+        })
+      )) as typeof fetch;
+
+    try {
+      await bridge.handleCompletion(
+        {
+          ...slackPayload,
+          finalText:
+            "The connector runs every fifteen minutes and currently has plenty of rate-limit headroom.",
+          processedMessageIds: ["m1"],
+          toolsUsed: [],
+          platformMetadata: {
+            ...slackPayload.platformMetadata,
+            agentId: "agent-1",
+            organizationId: "org-1",
+          },
+        },
+        "s"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousEnv.key === undefined)
+        delete process.env.SUGGESTION_GENERATOR_API_KEY;
+      else process.env.SUGGESTION_GENERATOR_API_KEY = previousEnv.key;
+      if (previousEnv.baseUrl === undefined)
+        delete process.env.SUGGESTION_GENERATOR_BASE_URL;
+      else process.env.SUGGESTION_GENERATOR_BASE_URL = previousEnv.baseUrl;
+      if (previousEnv.model === undefined)
+        delete process.env.SUGGESTION_GENERATOR_MODEL;
+      else process.env.SUGGESTION_GENERATOR_MODEL = previousEnv.model;
+    }
+
+    expect(postSuggestion).toHaveBeenCalledTimes(1);
+    expect(postSuggestion.mock.calls[0]?.[7]).toEqual([
+      { title: "Show details", message: "Show me the details" },
+    ]);
+  });
 
   test("Slack completion with NO local stream posts payload.finalText", async () => {
     // Simulates the terminal row arriving on a replica that never claimed any

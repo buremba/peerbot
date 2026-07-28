@@ -45,8 +45,8 @@ export interface OutputGuardrailContext {
   /**
    * Tool names the worker recorded for this turn (from `tool_execution_end`).
    * Present on terminal completion rows from workers that stamp `toolsUsed`
-   * (including `[]` when no tools ran). Absent only on older workers —
-   * require-tool treats absence as pass so rolling deploys never block.
+   * (including `[]` when no tools ran). Absent on older workers and synthetic
+   * gateway terminals; require-tool treats absence as unknown/pass.
    */
   toolsUsed?: string[];
 }

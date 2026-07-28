@@ -75,7 +75,7 @@ void _stageCheck;
  * - `kind: "judge"` (default when omitted) — LLM text judge; needs `policy`.
  * - `kind: "require-tool"` — pure lookup against this turn's `toolsUsed`;
  *   needs `tools` (manual tool names). Fixed policy: missing tool trips;
- *   absent toolsUsed (old worker) passes. No model call.
+ *   an unreported toolsUsed value passes. No model call.
  */
 export const AgentInlineGuardrailSchema = Type.Object({
   name: Type.String(),

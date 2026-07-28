@@ -43,7 +43,7 @@ describe("createRequireToolGuardrail", () => {
     ]);
   });
 
-  test("passes when toolsUsed is absent (old worker / rolling deploy)", async () => {
+  test("passes when the producer did not report toolsUsed", async () => {
     const g = createRequireToolGuardrail({
       name: "need-chips",
       tools: ["suggest_actions"],
@@ -58,7 +58,7 @@ describe("createRequireToolGuardrail", () => {
       name: "need-chips",
       tools: ["suggest_actions"],
     });
-    // Worker stamped [] = no tools this turn, not an old worker.
+    // Worker stamped [] = no tools this turn, not an unknown ledger.
     const r = await g.run(ctx({ toolsUsed: [] }));
     expect(r.tripped).toBe(true);
   });

@@ -5,7 +5,6 @@ import {
   isEnrichmentGuardrail,
   SUGGEST_FOLLOWUPS_NAME,
 } from "../../gateway/guardrails/suggest-followups";
-import { partitionBlockingOutputGuardrails } from "../../gateway/guardrails/output-scan";
 import type { Guardrail } from "@lobu/core";
 
 const REPLY =
@@ -56,21 +55,24 @@ describe("suggest-followups guardrail", () => {
     expect(result).toEqual({ tripped: false });
   });
 
-  test("isEnrichmentGuardrail partitions the name", () => {
-    expect(isEnrichmentGuardrail(SUGGEST_FOLLOWUPS_NAME)).toBe(true);
-    expect(isEnrichmentGuardrail("secret-scan")).toBe(false);
+  test("isEnrichmentGuardrail identifies the built-in instance, not a colliding name", () => {
+    const enrichment = createSuggestFollowupsGuardrail();
+    const collidingInline = {
+      name: SUGGEST_FOLLOWUPS_NAME,
+      stage: "output" as const,
+      run: async () => ({ tripped: true }),
+    };
+    expect(isEnrichmentGuardrail(enrichment)).toBe(true);
+    expect(isEnrichmentGuardrail(collidingInline)).toBe(false);
   });
 
-  test("partitionBlockingOutputGuardrails drops enrichment entries", () => {
+  test("the blocking filter drops enrichment entries", () => {
+    const enrichment = createSuggestFollowupsGuardrail();
     const list = [
       { name: "secret-scan", stage: "output" as const, run: async () => ({ tripped: false }) },
-      {
-        name: SUGGEST_FOLLOWUPS_NAME,
-        stage: "output" as const,
-        run: async () => ({ tripped: false }),
-      },
+      enrichment,
     ] as Guardrail<"output">[];
-    const blocking = partitionBlockingOutputGuardrails(list);
+    const blocking = list.filter((g) => !isEnrichmentGuardrail(g));
     expect(blocking.map((g) => g.name)).toEqual(["secret-scan"]);
   });
 });

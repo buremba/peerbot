@@ -15,7 +15,6 @@
 import {
 	createLogger,
 	getErrorMessage,
-	type Guardrail,
 	type GuardrailRegistry,
 	runGuardrailInstances,
 } from "@lobu/core";
@@ -78,7 +77,7 @@ export async function runOutputGuardrailScan(
     // see the reply until blocking scans have passed — exclude them here.
     // Generation is invoked explicitly by the terminal consumer after a pass.
     const list = resolved.byStage.output.filter(
-      (g) => !isEnrichmentGuardrail(g.name)
+      (g) => !isEnrichmentGuardrail(g)
     );
     if (list.length === 0) return null;
 
@@ -175,7 +174,7 @@ export class OutputGuardrailScanner {
       );
       // Only blocking output guardrails force withhold-stream. Enrichment
       // alone (suggest-followups) does not need to suppress token streaming.
-      return resolved.byStage.output.some((g) => !isEnrichmentGuardrail(g.name));
+      return resolved.byStage.output.some((g) => !isEnrichmentGuardrail(g));
     } catch {
       return false;
     }
@@ -212,16 +211,9 @@ export class OutputGuardrailScanner {
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );
-      return resolved.byStage.output.some((g) => isEnrichmentGuardrail(g.name));
+      return resolved.byStage.output.some((g) => isEnrichmentGuardrail(g));
     } catch {
       return false;
     }
   }
-}
-
-/** Test/helper: drop enrichment entries from a resolved output list. */
-export function partitionBlockingOutputGuardrails(
-  list: readonly Guardrail<"output">[]
-): Guardrail<"output">[] {
-  return list.filter((g) => !isEnrichmentGuardrail(g.name));
 }

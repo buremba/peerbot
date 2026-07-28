@@ -42,6 +42,48 @@ describe("validateGuardrailsInline", () => {
     ).toBeNull();
   });
 
+  test("accepts an output require-tool guardrail without judge fields", () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: "require-suggestions",
+          enabled: true,
+          stage: "output",
+          kind: "require-tool",
+          tools: ["suggest_actions"],
+        },
+      ])
+    ).toBeNull();
+  });
+
+  test("rejects require-tool outside the output stage", () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: "require-suggestions",
+          enabled: true,
+          stage: "input",
+          kind: "require-tool",
+          tools: ["suggest_actions"],
+        },
+      ])
+    ).toMatch(/only supports stage "output"/);
+  });
+
+  test("rejects require-tool without a non-empty tool list", () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: "require-suggestions",
+          enabled: true,
+          stage: "output",
+          kind: "require-tool",
+          tools: [],
+        },
+      ])
+    ).toMatch(/tools must be a non-empty array/);
+  });
+
   test("rejects a non-array payload", () => {
     expect(validateGuardrailsInline({})).toMatch(/must be an array/);
   });

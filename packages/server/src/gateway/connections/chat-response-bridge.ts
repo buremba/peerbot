@@ -29,7 +29,9 @@ import {
   OutputGuardrailScanner,
   type OutputGuardrailTrip,
 } from "../guardrails/output-scan.js";
+import { generateSuggestFollowups } from "../guardrails/suggest-followups.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
+import type { InteractionService } from "../interactions.js";
 import {
   buildCtaCardPayload,
   extractSettingsLinkButtons,
@@ -98,6 +100,7 @@ interface ResponseContext {
  */
 export class ChatResponseBridge implements ResponseRenderer {
   private streams = new Map<string, StreamState>();
+  private interactionService?: InteractionService;
   /**
    * Output-stage guardrails. Shared with the API/SSE path
    * (UnifiedThreadResponseConsumer) so both surfaces enforce ONE policy:
@@ -121,6 +124,10 @@ export class ChatResponseBridge implements ResponseRenderer {
     settingsStore?: AgentSettingsStore
   ): void {
     this.outputGuardrail.setGuardrails(registry, settingsStore);
+  }
+
+  setInteractionService(interactionService: InteractionService): void {
+    this.interactionService = interactionService;
   }
 
   /**
@@ -195,6 +202,57 @@ export class ChatResponseBridge implements ResponseRenderer {
       platform: ctx.platform,
       toolsUsed: payload.toolsUsed,
     });
+  }
+
+  private async maybeEnrichSuggestFollowups(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext,
+    replyText: string
+  ): Promise<void> {
+    if (!this.interactionService) return;
+    // An old worker cannot distinguish "no tool" from "not reported"; skip to
+    // avoid duplicating a suggest_actions card during a rolling deployment.
+    if (
+      payload.toolsUsed === undefined ||
+      payload.toolsUsed.includes("suggest_actions")
+    ) {
+      return;
+    }
+    const agentId = this.resolveAgentId(payload, ctx);
+    const organizationId = this.resolveOrganizationId(payload, ctx);
+    if (!agentId || !organizationId) return;
+
+    try {
+      if (
+        !(await this.outputGuardrail.hasSuggestFollowups(
+          agentId,
+          organizationId
+        ))
+      ) {
+        return;
+      }
+      const prompts = await generateSuggestFollowups(replyText);
+      if (prompts.length === 0) return;
+      await this.interactionService.postSuggestion(
+        organizationId,
+        payload.userId,
+        payload.conversationId,
+        ctx.channelId,
+        payload.teamId,
+        ctx.connectionId,
+        ctx.platform,
+        prompts
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          connectionId: ctx.connectionId,
+          conversationId: payload.conversationId,
+          error: String(error),
+        },
+        "suggest-followups chat enrichment failed"
+      );
+    }
   }
 
   private extractResponseContext(
@@ -526,6 +584,14 @@ export class ChatResponseBridge implements ResponseRenderer {
           );
         }
       }
+    }
+
+    if (
+      !blockedAtCompletion &&
+      !completionMd.sessionReset &&
+      historyText?.trim()
+    ) {
+      await this.maybeEnrichSuggestFollowups(payload, ctx, historyText);
     }
 
     logger.info(

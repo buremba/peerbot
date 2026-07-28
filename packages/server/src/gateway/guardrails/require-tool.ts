@@ -5,7 +5,7 @@
  * completion row) and trips when any of the operator-listed tool names is
  * missing. Fixed policy (no operator knobs):
  *
- *   - toolsUsed **absent** (old worker) → **pass** (rolling-deploy safe)
+ *   - toolsUsed **absent** (not reported) → **pass**
  *   - toolsUsed **present**, required tool missing → **trip**
  *   - toolsUsed **present**, all required present → **pass**
  *   - toolsUsed **[]** counts as present → miss trips
@@ -53,7 +53,7 @@ export function createRequireToolGuardrail(
         return { tripped: false, metadata: { requireTool: true, empty: true } };
       }
 
-      // Old worker / no stamp — pass so a rolling deploy never blocks turns.
+      // No producer stamp — pass because a missing ledger cannot prove a miss.
       if (ctx.toolsUsed === undefined) {
         return {
           tripped: false,

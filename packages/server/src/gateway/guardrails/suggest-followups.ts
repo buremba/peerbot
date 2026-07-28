@@ -34,14 +34,16 @@ const logger = createLogger("suggest-followups");
 export const SUGGEST_FOLLOWUPS_NAME = "suggest-followups";
 
 /**
- * Output-stage names that enrich rather than block. Partitioned out of the
+ * Output-stage instances that enrich rather than block. Partitioned out of the
  * parallel blocking race so they never run (or see the reply) before safety
  * scans pass, and so enabling only enrichment does not withhold streaming.
+ * Track identity rather than name so a malformed/out-of-band inline guardrail
+ * that collides with a built-in name keeps its own blocking semantics.
  */
-const ENRICHMENT_GUARDRAILS = new Set<string>([SUGGEST_FOLLOWUPS_NAME]);
+const ENRICHMENT_GUARDRAILS = new WeakSet<Guardrail>();
 
-export function isEnrichmentGuardrail(name: string): boolean {
-  return ENRICHMENT_GUARDRAILS.has(name);
+export function isEnrichmentGuardrail(guardrail: Guardrail): boolean {
+  return ENRICHMENT_GUARDRAILS.has(guardrail);
 }
 
 /** The tail of a reply carries the "what now" better than its opening. */
@@ -84,13 +86,15 @@ export interface SuggestFollowupsEnv {
  * bug. `run` is therefore a pure no-op pass.
  */
 export function createSuggestFollowupsGuardrail(): Guardrail<"output"> {
-  return {
+  const guardrail: Guardrail<"output"> = {
     name: SUGGEST_FOLLOWUPS_NAME,
     stage: "output",
     async run() {
       return { tripped: false };
     },
   };
+  ENRICHMENT_GUARDRAILS.add(guardrail);
+  return guardrail;
 }
 
 /**

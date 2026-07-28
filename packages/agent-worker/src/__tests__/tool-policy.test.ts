@@ -425,8 +425,27 @@ describe("enforceBashCommandPolicy", () => {
       // line is in command position and its body must be scanned.
       "echo ok\nsh -c 'nix run x'",
       "cd /tmp\nbash -c 'uvx cowsay'",
+      // `c` can sit anywhere in a short-option cluster, and options may be
+      // separate words. Matching only clusters ending in `c` missed all of
+      // these — including the very common `-euo pipefail -c` idiom.
+      "bash -ce 'nix run x'",
+      "sh -cx 'uvx cowsay'",
+      "bash -e -c 'nix run x'",
+      "bash -o pipefail -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx x'",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+  });
+
+  test("an interpreter named as an argument is still not a command (#2259)", () => {
+    // The option-cluster widening must not start matching argument text.
+    for (const cmd of [
+      "echo bash -ce 'nix run x'",
+      "git commit -m 'bash -ce nix run'",
+      "bash -x script.sh",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
     }
   });
 

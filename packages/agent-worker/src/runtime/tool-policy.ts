@@ -118,18 +118,23 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 ];
 
 /**
- * An interpreter invoked with `-c` (allowing bundled flags like `-lc`) runs its
- * QUOTED argument as a command, so that body is a command position and must be
- * scanned. Everywhere else a quote introduces data (`git commit -m '…'`), which
- * is why the patterns above do not treat a quote character as a word boundary.
+ * An interpreter invoked with `-c` runs its QUOTED argument as a command, so
+ * that body is a command position and must be scanned. Everywhere else a quote
+ * introduces data (`git commit -m '…'`), which is why the patterns above do not
+ * treat a quote character as a word boundary.
  *
  * The interpreter itself must be in COMMAND position — start of the string, a
  * newline, or just after a shell operator. Without that anchor,
  * `echo sh -c 'nix run x'` would have its argument text scanned as if it were
  * executed, and a newline-delimited `sh -c` would be missed entirely.
+ *
+ * `c` may sit anywhere in a short-option cluster and may follow other options
+ * given as separate words, so `-lc`, `-ce`, `-cx` and `bash -euo pipefail -c`
+ * all reach the body. Matching only clusters that END in `c` missed every one
+ * of those, including the very common `set -euo pipefail` idiom.
  */
 const INTERPRETER_DASH_C =
-  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
+  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*\s+|-[a-z]*\s+\S+\s+)*-[a-z]*c[a-z]*\s+(['"])([\s\S]*?)\1/gi;
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:

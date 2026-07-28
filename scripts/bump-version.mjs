@@ -28,7 +28,27 @@ async function main() {
     if (bump === "patch") version = `${major}.${minor}.${patch + 1}`;
     else if (bump === "minor") version = `${major}.${minor + 1}.0`;
     else if (bump === "major") version = `${major + 1}.0.0`;
-    else version = bump; // explicit version
+    else {
+      // Explicit version — validate before writing. Anything unrecognized used
+      // to be accepted verbatim, so a stray flag (`--help`) or a typo silently
+      // rewrote every package.json in the workspace to a nonsense version.
+      //
+      // This is the official SemVer 2.0.0 pattern (semver.org), not a loose
+      // \d+\.\d+\.\d+ approximation: the loose one accepted `01.2.3`,
+      // `1.2.3-01` and `1.2.3-..`, all of which npm rejects at publish time —
+      // so a bad version would still have been written across every manifest
+      // and only failed much later.
+      if (
+        !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/.test(
+          bump
+        )
+      ) {
+        throw new Error(
+          `Invalid version "${bump}". Expected patch | minor | major, or an explicit semver like 3.1.0 / 3.1.0-beta.1.`
+        );
+      }
+      version = bump;
+    }
   }
 
   // Update root

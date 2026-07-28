@@ -210,17 +210,25 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
       "@lobu/worker/package.json"
     );
     const workerPackageRoot = path.dirname(workerPackageJson);
-    // Prefer the ESM TypeScript source (spawned via `bun run`): the published
+    // In-repo, prefer the ESM TypeScript source (spawned via `bun run`): the
     // CJS `dist/index.js` is a dead end because `@mariozechner/pi-coding-agent`
     // only exposes an `import` condition, so a `node`-loaded `require()` of it
-    // throws ERR_PACKAGE_PATH_NOT_EXPORTED. The package ships `src/` and a
-    // `bun` exports condition for exactly this path. `bun` is a declared
+    // throws ERR_PACKAGE_PATH_NOT_EXPORTED. The workspace package keeps `src/`
+    // and a `bun` exports condition for exactly this path. `bun` is a declared
     // peerDependency of `@lobu/worker`.
+    //
+    // Installed from the registry there is no `src/`: the published package
+    // ships a single ESM bundle (`dist/index.bundle.mjs`) with the whole @lobu
+    // workspace graph inlined — see packages/agent-worker/scripts/
+    // build-worker-bundle.mjs. This used to fall through to `dist/index.js`,
+    // which the tarball no longer contains (and which could never have loaded
+    // pi-coding-agent under node anyway), so the bundle is the installed entry.
+    // A guard test asserts every dist path named here is actually published.
     const workerSrcEntry = path.join(workerPackageRoot, "src/index.ts");
     return {
       entryPoint: existsSync(workerSrcEntry)
         ? workerSrcEntry
-        : path.join(workerPackageRoot, "dist/index.js"),
+        : path.join(workerPackageRoot, "dist/index.bundle.mjs"),
       binPathEntries: [
         path.join(workerPackageRoot, "node_modules/.bin"),
         path.resolve(workerPackageRoot, "..", "..", ".bin"),

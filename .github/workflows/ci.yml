@@ -546,6 +546,12 @@ jobs:
         # guard that stops catching regressions fails here instead of going quiet.
         run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
 
+      - name: Publish manifest gate fixtures
+        # @lobu/worker@14.3.0 shipped five private workspace dependencies at
+        # their `0.0.0` placeholder versions, so external installs failed
+        # (#2186). These fixtures exercise the publish transform's guard.
+        run: bun test scripts/__tests__/publish-packages-guard.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

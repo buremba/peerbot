@@ -15,8 +15,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const REPO_ROOT = process.cwd();
+// Anchored to this file, not process.cwd(), so the manifest reads below resolve
+// the same way whether the script is run from the repo root or imported by a
+// test running from another directory.
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 
 const PACKAGES = [
   { dir: "packages/core", transform: transformCorePublish },
@@ -24,7 +31,9 @@ const PACKAGES = [
   { dir: "packages/plugin-host", transform: transformCorePublish },
   { dir: "packages/connector-sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/client", transform: rewriteWorkspaceRefs },
-  { dir: "packages/agent-worker", transform: rewriteWorkspaceRefs },
+  // Publishes the esbuild bundle rather than the tsc output — see
+  // transformWorkerPublish for why (#2186).
+  { dir: "packages/agent-worker", transform: transformWorkerPublish },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
   // @lobu/pgvector-embedded is NOT published: it's `private` and ships its
   // prebuilt native binaries inside the @lobu/cli tarball (build.cjs copies it
@@ -32,8 +41,11 @@ const PACKAGES = [
   // runtime without a registry fetch. esbuild can't inline the native
   // binaries, hence it stays a runtime sidecar rather than part of
   // server.bundle.mjs.
-  { dir: "packages/cli", transform: rewriteWorkspaceRefs },
+  // connector-worker precedes cli: @lobu/cli depends on it at runtime, and the
+  // blocked-dependency skip below relies on a dependency always being attempted
+  // before its dependents. A guard test asserts this ordering holds.
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
+  { dir: "packages/cli", transform: rewriteWorkspaceRefs },
   { dir: "packages/promptfoo-provider", transform: rewriteWorkspaceRefs },
 ];
 
@@ -43,16 +55,58 @@ const PACKAGES = [
 const UNSCOPED_ALLOWED_PUBLISHED_NAMES = new Set();
 
 /**
+ * Names this script actually publishes, derived from PACKAGES so the two can
+ * never drift. A `runtime` dependency on anything outside this set cannot be
+ * satisfied by an external consumer.
+ */
+let cachedPublishedNames;
+function publishedPackageNames() {
+  if (!cachedPublishedNames) {
+    cachedPublishedNames = new Set();
+    for (const { dir } of PACKAGES) {
+      const pkg = JSON.parse(
+        readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+      );
+      if (!pkg.name || pkg.private) {
+        throw new Error(
+          `${dir} must have a public package name before it can be added to PACKAGES`
+        );
+      }
+      cachedPublishedNames.add(pkg.name);
+    }
+  }
+  return cachedPublishedNames;
+}
+
+/**
  * `workspace:*` / `workspace:^` / `workspace:~` references are a Bun/Yarn
  * dev-time feature — they point at the sibling package's current version so
  * we never have to hand-edit versions across packages. npm does not natively
  * rewrite them at publish time, so we do it explicitly here before `npm
  * publish` runs and restore the original package.json afterwards.
+ *
+ * Consumer-installed sections are additionally gated on the target actually
+ * being published: without that gate this rewrote a private package's `0.0.0`
+ * placeholder into a public manifest, a constraint no release can satisfy
+ * (#2186). devDependencies are exempt — consumers never install them.
  */
 function rewriteWorkspaceRefs(pkg) {
-  const rewriteSection = (deps) => {
+  const rewriteSection = (deps, section) => {
     if (!deps) return;
     for (const [name, spec] of Object.entries(deps)) {
+      if (
+        section !== "devDependencies" &&
+        name.startsWith("@lobu/") &&
+        !publishedPackageNames().has(name)
+      ) {
+        throw new Error(
+          `${pkg.name} declares ${name} in "${section}", but this script does not publish it.\n` +
+            `  An external consumer cannot install ${name}, so the published ${pkg.name} would be broken.\n` +
+            "  Fix by either:\n" +
+            `    - adding ${name} to PACKAGES (and making it non-private), or\n` +
+            `    - bundling ${name} into ${pkg.name}'s build output and removing it from "${section}".`
+        );
+      }
       if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
       if (
         !name.startsWith("@lobu/") &&
@@ -65,9 +119,81 @@ function rewriteWorkspaceRefs(pkg) {
       deps[name] = workspacePackageVersion(name);
     }
   };
-  rewriteSection(pkg.dependencies);
-  rewriteSection(pkg.devDependencies);
-  rewriteSection(pkg.peerDependencies);
+  rewriteSection(pkg.dependencies, "dependencies");
+  rewriteSection(pkg.optionalDependencies, "optionalDependencies");
+  rewriteSection(pkg.devDependencies, "devDependencies");
+  rewriteSection(pkg.peerDependencies, "peerDependencies");
+  stripUnpublishableScripts(pkg);
+  return pkg;
+}
+
+/**
+ * Drop scripts that cannot run from the published tarball.
+ *
+ * Every manifest here carries dev-loop scripts (`build`, `dev`, `typecheck`,
+ * `test`, `clean`) needing `src/`, `tsc` or `scripts/` — none of which ship.
+ * Shipping them is not merely dead weight: `@lobu/worker`'s `start` pointed at
+ * `dist/index.js`, which transformWorkerPublish excludes from `files`, so
+ * `npm start` on an installed copy died with MODULE_NOT_FOUND. That is the
+ * same defect class as #2186 — a published manifest naming something the
+ * consumer cannot get.
+ *
+ * Runnability is decided by `files`, not by a name allowlist: a script whose
+ * referenced paths all ship is kept (@lobu/connector-worker's
+ * `start: node dist/bin.js` is real and still works), and one that reaches
+ * outside `files` is dropped. Lifecycle scripts are kept unconditionally —
+ * npm runs those itself on install, so dropping one changes install behaviour.
+ */
+const PUBLISHED_LIFECYCLE_SCRIPTS = new Set([
+  "preinstall",
+  "install",
+  "postinstall",
+  "prepare",
+]);
+
+/** Paths a script command references, e.g. `node dist/bin.js` → ["dist/bin.js"]. */
+const SCRIPT_PATH_REF = /(?:\.\/)?(?:src|dist|scripts|bin)\/[\w./-]+/g;
+
+/** A tool that must be a devDependency, so it cannot exist in a consumer install. */
+const DEV_TOOL =
+  /^(?:tsc|tsx|bun|biome|vitest|jest|esbuild|rimraf|openapi-ts)\b/;
+
+/**
+ * `clean: rm -rf dist` passes the path check — dist IS shipped — but running it
+ * in an installed package deletes the package's own code. Runnable is not the
+ * same as safe to expose, so drop the dev-loop names outright.
+ */
+const DEV_ONLY_SCRIPT_NAMES = new Set(["clean", "dev", "watch"]);
+
+function scriptRunsFromTarball(command, files, name) {
+  // No `files` means npm ships the whole directory — everything resolves.
+  const included = files?.filter((f) => !f.startsWith("!"));
+  if (DEV_ONLY_SCRIPT_NAMES.has(name)) return false;
+  if (DEV_TOOL.test(command.trim())) return false;
+  if (!included || included.length === 0) return true;
+  for (const ref of command.match(SCRIPT_PATH_REF) ?? []) {
+    const normalized = ref.replace(/^\.\//, "");
+    const shipped = included.some(
+      (f) => normalized === f || normalized.startsWith(`${f}/`)
+    );
+    if (!shipped) return false;
+  }
+  return true;
+}
+
+function stripUnpublishableScripts(pkg) {
+  if (!pkg.scripts) return pkg;
+  const kept = {};
+  for (const [name, command] of Object.entries(pkg.scripts)) {
+    if (
+      PUBLISHED_LIFECYCLE_SCRIPTS.has(name) ||
+      scriptRunsFromTarball(command, pkg.files, name)
+    ) {
+      kept[name] = command;
+    }
+  }
+  if (Object.keys(kept).length > 0) pkg.scripts = kept;
+  else delete pkg.scripts;
   return pkg;
 }
 
@@ -124,6 +250,114 @@ function transformCorePublish(pkg) {
     }
   }
   return rewriteWorkspaceRefs(pkg);
+}
+
+/**
+ * @lobu/worker publishes the esbuild bundle, not the tsc output.
+ *
+ * Both the shipped src/ and the tsc dist/ import `private: true` plugin
+ * packages, which is what put unresolvable dependencies on the registry
+ * (#2186). build-worker-bundle.mjs inlines the whole @lobu workspace graph
+ * into dist/index.bundle.mjs, so this repoints the published entry points at
+ * it and drops what the bundle no longer needs. The in-repo manifest keeps
+ * `bun`/src for local dev; the publish script restores it afterwards.
+ */
+function transformWorkerPublish(pkg) {
+  const BUNDLE = "./dist/index.bundle.mjs";
+  const DECLARATION = "./dist/index.bundle.d.ts";
+
+  pkg.main = BUNDLE;
+  // Both type entries must move: Node10 resolution reads the top-level `types`,
+  // and leaving it on the unshipped dist/index.d.ts gave consumers an untyped
+  // bundle (TS7016) even though exports.types was correct.
+  pkg.types = DECLARATION;
+  pkg.bin = { "lobu-worker": BUNDLE };
+  pkg.exports = {
+    ".": {
+      types: DECLARATION,
+      import: BUNDLE,
+      default: BUNDLE,
+    },
+    "./package.json": "./package.json",
+  };
+  // Exactly the bundle plus the self-contained declaration the bundler emits.
+  // Shipping src/ or tsc's dist/**/*.d.ts drags back in files that reference
+  // @lobu packages this manifest no longer declares, failing consumer tsc.
+  pkg.files = ["dist/index.bundle.mjs", "dist/index.bundle.d.ts", "!**/*.map"];
+
+  // EVERY @lobu dependency is dropped, not just the private ones — the bundle
+  // inlines them all, so declaring them would make consumers install packages
+  // nothing imports. It also means the release does not wait on plugin-api /
+  // plugin-host ever being published.
+  for (const section of ["dependencies", "optionalDependencies"]) {
+    const deps = pkg[section];
+    if (!deps) continue;
+    for (const name of Object.keys(deps)) {
+      if (name.startsWith("@lobu/")) delete deps[name];
+    }
+  }
+
+  return rewriteWorkspaceRefs(pkg);
+}
+
+function packageNameFor(dir) {
+  try {
+    return (
+      JSON.parse(
+        readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+      ).name ?? dir
+    );
+  } catch {
+    return dir;
+  }
+}
+
+/**
+ * @lobu runtime and peer dependency names a workspace package will PUBLISH.
+ *
+ * The publish transform is applied first, because the transformed manifest is
+ * what npm receives and therefore what a consumer has to be able to install.
+ * Reading the raw on-disk manifest instead would skip @lobu/worker whenever
+ * @lobu/core, plugin-api or plugin-host is unavailable — the worker still
+ * declares them on disk, but `transformWorkerPublish` deletes every @lobu
+ * dependency because the bundle inlines the whole graph. That is precisely the
+ * bootstrap wait this change removes.
+ *
+ * Callers may omit `transform` to ask what the package declares on disk.
+ */
+function lobuRuntimeDeps(dir, transform) {
+  let pkg;
+  try {
+    pkg = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+    );
+  } catch {
+    return [];
+  }
+  // Deliberately outside the catch: the transform runs `rewriteWorkspaceRefs`,
+  // which throws when a package declares an @lobu dependency this script does
+  // not publish. That is a release-stopping contract break, and swallowing it
+  // into an empty list would report the package as depending on nothing —
+  // publishing the exact broken manifest the guard exists to stop.
+  if (transform) pkg = transform(pkg);
+  return [
+    ...new Set(
+      [
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.optionalDependencies ?? {}),
+        ...Object.keys(pkg.peerDependencies ?? {}),
+      ].filter((name) => name.startsWith("@lobu/"))
+    ),
+  ];
+}
+
+function markUnavailablePackage(name, dependencies, unavailableNames) {
+  const missingDeps = dependencies.filter((dependency) =>
+    unavailableNames.has(dependency)
+  );
+  if (missingDeps.length === 0) return;
+  unavailableNames.add(name);
+  return { name, missingDeps };
 }
 
 function run(cmd, args, opts = {}) {
@@ -271,13 +505,33 @@ async function main() {
   }
   // Collect packages npm refuses to create on their first publish so the whole
   // fleet still gets attempted; a single new package must not hide the others.
+  //
+  // A package whose own @lobu dependency was blocked is SKIPPED rather than
+  // published: shipping it would put a manifest on the registry pointing at a
+  // version that does not exist. PACKAGES is in dependency order, so a blocked
+  // dependency is always seen before its dependents.
   const blocked = [];
+  const unavailableNames = new Set();
+  const skipped = [];
   for (const pkg of PACKAGES) {
+    const skippedPackage = markUnavailablePackage(
+      packageNameFor(pkg.dir),
+      lobuRuntimeDeps(pkg.dir, pkg.transform),
+      unavailableNames
+    );
+    if (skippedPackage) {
+      skipped.push(skippedPackage);
+      console.error(
+        `  ✗ ${skippedPackage.name}: skipped — depends on unpublished ${skippedPackage.missingDeps.join(", ")}`
+      );
+      continue;
+    }
     try {
       await publishPackage(pkg, otp);
     } catch (error) {
       if (error instanceof FirstPublishBlockedError) {
         blocked.push(error);
+        unavailableNames.add(error.pkgName);
         console.error(
           `  ✗ ${error.pkgName}: never-published; needs a one-time bootstrap (see below)`
         );
@@ -285,6 +539,23 @@ async function main() {
       }
       throw error;
     }
+  }
+
+  if (skipped.length > 0) {
+    console.error(
+      [
+        "",
+        `Skipped ${skipped.length} package(s) whose dependencies were not published:`,
+        ...skipped.map(
+          (s) => `  - ${s.name} (needs ${s.missingDeps.join(", ")})`
+        ),
+        "",
+        "These were NOT published on purpose. An unavailable @lobu runtime or",
+        "peer dependency leaves external installs broken or incomplete (issue",
+        "#2186). Bootstrap the blocked packages below, then re-run; this release",
+        "is incomplete until then.",
+      ].join("\n")
+    );
   }
 
   if (blocked.length > 0) {
@@ -316,6 +587,9 @@ async function main() {
         "fail `npm install` for external consumers.",
       ].join("\n")
     );
+  }
+
+  if (blocked.length > 0 || skipped.length > 0) {
     process.exitCode = 1;
     return;
   }
@@ -323,7 +597,24 @@ async function main() {
   console.log("\nDone.");
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+// Only run when invoked as a script. Without this guard, importing the module
+// (as the guard tests do) would start a real publish.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
+
+export { rewriteWorkspaceRefs };
+
+/** Internals exposed for the guard tests; not part of any published surface. */
+export const __testing = {
+  PACKAGES,
+  lobuRuntimeDeps,
+  markUnavailablePackage,
+  packageNameFor,
+};

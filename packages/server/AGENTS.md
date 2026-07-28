@@ -38,6 +38,7 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - API/SSE terminal rows and interaction cards are owner-routed; non-owners requeue until the owning pod claims. Headless rows with no SSE client may be delivered by first claim.
 - Streaming deltas/status are best-effort across pods today. Do not build correctness on cross-pod in-memory delivery.
 - Exclusive transports such as Telegram polling run on exactly one replica via `connection_claims`; webhook transports must run on any replica.
+- Connector-lease recycling is pod-local BY DESIGN and has two triggers: the message path (only when the pod handling the message also owns the worker) and `reconcileDeployments` (each pod over its own deployments). The second is what makes it correct at N>1 — with several replicas most messages are claimed by a non-owner, which enqueues and then drops with `ConversationOwnedElsewhereError` without evaluating the recycle. Never "fix" this by sharing the expiry/fingerprint maps across pods: a worker can only be torn down by the pod that spawned it.
 
 ## Connector operations and repair
 - Built-in connector definitions/catalog install in server; connector implementation details belong in `packages/connectors/AGENTS.md`.

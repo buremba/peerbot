@@ -573,6 +573,13 @@ jobs:
         # could only be exercised by cutting a real release.
         run: bun test scripts/__tests__/derive-image-tags.test.ts
 
+      - name: Release image audit decision table
+        # The scheduled audit (release-image-audit.yml) is the only thing that
+        # notices a release which published no image — a run evicted from its
+        # concurrency queue fails nothing. A wrong decision table here silently
+        # disables that alarm, so it is pinned by tests like the tag logic above.
+        run: bun test scripts/__tests__/audit-release-images.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

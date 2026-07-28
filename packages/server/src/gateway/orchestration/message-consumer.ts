@@ -56,6 +56,28 @@ import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
 const logger = createLogger("orchestrator");
 
 /**
+ * How long a worker must have been quiet before it may be recycled for stale
+ * tooling or an expiring lease.
+ *
+ * `ensureWorkerExists` runs AFTER the turn is enqueued, so a warm worker may
+ * already be executing it. Recycling then would SIGTERM a live run and drop
+ * the user's reply. Staleness can wait for the next turn; a lost reply cannot
+ * be recovered.
+ */
+const MIN_QUIET_MS_BEFORE_RECYCLE = 30_000;
+
+/**
+ * How much of the 5-minute recycle margin must burn down before an expiring
+ * lease overrides the quiet gate — leaving a 1-minute hard floor.
+ *
+ * A conversation busy enough to never look quiet would otherwise never renew,
+ * which is the very bug the recycle exists to fix. Inside the final minute the
+ * credential is close enough to death that a mid-command 401 is the likelier
+ * harm, so recycling wins even at the risk of interrupting a turn.
+ */
+const LEASE_CRITICAL_LEAD_MS = 4 * 60_000;
+
+/**
  * Mint the per-run worker JWT the worker uses as its PRIMARY gateway auth
  * (`session-runner`: `runJobToken || WORKER_TOKEN`). Extracted as a pure,
  * exported function so the claim set is exercised by a regression test that
@@ -1108,10 +1130,37 @@ export class MessageConsumer {
             toolingFingerprint
           );
 
+        // The message is already ENQUEUED by the time this runs (see the
+        // background call in sendToWorkerQueue), so a warm worker may be
+        // consuming this very turn. Killing it then would SIGTERM a live run
+        // and drop the user's reply, so only recycle a worker that has been
+        // quiet — the credential/tooling staleness is worth one more turn.
+        const recycleCandidate = existingDeployments.find(
+          (d) => d.deploymentName === deploymentName
+        );
+        const workerIsQuiet =
+          !recycleCandidate ||
+          Date.now() - recycleCandidate.lastActivity.getTime() >=
+            MIN_QUIET_MS_BEFORE_RECYCLE;
+
+        // Expiry is graded so a busy conversation still renews. The 5-minute
+        // margin wants a quiet worker; once the credential is genuinely at the
+        // edge, recycling beats serving a turn whose `gh` will 401 mid-command.
+        const leaseExpiring =
+          this.deploymentManager.hasExpiringLease(deploymentName);
+        // Rewinding `now` NARROWS the window: hasExpiringLease fires at
+        // <=5min remaining, so evaluating it 4 minutes in the past only fires
+        // at <=1min remaining. (Advancing it would widen to 9min and make the
+        // override trigger BEFORE the quiet path, defeating the gate.)
+        const leaseCritical = this.deploymentManager.hasExpiringLease(
+          deploymentName,
+          new Date(Date.now() - LEASE_CRITICAL_LEAD_MS)
+        );
+
         if (
           !isNewThread &&
-          (this.deploymentManager.hasExpiringLease(deploymentName) ||
-            toolingChanged)
+          ((workerIsQuiet && (leaseExpiring || toolingChanged)) ||
+            leaseCritical)
         ) {
           logger.info(
             { traceId, deploymentName, tooling_changed: toolingChanged },

@@ -768,6 +768,45 @@ describe("deployment env assembly", () => {
     expect(manager.hasExpiringLease("deploy-unknown")).toBe(false);
   });
 
+  test("the recycle window narrows, never widens, as the lease burns down", async () => {
+    // The consumer evaluates hasExpiringLease at a REWOUND `now` to get the
+    // hard floor that overrides its quiet gate. Rewinding narrows the window
+    // (5min -> 1min); advancing it would WIDEN to 9min and make the override
+    // fire before the quiet path, which would defeat the mid-turn protection
+    // entirely. This pins the direction so it cannot silently flip.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+    await manager.buildEnv(buildPayload());
+
+    const CRITICAL_LEAD = 4 * 60_000;
+    const at = (minsRemaining: number) =>
+      new Date(Date.now() + (60 - minsRemaining) * 60_000);
+    // The harness mints a 60-minute token.
+    const quietGate = (minsRemaining: number) =>
+      manager.hasExpiringLease("deploy-1", at(minsRemaining));
+    const hardFloor = (minsRemaining: number) =>
+      manager.hasExpiringLease(
+        "deploy-1",
+        new Date(at(minsRemaining).getTime() - CRITICAL_LEAD)
+      );
+
+    // 6 minutes left: neither fires.
+    expect(quietGate(6)).toBe(false);
+    expect(hardFloor(6)).toBe(false);
+    // 3 minutes left: a quiet worker recycles, a busy one is left alone.
+    expect(quietGate(3)).toBe(true);
+    expect(hardFloor(3)).toBe(false);
+    // 30 seconds left: even a busy worker must recycle.
+    expect(quietGate(0.5)).toBe(true);
+    expect(hardFloor(0.5)).toBe(true);
+  });
+
   test("a deployment with no minted lease is never recycled for expiry", async () => {
     await seedConnectorDef({
       key: "github",

@@ -12,6 +12,10 @@ import {
   createJudgeGuardrail,
   inlineJudgeHash,
 } from "./judge-factory.js";
+import {
+  createRequireToolGuardrailFromEntry,
+  isRequireToolEntry,
+} from "./require-tool.js";
 
 const logger = createLogger("guardrail-aggregator");
 
@@ -150,7 +154,40 @@ export function resolveAgentGuardrails(
       );
       continue;
     }
-    const g = createJudgeGuardrail(entry.stage, entry.policy, {
+
+    // require-tool is output-only (turn-scoped toolsUsed). Wrong stage → skip.
+    if (isRequireToolEntry(entry)) {
+      if (entry.stage !== "output") {
+        logger.warn(
+          { name: entry.name, stage: entry.stage },
+          "require-tool guardrail only runs at output stage; skipping"
+        );
+        continue;
+      }
+      const g = createRequireToolGuardrailFromEntry(entry);
+      if (!g) {
+        logger.warn(
+          { name: entry.name },
+          "require-tool guardrail has empty tools; skipping"
+        );
+        continue;
+      }
+      if (!seen.output.has(g.name)) {
+        seen.output.set(g.name, g);
+      }
+      continue;
+    }
+
+    // Default / kind: "judge" — needs a non-empty policy.
+    const policy = entry.policy?.trim();
+    if (!policy) {
+      logger.warn(
+        { name: entry.name },
+        "Inline judge guardrail missing policy; skipping"
+      );
+      continue;
+    }
+    const g = createJudgeGuardrail(entry.stage, policy, {
       name: entry.name,
       model: entry.model,
       tools: entry.tools,

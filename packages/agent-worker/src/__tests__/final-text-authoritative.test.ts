@@ -65,6 +65,23 @@ function completionFinalText(): string | undefined {
 }
 
 describe("HttpWorkerTransport finalText is authoritative", () => {
+  test("terminal completion stamps distinct tool names, including an empty list", async () => {
+    const unusedTransport = new HttpWorkerTransport(baseConfig);
+    await unusedTransport.signalCompletion();
+    expect(sentPayloads.at(-1)?.toolsUsed).toEqual([]);
+
+    sentPayloads = [];
+    const usedTransport = new HttpWorkerTransport(baseConfig);
+    usedTransport.recordToolUsed(" suggest_actions ");
+    usedTransport.recordToolUsed("suggest_actions");
+    usedTransport.recordToolUsed("search_memory");
+    await usedTransport.signalCompletion();
+    expect(sentPayloads.at(-1)?.toolsUsed).toEqual([
+      "suggest_actions",
+      "search_memory",
+    ]);
+  });
+
   test("divergent final: finalText is the full final, NOT partial+full", async () => {
     const transport = new HttpWorkerTransport(baseConfig);
 

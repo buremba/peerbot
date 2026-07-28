@@ -117,7 +117,9 @@ describe("signalError is once-per-turn", () => {
     ).rejects.toThrow();
 
     // Gateway recovers; the caller's retry must still get through.
-    globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+    globalThis.fetch = (async (
+      ...args: Parameters<typeof globalThis.fetch>
+    ) => {
       const init = args[1];
       if (init?.body) sentPayloads.push(JSON.parse(init.body as string));
       return new Response(null, { status: 200 });

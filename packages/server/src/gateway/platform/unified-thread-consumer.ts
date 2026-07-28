@@ -9,7 +9,6 @@ import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.j
 import type { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import { readPlatformMetadata } from "../connections/platform-metadata.js";
 import { OutputGuardrailScanner } from "../guardrails/output-scan.js";
-import { generateSuggestFollowups } from "../guardrails/suggest-followups.js";
 import type {
   IMessageQueue,
   QueueJob,
@@ -21,9 +20,7 @@ import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
 import {
   finalizeTurnSuggestions,
-  persistSuggestion,
   readCurrentSuggestion,
-  readTurnRunId,
 } from "../suggestions/persist-suggestion.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
@@ -284,96 +281,6 @@ export class UnifiedThreadResponseConsumer {
   }
 
   /**
-   * After blocking output scans pass: if this turn published no chips and the
-   * agent has the `suggest-followups` enrichment guardrail enabled, derive
-   * chips from the (already-scanned) reply and publish them. Best-effort —
-   * every failure leaves the turn chipless. Never runs on a tripped/blocked
-   * reply (caller must only invoke after scanFinal returned null).
-   */
-  private async maybeEnrichSuggestFollowups(
-    data: ThreadResponsePayload,
-    organizationId: string,
-    agentId: string
-  ): Promise<void> {
-    try {
-      if (
-        !(await this.outputGuardrail.hasSuggestFollowups(
-          agentId,
-          organizationId
-        ))
-      ) {
-        return;
-      }
-
-      const turnMessageIds = [
-        ...(data.messageId ? [data.messageId] : []),
-        ...(data.processedMessageIds ?? []),
-      ].filter(Boolean);
-      const owned = new Set(turnMessageIds);
-      const current = await readCurrentSuggestion(
-        organizationId,
-        data.conversationId
-      );
-      // Agent (or a prior enrichment on a re-queue) already owns the rail —
-      // never overwrite an explicit suggest_actions set.
-      if (
-        current?.turnMessageId != null &&
-        owned.has(current.turnMessageId)
-      ) {
-        return;
-      }
-
-      const replyText =
-        typeof data.finalText === "string" ? data.finalText : "";
-      if (!replyText) return;
-
-      // This turn's run id, resolved the same way finalize does. Enrichment
-      // decides to publish OUTSIDE persistSuggestion's advisory lock and only
-      // after a model call that can take up to 15s, so a later turn's
-      // suggest_actions set can land first. Stamping our run id lets
-      // persistSuggestion's ordering guard reject this stale enrichment instead
-      // of clobbering the newer set (the guard fires only when both sides carry
-      // a run id).
-      const runId = await readTurnRunId(
-        organizationId,
-        data.conversationId,
-        turnMessageIds
-      );
-
-      const prompts = await generateSuggestFollowups(replyText);
-      if (prompts.length === 0) return;
-
-      await persistSuggestion({
-        organizationId,
-        conversationId: data.conversationId,
-        prompts,
-        // Stamp the completing turn so the next finalize clears this set.
-        turnMessageId: data.messageId,
-        runId,
-      });
-
-      await this.interactionService?.postSuggestion(
-        organizationId,
-        data.userId ?? "api",
-        data.conversationId,
-        data.channelId ?? data.conversationId,
-        data.teamId,
-        typeof data.platformMetadata?.connectionId === "string"
-          ? data.platformMetadata.connectionId
-          : undefined,
-        data.platform ?? "api",
-        prompts
-      );
-    } catch (err) {
-      logger.warn(
-        `suggest-followups enrichment failed for ${data.conversationId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-    }
-  }
-
-  /**
    * Deliver a fanned-out CHAT-PLATFORM interaction card on the pod that owns
    * the connection's bridge.
    *
@@ -623,27 +530,25 @@ export class UnifiedThreadResponseConsumer {
                 finalText: data.finalText ? blockMsg : data.finalText,
                 error: data.error != null ? blockMsg : data.error,
               };
-            } else if (
-              !data.error &&
-              data.processedMessageIds?.length &&
-              data.finalText
-            ) {
-              // Blocking scan passed — enrichment may derive chips. Never on
-              // error turns or when finalText was replaced by a block notice.
-              const organizationId =
-                data.organizationId ?? md.organizationId;
-              if (organizationId) {
-                // Fire-and-forget: chips are delivered out-of-band via
-                // interactionService.postSuggestion, not through the completion
-                // payload, so terminal delivery must not wait on the up-to-15s
-                // model call + DB write. Errors are caught inside the method.
-                void this.maybeEnrichSuggestFollowups(
-                  data,
-                  organizationId,
-                  agentId
-                );
-              }
             }
+            // NOTE: `suggest-followups` enrichment deliberately does NOT run on
+            // this API path — only on chat platforms (ChatResponseBridge).
+            //
+            // The SPA opens one EventSource per send and closes it in a
+            // `finally` as soon as `complete` arrives, so chips are only live if
+            // they are already durable when ApiResponseRenderer embeds them on
+            // that event. Enrichment needs an up-to-15s model call, which leaves
+            // two bad options: await it (adds that latency to every enrichment
+            // turn, putting a decorative feature on the critical path) or
+            // fire-and-forget it (the write lands after the socket is gone, so
+            // the chips are generated, persisted, and never delivered).
+            //
+            // Chat has neither problem: a native card is posted out-of-band and
+            // the platform itself persists it. Web chips need a post-turn update
+            // channel that outlives the send (invalidating the history query,
+            // which already restores chips via historyInteractionsToSuggestions)
+            // — a general mechanism worth building on its own, not a special
+            // case wedged into the turn-scoped stream.
           }
         }
       }

@@ -180,13 +180,16 @@ export async function readCurrentSuggestion(
  * suggestion event of its own) and rows are marked 'completed' rather than
  * deleted, so the id is still readable at terminal time. Returns null when no
  * message ids are supplied or none match (older workers, unstamped turns) — the
- * ordering guards that consume it treat a null run id as "unknown, don't block".
+ * ordering guard that consumes it treats a null run id as "unknown, don't block".
+ *
+ * Always read on the caller's transaction: `finalizeTurnSuggestions` needs the
+ * id inside its advisory lock so the value cannot change under the guard.
  */
-export async function readTurnRunId(
+async function readTurnRunId(
   organizationId: string,
   conversationId: string,
   turnMessageIds: string[],
-  sql: DbClient = getDb()
+  sql: DbClient
 ): Promise<number | null> {
   const owned = turnMessageIds.filter(Boolean);
   if (owned.length === 0) return null;

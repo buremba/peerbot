@@ -106,6 +106,8 @@ export interface ToolContext {
   sourceContext?: ToolSourceContext | null;
   /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */
   applyId?: string | null;
+  /** Persistent MCP session id driving this call; null off the MCP transport. */
+  mcpSessionId?: string | null;
   /** Whether request was authenticated */
   isAuthenticated: boolean;
   /** OAuth client ID that created this request (null for session/anonymous) */

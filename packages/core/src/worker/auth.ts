@@ -113,6 +113,17 @@ export interface WorkerTokenData {
    * entry the denylist covers rather than granting it.
    */
   deniedDomains?: string[];
+  /**
+   * Nix packages to provision inside a remote runtime sandbox (the agent's
+   * resolved `nixConfig.packages` unioned with its connections' contributed
+   * tooling). Signed for the same reason as {@link allowedDomains}: the worker
+   * is the sandbox-ee, so a compromised one must not be able to name its own
+   * package set — every entry here reaches a `nix profile install` command line.
+   * The local (embedded) path wraps the worker spawn in `nix-shell` instead and
+   * ignores this claim. Absent/empty → nothing is provisioned and a contributed
+   * CLI is simply absent from PATH (honest degradation, never a silent success).
+   */
+  nixPackages?: string[];
 }
 
 export interface WorkerTokenOptions {
@@ -154,6 +165,8 @@ export interface WorkerTokenOptions {
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox. See WorkerTokenData.deniedDomains. */
   deniedDomains?: string[];
+  /** Resolved nix package set for a remote runtime sandbox. See WorkerTokenData.nixPackages. */
+  nixPackages?: string[];
 }
 
 function generateToken(
@@ -192,6 +205,7 @@ function generateToken(
     sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
     deniedDomains: options.deniedDomains,
+    nixPackages: options.nixPackages,
   };
 
   return encrypt(JSON.stringify(payload));
@@ -337,6 +351,19 @@ function verifyToken(
     if (data.sandboxId !== undefined && typeof data.sandboxId !== "string") {
       logger.error("Worker token rejected: sandboxId must be a string");
       return null;
+    }
+    // `nixPackages` feeds a `nix profile install` command line in the remote
+    // runtime provider. Reject a non-string[] here rather than coercing — the
+    // provider validates each NAME through `nixPackageAttrRef`, but a non-array
+    // (or a nested object) would defeat that per-element check entirely.
+    if (data.nixPackages !== undefined) {
+      if (
+        !Array.isArray(data.nixPackages) ||
+        !data.nixPackages.every((p) => typeof p === "string")
+      ) {
+        logger.error("Worker token rejected: nixPackages must be a string[]");
+        return null;
+      }
     }
     // Reject legacy tokens carrying the pre-rename `environmentId` claim (the
     // field was renamed to `sandboxId`). A token minted just before the

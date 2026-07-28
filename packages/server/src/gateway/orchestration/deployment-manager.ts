@@ -656,6 +656,8 @@ export function buildDeploymentWorkerToken(args: {
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
   deniedDomains?: string[];
+  /** Resolved nix package set for a remote runtime sandbox (signed claim). */
+  nixPackages?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1684,6 +1686,9 @@ export class DeploymentManager {
       // the runtime route reads it off the signed token, not the worker's body.
       allowedDomains: validated.networkConfig?.allowedDomains,
       deniedDomains: validated.networkConfig?.deniedDomains,
+      // Same package union the local nix-shell spawn uses below — signed here so
+      // a REMOTE runtime provisions the same set instead of running without it.
+      nixPackages: validated.nixConfig?.packages,
     };
     const { workerToken, egressProxyToken } =
       buildDeploymentTokenPair(deploymentTokenArgs);

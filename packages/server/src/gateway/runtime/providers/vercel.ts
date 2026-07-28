@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
-import { normalizeDomainPattern } from "@lobu/core";
+import { createLogger, normalizeDomainPattern } from "@lobu/core";
+import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
+import {
+  NIX_SUBSTITUTER_DOMAINS,
+  nixPackageSetHash,
+  sanitizeNixPackages,
+} from "../packages.js";
 import { remoteCwd } from "../workspace.js";
 import {
   RuntimeInfrastructureError,
@@ -8,11 +14,61 @@ import {
 } from "../types.js";
 import type {
   GatewayRuntimeProvider,
+  PackageProvisionResult,
   RuntimeExecContext,
   RuntimeExecResult,
 } from "../types.js";
 
+const logger = createLogger("vercel-runtime");
+
 const REMOTE_WORKSPACE_DIR = "/vercel/sandbox";
+
+/**
+ * Where the single-user nix install and the agent's package profile live.
+ * Under `$HOME` rather than `/nix` because the sandbox user is not root and a
+ * daemon install would need one.
+ */
+const NIX_ROOT = "/vercel/sandbox/.lobu-nix";
+const NIX_PROFILE_BIN = `${NIX_ROOT}/profile/bin`;
+/** Sandbox-side provisioning state — see `nixPackageSetHash`. Never a gateway Map. */
+const PACKAGE_MARKER_PATH = `${NIX_ROOT}/.lobu-packages`;
+
+/** How long a cold nix bootstrap + install may take before we give up on it. */
+function provisionTimeoutMs(): number {
+  return parsePositiveInt(
+    process.env.LOBU_RUNTIME_PROVISION_TIMEOUT_MS,
+    300_000
+  );
+}
+
+/**
+ * Pinned single-user nix installer. Version-pinned rather than floating
+ * (`nixos.org/nix/install`) for two reasons: a pinned artifact is a fixed
+ * supply-chain surface, and `releases.nixos.org` is already a substituter host
+ * so no extra egress grant is needed for the bootstrap itself.
+ *
+ * `LOBU_NIX_INSTALLER_URL` overrides it for air-gapped/mirrored deployments.
+ * The value is interpolated into a shell command, so it is accepted only as a
+ * plain https URL with no shell-significant characters — an operator typo must
+ * fall back to the pinned default rather than run something else.
+ */
+const DEFAULT_NIX_INSTALLER_URL =
+  "https://releases.nixos.org/nix/nix-2.28.4/install";
+
+export function nixInstallerUrl(): string {
+  const override = process.env.LOBU_NIX_INSTALLER_URL?.trim();
+  if (!override) return DEFAULT_NIX_INSTALLER_URL;
+  // Deliberately narrower than RFC 3986: `$ & ' ( ) ; * ! ,` are legal URL
+  // characters AND shell metacharacters, so they are rejected rather than
+  // quoted. No real installer URL needs them.
+  if (!/^https:\/\/[A-Za-z0-9._~:/?#@=%+-]+$/.test(override)) {
+    logger.warn(
+      "LOBU_NIX_INSTALLER_URL is not a plain https URL — using the pinned default"
+    );
+    return DEFAULT_NIX_INSTALLER_URL;
+  }
+  return override;
+}
 
 type SnapshotRetention = {
   snapshotExpiration?: number;
@@ -177,17 +233,25 @@ function overlapsDeny(entry: string, denied: string[]): boolean {
   );
 }
 
+/**
+ * @param extraAllowed gateway-DERIVED hosts (never worker-supplied) to add to
+ *   the allow set — the nix substituters, added only when there is a validated
+ *   package set to install. They are still subject to the denylist below: an
+ *   operator who explicitly denies `cache.nixos.org` gets no package install,
+ *   not a silent exemption.
+ */
 function networkPolicyFromDomains(
   value: unknown,
-  deniedValue?: unknown
+  deniedValue?: unknown,
+  extraAllowed: string[] = []
 ): NetworkPolicy {
-  if (!Array.isArray(value)) return "deny-all";
+  if (!Array.isArray(value) && extraAllowed.length === 0) return "deny-all";
   const normalize = (input: unknown) =>
     (Array.isArray(input) ? input : [])
       .filter((entry): entry is string => typeof entry === "string")
       .map(normalizeAllowedDomain)
       .filter((entry): entry is string => !!entry);
-  const domains = normalize(value);
+  const domains = [...normalize(value), ...normalize(extraAllowed)];
   const denied = normalize(deniedValue);
   if (domains.includes("*") && denied.length === 0) return "allow-all";
   // The provider policy has no deny primitive, so denies are enforced by
@@ -305,11 +369,102 @@ async function getSandbox(params: {
 }
 
 /**
+ * Resolve the sandbox for one request. Shared by `ensurePackages` and `exec` so
+ * both see the SAME network policy — provisioning must not create the sandbox
+ * with substituter access that the subsequent `exec` then revokes (each
+ * `getOrCreate` reconciles the policy, so a divergent second call would churn
+ * the sandbox on every single command).
+ */
+async function sandboxForRequest(ctx: RuntimeExecContext): Promise<Sandbox> {
+  const packages = sanitizeNixPackages(ctx.nixPackages);
+  return getSandbox({
+    name: stableSandboxName({
+      organizationId: ctx.organizationId,
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    }),
+    networkPolicy: networkPolicyFromDomains(
+      ctx.allowedDomains,
+      ctx.deniedDomains,
+      // Only widen for the substituters when there is actually something to
+      // install — an agent with no contributed packages keeps the exact policy
+      // its operator configured.
+      packages.length > 0 ? NIX_SUBSTITUTER_DOMAINS : []
+    ),
+    credentials: ctx.credentials.values,
+  });
+}
+
+/**
+ * Shell script that brings `packages` onto PATH inside the sandbox.
+ *
+ * Single-user nix (`--no-daemon`) into a sandbox-local prefix: the sandbox user
+ * is not root, so the standard daemon install is unavailable. `nix profile
+ * install` is used rather than `nix-shell -p` because the profile persists in
+ * the sandbox filesystem across messages, which is what makes the marker-file
+ * skip meaningful.
+ *
+ * Every interpolated package name has ALREADY been through `nixPackageAttrRef`
+ * (twice: `sanitizeNixPackages`, then per-element below), so no shell
+ * metacharacter can be present. The double check is deliberate — this string
+ * becomes a command line, and a future caller that forgets to sanitize must not
+ * turn that omission into a sandbox escape.
+ */
+function provisionScript(packages: string[], marker: string): string {
+  for (const pkg of packages) nixPackageAttrRef(pkg);
+  const attrs = packages.map((pkg) => `nixpkgs#${pkg}`).join(" ");
+  return [
+    "set -eu",
+    `export NIX_ROOT=${NIX_ROOT}`,
+    // Marker match → the exact same package set is already installed. This is
+    // the whole idempotence story and it lives in the sandbox, not the gateway.
+    `if [ "$(cat ${PACKAGE_MARKER_PATH} 2>/dev/null || true)" = "${marker}" ]; then echo "lobu-packages: cached"; exit 0; fi`,
+    `mkdir -p "$NIX_ROOT"`,
+    `export HOME="$NIX_ROOT"`,
+    `export NIX_CONF_DIR="$NIX_ROOT/etc"`,
+    `mkdir -p "$NIX_CONF_DIR"`,
+    `printf 'experimental-features = nix-command flakes\\n' > "$NIX_CONF_DIR/nix.conf"`,
+    // Bootstrap once; subsequent turns reuse the store already in the filesystem.
+    `if [ ! -x "$NIX_ROOT/nix/var/nix/profiles/default/bin/nix" ]; then`,
+    `  curl -fsSL ${nixInstallerUrl()} | sh -s -- --no-daemon --no-channel-add`,
+    `fi`,
+    `. "$NIX_ROOT/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" 2>/dev/null || . "$NIX_ROOT/.nix-profile/etc/profile.d/nix.sh"`,
+    `nix profile install --profile "$NIX_ROOT/profile" ${attrs}`,
+    `printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}`,
+    `echo "lobu-packages: installed"`,
+  ].join("\n");
+}
+
+/**
+ * Prefix the worker's command with the PATH export that makes provisioned
+ * packages visible.
+ *
+ * Done in the COMMAND rather than via `runCommand({ env })` because the profile
+ * dir must be *prepended* to whatever PATH the login shell computes. An `env`
+ * entry would have to name the full PATH, which the gateway does not know (it
+ * is the base image's), and a literal `$PATH` there is not expanded — it would
+ * be passed through as the string `$PATH` and break every command in the
+ * sandbox. Under `bash -lc` the export below expands correctly.
+ *
+ * `NIX_PROFILE_BIN` is a module constant, never request-derived, so nothing
+ * attacker-influenced enters the command here.
+ */
+function withProvisionedPath(ctx: RuntimeExecContext): string {
+  if (sanitizeNixPackages(ctx.nixPackages).length === 0) return ctx.command;
+  return `export PATH="${NIX_PROFILE_BIN}:$PATH"\n${ctx.command}`;
+}
+
+/**
  * Vercel persistent-sandbox runtime (gateway side). The sandbox name is
  * deterministic per (org, agent, conversation) so messages resume the same
  * filesystem; the filesystem is the persistent source of truth (no file sync).
  */
-export const __testOnly = { networkPolicyFromDomains, execArgv };
+export const __testOnly = {
+  networkPolicyFromDomains,
+  execArgv,
+  provisionScript,
+  withProvisionedPath,
+};
 
 export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
   id: "vercel",
@@ -341,25 +496,60 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     // on Vercel, or pulled via `vercel env pull`). The SDK self-resolves it.
     return !!process.env.VERCEL_OIDC_TOKEN?.trim();
   },
+  async ensurePackages(
+    ctx: RuntimeExecContext
+  ): Promise<PackageProvisionResult> {
+    const packages = sanitizeNixPackages(ctx.nixPackages);
+    if (packages.length === 0) {
+      return { installed: [], failed: [], cached: true };
+    }
+    const marker = nixPackageSetHash(packages);
+    try {
+      const sandbox = await sandboxForRequest(ctx);
+      await sandbox.fs.mkdir(REMOTE_WORKSPACE_DIR, { recursive: true });
+      const result = await sandbox.runCommand({
+        cmd: "/bin/bash",
+        args: ["-lc", provisionScript(packages, marker)],
+        cwd: REMOTE_WORKSPACE_DIR,
+        timeoutMs: provisionTimeoutMs(),
+      });
+      const stdout = await result.stdout();
+      if (result.exitCode !== 0) {
+        const stderr = await result.stderr();
+        // Degrade honestly: the tool is absent and we SAY so. Failing the turn
+        // here would take down an agent whose main work has nothing to do with
+        // the contributed CLI.
+        logger.warn(
+          { packages, exitCode: result.exitCode, stderr: stderr.slice(-2000) },
+          "Nix package provisioning failed — sandbox continues without these packages"
+        );
+        return {
+          installed: [],
+          failed: packages,
+          cached: false,
+          error: `nix provisioning exited ${result.exitCode}`,
+        };
+      }
+      return {
+        installed: packages,
+        failed: [],
+        cached: stdout.includes("lobu-packages: cached"),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+        { packages, err: message },
+        "Nix package provisioning errored — sandbox continues without these packages"
+      );
+      return { installed: [], failed: packages, cached: false, error: message };
+    }
+  },
   async exec(ctx: RuntimeExecContext): Promise<RuntimeExecResult> {
-    const sandboxName = stableSandboxName({
-      organizationId: ctx.organizationId,
-      agentId: ctx.agentId,
-      conversationId: ctx.conversationId,
-    });
-    const networkPolicy = networkPolicyFromDomains(
-      ctx.allowedDomains,
-      ctx.deniedDomains
-    );
     // Provisioning happens before the agent's command exists, so ANY failure
     // here is the runtime's, never the command's.
     let sandbox: Sandbox;
     try {
-      sandbox = await getSandbox({
-        name: sandboxName,
-        networkPolicy,
-        credentials: ctx.credentials.values,
-      });
+      sandbox = await sandboxForRequest(ctx);
     } catch (error) {
       throw asRuntimeInfrastructureError(error, "provision sandbox", "not_started");
     }
@@ -377,7 +567,11 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     try {
       result = await sandbox.runCommand({
         cmd: "/bin/bash",
-        args: execArgv(cwd, ctx.command),
+        // Provisioned packages live in a sandbox-local profile, so PATH must
+        // name it or the CLI is installed-but-invisible. Prepended (not
+        // appended) so a declared package wins over an older copy baked into
+        // the base image.
+        args: execArgv(cwd, withProvisionedPath(ctx)),
         env: ctx.env,
         timeoutMs: ctx.timeoutMs,
       });

@@ -55,6 +55,24 @@ export interface RuntimeExecContext {
   allowedDomains: unknown;
   /** Raw denied-domains list (signed claim); providers subtract it from the allow policy. */
   deniedDomains: unknown;
+  /**
+   * Nix package names already validated through `nixPackageAttrRef` by the
+   * route. Providers may put these on a command line as-is; anything the
+   * validator rejected never reaches here.
+   */
+  nixPackages?: string[];
+}
+
+/** Outcome of one `ensurePackages` call, surfaced to the worker as exec meta. */
+export interface PackageProvisionResult {
+  /** Package names that are on PATH after this call (installed now or already present). */
+  installed: string[];
+  /** Package names provisioning failed for. The tool is absent; the turn still runs. */
+  failed: string[];
+  /** True when the marker matched and nothing had to be installed. */
+  cached: boolean;
+  /** Why provisioning degraded, when it did. Logged and surfaced, never thrown. */
+  error?: string;
 }
 
 export interface RuntimeExecResult {
@@ -77,6 +95,23 @@ export interface GatewayRuntimeProvider {
    * when absent/false, a missing credential fails closed.
    */
   canSelfAuth?(): boolean;
+  /**
+   * Optional: provision `ctx.nixPackages` into the compute target so the
+   * contributed CLIs are on PATH for the subsequent {@link exec}. Called by the
+   * generic route before `exec`, AFTER the network policy is in force (the nix
+   * substituter hosts must be reachable or the install hangs on deny-by-default).
+   *
+   * ABSENT means "this provider cannot provision" — the honest-degradation path:
+   * the route logs it and the tool is simply missing, rather than the turn
+   * failing or the gateway pretending the package is there. Implementations must
+   * likewise RESOLVE with `failed` populated rather than throwing; a package that
+   * didn't install must never fail the whole turn.
+   *
+   * Idempotence is the implementation's job and must be sandbox-side state (a
+   * marker file), never gateway memory — another replica handles the next
+   * message and must reach the same conclusion without reading this pod.
+   */
+  ensurePackages?(ctx: RuntimeExecContext): Promise<PackageProvisionResult>;
   exec(ctx: RuntimeExecContext): Promise<RuntimeExecResult>;
 }
 

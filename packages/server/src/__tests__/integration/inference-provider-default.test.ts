@@ -310,6 +310,48 @@ describe('inference provider org default', () => {
     expect(await defaultSlug(org.id)).toBe('openai');
   });
 
+  it('(j5) converting the DEFAULT api-key row to oauth hands off the default', async () => {
+    const org = await newOrg();
+    // `zed` is the default (created first); `openai` is an eligible successor.
+    await create(org.id, 'zed', 'zed-model');
+    await create(org.id, 'openai', 'gpt-4o-mini');
+    expect(await defaultSlug(org.id)).toBe('zed');
+
+    // Signing in with OAuth converts the EXISTING api-key row in place. The
+    // row keeps its id and its is_default flag, but its credential becomes
+    // per-user — so it is no longer eligible to be the ORG default. Leaving
+    // the flag set would strand the org on a credential only one member can
+    // read, and promotion cannot fix it: the NOT EXISTS guard sees a default
+    // already present and no-ops.
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'zed',
+      kind: 'zed',
+      defaultModel: 'zed-model',
+    });
+
+    expect(await defaultSlug(org.id)).toBe('openai');
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+  });
+
+  it('(j6) converting the ONLY provider to oauth leaves no default at all', async () => {
+    const org = await newOrg();
+    await create(org.id, 'zed', 'zed-model');
+    expect(await defaultSlug(org.id)).toBe('zed');
+
+    // No eligible successor exists. Default-less is CORRECT here — better than
+    // a default every headless run would fail to authenticate.
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'zed',
+      kind: 'zed',
+      defaultModel: 'zed-model',
+    });
+
+    expect(await defaultSlug(org.id)).toBeNull();
+    expect(await getOrgDefaultModel(org.id)).toBeNull();
+  });
+
   it('(k) an explicit model resolves with a row key and static OpenAI URL', async () => {
     const org = await newOrg();
     await create(org.id, 'openai');

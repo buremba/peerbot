@@ -540,6 +540,17 @@ export async function ensureOAuthInferenceProvider(args: {
 					slug,
 					existingRow.id,
 				);
+				// Clearing `is_default` is load-bearing, not tidiness. This row is
+				// becoming `oauth://`, which {@link promoteOldestRunnableProvider}
+				// and {@link setInferenceProviderDefault} both refuse as an org
+				// default — its credential belongs to ONE user. Keeping the flag
+				// would strand the org on a model no other member and no headless
+				// Behavior run can authenticate, and promotion could not repair it:
+				// the NOT EXISTS guard sees a default already present and no-ops.
+				// Clearing first lets the promotion below hand off to an eligible
+				// row, or leave the org default-less when none exists — which is
+				// the correct outcome, since a default that always fails at egress
+				// is worse than none.
 				const repaired = (await tx`
 						UPDATE inference_providers
 						SET kind = ${kind},
@@ -547,6 +558,7 @@ export async function ensureOAuthInferenceProvider(args: {
 						    api_key_ref = ${apiKeyRef},
 						    capabilities = ${sql.json(oauthCapabilities)}::jsonb,
 						    created_by = COALESCE(created_by, ${createdBy}),
+						    is_default = false,
 						    updated_at = now()
 						WHERE id = ${existingRow.id}
 						RETURNING id, organization_id, slug, kind, display_name, api_key_ref,

@@ -338,11 +338,15 @@ describe("enforceBashCommandPolicy", () => {
     // embedded-just-bash-bootstrap.test.ts). Documented as ALLOWED here so the
     // contract is explicit and a future "tighten the regex" change is a
     // conscious decision, not an accident.
+    // Each form below is a spelling bash really resolves to the `nix` binary
+    // (quote removal runs before the PATH lookup), so every one of them would
+    // execute `nix run` if `nix` were discoverable at all.
     const bs = String.fromCharCode(92);
     const policy = buildToolPolicy({}).bashPolicy;
     for (const cmd of [
-      `"n${bs}ix"`, // escaped name inside quotes
-      `$'nix${bs}x20run'`, // ANSI-C quoting
+      "$'nix' run nixpkgs#hello", // ANSI-C quoted name
+      `n$'${bs}151'x run nixpkgs#hello`, // name assembled from an octal escape
+      `n${bs}ix run nixpkgs#hello`, // backslash-escaped name
       "env nix run nixpkgs#hello", // exec wrapper
       "git commit -m 'nix shell support'", // package phrase as quoted data
     ]) {

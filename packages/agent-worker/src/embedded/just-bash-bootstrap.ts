@@ -188,6 +188,12 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
  * legitimately shells out to a general tool by name (`gh` runs `git`), and
  * scrubbing those dirs would break it. Package managers are never a tool's
  * required runtime dependency, so removing their dirs is safe.
+ *
+ * Known residual gap: this closes NAME-based re-execution only. `/nix` is bound
+ * read-only but executable, so a registered tool that hardcodes or globs
+ * `/nix/store/…/bin/npm` still reaches it. Closing that means binding only an
+ * allowlisted store closure into the namespace, which is a change to the bwrap
+ * mount plan rather than to the child PATH, and is tracked separately.
  */
 const PACKAGE_MANAGER_BINARIES = new Set<string>([
   "nix",

@@ -140,6 +140,7 @@ function token(
     runtimeProviderId?: string;
     sandboxId?: string;
     allowedDomains?: string[];
+    deniedDomains?: string[];
     nixPackages?: string[];
   } = {}
 ): string {
@@ -152,6 +153,7 @@ function token(
     runtimeProviderId: options.runtimeProviderId,
     sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
+    deniedDomains: options.deniedDomains,
     nixPackages: options.nixPackages,
   });
 }
@@ -653,6 +655,85 @@ describe("createRuntimeRoutes", () => {
       networkPolicy: { allow: ["github.com"] },
     });
     expect((await res.json()).sandbox).not.toHaveProperty("packages");
+  });
+
+  test("fails provisioning immediately when the signed denylist blocks a Nix host", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 75,
+      stdout: async () => "",
+      stderr: async () => "",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          deniedDomains: ["cache.nixos.org"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sandbox.packages).toMatchObject({
+      installed: [],
+      failed: ["gh"],
+      cached: false,
+    });
+    expect(body.sandbox.packages.error).toContain(
+      "Nix package hosts are blocked"
+    );
+    // The known policy conflict must not burn the five-minute provisioning
+    // timeout. The first command is a local profile probe (no curl/Nix
+    // install), followed by the agent's command.
+    expect(runCommandMock).toHaveBeenCalledTimes(2);
+    expect(commandScript(0)).not.toContain("curl");
+    expect(commandScript(0)).toContain("exit 75");
+    expect(commandScript(1)).toBe("gh --version");
+  });
+
+  test("reuses an exact cached package set even when Nix hosts are denied", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => "lobu-packages: cached\n",
+      stderr: async () => "",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          deniedDomains: ["cache.nixos.org"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).sandbox.packages).toEqual({
+      installed: ["gh"],
+      failed: [],
+      cached: true,
+    });
+    expect(commandScript(1)).toBe(
+      'export PATH="/vercel/sandbox/.lobu-nix/profile/bin:$PATH"\ngh --version'
+    );
   });
 
   test("drops a package name the nix validator rejects before it reaches a command line", async () => {

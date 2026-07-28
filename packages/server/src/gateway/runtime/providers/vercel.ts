@@ -42,10 +42,11 @@ function provisionTimeoutMs(): number {
  * supply-chain surface, and `releases.nixos.org` is already a substituter host
  * so no extra egress grant is needed for the bootstrap itself.
  *
- * `LOBU_NIX_INSTALLER_URL` overrides it for air-gapped/mirrored deployments.
- * The value is interpolated into a shell command, so it is accepted only as a
- * plain https URL with no shell-significant characters — an operator typo must
- * fall back to the pinned default rather than run something else.
+ * `LOBU_NIX_INSTALLER_URL` overrides the installer artifact. Its host must also
+ * be present in the agent's egress allowlist. The value is interpolated into a
+ * shell command, so it is accepted only as a plain https URL with no
+ * shell-significant characters — an operator typo must fall back to the pinned
+ * default rather than run something else.
  */
 const DEFAULT_NIX_INSTALLER_URL =
   "https://releases.nixos.org/nix/nix-2.28.4/install";
@@ -260,6 +261,19 @@ function networkPolicyFromDomains(
     : "deny-all";
 }
 
+function nixHostsReachable(ctx: RuntimeExecContext): boolean {
+  const policy = networkPolicyFromDomains(
+    ctx.allowedDomains,
+    ctx.deniedDomains,
+    NIX_SUBSTITUTER_DOMAINS
+  );
+  if (policy === "allow-all") return true;
+  if (policy === "deny-all") return false;
+  const allowed = policy.allow;
+  if (!Array.isArray(allowed)) return false;
+  return NIX_SUBSTITUTER_DOMAINS.every((domain) => allowed.includes(domain));
+}
+
 async function getSandbox(params: {
   name: string;
   networkPolicy: NetworkPolicy;
@@ -375,11 +389,24 @@ function provisionScript(packages: string[], marker: string): string {
     `. "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"`,
     // One immutable profile per exact set: removed declarations disappear from
     // PATH, and a failed partial attempt is deleted before the next retry.
-    `rm -f "$PROFILE"`,
-    `if ! nix profile install --profile "$PROFILE" ${attrs}; then rm -f "$PROFILE"; exit 1; fi`,
+    `rm -f "$PROFILE" "$PROFILE"-*-link`,
+    `if ! nix profile install --profile "$PROFILE" ${attrs}; then rm -f "$PROFILE" "$PROFILE"-*-link; exit 1; fi`,
     `ln -sfn "$PROFILE" "$NIX_HOME/profile"`,
     `printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}`,
     `echo "lobu-packages: installed"`,
+  ].join("\n");
+}
+
+/** Select an already-built exact profile without contacting a Nix host. */
+function cachedProfileScript(marker: string): string {
+  return [
+    "set -eu",
+    `export NIX_HOME=${NIX_HOME}`,
+    `PROFILE="$NIX_HOME/profiles/${marker}"`,
+    `if [ ! -d "$PROFILE/bin" ]; then exit 75; fi`,
+    `ln -sfn "$PROFILE" "$NIX_HOME/profile"`,
+    `printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}`,
+    `echo "lobu-packages: cached"`,
   ].join("\n");
 }
 
@@ -414,7 +441,9 @@ function withProvisionedPath(ctx: RuntimeExecContext): string {
  * filesystem; the filesystem is the persistent source of truth (no file sync).
  */
 export const __testOnly = {
+  cachedProfileScript,
   networkPolicyFromDomains,
+  nixHostsReachable,
   provisionScript,
   withProvisionedPath,
 };
@@ -460,6 +489,23 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     try {
       const sandbox = await sandboxForRequest(ctx);
       await sandbox.fs.mkdir(REMOTE_WORKSPACE_DIR, { recursive: true });
+      if (!nixHostsReachable(ctx)) {
+        const cached = await sandbox.runCommand({
+          cmd: "/bin/bash",
+          args: ["-lc", cachedProfileScript(marker)],
+          cwd: REMOTE_WORKSPACE_DIR,
+          timeoutMs: 10_000,
+        });
+        if (cached.exitCode === 0) {
+          return { installed: packages, failed: [], cached: true };
+        }
+        return {
+          installed: [],
+          failed: packages,
+          cached: false,
+          error: "Nix package hosts are blocked by the sandbox network policy",
+        };
+      }
       const result = await sandbox.runCommand({
         cmd: "/bin/bash",
         args: ["-lc", provisionScript(packages, marker)],

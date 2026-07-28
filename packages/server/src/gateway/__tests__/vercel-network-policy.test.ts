@@ -141,7 +141,10 @@ describe("vercel provisionScript", () => {
   test("deletes a partial profile so a failed attempt cannot poison the retry", () => {
     const script = provisionScript(["gh"], "marker123");
     expect(script).toContain(
-      'if ! nix profile install --profile "$PROFILE" nixpkgs#gh; then rm -f "$PROFILE"; exit 1; fi'
+      'rm -f "$PROFILE" "$PROFILE"-*-link'
+    );
+    expect(script).toContain(
+      'if ! nix profile install --profile "$PROFILE" nixpkgs#gh; then rm -f "$PROFILE" "$PROFILE"-*-link; exit 1; fi'
     );
   });
 

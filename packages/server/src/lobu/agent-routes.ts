@@ -843,6 +843,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 				capabilities: provider.capabilities,
 				hasCustomUpstream: provider.hasCustomUpstream,
 				status: provider.status,
+				isDefault: provider.isDefault,
 			},
 		});
 
@@ -964,10 +965,13 @@ routes.post("/inference-providers", async (c) => {
 			capabilities: result.capabilities,
 			hasCustomUpstream: result.hasCustomUpstream,
 			status: result.status,
+			isDefault: result.isDefault,
 		},
 	});
 
 	// Never echo the key or the api_key_ref back to the caller.
+	// `isDefault` is load-bearing: the first runnable provider is auto-promoted,
+	// so a caller cannot infer it from its own request.
 	return c.json(
 		{
 			provider: {
@@ -979,6 +983,7 @@ routes.post("/inference-providers", async (c) => {
 				hasCustomUpstream: result.hasCustomUpstream,
 				status: result.status,
 				createdAt: result.createdAt,
+				isDefault: result.isDefault,
 			},
 		},
 		201

@@ -115,6 +115,13 @@ export interface InferenceProviderRow {
 	hasCustomUpstream: boolean;
 	status: string;
 	createdAt: string;
+	/**
+	 * Whether THIS row is the org default. Load-bearing on create: the first
+	 * runnable provider is auto-promoted, so a caller that assumed "not default
+	 * unless I asked" would report the wrong state (the CLI's `--json` output
+	 * did exactly that). Resolved inside the same transaction as the promotion.
+	 */
+	isDefault: boolean;
 }
 
 /** Typed error returned (not thrown) when a live slug already exists for the org. */
@@ -259,6 +266,7 @@ function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
 			r.created_at instanceof Date
 				? r.created_at.toISOString()
 				: String(r.created_at),
+		isDefault: r.is_default ?? false,
 	};
 }
 
@@ -298,8 +306,8 @@ async function lockInferenceProviderDefaults(
 async function promoteOldestRunnableProvider(
 	sql: DbClient,
 	organizationId: string,
-): Promise<void> {
-	await sql`
+): Promise<number | null> {
+	const promoted = (await sql`
 		UPDATE inference_providers
 		SET is_default = true, updated_at = now()
 		WHERE id = (
@@ -317,7 +325,26 @@ async function promoteOldestRunnableProvider(
 			ORDER BY candidate.created_at, candidate.id
 			LIMIT 1
 		)
-	`;
+		RETURNING id
+	`) as Array<{ id: string | number }>;
+	return promoted[0] ? Number(promoted[0].id) : null;
+}
+
+/**
+ * Stamp `isDefault` onto a row that may have just been auto-promoted.
+ *
+ * Every writer reads its row with `RETURNING` BEFORE calling
+ * {@link promoteOldestRunnableProvider}, so the returned `is_default` is stale
+ * `false` for the very row the promotion then picks. Callers publish this over
+ * the REST API and the CLI prints it, so a stale value is a lie about state the
+ * server owns — `lobu providers create --json` reported `isDefault: false` for
+ * a provider that WAS the org default.
+ */
+function withPromotion(
+	row: InferenceProviderRow,
+	promotedId: number | null,
+): InferenceProviderRow {
+	return promotedId === row.id ? { ...row, isDefault: true } : row;
 }
 
 /**
@@ -385,10 +412,13 @@ export async function createInferenceProvider(args: {
 					${apiKeyRef}, ${sql.json(capabilities)}, ${createdBy}
 				)
 				RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-				          capabilities, has_custom_upstream, status, created_at
+				          capabilities, has_custom_upstream, status, created_at, is_default
 			`) as RawInferenceProviderRow[];
 
-			await promoteOldestRunnableProvider(tx, organizationId);
+			const promotedId = await promoteOldestRunnableProvider(
+				tx,
+				organizationId,
+			);
 
 			// Encrypt the key into the org vault under the row-unique name.
 			await tx`
@@ -398,7 +428,7 @@ export async function createInferenceProvider(args: {
 				DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = now()
 			`;
 
-			return mapRow(rows[0]);
+			return withPromotion(mapRow(rows[0]), promotedId);
 		});
 	} catch (error) {
 		const msg = getErrorMessage(error);
@@ -450,7 +480,7 @@ export async function ensureOAuthInferenceProvider(args: {
 
 			const existing = (await tx`
 					SELECT id, organization_id, slug, kind, display_name, api_key_ref,
-					       capabilities, has_custom_upstream, status, created_at
+					       capabilities, has_custom_upstream, status, created_at, is_default
 					FROM inference_providers
 					WHERE organization_id = ${organizationId}
 					  AND slug = ${slug}
@@ -475,12 +505,15 @@ export async function ensureOAuthInferenceProvider(args: {
 							    updated_at = now()
 							WHERE id = ${existingRow.id}
 							RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-							          capabilities, has_custom_upstream, status, created_at
+							          capabilities, has_custom_upstream, status, created_at, is_default
 						`) as RawInferenceProviderRow[];
 						row = updated[0] ?? existingRow;
 					}
-					await promoteOldestRunnableProvider(tx, organizationId);
-					return mapRow(row);
+					const promotedId = await promoteOldestRunnableProvider(
+						tx,
+						organizationId,
+					);
+					return withPromotion(mapRow(row), promotedId);
 				}
 
 				const apiKeyRef = oauthInferenceProviderRef(
@@ -498,10 +531,13 @@ export async function ensureOAuthInferenceProvider(args: {
 						    updated_at = now()
 						WHERE id = ${existingRow.id}
 						RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-						          capabilities, has_custom_upstream, status, created_at
+						          capabilities, has_custom_upstream, status, created_at, is_default
 					`) as RawInferenceProviderRow[];
-				await promoteOldestRunnableProvider(tx, organizationId);
-				return mapRow(repaired[0]);
+				const promotedId = await promoteOldestRunnableProvider(
+					tx,
+					organizationId,
+				);
+				return withPromotion(mapRow(repaired[0]), promotedId);
 			}
 
 			const idRows = (await tx`
@@ -518,11 +554,14 @@ export async function ensureOAuthInferenceProvider(args: {
 					${apiKeyRef}, ${sql.json(oauthCapabilities)}::jsonb, ${createdBy}
 				)
 				RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-				          capabilities, has_custom_upstream, status, created_at
+				          capabilities, has_custom_upstream, status, created_at, is_default
 			`) as RawInferenceProviderRow[];
 
-			await promoteOldestRunnableProvider(tx, organizationId);
-			return mapRow(rows[0]);
+			const promotedId = await promoteOldestRunnableProvider(
+				tx,
+				organizationId,
+			);
+			return withPromotion(mapRow(rows[0]), promotedId);
 		});
 	} catch (error) {
 		const msg = getErrorMessage(error);
@@ -703,7 +742,7 @@ export async function getInferenceProviderBySlug(
 	const sql = getDb();
 	const rows = (await sql`
 		SELECT id, organization_id, slug, kind, display_name, api_key_ref,
-		       capabilities, has_custom_upstream, status, created_at
+		       capabilities, has_custom_upstream, status, created_at, is_default
 		FROM inference_providers
 		WHERE organization_id = ${organizationId} AND slug = ${slug}
 		  AND deleted_at IS NULL
@@ -865,7 +904,7 @@ export async function updateInferenceProviderCapabilities(
 		WHERE organization_id = ${organizationId} AND slug = ${slug}
 		  AND deleted_at IS NULL
 		RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-		          capabilities, has_custom_upstream, status, created_at
+		          capabilities, has_custom_upstream, status, created_at, is_default
 	`) as RawInferenceProviderRow[];
 
 	return rows[0] ? mapRow(rows[0]) : null;
@@ -891,7 +930,7 @@ export async function updateInferenceProviderCoreFields(
 		WHERE organization_id = ${organizationId} AND slug = ${slug}
 		  AND deleted_at IS NULL
 		RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
-		          capabilities, has_custom_upstream, status, created_at
+		          capabilities, has_custom_upstream, status, created_at, is_default
 	`) as RawInferenceProviderRow[];
 	return rows[0] ? mapRow(rows[0]) : null;
 }

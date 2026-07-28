@@ -83,6 +83,25 @@ describe('inference provider org default', () => {
     expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
   });
 
+  it('(a2) create REPORTS the auto-promotion in its return value', async () => {
+    const org = await newOrg();
+
+    // The contract, not just the DB state: the caller cannot infer this from
+    // its own request, and both the REST response and `lobu providers create
+    // --json` publish it. The INSERT's RETURNING captures is_default BEFORE
+    // promotion, so a naive implementation reports a stale `false` here.
+    const first = await create(org.id, 'openai', 'gpt-4o-mini');
+    expect(first.isDefault).toBe(true);
+
+    // A later provider is NOT the default, and must say so.
+    const second = await create(org.id, 'z-ai', 'glm-4.6');
+    expect(second.isDefault).toBe(false);
+
+    // A model-less row is never promoted, so it is never reported as default.
+    const third = await create(org.id, 'groq');
+    expect(third.isDefault).toBe(false);
+  });
+
   it('(b) later providers do NOT steal the default', async () => {
     const org = await newOrg();
     await create(org.id, 'openai', 'gpt-4o-mini');

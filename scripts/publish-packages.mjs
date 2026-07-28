@@ -15,13 +15,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Anchored to this file, not process.cwd(), so the manifest reads below resolve
 // the same way whether the script is run from the repo root or imported by a
 // test running from another directory.
 const REPO_ROOT = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   ".."
 );
 
@@ -62,14 +62,15 @@ function publishedPackageNames() {
   if (!cachedPublishedNames) {
     cachedPublishedNames = new Set();
     for (const { dir } of PACKAGES) {
-      try {
-        const pkg = JSON.parse(
-          readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+      const pkg = JSON.parse(
+        readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+      );
+      if (!pkg.name || pkg.private) {
+        throw new Error(
+          `${dir} must have a public package name before it can be added to PACKAGES`
         );
-        if (pkg.name) cachedPublishedNames.add(pkg.name);
-      } catch {
-        // Missing/unreadable manifest surfaces later in publishPackage.
       }
+      cachedPublishedNames.add(pkg.name);
     }
   }
   return cachedPublishedNames;
@@ -82,22 +83,34 @@ function publishedPackageNames() {
  * rewrite them at publish time, so we do it explicitly here before `npm
  * publish` runs and restore the original package.json afterwards.
  *
- * Runtime `dependencies` are additionally gated on the target actually being
- * published. Without that gate this function faithfully rewrote
- * `"@lobu/plugin-mcp": "workspace:*"` to the placeholder version that
- * `private: true` packages carry (`0.0.0`) and shipped it in a public
- * manifest — a constraint no future release can satisfy. That is exactly how
- * @lobu/worker@14.3.0 went out depending on six packages that do not exist on
- * the registry, breaking `npx @lobu/cli@latest` for every external consumer
- * while every CI gate stayed green (issue #2186).
+ * Runtime dependencies and peer contracts are additionally gated on the
+ * target actually being published. Without that gate this function faithfully
+ * rewrote `"@lobu/plugin-mcp": "workspace:*"` to the placeholder version that
+ * `private: true` packages carry (`0.0.0`) and shipped it in a public manifest
+ * — a constraint no future release can satisfy. That is exactly how
+ * @lobu/worker@14.3.0 went out with five private dependencies pinned to
+ * `0.0.0`, breaking external installs (issue #2186).
  *
- * Scoped to `dependencies` on purpose: devDependencies are not installed by
- * consumers, and a private workspace package is a legitimate dev-only tool.
+ * devDependencies are excluded because consumers do not install them, and a
+ * private workspace package is a legitimate dev-only tool.
  */
 function rewriteWorkspaceRefs(pkg) {
   const rewriteSection = (deps, section) => {
     if (!deps) return;
     for (const [name, spec] of Object.entries(deps)) {
+      if (
+        section !== "devDependencies" &&
+        name.startsWith("@lobu/") &&
+        !publishedPackageNames().has(name)
+      ) {
+        throw new Error(
+          `${pkg.name} declares ${name} in "${section}", but this script does not publish it.\n` +
+            `  An external consumer cannot install ${name}, so the published ${pkg.name} would be broken.\n` +
+            "  Fix by either:\n" +
+            `    - adding ${name} to PACKAGES (and making it non-private), or\n` +
+            `    - bundling ${name} into ${pkg.name}'s build output and removing it from "${section}".`
+        );
+      }
       if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
       if (
         !name.startsWith("@lobu/") &&
@@ -107,19 +120,11 @@ function rewriteWorkspaceRefs(pkg) {
           `Unexpected workspace ref outside @lobu scope: ${name}@${spec}`
         );
       }
-      if (section === "dependencies" && !publishedPackageNames().has(name)) {
-        throw new Error(
-          `${pkg.name} declares a runtime dependency on ${name}, which this script does not publish.\n` +
-            `  An external consumer cannot install ${name}, so the published ${pkg.name} would be broken.\n` +
-            "  Fix by either:\n" +
-            `    - adding ${name} to PACKAGES (and making it non-private), or\n` +
-            `    - bundling ${name} into ${pkg.name}'s build output and removing it from "dependencies".`
-        );
-      }
       deps[name] = workspacePackageVersion(name);
     }
   };
   rewriteSection(pkg.dependencies, "dependencies");
+  rewriteSection(pkg.optionalDependencies, "optionalDependencies");
   rewriteSection(pkg.devDependencies, "devDependencies");
   rewriteSection(pkg.peerDependencies, "peerDependencies");
   return pkg;
@@ -192,18 +197,33 @@ function packageNameFor(dir) {
   }
 }
 
-/** @lobu runtime (non-dev) dependency names declared by a workspace package. */
+/** @lobu runtime and peer dependency names declared by a workspace package. */
 function lobuRuntimeDeps(dir) {
   try {
     const pkg = JSON.parse(
       readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
     );
-    return Object.keys(pkg.dependencies ?? {}).filter((name) =>
-      name.startsWith("@lobu/")
-    );
+    return [
+      ...new Set(
+        [
+          ...Object.keys(pkg.dependencies ?? {}),
+          ...Object.keys(pkg.optionalDependencies ?? {}),
+          ...Object.keys(pkg.peerDependencies ?? {}),
+        ].filter((name) => name.startsWith("@lobu/"))
+      ),
+    ];
   } catch {
     return [];
   }
+}
+
+function markUnavailablePackage(name, dependencies, unavailableNames) {
+  const missingDeps = dependencies.filter((dependency) =>
+    unavailableNames.has(dependency)
+  );
+  if (missingDeps.length === 0) return;
+  unavailableNames.add(name);
+  return { name, missingDeps };
 }
 
 function run(cmd, args, opts = {}) {
@@ -357,17 +377,18 @@ async function main() {
   // version that does not exist. PACKAGES is in dependency order, so a blocked
   // dependency is always seen before its dependents.
   const blocked = [];
-  const blockedNames = new Set();
+  const unavailableNames = new Set();
   const skipped = [];
   for (const pkg of PACKAGES) {
-    const missingDeps = lobuRuntimeDeps(pkg.dir).filter((name) =>
-      blockedNames.has(name)
+    const skippedPackage = markUnavailablePackage(
+      packageNameFor(pkg.dir),
+      lobuRuntimeDeps(pkg.dir),
+      unavailableNames
     );
-    if (missingDeps.length > 0) {
-      const name = packageNameFor(pkg.dir);
-      skipped.push({ name, missingDeps });
+    if (skippedPackage) {
+      skipped.push(skippedPackage);
       console.error(
-        `  ✗ ${name}: skipped — depends on unpublished ${missingDeps.join(", ")}`
+        `  ✗ ${skippedPackage.name}: skipped — depends on unpublished ${skippedPackage.missingDeps.join(", ")}`
       );
       continue;
     }
@@ -376,7 +397,7 @@ async function main() {
     } catch (error) {
       if (error instanceof FirstPublishBlockedError) {
         blocked.push(error);
-        blockedNames.add(error.pkgName);
+        unavailableNames.add(error.pkgName);
         console.error(
           `  ✗ ${error.pkgName}: never-published; needs a one-time bootstrap (see below)`
         );
@@ -395,10 +416,10 @@ async function main() {
           (s) => `  - ${s.name} (needs ${s.missingDeps.join(", ")})`
         ),
         "",
-        "These were NOT published on purpose. Publishing a package whose @lobu",
-        "dependency is missing from the registry produces an install that fails",
-        "for every external consumer (issue #2186). Bootstrap the blocked",
-        "packages below, then re-run; this release is incomplete until then.",
+        "These were NOT published on purpose. An unavailable @lobu runtime or",
+        "peer dependency leaves external installs broken or incomplete (issue",
+        "#2186). Bootstrap the blocked packages below, then re-run; this release",
+        "is incomplete until then.",
       ].join("\n")
     );
   }
@@ -460,6 +481,6 @@ export { rewriteWorkspaceRefs };
 export const __testing = {
   PACKAGES,
   lobuRuntimeDeps,
+  markUnavailablePackage,
   packageNameFor,
-  publishedPackageNames,
 };

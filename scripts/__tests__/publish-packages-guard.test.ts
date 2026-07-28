@@ -1,32 +1,23 @@
 /**
  * @lobu/worker@14.3.0 shipped to the registry declaring runtime dependencies on
- * six packages that do not exist there — four of them pinned to `0.0.0`, the
- * placeholder version `private: true` workspace packages carry. `npx
- * @lobu/cli@latest` 404s for every external consumer as a result (issue #2186),
- * and every CI gate was green when it shipped.
+ * five private workspace packages at their `0.0.0` placeholder versions,
+ * breaking external installs (issue #2186).
  *
  * The cause was `rewriteWorkspaceRefs` resolving `workspace:*` against whatever
- * version it read off disk without checking the target is published. These
- * fixtures drive that function directly with the real manifest shapes.
+ * version it read off disk without checking the target is published.
  */
 
 import { describe, expect, it } from "bun:test";
+import { __testing, rewriteWorkspaceRefs } from "../publish-packages.mjs";
 
-const { rewriteWorkspaceRefs, __testing } = await import(
-  "../publish-packages.mjs"
-);
-
-/** Mirrors packages/agent-worker: published, but depends on private plugins. */
 function workerManifest() {
   return {
     name: "@lobu/worker",
     version: "14.3.0",
     dependencies: {
       "@lobu/core": "workspace:*",
-      // Published siblings — legitimate.
       "@lobu/plugin-api": "workspace:*",
       "@lobu/plugin-host": "workspace:*",
-      // `private: true`, version 0.0.0 — the ones that broke the release.
       "@lobu/plugin-mcp": "workspace:*",
       "@lobu/plugin-memory": "workspace:*",
     },
@@ -53,20 +44,19 @@ describe("rewriteWorkspaceRefs publishability guard", () => {
     expect(message).toContain("PACKAGES");
   });
 
-  it("never emits the 0.0.0 placeholder into a published manifest", () => {
-    // The precise defect on the registry today: a constraint no release can
-    // ever satisfy. Whatever this function returns, it must not contain it.
-    let result: Record<string, unknown> | undefined;
-    try {
-      result = rewriteWorkspaceRefs(workerManifest()) as Record<
-        string,
-        unknown
-      >;
-    } catch {
-      // Throwing is the correct behavior; nothing was emitted.
-    }
-    if (result) {
-      expect(Object.values(result.dependencies ?? {})).not.toContain("0.0.0");
+  it("guards every runtime dependency section, including explicit versions", () => {
+    for (const section of [
+      "dependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      expect(() =>
+        rewriteWorkspaceRefs({
+          name: "@lobu/worker",
+          version: "14.3.0",
+          [section]: { "@lobu/plugin-mcp": "1.2.3" },
+        })
+      ).toThrow(/@lobu\/plugin-mcp/);
     }
   });
 
@@ -120,5 +110,29 @@ describe("blocked-dependency skip ordering", () => {
         expect(indexOf(depDir)).toBeLessThan(indexOf(dir));
       }
     }
+  });
+
+  it("propagates an unavailable package to transitive dependents", () => {
+    const unavailable = new Set(["@lobu/missing"]);
+    expect(
+      __testing.markUnavailablePackage(
+        "@lobu/direct-dependent",
+        ["@lobu/missing"],
+        unavailable
+      )
+    ).toEqual({
+      name: "@lobu/direct-dependent",
+      missingDeps: ["@lobu/missing"],
+    });
+    expect(
+      __testing.markUnavailablePackage(
+        "@lobu/transitive-dependent",
+        ["@lobu/direct-dependent"],
+        unavailable
+      )
+    ).toEqual({
+      name: "@lobu/transitive-dependent",
+      missingDeps: ["@lobu/direct-dependent"],
+    });
   });
 });

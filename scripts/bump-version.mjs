@@ -30,8 +30,8 @@ async function main() {
     else if (bump === "major") version = `${major + 1}.0.0`;
     else {
       // Explicit version — validate before writing. Anything unrecognized used
-      // to be accepted verbatim, so a stray flag (`--help`) or typo silently
-      // rewrote every package.json to a nonsense version across the workspace.
+      // to be accepted verbatim, so a stray flag (`--help`) or a typo silently
+      // rewrote every package.json in the workspace to a nonsense version.
       if (
         !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(bump)
       ) {

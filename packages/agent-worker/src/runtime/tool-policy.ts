@@ -123,12 +123,13 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  * scanned. Everywhere else a quote introduces data (`git commit -m '…'`), which
  * is why the patterns above do not treat a quote character as a word boundary.
  *
- * The interpreter itself must be in COMMAND position — start of the string or
- * just after a shell operator. Without that anchor, `echo sh -c 'nix run x'`
- * would have its argument text scanned as if it were executed.
+ * The interpreter itself must be in COMMAND position — start of the string, a
+ * newline, or just after a shell operator. Without that anchor,
+ * `echo sh -c 'nix run x'` would have its argument text scanned as if it were
+ * executed, and a newline-delimited `sh -c` would be missed entirely.
  */
 const INTERPRETER_DASH_C =
-  /(?:^|[;|&(])\s*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
+  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*c)\s+(['"])([\s\S]*?)\1/gi;
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:
@@ -202,7 +203,18 @@ function blankQuotedSpans(text: string): string {
  * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
  * is NOT recognized here. Trying to make this matcher airtight means
  * reimplementing bash's lexer and only produces false positives on honest
- * commands. It is advisory on BOTH bash backends, for different reasons:
+ * commands.
+ *
+ * KNOWN OVER-DENIAL: the patterns treat any whitespace as a command boundary,
+ * so a manager named as a plain ARGUMENT is flagged too — `echo uvx cowsay`,
+ * `git log --grep nix run`, `man nix run`. That is deliberate on main (see the
+ * "intentionally conservative" cases in tool-policy-edge-cases.test.ts, which
+ * pin `echo npm install` as detected) and predates the nix entries here.
+ * Anchoring the patterns to real command positions fixes it for every manager,
+ * but flips that documented contract, so it belongs in its own change rather
+ * than riding along with this one.
+ *
+ * It is advisory on BOTH bash backends, for different reasons:
  *
  *  - Local embedded just-bash (the default, and the unattended/scheduled path):
  *    enforcement is the binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in

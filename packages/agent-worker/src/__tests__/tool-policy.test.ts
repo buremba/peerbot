@@ -421,6 +421,10 @@ describe("enforceBashCommandPolicy", () => {
       "sh -lc 'uvx cowsay'",
       "true; bash -c 'nix run x'",
       "(sh -c 'uvx x')",
+      // A newline is a command separator too, so an interpreter on its own
+      // line is in command position and its body must be scanned.
+      "echo ok\nsh -c 'nix run x'",
+      "cd /tmp\nbash -c 'uvx cowsay'",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }

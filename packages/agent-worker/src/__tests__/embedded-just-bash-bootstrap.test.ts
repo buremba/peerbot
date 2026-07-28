@@ -681,6 +681,32 @@ describe("filtered package managers are not runnable via the shell directly", ()
       );
     }
   });
+
+  test("interpreter spellings the text hint skips are still unreachable", async () => {
+    // isDirectPackageInstallCommand does not scan the body of an interpreter
+    // reached by path, long option, or `env` (documented there). This pins the
+    // reason that is acceptable: the manager is unreachable anyway.
+    //
+    // The mechanism differs per spelling — an unregistered interpreter fails on
+    // its OWN name, while just-bash's `bash` builtin accepts the invocation and
+    // fails on the manager inside the body — so assert only the outcome.
+    const { Bash, InMemoryFs } = await import("just-bash");
+    const bash = new Bash({ fs: new InMemoryFs() });
+
+    for (const cmd of [
+      "/bin/bash -c 'nix run x'",
+      "/usr/bin/env bash -c 'nix run x'",
+      "bash --login -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx cowsay'",
+      "zsh -c 'uvx x'",
+      "dash -c 'uvx x'",
+    ]) {
+      const r = await bash.exec(cmd);
+      expect(r.exitCode).not.toBe(0);
+      // Whatever failed, no package manager ran.
+      expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).not.toContain("installing");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -206,9 +206,30 @@ function blankQuotedSpans(text: string): string {
  * `n\ix run`, `$'n\x69x' run`), a path-qualified one (`/usr/bin/nix run`,
  * `/nix/store/<hash>/bin/nix run`), a package manager launched through an exec
  * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
- * is NOT recognized here. Trying to make this matcher airtight means
- * reimplementing bash's lexer and only produces false positives on honest
- * commands.
+ * is NOT recognized here. The same goes for an interpreter reached by a path or
+ * a long option before `-c` (`/bin/bash -c '…'`, `bash --login -c '…'`,
+ * `env bash -c '…'`): the body is not scanned.
+ *
+ * None of those are holes on the local backend, because the package manager
+ * itself is never a runnable command there: `UNSANDBOXED_INTERPRETERS` in
+ * `just-bash-bootstrap.ts` keeps it out of the just-bash registry, and that
+ * lookup is on the RESOLVED binary name, which quoting and paths cannot change.
+ * Verified — each of these exits 127 with the manager never running:
+ *
+ *   /bin/bash -c 'nix run x'        -> bash: nix: command not found
+ *   /usr/bin/env bash -c 'nix run x'-> bash: nix: command not found
+ *   bash --login -c 'nix run x'     -> bash: --login: No such file or directory
+ *   zsh -c 'uvx x'                  -> bash: zsh: command not found
+ *
+ * Note the mechanism varies: an unregistered interpreter (`zsh`) fails on its
+ * own name, while just-bash's `bash` builtin accepts the invocation and fails
+ * on `nix` inside the body. Either way the install does not happen.
+ *
+ * Trying to make this matcher airtight means reimplementing bash's lexer. That
+ * was attempted across several rounds of review on #2259 and produced a steady
+ * stream of false positives on honest commands (`git commit -m 'nix shell
+ * support'`, `echo done # nix run x`, `echo sh -c '…'`) for no gain in
+ * enforcement. Prefer widening the discovery filter over widening this regex.
  *
  * KNOWN OVER-DENIAL: the patterns treat any whitespace as a command boundary,
  * so a manager named as a plain ARGUMENT is flagged too — `echo uvx cowsay`,

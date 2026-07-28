@@ -67,7 +67,7 @@ const logger = createLogger("worker");
 /**
  * Built-in tool names that Lobu rebuilds itself (via createLobuTools).
  * These carry the security-sensitive behavior — most importantly the bash
- * spawnHook that strips SENSITIVE_WORKER_ENV_KEYS and the embedded
+ * spawnHook that builds the env from the worker allowlist and the embedded
  * BashOperations that route MCP/just-bash through the gateway. They must be
  * the instances the agent actually runs.
  */

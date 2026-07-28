@@ -1,7 +1,6 @@
-import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../../shared/worker-env-keys";
+import { buildAgentEnv } from "../../shared/worker-env-keys";
 import type { WorkerRuntimeProvider } from "./types";
 
 type RuntimeExecResponse = {
@@ -32,10 +31,12 @@ function commandEnv(
   env: NodeJS.ProcessEnv | undefined,
   remoteEnv: Record<string, string>
 ): Record<string, string> {
-  const cleanEnv = stripEnv(env ?? process.env, [
-    ...SENSITIVE_WORKER_ENV_KEYS,
-    ...REMOTE_UNSUPPORTED_ENV_KEYS,
-  ]);
+  // Allowlist first — this env crosses the network to a third-party sandbox,
+  // so it must never carry the gateway's own secrets.
+  const cleanEnv = buildAgentEnv(env ?? process.env);
+  for (const key of REMOTE_UNSUPPORTED_ENV_KEYS) {
+    delete cleanEnv[key];
+  }
   return { ...cleanEnv, ...remoteEnv };
 }
 

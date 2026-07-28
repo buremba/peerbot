@@ -10,13 +10,12 @@ import {
   createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { stripEnv } from "@lobu/core";
 import {
   type BashCommandPolicy,
   enforceBashCommandPolicy,
   isDirectPackageInstallCommand,
 } from "./tool-policy";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { buildAgentEnv } from "../shared/worker-env-keys";
 
 type RequiredParamGroup = {
   keys: readonly string[];
@@ -163,7 +162,7 @@ export function createLobuTools(
     }) => ({
       command: params.command,
       cwd: params.cwd,
-      env: stripEnv(params.env, SENSITIVE_WORKER_ENV_KEYS) as NodeJS.ProcessEnv,
+      env: buildAgentEnv(params.env) as NodeJS.ProcessEnv,
     }),
   };
   const bash = wrapBashWithProxyHint(
@@ -246,7 +245,7 @@ function isDirectGatewayApiAccessCommand(command: string): boolean {
  *   - direct-gateway-API-access block
  *   - direct-package-install block
  *
- * NOT included here: credential-stripping (`spawnHook`/`stripEnv`, inside
+ * NOT included here: env allowlisting (`spawnHook`/`buildAgentEnv`, inside
  * `createBashTool`) and bash *removal* when policy disallows it (a tool-list
  * filter in the caller). The `!` intercept covers those separately: it selects
  * the same hardened `BashOperations` and only runs when bash survived the
@@ -279,7 +278,7 @@ export function enforceBashPreflight(
  * proxy CONNECT body, so the model would otherwise see only exit code 56, not
  * "Domain not allowed").
  *
- * Credential-stripping (`spawnHook`/`stripEnv`) lives inside `createBashTool`;
+ * Env allowlisting (`spawnHook`/`buildAgentEnv`) lives inside `createBashTool`;
  * bash *removal* when policy disallows it is a tool-list filter in the caller.
  */
 function wrapBashWithProxyHint(

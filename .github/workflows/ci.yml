@@ -546,6 +546,16 @@ jobs:
         # guard that stops catching regressions fails here instead of going quiet.
         run: bun test scripts/__tests__/check-exposed-surface-naming.test.ts
 
+      - name: Publish manifest gate fixtures
+        # @lobu/worker@14.3.0 shipped depending on six packages that do not exist
+        # on the registry — four pinned to the `0.0.0` placeholder that `private:
+        # true` workspace packages carry — which 404s `npx @lobu/cli@latest` for
+        # every external consumer (#2186). Nothing caught it: the publish script
+        # rewrote `workspace:*` against on-disk versions without checking the
+        # target is published. These fixtures drive the real transform with the
+        # real manifest shapes and assert it refuses.
+        run: bun test scripts/__tests__/publish-packages-guard.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

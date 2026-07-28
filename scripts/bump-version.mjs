@@ -28,7 +28,19 @@ async function main() {
     if (bump === "patch") version = `${major}.${minor}.${patch + 1}`;
     else if (bump === "minor") version = `${major}.${minor + 1}.0`;
     else if (bump === "major") version = `${major + 1}.0.0`;
-    else version = bump; // explicit version
+    else {
+      // Explicit version — validate before writing. Anything unrecognized used
+      // to be accepted verbatim, so a stray flag (`--help`) or typo silently
+      // rewrote every package.json to a nonsense version across the workspace.
+      if (
+        !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(bump)
+      ) {
+        throw new Error(
+          `Invalid version "${bump}". Expected patch | minor | major, or an explicit semver like 3.1.0 / 3.1.0-beta.1.`
+        );
+      }
+      version = bump;
+    }
   }
 
   // Update root

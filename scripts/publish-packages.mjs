@@ -15,8 +15,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
-const REPO_ROOT = process.cwd();
+// Anchored to this file, not process.cwd(), so the manifest reads below resolve
+// the same way whether the script is run from the repo root or imported by a
+// test running from another directory.
+const REPO_ROOT = path.resolve(
+  path.dirname(new URL(import.meta.url).pathname),
+  ".."
+);
 
 const PACKAGES = [
   { dir: "packages/core", transform: transformCorePublish },
@@ -32,8 +39,11 @@ const PACKAGES = [
   // runtime without a registry fetch. esbuild can't inline the native
   // binaries, hence it stays a runtime sidecar rather than part of
   // server.bundle.mjs.
-  { dir: "packages/cli", transform: rewriteWorkspaceRefs },
+  // connector-worker precedes cli: @lobu/cli depends on it at runtime, and the
+  // blocked-dependency skip below relies on a dependency always being attempted
+  // before its dependents. A guard test asserts this ordering holds.
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
+  { dir: "packages/cli", transform: rewriteWorkspaceRefs },
   { dir: "packages/promptfoo-provider", transform: rewriteWorkspaceRefs },
 ];
 
@@ -43,14 +53,49 @@ const PACKAGES = [
 const UNSCOPED_ALLOWED_PUBLISHED_NAMES = new Set();
 
 /**
+ * Names this script actually publishes, derived from PACKAGES so the two can
+ * never drift. A `runtime` dependency on anything outside this set cannot be
+ * satisfied by an external consumer.
+ */
+let cachedPublishedNames;
+function publishedPackageNames() {
+  if (!cachedPublishedNames) {
+    cachedPublishedNames = new Set();
+    for (const { dir } of PACKAGES) {
+      try {
+        const pkg = JSON.parse(
+          readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+        );
+        if (pkg.name) cachedPublishedNames.add(pkg.name);
+      } catch {
+        // Missing/unreadable manifest surfaces later in publishPackage.
+      }
+    }
+  }
+  return cachedPublishedNames;
+}
+
+/**
  * `workspace:*` / `workspace:^` / `workspace:~` references are a Bun/Yarn
  * dev-time feature — they point at the sibling package's current version so
  * we never have to hand-edit versions across packages. npm does not natively
  * rewrite them at publish time, so we do it explicitly here before `npm
  * publish` runs and restore the original package.json afterwards.
+ *
+ * Runtime `dependencies` are additionally gated on the target actually being
+ * published. Without that gate this function faithfully rewrote
+ * `"@lobu/plugin-mcp": "workspace:*"` to the placeholder version that
+ * `private: true` packages carry (`0.0.0`) and shipped it in a public
+ * manifest — a constraint no future release can satisfy. That is exactly how
+ * @lobu/worker@14.3.0 went out depending on six packages that do not exist on
+ * the registry, breaking `npx @lobu/cli@latest` for every external consumer
+ * while every CI gate stayed green (issue #2186).
+ *
+ * Scoped to `dependencies` on purpose: devDependencies are not installed by
+ * consumers, and a private workspace package is a legitimate dev-only tool.
  */
 function rewriteWorkspaceRefs(pkg) {
-  const rewriteSection = (deps) => {
+  const rewriteSection = (deps, section) => {
     if (!deps) return;
     for (const [name, spec] of Object.entries(deps)) {
       if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
@@ -62,12 +107,21 @@ function rewriteWorkspaceRefs(pkg) {
           `Unexpected workspace ref outside @lobu scope: ${name}@${spec}`
         );
       }
+      if (section === "dependencies" && !publishedPackageNames().has(name)) {
+        throw new Error(
+          `${pkg.name} declares a runtime dependency on ${name}, which this script does not publish.\n` +
+            `  An external consumer cannot install ${name}, so the published ${pkg.name} would be broken.\n` +
+            "  Fix by either:\n" +
+            `    - adding ${name} to PACKAGES (and making it non-private), or\n` +
+            `    - bundling ${name} into ${pkg.name}'s build output and removing it from "dependencies".`
+        );
+      }
       deps[name] = workspacePackageVersion(name);
     }
   };
-  rewriteSection(pkg.dependencies);
-  rewriteSection(pkg.devDependencies);
-  rewriteSection(pkg.peerDependencies);
+  rewriteSection(pkg.dependencies, "dependencies");
+  rewriteSection(pkg.devDependencies, "devDependencies");
+  rewriteSection(pkg.peerDependencies, "peerDependencies");
   return pkg;
 }
 
@@ -124,6 +178,32 @@ function transformCorePublish(pkg) {
     }
   }
   return rewriteWorkspaceRefs(pkg);
+}
+
+function packageNameFor(dir) {
+  try {
+    return (
+      JSON.parse(
+        readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+      ).name ?? dir
+    );
+  } catch {
+    return dir;
+  }
+}
+
+/** @lobu runtime (non-dev) dependency names declared by a workspace package. */
+function lobuRuntimeDeps(dir) {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
+    );
+    return Object.keys(pkg.dependencies ?? {}).filter((name) =>
+      name.startsWith("@lobu/")
+    );
+  } catch {
+    return [];
+  }
 }
 
 function run(cmd, args, opts = {}) {
@@ -271,13 +351,32 @@ async function main() {
   }
   // Collect packages npm refuses to create on their first publish so the whole
   // fleet still gets attempted; a single new package must not hide the others.
+  //
+  // A package whose own @lobu dependency was blocked is SKIPPED rather than
+  // published: shipping it would put a manifest on the registry pointing at a
+  // version that does not exist. PACKAGES is in dependency order, so a blocked
+  // dependency is always seen before its dependents.
   const blocked = [];
+  const blockedNames = new Set();
+  const skipped = [];
   for (const pkg of PACKAGES) {
+    const missingDeps = lobuRuntimeDeps(pkg.dir).filter((name) =>
+      blockedNames.has(name)
+    );
+    if (missingDeps.length > 0) {
+      const name = packageNameFor(pkg.dir);
+      skipped.push({ name, missingDeps });
+      console.error(
+        `  ✗ ${name}: skipped — depends on unpublished ${missingDeps.join(", ")}`
+      );
+      continue;
+    }
     try {
       await publishPackage(pkg, otp);
     } catch (error) {
       if (error instanceof FirstPublishBlockedError) {
         blocked.push(error);
+        blockedNames.add(error.pkgName);
         console.error(
           `  ✗ ${error.pkgName}: never-published; needs a one-time bootstrap (see below)`
         );
@@ -285,6 +384,23 @@ async function main() {
       }
       throw error;
     }
+  }
+
+  if (skipped.length > 0) {
+    console.error(
+      [
+        "",
+        `Skipped ${skipped.length} package(s) whose dependencies were not published:`,
+        ...skipped.map(
+          (s) => `  - ${s.name} (needs ${s.missingDeps.join(", ")})`
+        ),
+        "",
+        "These were NOT published on purpose. Publishing a package whose @lobu",
+        "dependency is missing from the registry produces an install that fails",
+        "for every external consumer (issue #2186). Bootstrap the blocked",
+        "packages below, then re-run; this release is incomplete until then.",
+      ].join("\n")
+    );
   }
 
   if (blocked.length > 0) {
@@ -316,6 +432,9 @@ async function main() {
         "fail `npm install` for external consumers.",
       ].join("\n")
     );
+  }
+
+  if (blocked.length > 0 || skipped.length > 0) {
     process.exitCode = 1;
     return;
   }
@@ -323,7 +442,24 @@ async function main() {
   console.log("\nDone.");
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+// Only run when invoked as a script. Without this guard, importing the module
+// (as the guard tests do) would start a real publish.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
+
+export { rewriteWorkspaceRefs };
+
+/** Internals exposed for the guard tests; not part of any published surface. */
+export const __testing = {
+  PACKAGES,
+  lobuRuntimeDeps,
+  packageNameFor,
+  publishedPackageNames,
+};

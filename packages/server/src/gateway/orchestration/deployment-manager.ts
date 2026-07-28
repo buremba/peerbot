@@ -42,6 +42,7 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { hasLiveTurnForDeployment } from "./turn-liveness.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
   isReservedAgentToolingEnvName,
@@ -2098,6 +2099,27 @@ export class DeploymentManager {
   /**
    * Reconcile deployments: unified method for cleanup and resource management.
    */
+  /**
+   * Whether a turn is currently running on `deploymentName`, for teardown
+   * decisions. Same rule as the message path: never SIGTERM a worker mid-turn.
+   *
+   * Fails SAFE (reports "busy") and never propagates: a probe error must not
+   * abort `reconcileDeployments`, which also drives idle cleanup and the
+   * max-deployment cap. Deferring costs one reconcile cycle; aborting the loop
+   * would stall unrelated cleanup fleet-wide.
+   */
+  protected async isServingLiveTurn(deploymentName: string): Promise<boolean> {
+    try {
+      return await hasLiveTurnForDeployment(deploymentName);
+    } catch (error) {
+      logger.warn(
+        { deploymentName, error: getErrorMessage(error) },
+        "Turn-liveness probe failed; treating the deployment as busy"
+      );
+      return true;
+    }
+  }
+
   async reconcileDeployments(): Promise<void> {
     try {
       const maxDeployments = this.config.worker.maxDeployments;
@@ -2130,6 +2152,25 @@ export class DeploymentManager {
           toDelete.push(deploymentName);
         } else if (isIdle && replicas > 0) {
           toScaleDown.push(deploymentName);
+        } else if (
+          this.hasExpiringLease(deploymentName) &&
+          !(await this.isServingLiveTurn(deploymentName))
+        ) {
+          // Multi-replica backstop. The message path only recycles when the
+          // pod handling the message also OWNS the worker; with N replicas a
+          // conversation pinned to pod A can have every message claimed by
+          // other pods, so A would keep serving turns on a dead credential.
+          // This loop runs on each pod over its OWN deployments, so the owner
+          // always re-evaluates on its own schedule — no cross-pod state.
+          //
+          // Only expiry, not tooling changes: a stale-tooling worker is
+          // functional, and the message path picks it up on the next
+          // owner-claimed turn. A dead credential is not functional.
+          logger.info(
+            { deploymentName },
+            "Reaping a deployment whose connector lease is expiring"
+          );
+          toDelete.push(deploymentName);
         }
       }
 

@@ -243,6 +243,64 @@ describe("stale-deployment recycling", () => {
   });
 });
 
+describe("multi-replica backstop (reconcile loop)", () => {
+  // With N replicas, a conversation pinned to pod A's worker can have every
+  // message claimed by other pods — they enqueue, A's worker drains, and the
+  // non-owners drop with ConversationOwnedElsewhereError without ever
+  // evaluating the recycle. So the message path alone would let pod A serve
+  // turns on a dead credential indefinitely. reconcileDeployments runs on each
+  // pod over its OWN deployments, so the owner always re-evaluates.
+
+  class ReconcilingManager extends RecordingManager {
+    liveTurn = false;
+    protected async isServingLiveTurn(): Promise<boolean> {
+      return this.liveTurn;
+    }
+    // The reconcile classifies on these; keep the worker "in use" so it is
+    // neither idle-scaled nor age-reaped, isolating the lease path.
+    async listDeployments(): Promise<DeploymentInfo[]> {
+      return [
+        {
+          deploymentName: DEPLOYMENT,
+          lastActivity: new Date(),
+          minutesIdle: 0,
+          daysSinceActivity: 0,
+          replicas: 1,
+          isIdle: false,
+          isVeryOld: false,
+        },
+      ];
+    }
+  }
+
+  test("the owning pod reaps its own stale-credentialed worker", async () => {
+    const manager = new ReconcilingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("a healthy worker is not reaped", async () => {
+    const manager = new ReconcilingManager(CONFIG);
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([]);
+  });
+
+  test("a worker mid-turn is left alone until the next cycle", async () => {
+    const manager = new ReconcilingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    manager.liveTurn = true;
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([]);
+  });
+});
+
 describe("deferral is retried, not lost", () => {
   test("a turn deferred by liveness recycles on the next turn", async () => {
     // The trigger is STATE, not an event: hasExpiringLease/hasToolingChanged

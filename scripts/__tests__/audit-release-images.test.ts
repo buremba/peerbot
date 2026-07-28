@@ -4,6 +4,7 @@ import {
   IMAGES,
   auditRelease,
   fetchAuditedRelease,
+  fetchDigest,
   pickAuditedRelease,
   // @ts-expect-error — plain .mjs script, no type declarations by design.
 } from "../audit-release-images.mjs";
@@ -194,5 +195,76 @@ describe("auditRelease", () => {
       digests: {},
     });
     expect(verdict.status).toBe("skip");
+  });
+});
+
+describe("fetchDigest", () => {
+  // The probe is deliberately anonymous — the self-hoster pull path — so the
+  // token exchange carries no credentials and a private package reads as
+  // "not pullable", not as an auth problem to work around.
+  const ghcr = (handlers: {
+    token?: () => Response;
+    manifest?: (init?: RequestInit) => Response;
+  }) => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: string, init?: RequestInit) => {
+      requests.push(url);
+      if (url.startsWith("https://ghcr.io/token")) {
+        return handlers.token?.() ?? Response.json({ token: "anon-token" });
+      }
+      return handlers.manifest?.(init) ?? new Response(null, { status: 404 });
+    };
+    return { requests, fetchImpl };
+  };
+
+  it("requests a pull token and HEADs the manifest with it", async () => {
+    let manifestInit: RequestInit | undefined;
+    const { requests, fetchImpl } = ghcr({
+      manifest: (init) => {
+        manifestInit = init;
+        return new Response(null, {
+          status: 200,
+          headers: { "docker-content-digest": "sha256:abc" },
+        });
+      },
+    });
+
+    const result = await fetchDigest({
+      image: "lobu-app",
+      tag: "14.4.1",
+      fetchImpl,
+    });
+
+    expect(result).toBe("sha256:abc");
+    expect(requests).toEqual([
+      "https://ghcr.io/token?scope=repository:lobu-ai/lobu-app:pull",
+      "https://ghcr.io/v2/lobu-ai/lobu-app/manifests/14.4.1",
+    ]);
+    expect(manifestInit?.method).toBe("HEAD");
+    const headers = new Headers(manifestInit?.headers);
+    expect(headers.get("authorization")).toBe("Bearer anon-token");
+    // Without the index/list Accept types the registry answers 404 for
+    // multi-arch images even though the tag exists.
+    expect(headers.get("accept")).toContain(
+      "application/vnd.oci.image.index.v1+json"
+    );
+  });
+
+  it("returns null for a missing manifest — the audit's failure signal", async () => {
+    const { fetchImpl } = ghcr({});
+    expect(
+      await fetchDigest({ image: "lobu-app", tag: "99.99.99", fetchImpl })
+    ).toBeNull();
+  });
+
+  it("returns null when the token exchange itself fails", async () => {
+    // A private package rejects the anonymous token exchange; that must read
+    // as "not pullable", not crash the audit before it can report.
+    const { fetchImpl } = ghcr({
+      token: () => new Response(null, { status: 403 }),
+    });
+    expect(
+      await fetchDigest({ image: "lobu-app", tag: "14.4.1", fetchImpl })
+    ).toBeNull();
   });
 });

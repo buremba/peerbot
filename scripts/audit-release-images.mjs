@@ -146,12 +146,12 @@ function isMainModule() {
 }
 
 /** Anonymous manifest digest for one tag, or null when it is not pullable. */
-async function fetchDigest(image, tag) {
+export async function fetchDigest({ image, tag, fetchImpl = fetch }) {
   const scope = `repository:lobu-ai/${image}:pull`;
-  const tokenRes = await fetch(`https://ghcr.io/token?scope=${scope}`);
+  const tokenRes = await fetchImpl(`https://ghcr.io/token?scope=${scope}`);
   if (!tokenRes.ok) return null;
   const { token } = await tokenRes.json();
-  const res = await fetch(
+  const res = await fetchImpl(
     `https://ghcr.io/v2/lobu-ai/${image}/manifests/${tag}`,
     {
       method: "HEAD",
@@ -186,8 +186,8 @@ if (process.argv[1] && isMainModule()) {
   if (release) {
     for (const image of IMAGES) {
       digests[image] = {
-        semver: await fetchDigest(image, release.version),
-        latest: await fetchDigest(image, "latest"),
+        semver: await fetchDigest({ image, tag: release.version }),
+        latest: await fetchDigest({ image, tag: "latest" }),
       };
     }
   }

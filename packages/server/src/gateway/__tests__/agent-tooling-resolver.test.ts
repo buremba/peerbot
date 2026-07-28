@@ -19,7 +19,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { type MessagePayload, verifyWorkerToken } from "@lobu/core";
+import {
+  type MessagePayload,
+  verifyEgressProxyToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
@@ -528,6 +532,11 @@ describe("deployment env assembly", () => {
 
     expect(env.GH_TOKEN).toBe(MINTED_TOKEN);
     expect(env.NIX_PACKAGES?.split(",")).toContain("gh");
+    const proxyToken = decodeURIComponent(
+      new URL(env.HTTP_PROXY ?? "").password
+    );
+    expect(verifyEgressProxyToken(proxyToken)).not.toBeNull();
+    expect(verifyWorkerToken(proxyToken)).toBeNull();
   });
 
   test("contributed nix packages union with the agent's own, never replace them", async () => {

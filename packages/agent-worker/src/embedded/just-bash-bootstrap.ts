@@ -12,9 +12,8 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { buildAgentEnv } from "../shared/worker-env-keys";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
 import { buildEgressFetch } from "./egress-fetch";
 import {
@@ -284,21 +283,19 @@ async function buildCustomCommands(
   for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
-        const envRecord = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
+        // `ctx.env` is whatever the agent exported inside just-bash. It is
+        // merged on top so a script can set its own variables, but it starts
+        // from the allowlisted worker env, never from `process.env` — the agent
+        // cannot re-introduce a gateway secret it was never given.
+        const shellEnv: Record<string, string> = {};
         if (ctx.env && typeof ctx.env.forEach === "function") {
           ctx.env.forEach((v: string, k: string) => {
-            envRecord[k] = v;
+            shellEnv[k] = v;
           });
         } else if (ctx.env && typeof ctx.env === "object") {
-          Object.assign(envRecord, ctx.env);
+          Object.assign(shellEnv, ctx.env);
         }
-        // The agent can `export WORKER_TOKEN=...` inside just-bash to slip a
-        // value through `ctx.env`. Re-strip so spawned binaries (and anything
-        // that may echo or log env) never see a sensitive-shaped key, even an
-        // attacker-controlled one.
-        for (const key of SENSITIVE_WORKER_ENV_KEYS) {
-          delete envRecord[key];
-        }
+        const envRecord = buildAgentEnv(process.env, shellEnv);
 
         // Pin HOME / TMPDIR to dedicated subdirs so tool dotfiles (~/.gitconfig,
         // ~/.cache, ~/.config) and temp files don't collide with workspace
@@ -624,7 +621,7 @@ export async function createEmbeddedBashOps(
   const bashInstance = new Bash({
     fs: bashFs,
     cwd: "/",
-    env: stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS),
+    env: buildAgentEnv(process.env),
     executionLimits: EMBEDDED_BASH_LIMITS,
     ...(egressFetch && { fetch: egressFetch }),
     ...(customCommands.length > 0 && { customCommands }),

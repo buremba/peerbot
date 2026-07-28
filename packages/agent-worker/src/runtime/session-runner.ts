@@ -67,7 +67,7 @@ const logger = createLogger("worker");
 /**
  * Built-in tool names that Lobu rebuilds itself (via createLobuTools).
  * These carry the security-sensitive behavior — most importantly the bash
- * spawnHook that strips SENSITIVE_WORKER_ENV_KEYS and the embedded
+ * spawnHook that builds the env from the worker allowlist and the embedded
  * BashOperations that route MCP/just-bash through the gateway. They must be
  * the instances the agent actually runs.
  */
@@ -88,9 +88,9 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * Background: pi's `createAgentSession({ tools })` uses the `tools` option only
  * to derive the active tool NAMES — it rebuilds the underlying built-in tools
  * internally via `createAllTools(cwd, { bash: { commandPrefix } })`, whose bash
- * uses `getShellEnv()` = `{ ...process.env }` with no env strip and no custom
+ * uses `getShellEnv()` = `{ ...process.env }` with no env filter and no custom
  * BashOperations. That silently discards the worker's hardened bash (the
- * spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and the embedded
+ * spawnHook that builds an allowlisted agent environment and the embedded
  * BashOperations), so the agent's general bash would inherit the worker's real
  * gateway credentials.
  *
@@ -1050,7 +1050,7 @@ export async function runAISession(
     });
   // The bash tool returned here carries the FULL hardened policy by construction
   // (prefix allow/deny + gateway-access + package-install blocks, plus
-  // credential-strip), and the `!`-bash intercept reuses the same guards (via
+  // environment allowlist), and the `!`-bash intercept reuses the same guards (via
   // enforceBashPreflight) rather than a second raw path. The filter then removes
   // bash entirely when the agent policy disallows it (strict / disallowedTools).
   const tools = createLobuTools(workspaceDir, {
@@ -1247,10 +1247,11 @@ user references earlier discussion or you need prior context.`);
       // = {...process.env}, no env strip, no embedded BashOperations).
       // buildAgentSession() swaps those rebuilt built-ins back to these
       // Lobu instances (via `builtinOverrides`) after construction so the
-      // agent's bash actually runs with the spawnHook that strips
-      // WORKER_TOKEN/DISPATCHER_URL and with the embedded BashOperations + tool
-      // policy wired in above. `tools` (names) activates exactly this set;
-      // `builtinOverrides` supplies the instances the swap installs.
+      // agent's bash actually runs with the spawnHook that replaces the
+      // inherited environment with the `buildAgentEnv` allowlist and with the
+      // embedded BashOperations + tool policy wired in above. `tools` (names)
+      // activates exactly this set; `builtinOverrides` supplies the instances
+      // the swap installs.
       // Wrap built-ins with the synchronous runaway guard so the per-turn
       // tool-call cap and identical-call guard bound bash/read/edit/write
       // too. The guard runs inside execute (before the tool body), so the
@@ -1603,7 +1604,7 @@ user references earlier discussion or you need prior context.`);
     // command runs through the SAME hardened path the agent's own bash tool uses
     // (enforceBashPreflight → the pinned embeddedBashOps), so it inherits the
     // prefix policy, gateway-access block, package-install block, and
-    // credential-strip; it crosses no boundary the agent couldn't already. pi's
+    // environment allowlist; it crosses no boundary the agent couldn't already. pi's
     // `executeBash` records a `bashExecution` transcript entry synchronously and
     // honors `excludeFromContext` (the `!!` form).
     const bangBash = readBangBashCommand(platformMetadata);

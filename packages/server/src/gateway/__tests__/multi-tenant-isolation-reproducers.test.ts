@@ -27,6 +27,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import {
   createBuiltinSecretRef,
   generateWorkerToken,
+  generateWorkerTokenPair,
   verifyWorkerToken,
 } from "@lobu/core";
 import { GrantStore } from "../permissions/grant-store.js";
@@ -359,12 +360,11 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
   test("HTTP proxy's checkDomainAccess passes the token's orgId into GrantStore", async () => {
     // End-to-end exercise of the call-site plumbing: install a real
     // GrantStore in the http-proxy, grant `api.example.com` to org A's
-    // copy of `shared-agent-id`, then hit the proxy with an org-B worker
+    // copy of `shared-agent-id`, then hit the proxy with an org-B egress
     // token. Pre-fix, the call site dropped the `organizationId` argument
     // and the WHERE clause matched org A's grant (the only one with that
     // agent id). Post-fix, the predicate now scopes by org and the request
     // is blocked.
-    const { generateWorkerToken } = await import("@lobu/core");
     const {
       __testOnly,
       setProxyGrantStore,
@@ -400,7 +400,7 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
 
     try {
       // Mint an org-B token claiming `shared-agent-id`.
-      const token = generateWorkerToken(
+      const token = generateWorkerTokenPair(
         "test-user",
         "test-conv",
         "deploy-B",
@@ -410,7 +410,7 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
           agentId: "shared-agent-id",
           organizationId: "org-b",
         }
-      );
+      ).egressProxyToken;
       const auth = `Basic ${Buffer.from(`deploy-B:${token}`).toString("base64")}`;
 
       // Fire a raw HTTP request through the proxy targeting api.example.com.

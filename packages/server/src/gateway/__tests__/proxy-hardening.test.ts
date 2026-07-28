@@ -28,7 +28,7 @@ import type * as http from "node:http";
 import * as net from "node:net";
 import {
   __resetEncryptionKeyCacheForTests,
-  generateWorkerToken,
+  generateWorkerTokenPair,
 } from "@lobu/core";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { CircuitBreaker } from "../proxy/egress-judge/circuit-breaker.js";
@@ -61,12 +61,12 @@ function createToken(
   agentId?: string,
   organizationId: string = "org-1"
 ): string {
-  return generateWorkerToken("test-user", "test-conv", deploymentName, {
+  return generateWorkerTokenPair("test-user", "test-conv", deploymentName, {
     channelId: "test-channel",
     platform: "test",
     ...(agentId ? { agentId } : {}),
     organizationId,
-  });
+  }).egressProxyToken;
 }
 
 function rawProxyRequest(

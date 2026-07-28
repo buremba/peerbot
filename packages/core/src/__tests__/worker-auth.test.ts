@@ -5,6 +5,8 @@ import {
 } from "../utils/encryption";
 import {
   generateWorkerToken,
+  generateWorkerTokenPair,
+  verifyEgressProxyToken,
   verifyWorkerToken,
   type WorkerTokenData,
 } from "../worker/auth";
@@ -104,6 +106,26 @@ describe("worker auth token", () => {
     // both must still verify
     expect(verifyWorkerToken(t1)).not.toBeNull();
     expect(verifyWorkerToken(t2)).not.toBeNull();
+  });
+
+  test("worker and egress-proxy credentials are accepted only on their own surfaces", () => {
+    const pair = generateWorkerTokenPair("u", "c", "d", {
+      channelId: "ch",
+    });
+
+    expect(verifyWorkerToken(pair.workerToken)).not.toBeNull();
+    expect(verifyEgressProxyToken(pair.egressProxyToken)).not.toBeNull();
+    expect(verifyWorkerToken(pair.egressProxyToken)).toBeNull();
+    expect(verifyEgressProxyToken(pair.workerToken)).toBeNull();
+  });
+
+  test("a deployment token pair shares one revocation id", () => {
+    const pair = generateWorkerTokenPair("u", "c", "d", { channelId: "ch" });
+    const worker = verifyWorkerToken(pair.workerToken);
+    const egress = verifyEgressProxyToken(pair.egressProxyToken);
+
+    expect(worker?.jti).toBeTruthy();
+    expect(egress?.jti).toBe(worker?.jti);
   });
 
   test("missing channelId throws", () => {

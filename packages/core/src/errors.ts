@@ -186,6 +186,14 @@ export enum AgentErrorCode {
    * with remediation steps, not a transient user error.
    */
   WORKER_SANDBOX_REQUIRED = "WORKER_SANDBOX_REQUIRED",
+  /**
+   * The provider aborted the turn on its own tool-call filter rather than
+   * returning a usable stop reason — e.g. Gemini's
+   * `finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL`. A
+   * provider-side, usually transient condition: nothing about the agent's
+   * config is wrong, so it must not render as a worker crash.
+   */
+  PROVIDER_TOOL_CALL_FAILED = "PROVIDER_TOOL_CALL_FAILED",
   /** Session exceeded its time budget (exit 124); retried silently. */
   SESSION_TIMEOUT = "SESSION_TIMEOUT",
 }
@@ -254,6 +262,15 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
   [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
     cta: "provider-management",
     ctaLabel: "Manage provider",
+  },
+  // The provider's own finish_reason string is not useful to an end user
+  // ("function_call_filter: MALFORMED_FUNCTION_CALL"), so unlike the other
+  // PROVIDER_* entries this one carries its own text and does NOT relay the
+  // upstream blob. The raw message stays in the logs / Sentry.
+  [AgentErrorCode.PROVIDER_TOOL_CALL_FAILED]: {
+    message:
+      "The model provider rejected its own tool call and ended the turn. This is usually temporary — please try again.",
+    cta: "none",
   },
   // Errors we synthesize — carry our own text (no provider string to relay).
   [AgentErrorCode.NO_MODEL_CONFIGURED]: {

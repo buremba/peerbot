@@ -176,6 +176,10 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("openrouter");
+    // Regression guard: this case asserted only provider/modelId, so a CTA
+    // misattribution to "openai" passed green here. OpenRouter serves this
+    // model, so OpenRouter owns the CTA.
+    expect(result.providerSlug).toBe("openrouter");
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
@@ -391,6 +395,153 @@ describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
       providerBaseUrl: undefined,
     });
     expect(model.baseUrl).toBe("https://api.openai.com/v1");
+  });
+});
+
+describe("resolveModelRef — providerSlug must describe the REQUESTED model", () => {
+  test("an explicitly-prefixed model keeps its OWN slug, not the default provider's", () => {
+    // Observed live: agent models = ["gemini/gemini-2.5-flash"], but the
+    // session context published defaultProvider="openai" (the gateway's
+    // "first credentialed module" scan). The old code took the
+    // `if (defaultProvider)` branch and returned providerSlug="openai", so the
+    // failure CTA linked to `inference-provider:openai` while the `?model=`
+    // param correctly said `gemini/gemini-2.5-flash` — sending the user to
+    // connect the WRONG provider.
+    const result = resolveModelRef("gemini/gemini-2.5-flash", {
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+      // The gateway could NOT match this model to a provider, so its
+      // credentialed-fallback scan published openai. That is exactly what
+      // `defaultProviderServesModel: false` reports — openai does not serve
+      // the requested model, so it must not own the failure CTA.
+      defaultProviderServesModel: false,
+      // gemini IS installed here — it just has no usable key, which is why the
+      // gateway fell back to publishing openai as defaultProvider.
+      installedProviderRoutes: { openai: "openai", gemini: "gemini" },
+    });
+
+    // The CTA must name the provider the run ASKED for.
+    expect(result.providerSlug).toBe("gemini");
+    // Routing itself is unchanged (the gateway owns that decision) and the ref
+    // keeps its namespace — stripping a FOREIGN prefix here would break
+    // OpenRouter-style refs like "anthropic/claude-sonnet-4".
+    expect(result.provider).toBe("openai");
+    expect(result.modelId).toBe("gemini/gemini-2.5-flash");
+  });
+
+  test("a SERVING provider keeps the CTA even when the prefix names another installed provider", () => {
+    // The mirror of the fallback case above, and why an installed-provider
+    // match cannot decide attribution on its own. OpenRouter is configured AND
+    // serves this model; "openai" here is OpenRouter's vendor namespace, not a
+    // request for the OpenAI provider — even though standalone OpenAI is also
+    // installed and the prefix matches it.
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      // The gateway MATCHED the model to OpenRouter.
+      defaultProviderServesModel: true,
+      installedProviderRoutes: { openai: "openai", openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("openai/gpt-4o");
+  });
+
+  test("attribution follows the RESOLVED model when the run carries no explicit ref", () => {
+    // The common shape: the run has no per-turn model, so the ref comes from
+    // `defaultModel`. Attribution must read the RESOLVED ref — deriving it from
+    // the raw (empty) argument silently skipped reattribution and reproduced the
+    // exact wrong-provider CTA this fix exists to prevent.
+    const result = resolveModelRef("", {
+      defaultModel: "gemini/gemini-2.5-flash",
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+      defaultProviderServesModel: false,
+      installedProviderRoutes: { openai: "openai", gemini: "gemini" },
+    });
+
+    expect(result.providerSlug).toBe("gemini");
+    // Routing still belongs to the gateway's published provider.
+    expect(result.provider).toBe("openai");
+  });
+
+  test("an UNINSTALLED aggregator namespace never owns the CTA", () => {
+    // Both gateway facts are required. Here the model was NOT matched
+    // (`serves: false`, so the fallback scan picked OpenRouter), but the
+    // "anthropic" prefix is an OpenRouter vendor namespace — there is no
+    // Anthropic provider installed. Attributing the CTA to it would send the
+    // user to reconnect a provider that does not exist in this deployment.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      defaultProviderServesModel: false,
+      installedProviderRoutes: { openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("an older gateway (field absent) keeps the pre-existing attribution", () => {
+    // Back-compat: a gateway that predates `defaultProviderServesModel` sends
+    // nothing. Absent must mean "serves" so a stale gateway keeps today's
+    // behavior instead of acquiring a NEW misattribution.
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      installedProviderRoutes: { openai: "openai", openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
+  });
+
+  test("a bare model id still inherits the configured default provider", () => {
+    // No slug in the ref → nothing to contradict the default. Unchanged.
+    const result = resolveModelRef("gpt-4.1", {
+      defaultProvider: "openai",
+      defaultProviderSlug: "openai",
+    });
+    expect(result.providerSlug).toBe("openai");
+    expect(result.modelId).toBe("gpt-4.1");
+  });
+
+  test("a provider-INTERNAL namespace keeps the configured provider's slug", () => {
+    // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
+    // model", NOT "switch to the anthropic provider". `anthropic` is not an
+    // installed provider here, so the CTA must stay on openrouter — pointing
+    // it at `anthropic` would send the user to a provider this deployment
+    // does not even have.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      installedProviderRoutes: { openrouter: "openrouter" },
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("no installedProviderRoutes → keep the default attribution (cannot tell them apart)", () => {
+    // Without the gateway's installed-provider list we cannot distinguish a
+    // real provider request from a provider-internal namespace, so fail safe.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.providerSlug).toBe("openrouter");
+  });
+
+  test("the configured provider's own prefix is still stripped", () => {
+    const result = resolveModelRef("claude/claude-opus-4-8", {
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+    });
+    expect(result.provider).toBe("anthropic");
+    expect(result.providerSlug).toBe("claude");
+    expect(result.modelId).toBe("claude-opus-4-8");
   });
 });
 

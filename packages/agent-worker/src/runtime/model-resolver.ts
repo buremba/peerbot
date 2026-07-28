@@ -209,6 +209,12 @@ export function resolveModelRef(
     defaultProviderSlug?: string;
     installedProviderRoutes?: Record<string, string>;
     allowInstalledProviderOverride?: boolean;
+    /**
+     * Gateway-supplied: did `defaultProvider` actually MATCH the requested
+     * model, or was it fallback-picked? Drives failure-CTA attribution only —
+     * never routing. Absent (older gateway) is treated as "serves".
+     */
+    defaultProviderServesModel?: boolean;
   }
 ): {
   provider: string;
@@ -312,9 +318,46 @@ export function resolveModelRef(
     ) {
       modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
+    // `providerSlug` targets the failure CTA ("Reconnect provider"), so it must
+    // name the provider the run ASKED FOR — not whichever module the gateway
+    // published as `defaultProvider` via its credentialed-fallback scan
+    // (`gateway/index.ts`, `if (!primaryProvider)`). Routing (`provider`) and
+    // `modelId` are untouched.
+    //
+    // Reattribute only when all three hold, because each alone misfires:
+    //   1. `modelId === modelRef` — the self-prefix strip above did not consume
+    //      the prefix, so the name is genuinely foreign.
+    //   2. `defaultProviderServesModel === false` — the gateway did not match
+    //      the model to `defaultProvider`. Without it, OpenRouter's own vendor
+    //      namespace ("openai/gpt-4o") would blame `openai`.
+    //   3. the prefix names an INSTALLED provider — otherwise it is an
+    //      aggregator namespace ("anthropic/…" with no Anthropic installed) and
+    //      the CTA would point at a provider absent from this deployment.
+    //
+    // Absent `defaultProviderServesModel` (older gateway) keeps the
+    // pre-existing attribution rather than acquiring a new misattribution.
+    // Derived from the RESOLVED `modelRef`, not `normalizedRaw`: when the run
+    // carries no explicit model the ref comes from `defaultModel`, and
+    // `explicitParts` (which exists to gate behavior-override ROUTING on an
+    // explicit request) is empty — so attribution would silently fall back to
+    // the serving provider and reproduce the very bug this fixes.
+    const attributionParts = modelRef.split("/").filter(Boolean);
+    const attributionProvider = attributionParts[0];
+    const requestedForeignSlug =
+      attributionParts.length >= 2 &&
+      attributionProvider &&
+      attributionProvider !== defaultProvider &&
+      attributionProvider !== defaultProviderSlug &&
+      modelId === modelRef &&
+      overrides?.defaultProviderServesModel === false &&
+      overrides?.installedProviderRoutes?.[attributionProvider]
+        ? attributionProvider
+        : undefined;
+
     return {
       provider: defaultProvider,
-      providerSlug: defaultProviderSlug || defaultProvider,
+      providerSlug:
+        requestedForeignSlug ?? (defaultProviderSlug || defaultProvider),
       modelId,
     };
   }

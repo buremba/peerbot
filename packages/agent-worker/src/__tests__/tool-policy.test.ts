@@ -412,9 +412,9 @@ describe("enforceBashCommandPolicy", () => {
     // (`nixpkgs#hello`), so a package manager AFTER such a token must still be
     // seen — treating the first `#` as a comment would blank the rest of the
     // line and hide it.
-    expect(
-      isDirectPackageInstallCommand("echo nixpkgs#hello; nix run x")
-    ).toBe(true);
+    expect(isDirectPackageInstallCommand("echo nixpkgs#hello; nix run x")).toBe(
+      true
+    );
     expect(isDirectPackageInstallCommand("nix run nixpkgs#hello")).toBe(true);
     // …while a real comment still hides what follows it.
     expect(isDirectPackageInstallCommand("echo hi # nix run x")).toBe(false);

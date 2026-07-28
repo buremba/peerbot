@@ -27,6 +27,7 @@ import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
 import { nextRunAt } from "../utils/cron";
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY } from "../watchers/source-refs";
 import logger from "../utils/logger";
 import {
 	resolveNewAgentProvisioningDefaults,
@@ -458,7 +459,7 @@ export async function ensureDefaultWatcher(params: {
 		}
 
 		const sources = [
-			{ name: "content", query: "SELECT * FROM events ORDER BY occurred_at DESC" },
+			{ name: "content", query: DEFAULT_BEHAVIOR_SOURCE_QUERY },
 		];
 
 		// triggers is the canonical activation contract; schedule/timezone/

@@ -36,7 +36,7 @@ import {
   type WatcherOperationResult,
 } from './shared';
 import { getErrorMessage } from '@lobu/core';
-import { extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
+import { DEFAULT_BEHAVIOR_SOURCE_QUERY, extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
 import {
   compileReactionScript,
   extractReactionInputSchema,
@@ -128,7 +128,7 @@ export async function handleCreate(
       : [
           {
             name: 'content',
-            query: 'SELECT * FROM events ORDER BY occurred_at DESC',
+            query: DEFAULT_BEHAVIOR_SOURCE_QUERY,
           },
         ];
 

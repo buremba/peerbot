@@ -21,6 +21,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildPublishedDeclaration } from "./published-declaration.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
@@ -80,33 +81,23 @@ for (const decl of ["dist/index.d.ts", TYPES_SRC]) {
   }
 }
 
-// Emit ONE self-contained declaration beside the bundle.
-//
-// The published package declares no @lobu dependencies, so shipping tsc's
-// dist/core/types.d.ts verbatim left `import type { WorkerTransport } from
-// "@lobu/core"` dangling and every consumer tsc failed with TS2307. Only
-// WorkerConfig is exported from the entry and it does not reference @lobu/core
-// — that import serves sibling interfaces outside the public surface — so the
-// declaration is rebuilt from just that type.
-const typesSource = readFileSync(join(pkgDir, TYPES_SRC), "utf8");
-const workerConfig = typesSource.match(
-  /export interface WorkerConfig \{[\s\S]*?\n\}/
-)?.[0];
-if (!workerConfig) {
+// Emit ONE self-contained declaration beside the bundle. The generator lives in
+// published-declaration.mjs so the publish gate can drive it without a built
+// dist/ — see the note there.
+let declaration;
+try {
+  declaration = buildPublishedDeclaration(
+    readFileSync(join(pkgDir, TYPES_SRC), "utf8")
+  );
+} catch (error) {
   console.error(
-    `\n[build-worker-bundle] FAILED: could not extract WorkerConfig from ${TYPES_SRC}.\n` +
-      "  The published type surface is generated from it; check whether it was renamed."
+    `\n[build-worker-bundle] FAILED (source ${TYPES_SRC}): ${
+      error instanceof Error ? error.message : String(error)
+    }`
   );
   process.exit(1);
 }
-if (/@lobu\//.test(workerConfig)) {
-  console.error(
-    "\n[build-worker-bundle] FAILED: generated declaration references an @lobu package.\n" +
-      "  The published manifest declares none, so a consumer's tsc would fail with TS2307."
-  );
-  process.exit(1);
-}
-writeFileSync(join(pkgDir, "dist/index.bundle.d.ts"), `${workerConfig}\n`);
+writeFileSync(join(pkgDir, "dist/index.bundle.d.ts"), declaration);
 
 // Select the JS output explicitly — outputs also contains the .map entry, and
 // picking [0] silently read the sourcemap's (empty) import list instead, which

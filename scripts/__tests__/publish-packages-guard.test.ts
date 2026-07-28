@@ -18,6 +18,7 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
+import { buildPublishedDeclaration } from "../../packages/agent-worker/scripts/published-declaration.mjs";
 import { __testing, rewriteWorkspaceRefs } from "../publish-packages.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -293,15 +294,26 @@ describe("published @lobu/worker manifest", () => {
   });
 
   it("ships a self-contained declaration, not one importing @lobu", () => {
-    // tsc's dist/core/types.d.ts imports @lobu/core, which the published
-    // manifest no longer declares — shipping it verbatim failed every
-    // consumer's tsc with TS2307. The bundler emits a standalone declaration.
-    const decl = readFileSync(
-      join(REPO_ROOT, "packages/agent-worker/dist/index.bundle.d.ts"),
-      "utf8"
+    // The module declaring WorkerConfig imports @lobu/core, which the published
+    // manifest no longer declares — shipping tsc's emitted d.ts verbatim failed
+    // every consumer's tsc with TS2307. The build drives the generator below.
+    // Reading the emitted dist/index.bundle.d.ts instead only works after a
+    // build; this gate runs in the lint job, which never builds one.
+    const decl = buildPublishedDeclaration(
+      readFileSync(
+        join(REPO_ROOT, "packages/agent-worker/src/core/types.ts"),
+        "utf8"
+      )
     );
     expect(decl).toContain("WorkerConfig");
     expect(decl).not.toContain("@lobu/");
+    // ...and it refuses rather than emitting a declaration that would dangle.
+    expect(() =>
+      buildPublishedDeclaration(
+        'export interface WorkerConfig {\n  transport: import("@lobu/core").WorkerTransport;\n}\n'
+      )
+    ).toThrow(/@lobu/);
+
     expect(transformed.files).toContain("dist/index.bundle.d.ts");
     expect(JSON.stringify(transformed.exports)).not.toContain(
       "dist/index.d.ts"

@@ -47,7 +47,10 @@ describe("rewriteWorkspaceRefs publishability guard", () => {
         message = error instanceof Error ? error.message : String(error);
         throw error;
       }
-    }).toThrow(/@lobu\/plugin-mcp/);
+      // plugin-api is the first unpublishable dep in this manifest. It is not
+      // in PACKAGES (nothing on npm can resolve it, and @lobu/worker inlines
+      // it), so the guard must name it exactly as it names a private plugin.
+    }).toThrow(/@lobu\/plugin-api/);
     // An actionable message is the point: "failed" would leave the next
     // person guessing which of the two fixes applies.
     expect(message).toContain("@lobu/worker");

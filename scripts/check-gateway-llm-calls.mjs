@@ -93,6 +93,48 @@ function isSuppressed(lines, idx) {
   return false;
 }
 
+/**
+ * Text of the statement that STARTS at `idx`, spanning however many physical
+ * lines it takes to close — balanced `(`/`{` for a call or import clause, or a
+ * terminating `;`.
+ *
+ * Why not just the one line: prettier/biome split any construct that exceeds
+ * the print width, so the real-world violations are
+ *
+ *   return fetch(                  import {
+ *     "https://host/v1/chat/completions",   OpenAI,
+ *   );                             } from "openai";
+ *
+ * where no single line holds both the keyword and the literal the rule looks
+ * for. A line-local check was therefore weakest at exactly the shape a
+ * formatter produces. Depth counting stops at the matching close so an
+ * unrelated later statement cannot be dragged in, and a bounded lookahead
+ * keeps a malformed file from scanning to EOF.
+ */
+function statementText(lines, idx) {
+  const MAX_STATEMENT_LINES = 40;
+  let depth = 0;
+  let opened = false;
+  const parts = [];
+  for (let i = idx; i < lines.length && i < idx + MAX_STATEMENT_LINES; i++) {
+    const raw = lines[i];
+    parts.push(raw);
+    for (const ch of raw) {
+      if (ch === "(" || ch === "{") {
+        depth++;
+        opened = true;
+      } else if (ch === ")" || ch === "}") {
+        depth--;
+      }
+    }
+    // A statement with no bracket at all (`import "openai";`) ends at its
+    // semicolon; one that opened brackets ends when they balance.
+    if (opened && depth <= 0) break;
+    if (!opened && raw.includes(";")) break;
+  }
+  return parts.join("\n");
+}
+
 function flag(file, lineNo, kind, snippet) {
   violations.push({
     file: relative(REPO_ROOT, file),
@@ -186,9 +228,15 @@ for (const file of files) {
     if (isSuppressed(lines, i)) continue;
 
     // 1. fetch() to a completions-style path.
+    //
+    // Match against the whole call expression, not the single physical line:
+    // a formatter routinely splits `fetch(` from its URL argument, and a
+    // line-local check silently exempted that — the most likely shape the
+    // violation actually gets written in.
     if (/\bfetch\s*\(/.test(code)) {
+      const callText = statementText(lines, i);
       for (const p of COMPLETION_PATHS) {
-        if (code.includes(p)) {
+        if (callText.includes(p)) {
           flag(file, i + 1, "hand-rolled completion fetch", line);
           break;
         }
@@ -197,12 +245,16 @@ for (const file of files) {
 
     // 2. Vendor SDK import.
     if (/\b(?:import|require)\b/.test(code)) {
+      // Whole statement, not the line: `import {\n ... \n} from "openai"` is
+      // the shape a formatter produces, and it carried the module literal on a
+      // line with no `import` keyword on it.
+      const importText = statementText(lines, i);
       for (const sdk of VENDOR_SDKS) {
         if (
-          code.includes(`"${sdk}"`) ||
-          code.includes(`'${sdk}'`) ||
-          code.includes(`"${sdk}/`) ||
-          code.includes(`'${sdk}/`)
+          importText.includes(`"${sdk}"`) ||
+          importText.includes(`'${sdk}'`) ||
+          importText.includes(`"${sdk}/`) ||
+          importText.includes(`'${sdk}/`)
         ) {
           flag(file, i + 1, `vendor SDK import (${sdk})`, line);
           break;

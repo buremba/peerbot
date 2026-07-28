@@ -70,6 +70,53 @@ export function buildBinaryInvocation(
 }
 
 /**
+ * Why a spawned binary may be registered at all.
+ *
+ * `sandbox` — a real per-exec sandbox (bwrap / sandbox-exec) confines it.
+ * `self-hosted` — not cloud mode, so this gateway serves one tenant and there
+ *   is no sibling workspace to read.
+ * `unsandboxed-opt-in` — the pre-existing escape hatch for trusted agents.
+ */
+export interface WorkerIsolation {
+  isolated: boolean;
+  reason: "sandbox" | "self-hosted" | "unsandboxed-opt-in" | "none";
+}
+
+/**
+ * Resolve whether this worker is isolated enough to run spawned binaries.
+ *
+ * Registration is gated on ISOLATION, which has two independent sources: a real
+ * per-exec sandbox, or a deployment that hosts a single tenant. Gating on the
+ * sandbox probe alone was wrong in both directions — it denied self-hosters a
+ * working CLI for no security benefit, and would have permitted registration on
+ * a multi-tenant host wherever bwrap happened to start.
+ *
+ * Tenancy comes from `LOBU_CLOUD_MODE`, the flag the gateway already uses to
+ * separate multi-tenant cloud from a single-tenant self-hosted install. It is
+ * deliberately NOT a new switch: a second flag could disagree with the first,
+ * and the safe reading must not depend on an operator keeping two in sync.
+ * Unset means self-hosted, which is correct for `lobu run` on a laptop and for
+ * an OSS install; the cloud deployment sets it to 1.
+ */
+export function resolveWorkerIsolation(): WorkerIsolation {
+  if (probeSandboxStrategy().kind !== "none") {
+    return { isolated: true, reason: "sandbox" };
+  }
+  const cloud = (process.env.LOBU_CLOUD_MODE || "").trim().toLowerCase();
+  const isCloud = cloud === "1" || cloud === "true" || cloud === "yes";
+  if (!isCloud) {
+    return { isolated: true, reason: "self-hosted" };
+  }
+  if (
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true"
+  ) {
+    return { isolated: true, reason: "unsandboxed-opt-in" };
+  }
+  return { isolated: false, reason: "none" };
+}
+
+/**
  * Binaries that are full code-execution capabilities. If they land on the
  * just-bash allowlist, the depth/loop caps are moot — the agent can run
  * arbitrary code through them. They are excluded by default; an agent that
@@ -550,23 +597,15 @@ export async function createEmbeddedBashOps(
   const mcpCliNames = new Set(mcpCliCommands.map((c) => c.name));
 
   const sandboxStrategy = probeSandboxStrategy();
-  const allowUnsandboxedExec =
-    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
-    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
 
-  // A REAL per-exec sandbox is required. The app container hosts every worker
-  // and the gateway as the same user, so a shell-capable CLI (gh runs
-  // extensions and aliases) would otherwise read sibling `workspaces/{agentId}`
-  // directories and the gateway's own environment — reproduced: a registered
-  // tool read another tenant's workspace file.
-  //
-  // An earlier revision of this branch added a `LOBU_POD_IS_SANDBOX` bypass on
-  // the theory that the pod boundary was isolation enough. It is not: the
-  // boundary is per-POD, and the tenants share the pod. Deployments that need
-  // contributed CLIs must give bubblewrap a seccomp profile that permits
-  // `unshare` (see charts/lobu/values.yaml), not disable the sandbox.
-  const registerSpawnedBinaries =
-    sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
+  // The container hosts every worker and the gateway as the same user, so a
+  // shell-capable CLI (gh runs extensions and aliases) can read sibling
+  // `workspaces/{agentId}` directories and /proc/1/environ — reproduced: a
+  // registered tool read another tenant's workspace file. What makes that a
+  // breach is the SIBLING, not the missing sandbox, which is why cloud mode is
+  // half of the gate. See resolveWorkerIsolation.
+  const isolation = resolveWorkerIsolation();
+  const registerSpawnedBinaries = isolation.isolated;
 
   // Discover nix binaries and known CLI tools, register as custom commands.
   // Strip names claimed by MCP CLIs so the MCP-backed handler takes precedence.
@@ -587,16 +626,18 @@ export async function createEmbeddedBashOps(
   const binaryCommands =
     binaries.size > 0 ? await buildCustomCommands(binaries, sandboxCtx) : [];
 
-  if (sandboxStrategy.kind !== "none") {
-    console.log(`[embedded] exec sandbox active: kind=${sandboxStrategy.kind}`);
-  } else if (!allowUnsandboxedExec) {
+  if (isolation.isolated) {
+    console.log(`[embedded] spawned binaries enabled: ${isolation.reason}`);
+  } else {
     console.warn(
-      `[embedded] Exec sandbox unavailable; not registering spawned binary ` +
-        `commands, so connector-contributed CLIs will exit 127. Give ` +
-        `bubblewrap a seccomp profile permitting unshare (workers share this ` +
-        `container, so the pod boundary is NOT per-tenant isolation). ` +
-        `LOBU_ALLOW_UNSANDBOXED_EXEC=1 skips the sandbox entirely and is a ` +
-        `per-agent decision for trusted agents, never a deployment default.`
+      `[embedded] Not registering spawned binary commands, so ` +
+        `connector-contributed CLIs will exit 127. This is cloud mode ` +
+        `(LOBU_CLOUD_MODE=1, multi-tenant) with no working per-exec sandbox, ` +
+        `and a registered CLI could read sibling tenants' workspaces and ` +
+        `/proc/1/environ. On containerd bwrap fails at the uid_map write ` +
+        `regardless of capabilities or seccomp (see charts/lobu/values.yaml), ` +
+        `so toolchain work here belongs on a remote runtime. Self-hosted ` +
+        `single-tenant installs are unaffected and register CLIs normally.`
     );
   }
 

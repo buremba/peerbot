@@ -11,6 +11,7 @@ import {
 import {
   buildBinaryInvocation,
   createEmbeddedBashOps,
+  resolveWorkerIsolation,
 } from "../embedded/just-bash-bootstrap";
 
 const tempDirs: string[] = [];
@@ -18,6 +19,7 @@ const originalEnv = {
   PATH: process.env.PATH,
   LOBU_EXEC_SANDBOX: process.env.LOBU_EXEC_SANDBOX,
   LOBU_ALLOW_UNSANDBOXED_EXEC: process.env.LOBU_ALLOW_UNSANDBOXED_EXEC,
+  LOBU_CLOUD_MODE: process.env.LOBU_CLOUD_MODE,
   LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
   LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
   JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
@@ -83,6 +85,7 @@ afterEach(() => {
   restoreEnv("PATH");
   restoreEnv("LOBU_EXEC_SANDBOX");
   restoreEnv("LOBU_ALLOW_UNSANDBOXED_EXEC");
+  restoreEnv("LOBU_CLOUD_MODE");
   restoreEnv("LOBU_WORKSPACE_BACKEND");
   restoreEnv("LOBU_RUNTIME_PROVIDER");
   restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
@@ -108,6 +111,9 @@ describe("createEmbeddedBashOps", () => {
     process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
     process.env.LOBU_EXEC_SANDBOX = "off";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    // Multi-tenant: the sibling tenant is what makes an unsandboxed spawned
+    // binary a breach, so the deployment shape is part of this assertion.
+    process.env.LOBU_CLOUD_MODE = "1";
     delete process.env.LOBU_WORKSPACE_BACKEND;
 
     const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
@@ -246,6 +252,8 @@ describe("createEmbeddedBashOps", () => {
     process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
     process.env.LOBU_EXEC_SANDBOX = "off";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    // Multi-tenant, per the shared-container reasoning above.
+    process.env.LOBU_CLOUD_MODE = "1";
     // Declared, and still must not run: declaration is not authorization.
     process.env.NIX_PACKAGES = "gh";
     delete process.env.LOBU_WORKSPACE_BACKEND;
@@ -622,5 +630,140 @@ describe("buildBinaryInvocation", () => {
       workspaceDir: "/tmp",
     });
     expect(r).toEqual({ command: "/bin/echo", args: ["hi"] });
+  });
+});
+
+/**
+ * Registration is gated on ISOLATION, not on the sandbox probe alone.
+ *
+ * The probe was an accidental proxy for the real question ("can this worker
+ * reach another tenant's data?") and got it wrong in both directions: it denied
+ * self-hosted single-tenant installs a CLI for no benefit, and would have
+ * permitted registration on a multi-tenant host wherever bwrap happened to
+ * start. Tenancy comes from LOBU_CLOUD_MODE, the flag the gateway already uses
+ * for exactly this distinction.
+ */
+describe("worker isolation gate", () => {
+  test("SECURITY: cloud mode without a sandbox is NOT isolated", () => {
+    // The case that matters: multi-tenant, no sandbox, so a registered CLI
+    // could read a sibling tenant's workspace.
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    process.env.LOBU_CLOUD_MODE = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    resetSandboxProbeForTests();
+
+    const isolation = resolveWorkerIsolation();
+    expect(isolation.isolated).toBe(false);
+    expect(isolation.reason).toBe("none");
+  });
+
+  test("self-hosted (cloud mode unset) is isolated without a sandbox", () => {
+    // `lobu run` on a laptop and an OSS install: one tenant, no sibling to
+    // leak to, so the sandbox is not load-bearing.
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    delete process.env.LOBU_CLOUD_MODE;
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    resetSandboxProbeForTests();
+
+    const isolation = resolveWorkerIsolation();
+    expect(isolation.isolated).toBe(true);
+    expect(isolation.reason).toBe("self-hosted");
+  });
+
+  test("cloud mode accepts the same truthy spellings as the gateway", () => {
+    // isCloudMode() honours 1/true/yes; a gate that read only "1" would treat
+    // a `yes` cloud deployment as self-hosted and register CLIs there.
+    for (const raw of ["1", "true", "TRUE", "yes"]) {
+      process.env.LOBU_EXEC_SANDBOX = "off";
+      process.env.LOBU_CLOUD_MODE = raw;
+      delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+      resetSandboxProbeForTests();
+      expect(resolveWorkerIsolation().isolated).toBe(false);
+    }
+  });
+
+  test("a real sandbox isolates even in cloud mode", () => {
+    if (!realSandboxAvailable) return;
+    delete process.env.LOBU_EXEC_SANDBOX;
+    process.env.LOBU_CLOUD_MODE = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    resetSandboxProbeForTests();
+
+    const isolation = resolveWorkerIsolation();
+    expect(isolation.isolated).toBe(true);
+    expect(isolation.reason).toBe("sandbox");
+  });
+
+  test("the unsandboxed opt-in still works in cloud mode", () => {
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    process.env.LOBU_CLOUD_MODE = "1";
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC = "1";
+    resetSandboxProbeForTests();
+
+    const isolation = resolveWorkerIsolation();
+    expect(isolation.isolated).toBe(true);
+    expect(isolation.reason).toBe("unsandboxed-opt-in");
+  });
+
+  test("a declared CLI registers when self-hosted, with no sandbox", async () => {
+    // End to end through the real bootstrap: prove the CLI actually becomes
+    // reachable, not merely that a flag flipped.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-selfhost-"))
+    );
+    tempDirs.push(workspace);
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    delete process.env.LOBU_CLOUD_MODE;
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+    resetSandboxProbeForTests();
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain("gh version");
+  });
+
+  test("SECURITY: the same CLI stays unreachable in cloud mode", async () => {
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-cloud-deny-"))
+    );
+    tempDirs.push(workspace);
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeGh = path.join(usrBin, "gh");
+    fs.writeFileSync(fakeGh, '#!/bin/sh\necho "gh version 2.23.0"\n', "utf8");
+    fs.chmodSync(fakeGh, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    process.env.LOBU_CLOUD_MODE = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    process.env.NIX_PACKAGES = "gh";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+    resetSandboxProbeForTests();
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("gh --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(chunks.join("")).not.toContain("gh version 2.23.0");
   });
 });

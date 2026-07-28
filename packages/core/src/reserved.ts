@@ -28,7 +28,7 @@ export const OWNER_ROUTE_SEGMENTS = [
   "agents",
   "connectors",
   "devices",
-  // Legacy redirect path /$owner/environments → connectors/runtime.
+  // Legacy redirect path /$owner/environments → connectors.
   // Keep reserved so an org/entity slug never collides with the redirect.
   "environments",
   // Redirect-only segment for immutable chat-message links: /$owner/

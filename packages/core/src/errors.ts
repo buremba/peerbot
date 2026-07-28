@@ -198,7 +198,7 @@ export enum AgentErrorCode {
  */
 export type AgentErrorCtaKind =
   | "agent-settings" // → <webOrigin>/<slug>/agents/<agentId>/settings
-  | "provider-connect" // → <webOrigin>/<slug>/inference-providers/new
+  | "provider-connect" // → exact provider connector detail, or connectors list
   | "provider-management" // → existing provider management, exact provider/model
   | "none";
 

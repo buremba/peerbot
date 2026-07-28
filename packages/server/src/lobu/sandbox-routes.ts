@@ -98,6 +98,7 @@ async function applyCredential(
 routes.get("/", async (c) => {
 	const orgId = c.get("organizationId") as string;
 	const rows = await listSandboxes(orgId);
+	const availableProviders = listGatewayRuntimeProviderIds();
 	// `connected` reflects the ACTUAL vault contents (the provider's required
 	// credential fields), not the stale `credential_name` column — so a credential
 	// written by any path shows correctly. `details` carries only the non-secret
@@ -113,7 +114,24 @@ routes.get("/", async (c) => {
 			availableInCloud: !isCloudMode(),
 		},
 		sandboxes,
-		availableProviders: listGatewayRuntimeProviderIds(),
+		availableProviders,
+		providerCatalog: availableProviders.flatMap((id) => {
+			const provider = getGatewayRuntimeProvider(id);
+			if (!provider) return [];
+			return [
+				{
+					id,
+					credentialFields: provider.credentialFields.map(
+						({ key, label, required, secret }) => ({
+							key,
+							label,
+							required,
+							secret,
+						})
+					),
+				},
+			];
+		}),
 	});
 });
 

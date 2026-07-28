@@ -160,11 +160,44 @@ describe('inference provider org default', () => {
     await create(org.id, 'openai', 'gpt-4o-mini');
     await create(org.id, 'z-ai', 'glm-4.6');
 
-    expect(await setInferenceProviderDefault(org.id, 'z-ai')).toBe(true);
+    expect(await setInferenceProviderDefault(org.id, 'z-ai')).toBe('ok');
     expect(await defaultSlug(org.id)).toBe('z-ai');
     // Exactly one default survives the switch (partial unique index).
     const providers = await listInferenceProviders(org.id);
     expect(providers.filter((p) => p.isDefault)).toHaveLength(1);
+  });
+
+  /**
+   * set-default must not report success for a choice the next read undoes.
+   *
+   * A model-less row resolves to null in `getOrgDefaultModel`, which then
+   * REPAIRS the org by demoting it and promoting a runnable row. Accepting the
+   * write would make the API claim to have stored something it immediately
+   * reverts — the CLI printed "set as org default" for a selection that was
+   * gone one request later.
+   */
+  it('(g2) set-default REJECTS a provider with no text model', async () => {
+    const org = await newOrg();
+    await create(org.id, 'openai', 'gpt-4o-mini');
+    await create(org.id, 'groq'); // no text model
+
+    expect(await setInferenceProviderDefault(org.id, 'groq')).toBe(
+      'not_runnable',
+    );
+    // The prior default is untouched — a rejected write changes nothing.
+    expect(await defaultSlug(org.id)).toBe('openai');
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+  });
+
+  it('(g3) an accepted set-default survives the next resolution', async () => {
+    const org = await newOrg();
+    await create(org.id, 'openai', 'gpt-4o-mini');
+    await create(org.id, 'z-ai', 'glm-4.6');
+
+    expect(await setInferenceProviderDefault(org.id, 'z-ai')).toBe('ok');
+    // The round trip is the point: resolution must NOT repair this away.
+    expect(await getOrgDefaultModel(org.id)).toBe('z-ai/glm-4.6');
+    expect(await defaultSlug(org.id)).toBe('z-ai');
   });
 
   it('(h) two orgs each keep their own default', async () => {
@@ -190,7 +223,16 @@ describe('inference provider org default', () => {
     expect(await defaultSlug(org.id)).toBe('openai');
   });
 
-  it('(j) an OAuth provider can become the runnable org default', async () => {
+  /**
+   * An OAuth row is NOT auto-promoted, even though it has a text model.
+   *
+   * OAuth credentials live in per-user `auth_profiles`; `oauth://` joins to no
+   * `agent_secrets` row, so the org-shared key reader returns null for it. A
+   * headless Behavior run carries a synthetic user id with no profile, so an
+   * OAuth org default hands every agent a model it cannot authenticate — it
+   * fails at egress instead of falling back, which is worse than no default.
+   */
+  it('(j) an OAuth provider is NOT auto-promoted to org default', async () => {
     const org = await newOrg();
     await ensureOAuthInferenceProvider({
       organizationId: org.id,
@@ -199,6 +241,38 @@ describe('inference provider org default', () => {
       defaultModel: 'claude-sonnet-5',
     });
 
+    expect(await defaultSlug(org.id)).toBeNull();
+    expect(await getOrgDefaultModel(org.id)).toBeNull();
+  });
+
+  it('(j2) an API-key provider is promoted over an older OAuth row', async () => {
+    const org = await newOrg();
+    // OAuth first, so "oldest wins" alone would pick it.
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'claude',
+      kind: 'claude',
+      defaultModel: 'claude-sonnet-5',
+    });
+    await create(org.id, 'openai', 'gpt-4o-mini');
+
+    expect(await defaultSlug(org.id)).toBe('openai');
+    expect(await getOrgDefaultModel(org.id)).toBe('openai/gpt-4o-mini');
+  });
+
+  it('(j3) a user may still choose an OAuth provider explicitly', async () => {
+    const org = await newOrg();
+    await create(org.id, 'openai', 'gpt-4o-mini');
+    await ensureOAuthInferenceProvider({
+      organizationId: org.id,
+      slug: 'claude',
+      kind: 'claude',
+      defaultModel: 'claude-sonnet-5',
+    });
+
+    // Deliberate act by someone who holds the profile — allowed, and it must
+    // SURVIVE a subsequent resolution rather than being silently repaired away.
+    expect(await setInferenceProviderDefault(org.id, 'claude')).toBe('ok');
     expect(await getOrgDefaultModel(org.id)).toBe('claude/claude-sonnet-5');
     expect(await defaultSlug(org.id)).toBe('claude');
   });
@@ -284,11 +358,14 @@ describe('inference provider org default', () => {
         defaultModel: 'claude-sonnet-5',
       });
 
-      // It IS the org default (see (j)) — but an oauth:// ref joins to no vault
-      // secret, so the transport declines rather than sending a keyless
-      // request. Claude is also sdkCompat:"anthropic", the one non-OpenAI
-      // protocol in the registry.
+      // Reached the default the only legitimate way for an OAuth row: an
+      // explicit user choice (auto-promotion declines these — see (j)).
+      expect(await setInferenceProviderDefault(org.id, 'claude')).toBe('ok');
       expect(await getOrgDefaultModel(org.id)).toBe('claude/claude-sonnet-5');
+
+      // An oauth:// ref joins to no vault secret, so the gateway transport
+      // declines rather than sending a keyless request. Claude is also
+      // sdkCompat:"anthropic", the one non-OpenAI protocol in the registry.
       expect(await resolveCompletionTarget(org.id)).toBeNull();
     });
 

@@ -222,7 +222,7 @@ describe('inference-provider store', () => {
     // Mark openai the default → its text model is the org default, returned as
     // a routable `slug/model` ref (the worker derives the provider from the
     // prefix; a bare model would throw "No provider specified" there).
-    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe('ok');
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
     expect(
       (await listInferenceProviders(ORG)).find((p) => p.slug === 'openai')
@@ -230,7 +230,7 @@ describe('inference-provider store', () => {
     ).toBe(true);
 
     // Switching the default clears the prior one (one live default per org).
-    expect(await setInferenceProviderDefault(ORG, 'groq')).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, 'groq')).toBe('ok');
     expect(await getOrgDefaultModel(ORG)).toBe('groq/llama-y');
     const after = await listInferenceProviders(ORG);
     expect(after.find((p) => p.slug === 'openai')?.isDefault).toBe(false);
@@ -249,7 +249,7 @@ describe('inference-provider store', () => {
       apiKey: 'k1',
       capabilities: { text: { model: 'anthropic/claude-sonnet-5' } },
     });
-    expect(await setInferenceProviderDefault(ORG, 'openrouter')).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, 'openrouter')).toBe('ok');
     expect(await getOrgDefaultModel(ORG)).toBe(
       'openrouter/anthropic/claude-sonnet-5'
     );
@@ -263,12 +263,12 @@ describe('inference-provider store', () => {
       apiKey: 'k1',
       capabilities: { text: { model: 'openai/gpt-x' } },
     });
-    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe('ok');
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
   });
 
-  it('setInferenceProviderDefault returns false for a missing slug', async () => {
-    expect(await setInferenceProviderDefault(ORG, 'does-not-exist')).toBe(false);
+  it('setInferenceProviderDefault returns not_found for a missing slug', async () => {
+    expect(await setInferenceProviderDefault(ORG, 'does-not-exist')).toBe('not_found');
   });
 
   it('setting a missing slug default does NOT clear the existing default', async () => {
@@ -279,11 +279,11 @@ describe('inference-provider store', () => {
       apiKey: 'k1',
       capabilities: { text: { model: 'gpt-x' } },
     });
-    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, 'openai')).toBe('ok');
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
 
     // A no-op on a missing slug must leave the current default intact.
-    expect(await setInferenceProviderDefault(ORG, 'ghost')).toBe(false);
+    expect(await setInferenceProviderDefault(ORG, 'ghost')).toBe('not_found');
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
   });
 });

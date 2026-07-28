@@ -1056,8 +1056,24 @@ routes.put("/inference-providers/:slug/default", async (c) => {
 	if (typeof orgId !== "string") return orgId;
 	const { slug } = c.req.param();
 
-	const ok = await setInferenceProviderDefault(orgId, slug);
-	if (!ok) return c.json({ error: "Provider not found" }, 404);
+	const result = await setInferenceProviderDefault(orgId, slug);
+	if (result === "not_found") {
+		return c.json({ error: "Provider not found" }, 404);
+	}
+	// A provider with no text model cannot hold the default: the next
+	// getOrgDefaultModel read would demote it and promote another row, so
+	// reporting success here would be a lie.
+	if (result === "not_runnable") {
+		return c.json(
+			{
+				error:
+					`Provider '${slug}' has no text model configured, so it cannot be ` +
+					`the org default. Set one with: lobu providers set-capabilities ` +
+					`${slug} text --model <model>`,
+			},
+			400
+		);
+	}
 	emitConfigChange(c, {
 		resourceKind: "inference-provider",
 		resourceId: slug,

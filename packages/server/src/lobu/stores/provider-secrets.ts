@@ -297,11 +297,28 @@ async function lockInferenceProviderDefaults(
  * org currently has none (the `NOT EXISTS` guard makes this idempotent, so
  * every mutating path can call it unconditionally).
  *
- * "Runnable" = carries a non-blank `capabilities.text.model`. A row without one
- * would resolve to null in `getOrgDefaultModel`, leaving the org just as
- * default-less as before while *looking* fixed. Oldest-first (`created_at`,
- * ties broken by the monotonic identity id) keeps the choice deterministic and
- * identical across replicas.
+ * "Runnable" has TWO halves, and both are load-bearing:
+ *
+ *  1. A non-blank `capabilities.text.model`. Without one the row resolves to
+ *     null in `getOrgDefaultModel`, leaving the org just as default-less as
+ *     before while *looking* fixed.
+ *
+ *  2. An org-readable credential — i.e. NOT an `oauth://` ref. OAuth
+ *     credentials live in per-user `auth_profiles` and are fetched by
+ *     `getBestProfile(agentId, providerId, …, context)`; `oauth://` joins to no
+ *     `agent_secrets` row, so `readOrgSharedProviderApiKey` returns null for
+ *     them. A headless Behavior run carries a synthetic user id with no
+ *     profile, so inheriting an OAuth row as the ORG default hands every agent
+ *     in the org a model it cannot authenticate — worse than having no default,
+ *     because it fails at egress instead of falling back. (The gateway
+ *     transport already refuses these; this keeps the run path honest too.)
+ *
+ * A user can still choose an OAuth provider explicitly via
+ * {@link setInferenceProviderDefault} — that is a deliberate act by someone who
+ * holds the profile. This guard only governs AUTOMATIC promotion.
+ *
+ * Oldest-first (`created_at`, ties broken by the monotonic identity id) keeps
+ * the choice deterministic and identical across replicas.
  */
 async function promoteOldestRunnableProvider(
 	sql: DbClient,
@@ -316,6 +333,7 @@ async function promoteOldestRunnableProvider(
 			WHERE candidate.organization_id = ${organizationId}
 			  AND candidate.deleted_at IS NULL
 			  AND NULLIF(BTRIM(candidate.capabilities #>> '{text,model}'), '') IS NOT NULL
+			  AND candidate.api_key_ref NOT LIKE 'oauth://%'
 			  AND NOT EXISTS (
 				  SELECT 1 FROM inference_providers current_default
 				  WHERE current_default.organization_id = ${organizationId}
@@ -613,6 +631,17 @@ interface OrgDefaultModelRow {
 	is_default: boolean;
 }
 
+/**
+ * The row that currently is — or should become — the org default.
+ *
+ * The flagged default always wins (`is_default DESC`), whatever its ref: an
+ * explicit `setInferenceProviderDefault` choice is a user decision this read
+ * must never second-guess. The `OR` branch exists ONLY to find a promotion
+ * candidate for an org that has no flag yet, so it applies exactly the filter
+ * {@link promoteOldestRunnableProvider} does — including the `oauth://`
+ * exclusion. Without that, a read would report an OAuth model as the org
+ * default that promotion had deliberately declined to set.
+ */
 async function readOrgDefaultCandidate(
 	sql: DbClient,
 	organizationId: string,
@@ -624,7 +653,10 @@ async function readOrgDefaultCandidate(
 		  AND deleted_at IS NULL
 		  AND (
 			  is_default
-			  OR NULLIF(BTRIM(capabilities #>> '{text,model}'), '') IS NOT NULL
+			  OR (
+				  NULLIF(BTRIM(capabilities #>> '{text,model}'), '') IS NOT NULL
+				  AND api_key_ref NOT LIKE 'oauth://%'
+			  )
 		  )
 		ORDER BY is_default DESC, created_at, id
 		LIMIT 1
@@ -693,13 +725,26 @@ export async function getOrgDefaultModel(
 /**
  * Mark one live provider as the org default (clearing any prior default in the
  * same transaction). The partial unique index guarantees at most one live
- * default per org; clearing first keeps the switch atomic. Returns false when
- * the slug has no live row.
+ * default per org; clearing first keeps the switch atomic.
+ *
+ * Rejects a target with no `capabilities.text.model` as `not_runnable` rather
+ * than committing it. Such a row cannot serve as a default: `getOrgDefaultModel`
+ * resolves it to null and then REPAIRS the org by demoting it and promoting a
+ * runnable row. Accepting the write would report success for a selection that
+ * silently reverts on the very next read — the API must not claim to have
+ * stored something it will immediately undo. An OAuth row IS accepted here:
+ * unlike automatic promotion, this is a deliberate act by a user who holds the
+ * profile (see {@link promoteOldestRunnableProvider}).
  */
+export type SetInferenceProviderDefaultResult =
+	| "ok"
+	| "not_found"
+	| "not_runnable";
+
 export async function setInferenceProviderDefault(
 	organizationId: string,
 	slug: string,
-): Promise<boolean> {
+): Promise<SetInferenceProviderDefaultResult> {
 	const sql = getDb();
 	return await sql.begin(async (tx) => {
 		await lockInferenceProviderDefaults(tx, organizationId);
@@ -708,12 +753,14 @@ export async function setInferenceProviderDefault(
 		// otherwise a missing slug would commit the clear and leave the org with
 		// no default at all.
 		const target = (await tx`
-			SELECT id FROM inference_providers
+			SELECT id, NULLIF(BTRIM(capabilities #>> '{text,model}'), '') AS text_model
+			FROM inference_providers
 			WHERE organization_id = ${organizationId}
 			  AND slug = ${slug} AND deleted_at IS NULL
 			LIMIT 1
-		`) as Array<{ id: string | number }>;
-		if (target.length === 0) return false;
+		`) as Array<{ id: string | number; text_model: string | null }>;
+		if (target.length === 0) return "not_found";
+		if (!target[0]?.text_model) return "not_runnable";
 
 		await tx`
 			UPDATE inference_providers
@@ -727,7 +774,7 @@ export async function setInferenceProviderDefault(
 			WHERE organization_id = ${organizationId}
 			  AND slug = ${slug} AND deleted_at IS NULL
 		`;
-		return true;
+		return "ok";
 	});
 }
 

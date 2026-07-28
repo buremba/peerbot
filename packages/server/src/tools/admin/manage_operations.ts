@@ -1186,9 +1186,10 @@ async function handleExecute(
 					action_input: input,
 					input_schema: operation.input_schema ?? null,
 					status: "pending_approval",
-						connection_name:
-							connection.display_name ?? connection.connector_key,
+					connection_name:
+						connection.display_name ?? connection.connector_key,
 					run_id: createdRunId,
+					mcp_session_id: ctx.mcpSessionId ?? null,
 				},
 				authorName: ctx.clientId ?? "agent",
 			},

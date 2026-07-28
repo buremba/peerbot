@@ -57,6 +57,7 @@ describe("approval-event atomicity (item 16)", () => {
 			orgName: "Approval Atomicity Org",
 		});
 		ownerCtx.baseUrl = "https://gateway.test/lobu";
+		ownerCtx.mcpSessionId = "session-approval-atomicity";
 		orgId = org.id;
 		userId = user.id;
 		ctx = ownerCtx;
@@ -160,7 +161,7 @@ describe("approval-event atomicity (item 16)", () => {
 		// The approval event exists, is org-scoped, and joins to the run — this is
 		// what the /memory?run_ids= page reads. A stranded run would have none.
 		const eventRows = await sql`
-			SELECT id, interaction_type, interaction_status, organization_id
+			SELECT id, interaction_type, interaction_status, organization_id, metadata
 			FROM events
 			WHERE run_id = ${result.run_id} AND organization_id = ${orgId}
 		`;
@@ -169,6 +170,9 @@ describe("approval-event atomicity (item 16)", () => {
 		expect(eventRows[0].interaction_type).toBe("approval");
 		expect(eventRows[0].interaction_status).toBe("pending");
 		expect(eventRows[0].organization_id).toBe(orgId);
+		expect(eventRows[0].metadata).toMatchObject({
+			mcp_session_id: "session-approval-atomicity",
+		});
 
 		const after = await sql`SELECT count(*)::int AS n FROM runs WHERE organization_id = ${orgId}`;
 		expect(after[0].n).toBe(before[0].n + 1);

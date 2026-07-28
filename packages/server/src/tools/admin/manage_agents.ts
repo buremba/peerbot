@@ -771,6 +771,7 @@ async function queueWriteForApproval(
       },
       status: 'pending_approval',
       run_id: runId,
+      mcp_session_id: ctx.mcpSessionId ?? null,
     },
     authorName: ctx.clientId ?? 'agent',
   });

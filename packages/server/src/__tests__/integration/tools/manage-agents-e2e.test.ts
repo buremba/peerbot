@@ -134,6 +134,7 @@ describe("manage_agents — builder gate e2e", () => {
 			["mcp:read", "mcp:write", "mcp:admin"],
 			"builder-agent",
 		);
+		agentCtx.mcpSessionId = "session-manage-agents";
 		memberCtx = baseCtx(org.id, member.id, "member", ["mcp:read", "mcp:write"]);
 	});
 
@@ -340,6 +341,9 @@ describe("manage_agents — builder gate e2e", () => {
 		`;
 		expect(eventRows.length).toBe(1);
 		expect(eventRows[0]?.interaction_status).toBe("pending");
+		expect(eventRows[0]?.metadata).toMatchObject({
+			mcp_session_id: "session-manage-agents",
+		});
 
 		// No agent created yet — the gate is the whole point.
 		expect(await agentExists(orgId, "support-bot")).toBe(false);

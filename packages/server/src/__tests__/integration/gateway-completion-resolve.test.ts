@@ -10,6 +10,8 @@
  * LONG before it reaches the protocol check, so a registry-only test would
  * pass even with the check deleted.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   __resetEncryptionKeyCacheForTests,
@@ -74,18 +76,20 @@ function register(module: Record<string, unknown>) {
 
 describe('resolveCompletionTarget protocol gating', () => {
   /**
-   * The ChatGPT subscription provider. It is registered by a SPECIALIZED module
-   * (`ChatGPTOAuthModule`, core-services.ts) which claims `providerId:
-   * "chatgpt"` BEFORE the config-driven loop runs — so providers.json's
-   * `sdkCompat: "openai"` for that id is never applied and the winning module
-   * leaves it undefined.
+   * The ChatGPT subscription provider resolves to null, and that is CORRECT.
    *
-   * Resolving to null is CORRECT here, not an oversight. Its upstream is
-   * `chatgpt.com/backend-api` — Codex's subscription backend, not an
-   * OpenAI-compatible `/chat/completions` API. The module's own comment records
-   * the incident: an `openai/<model>` request that leaked to that host returned
+   * Its upstream is `chatgpt.com/backend-api` — Codex's subscription backend,
+   * not an OpenAI-compatible `/chat/completions` API. Its models endpoint
+   * returns `{models:[{slug,title}]}` rather than OpenAI's `{data:[{id}]}`
+   * (chatgpt-oauth-module.ts:94), and that module's comment records the
+   * incident where an `openai/<model>` request leaking to this host returned
    * `403` without a ChatGPT session. Treating "undefined sdkCompat" as
    * "probably OpenAI" would re-create exactly that misroute.
+   *
+   * providers.json used to declare `sdkCompat: "openai"` for this id. It was
+   * inert — the specialized module claims the id first and the config loop
+   * skips it — but it was still a false claim about the wire protocol, so it
+   * has been removed. `sdkCompatIsNotDeclaredForChatgpt` below pins that.
    *
    * If ChatGPT should ever back these features, the fix is to give it a real
    * OpenAI-compatible upstream — not to loosen this check.
@@ -150,6 +154,24 @@ describe('resolveCompletionTarget protocol gating', () => {
       }),
     });
     expect(await resolveCompletionTarget(orgId)).toBeNull();
+  });
+
+  /**
+   * The config must not claim a protocol the upstream does not speak.
+   *
+   * This was inert (the specialized module wins the id), but a false entry is
+   * a trap: `buildProviderCatalog` resolves `config?.sdkCompat ?? module…`, so
+   * config wins wherever it IS consulted. With it removed, the catalog, the
+   * API-key creation gate in agent-routes.ts, and this resolver all agree that
+   * chatgpt is not routable as OpenAI.
+   */
+  it('providers.json does not declare an OpenAI protocol for chatgpt', async () => {
+    const cfg = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, '../../../../../config/providers.json'), 'utf8'),
+    ) as { providers: Array<{ id: string; providers: Array<{ sdkCompat?: string }> }> };
+    const chatgpt = cfg.providers.find((g) => g.id === 'chatgpt');
+    expect(chatgpt).toBeDefined();
+    expect(chatgpt?.providers[0]?.sdkCompat).toBeUndefined();
   });
 
   it('does NOT resolve an explicitly non-OpenAI protocol', async () => {

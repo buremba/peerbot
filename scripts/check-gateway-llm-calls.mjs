@@ -143,7 +143,10 @@ function statementText(lines, idx) {
         if (line.startsWith("/*", j)) {
           inBlockComment = true;
           j += 2;
-        } else if (line.startsWith("//", j) && (j === 0 || line[j - 1] !== ":")) {
+        } else if (
+          line.startsWith("//", j) &&
+          (j === 0 || line[j - 1] !== ":")
+        ) {
           break;
         } else {
           code += line[j];

@@ -91,34 +91,30 @@ jobs:
       is_stable: ${{ steps.semver.outputs.is_stable }}
       should_publish: ${{ steps.semver.outputs.should_publish }}
     steps:
-      # Claim a timestamp tag no image already carries. Serialization alone no
+      # `{date}-{run_number}`, not a wall-clock time. Serialization alone no
       # longer guarantees uniqueness now that a release can run beside a push,
-      # and the tag is second-resolution. Format stays `^(\d{8})-(\d{6})$`
-      # because that is what Flux's ImagePolicy matches — semver/latest are
-      # invisible to it, so the timestamp is what actually deploys.
+      # and a clock is the wrong tool: two runs starting in the same second
+      # produce the same value. Asking the registry first does not fix it
+      # either — that is check-then-act, and concurrent runs both observe the
+      # tag free before either has pushed.
       #
-      # Probes the app repo only: all three images share one tag, so if app is
-      # free the others are too. Failing open on an unreachable registry keeps
-      # a GHCR blip from blocking every build; the tag is then merely as unique
-      # as it was before this loop.
-      - name: Generate shared timestamp tag
+      # run_number is unique and monotonic per workflow, so equal tags are
+      # impossible by construction rather than unlikely. Zero-padded to six
+      # digits to satisfy Flux's ImagePolicy `^(\d{8})-(\d{6})$` — semver and
+      # latest are invisible to it, so this tag is what actually deploys — and
+      # its numerical `${date}${time}` extract still orders ascending, so the
+      # newest build still wins. Hard-fails past 999999 rather than silently
+      # emitting an unmatched tag that would freeze deploys.
+      - name: Generate shared image tag
         id: timestamp
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for _ in $(seq 1 10); do
-            tag="$(date -u +'%Y%m%d-%H%M%S')"
-            if ! taken="$(gh api "/orgs/${{ github.repository_owner }}/packages/container/lobu-app/versions" \
-                  --paginate --jq '[.[].metadata.container.tags[]] | @tsv' 2>/dev/null)"; then
-              echo "::warning::registry unreachable; using $tag unverified"
-              break
-            fi
-            case "	$taken	" in
-              *"	$tag	"*) echo "tag $tag already published, retrying"; sleep 1; continue;;
-            esac
-            break
-          done
+          run_number="${{ github.run_number }}"
+          if [ "$run_number" -gt 999999 ]; then
+            echo "::error::run_number $run_number exceeds the 6 digits the tag format allows."
+            exit 1
+          fi
+          tag="$(date -u +'%Y%m%d')-$(printf '%06d' "$run_number")"
           echo "Using image tag: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 

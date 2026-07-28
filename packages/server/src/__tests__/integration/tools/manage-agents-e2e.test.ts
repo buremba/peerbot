@@ -746,9 +746,9 @@ describe("manage_agents — model config (#2047)", () => {
 	});
 
 	it("create WITHOUT default_model and no org default ⇒ not_runnable", async () => {
-		// Needs an org with NO provider at all: the shared `orgId` has a `myco`
-		// row from beforeAll, and an org's first provider becomes its default, so
-		// that org resolves `org_default` rather than `none`.
+		// Needs an org with NO provider at all: the shared `orgId` has a runnable
+		// `myco` row from beforeAll, so it resolves `org_default` rather than
+		// `none`.
 		const bareOrg = await createTestOrganization({ name: "no provider org" });
 		const bareOwner = await createTestUser({ email: "ma-bare-owner@test.com" });
 		await addUserToOrganization(bareOwner.id, bareOrg.id, "owner");
@@ -766,9 +766,8 @@ describe("manage_agents — model config (#2047)", () => {
 	});
 
 	it("create WITHOUT default_model but WITH an org default ⇒ runnable via org_default", async () => {
-		// The complement: the shared org has a provider (hence a default), so a
-		// model-less agent is still runnable by inheriting it. This is the branch
-		// that makes "an org's first provider is its default" worth having.
+		// The complement: the shared org has a runnable default provider, so a
+		// model-less agent inherits it.
 		const res = (await executeTool(
 			"manage_agents",
 			{ action: "create", agent_id: "inherit-model-bot", name: "Inherit" },

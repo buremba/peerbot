@@ -634,6 +634,7 @@ async function ensureVisibleOAuthProvidersForUser(
 			slug: config.id,
 			kind: config.id,
 			displayName: config.name,
+			defaultModel: config.defaultModel,
 			createdBy: user.id,
 		});
 	}
@@ -827,6 +828,7 @@ routes.post("/inference-providers/oauth/complete", async (c) => {
 			slug: config.id,
 			kind: config.id,
 			displayName: config.name,
+			defaultModel: config.defaultModel,
 			createdBy: user.id,
 		});
 		emitConfigChange(c, {

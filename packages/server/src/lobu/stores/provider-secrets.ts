@@ -15,7 +15,7 @@
  */
 
 import { createLogger, decrypt, encrypt, getErrorMessage } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { getDb, type DbClient } from "../../db/client.js";
 
 const logger = createLogger("provider-secrets");
 
@@ -263,29 +263,84 @@ function mapRow(r: RawInferenceProviderRow): InferenceProviderRow {
 }
 
 /**
+ * Serialize every default-mutating path for ONE org by taking a row lock on
+ * its `organization` row. Multi-replica correctness: two pods creating or
+ * deleting providers concurrently would otherwise interleave the
+ * "is there a default?" read with the other's write, and both could conclude
+ * "no default exists" and promote — which the partial unique index
+ * `inference_providers_org_default_live` then surfaces to a user as a spurious
+ * conflict error on an unrelated create. Locking the parent row (never the
+ * provider rows, which the racing txn may be inserting) makes promotion
+ * read-modify-write safe. Scoped per-org, so unrelated tenants never contend.
+ */
+async function lockInferenceProviderDefaults(
+	sql: DbClient,
+	organizationId: string,
+): Promise<void> {
+	await sql`
+		SELECT id FROM organization
+		WHERE id = ${organizationId}
+		FOR UPDATE
+	`;
+}
+
+/**
+ * Promote the oldest RUNNABLE live provider to org default, but only when the
+ * org currently has none (the `NOT EXISTS` guard makes this idempotent, so
+ * every mutating path can call it unconditionally).
+ *
+ * "Runnable" = carries a non-blank `capabilities.text.model`. A row without one
+ * would resolve to null in `getOrgDefaultModel`, leaving the org just as
+ * default-less as before while *looking* fixed. Oldest-first (`created_at`,
+ * ties broken by the monotonic identity id) keeps the choice deterministic and
+ * identical across replicas.
+ */
+async function promoteOldestRunnableProvider(
+	sql: DbClient,
+	organizationId: string,
+): Promise<void> {
+	await sql`
+		UPDATE inference_providers
+		SET is_default = true, updated_at = now()
+		WHERE id = (
+			SELECT candidate.id
+			FROM inference_providers candidate
+			WHERE candidate.organization_id = ${organizationId}
+			  AND candidate.deleted_at IS NULL
+			  AND NULLIF(BTRIM(candidate.capabilities #>> '{text,model}'), '') IS NOT NULL
+			  AND NOT EXISTS (
+				  SELECT 1 FROM inference_providers current_default
+				  WHERE current_default.organization_id = ${organizationId}
+				    AND current_default.is_default
+				    AND current_default.deleted_at IS NULL
+			  )
+			ORDER BY candidate.created_at, candidate.id
+			LIMIT 1
+		)
+	`;
+}
+
+/**
  * Create one inference-provider credential for an org. Atomic: a single
  * transaction (a) mints the row id via the identity sequence, (b) derives the
  * row-unique `api_key_ref = secret://<org>/<slug>-<id>`, (c) INSERTs the row
- * with the explicit id — as the org default when it is the org's FIRST live
- * provider — and (d) encrypts the api key into `agent_secrets` under
- * `<slug>-<id>`. On a live slug collision returns a typed
+ * with the explicit id, (d) ensures the org has a runnable default, and (e)
+ * encrypts the api key into `agent_secrets` under `<slug>-<id>`. On a live slug
+ * collision returns a typed
  * `{ error: 'slug_conflict' }` rather than throwing.
  *
- * First-provider-is-default: the org default is the tail of the layered model
- * fallback (behavior → agent → org default), so an org with no default has no
+ * Why (d): the org default is the tail of the layered model fallback
+ * (behavior → agent → org default), so an org with no default has no
  * resolvable model at all — `getOrgDefaultModel` returns null and every
  * org-scoped model consumer silently no-ops. Marking a provider default was a
  * SEPARATE explicit call (`PUT /inference-providers/:slug/default`) that
- * nothing chains to creation, so in practice orgs connected a provider and
- * never got a default: as of 2026-07-28 no live prod row had `is_default`.
- * Defaulting the first one removes a required manual step that had no sensible
- * alternative answer — with one provider, it IS the default.
+ * nothing chained to creation, so creating a provider could leave the org
+ * without a model fallback.
  *
- * Safe under concurrency: the partial unique index
- * `inference_providers_org_default_live (organization_id) WHERE is_default AND
- * deleted_at IS NULL` lets Postgres, not this read, be the arbiter. Two
- * simultaneous first-creates make one commit and the other fail the index,
- * which the caller already surfaces as a conflict — never two defaults.
+ * "Runnable" is load-bearing — promotion only ever considers rows that carry a
+ * `capabilities.text.model`. Promoting a model-less row would hand the org a
+ * default that still resolves to null, which is the same silent no-op wearing
+ * a different hat.
  */
 export async function createInferenceProvider(args: {
 	organizationId: string;
@@ -311,6 +366,8 @@ export async function createInferenceProvider(args: {
 
 	try {
 		return await sql.begin(async (tx) => {
+			await lockInferenceProviderDefaults(tx, organizationId);
+
 			// Mint the id up front so it can be embedded in api_key_ref BEFORE the
 			// INSERT (BY DEFAULT identity allows the explicit id; see migration).
 			const idRows = (await tx`
@@ -320,25 +377,18 @@ export async function createInferenceProvider(args: {
 			const secretName = inferenceProviderSecretName(slug, id);
 			const apiKeyRef = `secret://${organizationId}/${secretName}`;
 
-			// Is this the org's first live provider? Read inside the txn; the
-			// partial unique index is the real arbiter under a concurrent race.
-			const existing = (await tx`
-				SELECT 1 FROM inference_providers
-				WHERE organization_id = ${organizationId} AND deleted_at IS NULL
-				LIMIT 1
-			`) as Array<{ "?column?": number }>;
-			const isFirstProvider = existing.length === 0;
-
 			const rows = (await tx`
 				INSERT INTO inference_providers
-					(id, organization_id, slug, kind, display_name, api_key_ref, capabilities, created_by, is_default)
+					(id, organization_id, slug, kind, display_name, api_key_ref, capabilities, created_by)
 				VALUES (
 					${id}, ${organizationId}, ${slug}, ${kind}, ${displayName},
-					${apiKeyRef}, ${sql.json(capabilities)}, ${createdBy}, ${isFirstProvider}
+					${apiKeyRef}, ${sql.json(capabilities)}, ${createdBy}
 				)
 				RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
 				          capabilities, has_custom_upstream, status, created_at
 			`) as RawInferenceProviderRow[];
+
+			await promoteOldestRunnableProvider(tx, organizationId);
 
 			// Encrypt the key into the org vault under the row-unique name.
 			await tx`
@@ -378,6 +428,7 @@ export async function ensureOAuthInferenceProvider(args: {
 	slug: string;
 	kind: string;
 	displayName?: string | null;
+	defaultModel?: string | null;
 	createdBy?: string | null;
 }): Promise<InferenceProviderRow> {
 	const {
@@ -385,12 +436,18 @@ export async function ensureOAuthInferenceProvider(args: {
 		slug,
 		kind,
 		displayName = null,
+		defaultModel = null,
 		createdBy = null,
 	} = args;
 	const sql = getDb();
+	const oauthCapabilities: InferenceCapabilities = defaultModel
+		? { text: { model: defaultModel } }
+		: {};
 
 	try {
 		return await sql.begin(async (tx) => {
+			await lockInferenceProviderDefaults(tx, organizationId);
+
 			const existing = (await tx`
 					SELECT id, organization_id, slug, kind, display_name, api_key_ref,
 					       capabilities, has_custom_upstream, status, created_at
@@ -403,7 +460,27 @@ export async function ensureOAuthInferenceProvider(args: {
 			const existingRow = existing[0];
 			if (existingRow) {
 				if (isOAuthInferenceProviderRef(existingRow.api_key_ref)) {
-					return mapRow(existingRow);
+					let row = existingRow;
+					if (
+						defaultModel &&
+						!existingRow.capabilities?.text?.model?.trim()
+					) {
+						const updated = (await tx`
+							UPDATE inference_providers
+							SET capabilities = capabilities || jsonb_build_object(
+								'text',
+								COALESCE(capabilities -> 'text', '{}'::jsonb) ||
+									jsonb_build_object('model', ${defaultModel}::text)
+							),
+							    updated_at = now()
+							WHERE id = ${existingRow.id}
+							RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
+							          capabilities, has_custom_upstream, status, created_at
+						`) as RawInferenceProviderRow[];
+						row = updated[0] ?? existingRow;
+					}
+					await promoteOldestRunnableProvider(tx, organizationId);
+					return mapRow(row);
 				}
 
 				const apiKeyRef = oauthInferenceProviderRef(
@@ -416,13 +493,14 @@ export async function ensureOAuthInferenceProvider(args: {
 						SET kind = ${kind},
 						    display_name = COALESCE(${displayName}, display_name),
 						    api_key_ref = ${apiKeyRef},
-						    capabilities = '{}'::jsonb,
+						    capabilities = ${sql.json(oauthCapabilities)}::jsonb,
 						    created_by = COALESCE(created_by, ${createdBy}),
 						    updated_at = now()
 						WHERE id = ${existingRow.id}
 						RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
 						          capabilities, has_custom_upstream, status, created_at
 					`) as RawInferenceProviderRow[];
+				await promoteOldestRunnableProvider(tx, organizationId);
 				return mapRow(repaired[0]);
 			}
 
@@ -437,12 +515,13 @@ export async function ensureOAuthInferenceProvider(args: {
 					(id, organization_id, slug, kind, display_name, api_key_ref, capabilities, created_by)
 				VALUES (
 					${id}, ${organizationId}, ${slug}, ${kind}, ${displayName},
-					${apiKeyRef}, '{}'::jsonb, ${createdBy}
+					${apiKeyRef}, ${sql.json(oauthCapabilities)}::jsonb, ${createdBy}
 				)
 				RETURNING id, organization_id, slug, kind, display_name, api_key_ref,
 				          capabilities, has_custom_upstream, status, created_at
 			`) as RawInferenceProviderRow[];
 
+			await promoteOldestRunnableProvider(tx, organizationId);
 			return mapRow(rows[0]);
 		});
 	} catch (error) {
@@ -488,40 +567,88 @@ export async function listInferenceProviders(
 	}));
 }
 
+interface OrgDefaultModelRow {
+	id: string | number;
+	slug: string;
+	capabilities: InferenceCapabilities;
+	is_default: boolean;
+}
+
+async function readOrgDefaultCandidate(
+	sql: DbClient,
+	organizationId: string,
+): Promise<OrgDefaultModelRow | null> {
+	const rows = (await sql`
+		SELECT id, slug, capabilities, is_default
+		FROM inference_providers
+		WHERE organization_id = ${organizationId}
+		  AND deleted_at IS NULL
+		  AND (
+			  is_default
+			  OR NULLIF(BTRIM(capabilities #>> '{text,model}'), '') IS NOT NULL
+		  )
+		ORDER BY is_default DESC, created_at, id
+		LIMIT 1
+	`) as OrgDefaultModelRow[];
+	return rows[0] ?? null;
+}
+
+function modelRefFromDefaultRow(row: OrgDefaultModelRow | null): string | null {
+	const model = row?.capabilities?.text?.model?.trim();
+	if (!model || !row?.slug) return null;
+	return model.startsWith(`${row.slug}/`) ? model : `${row.slug}/${model}`;
+}
+
 /**
- * The org's default model — the fallback tail of `behavior → agent → org`. Reads
- * the `is_default` inference-provider row and returns a ROUTABLE `slug/model`
- * ref built from the row's slug + text-modality model (`capabilities.text.model`),
- * or null when the org has no default (or the default row carries no text model).
+ * The org's default model — the fallback tail of `behavior → agent → org` —
+ * as a ROUTABLE `slug/model` ref, or null when the org has nothing runnable.
  *
  * The `slug/` prefix is load-bearing: the worker derives the provider from a
- * model ref's first segment (`model-resolver.ts` auto path). A bare model like
- * `gpt-4o` throws "No provider specified" there, so an agent with no installed
- * providers (the exact case the org default exists to serve) could never route
- * a bare org default. Returning `openai/gpt-4o` lets the worker route it with no
- * installed-provider module. Callers fall through to the worker's hard "no model
- * resolved" error only when this is null.
+ * model ref's first segment (`model-resolver.ts` auto path), so a bare `gpt-4o`
+ * throws "No provider specified" there. Checking for a bare `/` would be wrong
+ * — provider-native ids often contain slashes (openrouter
+ * `anthropic/claude-sonnet-5`) — so only an existing `${slug}/…` is left alone.
+ *
+ * SELF-HEALING, because the writers alone cannot fix history. Orgs that
+ * predate first-provider-is-default (and orgs whose only flagged default was
+ * later soft-deleted) would otherwise stay default-less forever. Two repairs
+ * happen under the org lock:
+ *   - no flagged default at all ⇒ promote the oldest runnable provider;
+ *   - a flagged default that is NOT runnable (no `capabilities.text.model`)
+ *     ⇒ demote it, then promote a runnable one. Leaving it would keep
+ *     returning null while the UI showed a default, which is the confusing
+ *     half of the bug.
+ * The fast path (a runnable flagged default) never opens a transaction.
  */
 export async function getOrgDefaultModel(
 	organizationId: string,
 ): Promise<string | null> {
 	const sql = getDb();
-	const rows = (await sql`
-		SELECT slug, capabilities
-		FROM inference_providers
-		WHERE organization_id = ${organizationId}
-		  AND is_default AND deleted_at IS NULL
-		LIMIT 1
-	`) as Array<{ slug: string; capabilities: InferenceCapabilities }>;
-	const row = rows[0];
-	const model = row?.capabilities?.text?.model?.trim();
-	if (!model || !row?.slug) return null;
-	// Prefix with the provider slug unless it's ALREADY prefixed with THIS
-	// slug. Checking for a bare `/` is wrong: provider-native model ids often
-	// contain slashes (openrouter `anthropic/claude-sonnet-5`, nvidia
-	// `nvidia/moonshotai/kimi-k2.6`), and returning those bare would misroute
-	// them to the wrong provider. Only `${slug}/…` is already routable.
-	return model.startsWith(`${row.slug}/`) ? model : `${row.slug}/${model}`;
+	const current = await readOrgDefaultCandidate(sql, organizationId);
+	if (!current) return null;
+	const currentModel = modelRefFromDefaultRow(current);
+	if (current.is_default && currentModel) return currentModel;
+
+	return await sql.begin(async (tx) => {
+		await lockInferenceProviderDefaults(tx, organizationId);
+		const afterLock = await readOrgDefaultCandidate(tx, organizationId);
+		if (!afterLock) return null;
+		const afterLockModel = modelRefFromDefaultRow(afterLock);
+		if (afterLock.is_default && afterLockModel) return afterLockModel;
+
+		if (afterLock.is_default) {
+			await tx`
+				UPDATE inference_providers
+				SET is_default = false, updated_at = now()
+				WHERE id = ${afterLock.id}
+			`;
+		}
+
+		await promoteOldestRunnableProvider(tx, organizationId);
+		return modelRefFromDefaultRow(
+			await readOrgDefaultCandidate(tx, organizationId),
+		);
+	});
 }
 
 /**
@@ -536,6 +663,8 @@ export async function setInferenceProviderDefault(
 ): Promise<boolean> {
 	const sql = getDb();
 	return await sql.begin(async (tx) => {
+		await lockInferenceProviderDefaults(tx, organizationId);
+
 		// Confirm the target exists BEFORE clearing the current default —
 		// otherwise a missing slug would commit the clear and leave the org with
 		// no default at all.
@@ -656,6 +785,59 @@ export async function resolveInferenceProviderConfig(
 	};
 }
 
+interface ResolvedInferenceProviderCredential {
+	kind: string;
+	baseUrl?: string;
+	apiKey?: string;
+}
+
+/**
+ * Resolve a provider row's credential even when it has no modality override.
+ * The base URL and ciphertext come from one read so a concurrent capability
+ * edit cannot pair a tenant URL with a key read from a different row state.
+ */
+export async function resolveInferenceProviderCredential(
+	organizationId: string,
+	slug: string,
+	modality: InferenceModality,
+): Promise<ResolvedInferenceProviderCredential | null> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT p.kind, p.capabilities -> ${modality} AS block, s.ciphertext
+		FROM inference_providers p
+		LEFT JOIN agent_secrets s
+		  ON s.organization_id = p.organization_id
+		 AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
+		 AND (s.expires_at IS NULL OR s.expires_at > now())
+		WHERE p.organization_id = ${organizationId} AND p.slug = ${slug}
+		  AND p.deleted_at IS NULL
+		LIMIT 1
+	`) as Array<{
+		kind: string;
+		block: InferenceCapabilityBlock | null;
+		ciphertext: string | null;
+	}>;
+	const row = rows[0];
+	if (!row) return null;
+
+	let apiKey: string | undefined;
+	if (row.ciphertext) {
+		try {
+			apiKey = decrypt(row.ciphertext);
+		} catch (error) {
+			logger.warn(
+				`Failed to decrypt inference-provider key for ${organizationId}/${slug}: ${getErrorMessage(error)}`,
+			);
+		}
+	}
+
+	return {
+		kind: row.kind,
+		baseUrl: row.block?.base_url,
+		apiKey,
+	};
+}
+
 /**
  * Merge (never clobber) one modality's block into `capabilities`:
  * `capabilities || jsonb_build_object(<modality>, <block>)`, so a concurrent
@@ -768,14 +950,12 @@ export async function rotateInferenceProviderKey(
  * recreate mints a fresh id so it never inherits this row's ciphertext.
  * Returns false when no live row exists for the slug.
  *
- * Deleting THE default promotes the oldest surviving live provider in the same
- * transaction. Without this, removing the default silently leaves the org with
- * none — `getOrgDefaultModel` starts returning null and every org-scoped model
- * consumer no-ops, with nothing in the UI to indicate why. Prod shows this is
- * the real failure mode, not a hypothetical: the only `is_default` row found
- * there (2026-07-28) was soft-deleted, leaving every org default-less.
- * Promotion is skipped when the deleted row was not the default, and is a no-op
- * when it was the org's last provider.
+ * Deleting THE default promotes the oldest surviving runnable provider in the
+ * same transaction. Without this, removing the default silently leaves the org
+ * with none — `getOrgDefaultModel` starts returning null and every org-scoped
+ * model consumer no-ops, with nothing in the UI to indicate why. Promotion is
+ * skipped when the deleted row was not the default, and is a no-op when it was
+ * the org's last runnable provider.
  */
 export async function softDeleteInferenceProvider(
 	organizationId: string,
@@ -783,6 +963,8 @@ export async function softDeleteInferenceProvider(
 ): Promise<boolean> {
 	const sql = getDb();
 	return await sql.begin(async (tx) => {
+		await lockInferenceProviderDefaults(tx, organizationId);
+
 		const rows = (await tx`
 			UPDATE inference_providers
 			SET deleted_at = now(), updated_at = now()
@@ -793,18 +975,7 @@ export async function softDeleteInferenceProvider(
 		if (rows.length === 0) return false;
 		if (!rows[0]?.is_default) return true;
 
-		// Oldest-first so promotion is deterministic and stable across replicas
-		// (`created_at` ties broken by the monotonic identity id).
-		await tx`
-			UPDATE inference_providers
-			SET is_default = true, updated_at = now()
-			WHERE id = (
-				SELECT id FROM inference_providers
-				WHERE organization_id = ${organizationId} AND deleted_at IS NULL
-				ORDER BY created_at, id
-				LIMIT 1
-			)
-		`;
+		await promoteOldestRunnableProvider(tx, organizationId);
 		return true;
 	});
 }
@@ -919,57 +1090,4 @@ export async function readOrgSharedProviderApiKey(
 		);
 		return null;
 	}
-}
-
-interface ResolvedInferenceProviderCredential {
-	kind: string;
-	baseUrl?: string;
-	apiKey?: string;
-}
-
-/**
- * Resolve a provider row's credential even when it has no modality override.
- * The base URL and ciphertext come from one read so a concurrent capability
- * edit cannot pair a tenant URL with a key read from a different row state.
- */
-export async function resolveInferenceProviderCredential(
-	organizationId: string,
-	slug: string,
-	modality: InferenceModality,
-): Promise<ResolvedInferenceProviderCredential | null> {
-	const sql = getDb();
-	const rows = (await sql`
-		SELECT p.kind, p.capabilities -> ${modality} AS block, s.ciphertext
-		FROM inference_providers p
-		LEFT JOIN agent_secrets s
-		  ON s.organization_id = p.organization_id
-		 AND ('secret://' || p.organization_id || '/' || s.name) = p.api_key_ref
-		 AND (s.expires_at IS NULL OR s.expires_at > now())
-		WHERE p.organization_id = ${organizationId} AND p.slug = ${slug}
-		  AND p.deleted_at IS NULL
-		LIMIT 1
-	`) as Array<{
-		kind: string;
-		block: InferenceCapabilityBlock | null;
-		ciphertext: string | null;
-	}>;
-	const row = rows[0];
-	if (!row) return null;
-
-	let apiKey: string | undefined;
-	if (row.ciphertext) {
-		try {
-			apiKey = decrypt(row.ciphertext);
-		} catch (error) {
-			logger.warn(
-				`Failed to decrypt inference-provider key for ${organizationId}/${slug}: ${getErrorMessage(error)}`,
-			);
-		}
-	}
-
-	return {
-		kind: row.kind,
-		baseUrl: row.block?.base_url,
-		apiKey,
-	};
 }

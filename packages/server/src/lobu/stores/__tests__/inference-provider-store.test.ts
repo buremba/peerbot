@@ -215,10 +215,8 @@ describe('inference-provider store', () => {
       capabilities: { text: { model: 'llama-y' } },
     });
 
-    // The FIRST provider an org creates becomes its default automatically, so
-    // the org is already resolvable here — `groq`, created second, did not
-    // steal it. (Before that behaviour existed, an org could sit with zero
-    // defaults forever and every org-scoped model consumer silently no-opped.)
+    // The first runnable provider becomes the default; `groq`, created second,
+    // does not steal it.
     expect(await getOrgDefaultModel(ORG)).toBe('openai/gpt-x');
 
     // Mark openai the default → its text model is the org default, returned as

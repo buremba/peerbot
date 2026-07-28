@@ -226,9 +226,8 @@ describe("manage_agents create — env-key deployment provisions a runnable agen
 		// Own org: this pins the NO-org-default branch of
 		// resolveNewAgentProvisioningDefaults (seed the system-key models list).
 		// The shared `orgId` can't be used — an earlier test in this file creates
-		// an `inference_providers` row there, and an org's first provider becomes
-		// its default, which correctly switches provisioning to the seed-nothing
-		// branch ("already runnable via the documented fallback").
+		// a runnable `inference_providers` row there, which becomes the org
+		// default and switches provisioning to the seed-nothing branch.
 		const freshOrg = await createTestOrganization({
 			name: "store fresh insert",
 		});

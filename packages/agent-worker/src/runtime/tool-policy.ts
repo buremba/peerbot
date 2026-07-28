@@ -95,26 +95,26 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
 ];
 
 const DIRECT_PACKAGE_INSTALL_PATTERNS = [
-  /(^|[\s;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
-  /(^|[\s;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
   // New-style nix subcommands and the nix-* helpers, recognized after a shell
   // operator or `sudo` (leading forms are already covered by the prefix list).
-  /(^|[\s;|&()])(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
-  /(^|[\s;|&()])(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
-  /(^|[\s;|&()])(?:pip|pip3)\s+install\b/i,
-  /(^|[\s;|&()])uv\s+pip\s+install\b/i,
-  /(^|[\s;|&()])uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
-  /(^|[\s;|&()])uvx\b/i,
-  /(^|[\s;|&()])pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
-  /(^|[\s;|&()])npm\s+(?:install|i)\b/i,
-  /(^|[\s;|&()])pnpm\s+(?:install|add|dlx)\b/i,
-  /(^|[\s;|&()])yarn\s+(?:install|add|global\s+add|dlx)\b/i,
-  /(^|[\s;|&()])bun\s+(?:install|add)\b/i,
-  /(^|[\s;|&()])cargo\s+install\b/i,
-  /(^|[\s;|&()])go\s+install\b/i,
-  /(^|[\s;|&()])gem\s+install\b/i,
-  /(^|[\s;|&()])poetry\s+add\b/i,
-  /(^|[\s;|&()])composer\s+require\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*(?:pip|pip3)\s+install\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*uv\s+pip\s+install\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*uvx\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*npm\s+(?:install|i)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*pnpm\s+(?:install|add|dlx)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*yarn\s+(?:install|add|global\s+add|dlx)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*bun\s+(?:install|add)\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*cargo\s+install\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*go\s+install\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*gem\s+install\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*poetry\s+add\b/i,
+  /(?:^|[;|&()\n])[^\S\n]*composer\s+require\b/i,
 ];
 
 /**
@@ -212,8 +212,12 @@ function blankQuotedSpans(text: string): string {
  * name (`"nix" run`, `n\ix run`, `/usr/bin/nix run`), a manager behind an exec
  * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
  * the body of an interpreter reached by path or long option (`/bin/bash -c`,
- * `bash --login -c`). It also over-denies a manager named as a plain argument
- * (`echo uvx cowsay`).
+ * `bash --login -c`).
+ *
+ * It matches only at a COMMAND POSITION — start of input, a newline, or just
+ * after a shell operator (`;`, `|`, `&`, parens) — so a manager named as a
+ * plain argument is left alone: `echo uvx cowsay`, `git log --grep nix run`
+ * and `man nix run` all run untouched.
  *
  * Those misses are not holes on the local backend: the manager is never a
  * runnable command there. `UNSANDBOXED_INTERPRETERS` in

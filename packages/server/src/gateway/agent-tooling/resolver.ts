@@ -114,6 +114,9 @@ interface ToolingConnectionRow {
   config: Record<string, unknown> | null;
   agent_tooling: unknown;
   auth_schema: unknown;
+  /** Install state, fingerprint-only — see the query comment. */
+  installation_status: string | null;
+  installation_tenant: string | null;
 }
 
 /**
@@ -198,12 +201,21 @@ async function loadToolingConnections(
            c.connector_key,
            c.config,
            cd.agent_tooling,
-           cd.auth_schema
+           cd.auth_schema,
+           -- Lease AUTHORITY, joined only for the fingerprint: revoking or
+           -- transferring an installation must invalidate a warm worker that
+           -- is still holding a token minted under it. Neither field changes
+           -- what is contributed, so nothing else reads them.
+           ai.status AS installation_status,
+           ai.external_tenant_id AS installation_tenant
     FROM connections c
     JOIN connector_definitions cd
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
+    LEFT JOIN app_installations ai
+      ON ai.id = NULLIF(c.config->>'installation_ref', '')::bigint
+     AND ai.organization_id = c.organization_id
     WHERE c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
       AND c.status = 'active'
@@ -226,6 +238,11 @@ function toolingIdentityEntry(
     String(row.connection_id),
     row.connector_key,
     installationRef == null ? null : String(installationRef),
+    // Suspending an install, or transferring it to another GitHub org, leaves
+    // the connection row untouched — so without these a warm worker keeps
+    // using a token minted under authority it no longer has.
+    row.installation_status,
+    row.installation_tenant,
     tooling,
   ]);
 }

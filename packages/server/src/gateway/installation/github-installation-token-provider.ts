@@ -24,6 +24,7 @@ import {
   type InstallationTokenProvider,
   InMemoryInstallationTokenCache,
   type MintedInstallationToken,
+  type MintTokenOptions,
 } from "./installation-token-provider.js";
 
 const logger = createLogger("github-installation-token");
@@ -167,10 +168,11 @@ export class GitHubInstallationTokenProvider
   }
 
   async mintToken(
-    install: AppInstallationRow
+    install: AppInstallationRow,
+    options?: MintTokenOptions
   ): Promise<MintedInstallationToken> {
     const key = this.cacheKey(install);
-    const cached = this.cache.get(key);
+    const cached = this.cache.get(key, options?.minTtlMs);
     if (cached) return cached;
 
     const { appId, privateKeyPem } = this.resolveAppConfig(install);

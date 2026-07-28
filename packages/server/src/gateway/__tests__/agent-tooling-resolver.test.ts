@@ -768,45 +768,6 @@ describe("deployment env assembly", () => {
     expect(manager.hasExpiringLease("deploy-unknown")).toBe(false);
   });
 
-  test("the recycle window narrows, never widens, as the lease burns down", async () => {
-    // The consumer evaluates hasExpiringLease at a REWOUND `now` to get the
-    // hard floor that overrides its quiet gate. Rewinding narrows the window
-    // (5min -> 1min); advancing it would WIDEN to 9min and make the override
-    // fire before the quiet path, which would defeat the mid-turn protection
-    // entirely. This pins the direction so it cannot silently flip.
-    const installId = await seedInstall();
-    await seedConnectorDef({
-      key: "github",
-      agentTooling: GITHUB_AGENT_TOOLING,
-      authSchema: GITHUB_AUTH_SCHEMA,
-    });
-    await seedConnection({ connectorKey: "github", installationRef: installId });
-    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
-    await manager.buildEnv(buildPayload());
-
-    const CRITICAL_LEAD = 4 * 60_000;
-    const at = (minsRemaining: number) =>
-      new Date(Date.now() + (60 - minsRemaining) * 60_000);
-    // The harness mints a 60-minute token.
-    const quietGate = (minsRemaining: number) =>
-      manager.hasExpiringLease("deploy-1", at(minsRemaining));
-    const hardFloor = (minsRemaining: number) =>
-      manager.hasExpiringLease(
-        "deploy-1",
-        new Date(at(minsRemaining).getTime() - CRITICAL_LEAD)
-      );
-
-    // 6 minutes left: neither fires.
-    expect(quietGate(6)).toBe(false);
-    expect(hardFloor(6)).toBe(false);
-    // 3 minutes left: a quiet worker recycles, a busy one is left alone.
-    expect(quietGate(3)).toBe(true);
-    expect(hardFloor(3)).toBe(false);
-    // 30 seconds left: even a busy worker must recycle.
-    expect(quietGate(0.5)).toBe(true);
-    expect(hardFloor(0.5)).toBe(true);
-  });
-
   test("a deployment with no minted lease is never recycled for expiry", async () => {
     await seedConnectorDef({
       key: "github",
@@ -887,6 +848,115 @@ describe("deployment env assembly", () => {
     expect(after.domains).toEqual(before.domains);
     // ...but identity is not.
     expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
+  test("REGRESSION: suspending an installation invalidates a warm worker", async () => {
+    // Revoking the App install at GitHub leaves connections/connector_definitions
+    // untouched, so a fingerprint over those alone would not change and the warm
+    // worker would keep using a token minted under authority it no longer has.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    await getDb()`
+      UPDATE app_installations SET status = 'revoked' WHERE id = ${installId}
+    `;
+    const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
+  test("REGRESSION: transferring an installation to another tenant is a change", async () => {
+    // Same App id, same declaration, different GitHub org — the agent's
+    // identity changed even though nothing about the connection did.
+    const installId = await seedInstall(ORG, "55556666");
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    await getDb()`
+      UPDATE app_installations
+         SET external_tenant_id = '77778888'
+       WHERE id = ${installId}
+    `;
+    const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    expect(after.packages).toEqual(before.packages);
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
+  test("BLOCKER REGRESSION: a re-mint never returns a token inside the recycle margin", async () => {
+    // The recycle exists to replace a dying credential. The provider cache
+    // serves any token with >60s left, but the deployment recycles at <=5min
+    // remaining — so without a stricter TTL on the LEASE path the re-mint
+    // hands back the SAME dying token, re-records the same expiry, and
+    // recycles again next turn: a cold start every turn, forever, and every
+    // deployment born with a nearly-dead credential.
+    //
+    // Uses the REAL InMemoryInstallationTokenCache, unlike the mint-fresh
+    // harness registry, because the cache IS the thing under test.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey
+      .export({ type: "pkcs1", format: "pem" })
+      .toString();
+
+    // First mint yields a token with only 3 minutes left — inside the margin.
+    // Every later mint yields a healthy 1h token.
+    let mintCount = 0;
+    __resetInstallationTokenRegistryForTests();
+    getInstallationTokenRegistry().register(
+      new GitHubInstallationTokenProvider({
+        env: { TEST_GH_APP_ID: "12345", TEST_GH_APP_KEY: privateKeyPem },
+        cache: new InMemoryInstallationTokenCache(),
+        fetchImpl: (async () => {
+          mintCount += 1;
+          const ttl = mintCount === 1 ? 3 * 60_000 : 3_600_000;
+          return new Response(
+            JSON.stringify({
+              token: `ghs_mint_${mintCount}`,
+              expires_at: new Date(Date.now() + ttl).toISOString(),
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        }) as unknown as typeof fetch,
+      })
+    );
+    const registry = new CredentialLeaseRegistry();
+    registry.register(
+      new GitHubCredentialLeaseProvider(createPostgresAppInstallationStore())
+    );
+
+    const first = await resolve({ registry });
+    expect(first.env.GH_TOKEN).toBe("ghs_mint_1");
+
+    // The recycle re-mints. The 3-minute token is still cache-eligible under
+    // the default 60s skew, so only the lease path's stricter TTL forces a
+    // fresh one.
+    const second = await resolve({ registry });
+    expect(second.env.GH_TOKEN).toBe("ghs_mint_2");
+    expect(mintCount).toBe(2);
+
+    // And the replacement is actually outside the recycle margin, so the
+    // rebuilt deployment does not immediately qualify for recycling again.
+    const remainingMs = second.leaseExpiresAt!.getTime() - Date.now();
+    expect(remainingMs).toBeGreaterThan(5 * 60_000);
   });
 
   test("an unchanged org keeps its warm worker", async () => {

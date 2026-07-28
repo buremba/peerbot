@@ -31,6 +31,15 @@ import type { AppInstallationStore } from "../../lobu/stores/app-installation-st
 
 const logger = createLogger("credential-lease");
 
+/**
+ * Minimum life a lease token must have left to be reused from cache.
+ *
+ * Must exceed the deployment manager's recycle margin (5 min): a recycle that
+ * re-mints inside the margin gets the same token back, re-records the same
+ * expiry, and recycles again on the next turn.
+ */
+const LEASE_MIN_TTL_MS = 10 * 60_000;
+
 /** The connection a lease is being minted for, as resolved from the database. */
 export interface LeaseSubject {
   /** `connections.id`. */
@@ -211,7 +220,15 @@ export class GitHubCredentialLeaseProvider implements CredentialLeaseProvider {
 
     let minted: MintedInstallationToken;
     try {
-      minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+      minted = await getInstallationTokenRegistry().mintFor(installWithKeys, {
+        // A lease is baked into a sandbox that reads its env once at startup,
+        // so a cached token with a few minutes left would produce a worker
+        // that is born nearly dead — and the deployment would immediately
+        // recycle itself for expiry, hand back the SAME cached token, and
+        // churn a cold start every turn. Demand more runway than the recycle
+        // margin so a re-mint always makes progress.
+        minTtlMs: LEASE_MIN_TTL_MS,
+      });
     } catch (error) {
       const reason =
         error instanceof InstallationTokenError ? error.reason : "unknown";

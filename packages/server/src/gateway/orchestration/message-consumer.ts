@@ -55,27 +55,7 @@ import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
 
-/**
- * How long a worker must have been quiet before it may be recycled for stale
- * tooling or an expiring lease.
- *
- * `ensureWorkerExists` runs AFTER the turn is enqueued, so a warm worker may
- * already be executing it. Recycling then would SIGTERM a live run and drop
- * the user's reply. Staleness can wait for the next turn; a lost reply cannot
- * be recovered.
- */
-const MIN_QUIET_MS_BEFORE_RECYCLE = 30_000;
 
-/**
- * How much of the 5-minute recycle margin must burn down before an expiring
- * lease overrides the quiet gate — leaving a 1-minute hard floor.
- *
- * A conversation busy enough to never look quiet would otherwise never renew,
- * which is the very bug the recycle exists to fix. Inside the final minute the
- * credential is close enough to death that a mid-command 401 is the likelier
- * harm, so recycling wins even at the risk of interrupting a turn.
- */
-const LEASE_CRITICAL_LEAD_MS = 4 * 60_000;
 
 /**
  * Mint the per-run worker JWT the worker uses as its PRIMARY gateway auth
@@ -724,6 +704,19 @@ export class MessageConsumer {
         return;
       }
 
+      // Recycle a stale worker BEFORE the turn becomes deliverable. Doing this
+      // after enqueue cannot be made safe by an idleness check: the worker can
+      // claim the newly-queued turn between the check and the SIGTERM, so a
+      // reply would be lost. Nothing below this point is reachable by the
+      // worker yet, so a teardown here can only interrupt a PREVIOUS turn —
+      // and `hasExpiringLease`/`hasToolingChanged` are only consulted for a
+      // deployment that has already gone quiet enough to be reusable.
+      await this.recycleStaleDeployment(
+        deploymentName,
+        toolingFingerprint,
+        traceId
+      );
+
       // Arm the turn-liveness marker BEFORE the message is deliverable to the
       // worker. The marker is the durable record that this turn owes the client
       // a terminal event; it is discharged on the worker's reply and otherwise
@@ -782,8 +775,7 @@ export class MessageConsumer {
         data,
         effectiveConversationId,
         traceId,
-        childTraceparent,
-        toolingFingerprint
+        childTraceparent
       ).catch((bgError) => {
         // Cross-pod handled-elsewhere signal: another replica won the
         // per-conversation lock and is running this turn to completion. This is
@@ -1019,11 +1011,6 @@ export class MessageConsumer {
   }
 
   /**
-   * Ensure worker deployment exists for a thread
-   * Uses shared retry utility with linear backoff + jitter
-   * Uses an advisory lock to prevent concurrent duplicate deployment creation
-   */
-  /**
    * Fold the org's connector-contributed packages and domains into the queue
    * payload, in place.
    *
@@ -1082,18 +1069,71 @@ export class MessageConsumer {
     }
   }
 
+  /**
+   * Tear down a warm deployment whose connector credential is expiring or whose
+   * tooling no longer matches the org's connections, so the create path rebuilds
+   * it with a fresh lease. A worker reads its env once at process start, so
+   * recycling is the only way to change what a sandbox holds.
+   *
+   * MUST be called before the turn is enqueued. After enqueue the worker can
+   * claim the turn at any moment, and no idleness check closes that window —
+   * the worker can start between the check and the SIGTERM, losing the reply.
+   * Here, the turn is not yet deliverable, so a teardown can only interrupt an
+   * already-finished or previous turn.
+   *
+   * Never throws: a stale credential beats a failed turn, and the idle reaper
+   * clears the deployment eventually either way.
+   */
+  private async recycleStaleDeployment(
+    deploymentName: string,
+    toolingFingerprint: string | null,
+    traceId: string
+  ): Promise<void> {
+    try {
+      // Establish there IS a warm deployment before reading any lease state.
+      // On a cold start nothing has been minted yet, so those reads are
+      // guaranteed-unused work — and a DeploymentManager that implements only
+      // the cold path (as the owned-elsewhere suite's fake deliberately does)
+      // would throw on them.
+      const deployments = await this.deploymentManager.listDeployments();
+      if (!deployments.some((d) => d.deploymentName === deploymentName)) return;
+
+      const toolingChanged =
+        toolingFingerprint != null &&
+        this.deploymentManager.hasToolingChanged(
+          deploymentName,
+          toolingFingerprint
+        );
+      const leaseExpiring =
+        this.deploymentManager.hasExpiringLease(deploymentName);
+      if (!toolingChanged && !leaseExpiring) return;
+
+      logger.info(
+        { traceId, deploymentName, tooling_changed: toolingChanged },
+        toolingChanged
+          ? "Connector tooling changed — recycling deployment to pick it up"
+          : "Connector lease expiring — recycling deployment to re-mint"
+      );
+      await this.deploymentManager.deleteDeployment(deploymentName);
+    } catch (error) {
+      logger.warn(
+        { traceId, deploymentName, error: getErrorMessage(error) },
+        "Failed to recycle a stale deployment; continuing with the existing worker"
+      );
+    }
+  }
+
+  /**
+   * Ensure worker deployment exists for a thread
+   * Uses shared retry utility with linear backoff + jitter
+   * Uses an advisory lock to prevent concurrent duplicate deployment creation
+   */
   private async ensureWorkerExists(
     deploymentName: string,
     data: MessagePayload,
     conversationId: string,
     traceId: string,
-    traceparent?: string,
-    /**
-     * Tooling fingerprint resolved for THIS turn, or null when resolution
-     * failed. Passed rather than re-queried so the recycle decision can never
-     * disagree with the contribution that was actually folded into `data`.
-     */
-    toolingFingerprint?: string | null
+    traceparent?: string
   ): Promise<void> {
     return retryWithBackoff(
       async () => {
@@ -1109,87 +1149,9 @@ export class MessageConsumer {
         // Check if this is truly a new thread by looking for existing deployment
         const existingDeployments =
           await this.deploymentManager.listDeployments();
-        let isNewThread = !existingDeployments.some(
+        const isNewThread = !existingDeployments.some(
           (d) => d.deploymentName === deploymentName
         );
-
-        // A warm deployment holding a connector lease that is expiring gets
-        // torn down so the create path below re-mints. A worker reads its env
-        // once at startup, so a live one cannot be handed a fresh credential —
-        // without this, a deployment that never goes idle (idle cleanup is 60m,
-        // GitHub installation tokens last ~60m) keeps serving a sandbox whose
-        // `gh` has started 401ing.
-        // The contribution is folded into `data` above, so its fingerprint is
-        // already resolved for this turn — compare it against what the warm
-        // deployment was built with.
-        const toolingChanged =
-          !isNewThread &&
-          toolingFingerprint != null &&
-          this.deploymentManager.hasToolingChanged(
-            deploymentName,
-            toolingFingerprint
-          );
-
-        // The message is already ENQUEUED by the time this runs (see the
-        // background call in sendToWorkerQueue), so a warm worker may be
-        // consuming this very turn. Killing it then would SIGTERM a live run
-        // and drop the user's reply, so only recycle a worker that has been
-        // quiet — the credential/tooling staleness is worth one more turn.
-        const recycleCandidate = existingDeployments.find(
-          (d) => d.deploymentName === deploymentName
-        );
-        const workerIsQuiet =
-          !recycleCandidate ||
-          Date.now() - recycleCandidate.lastActivity.getTime() >=
-            MIN_QUIET_MS_BEFORE_RECYCLE;
-
-        // Expiry is graded so a busy conversation still renews. The 5-minute
-        // margin wants a quiet worker; once the credential is genuinely at the
-        // edge, recycling beats serving a turn whose `gh` will 401 mid-command.
-        // Gated on `!isNewThread` like `toolingChanged` above: there is no lease
-        // to expire before the create path below mints one, and the recycle
-        // branch never consults these on a cold start.
-        const leaseExpiring =
-          !isNewThread &&
-          this.deploymentManager.hasExpiringLease(deploymentName);
-        // Rewinding `now` NARROWS the window: hasExpiringLease fires at
-        // <=5min remaining, so evaluating it 4 minutes in the past only fires
-        // at <=1min remaining. (Advancing it would widen to 9min and make the
-        // override trigger BEFORE the quiet path, defeating the gate.)
-        const leaseCritical =
-          !isNewThread &&
-          this.deploymentManager.hasExpiringLease(
-            deploymentName,
-            new Date(Date.now() - LEASE_CRITICAL_LEAD_MS)
-          );
-
-        if (
-          !isNewThread &&
-          ((workerIsQuiet && (leaseExpiring || toolingChanged)) ||
-            leaseCritical)
-        ) {
-          logger.info(
-            { traceId, deploymentName, tooling_changed: toolingChanged },
-            toolingChanged
-              ? "Connector tooling changed — recycling deployment to pick it up"
-              : "Connector lease expiring — recycling deployment to re-mint"
-          );
-          try {
-            await this.deploymentManager.deleteDeployment(deploymentName);
-            isNewThread = true;
-          } catch (error) {
-            // Keep serving the warm worker: a stale credential still beats a
-            // failed turn, and the next idle reap will clear it.
-            logger.warn(
-              {
-                traceId,
-                deploymentName,
-                error: getErrorMessage(error),
-              },
-              "Failed to recycle deployment for lease renewal; continuing with the existing worker"
-            );
-          }
-        }
 
         if (isNewThread) {
           const acquired = this.acquireDeploymentLock(deploymentName);

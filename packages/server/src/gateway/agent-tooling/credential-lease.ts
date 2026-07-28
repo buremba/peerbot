@@ -1,5 +1,5 @@
 /**
- * Credential leases — Tier 1 of connector-contributed agent tooling.
+ * Short-lived credential leases for connector-contributed agent tooling.
  *
  * A LEASE is a short-lived, provider-derived credential minted per deployment
  * and injected into the agent sandbox as a real env var. This does not weaken
@@ -8,9 +8,9 @@
  * revoked at the provider without touching the stored connection credential,
  * which never leaves the gateway.
  *
- * Tier 2 (a provider with no derived-token support) stays on the existing
- * placeholder rails — `lobu_secret_<uuid>` resolved by the secret-proxy at
- * egress — and is handled by the resolver, not here.
+ * Providers with no derived-token support contribute no credential. The worker
+ * egress proxy raw-tunnels HTTPS CONNECT traffic, so it cannot replace an
+ * opaque placeholder inside a CLI's TLS request.
  *
  * Multi-replica: minting is STATELESS per deployment. No lease is persisted and
  * no replica reads another's lease; two pods minting for the same connection

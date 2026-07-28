@@ -130,19 +130,21 @@ export interface ConnectorAgentToolingEnv {
   /** Env var name set inside the agent sandbox, e.g. `GH_TOKEN`. */
   name: string;
   /**
-   * How the gateway materializes the value — the two delivery tiers of the
-   * workers-never-receive-durable-credentials invariant:
+   * How the gateway materializes the value. `'lease'` is the only tier: the
+   * provider can derive short-lived scoped tokens, so the gateway mints one per
+   * deployment and injects the REAL token. Safe under the
+   * workers-never-receive-durable-credentials invariant because it expires on
+   * its own (GitHub installation tokens: ~1h). Requires the connection to
+   * resolve to a mintable installation; without one the var is simply absent
+   * (the CLI reports unauthenticated — never a durable secret).
    *
-   * - `'lease'` — the provider can derive short-lived scoped tokens, so the
-   *   gateway mints one per deployment and injects the REAL token. Safe because
-   *   it expires on its own (GitHub installation tokens: ~1h). Requires the
-   *   connection to resolve to a mintable installation; without one the var is
-   *   simply absent (the CLI reports unauthenticated — never a durable secret).
-   * - `'placeholder'` — no derived-token support, so the worker gets an opaque
-   *   `lobu_secret_<uuid>` the secret-proxy swaps at egress. The stored
-   *   credential never enters the sandbox.
+   * There is deliberately no tier for static credentials: the worker egress
+   * proxy raw-tunnels HTTPS CONNECT traffic, so an opaque placeholder in a CLI
+   * env var would reach the provider verbatim. Providers without derived
+   * tokens can contribute packages and domains but no credential until a
+   * credential-aware relay exists.
    */
-  credential: 'lease' | 'placeholder';
+  credential: 'lease';
 }
 
 export interface ConnectorRuntimeInfo {

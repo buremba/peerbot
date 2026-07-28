@@ -96,11 +96,12 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
         ) {
           return [];
         }
-        // An unrecognized tier is dropped, not defaulted: defaulting to
-        // 'placeholder' would silently route a lease var through the secret
-        // store, and defaulting to 'lease' would mint for a provider that
-        // cannot derive tokens. Neither is a safe guess.
-        if (credential !== "lease" && credential !== "placeholder") return [];
+        // 'lease' is the only tier. Anything else is dropped, not defaulted:
+        // the worker egress proxy raw-tunnels HTTPS CONNECT traffic, so an
+        // opaque placeholder in a CLI env var would be sent to the provider
+        // verbatim — there is no relay that could swap it inside TLS. A static
+        // credential tier can only exist once a credential-aware relay does.
+        if (credential !== "lease") return [];
         return [{ name, credential }];
       })
     : [];
@@ -182,16 +183,6 @@ export async function resolveAgentTooling(params: {
   organizationId: string;
   deploymentName: string;
   leaseRegistry: CredentialLeaseRegistry;
-  /**
-   * Materializes a Tier-2 placeholder for `envName` on this deployment, or null
-   * when it cannot. Supplied by the deployment manager (it owns the secret
-   * store); a caller without one contributes lease vars only.
-   */
-  buildPlaceholder?: (params: {
-    connectionId: number;
-    connectorKey: string;
-    envName: string;
-  }) => Promise<string | null>;
   runId?: number;
 }): Promise<ResolvedAgentTooling> {
   const { agentId, organizationId } = params;
@@ -230,9 +221,9 @@ export async function resolveAgentTooling(params: {
     };
 
     for (const entry of tooling.env) {
-      // First declaration wins. Two connections of the same connector (e.g. two
-      // GitHub orgs) would otherwise fight over one env var and the sandbox
-      // would silently use whichever sorted last.
+      // First successfully minted value wins. Two connections of the same
+      // connector (e.g. two GitHub orgs) would otherwise fight over one env var
+      // and the sandbox would silently use whichever sorted last.
       if (entry.name in env) {
         logger.info(
           {
@@ -245,19 +236,10 @@ export async function resolveAgentTooling(params: {
         continue;
       }
 
-      if (entry.credential === "lease") {
-        const subject = buildLeaseSubject(row, connectionId, organizationId);
-        const lease = await params.leaseRegistry.mintFor(subject, scope);
-        if (!lease) continue;
-        env[entry.name] = lease.token;
-      } else if (params.buildPlaceholder) {
-        const placeholder = await params.buildPlaceholder({
-          connectionId,
-          connectorKey: row.connector_key,
-          envName: entry.name,
-        });
-        if (placeholder) env[entry.name] = placeholder;
-      }
+      const subject = buildLeaseSubject(row, connectionId, organizationId);
+      const lease = await params.leaseRegistry.mintFor(subject, scope);
+      if (!lease) continue;
+      env[entry.name] = lease.token;
     }
   }
 

@@ -44,7 +44,6 @@ import {
 import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import type { SecretRef, WritableSecretStore } from "../secrets/index.js";
-import { lookupPlaceholderMapping } from "../proxy/secret-proxy.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -633,7 +632,11 @@ describe("deployment env assembly", () => {
     expect(env.SOME_API_TOKEN).toContain("lobu_secret_");
   });
 
-  test("a placeholder credential resolves through the auth profile exactly once", async () => {
+  test("a retired placeholder-tier declaration contributes no env var at all", async () => {
+    // The egress proxy raw-tunnels HTTPS CONNECT, so a placeholder in a CLI
+    // env var would be sent to the provider verbatim. The tier was removed:
+    // a persisted declaration still using it must contribute nothing — and
+    // in particular must never fall back to the stored durable credential.
     const connectorKey = "placeholder-probe";
     await seedConnectorDef({
       key: connectorKey,
@@ -646,18 +649,15 @@ describe("deployment env assembly", () => {
       authData: { API_TOKEN: STORED_DURABLE_SECRET },
     });
     await seedConnection({ connectorKey, authProfileId });
-    const secretStore = new InMemoryWritableStore();
     manager.setCredentialLeaseRegistry(buildLeaseRegistry());
-    manager.setSecretStore(secretStore);
+    manager.setSecretStore(new InMemoryWritableStore());
 
     const env = await manager.buildEnv(buildPayload());
-    const mapping = lookupPlaceholderMapping(env.API_TOKEN, ORG);
 
-    expect(env.API_TOKEN).toContain("lobu_secret_");
-    expect(mapping).not.toBeNull();
-    expect(await secretStore.get(mapping!.secretRef)).toBe(
-      STORED_DURABLE_SECRET
-    );
+    expect(env.API_TOKEN).toBeUndefined();
+    for (const [key, value] of Object.entries(env)) {
+      expect(`${key}=${value}`).not.toContain(STORED_DURABLE_SECRET);
+    }
   });
 
   test("INVARIANT: the connection's stored durable credential never reaches the worker env", async () => {

@@ -29,10 +29,13 @@ describe("parseAgentTooling", () => {
     });
   });
 
-  test("accepts the placeholder credential tier", () => {
+  test("drops the retired placeholder credential tier", () => {
+    // 'placeholder' was removed before ship: the egress proxy raw-tunnels
+    // HTTPS CONNECT, so a placeholder in a CLI env var would reach the
+    // provider verbatim. A persisted declaration using it contributes nothing.
     expect(
       parseAgentTooling({ env: [{ name: "API_KEY", credential: "placeholder" }] })
-    ).toEqual({ env: [{ name: "API_KEY", credential: "placeholder" }] });
+    ).toBeNull();
   });
 
   test.each([
@@ -55,7 +58,7 @@ describe("parseAgentTooling", () => {
         env: [
           { name: "GOOD_TOKEN", credential: "lease" },
           { name: "__proto__", credential: "lease" },
-          { name: "BAD-NAME", credential: "placeholder" },
+          { name: "BAD-NAME", credential: "lease" },
         ],
         domains: ["github.com", 7, ""],
       })
@@ -88,9 +91,9 @@ describe("parseAgentTooling", () => {
   });
 
   test("drops an env entry with an unrecognized credential tier", () => {
-    // Guessing a tier is unsafe in both directions: defaulting to 'placeholder'
-    // would route a lease var through the secret store, and defaulting to
-    // 'lease' would try to mint for a provider that cannot derive tokens.
+    // Defaulting an unknown tier to 'lease' would try to mint for a provider
+    // that cannot derive tokens; dropping it keeps the failure visible (the
+    // CLI reports unauthenticated) instead of guessing.
     expect(
       parseAgentTooling({
         env: [

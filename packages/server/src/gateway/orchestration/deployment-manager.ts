@@ -48,7 +48,6 @@ import {
 } from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { getInternalGatewayUrl } from "../config/index.js";
-import { resolveExecutionAuth } from "../../utils/execution-context.js";
 
 const logger = createLogger("orchestrator");
 
@@ -848,7 +847,7 @@ export class DeploymentManager {
   protected grantStore?: GrantStore;
   protected policyStore?: PolicyStore;
   /**
-   * Mints Tier-1 credential leases for connector-contributed agent tooling.
+   * Mints credential leases for connector-contributed agent tooling.
    * Unset (tests, or a gateway with no lease providers wired) means connections
    * contribute their packages and domains but no credentials.
    */
@@ -934,7 +933,7 @@ export class DeploymentManager {
   }
 
   /**
-   * Inject the credential-lease registry used to mint Tier-1 credentials for
+   * Inject the credential-lease registry used to mint credentials for
    * connector-contributed agent tooling.
    */
   setCredentialLeaseRegistry(registry: CredentialLeaseRegistry): void {
@@ -1433,7 +1432,7 @@ export class DeploymentManager {
    * Non-provider secrets use UUID placeholders stored in the secret-proxy.
    *
    * `preMaterializedSecrets` contains connector-tooling values that are already
-   * safe for the worker: either a short-lived lease or an opaque placeholder.
+   * safe for the worker: short-lived credential leases that expire on their own.
    * The value comparison matters because an operator override with the same env
    * name is still a durable secret and must go through normal placeholder
    * injection.
@@ -1544,7 +1543,6 @@ export class DeploymentManager {
     const { agentId, organizationId } = messageData;
     if (!agentId || !organizationId) return empty;
 
-    const secretStore = this.secretStore;
     try {
       return await resolveAgentTooling({
         agentId,
@@ -1555,35 +1553,6 @@ export class DeploymentManager {
         // so lease vars are simply absent rather than the whole contribution.
         leaseRegistry: this.leaseRegistry ?? EMPTY_LEASE_REGISTRY,
         runId: messageData.runId,
-        // Tier 2: the stored credential goes into the secret store and the
-        // worker gets an opaque placeholder the secret-proxy swaps at egress.
-        buildPlaceholder: secretStore
-          ? async ({ connectionId, connectorKey, envName }) => {
-              const credential = await this.readConnectionCredential(
-                connectionId,
-                organizationId,
-                envName
-              );
-              if (!credential) return null;
-              const secretRef = await persistSecretValue(
-                secretStore,
-                `deployments/${deploymentName}/${agentId}/${connectorKey}/${envName}`,
-                credential,
-                { ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS }
-              );
-              if (!secretRef) return null;
-              return generatePlaceholder(
-                agentId,
-                envName,
-                secretRef,
-                deploymentName,
-                {
-                  ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS,
-                  organizationId,
-                }
-              );
-            }
-          : undefined,
       });
     } catch (error) {
       logger.warn(
@@ -1592,53 +1561,6 @@ export class DeploymentManager {
       );
       return empty;
     }
-  }
-
-  /**
-   * Resolve a connection credential for a Tier-2 placeholder through the same
-   * auth-profile seam used by connector execution. Returns the value under the
-   * env var's own name, or the only resolved value when the mapping is
-   * unambiguous.
-   *
-   * Never returns to the worker: the value goes straight into the secret store,
-   * and the worker receives only the placeholder.
-   */
-  private async readConnectionCredential(
-    connectionId: number,
-    organizationId: string,
-    envName: string
-  ): Promise<string | null> {
-    const sql = getDb();
-    const rows = (await sql`
-      SELECT auth_profile_id, app_auth_profile_id
-      FROM connections
-      WHERE id = ${connectionId}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-      LIMIT 1
-    `) as unknown as Array<{
-      auth_profile_id: number | null;
-      app_auth_profile_id: number | null;
-    }>;
-    const connection = rows[0];
-    if (!connection) return null;
-
-    const resolved = await resolveExecutionAuth({
-      organizationId,
-      connectionId,
-      authProfileId: connection.auth_profile_id,
-      appAuthProfileId: connection.app_auth_profile_id,
-      credentialDb: sql,
-      logContext: { agent_tooling_env: envName },
-    });
-    const byName = resolved.connectionCredentials[envName];
-    if (typeof byName === "string" && byName) return byName;
-
-    const values = [
-      ...Object.values(resolved.connectionCredentials),
-      resolved.credentials?.accessToken,
-    ].filter((v): v is string => typeof v === "string" && v.length > 0);
-    return values.length === 1 ? values[0] : null;
   }
 
   /**

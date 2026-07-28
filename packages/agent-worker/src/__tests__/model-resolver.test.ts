@@ -176,6 +176,10 @@ describe("resolveModelRef", () => {
     });
 
     expect(result.provider).toBe("openrouter");
+    // Regression guard: this case asserted only provider/modelId, so a CTA
+    // misattribution to "openai" passed green here. OpenRouter serves this
+    // model, so OpenRouter owns the CTA.
+    expect(result.providerSlug).toBe("openrouter");
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
@@ -406,6 +410,11 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     const result = resolveModelRef("gemini/gemini-2.5-flash", {
       defaultProvider: "openai",
       defaultProviderSlug: "openai",
+      // The gateway could NOT match this model to a provider, so its
+      // credentialed-fallback scan published openai. That is exactly what
+      // `defaultProviderServesModel: false` reports — openai does not serve
+      // the requested model, so it must not own the failure CTA.
+      defaultProviderServesModel: false,
       // gemini IS installed here — it just has no usable key, which is why the
       // gateway fell back to publishing openai as defaultProvider.
       installedProviderRoutes: { openai: "openai", gemini: "gemini" },
@@ -418,6 +427,38 @@ describe("resolveModelRef — providerSlug must describe the REQUESTED model", (
     // OpenRouter-style refs like "anthropic/claude-sonnet-4".
     expect(result.provider).toBe("openai");
     expect(result.modelId).toBe("gemini/gemini-2.5-flash");
+  });
+
+  test("a SERVING provider keeps the CTA even when the prefix names another installed provider", () => {
+    // The mirror of the fallback case above, and why an installed-provider
+    // match cannot decide attribution on its own. OpenRouter is configured AND
+    // serves this model; "openai" here is OpenRouter's vendor namespace, not a
+    // request for the OpenAI provider — even though standalone OpenAI is also
+    // installed and the prefix matches it.
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      // The gateway MATCHED the model to OpenRouter.
+      defaultProviderServesModel: true,
+      installedProviderRoutes: { openai: "openai", openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("openai/gpt-4o");
+  });
+
+  test("an older gateway (field absent) keeps the pre-existing attribution", () => {
+    // Back-compat: a gateway that predates `defaultProviderServesModel` sends
+    // nothing. Absent must mean "serves" so a stale gateway keeps today's
+    // behavior instead of acquiring a NEW misattribution.
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+      installedProviderRoutes: { openai: "openai", openrouter: "openrouter" },
+    });
+
+    expect(result.providerSlug).toBe("openrouter");
   });
 
   test("a bare model id still inherits the configured default provider", () => {

@@ -209,6 +209,12 @@ export function resolveModelRef(
     defaultProviderSlug?: string;
     installedProviderRoutes?: Record<string, string>;
     allowInstalledProviderOverride?: boolean;
+    /**
+     * Gateway-supplied: did `defaultProvider` actually MATCH the requested
+     * model, or was it fallback-picked? Drives failure-CTA attribution only —
+     * never routing. Absent (older gateway) is treated as "serves".
+     */
+    defaultProviderServesModel?: boolean;
   }
 ): {
   provider: string;
@@ -329,21 +335,30 @@ export function resolveModelRef(
     // `modelId === modelRef` means the strip above did NOT consume the prefix,
     // so the name is genuinely foreign rather than the provider's own id.
     //
-    // The prefix must ALSO name a real INSTALLED provider. Without that check a
-    // provider-internal namespace is misread as a provider request:
-    // OpenRouter's "anthropic/claude-sonnet-4" means "OpenRouter's anthropic
-    // model", not "the Anthropic provider", and attributing the CTA to
-    // `anthropic` would point the user at a provider this deployment may not
-    // even have. `installedProviderRoutes` is the gateway's own list of
-    // installed provider slugs, so it is the authority on that distinction —
-    // absent it we cannot tell the two apart and keep the default attribution.
+    // A slash prefix alone cannot decide this, and neither can the installed
+    // provider list: with OpenRouter configured and standalone OpenAI also
+    // installed, "openai/gpt-4o" is OpenRouter's VENDOR NAMESPACE, yet the
+    // prefix does name an installed provider. Blaming `openai` there would send
+    // the user to reconnect a provider that is not even serving the request.
+    //
+    // Only the gateway can tell the two apart, and it already knows:
+    // `findProviderForModel` either MATCHED the model to `defaultProvider`
+    // (OpenRouter serves "openai/gpt-4o" → blame OpenRouter) or returned
+    // nothing, leaving the credentialed-fallback scan to pick an unrelated
+    // provider ("gemini/gemini-2.5-flash" with a fallback-selected openai →
+    // blame gemini, the provider actually requested). It publishes that fact as
+    // `defaultProviderServesModel`.
+    //
+    // Older gateways omit the field. Treat absent as "serves" — that is the
+    // pre-existing attribution, so a stale gateway keeps today's behavior
+    // rather than acquiring a new misattribution.
     const requestedForeignSlug =
       explicitParts.length >= 2 &&
       explicitProvider &&
       explicitProvider !== defaultProvider &&
       explicitProvider !== defaultProviderSlug &&
       modelId === modelRef &&
-      overrides?.installedProviderRoutes?.[explicitProvider]
+      overrides?.defaultProviderServesModel === false
         ? explicitProvider
         : undefined;
 

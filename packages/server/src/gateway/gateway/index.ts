@@ -912,6 +912,8 @@ export class WorkerGateway {
     credentialEnvVarName?: string;
     defaultProvider?: string;
     defaultProviderSlug?: string;
+    /** True when defaultProvider was MATCHED to the model, not fallback-picked. */
+    defaultProviderServesModel?: boolean;
     defaultModel?: string;
     cliBackends?: Array<{
       providerId: string;
@@ -960,6 +962,16 @@ export class WorkerGateway {
           effectiveProviders
         )
       : undefined;
+
+    // Whether `primaryProvider` was MATCHED to the agent's model, as opposed to
+    // picked by the credentialed-fallback scan below. Only the gateway knows
+    // this: downstream, a matched provider and a fallback one look identical.
+    // The worker needs it to attribute failure CTAs, because a slash prefix is
+    // ambiguous on its own — "openai/gpt-4o" under OpenRouter is OpenRouter's
+    // vendor namespace (matched → blame OpenRouter), while
+    // "gemini/gemini-2.5-flash" under a fallback-selected openai is a genuine
+    // request for gemini (unmatched → blame gemini, not the fallback).
+    const defaultProviderServesModel = !!primaryProvider;
 
     if (!primaryProvider) {
       for (const candidate of effectiveProviders) {
@@ -1039,6 +1051,8 @@ export class WorkerGateway {
       credentialEnvVarName?: string;
       defaultProvider?: string;
       defaultProviderSlug?: string;
+      /** True when defaultProvider was MATCHED to the model, not fallback-picked. */
+      defaultProviderServesModel?: boolean;
       defaultModel?: string;
       cliBackends?: typeof cliBackends;
       providerBaseUrlMappings?: Record<string, string>;
@@ -1061,6 +1075,8 @@ export class WorkerGateway {
       if (upstream?.slug && upstream.slug !== primaryProvider.providerId) {
         result.defaultProviderSlug = primaryProvider.providerId;
       }
+      // Only meaningful alongside a published defaultProvider.
+      result.defaultProviderServesModel = defaultProviderServesModel;
     }
 
     // Only an explicitly configured model is used — Lobu no longer silently

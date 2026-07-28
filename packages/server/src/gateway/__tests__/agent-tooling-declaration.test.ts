@@ -116,7 +116,34 @@ describe("parseAgentTooling", () => {
           "  spaced.com  ",
         ],
       })
-    ).toEqual({ domains: ["api.github.com", "*.github.com", "spaced.com"] });
+    ).toEqual({ domains: ["api.github.com", ".github.com", "spaced.com"] });
+  });
+
+  test("normalizes a surviving domain to the form grants are stored in", () => {
+    // The grant store, the deploy-time reconcile and the proxy matcher all key
+    // on `normalizeDomainPattern`'s output, so a re-cased or wildcard spelling
+    // must collapse onto the SAME entry here — otherwise the declaration adds a
+    // second grant row for a host the agent already reaches, and the tooling
+    // fingerprint (which digests this declaration) reads a pure re-spelling as
+    // a change worth recycling a warm worker for.
+    expect(
+      parseAgentTooling({
+        domains: ["GitHub.COM", "*.GitHub.COM", "münchen.de"],
+      })
+    ).toEqual({
+      domains: ["github.com", ".github.com", "xn--mnchen-3ya.de"],
+    });
+  });
+
+  test("drops hex-spelled IPv4 literals, not just dotted-decimal ones", () => {
+    // inet_aton (so curl, git and glibc) resolves 0x7f.0x1 as 127.0.0.1 and
+    // 0xa9fe.0xa9fe as the link-local metadata address, so the IP-literal
+    // refusal has to cover the alternate spellings too.
+    expect(
+      parseAgentTooling({
+        domains: ["api.github.com", "0x7f.0x1", "0xa9fe.0xa9fe", "0177.0.0.1"],
+      })
+    ).toEqual({ domains: ["api.github.com"] });
   });
 
   test("drops IP literals and non-resolvable infrastructure suffixes", () => {

@@ -14,6 +14,7 @@
 import {
   createLogger,
   isValidDomainPattern,
+  normalizeDomainPattern,
   parseJsonObject,
 } from "@lobu/core";
 import type {
@@ -153,10 +154,15 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
   // so it gets the same shape check the operator-facing settings API applies —
   // `"*"`, `"*.com"`, `"https://evil.com/x"` and `"a.com, b.com"` must widen
   // egress by nothing rather than by everything.
+  //
+  // Accepted entries are normalized to the form grants are stored and matched
+  // in, so a declaration spelling it `GitHub.COM` or `*.GitHub.COM` joins the
+  // existing `github.com`/`.github.com` grant instead of adding a second row
+  // for the same host.
   const domains = Array.isArray(raw.domains)
     ? (raw.domains as unknown[])
         .filter(isValidDomainPattern)
-        .map((d) => d.trim())
+        .map(normalizeDomainPattern)
     : [];
 
   if (packages.length === 0 && env.length === 0 && domains.length === 0) {
@@ -284,7 +290,11 @@ export async function resolveAgentTooling(params: {
       // First successfully minted value wins. Two connections of the same
       // connector (e.g. two GitHub orgs) would otherwise fight over one env var
       // and the sandbox would silently use whichever sorted last.
-      if (entry.name in env) {
+      // Own properties only: `env` is a plain object literal, so `in` would
+      // report `toString`/`constructor`/`valueOf` as already claimed before
+      // anything is minted — all pass the identifier check and none is
+      // reserved, so such an entry would be dropped with a bogus collision.
+      if (Object.hasOwn(env, entry.name)) {
         logger.info(
           {
             env_name: entry.name,

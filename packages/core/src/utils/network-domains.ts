@@ -67,19 +67,37 @@ export function isValidDomainPattern(pattern: unknown): pattern is string {
       ? trimmed.slice(1)
       : trimmed;
 
+  // Compare in punycode, the form patterns are stored and matched in, so an IDN
+  // host is judged by the same rule as its ASCII equivalent.
+  const asciiHost = toAscii(host);
+
   // An IPv4 literal passes the two-label test below (`169.254.169.254` is four
   // labels) but names a network location rather than a service. Cloud metadata
   // endpoints — 169.254.169.254, metadata.google.internal — are the reason: a
   // grant for one hands every agent in the org the instance's credentials.
   // Egress entries must be resolvable names, so IP literals are refused
   // outright rather than the link-local range being special-cased.
-  if (/^\d+(\.\d+)*$/.test(host)) return false;
+  //
+  // Dotted-decimal is not the only spelling: `inet_aton` (and therefore curl,
+  // git and glibc) also accepts hex/octal labels, so `0x7f.0x1` is 127.0.0.1
+  // and `0xa9fe.0xa9fe` is the link-local metadata address. Both forms are
+  // checked — the raw pattern and its ASCII form, because `domainToASCII`
+  // canonicalizes some of these spellings to dotted-decimal and leaves others
+  // alone.
+  if (isIpv4Literal(host) || isIpv4Literal(asciiHost)) return false;
   // `.internal`/`.local` are not publicly resolvable; a pattern ending in one
   // only ever names infrastructure the proxy should not be reaching for.
   if (/\.(internal|local|localdomain)$/.test(host)) return false;
-  // Compare in punycode, the form patterns are stored and matched in, so an IDN
-  // host is judged by the same rule as its ASCII equivalent.
   // Two labels minimum: a wildcard over a TLD (`*.com`) is not a grant anyone
   // can reason about, and a bare label is not a routable host.
-  return /^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/.test(toAscii(host));
+  return /^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/.test(asciiHost);
+}
+
+/**
+ * True when every label is numeric in one of the radices `inet_aton` accepts, so
+ * the host is an IPv4 literal rather than a name. Covers the dotted-decimal
+ * form plus the hex spellings (`0x7f.0x1`) that resolvers still honor.
+ */
+function isIpv4Literal(host: string): boolean {
+  return host.split(".").every((label) => /^(\d+|0x[0-9a-f]+)$/.test(label));
 }

@@ -85,7 +85,9 @@
 > Files: `packages/server/src/auth/builder-provisioning.ts:175-189` +
 > `packages/server/src/auth/system-provider-resolution.ts:55-105` (repair no-op);
 > existing link+form path to reuse: `packages/server/src/utils/url-builder.ts:84-107` +
-> `packages/owletto/src/app/$owner/inference-providers/new.tsx:8-16`. Fix: when the builder has no
+> `packages/owletto/src/app/$owner/inference-providers/new.tsx:8-16` *(route deleted 2026-07-28 —
+> the form now lives at `/$owner/connectors/inference-provider:<slug>`, emitted by
+> `buildProviderConnectUrl` in `url-builder.ts`)*. Fix: when the builder has no
 > usable model, have the bot post the run-backed configure link (§16.2) instead of erroring; deliver
 > the §16.2/§21 flow in Phase 0.
 >
@@ -555,7 +557,8 @@ Every public action has one `ActionDefinition` (input/output schemas, access tie
 > nice-to-have. Note: no owletto route reads these params for runtime connections today, and the
 > environments form hardcodes Vercel's three fields client-side
 > (`packages/owletto/src/app/$owner/inference-providers/new.tsx:8-13`;
-> `.../environments/index.tsx:24-43`). Defer.
+> `.../environments/index.tsx:24-43` — *both routes deleted 2026-07-28; the connect form now lives
+> at `/$owner/connectors/inference-provider:<slug>`*). Defer.
 
 ## 16.2 Run-backed configuration link
 > **KEEP + GAP (high) — this is the demo's config mechanism; build it in Phase 0/1.** Correct design,

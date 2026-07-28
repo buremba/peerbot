@@ -24,6 +24,19 @@ describe("isReservedEntityTypeSlug", () => {
     expect(isReservedEntityTypeSlug("person")).toBe(false);
     expect(isReservedEntityTypeSlug("channel")).toBe(false);
   });
+
+  it("blocks live routes missing from OWNER_ROUTE_SEGMENTS and deleted legacy segments", () => {
+    // /$owner/entity-types is a live route absent from OWNER_ROUTE_SEGMENTS —
+    // an entity type with that slug would get its list page permanently
+    // shadowed by the static route.
+    expect(isReservedEntityTypeSlug("entity-types")).toBe(true);
+    // Deleted legacy routes stay reserved via REMOVED_OWNER_SEGMENTS: chat
+    // history still contains their URLs (`events` is append-only), so no
+    // entity type may ever claim a dead URL.
+    expect(isReservedEntityTypeSlug("inference-providers")).toBe(true);
+    expect(isReservedEntityTypeSlug("environments")).toBe(true);
+    expect(isReservedEntityTypeSlug("infrastructure")).toBe(true);
+  });
 });
 
 describe("lists", () => {

@@ -143,4 +143,70 @@ describe("generateSuggestFollowups", () => {
     const out = await generateSuggestFollowups(REPLY, env());
     expect(out).toEqual([]);
   });
+
+  // A per-agent `model` is the one override worth having: the credentials are
+  // an operator secret, but model choice decides whether chips arrive at all
+  // (a slow reasoning model times out and silently yields none).
+  test("a per-guardrail model overrides the env model", async () => {
+    let sentModel: string | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      sentModel = JSON.parse(String(init.body)).model;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"prompts":[{"title":"T","message":"M"}]}',
+              },
+            },
+          ],
+        })
+      );
+    }) as unknown as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    const out = await generateSuggestFollowups(REPLY, env(), {
+      model: "per-agent-model",
+    });
+    expect(sentModel).toBe("per-agent-model");
+    expect(out).toEqual([{ title: "T", message: "M" }]);
+  });
+
+  test("falls back to the env model when the guardrail sets none", async () => {
+    let sentModel: string | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      sentModel = JSON.parse(String(init.body)).model;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"prompts":[]}' } }],
+        })
+      );
+    }) as unknown as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    await generateSuggestFollowups(REPLY, env(), {});
+    expect(sentModel).toBe(env().SUGGESTION_GENERATOR_MODEL);
+  });
+
+  test("an elapsed timeout yields [] rather than throwing", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted"))
+        );
+      })) as unknown as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    const out = await generateSuggestFollowups(REPLY, env(), { timeoutMs: 10 });
+    expect(out).toEqual([]);
+  });
 });

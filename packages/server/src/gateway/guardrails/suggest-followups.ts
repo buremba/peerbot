@@ -48,7 +48,19 @@ export function isEnrichmentGuardrail(guardrail: Guardrail): boolean {
 
 /** The tail of a reply carries the "what now" better than its opening. */
 const MAX_INPUT_CHARS = 6_000;
-const TIMEOUT_MS = 15_000;
+/**
+ * Generation is dispatched fire-and-forget (see ChatResponseBridge), so nothing
+ * waits on this — the timeout only bounds a leaked request, it does not protect
+ * turn latency. Sized like the other provider calls in the gateway
+ * (MCP_PROXY_FETCH_TIMEOUT_MS, TRANSCRIPTION_FETCH_TIMEOUT_MS) rather than like
+ * the blocking judges, which fail fast because a turn is stalled behind them.
+ *
+ * Do not trim this without measuring the configured model: reasoning-tier
+ * models are slow here (glm-4.7 measured 19-26s, glm-4.6 16.7s, glm-4.5-air
+ * 21.9s on 2026-07-28), and a timeout below the model's real latency yields
+ * zero chips on every turn while still paying for the call.
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
 const MIN_REPLY_CHARS = 40;
 
 const SYSTEM_PROMPT = [
@@ -97,17 +109,33 @@ export function createSuggestFollowupsGuardrail(): Guardrail<"output"> {
   return guardrail;
 }
 
+/** Per-guardrail overrides, from the agent's `suggest-followups` entry. */
+export interface SuggestFollowupsOptions {
+  /** `model` on the guardrail entry — wins over SUGGESTION_GENERATOR_MODEL. */
+  model?: string;
+  /** Abort budget; defaults to {@link DEFAULT_TIMEOUT_MS}. */
+  timeoutMs?: number;
+}
+
 /**
  * Derive follow-up chips from the (already scanned) agent reply. Returns []
  * when unconfigured, on short replies, or on any failure.
+ *
+ * The credentials stay env-scoped (an operator secret, not agent-editable), but
+ * `model` is per-agent: it is the one knob worth varying — a slow reasoning
+ * model yields nothing under any sane timeout, and chip quality differs sharply
+ * by tier. It mirrors how a judge guardrail's `model` field already works.
  */
 export async function generateSuggestFollowups(
   replyText: string,
-  env: SuggestFollowupsEnv = process.env as SuggestFollowupsEnv
+  env: SuggestFollowupsEnv | undefined = process.env as SuggestFollowupsEnv,
+  options: SuggestFollowupsOptions = {}
 ): Promise<SuggestedPrompt[]> {
+  env ??= process.env as SuggestFollowupsEnv;
   const apiKey = env.SUGGESTION_GENERATOR_API_KEY?.trim();
   const configuredBaseUrl = env.SUGGESTION_GENERATOR_BASE_URL?.trim();
-  const model = env.SUGGESTION_GENERATOR_MODEL?.trim();
+  const model =
+    options.model?.trim() || env.SUGGESTION_GENERATOR_MODEL?.trim();
   // Keep provider selection explicit — no silent hardcoding of a base URL or
   // model outside the operator-configured env.
   if (!apiKey || !configuredBaseUrl || !model) return [];
@@ -121,7 +149,10 @@ export async function generateSuggestFollowups(
     trimmed.length > MAX_INPUT_CHARS ? trimmed.slice(-MAX_INPUT_CHARS) : trimmed;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  );
 
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {

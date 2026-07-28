@@ -231,15 +231,14 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (!agentId || !organizationId) return;
 
     try {
-      if (
-        !(await this.outputGuardrail.hasSuggestFollowups(
-          agentId,
-          organizationId
-        ))
-      ) {
-        return;
-      }
-      const prompts = await generateSuggestFollowups(replyText);
+      const config = await this.outputGuardrail.getSuggestFollowupsConfig(
+        agentId,
+        organizationId
+      );
+      if (!config) return;
+      const prompts = await generateSuggestFollowups(replyText, undefined, {
+        model: config.model,
+      });
       if (prompts.length === 0) return;
       await this.interactionService.postSuggestion(
         organizationId,

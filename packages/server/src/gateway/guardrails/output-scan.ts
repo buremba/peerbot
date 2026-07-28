@@ -24,7 +24,10 @@ import {
   resolveAgentGuardrails,
 } from "./aggregator.js";
 import { recordGuardrailTrip } from "./audit.js";
-import { isEnrichmentGuardrail } from "./suggest-followups.js";
+import {
+  isEnrichmentGuardrail,
+  SUGGEST_FOLLOWUPS_NAME,
+} from "./suggest-followups.js";
 
 const logger = createLogger("output-guardrail");
 
@@ -193,14 +196,18 @@ export class OutputGuardrailScanner {
   }
 
   /**
-   * Whether the agent has the `suggest-followups` enrichment guardrail
-   * enabled. Used by the terminal consumer after a blocking scan pass.
+   * The agent's `suggest-followups` enrichment config, or null when the
+   * guardrail is not enabled. Used by the chat bridge after a blocking scan
+   * pass. Returns the entry's overrides (rather than a bare boolean) so the
+   * generator can honour a per-agent `model`, the same field a judge guardrail
+   * already uses — an operator who configures a slow model here would
+   * otherwise get silent empty chips with no way to change it.
    */
-  async hasSuggestFollowups(
+  async getSuggestFollowupsConfig(
     agentId: string,
     organizationId?: string
-  ): Promise<boolean> {
-    if (!this.enabled || !agentId) return false;
+  ): Promise<{ model?: string } | null> {
+    if (!this.enabled || !agentId) return null;
     try {
       const settings = await this.settingsStore!.getSettings(agentId, {
         organizationId,
@@ -211,9 +218,17 @@ export class OutputGuardrailScanner {
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );
-      return resolved.byStage.output.some((g) => isEnrichmentGuardrail(g));
+      if (!resolved.byStage.output.some((g) => isEnrichmentGuardrail(g))) {
+        return null;
+      }
+      // The resolved instance is the built-in stub; per-agent overrides live on
+      // the inline settings entry of the same name.
+      const entry = enabledInlineGuardrails(settings).find(
+        (g) => g.name === SUGGEST_FOLLOWUPS_NAME
+      );
+      return { model: entry?.model };
     } catch {
-      return false;
+      return null;
     }
   }
 }

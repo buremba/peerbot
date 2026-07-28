@@ -150,6 +150,20 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "taskset",
   "watch",
   "flock",
+  // `make` belongs to the same tier for the same reason: every recipe line is
+  // handed to `/bin/sh -c`, so a registered `make` runs an arbitrary script from
+  // a Makefile the agent just wrote.
+  "make",
+  // Privilege / namespace / trace tools also exec an arbitrary trailing argv
+  // (and `su`, `chroot`, `nsenter` default to a SHELL when given no command),
+  // so registering one is the same proxy hole as `env`.
+  "sudo",
+  "su",
+  "unshare",
+  "nsenter",
+  "chroot",
+  "strace",
+  "ltrace",
 ]);
 
 /**

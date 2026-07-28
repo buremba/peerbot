@@ -123,9 +123,10 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 /**
  * Canonicalize a shell segment to the token string the shell would actually
  * execute: remove quote DELIMITERS while joining the fragments they wrap (so
- * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`) and drop backslash escapes
- * (`n\ix` → `nix`). The detector matches against this canonical form so an
- * honestly-typed package manager is recognized however it is spelled.
+ * `"nix"` → `nix`, `n"i"x` → `nix`, `n'i'x` → `nix`, `$'nix'` → `nix`) and drop
+ * backslash escapes (`n\ix` → `nix`). The detector matches against this
+ * canonical form so an honestly-typed package manager is recognized however it
+ * is spelled.
  *
  * `dataStripped` additionally removes the CONTENTS of quoted spans, for a
  * segment whose leading command treats its quoted arguments as data (`echo`,
@@ -158,6 +159,17 @@ function canonicalizeSegment(segment: string): {
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
+      continue;
+    }
+    // ANSI-C (`$'nix'`) and locale (`$"nix"`) quoting: bash drops the `$` along
+    // with the quotes, so `$'nix' run x` executes `nix`. The sigil is part of
+    // the delimiter and must not survive into the canonical form, or it would
+    // sit in front of the executable name and defeat both the deny-prefix
+    // `startsWith` and the regex word boundaries.
+    const next = segment[i + 1];
+    if (ch === "$" && (next === '"' || next === "'")) {
+      quote = next;
+      i++;
       continue;
     }
     code += ch;

@@ -708,35 +708,44 @@ describe("exec wrappers are filtered from discovery by default", () => {
     return { workspace, storeBin };
   }
 
-  test("default: host env is not registered; env nix cannot reach nix", async () => {
-    const { workspace, storeBin } = seedFixtureWrapper();
-    process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
-    // Opt-in OFF is the point: the discovery filter drops the host `env`, so the
-    // safe builtin handles it. (The opt-in would bypass the filter.)
-    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
-    delete process.env.LOBU_EXEC_SANDBOX;
-    resetSandboxProbeForTests();
+  // Gated on a real sandbox: registration itself requires one (or the opt-in,
+  // which would ALSO lift the discovery filter and defeat the point). Without
+  // it `registerSpawnedBinaries` is false, discoverBinaries() never runs, and
+  // the fixture would be absent for the wrong reason — a vacuous pass. With a
+  // real sandbox the fixture IS discovered and only UNSANDBOXED_INTERPRETERS
+  // keeps it out, which is the assertion we want. (Fourth review of #2259.)
+  (realSandboxAvailable ? test : test.skip)(
+    "default: host env is not registered; env nix cannot reach nix",
+    async () => {
+      const { workspace, storeBin } = seedFixtureWrapper();
+      process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
+      // Opt-in OFF is the point: the discovery filter drops the host `env`, so
+      // the safe builtin handles it. (The opt-in would bypass the filter.)
+      delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+      delete process.env.LOBU_EXEC_SANDBOX;
+      resetSandboxProbeForTests();
 
-    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
 
-    // The host fixture env must never run — the builtin handles `env`.
-    const passthru: string[] = [];
-    await ops.exec("env true", "/", {
-      onData: (chunk) => passthru.push(chunk.toString()),
-      timeout: 5,
-    });
-    expect(passthru.join("")).not.toContain("HOST-ENV-RAN");
+      // The host fixture env must never run — the builtin handles `env`.
+      const passthru: string[] = [];
+      await ops.exec("env true", "/", {
+        onData: (chunk) => passthru.push(chunk.toString()),
+        timeout: 5,
+      });
+      expect(passthru.join("")).not.toContain("HOST-ENV-RAN");
 
-    // And `env nix run` cannot reach a nix — the builtin resolves `nix` in the
-    // just-bash registry, where it is filtered → command not found.
-    const chunks: string[] = [];
-    const nixResult = await ops.exec("env nix run nixpkgs#hello", "/", {
-      onData: (chunk) => chunks.push(chunk.toString()),
-      timeout: 5,
-    });
-    expect(nixResult.exitCode).toBe(127);
-    expect(chunks.join("")).toContain("command not found");
-  });
+      // And `env nix run` cannot reach a nix — the builtin resolves `nix` in the
+      // just-bash registry, where it is filtered → command not found.
+      const chunks: string[] = [];
+      const nixResult = await ops.exec("env nix run nixpkgs#hello", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 5,
+      });
+      expect(nixResult.exitCode).toBe(127);
+      expect(chunks.join("")).toContain("command not found");
+    }
+  );
 
   test("opt-in ON: the same fixture env IS registered and runs (filter is real)", async () => {
     const { workspace, storeBin } = seedFixtureWrapper();

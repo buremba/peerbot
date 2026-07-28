@@ -328,6 +328,12 @@ describe("isDirectPackageInstallCommand quote-concatenation bypass", () => {
     "'uvx' cowsay",
     '"nix"-build x',
     "'nix'\\ shell x",
+    // ANSI-C / locale quoting drops the `$` with the quotes, so these run `nix`
+    // too. (Fourth review of #2259.)
+    "$'nix' run nixpkgs#hello",
+    "n$'i'x run nixpkgs#hello",
+    '$"nix" run nixpkgs#hello',
+    "$'uvx' cowsay",
   ];
   for (const cmd of concatenated) {
     test(`canonicalizes quote-concat exec name: ${JSON.stringify(cmd)}`, () => {

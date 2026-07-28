@@ -190,6 +190,7 @@ describe("manage_entity merge action", () => {
 			userId: null,
 			agentId: "personal-agent",
 			actingWatcherId: 6001,
+			mcpSessionId: "session-entity-merge",
 		} as ToolContext;
 		const queued = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
@@ -211,12 +212,15 @@ describe("manage_entity merge action", () => {
 			"merge",
 		);
 		const [approvalEvent] = await sql`
-			SELECT title FROM current_event_records
+			SELECT title, metadata FROM current_event_records
 			WHERE run_id = ${queued.approval_run_id} AND interaction_status = 'pending'
 		`;
 		expect(approvalEvent.title).toBe(
 			"Merge Loser into Winner — pending approval",
 		);
+		expect(approvalEvent.metadata).toMatchObject({
+			mcp_session_id: "session-entity-merge",
+		});
 
 		const approved = await manageOperations(
 			{ action: "approve", run_id: queued.approval_run_id },

@@ -713,6 +713,7 @@ export async function proposeEntityChange(
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
 					run_id: runId,
+					mcp_session_id: ctx.mcpSessionId ?? null,
 				},
 				authorName: attribution,
 			},

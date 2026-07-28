@@ -124,6 +124,7 @@ describe("manage_behaviors — builder gate e2e", () => {
 			["mcp:read", "mcp:write", "mcp:admin"],
 			agentId
 		);
+		agentCtx.mcpSessionId = "session-manage-behaviors";
 	});
 
 	it("human owner: create applies immediately with no approval run", async () => {
@@ -198,6 +199,9 @@ describe("manage_behaviors — builder gate e2e", () => {
 		`;
 		expect(eventRows.length).toBe(1);
 		expect(eventRows[0]?.interaction_status).toBe("pending");
+		expect(eventRows[0]?.metadata).toMatchObject({
+			mcp_session_id: "session-manage-behaviors",
+		});
 		expect(
 			(eventRows[0]?.metadata as { initiator?: Record<string, unknown> })
 				?.initiator

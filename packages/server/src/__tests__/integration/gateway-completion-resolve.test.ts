@@ -66,12 +66,34 @@ async function newOrgWithProvider(slug: string, model: string) {
   return orgId;
 }
 
+/** A second, NON-default provider in an existing org. */
+async function addProvider(orgId: string, slug: string, model: string) {
+  const created = await createInferenceProvider({
+    organizationId: orgId,
+    slug,
+    kind: slug,
+    apiKey: `sk-${slug}-test`,
+    capabilities: { text: { model } },
+  });
+  if ('error' in created) throw new Error(`create failed: ${created.error}`);
+}
+
 function register(module: Record<string, unknown>) {
   moduleRegistry.register({
     isEnabled: () => true,
     getSecretEnvVarNames: () => [],
     ...module,
   } as unknown as ModuleInterface);
+}
+
+function registerOpenAiCompatible(providerId: string, upstreamBaseUrl: string) {
+  register({
+    name: `${providerId}-api-key`,
+    providerId,
+    providerDisplayName: providerId,
+    sdkCompat: 'openai',
+    getUpstreamConfig: () => ({ slug: providerId, upstreamBaseUrl }),
+  });
 }
 
 describe('resolveCompletionTarget protocol gating', () => {
@@ -122,9 +144,13 @@ describe('resolveCompletionTarget protocol gating', () => {
    *
    * Registering config-first inverts the outcome and the provider resolves.
    * A live e2e that got this order wrong reported a false failure, which is
-   * exactly why this is pinned: if someone moves the config loop above the
-   * specialized registrations, chat completions would start egressing to
-   * chatgpt.com/backend-api.
+   * what prompted pinning it.
+   *
+   * SCOPE: this simulates the two registry states directly; it does not import
+   * core-services, so reordering the real registrations there would NOT fail
+   * here. What it pins is the consequence — that whichever module wins the
+   * providerId lookup decides the protocol — so the resolver's behaviour under
+   * each state is locked even though the wiring that produces them is not.
    */
   it('the specialized module wins over the config entry, and only because it registers first', async () => {
     const orgId = await newOrgWithProvider('chatgpt', 'gpt-5');
@@ -172,6 +198,60 @@ describe('resolveCompletionTarget protocol gating', () => {
     const chatgpt = cfg.providers.find((g) => g.id === 'chatgpt');
     expect(chatgpt).toBeDefined();
     expect(chatgpt?.providers[0]?.sdkCompat).toBeUndefined();
+  });
+
+  /**
+   * `modelRef` overrides — the branch a guardrail's `model` field drives.
+   *
+   * Historically that field held a RAW model id (`gpt-4o-mini`) posted to one
+   * operator-configured base URL. Now that credentials come from provider rows
+   * a ref may ALSO be `<slug>/<model>`, and the two cannot be told apart by
+   * looking for a "/": provider-native ids contain them (`anthropic/claude-…`,
+   * `nvidia/moonshotai/kimi-k2.6`). So the resolver tries the prefix as a slug
+   * and only accepts that reading if the org has such a row.
+   *
+   * All of this was previously untested — every other case here resolves the
+   * org default with no ref at all.
+   */
+  describe('modelRef override', () => {
+    it('a qualified <slug>/<model> ref routes to THAT provider, not the default', async () => {
+      const orgId = await newOrgWithProvider('groq', 'llama-3.3-70b-versatile');
+      await addProvider(orgId, 'together-ai', 'Qwen/Qwen2.5-72B-Instruct-Turbo');
+      registerOpenAiCompatible('groq', 'https://api.groq.com/openai/v1');
+      registerOpenAiCompatible('together-ai', 'https://api.together.xyz/v1');
+
+      const target = await resolveCompletionTarget(orgId, 'together-ai/deepseek-ai/DeepSeek-V3');
+      // The ref names a real row, so the prefix IS the slug — and the rest of
+      // the string stays whole, slashes included.
+      expect(target?.baseUrl).toBe('https://api.together.xyz/v1');
+      expect(target?.model).toBe('deepseek-ai/DeepSeek-V3');
+    });
+
+    it('a BARE model ref borrows the default provider credentials', async () => {
+      const orgId = await newOrgWithProvider('groq', 'llama-3.3-70b-versatile');
+      registerOpenAiCompatible('groq', 'https://api.groq.com/openai/v1');
+
+      const target = await resolveCompletionTarget(orgId, 'llama-3.1-8b-instant');
+      // No "/" at all: the operator's raw model id runs on the org default.
+      expect(target?.baseUrl).toBe('https://api.groq.com/openai/v1');
+      expect(target?.model).toBe('llama-3.1-8b-instant');
+    });
+
+    it('a provider-native ref whose prefix is NOT a row is kept whole', async () => {
+      const orgId = await newOrgWithProvider('openrouter', 'auto');
+      registerOpenAiCompatible('openrouter', 'https://openrouter.ai/api/v1');
+
+      // `anthropic/` is openrouter's MODEL namespace here, not a provider row.
+      // Splitting on it would misroute to a provider the org does not have.
+      const target = await resolveCompletionTarget(orgId, 'anthropic/claude-sonnet-5');
+      expect(target?.baseUrl).toBe('https://openrouter.ai/api/v1');
+      expect(target?.model).toBe('anthropic/claude-sonnet-5');
+    });
+
+    it('an override is skipped when the org has no default to borrow from', async () => {
+      const org = await createTestOrganization();
+      expect(await resolveCompletionTarget(org.id, 'some-model')).toBeNull();
+    });
   });
 
   it('does NOT resolve an explicitly non-OpenAI protocol', async () => {

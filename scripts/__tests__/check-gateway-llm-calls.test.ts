@@ -60,7 +60,9 @@ describe("check-gateway-llm-calls", () => {
   });
 
   it("fails on a vendor SDK import outside the allowlisted client", () => {
-    create(`import Anthropic from "@anthropic-ai/sdk";\nexport default Anthropic;\n`);
+    create(
+      `import Anthropic from "@anthropic-ai/sdk";\nexport default Anthropic;\n`
+    );
     expect(runGuard()).toBe(1);
   });
 

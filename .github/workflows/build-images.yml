@@ -23,9 +23,8 @@ name: Build and Push Images
 # no failure, so the release silently did not happen.
 #
 # Splitting only the release event keeps push runs serialized against each
-# other (the timestamp-collision incident above), while a release — which is
-# rare, and never concurrent with another release — can never be evicted by
-# routine merges.
+# other, while a release — which is rare, and never concurrent with another
+# release — can never be evicted by routine merges.
 #
 # The release group deliberately keeps GitHub's default `queue: single`.
 # `queue: max` (100 pending runs, no eviction) takes no expression, so it would
@@ -33,6 +32,14 @@ name: Build and Push Images
 # coalescing to the newest. Eviction here would need three `release: published`
 # events inside one build: release-please publishes exactly one `lobu-v*`
 # release per release PR, and mac-release/helm-chart only consume that event.
+#
+# That does mean a release and a push can now run at the same time, so
+# serialization no longer guarantees a unique timestamp tag on its own.
+# `generate-tag` therefore claims a tag the registry does not already carry
+# rather than trusting runs to be seconds apart. Dropping the timestamp from
+# release runs would have been simpler but breaks deploys outright: Flux's
+# ImagePolicy matches ONLY '^(\d{8})-(\d{6})$', so semver/latest never roll
+# prod.
 concurrency:
   group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
@@ -84,9 +91,36 @@ jobs:
       is_stable: ${{ steps.semver.outputs.is_stable }}
       should_publish: ${{ steps.semver.outputs.should_publish }}
     steps:
+      # Claim a timestamp tag no image already carries. Serialization alone no
+      # longer guarantees uniqueness now that a release can run beside a push,
+      # and the tag is second-resolution. Format stays `^(\d{8})-(\d{6})$`
+      # because that is what Flux's ImagePolicy matches — semver/latest are
+      # invisible to it, so the timestamp is what actually deploys.
+      #
+      # Probes the app repo only: all three images share one tag, so if app is
+      # free the others are too. Failing open on an unreachable registry keeps
+      # a GHCR blip from blocking every build; the tag is then merely as unique
+      # as it was before this loop.
       - name: Generate shared timestamp tag
         id: timestamp
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 10); do
+            tag="$(date -u +'%Y%m%d-%H%M%S')"
+            if ! taken="$(gh api "/orgs/${{ github.repository_owner }}/packages/container/lobu-app/versions" \
+                  --paginate --jq '[.[].metadata.container.tags[]] | @tsv' 2>/dev/null)"; then
+              echo "::warning::registry unreachable; using $tag unverified"
+              break
+            fi
+            case "	$taken	" in
+              *"	$tag	"*) echo "tag $tag already published, retrying"; sleep 1; continue;;
+            esac
+            break
+          done
+          echo "Using image tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       # Only this job needs the repo; the build jobs check out separately.
       - name: Checkout repository

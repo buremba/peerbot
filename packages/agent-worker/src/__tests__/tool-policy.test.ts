@@ -59,10 +59,6 @@ describe("buildToolPolicy", () => {
     expect(policy.bashPolicy.allowPrefixes).toEqual([]);
     expect(policy.bashPolicy.denyPrefixes).toContain("apt-get ");
     expect(policy.bashPolicy.denyPrefixes).toContain("nix-shell ");
-    expect(policy.bashPolicy.denyPrefixes).toContain("nix ");
-    expect(policy.bashPolicy.denyPrefixes).toContain("nix-store ");
-    expect(policy.bashPolicy.denyPrefixes).toContain("uvx ");
-    expect(policy.bashPolicy.denyPrefixes).toContain("pnpm dlx ");
   });
 
   test("merges toolsConfig with params", () => {
@@ -217,188 +213,6 @@ describe("enforceBashCommandPolicy", () => {
     ).toThrow("Bash command denied by policy");
   });
 
-  test("nix commands and store helpers are blocked by default prefixes", () => {
-    const policy = buildToolPolicy({}).bashPolicy;
-    expect(() =>
-      enforceBashCommandPolicy("nix shell nixpkgs#git -c git push", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("git status && nix run nixpkgs#hello", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("nix-store --realise /nix/store/abc", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy(
-        "nix-copy-closure --from host /nix/store/abc",
-        policy
-      )
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("sudo nix shell nixpkgs#git", policy)
-    ).toThrow("Bash command denied by policy");
-  });
-
-  test("ad-hoc package runners are blocked by default prefixes", () => {
-    const policy = buildToolPolicy({}).bashPolicy;
-    expect(() => enforceBashCommandPolicy("uvx cowsay moo", policy)).toThrow(
-      "Bash command denied by policy"
-    );
-    expect(() =>
-      enforceBashCommandPolicy("true && pipx run cowsay", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("yarn dlx create-react-app x", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("uv tool upgrade ruff", policy)
-    ).toThrow("Bash command denied by policy");
-    expect(() =>
-      enforceBashCommandPolicy("uv tool list", policy)
-    ).not.toThrow();
-  });
-
-  test("quoted nix words are data, not commands, at the segment layer", () => {
-    const policy = buildToolPolicy({}).bashPolicy;
-    expect(() =>
-      enforceBashCommandPolicy('echo "nix shell"', policy)
-    ).not.toThrow();
-    expect(() =>
-      enforceBashCommandPolicy("git commit -m 'nix support'", policy)
-    ).not.toThrow();
-  });
-
-  test("exec wrappers around a denied command are peeled and denied", () => {
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "env nix run nixpkgs#hello",
-      "sudo env nix shell nixpkgs#git",
-      "timeout 5s nix run nixpkgs#hello",
-      "timeout 5 uvx cowsay",
-      "nice -n 10 npm install lodash",
-      "nohup pnpm dlx create-react-app y",
-      "env FOO=bar nix run nixpkgs#hello",
-      "command env nix run nixpkgs#hello",
-      "/usr/bin/env nix run nixpkgs#hello",
-      "setsid uvx cowsay",
-      "xargs npm install",
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
-        "Bash command denied by policy"
-      );
-    }
-  });
-
-  test("a wrapper flag's separate operand cannot shift the command out of range", () => {
-    // `-u`/`-C`/`-s` take their value as a SEPARATE word. The wrapper peel knows
-    // which options consume a value (EXEC_WRAPPER_OPTIONS_WITH_VALUES) and
-    // resolves the real command head past them (`env -u PATH nix run …` →
-    // `nix run …`), so the operand cannot hide the install. (#2259 r6/r7.)
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "env -u PATH nix run nixpkgs#hello",
-      "env -C /tmp nix run nixpkgs#hello",
-      "sudo -u nobody nix shell nixpkgs#git",
-      "timeout -s KILL 5 nix run nixpkgs#hello",
-      "env -i -u HOME LC_ALL=C uvx cowsay",
-      "xargs -a list.txt -I{} npm install",
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
-        "Bash command denied by policy"
-      );
-    }
-  });
-
-  test("assignment values and quoted data are not mistaken for the command", () => {
-    // Two false-denial classes caught by review (#2259 r7):
-    //   - a leading `VAR=value` whose value is a path to a package manager is an
-    //     ENV assignment, not the executable (`NIX_BIN=/usr/bin/nix echo hi`
-    //     runs `echo`);
-    //   - a data-only command's quoted argument is DATA, not a wrapped command
-    //     (`printf "nix run docs"`, even behind an exec wrapper).
-    // Both must be ALLOWED; the deny check keys on the resolved command head and
-    // drops a data-only command's quoted args.
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "NIX_BIN=/usr/bin/nix echo configured",
-      "PACKAGER=npm echo using $PACKAGER",
-      'printf "nix run docs"',
-      'env printf "nix run docs"',
-      'env -u PATH printf "nix run docs"',
-      'echo "npm install is blocked"',
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
-    }
-  });
-
-  test("an assignment still cannot hide the real command", () => {
-    // Skipping the assignment must not skip the command that FOLLOWS it — the
-    // command past the assignments is matched from there. (#2259 r7.)
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "NIX_BIN=x nix run nixpkgs#hello",
-      "FOO=bar sudo -u root npm install lodash",
-      "A=1 B=2 uvx cowsay",
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
-        "Bash command denied by policy"
-      );
-    }
-  });
-
-  test("ANSI-C escaped executable names are decoded and denied", () => {
-    // Inside `$'…'` bash DECODES `\x69`/`\151`/`\u0069` to `i`, so these all
-    // exec `nix`/`uvx`. Treating the escape as literal text yields `nx69x` and
-    // misses the real name — a hole, not a conservative over-match. (#2259 r7.)
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "$'n\\x69x' run nixpkgs#hello",
-      "$'n\\151x' run nixpkgs#hello",
-      "n$'\\151'x run nixpkgs#hello",
-      "$'\\x6e\\x69\\x78' shell nixpkgs#git",
-      "$'n\\u0069x' run nixpkgs#hello",
-      "$'\\165vx' cowsay",
-      "env $'n\\x69x' run nixpkgs#hello",
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
-        "Bash command denied by policy"
-      );
-    }
-  });
-
-  test("a path-qualified executable is denied by its command name", () => {
-    // `/usr/bin/nix` and `/nix/store/…/bin/npm` run exactly the binary the deny
-    // prefix names, so the prefix is tried past the path too. (#2259 r7.)
-    const policy = buildToolPolicy({}).bashPolicy;
-    for (const cmd of [
-      "/usr/bin/nix run nixpkgs#hello",
-      "/nix/store/abc/bin/npm install lodash",
-      "env -u PATH /usr/bin/nix run nixpkgs#hello",
-    ]) {
-      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
-        "Bash command denied by policy"
-      );
-    }
-    // A path as an ARGUMENT is still just data: only the command name position
-    // is matched, so reading or listing the store stays allowed.
-    expect(() =>
-      enforceBashCommandPolicy("cat /usr/bin/nix", policy)
-    ).not.toThrow();
-    expect(() =>
-      enforceBashCommandPolicy("ls /nix/store", policy)
-    ).not.toThrow();
-  });
-
-  test("wrapper word as plain data does not spuriously deny", () => {
-    const policy = buildToolPolicy({}).bashPolicy;
-    expect(() =>
-      enforceBashCommandPolicy('echo "run env nix later"', policy)
-    ).not.toThrow();
-    expect(() =>
-      enforceBashCommandPolicy("git commit -m 'add env config'", policy)
-    ).not.toThrow();
-  });
-
   test("allows all when allowAll is true", () => {
     const policy: BashCommandPolicy = {
       allowAll: true,
@@ -451,5 +265,88 @@ describe("enforceBashCommandPolicy", () => {
     expect(() => enforceBashCommandPolicy("rm file.txt", policy)).toThrow(
       "Bash command denied by policy"
     );
+  });
+
+  test("new-style nix CLI and store helpers are denied (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "nix run nixpkgs#hello",
+      "nix shell nixpkgs#git -c git push",
+      "nix develop",
+      "nix build .#pkg",
+      "nix-store --realise /nix/store/abc",
+      "nix-channel --update",
+      "git status && nix run nixpkgs#hello",
+      "sudo nix run nixpkgs#hello",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("ad-hoc package runners are denied (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "uvx cowsay moo",
+      "uv tool install ruff",
+      "true && pipx run cowsay",
+      "pnpm dlx create-react-app x",
+      "yarn dlx create-react-app x",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("nix-adjacent and runner-adjacent commands stay allowed (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "nixfmt flake.nix",
+      "npx eslint .",
+      "uv run script.py",
+      "uv tool list",
+      "yarn run dlx-helper",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+  });
+
+  test("an escaped shell operator is data, not a command boundary (#2259 r8)", () => {
+    // `echo foo\; nix run x` is ONE echo with a literal `;`; bash never runs
+    // `nix run`. The splitter must not treat the escaped `;` as a boundary.
+    const bs = String.fromCharCode(92);
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      `echo foo${bs}; nix run x`,
+      `echo a ${bs}| nix run x`,
+      `echo a ${bs}& nix run x`,
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+    // An UNescaped operator still splits and denies the second command.
+    expect(() =>
+      enforceBashCommandPolicy("echo foo; nix run x", policy)
+    ).toThrow("Bash command denied by policy");
+  });
+
+  test("the matcher is a hint, not a lexer: quoted/escaped/wrapped forms are the sandbox's job (#2259 r8)", () => {
+    // These evasions are deliberately NOT caught by the text matcher — matching
+    // them means reimplementing bash's lexer and only yields false positives on
+    // honest commands. Enforcement is the sandbox binary-discovery filter (see
+    // embedded-just-bash-bootstrap.test.ts). Documented as ALLOWED here so the
+    // contract is explicit and a future "tighten the regex" change is a
+    // conscious decision, not an accident.
+    const bs = String.fromCharCode(92);
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      `"n${bs}ix"`, // escaped name inside quotes
+      `$'nix${bs}x20run'`, // ANSI-C quoting
+      "env nix run nixpkgs#hello", // exec wrapper
+      "git commit -m 'nix shell support'", // package phrase as quoted data
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
   });
 });

@@ -276,6 +276,7 @@ describe("published @lobu/worker manifest", () => {
     );
     return entry.transform(manifest) as {
       main: string;
+      types: string;
       bin: Record<string, string>;
       files: string[];
       exports: Record<string, unknown>;
@@ -318,6 +319,11 @@ describe("published @lobu/worker manifest", () => {
     expect(JSON.stringify(transformed.exports)).not.toContain(
       "dist/index.d.ts"
     );
+    // BOTH type entries must move. Node10 resolution reads the top-level
+    // `types`, so leaving it on the unshipped dist/index.d.ts handed consumers
+    // an untyped bundle (TS7016) even with exports.types correct. Verified
+    // against the installed tarball under node10, node16 and bundler.
+    expect(transformed.types).toBe("./dist/index.bundle.d.ts");
   });
 
   it("points every entry at the bundle and ships no src/", () => {

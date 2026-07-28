@@ -193,12 +193,17 @@ function transformCorePublish(pkg) {
  */
 function transformWorkerPublish(pkg) {
   const BUNDLE = "./dist/index.bundle.mjs";
+  const DECLARATION = "./dist/index.bundle.d.ts";
 
   pkg.main = BUNDLE;
+  // Both type entries must move: Node10 resolution reads the top-level `types`,
+  // and leaving it on the unshipped dist/index.d.ts gave consumers an untyped
+  // bundle (TS7016) even though exports.types was correct.
+  pkg.types = DECLARATION;
   pkg.bin = { "lobu-worker": BUNDLE };
   pkg.exports = {
     ".": {
-      types: "./dist/index.bundle.d.ts",
+      types: DECLARATION,
       import: BUNDLE,
       default: BUNDLE,
     },

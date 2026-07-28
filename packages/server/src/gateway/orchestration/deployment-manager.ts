@@ -726,6 +726,12 @@ const EMPTY_LEASE_REGISTRY = new CredentialLeaseRegistry();
  * configured. Config-derived like `networkConfig` domains: granted by the
  * sync while `nixConfig` is present, reconciled away when it is removed.
  */
+/**
+ * Marks a tooling resolution that did not happen (missing ids, or a thrown
+ * lookup). Never compared as a real digest — see `hasToolingChanged`.
+ */
+const UNKNOWN_TOOLING_FINGERPRINT = "";
+
 const NIX_CACHE_DOMAINS = [
   "cache.nixos.org",
   "channels.nixos.org",
@@ -902,6 +908,12 @@ export class DeploymentManager {
   private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
 
   /**
+   * Tooling fingerprint each deployment was BORN with, so a warm turn can tell
+   * that the org's connections changed underneath it.
+   */
+  private toolingFingerprintByDeployment = new Map<string, string>();
+
+  /**
    * True when a warm deployment holds a connector lease that has expired or is
    * about to. The caller tears the deployment down so the normal create path
    * re-mints — a worker reads its env once at process start, so refreshing the
@@ -916,9 +928,30 @@ export class DeploymentManager {
     );
   }
 
+  /**
+   * True when the org's connector tooling no longer matches what this
+   * deployment was built with — a connection was added, removed, or repointed
+   * at a different installation.
+   *
+   * Same root cause as {@link hasExpiringLease}: env is read once at process
+   * start. Without this, connecting GitHub mid-conversation leaves the agent
+   * with no `gh` and no GH_TOKEN until something else recycles it, and
+   * switching installations keeps it acting as the previous identity.
+   *
+   * Unknown deployment → false. A deployment this pod did not build is not
+   * evidence of a change, and recycling on every unknown name would tear down
+   * healthy workers after a pod restart.
+   */
+  hasToolingChanged(deploymentName: string, fingerprint: string): boolean {
+    const known = this.toolingFingerprintByDeployment.get(deploymentName);
+    if (known === undefined) return false;
+    return known !== fingerprint;
+  }
+
   /** Drop recorded lease state for a deployment that no longer exists. */
   protected forgetLeaseExpiry(deploymentName: string): void {
     this.leaseExpiryByDeployment.delete(deploymentName);
+    this.toolingFingerprintByDeployment.delete(deploymentName);
   }
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
@@ -1599,6 +1632,10 @@ export class DeploymentManager {
       env: {},
       domains: [],
       leaseExpiresAt: null,
+      // Sentinel: resolution did not run or failed. Recorded as "unknown"
+      // rather than as a real digest, so the next turn does not read a
+      // transient failure as "tooling changed" and recycle a healthy worker.
+      fingerprint: UNKNOWN_TOOLING_FINGERPRINT,
     };
     const { agentId, organizationId } = messageData;
     if (!agentId || !organizationId) return empty;
@@ -1789,6 +1826,18 @@ export class DeploymentManager {
       );
     } else {
       this.leaseExpiryByDeployment.delete(deploymentName);
+    }
+    // Remember WHICH connections built this sandbox, so a later turn can tell
+    // that one was added, removed, or repointed at a different installation.
+    // A failed resolution records nothing: absent means "no evidence", which
+    // keeps the worker rather than recycling it on a transient DB error.
+    if (agentTooling.fingerprint === UNKNOWN_TOOLING_FINGERPRINT) {
+      this.toolingFingerprintByDeployment.delete(deploymentName);
+    } else {
+      this.toolingFingerprintByDeployment.set(
+        deploymentName,
+        agentTooling.fingerprint
+      );
     }
 
     // Include host-provided secret references when requested.

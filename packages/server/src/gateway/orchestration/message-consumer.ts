@@ -564,7 +564,9 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      await this.foldConnectorTooling(data, traceId);
+      // Non-null once the contribution resolves; stays null when resolution
+      // failed, in which case the warm path must NOT read that as a change.
+      const toolingFingerprint = await this.foldConnectorTooling(data, traceId);
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
@@ -758,7 +760,8 @@ export class MessageConsumer {
         data,
         effectiveConversationId,
         traceId,
-        childTraceparent
+        childTraceparent,
+        toolingFingerprint
       ).catch((bgError) => {
         // Cross-pod handled-elsewhere signal: another replica won the
         // per-conversation lock and is running this turn to completion. This is
@@ -1011,11 +1014,16 @@ export class MessageConsumer {
    *
    * Never throws: a resolution failure leaves the payload untouched and the
    * sandbox runs without the contribution, rather than failing the turn.
+   *
+   * Returns the contribution's tooling fingerprint, or null when resolution
+   * failed. The warm path compares it against what the deployment was built
+   * with, so null must read as "no evidence of change" — a transient DB error
+   * keeps a healthy worker instead of recycling it every turn.
    */
   protected async foldConnectorTooling(
     data: MessagePayload,
     traceId: string
-  ): Promise<void> {
+  ): Promise<string | null> {
     try {
       const contribution = await resolveAgentToolingDeclaration({
         organizationId: data.organizationId,
@@ -1042,11 +1050,13 @@ export class MessageConsumer {
           ],
         };
       }
+      return contribution.fingerprint;
     } catch (error) {
       logger.warn(
         { traceId, agentId: data.agentId, error: getErrorMessage(error) },
         "Failed to resolve connector tooling contribution; continuing without it"
       );
+      return null;
     }
   }
 
@@ -1055,7 +1065,13 @@ export class MessageConsumer {
     data: MessagePayload,
     conversationId: string,
     traceId: string,
-    traceparent?: string
+    traceparent?: string,
+    /**
+     * Tooling fingerprint resolved for THIS turn, or null when resolution
+     * failed. Passed rather than re-queried so the recycle decision can never
+     * disagree with the contribution that was actually folded into `data`.
+     */
+    toolingFingerprint?: string | null
   ): Promise<void> {
     return retryWithBackoff(
       async () => {
@@ -1081,10 +1097,27 @@ export class MessageConsumer {
         // without this, a deployment that never goes idle (idle cleanup is 60m,
         // GitHub installation tokens last ~60m) keeps serving a sandbox whose
         // `gh` has started 401ing.
-        if (!isNewThread && this.deploymentManager.hasExpiringLease(deploymentName)) {
+        // The contribution is folded into `data` above, so its fingerprint is
+        // already resolved for this turn — compare it against what the warm
+        // deployment was built with.
+        const toolingChanged =
+          !isNewThread &&
+          toolingFingerprint != null &&
+          this.deploymentManager.hasToolingChanged(
+            deploymentName,
+            toolingFingerprint
+          );
+
+        if (
+          !isNewThread &&
+          (this.deploymentManager.hasExpiringLease(deploymentName) ||
+            toolingChanged)
+        ) {
           logger.info(
-            { traceId, deploymentName },
-            "Connector lease expiring — recycling deployment to re-mint"
+            { traceId, deploymentName, tooling_changed: toolingChanged },
+            toolingChanged
+              ? "Connector tooling changed — recycling deployment to pick it up"
+              : "Connector lease expiring — recycling deployment to re-mint"
           );
           try {
             await this.deploymentManager.deleteDeployment(deploymentName);

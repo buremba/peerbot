@@ -331,7 +331,7 @@ describe("resolveAgentTooling", () => {
       await resolveAgentToolingDeclaration({
         organizationId: ORG,
       })
-    ).toEqual({
+    ).toMatchObject({
       packages: ["gh"],
       domains: ["api.github.com", "github.com"],
     });
@@ -646,10 +646,10 @@ describe("deployment env assembly", () => {
   });
 
   test("INVARIANT: cold create and a warm turn give the sandbox the same tooling", async () => {
-    // Both reviewers circled this: the two paths must single-source their
-    // contribution. If they diverge, a warm turn silently drops a package or
-    // has its egress reconciled away, and the failure surfaces to the user as
-    // "the agent could do this a minute ago and now it can't".
+    // The two paths must single-source their contribution. If they diverge, a
+    // warm turn silently drops a package or has its egress reconciled away,
+    // and the failure surfaces to the user as "the agent could do this a
+    // minute ago and now it can't".
     const installId = await seedInstall();
     await seedConnectorDef({
       key: "github",
@@ -781,6 +781,94 @@ describe("deployment env assembly", () => {
     expect(
       manager.hasExpiringLease("deploy-1", new Date(Date.now() + 86_400_000))
     ).toBe(false);
+  });
+
+  test("REGRESSION: connecting a connector mid-conversation recycles the warm worker", async () => {
+    // A worker reads its env once at process start, so a deployment created
+    // before the GitHub connection existed has no gh and no GH_TOKEN. Without
+    // change detection it keeps serving that stale sandbox and the user sees
+    // "I connected GitHub but the agent still can't use it".
+    //
+    // Mutation: drop the toolingFingerprintByDeployment.set() in
+    // deployment-manager and the "changed" assertion below fails.
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    // Turn 1: no tooling connections at all.
+    await manager.buildEnv(buildPayload());
+    const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
+    expect(manager.hasToolingChanged("deploy-1", before.fingerprint)).toBe(false);
+
+    // The user connects GitHub.
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+
+    // Turn 2: the warm deployment must be recognized as stale.
+    const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(manager.hasToolingChanged("deploy-1", after.fingerprint)).toBe(true);
+
+    // And after recycling, the rebuilt sandbox actually carries the credential.
+    const rebuilt = await manager.buildEnv(buildPayload());
+    expect(rebuilt.GH_TOKEN).toBe(MINTED_TOKEN);
+    expect(manager.hasToolingChanged("deploy-1", after.fingerprint)).toBe(false);
+  });
+
+  test("repointing a connection at a different installation is a change", async () => {
+    // Two installs can declare identical tooling while being different
+    // identities. Packages and domains are unchanged, so only the installation
+    // ref in the digest catches it — without that the agent keeps acting as
+    // the previous GitHub org.
+    const installA = await seedInstall(ORG, "11112222");
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    const connId = await seedConnection({
+      connectorKey: "github",
+      installationRef: installA,
+    });
+    const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    const installB = await seedInstall(ORG, "33334444");
+    await getDb()`
+      UPDATE connections
+         SET config = ${getDb().json({ installation_ref: installB })}
+       WHERE id = ${connId}
+    `;
+    const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    // Capability is identical...
+    expect(after.packages).toEqual(before.packages);
+    expect(after.domains).toEqual(before.domains);
+    // ...but identity is not.
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
+  test("an unchanged org keeps its warm worker", async () => {
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    manager.setCredentialLeaseRegistry(buildLeaseRegistry());
+
+    await manager.buildEnv(buildPayload());
+    const again = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    // Recycling a healthy worker every turn would be worse than the bug.
+    expect(manager.hasToolingChanged("deploy-1", again.fingerprint)).toBe(false);
+    // A deployment this pod never built is not evidence of a change.
+    expect(manager.hasToolingChanged("deploy-unknown", again.fingerprint)).toBe(
+      false
+    );
   });
 
   test("a lease env var survives secret-placeholder injection", async () => {

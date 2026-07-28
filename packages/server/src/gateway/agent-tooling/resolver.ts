@@ -11,6 +11,7 @@
  * database, never connector code. Nothing here loads or executes a connector.
  */
 
+import { createHash } from "node:crypto";
 import {
   createLogger,
   isValidDomainPattern,
@@ -49,6 +50,8 @@ export interface ResolvedAgentTooling {
    * recycle the worker before its credential lapses.
    */
   leaseExpiresAt: Date | null;
+  /** See {@link ResolvedAgentToolingDeclaration.fingerprint}. */
+  fingerprint: string;
 }
 
 const EMPTY: ResolvedAgentTooling = {
@@ -56,6 +59,10 @@ const EMPTY: ResolvedAgentTooling = {
   env: {},
   domains: [],
   leaseExpiresAt: null,
+  // Must equal what `resolveAgentToolingDeclaration` digests for zero rows, or
+  // an org with no tooling connections would look "changed" on every turn and
+  // recycle its worker forever.
+  fingerprint: toolingFingerprint([]),
 };
 
 /**
@@ -205,10 +212,47 @@ async function loadToolingConnections(
   `) as unknown as ToolingConnectionRow[];
 }
 
+/**
+ * One connection's contribution to the tooling fingerprint: which connection,
+ * which installation, and what it declares. Shared by both resolvers so the
+ * cold and warm paths can never disagree about whether tooling changed.
+ */
+function toolingIdentityEntry(
+  row: ToolingConnectionRow,
+  tooling: ConnectorAgentTooling | null
+): string {
+  const installationRef = parseJsonObject(row.config).installation_ref;
+  return JSON.stringify([
+    String(row.connection_id),
+    row.connector_key,
+    installationRef == null ? null : String(installationRef),
+    tooling,
+  ]);
+}
+
+/** Digest the per-connection identity entries into a stable fingerprint. */
+function toolingFingerprint(entries: string[]): string {
+  return createHash("sha256")
+    .update(entries.join("\n"))
+    .digest("hex")
+    .slice(0, 32);
+}
+
 /** The declaration-only half of the contribution: no credential is minted. */
 export interface ResolvedAgentToolingDeclaration {
   packages: string[];
   domains: string[];
+  /**
+   * Stable digest of WHICH connections contribute and WHAT they declare —
+   * connection id, its `installation_ref`, and the validated declaration.
+   *
+   * A worker reads its env once at process start, so a warm deployment keeps
+   * whatever tooling it was born with. Comparing this across turns is how the
+   * warm path notices that a connection was added, removed, or repointed at a
+   * different installation, and recycles instead of serving an agent that is
+   * missing a CLI or still authenticating as the previous identity.
+   */
+  fingerprint: string;
 }
 
 /**
@@ -226,12 +270,25 @@ export async function resolveAgentToolingDeclaration(params: {
 }): Promise<ResolvedAgentToolingDeclaration> {
   const packages = new Set<string>();
   const domains = new Set<string>();
+  const identity: string[] = [];
+  // `loadToolingConnections` is ORDER BY c.id, so the digest is stable across
+  // turns and replicas without sorting here.
   for (const row of await loadToolingConnections(params.organizationId)) {
     const tooling = parseAgentTooling(row.agent_tooling);
     for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
+
+    // Identity, not just capability: two connections can declare identical
+    // tooling while pointing at different installations, and swapping between
+    // them changes WHO the agent is. The installation ref therefore has to be
+    // in the digest even though it contributes nothing to packages/domains.
+    identity.push(toolingIdentityEntry(row, tooling));
   }
-  return { packages: [...packages], domains: [...domains] };
+  return {
+    packages: [...packages],
+    domains: [...domains],
+    fingerprint: toolingFingerprint(identity),
+  };
 }
 
 /**
@@ -264,10 +321,14 @@ export async function resolveAgentTooling(params: {
   const env: Record<string, string> = {};
   /** env name → the connection whose lease is in `env`, for collision logging. */
   const envSource = new Map<string, number>();
+  const identity: string[] = [];
   let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
     const tooling = parseAgentTooling(row.agent_tooling);
+    // Recorded for EVERY row, including ones that contribute nothing: removing
+    // a malformed connection still changes the org's tooling identity.
+    identity.push(toolingIdentityEntry(row, tooling));
     if (!tooling) {
       // Covers both a structurally malformed value and one whose every entry
       // was filtered out (an unknown credential tier, an invalid package name,
@@ -350,6 +411,7 @@ export async function resolveAgentTooling(params: {
     env,
     domains: [...domains],
     leaseExpiresAt,
+    fingerprint: toolingFingerprint(identity),
   };
 }
 

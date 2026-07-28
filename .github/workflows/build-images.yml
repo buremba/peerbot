@@ -22,6 +22,12 @@ on:
   push:
     branches:
       - main
+  # release-please publishes `lobu-vX.Y.Z`. Building on that too is what gives
+  # the images a semver tag and repoints `latest` at a release instead of an
+  # arbitrary commit (#2184). The timestamp tag is still produced on every run
+  # so Flux's ImagePolicy keeps matching.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       platforms:
@@ -56,10 +62,41 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.timestamp.outputs.tag }}
+      semver: ${{ steps.semver.outputs.semver }}
+      is_stable: ${{ steps.semver.outputs.is_stable }}
     steps:
       - name: Generate shared timestamp tag
         id: timestamp
         run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      # Both outputs are empty on non-release runs, so a plain main push
+      # publishes only the timestamp tag — that is the #2184 fix. Computed once
+      # here so app/worker/embeddings can never disagree about the version.
+      - name: Derive semver tag from the release
+        id: semver
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+          PRERELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || false }}
+        run: |
+          set -euo pipefail
+          semver="${RELEASE_TAG#lobu-v}"
+          if [ "$semver" = "$RELEASE_TAG" ]; then
+            # Not a lobu-v* release (e.g. the Mac app). Publish no version tag
+            # rather than guessing, so `latest` never moves to an unrelated one.
+            semver=""
+          fi
+          # `latest` must track STABLE releases only. A prerelease still gets its
+          # own version tag (so it is installable) but must not become what a
+          # plain `docker pull ghcr.io/lobu-ai/lobu-app` resolves to. Checked
+          # against the semver string too, not just GitHub's prerelease flag,
+          # since release-please marks that flag only when it is told to.
+          is_stable=true
+          case "$semver" in
+            ""|*-*) is_stable=false ;;
+          esac
+          if [ "$PRERELEASE" = "true" ]; then is_stable=false; fi
+          echo "semver=$semver" >> "$GITHUB_OUTPUT"
+          echo "is_stable=$is_stable" >> "$GITHUB_OUTPUT"
 
   # Connector-runtime parity smoke gate (main/deploy side). RUNS the built worker
   # artifact's self-check before any image is pushed, so the packaging/parity
@@ -149,7 +186,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_APP }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push App image
         uses: useblacksmith/build-push-action@v2
@@ -210,7 +248,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_WORKER }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push Worker image
         uses: useblacksmith/build-push-action@v2
@@ -264,7 +303,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_EMBEDDINGS }}
           tags: |
             type=raw,value=${{ needs.generate-tag.outputs.tag }}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.generate-tag.outputs.semver }},enable=${{ needs.generate-tag.outputs.semver != '' }}
+            type=raw,value=latest,enable=${{ needs.generate-tag.outputs.is_stable == 'true' }}
 
       - name: Build and push Embeddings Service image
         uses: useblacksmith/build-push-action@v2

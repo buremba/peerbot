@@ -20,10 +20,21 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      # Releases created with GITHUB_TOKEN do not trigger release-event
+      # workflows, including build-images and mac-release.
+      - name: Require release automation token
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
+            echo "::error::RELEASE_PLEASE_TOKEN is required so release-event workflows can run."
+            exit 1
+          fi
+
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           include-component-in-tag: true
@@ -41,6 +52,8 @@ jobs:
     steps:
       - name: Trigger publish-packages workflow
         env:
+          # workflow_dispatch is allowed to create a run with GITHUB_TOKEN;
+          # only release-event consumers require the automation token above.
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run publish-packages.yml \

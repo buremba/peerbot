@@ -34,9 +34,9 @@ services:
       retries: 20
 
   lobu:
-    # `latest` tracks the newest STABLE release (e.g. 14.3.0), not every commit
-    # on main. Pin the version for reproducible deploys:
-    #   image: ghcr.io/lobu-ai/lobu-app:14.3.0
+    # Main-branch builds no longer move `latest`; stable releases do.
+    # Pin a published version for reproducible deploys:
+    #   image: ghcr.io/lobu-ai/lobu-app:X.Y.Z
     image: ghcr.io/lobu-ai/lobu-app:latest
     # platform: linux/amd64  # required on Apple Silicon until multi-arch image lands (see GitHub Issues)
     container_name: lobu-app

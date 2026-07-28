@@ -165,6 +165,14 @@ describe('tool invocation audit coverage', () => {
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
   });
 
+  it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {
+    await executeTool('list_organizations', {}, {} as Env, authCtxFor('oauth'));
+
+    const row = await latestAuditRow(orgId, 'list_organizations');
+    expect(row).not.toBeNull();
+    expect(row!.payload_data.success).toBe(true);
+  });
+
   it('records resolved tool failures as failed', async () => {
     const result = (await executeTool(
       'manage_classifiers',

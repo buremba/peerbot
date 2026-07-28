@@ -97,14 +97,61 @@ describe("vercel provisionScript", () => {
     const script = provisionScript(["gh", "ripgrep"], "marker123");
     expect(script).toContain("nixpkgs#gh");
     expect(script).toContain("nixpkgs#ripgrep");
-    expect(script).toContain('nix profile install --profile "$NIX_ROOT/profile"');
+    expect(script).toContain(
+      'nix profile install --profile "$PROFILE" nixpkgs#gh nixpkgs#ripgrep'
+    );
+    expect(script).toContain('PROFILE="$NIX_HOME/profiles/marker123"');
+    expect(script).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
+  });
+
+  test("checks the actual single-user nix binary before bootstrapping", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain('[ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]');
+    expect(script).not.toContain("$NIX_HOME/nix/var/nix/profiles/default/bin/nix");
+  });
+
+  test("uses an exact hash-addressed profile so removed packages leave PATH", () => {
+    const first = provisionScript(["gh"], "set-a");
+    const second = provisionScript(["jq"], "set-b");
+    expect(first).toContain('PROFILE="$NIX_HOME/profiles/set-a"');
+    expect(first).toContain("nixpkgs#gh");
+    expect(second).toContain('PROFILE="$NIX_HOME/profiles/set-b"');
+    expect(second).toContain("nixpkgs#jq");
+    expect(second).not.toContain("nixpkgs#gh");
+    expect(second).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
+  });
+
+  test("re-selects an already-built set without touching the network", () => {
+    // The profile dir survives in the persistent sandbox even if the marker
+    // was clobbered, so PATH can be pointed at it with no substituter access.
+    const script = provisionScript(["gh"], "marker123");
+    const offline = script
+      .split("\n")
+      .find(
+        (line) =>
+          line.startsWith('if [ -d "$PROFILE/bin" ]') &&
+          line.includes("lobu-packages: cached")
+      );
+    expect(offline).toBeDefined();
+    expect(script.indexOf('if [ -d "$PROFILE/bin" ]')).toBeLessThan(
+      script.indexOf("curl")
+    );
+  });
+
+  test("deletes a partial profile so a failed attempt cannot poison the retry", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain(
+      'if ! nix profile install --profile "$PROFILE" nixpkgs#gh; then rm -f "$PROFILE"; exit 1; fi'
+    );
   });
 
   test("short-circuits on a marker match before touching the network", () => {
     // Idempotence lives in the SANDBOX filesystem, not a gateway Map: the pod
     // that provisioned is not the pod that handles the next message.
     const script = provisionScript(["gh"], "marker123");
-    const guard = script.split("\n").find((line) => line.includes("marker123"));
+    const guard = script
+      .split("\n")
+      .find((line) => line.includes("lobu-packages: cached"));
     expect(guard).toContain("/vercel/sandbox/.lobu-nix/.lobu-packages");
     expect(guard).toContain("lobu-packages: cached");
     // The guard must precede the installer download, or the "cached" path still

@@ -61,6 +61,15 @@ export interface RuntimeExecContext {
    * validator rejected never reaches here.
    */
   nixPackages?: string[];
+  /**
+   * Result of this request's {@link GatewayRuntimeProvider.ensurePackages}, set
+   * by the route before `exec`. Absent when there was nothing to provision or
+   * the provider cannot. Providers use it to decide whether to expose their
+   * package profile: after a FAILED install the profile may still hold an older
+   * set, and silently putting that on PATH would contradict the `failed` list we
+   * just reported to the worker.
+   */
+  provisioned?: PackageProvisionResult;
 }
 
 /** Outcome of one `ensurePackages` call, surfaced to the worker as exec meta. */

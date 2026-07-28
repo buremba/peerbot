@@ -239,6 +239,27 @@ export function getSubdomainZone(
 }
 
 /**
+ * Returns the zone explicitly configured for cross-host organization routing.
+ * Unlike getSubdomainZone(), this never falls back to PUBLIC_GATEWAY_URL:
+ * path-based deployments also configure a public origin.
+ */
+export function getConfiguredSubdomainZone(
+  cookieDomain = process.env.AUTH_COOKIE_DOMAIN
+): string | null {
+  const zone = normalizeHost(cookieDomain);
+  return zone && isSubdomainCapableHost(zone) ? zone : null;
+}
+
+/** False for loopback names and IP literals, which cannot carry subdomains. */
+function isSubdomainCapableHost(host: string): boolean {
+  if (LOCALHOST_HOSTNAMES.has(host)) return false;
+  // IPv4 dotted-quad, or the bracketed/colon forms of IPv6.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
+  if (host.includes(':') || host.startsWith('[')) return false;
+  return true;
+}
+
+/**
  * Extracts the org slug from a Host header for `{org}.{zone}` requests.
  * Reserved subdomains (www, api, app, etc.) are skipped so infra hostnames are
  * not mistaken for org slugs. Returns null when the host does not belong to the

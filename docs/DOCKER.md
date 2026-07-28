@@ -84,6 +84,20 @@ Migrations are applied at boot. If you roll back to an older image whose migrati
 
 `FRAME_ANCESTORS` lets you embed the admin UI inside another origin if needed (Content-Security-Policy frame-ancestors directive). Set as a comma-separated list of allowed origins; leave unset to deny all framing.
 
+### Path-based orgs (default) vs per-org subdomains
+
+By default each organization lives on a path — `https://lobu.example.com/your-org`. This needs nothing beyond `PUBLIC_GATEWAY_URL` and works behind a single reverse proxy with one hostname and one certificate.
+
+Set `AUTH_COOKIE_DOMAIN` only if you want each org on its own hostname (`your-org.lobu.example.com`). The value is the shared parent zone, with or without the leading dot:
+
+```yaml
+AUTH_COOKIE_DOMAIN: .lobu.example.com
+```
+
+That mode additionally requires wildcard DNS (`*.lobu.example.com`), a wildcard-capable certificate, and a proxy that forwards those hosts to the container. If any of the three is missing, leave `AUTH_COOKIE_DOMAIN` unset — the app stays on path-based URLs.
+
+The server tells the frontend which mode is active at runtime, so this is a plain env change: no image rebuild, and nothing is inferred from the hostname you happen to serve on.
+
 ## Production checklist
 
 - [ ] Real `ENCRYPTION_KEY` and `BETTER_AUTH_SECRET` (NOT the example placeholders).

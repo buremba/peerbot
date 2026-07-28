@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractSubdomainOrg,
   getCanonicalRedirectUrl,
+  getConfiguredSubdomainZone,
   getSubdomainZone,
   normalizeHost,
 } from '../public-origin';
@@ -83,11 +84,22 @@ describe('getSubdomainZone', () => {
   });
 
   it('falls back to the configured origin host when no cookie domain is set', () => {
-    expect(getSubdomainZone('https://app.example.com', undefined)).toBe('app.example.com');
+    expect(getSubdomainZone('https://app.example.com', '')).toBe('app.example.com');
   });
 
   it('returns null when nothing is configured', () => {
-    expect(getSubdomainZone(undefined, undefined)).toBeNull();
+    expect(getSubdomainZone('', '')).toBeNull();
+  });
+});
+
+describe('getConfiguredSubdomainZone', () => {
+  it('returns only an explicit, subdomain-capable cookie zone', () => {
+    expect(getConfiguredSubdomainZone('.lobu.ai')).toBe('lobu.ai');
+    expect(getConfiguredSubdomainZone('')).toBeNull();
+    expect(getConfiguredSubdomainZone('localhost')).toBeNull();
+    expect(getConfiguredSubdomainZone('127.0.0.1')).toBeNull();
+    expect(getConfiguredSubdomainZone('192.168.1.50')).toBeNull();
+    expect(getConfiguredSubdomainZone('[::1]')).toBeNull();
   });
 });
 

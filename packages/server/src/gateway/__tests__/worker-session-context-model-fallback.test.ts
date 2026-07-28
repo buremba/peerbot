@@ -340,7 +340,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       base_url: "https://api.byo.example.com",
       model: "byo-model",
     });
-    expect(await setInferenceProviderDefault(ORG, "byo-default")).toBe(true);
+    expect(await setInferenceProviderDefault(ORG, "byo-default")).toBe('ok');
 
     const catalog = new ProviderCatalogService(
       // Agent settings with an EMPTY models list — the exact gap.

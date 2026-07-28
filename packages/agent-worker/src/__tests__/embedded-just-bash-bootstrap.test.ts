@@ -119,6 +119,40 @@ describe("createEmbeddedBashOps", () => {
     expect(chunks.join("")).toContain("gh version");
   });
 
+  test("REGRESSION: a declared package registers its command, not its name", async () => {
+    // A nix attribute does not name the command it installs: `ripgrep` installs
+    // `rg`. Deriving the command from the attribute registered `ripgrep` (which
+    // does not exist) and left `rg` unregistered, so a declared tool baked into
+    // the image was still unusable.
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-pkgname-"))
+    );
+    tempDirs.push(workspace);
+
+    const usrBin = path.join(workspace, "usr", "bin");
+    fs.mkdirSync(usrBin, { recursive: true });
+    const fakeRg = path.join(usrBin, "rg");
+    fs.writeFileSync(fakeRg, '#!/bin/sh\necho "ripgrep 14.1.0"\n', "utf8");
+    fs.chmodSync(fakeRg, 0o755);
+
+    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.LOBU_POD_IS_SANDBOX = "1";
+    delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    process.env.LOBU_EXEC_SANDBOX = "off";
+    process.env.NIX_PACKAGES = "ripgrep";
+    delete process.env.LOBU_WORKSPACE_BACKEND;
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    const result = await ops.exec("rg --version", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(chunks.join("")).toContain("ripgrep 14.1.0");
+  });
+
   test("an undeclared PATH binary stays unavailable", async () => {
     // The contributed-CLI discovery must widen to DECLARED tools only. If it
     // registered whatever is on PATH, it would undo the sandbox property the
@@ -162,18 +196,20 @@ describe("createEmbeddedBashOps", () => {
     );
     tempDirs.push(workspace);
 
-    const usrBin = path.join(workspace, "usr", "bin");
-    fs.mkdirSync(usrBin, { recursive: true });
-    const fakeNode = path.join(usrBin, "node");
+    // Under /nix/store so discovery genuinely reaches it and has to reject it:
+    // interpreters are filtered on BOTH discovery paths.
+    const nixBin = path.join(workspace, "nix", "store", "iface", "bin");
+    fs.mkdirSync(nixBin, { recursive: true });
+    const fakeNode = path.join(nixBin, "node");
     fs.writeFileSync(fakeNode, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
     fs.chmodSync(fakeNode, 0o755);
 
-    process.env.PATH = `${usrBin}:${process.env.PATH ?? ""}`;
+    process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
     process.env.LOBU_POD_IS_SANDBOX = "1";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
     process.env.LOBU_EXEC_SANDBOX = "off";
     // Even DECLARING it must not be enough — interpreters are a separate grant.
-    process.env.NIX_PACKAGES = "node";
+    process.env.NIX_PACKAGES = "nodejs";
     delete process.env.LOBU_WORKSPACE_BACKEND;
 
     const ops = await createEmbeddedBashOps({ workspaceDir: workspace });

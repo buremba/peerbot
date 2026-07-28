@@ -124,11 +124,34 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
 ]);
 
 /**
+ * Executables installed by a declared nix package, for the packages whose CLI
+ * is baked into the runtime image (docker/app/Dockerfile) instead of being
+ * provisioned under /nix/store.
+ *
+ * A package attribute does NOT name its commands (`ripgrep` installs `rg`), so
+ * this listing is explicit. Inferring the command from the attribute registers
+ * a name that does not exist (`ripgrep`) and leaves the real binary
+ * unregistered.
+ * Nix-provisioned packages need no entry: the /nix/store scan in
+ * `discoverBinaries` already finds their real binaries whatever they are named.
+ * A package with no entry contributes nothing outside /nix/store, which fails
+ * closed — baking a new CLI into the image is already an image change, so it
+ * lands here in the same commit.
+ */
+const IMAGE_BAKED_EXECUTABLES: ReadonlyMap<string, readonly string[]> = new Map(
+  [
+    ["git", ["git"]],
+    ["gh", ["gh"]],
+    ["ripgrep", ["rg"]],
+  ]
+);
+
+/**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
- * 2. `lobu`, plus every tool named in NIX_PACKAGES, from anywhere on PATH —
- *    a connector-contributed CLI may be baked into the image rather than
- *    provisioned by nix
+ * 2. `lobu`, plus the executables of the NIX_PACKAGES entries listed in
+ *    IMAGE_BAKED_EXECUTABLES, from anywhere on PATH — a connector-contributed
+ *    CLI may be baked into the image rather than provisioned by nix
  *
  * UNSANDBOXED_INTERPRETERS are filtered out unless the spawned worker has
  * LOBU_ALLOW_UNSANDBOXED_EXEC=1 in its env (set explicitly per-agent for
@@ -162,8 +185,8 @@ function discoverBinaries(): Map<string, string> {
     }
   }
 
-  // Discover known CLI tools, plus every connector-contributed one, from the
-  // FULL PATH rather than only /nix/store.
+  // Discover known CLI tools, plus the commands of the declared image-baked
+  // packages, from the FULL PATH rather than only /nix/store.
   //
   // `NIX_PACKAGES` is the declared tooling for this deployment. A declared tool
   // is not necessarily provisioned by nix: the production image bakes `git` and
@@ -174,10 +197,11 @@ function discoverBinaries(): Map<string, string> {
   const contributed = (process.env.NIX_PACKAGES || "")
     .split(",")
     .map((name) => name.trim())
-    // A nix attribute path (`pkgs.gh`, `nixpkgs#gh`) names the package, and the
-    // binary is the last segment.
+    // A nix attribute path (`pkgs.gh`, `nixpkgs#gh`) names the package; the
+    // commands it installs are NOT derivable from that name, so they come from
+    // the explicit listing above.
     .map((name) => name.split(/[.#]/).pop() ?? "")
-    .filter(Boolean);
+    .flatMap((pkg) => IMAGE_BAKED_EXECUTABLES.get(pkg) ?? []);
 
   for (const name of ["lobu", ...contributed]) {
     if (binaries.has(name)) continue;

@@ -306,15 +306,12 @@ describe("worker model fallback (real DB, both channels)", () => {
     // so the CTA stays here even when the model's prefix names some OTHER
     // installed provider (OpenRouter's "openai/gpt-4o" vendor namespace).
     //
-    // NOTE on the false branch: no fixture here reaches it, and that appears to
-    // be by design rather than a coverage gap. `resolveDispatchModel` fails
-    // closed — an unroutable ref is either replaced by the first routable one
-    // or resolves to undefined, in which case resolveProviderConfig returns {}
-    // and publishes NO provider at all. So via /session-context the gateway
-    // does not appear to publish a defaultProvider that fails to serve its
-    // model. The worker still handles `false` (older-gateway/other-caller
-    // safety, covered in model-resolver.test.ts), but asserting it here would
-    // require a state this endpoint does not seem to produce.
+    // With models PINNED (as here) the allow-list path applies and
+    // `resolveDispatchModel` fails closed, so an unroutable ref is replaced or
+    // yields no provider at all — this branch always sees a matched provider.
+    // The false branch is reached via the ALLOW-ALL path instead (no pinned
+    // models ⇒ `allowedRefs === null` ⇒ no routability check); see the
+    // fallback-picked test below.
     const sql = getDb();
     await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
     await createInferenceProvider({

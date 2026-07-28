@@ -210,13 +210,13 @@ export class ChatResponseBridge implements ResponseRenderer {
     replyText: string
   ): Promise<void> {
     if (!this.interactionService) return;
-    // No `persistSuggestion` here, unlike the API/SSE path: durable suggestion
-    // state exists so the web client can re-render chips on reload, and only
-    // API surfaces read it (`response-renderer`, `agent-history`). A chat chip
-    // is a native platform card that Slack/Telegram already persist, and its
-    // click-routing row is stashed by the interaction bridge's
-    // `suggestion:created` handler (`storePendingSuggestion`, 24h TTL).
-    // Persisting here would mint a second live row no chat surface reads.
+    // No `persistSuggestion` here: durable suggestion state exists so the web
+    // client can re-render chips on reload, and only API surfaces read it
+    // (`response-renderer`, `agent-history`). A chat chip is a native platform
+    // card that Slack/Telegram already persist, and its click-routing row is
+    // stashed by the interaction bridge's `suggestion:created` handler
+    // (`storePendingSuggestion`, 24h TTL). Persisting here would mint a second
+    // live row no chat surface reads.
     //
     // An old worker cannot distinguish "no tool" from "not reported"; skip to
     // avoid duplicating a suggest_actions card during a rolling deployment.
@@ -599,7 +599,13 @@ export class ChatResponseBridge implements ResponseRenderer {
       !completionMd.sessionReset &&
       historyText?.trim()
     ) {
-      await this.maybeEnrichSuggestFollowups(payload, ctx, historyText);
+      // Fire-and-forget: the `thread_response` worker runs at concurrency 1
+      // (runs-queue.ts DEFAULT_WORKER_CONCURRENCY), so awaiting an up-to-15s
+      // model call here would head-of-line block every other conversation's
+      // delivery on this pod. Nothing below needs the result, the chips are
+      // posted out-of-band as their own card, and the method catches all of
+      // its own errors.
+      void this.maybeEnrichSuggestFollowups(payload, ctx, historyText);
     }
 
     logger.info(

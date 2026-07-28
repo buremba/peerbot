@@ -6,6 +6,20 @@ import { ConversationStateStore } from "../connections/conversation-state-store.
 import { registerBuiltinGuardrails } from "../guardrails/builtins.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 
+/** Poll until `predicate` holds, or throw once `timeoutMs` elapses. */
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /**
  * Build a target whose `post(iterable)` drains the AsyncIterable into
  * `collected`. Returns a `drained` promise that resolves when the adapter
@@ -560,6 +574,11 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
         },
         "s"
       );
+      // Enrichment is intentionally fire-and-forget (it must not block the
+      // concurrency-1 delivery worker), so handleCompletion returns before the
+      // chip is posted. Wait for the detached chain rather than restoring env
+      // out from under it.
+      await waitFor(() => postSuggestion.mock.calls.length > 0);
     } finally {
       globalThis.fetch = originalFetch;
       if (previousEnv.key === undefined)

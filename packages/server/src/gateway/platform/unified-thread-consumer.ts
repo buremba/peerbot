@@ -544,11 +544,17 @@ export class UnifiedThreadResponseConsumer {
             // the chips are generated, persisted, and never delivered).
             //
             // Chat has neither problem: a native card is posted out-of-band and
-            // the platform itself persists it. Web chips need a post-turn update
-            // channel that outlives the send (invalidating the history query,
-            // which already restores chips via historyInteractionsToSuggestions)
-            // — a general mechanism worth building on its own, not a special
-            // case wedged into the turn-scoped stream.
+            // the platform itself persists it.
+            //
+            // If web chips are wanted later, the tractable design is to
+            // generate them WORKER-SIDE before `signalCompletion`, so they are
+            // already durable when `resolveTerminalSuggestions` embeds them on
+            // `complete` — no new channel and no SPA change. Note two dead
+            // ends: the SPA hydrates chips from history exactly once
+            // (`hydratedRef`, lobu-chat-store.tsx), so invalidating the history
+            // query does NOT re-render them; and the org invalidation stream is
+            // backed by a per-pod in-process emitter (events/emitter.ts), so it
+            // cannot signal a browser pinned to another replica.
           }
         }
       }

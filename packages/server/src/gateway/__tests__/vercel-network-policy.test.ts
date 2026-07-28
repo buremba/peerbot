@@ -155,11 +155,37 @@ describe("vercel provisionScript", () => {
     const guard = script
       .split("\n")
       .find((line) => line.includes("lobu-packages: cached"));
-    expect(guard).toContain("/vercel/sandbox/.lobu-nix/.lobu-packages");
+    expect(guard).toContain("/opt/lobu-nix/.lobu-packages");
     expect(guard).toContain("lobu-packages: cached");
     // The guard must precede the installer download, or the "cached" path still
     // pays the bootstrap.
     expect(script.indexOf("marker123")).toBeLessThan(script.indexOf("curl"));
+  });
+
+  test("fails the pipeline instead of trusting the installer's exit code", () => {
+    // `curl … | sh` exits 0 on a dead download (sh reads empty stdin), so a
+    // failed bootstrap would only surface as a confusing missing-nix.sh error.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain("set -o pipefail");
+    expect(script.indexOf("set -o pipefail")).toBeLessThan(
+      script.indexOf("curl")
+    );
+  });
+
+  test("sources the third-party profile script without nounset", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain(
+      'set +u; . "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"; set -u'
+    );
+  });
+
+  test("keeps root-written provisioning state out of the agent workspace", () => {
+    // Provisioning runs as root while the worker writes /vercel/sandbox
+    // unprivileged: a marker or HOME path the worker can swap for a symlink
+    // would be followed by root's writes.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain("export NIX_HOME=/opt/lobu-nix");
+    expect(script).not.toContain("/vercel/sandbox");
   });
 
   test("refuses to build a command line for an unvalidated package name", () => {

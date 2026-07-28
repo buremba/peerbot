@@ -26,8 +26,15 @@ const REMOTE_WORKSPACE_DIR = "/vercel/sandbox";
 /**
  * Writable home for the single-user Nix profile and Lobu's package profiles.
  * The Nix store itself remains at `/nix` inside the sandbox microVM.
+ *
+ * Deliberately OUTSIDE the agent-writable `/vercel/sandbox`: provisioning runs as root
+ * while the worker writes the workspace unprivileged, so any provisioning path
+ * the worker can replace with a symlink would be followed as root — by the
+ * marker write, by `nix.conf`, and by the installer's own writes under HOME.
+ * `/opt` is root-owned, so the worker cannot plant anything on these paths; it
+ * only ever needs read+execute on the profile's `bin`.
  */
-const NIX_HOME = "/vercel/sandbox/.lobu-nix";
+const NIX_HOME = "/opt/lobu-nix";
 const NIX_PROFILE_BIN = `${NIX_HOME}/profile/bin`;
 /** Sandbox-side provisioning state — see `nixPackageSetHash`. Never a gateway Map. */
 const PACKAGE_MARKER_PATH = `${NIX_HOME}/.lobu-packages`;
@@ -412,8 +419,8 @@ async function sandboxForRequest(ctx: RuntimeExecContext): Promise<Sandbox> {
  * Shell script that brings `packages` onto PATH inside the sandbox.
  *
  * Single-user Nix (`--no-daemon`) uses `/nix` inside the sandbox microVM and a
- * writable HOME under the persistent workspace. Provisioning runs with the
- * provider's `sudo` option because the standard installer creates `/nix`.
+ * root-owned HOME at `NIX_HOME`. Provisioning runs with the provider's `sudo`
+ * option because the standard installer creates `/nix`.
  * `nix profile install` is used rather than `nix-shell -p` because the profile
  * persists across messages, which is what makes the marker-file skip meaningful.
  *
@@ -428,6 +435,10 @@ function provisionScript(packages: string[], marker: string): string {
   const attrs = packages.map((pkg) => `nixpkgs#${pkg}`).join(" ");
   return [
     "set -eu",
+    // Without pipefail the installer masks a failed download: `sh` reads the
+    // empty stdin left by a dead `curl` and exits 0, so the real failure only
+    // surfaces later as a confusing missing-nix.sh error.
+    "set -o pipefail",
     `export NIX_HOME=${NIX_HOME}`,
     `PROFILE="$NIX_HOME/profiles/${marker}"`,
     // Marker + hash-addressed profile match → the exact set is installed. The
@@ -444,7 +455,10 @@ function provisionScript(packages: string[], marker: string): string {
     `if [ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]; then`,
     `  curl -fsSL ${nixInstallerUrl()} | sh -s -- --no-daemon --no-channel-add`,
     `fi`,
-    `. "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"`,
+    // Sourced with `set +u` because the profile script is third-party and reads
+    // environment variables a bare provisioning shell need not have set. `set
+    // -e` still applies, so a nix.sh missing after a failed bootstrap aborts.
+    `set +u; . "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"; set -u`,
     // One immutable profile per exact set: removed declarations disappear from
     // PATH, and a failed partial attempt is deleted before the next retry.
     `rm -f "$PROFILE" "$PROFILE"-*-link`,

@@ -124,15 +124,28 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
  *
  * This is a conservative TEXT hint, not the security boundary, and it does NOT
  * try to out-parse the shell: a quoted or escaped executable name (`"nix" run`,
- * `n\ix run`, `$'n\x69x' run`), a package manager launched through an exec
+ * `n\ix run`, `$'n\x69x' run`), a path-qualified one (`/usr/bin/nix run`,
+ * `/nix/store/<hash>/bin/nix run`), a package manager launched through an exec
  * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
- * is NOT recognized here. Actual enforcement is the sandbox binary-discovery
- * filter (`UNSANDBOXED_INTERPRETERS` in `just-bash-bootstrap.ts`): a package
- * manager that is not registered as a runnable command resolves to "command not
- * found" (exit 127) however it is spelled or wrapped, because the lookup is on
- * the RESOLVED binary name, which quoting cannot change. Trying to make this
- * matcher airtight means reimplementing bash's lexer and only produces false
- * positives on honest commands; the sandbox is where correctness lives.
+ * is NOT recognized here. Trying to make this matcher airtight means
+ * reimplementing bash's lexer and only produces false positives on honest
+ * commands. It is advisory on BOTH bash backends, for different reasons:
+ *
+ *  - Local embedded just-bash (the default, and the unattended/scheduled path):
+ *    enforcement is the binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in
+ *    `just-bash-bootstrap.ts`). A package manager that is not registered as a
+ *    runnable command resolves to "command not found" (exit 127) however it is
+ *    spelled, quoted, or path-qualified, because the lookup is on the RESOLVED
+ *    binary name. Declared `nixPackages` is the sanctioned way to get tooling.
+ *
+ *  - Remote runtime providers (opt-in, e.g. `vercel`): the runtime IS a sandbox
+ *    — read-only base image rooted at its own workspace, egress governed by the
+ *    provider's network policy. Package managers are intentionally usable there
+ *    (`nix shell` working is the point of the tier), and nothing installed
+ *    escapes into the worker or persists into a later scheduled run. There is
+ *    no discovery filter on that path BY DESIGN; the sandbox is the boundary.
+ *    Reaching a manager there is not a bypass of this hint — it is the tier
+ *    behaving as intended.
  */
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();

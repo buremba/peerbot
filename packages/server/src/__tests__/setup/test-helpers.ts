@@ -152,7 +152,7 @@ import { mcpSessions } from './mcp-session-cache';
  * Sends the proper initialize + notifications/initialized handshake
  * and caches the resulting session ID for subsequent requests.
  */
-async function ensureMcpSession(options?: {
+export async function ensureMcpSession(options?: {
   token?: string;
   env?: Partial<Env>;
   agentId?: string;

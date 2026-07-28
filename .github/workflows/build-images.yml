@@ -14,8 +14,20 @@ name: Build and Push Images
 #
 # cancel-in-progress stays false: a cancelled run can leave the chart pointing
 # at a tag whose sibling images were never pushed.
+#
+# Release runs get their OWN group. GitHub keeps only one *pending* run per
+# group, so a third arrival evicts the queued second — on 2026-07-28 the
+# `lobu-v14.4.0` release run was cancelled while queued behind two main pushes
+# that landed within the same two minutes, and `14.4.0` was never published
+# while `latest` stayed on a pre-release build. A cancelled queued run reports
+# no failure, so the release silently did not happen.
+#
+# Splitting only the release event keeps push runs serialized against each
+# other (the timestamp-collision incident above), while a release — which is
+# rare, and never concurrent with another release — can never be evicted by
+# routine merges.
 concurrency:
-  group: build-images
+  group: build-images${{ github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
 
 on:

@@ -32,7 +32,11 @@ import {
   RunsQueue,
   TERMINAL_DELIVERY_SEND_OPTS,
 } from "../infrastructure/queue/index.js";
-import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
+import {
+  armTurnTimeout,
+  failTurnIfPending,
+  hasLiveTurnForDeployment,
+} from "./turn-liveness.js";
 import { recordAgentRunInput } from "./agent-run-input.js";
 import {
   buildCanonicalConversationKey,
@@ -54,8 +58,6 @@ import {
 import { resolveAgentToolingDeclaration } from "../agent-tooling/resolver.js";
 
 const logger = createLogger("orchestrator");
-
-
 
 /**
  * Mint the per-run worker JWT the worker uses as its PRIMARY gateway auth
@@ -297,6 +299,8 @@ export class MessageConsumer {
   private agentSettingsStore?: AgentSettingsStore;
   private guardrailRegistry?: GuardrailRegistry;
   private recordRunInput: typeof recordAgentRunInput;
+  /** Test seam: durable "is a turn running on this deployment" probe. */
+  private hasLiveTurn: typeof hasLiveTurnForDeployment;
   constructor(
     config: OrchestratorConfig,
     deploymentManager: DeploymentManager,
@@ -304,11 +308,13 @@ export class MessageConsumer {
     // input journal. Unit tests can capture either boundary without a database.
     queue: IMessageQueue = new RunsQueue(),
     recordRunInput: typeof recordAgentRunInput = recordAgentRunInput,
+    hasLiveTurn: typeof hasLiveTurnForDeployment = hasLiveTurnForDeployment,
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
     this.queue = queue;
     this.recordRunInput = recordRunInput;
+    this.hasLiveTurn = hasLiveTurn;
   }
 
   /**
@@ -1075,11 +1081,12 @@ export class MessageConsumer {
    * it with a fresh lease. A worker reads its env once at process start, so
    * recycling is the only way to change what a sandbox holds.
    *
-   * MUST be called before the turn is enqueued. After enqueue the worker can
-   * claim the turn at any moment, and no idleness check closes that window —
-   * the worker can start between the check and the SIGTERM, losing the reply.
-   * Here, the turn is not yet deliverable, so a teardown can only interrupt an
-   * already-finished or previous turn.
+   * Two separate protections, because they cover different turns:
+   * - MUST be called before the turn is enqueued. After enqueue the worker can
+   *   claim it at any moment, and no idleness check closes that window — the
+   *   worker can start between the check and the SIGTERM, losing the reply.
+   * - A PREVIOUS turn may still be running, which ordering alone cannot rule
+   *   out, so the durable turn marker is consulted before any teardown.
    *
    * Never throws: a stale credential beats a failed turn, and the idle reaper
    * clears the deployment eventually either way.
@@ -1107,6 +1114,19 @@ export class MessageConsumer {
       const leaseExpiring =
         this.deploymentManager.hasExpiringLease(deploymentName);
       if (!toolingChanged && !leaseExpiring) return;
+
+      // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may still
+      // be running on the worker: message 1 starts a long turn, message 2
+      // arrives and would SIGTERM it before enqueueing, costing the user
+      // message 1's reply. The durable turn marker is the authority here —
+      // Postgres-backed, so it sees a turn started by another replica too.
+      if (await this.hasLiveTurn(deploymentName)) {
+        logger.info(
+          { traceId, deploymentName, tooling_changed: toolingChanged },
+          "Deferring deployment recycle: a turn is still in flight"
+        );
+        return;
+      }
 
       logger.info(
         { traceId, deploymentName, tooling_changed: toolingChanged },

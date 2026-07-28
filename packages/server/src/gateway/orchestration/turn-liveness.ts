@@ -222,6 +222,38 @@ export async function hasLiveTurnForMessage(
 }
 
 /**
+ * True when ANY turn is still in flight on `deploymentName`.
+ *
+ * Deployment-scoped sibling of {@link hasLiveTurnForMessage}, for callers that
+ * are about to tear a worker down and must not interrupt a turn already
+ * running on it — recycling a deployment for a stale credential must never
+ * SIGTERM a live run and cost the user a reply.
+ *
+ * Postgres-backed rather than pod-local, so it is correct with N replicas: the
+ * turn may have been started by a different pod than the one deciding to
+ * recycle.
+ *
+ * Same index probe and same `run_at > now()` deadline predicate as
+ * {@link hasLiveTurnForMessage} — a lapsed-but-unswept marker is a dead worker,
+ * not a live turn, and must not block a recycle forever.
+ */
+export async function hasLiveTurnForDeployment(
+  deploymentName: string
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs
+    WHERE status = 'pending'
+      AND run_type = 'internal'
+      AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND action_input->>'deploymentName' = ${deploymentName}
+      AND run_at > now()
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
  * caller gets the rows, and the terminal error is enqueued in the same

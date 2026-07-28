@@ -90,9 +90,18 @@ class TestConsumer extends MessageConsumer {
 /** The recycle step touches neither the queue nor the input journal. */
 const NOOP_QUEUE = {} as unknown as IMessageQueue;
 
-function build(): { manager: RecordingManager; consumer: TestConsumer } {
+function build(options?: { liveTurn?: boolean }): {
+  manager: RecordingManager;
+  consumer: TestConsumer;
+} {
   const manager = new RecordingManager(CONFIG);
-  const consumer = new TestConsumer(CONFIG, manager, NOOP_QUEUE, async () => {});
+  const consumer = new TestConsumer(
+    CONFIG,
+    manager,
+    NOOP_QUEUE,
+    async () => {},
+    async () => options?.liveTurn === true
+  );
   return { manager, consumer };
 }
 
@@ -144,6 +153,30 @@ describe("stale-deployment recycling", () => {
     await consumer.recycle(DEPLOYMENT, "fp-unchanged");
 
     expect(manager.deleted).toEqual([]);
+  });
+
+  test("REGRESSION: never SIGTERM a worker running a PREVIOUS turn", async () => {
+    // Pre-enqueue ordering protects only the CURRENT turn. Message 1 starts a
+    // long turn; message 2 arrives and, without this check, tears down the
+    // worker executing message 1 — the user loses that reply entirely.
+    // The durable turn marker is the authority (Postgres, so it also sees a
+    // turn started by another replica).
+    const { manager, consumer } = build({ liveTurn: true });
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    expect(manager.deleted).toEqual([]);
+  });
+
+  test("recycles once the in-flight turn has finished", async () => {
+    const { manager, consumer } = build({ liveTurn: false });
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    // Deferral must not be permanent, or the credential never renews.
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
   });
 
   test("INVARIANT: the recycle runs BEFORE the turn is enqueued", async () => {

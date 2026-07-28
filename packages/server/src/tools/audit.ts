@@ -6,9 +6,14 @@ import { AUDIT_SEMANTIC_TYPE } from './constants';
 import type { ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
+// The value alternatives must consume the COMPLETE credential: a quoted string
+// up to its closing quote (spaces included), otherwise an unquoted run that
+// does not stop at commas — stopping early leaks the remainder into the
+// preview. Over-consumption is fine here (previews are display-only; identity
+// comes from the hash), partial redaction is not.
 const SENSITIVE_ASSIGNMENT_RE =
-  /(api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*["']?[^\s,'"}]+/gi;
-const BEARER_TOKEN_RE = /bearer\s+[a-z0-9._~+\/-]+/gi;
+  /(api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
+const AUTH_SCHEME_RE = /\b(bearer|basic|digest)\s+[a-z0-9._~+/=:-]+/gi;
 
 interface ToolInvocationAuditParams {
   toolName: string;
@@ -25,7 +30,7 @@ function sha256(value: string): string {
 
 function redactSensitiveText(value: string): string {
   return value
-    .replace(BEARER_TOKEN_RE, 'Bearer [redacted]')
+    .replace(AUTH_SCHEME_RE, (_match, scheme: string) => `${scheme} [redacted]`)
     .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`);
 }
 

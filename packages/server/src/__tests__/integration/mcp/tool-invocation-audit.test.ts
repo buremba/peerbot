@@ -227,6 +227,42 @@ describe('tool invocation audit coverage', () => {
     }
   );
 
+  it('fully redacts secrets embedded in NON-secret string fields (quoted values, Basic auth, comma-delimited)', async () => {
+    // deepRedactSecrets only covers denylisted KEYS; secrets pasted into free
+    // text (a note, a script arg) rely on the text patterns, which must consume
+    // the complete credential — not stop at the first space, comma, or scheme
+    // word and leak the remainder into the preview.
+    await recordToolInvocationAudit({
+      toolName: 'probe_freetext_redaction',
+      args: {
+        note: [
+          'password="my secret value"',
+          'authorization: Basic dXNlcjpwYXNz',
+          'token=part1,part2',
+        ].join(' | '),
+      },
+      result: { ok: true },
+      durationMs: 3,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+
+    const row = await latestAuditRow(orgId, 'probe_freetext_redaction');
+    expect(row).not.toBeNull();
+    const preview = String(row!.payload_data.args_preview_redacted);
+    expect(preview).not.toContain('my secret value');
+    expect(preview).not.toContain('secret value');
+    expect(preview).not.toContain('dXNlcjpwYXNz');
+    expect(preview).not.toContain('part2');
+  });
+
   it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {
     await executeTool('list_organizations', {}, {} as Env, authCtxFor('oauth'));
 

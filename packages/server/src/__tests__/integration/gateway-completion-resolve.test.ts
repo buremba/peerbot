@@ -10,7 +10,7 @@
  * LONG before it reaches the protocol check, so a registry-only test would
  * pass even with the check deleted.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   __resetEncryptionKeyCacheForTests,
   moduleRegistry,
@@ -32,6 +32,12 @@ beforeAll(() => {
   process.env.LOBU_ENCRYPTION_KEY ||= 'a'.repeat(64);
   __resetEncryptionKeyCacheForTests();
   savedModules = new Map(registry.modules);
+});
+
+// The registry is process-global; a module leaking into the next test would
+// silently change which one wins the providerId lookup.
+afterEach(() => {
+  registry.modules = new Map(savedModules);
 });
 
 afterAll(async () => {
@@ -97,6 +103,52 @@ describe('resolveCompletionTarget protocol gating', () => {
       }),
     });
 
+    expect(await resolveCompletionTarget(orgId)).toBeNull();
+  });
+
+  /**
+   * The ordering is what makes the case above real, so assert it directly.
+   *
+   * providers.json DOES declare `sdkCompat: "openai"` for id `chatgpt`. It
+   * never takes effect because core-services registers the specialized module
+   * FIRST and the config loop then skips ids already claimed
+   * (`registeredIds.has(id)`). `getModelProviderModules().find()` returns the
+   * first match by providerId, so the OAuth module — sdkCompat undefined —
+   * wins.
+   *
+   * Registering config-first inverts the outcome and the provider resolves.
+   * A live e2e that got this order wrong reported a false failure, which is
+   * exactly why this is pinned: if someone moves the config loop above the
+   * specialized registrations, chat completions would start egressing to
+   * chatgpt.com/backend-api.
+   */
+  it('the specialized module wins over the config entry, and only because it registers first', async () => {
+    const orgId = await newOrgWithProvider('chatgpt', 'gpt-5');
+
+    // Config-first: providers.json's sdkCompat "openai" wins and it resolves.
+    register({
+      name: 'chatgpt-config-driven',
+      providerId: 'chatgpt',
+      providerDisplayName: 'ChatGPT',
+      sdkCompat: 'openai',
+      getUpstreamConfig: () => ({
+        slug: 'chatgpt',
+        upstreamBaseUrl: 'https://chatgpt.com/backend-api',
+      }),
+    });
+    expect(await resolveCompletionTarget(orgId)).not.toBeNull();
+
+    // Production order: specialized first, config skipped. Now it does not.
+    registry.modules = new Map(savedModules);
+    register({
+      name: 'chatgpt-oauth',
+      providerId: 'chatgpt',
+      providerDisplayName: 'ChatGPT (subscription login)',
+      getUpstreamConfig: () => ({
+        slug: 'openai-codex',
+        upstreamBaseUrl: 'https://chatgpt.com/backend-api',
+      }),
+    });
     expect(await resolveCompletionTarget(orgId)).toBeNull();
   });
 

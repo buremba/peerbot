@@ -184,6 +184,101 @@ describe("isDirectPackageInstallCommand nix and ad-hoc runner coverage", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — escaped executable names must not bypass
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand escaped-name bypass", () => {
+  // The shell strips a backslash before an ordinary character, so `n\ix shell`
+  // resolves to `nix shell` at execution. The detector must canonicalize those
+  // escapes before matching or the whole gate is bypassable one backslash at a
+  // time. (Reported by the review of PR #2259.)
+  const escaped = [
+    "n\\ix shell nixpkgs#git",
+    "ni\\x run nixpkgs#hello",
+    "\\nix build nixpkgs#hello",
+    "n\\i\\x develop",
+    "u\\vx cowsay",
+    "pip\\x run cowsay",
+    "np\\m install lodash",
+    "echo hi && n\\ix run nixpkgs#hello",
+  ];
+  for (const cmd of escaped) {
+    test(`detects escaped acquisition: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// isDirectPackageInstallCommand — quoted data must not be treated as a command
+// ---------------------------------------------------------------------------
+
+describe("isDirectPackageInstallCommand quoted-data false positives", () => {
+  // A package-manager phrase inside a quoted argument is DATA, not a command.
+  // The detector must inspect per shell segment (quotes stripped) so ordinary
+  // prose — commit messages, echoed help text — is not blocked.
+  // (Reported by the review of PR #2259.)
+  const quoted = [
+    'echo "nix shell"',
+    'git commit -m "nix shell support"',
+    "git commit -m 'add nix run helper'",
+    'echo "uvx foo"',
+    'echo "run npm install to set up"',
+    'printf "%s\\n" "pnpm dlx create-x"',
+    'grep "nix build" changelog.md',
+  ];
+  for (const cmd of quoted) {
+    test(`does not falsely detect quoted data: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    });
+  }
+
+  // Guard the guard: a real command chained AFTER quoted data is still caught.
+  test("real acquisition after quoted data is still detected", () => {
+    expect(
+      isDirectPackageInstallCommand('echo "nix docs"; nix run nixpkgs#hello')
+    ).toBe(true);
+    expect(isDirectPackageInstallCommand('echo "safe" && uvx cowsay')).toBe(
+      true
+    );
+  });
+
+  // The quoted body of an interpreter wrapper IS a command, not data, so it
+  // must still be inspected — including when the -c flag is bundled with other
+  // flags (`-lc`, `-xc`) or the wrapper is sudo/chained. This is the one place
+  // quoted content is executable rather than an argument.
+  const interpreterBodies = [
+    "bash -c 'npm install foo'",
+    "bash -c 'nix repl'",
+    'sh -c "nix run nixpkgs#hello"',
+    "bash -lc 'nix build nixpkgs#hello'",
+    "bash -xc 'uvx cowsay'",
+    "sudo bash -c 'pipx run x'",
+    "zsh -c 'pnpm dlx create-x'",
+    "echo hi; bash -c 'nix run x'",
+    "bash -c 'n\\ix shell y'",
+  ];
+  for (const cmd of interpreterBodies) {
+    test(`inspects interpreter -c body: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    });
+  }
+
+  // But an interpreter wrapper running a BENIGN body is not falsely flagged.
+  const benignBodies = [
+    "bash -c 'echo hello'",
+    "bash -c 'git status'",
+    "sh -c 'ls -la'",
+    "bash -lc 'uv run app.py'",
+  ];
+  for (const cmd of benignBodies) {
+    test(`does not falsely flag benign -c body: ${JSON.stringify(cmd)}`, () => {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // normalizeToolList edge cases
 // ---------------------------------------------------------------------------
 

@@ -120,18 +120,137 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
   /(^|[\s"'`;|&()])composer\s+require\b/i,
 ];
 
+/**
+ * Remove shell backslash-escaping so an escaped executable name is matched by
+ * its real, canonical form. The shell drops a backslash before an ordinary
+ * character (`n\ix` → `nix`, `u\vx` → `uvx`), so without this a single
+ * backslash bypasses the whole package-install gate. We collapse `\<char>` to
+ * `<char>` for every character; this is intentionally broad — it can only make
+ * the detector match MORE, never introduce a false negative, and the segment
+ * has already been split out of any quotes by the time we get here.
+ */
+function unescapeShellToken(segment: string): string {
+  return segment.replace(/\\(.)/g, "$1");
+}
+
+/**
+ * Blank out single- and double-quoted spans so a package-manager phrase used
+ * as DATA (a commit message, echoed help text) is not matched as a command.
+ * Quoted text can never itself be a command, so replacing it with a space can
+ * only remove false positives, never hide a real acquisition — a real command
+ * lives OUTSIDE the quotes and survives untouched. Backslash-escaped quotes are
+ * consumed as a pair so they don't spuriously open/close a span. Unbalanced
+ * quotes leave the trailing text intact (conservative: still matched).
+ */
+function stripQuotedSpans(segment: string): string {
+  let out = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (ch === "\\" && i + 1 < segment.length) {
+      // Preserve an escaped char outside quotes (unescapeShellToken handles the
+      // canonicalization); inside quotes it is dropped with the rest.
+      if (!quote) {
+        out += ch + segment[i + 1];
+      }
+      i++;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        out += " ";
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += " ";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Whether a command acquires a package/dependency (or fetches-and-executes
+ * one) through a package manager. Enforced by {@link enforceBashPreflight}.
+ *
+ * The check runs per shell segment (via {@link splitShellCommands}) so that a
+ * package-manager phrase inside a QUOTED argument — a commit message, echoed
+ * help text — is treated as data, not a command; and each segment is
+ * backslash-unescaped first so escaped executable names cannot slip past. A
+ * segment matches if it starts with a denied prefix or matches an install
+ * pattern.
+ */
 export function isDirectPackageInstallCommand(command: string): boolean {
-  const trimmed = command.trim().toLowerCase();
-  if (!trimmed) {
+  if (!command.trim()) {
     return false;
   }
 
-  return (
-    DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-      trimmed.startsWith(prefix.toLowerCase())
-    ) ||
-    DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(trimmed))
-  );
+  // Two views of the command are checked:
+  //   1. The de-quoted command — quoted spans blanked to a space — so a phrase
+  //      used as a plain ARGUMENT (`echo "nix shell"`, a commit message) is
+  //      data, not a command, and does not trip the gate.
+  //   2. The quoted bodies of interpreter wrappers (`sh -c '…'`, `bash -c "…"`)
+  //      — there the quoted text IS a command, so it must be inspected. This is
+  //      the one place quoted content is executable rather than data.
+  // A real command chained after quoted data (`echo "x"; nix run …`) lives
+  // outside the quotes and survives view 1's split, so it is still caught.
+  const bodies = [
+    stripQuotedSpans(command),
+    ...extractInterpreterBodies(command),
+  ];
+
+  return bodies.some((body) => {
+    const segments = splitShellCommands(body);
+    // Fall back to the whole body if the lexer yields nothing, so a malformed
+    // input can never silently skip the check.
+    const candidates = segments.length > 0 ? segments : [body];
+    return candidates.some((segment) => {
+      // Unescape backslash escapes so an escaped executable name (`n\ix`)
+      // matches its real form (`nix`).
+      const normalized = unescapeShellToken(segment).trim().toLowerCase();
+      if (!normalized) {
+        return false;
+      }
+      return (
+        DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+          normalized.startsWith(prefix.toLowerCase())
+        ) ||
+        DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) =>
+          pattern.test(normalized)
+        )
+      );
+    });
+  });
+}
+
+/**
+ * Extract the quoted program bodies of shell interpreter wrappers so the code
+ * they would execute is checked as a command (not skipped as quoted data).
+ * Matches `sh`/`bash`/`zsh`/`dash`/`ash -c '<body>'` (single or double quoted),
+ * anywhere in the command including after a chain operator. The body is
+ * returned with its wrapping quotes removed; nested quoting inside it is left
+ * for the recursive split/strip on the returned string.
+ */
+function extractInterpreterBodies(command: string): string[] {
+  const bodies: string[] = [];
+  // `-c` may be bundled with other flag letters in one token (`-lc`, `-xc`) or
+  // preceded by separate flags (`-l -c`); both forms hand the quoted arg to the
+  // interpreter as its program.
+  const wrapper =
+    /(?:^|[\s;|&()`])(?:sudo\s+)?(?:ba|z|da|a)?sh\s+(?:-[a-z]*\s+)*-[a-z]*c\s+(['"])([\s\S]*?)\1/gi;
+  let match: RegExpExecArray | null;
+  match = wrapper.exec(command);
+  while (match !== null) {
+    if (match[2]) {
+      bodies.push(match[2]);
+    }
+    match = wrapper.exec(command);
+  }
+  return bodies;
 }
 
 function normalizeToolName(name: string): string {
@@ -381,15 +500,22 @@ export function enforceBashCommandPolicy(
 
   for (const segment of segments) {
     const normalizedSegment = segment.toLowerCase();
+    // Deny is checked against the backslash-unescaped form so an escaped
+    // executable name (`n\ix shell` → `nix shell`) cannot slip past. Unescaping
+    // can only make a deny prefix match MORE, so it is always safe here.
+    const denyTarget = unescapeShellToken(normalizedSegment);
 
     const denied = policy.denyPrefixes.some((prefix) =>
-      normalizedSegment.startsWith(prefix.toLowerCase())
+      denyTarget.startsWith(prefix.toLowerCase())
     );
     if (denied) {
       throw new Error("Bash command denied by policy");
     }
 
     if (hasAllowlist) {
+      // Allow is checked against the RAW segment: an escaped command that no
+      // longer matches an allow prefix must fall through to "not allowed",
+      // never be spuriously permitted by unescaping.
       const allowed = policy.allowPrefixes.some((prefix) =>
         normalizedSegment.startsWith(prefix.toLowerCase())
       );

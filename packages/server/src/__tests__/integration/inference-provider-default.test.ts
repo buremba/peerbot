@@ -4,7 +4,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { __resetEncryptionKeyCacheForTests } from '@lobu/core';
+import {
+  __resetEncryptionKeyCacheForTests,
+  moduleRegistry,
+  type ModuleInterface,
+} from '@lobu/core';
 import {
   createInferenceProvider,
   ensureOAuthInferenceProvider,
@@ -267,6 +271,130 @@ describe('inference provider org default', () => {
       // protocol in the registry.
       expect(await getOrgDefaultModel(org.id)).toBe('claude/claude-sonnet-5');
       expect(await resolveCompletionTarget(org.id)).toBeNull();
+    });
+
+    /**
+     * The POSITIVE half of the invariant. (m)/(n) prove an unregistered
+     * provider resolves nothing; without this, a resolver that returned null
+     * for EVERYTHING would still pass them. Prod is the reason this matters:
+     * every live `inference_providers` row carries `capabilities = {}` (an API
+     * key and nothing else), so the registry upstream — not the row — is what
+     * actually routes a gateway completion for a non-OpenAI provider.
+     */
+    it('(q) a REGISTERED provider with no row base_url inherits its registry upstream', async () => {
+      const org = await newOrg();
+      await create(org.id, 'groq', 'llama-3.3-70b-versatile');
+
+      // The gateway registers config-driven provider modules at boot
+      // (core-services `initializeClaudeServices`); a bare vitest process has
+      // an empty registry, so stand one up the way that path does. Restored
+      // afterwards — the registry is process-global.
+      const registry = moduleRegistry as unknown as {
+        modules: Map<string, ModuleInterface>;
+      };
+      const saved = new Map(registry.modules);
+      try {
+        moduleRegistry.register({
+          name: 'groq-api-key',
+          isEnabled: () => true,
+          providerId: 'groq',
+          providerDisplayName: 'Groq',
+          sdkCompat: 'openai',
+          // `providerId` + `getSecretEnvVarNames` are what mark this a
+          // ModelProviderModule for getModelProviderModules()'s filter.
+          getSecretEnvVarNames: () => [],
+          getUpstreamConfig: () => ({
+            slug: 'groq',
+            upstreamBaseUrl: 'https://api.groq.com/openai/v1',
+          }),
+        } as unknown as ModuleInterface);
+
+        const target = await resolveCompletionTarget(org.id);
+        expect(target).not.toBeNull();
+        // Not a guess and not OpenAI's endpoint — groq's declared upstream.
+        expect(target?.baseUrl).toBe('https://api.groq.com/openai/v1');
+        expect(target?.model).toBe('llama-3.3-70b-versatile');
+        expect(target?.apiKey).toBe('sk-groq');
+      } finally {
+        registry.modules = saved;
+      }
+    });
+  });
+
+  /**
+   * Multi-replica correctness (AGENTS.md hard invariant). Every
+   * default-mutating path takes the same per-org `organization` row lock as its
+   * FIRST statement, so concurrent writers serialize instead of racing.
+   *
+   * What the lock actually buys, precisely: the partial unique index
+   * `inference_providers_org_default_live` already makes two live defaults
+   * IMPOSSIBLE — it would abort the second write. So the lock is not what keeps
+   * the count at one; it is what stops that abort from surfacing to a user as a
+   * failed, unrelated "add provider" call. These tests therefore assert on
+   * OUTCOMES (every concurrent call succeeds, exactly one default, org stays
+   * resolvable) rather than on the lock's existence.
+   */
+  describe('concurrency', () => {
+    it('(r) concurrent creates all succeed and yield exactly one default', async () => {
+      const org = await newOrg();
+
+      // Each of these promotes if the org has no default yet. Without
+      // serialization several can pass that check together and collide on the
+      // unique index — `create()` throws on any non-row result, so a lost race
+      // fails this test rather than silently degrading.
+      const results = await Promise.all([
+        create(org.id, 'openai', 'gpt-4o-mini'),
+        create(org.id, 'z-ai', 'glm-4.6'),
+        create(org.id, 'groq', 'llama-3.3-70b-versatile'),
+        create(org.id, 'xai', 'grok-4'),
+      ]);
+      expect(results).toHaveLength(4);
+
+      const live = await listInferenceProviders(org.id);
+      expect(live).toHaveLength(4);
+      expect(live.filter((p) => p.isDefault)).toHaveLength(1);
+      // Whichever won, the org resolves a runnable model — never null.
+      expect(await getOrgDefaultModel(org.id)).not.toBeNull();
+    });
+
+    it('(s) concurrent delete + create keeps exactly one default', async () => {
+      const org = await newOrg();
+      await create(org.id, 'openai', 'gpt-4o-mini');
+      await create(org.id, 'z-ai', 'glm-4.6');
+      expect(await defaultSlug(org.id)).toBe('openai');
+
+      // Racing the removal of THE default against a new arrival is the window
+      // where a lost update would leave the org with zero (or two) defaults.
+      await Promise.all([
+        softDeleteInferenceProvider(org.id, 'openai'),
+        create(org.id, 'groq', 'llama-3.3-70b-versatile'),
+      ]);
+
+      const live = await listInferenceProviders(org.id);
+      expect(live.filter((p) => p.isDefault)).toHaveLength(1);
+      expect(await getOrgDefaultModel(org.id)).not.toBeNull();
+    });
+
+    it('(t) concurrent lazy repairs promote once, not once per caller', async () => {
+      const org = await newOrg();
+      await create(org.id, 'openai', 'gpt-4o-mini');
+      await create(org.id, 'z-ai', 'glm-4.6');
+      // Force the legacy state every pre-fix org is in.
+      await getDb()`
+        UPDATE inference_providers
+        SET is_default = false
+        WHERE organization_id = ${org.id}
+      `;
+
+      const reads = await Promise.all(
+        Array.from({ length: 5 }, () => getOrgDefaultModel(org.id)),
+      );
+
+      // Every concurrent reader agrees, and the repair happened once.
+      expect(new Set(reads).size).toBe(1);
+      expect(reads[0]).toBe('openai/gpt-4o-mini');
+      const live = await listInferenceProviders(org.id);
+      expect(live.filter((p) => p.isDefault)).toHaveLength(1);
     });
   });
 });

@@ -660,6 +660,32 @@ describe("enforceBashCommandPolicy", () => {
     );
   });
 
+  test("a command substitution in the tail is not narrowed away (#2279)", () => {
+    // `$(...)` executes even as an argument, and it survives the narrowing for
+    // free: `(` and `)` are already command separators, so the substitution
+    // body is scanned as its own command before any tail is dropped.
+    for (const cmd of [
+      "echo $(npm install evil)",
+      "man $(nix run x)",
+      "git log --grep $(uvx cowsay)",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // BACKTICK substitution is a PRE-EXISTING gap, not one this change opened:
+    // every install pattern requires one of `[\s;|&()]` before the manager and
+    // a backtick is not in that class, so origin/main reads these false too
+    // (verified by running main's exported matcher against them). Pinned here
+    // so the limit is visible; widening 19 regexes is its own concern, not
+    // #2279's.
+    const bt = String.fromCharCode(96);
+    expect(
+      isDirectPackageInstallCommand(`echo ${bt}npm install evil${bt}`)
+    ).toBe(false);
+    // Plain inert data still narrows, so the fix itself is intact.
+    expect(isDirectPackageInstallCommand("echo uvx cowsay")).toBe(false);
+    expect(isDirectPackageInstallCommand("man nix run")).toBe(false);
+  });
+
   test("a pattern option is only data for the command that owns it (#2279)", () => {
     // An option is not self-evidently an option. `env -u NAME` takes a VARIABLE
     // NAME and then execs the rest, so `--grep` there is an operand — honouring

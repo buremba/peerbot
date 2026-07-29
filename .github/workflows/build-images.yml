@@ -53,10 +53,19 @@ env:
   # memory), so main-branch pushes build amd64 only. This dropped the
   # build-app step from ~25min to ~8min AND fixed the disk-full failure
   # mode (~14GB GHA runner couldn't hold both arch Playwright/Chrome
-  # downloads + image layers + buildx cache). The workflow_dispatch
-  # `platforms` input lets you rebuild multi-arch on demand if a dev
-  # machine needs the arm64 image, without slowing every prod deploy.
-  BUILD_PLATFORMS: ${{ inputs.platforms || 'linux/amd64' }}
+  # downloads + image layers + buildx cache).
+  #
+  # Releases are the exception: the tagged images are what self-hosters
+  # pull, and a chunk of them are on arm64 (Apple Silicon, Ampere, Graviton).
+  # Until this, `inputs.platforms` was only populated on workflow_dispatch,
+  # so every published release fell through to amd64-only and ARM operators
+  # silently ran the whole stack — Chromium included — under emulation.
+  # Releases are rare and not latency-sensitive, so they absorb the longer
+  # multi-arch build; main pushes stay fast.
+  BUILD_PLATFORMS: >-
+    ${{ inputs.platforms
+        || (github.event_name == 'release' && 'linux/amd64,linux/arm64')
+        || 'linux/amd64' }}
 
 jobs:
   generate-tag:

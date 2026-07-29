@@ -164,7 +164,7 @@ describe("buildRunContextBlock", () => {
     const out = buildRunContextBlock({
       platform: "telegram",
       channelId: "tg_1",
-      platformMetadata: {},
+      platformMetadata: { agentId: "spoofed-agent" },
     });
     expect(out).not.toContain("Agent:");
     expect(out).not.toContain("Conversation:");

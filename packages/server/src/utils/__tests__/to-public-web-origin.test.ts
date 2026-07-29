@@ -1,18 +1,10 @@
-/**
- * `toPublicWebOrigin` turns the gateway's configured public base into the origin
- * an agent composes user-openable Lobu links against.
- *
- * The `/lobu` case is not hypothetical: prod runs
- * `PUBLIC_GATEWAY_URL=https://app.lobu.ai/lobu` (see the summaries-prod
- * kustomization). The gateway is mounted under that prefix; the admin routes
- * these links point at are not. Without the strip, every link an agent writes
- * would 404 in production — so that assertion is the point of this file.
- */
 import { describe, expect, it } from 'vitest';
 import { toPublicWebOrigin } from '../url-builder';
 
 describe('toPublicWebOrigin', () => {
   it('strips the /lobu mount prefix prod actually runs with', () => {
+    // PUBLIC_GATEWAY_URL carries this gateway mount in prod, while frontend
+    // routes live at the origin.
     expect(toPublicWebOrigin('https://app.lobu.ai/lobu')).toBe('https://app.lobu.ai');
   });
 
@@ -24,16 +16,19 @@ describe('toPublicWebOrigin', () => {
     expect(toPublicWebOrigin('https://app.lobu.ai')).toBe('https://app.lobu.ai');
   });
 
-  it('keeps a base path that merely starts with "lobu"', () => {
-    // Guard the strip from over-reaching onto a legitimate prefix.
-    expect(toPublicWebOrigin('https://acme.example/lobu-staging')).toBe(
-      'https://acme.example/lobu-staging'
+  it('preserves a non-/lobu mount path, matching buildAgentSettingsUrl', () => {
+    // Deliberately NOT `parsed.origin`. The server-side builders strip only
+    // `/lobu`, so dropping every path here would make the agent's links and the
+    // server's disagree on any other mount. Consistency wins; change both or
+    // neither.
+    expect(toPublicWebOrigin('https://acme.example/gateway')).toBe(
+      'https://acme.example/gateway'
     );
   });
 
-  it('keeps a non-/lobu mount prefix', () => {
-    expect(toPublicWebOrigin('https://acme.example/gateway')).toBe(
-      'https://acme.example/gateway'
+  it('does not over-reach onto a prefix that merely starts with "lobu"', () => {
+    expect(toPublicWebOrigin('https://acme.example/lobu-staging')).toBe(
+      'https://acme.example/lobu-staging'
     );
   });
 
@@ -48,5 +43,7 @@ describe('toPublicWebOrigin', () => {
     expect(toPublicWebOrigin('')).toBeUndefined();
     expect(toPublicWebOrigin('   ')).toBeUndefined();
     expect(toPublicWebOrigin('app.lobu.ai/lobu')).toBeUndefined();
+    expect(toPublicWebOrigin('javascript:alert(1)')).toBeUndefined();
+    expect(toPublicWebOrigin('ftp://app.lobu.ai/lobu')).toBeUndefined();
   });
 });

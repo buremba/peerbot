@@ -471,20 +471,25 @@ export function buildContentUrl(
 }
 
 /**
- * The web origin an agent can compose user-openable Lobu links against:
- * `<webOrigin>/<orgSlug>/agents/<agentId>/conversations/<id>` and friends.
+ * Convert the gateway's configured PUBLIC base into the origin an agent composes
+ * user-openable Lobu links against.
  *
- * Takes the gateway's configured PUBLIC base — never a request Host header and
- * never `DISPATCHER_URL`. The worker reaches the gateway over an internal
- * cluster address, so both of those resolve to hostnames no user can open.
+ * Never a request Host header and never `DISPATCHER_URL`: the worker calls the
+ * gateway over an internal cluster address, so both resolve to hostnames no user
+ * can open.
  *
- * The `/lobu` strip mirrors {@link buildAgentSettingsUrl} and friends: prod runs
- * `PUBLIC_GATEWAY_URL=https://app.lobu.ai/lobu`, the gateway is mounted under
- * that prefix, and the admin routes these links point at are NOT. Without the
- * strip every link an agent writes would 404.
+ * The `/lobu` strip mirrors {@link buildAgentSettingsUrl} EXACTLY, including its
+ * limits. Prod runs `PUBLIC_GATEWAY_URL=https://app.lobu.ai/lobu` with the
+ * gateway mounted under that prefix while the frontend routes these links target
+ * are not, so an unstripped base 404s. A different mount path is preserved
+ * rather than dropped — not because that is obviously right, but because
+ * `buildAgentSettingsUrl` preserves it, and an agent whose links disagree with
+ * the server's is worse than both being wrong the same way. Change the two
+ * together or not at all.
  *
- * Returns undefined for an unparseable base so the caller omits the link
- * entirely — a mangled origin pasted into a reply is worse than no link.
+ * Returns undefined for an unparseable or non-HTTP(S) base so the caller omits
+ * the link: a mangled origin — or a `javascript:` one — pasted into a reply to a
+ * user is worse than no link.
  */
 export function toPublicWebOrigin(
   publicGatewayUrl: string | undefined
@@ -492,6 +497,9 @@ export function toPublicWebOrigin(
   if (!publicGatewayUrl?.trim()) return undefined;
   try {
     const parsed = new URL(publicGatewayUrl.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return undefined;
+    }
     const path = parsed.pathname.replace(/\/+$/, '').replace(/\/lobu$/, '');
     return `${parsed.origin}${path}`;
   } catch {

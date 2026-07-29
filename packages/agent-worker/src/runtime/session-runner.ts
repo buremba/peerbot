@@ -421,13 +421,7 @@ export function buildRunContextBlock(input: {
   platformMetadata: unknown;
   agentId?: string | undefined;
   conversationId?: string | undefined;
-  /**
-   * The WEB origin, not the raw gateway base. In embedded mode the gateway is
-   * mounted at `/lobu` while the admin routes it links to live at the origin,
-   * so the caller strips that suffix (mirroring every server-side URL builder)
-   * before handing it here. Passing the unstripped gateway URL would make the
-   * agent emit `<origin>/lobu/<slug>/...` links that 404.
-   */
+  /** Public HTTP(S) origin for user-openable Lobu links. */
   webOrigin?: string | undefined;
 }): string {
   // The web chat gets no block. This context exists to disambiguate WHICH
@@ -474,10 +468,10 @@ export function buildRunContextBlock(input: {
   const thread = str(md.responseThreadId);
   // Opportunistic: rendered only if the gateway ever plumbs a link through.
   const url = str(md.conversationUrl) ?? str(md.permalink);
-  // Identity of this run. `agentId`/`conversationId` are the worker's own
-  // trusted values, not platform metadata — but they still go through `str`,
-  // because the block's contract is that no field can forge a line.
-  const agent = str(input.agentId) ?? str(md.agentId);
+  // Identity of this run. These are the worker's own trusted values, not
+  // platform metadata — but they still go through `str`, because the block's
+  // contract is that no field can forge a line.
+  const agent = str(input.agentId);
   const conversation = str(input.conversationId);
   const origin = str(input.webOrigin);
 

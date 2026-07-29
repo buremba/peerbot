@@ -18,7 +18,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { AgentErrorCode, type MessagePayload } from "@lobu/core";
+import {
+  AgentErrorCode,
+  ConversationOwnedElsewhereError,
+  type MessagePayload,
+} from "@lobu/core";
 import { WorkerConnectionManager } from "../gateway/connection-manager.js";
 import type { DispatchRecycler } from "../gateway/dispatch-recycle.js";
 import { StaleWorkerError } from "../gateway/dispatch-recycle.js";
@@ -353,6 +357,31 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     expect(terminalized).toHaveLength(0);
   });
 
+  test("REGRESSION: a cross-pod ownership handoff defers — it never terminalizes the turn", async () => {
+    // The recycle's teardown releases this conversation's advisory lock, so
+    // another replica can win it before our rebuild takes it back. That throws
+    // the typed `ConversationOwnedElsewhereError`, which is a HANDOFF, not a
+    // rebuild failure: the winner is bringing the worker up under the same
+    // name and its pod will deliver this job. Terminalizing it here would show
+    // the user a spurious "worker startup failed" and race the winner's reply
+    // to discharge the shared turn marker.
+    recycler.bornFingerprint = "fp-old";
+    recycler.recycleError = new ConversationOwnedElsewhereError(
+      "Conversation owned by another replica"
+    );
+
+    const err = (await queue
+      .addJob(QUEUE, { id: "run-100", data: makePayload() })
+      .catch((e: unknown) => e)) as StaleWorkerError;
+
+    expect(err).toBeInstanceOf(StaleWorkerError);
+    expect(err.reason).toBe("ownership-handoff");
+    // Deferral contract: the retry must not consume the genuine-failure budget.
+    expect((err as unknown as { deferral: boolean }).deferral).toBe(true);
+    expect(deliveredJobs()).toHaveLength(0);
+    expect(terminalized).toHaveLength(0);
+  });
+
   test("FIFO fence: a recycled head turn still reaches the worker before a younger sibling", async () => {
     // The reorder defect: the recycle's queue-native retry pushes head job A's
     // run_at forward while younger job B keeps its original one, so claim
@@ -424,8 +453,9 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
   });
 
   test("REGRESSION: a newer observation with a LOWER runs.id still recycles", async () => {
-    // Round-11 defect: the old guard ordered observations by payload.runId,
-    // but message claims process out of id order across replicas — a
+    // `runs.id` is NOT processing chronology: message claims run out of id
+    // order across replicas, so a lower runId can carry a newer observation. An
+    // id-ordered guard would suppress it — a
     // deployment built from run 101 would suppress the genuinely newer
     // fingerprint stamped by run 100 and deliver the turn onto stale tooling.
     // With chronology deleted, the DB-truth drift check decides regardless of

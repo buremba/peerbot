@@ -24,15 +24,25 @@
  * FAIL CLOSED: nothing in this module catches-and-delivers. Any error on the
  * staleness path propagates, the job is not delivered to the stale worker, and
  * the queue retries until it either delivers to a fresh worker or fails
- * visibly. The one caught error is a recycle-REBUILD failure, and its outcome
- * is terminal, not delivery: the turn is failed through the marker election
- * (the same one the enqueue path uses for create failures) and the held job is
- * completed — re-throwing there would strand the job on a queue whose consumer
- * the teardown just paused, then deliver it as a zombie after a later rebuild.
+ * visibly. The only caught errors come from the recycle itself, and each
+ * failure mode is classified to a distinct outcome — collapsing them is the
+ * defect this module has been bitten by more than once:
+ *   - `ConversationOwnedElsewhereError` (another replica won the conversation
+ *     lock the teardown released) → DEFER. It is a handoff, not a fault; the
+ *     winner is bringing the worker up under the same name and its pod will
+ *     deliver this job.
+ *   - any other rebuild failure → TERMINAL. Fail the turn through the marker
+ *     election (the same one the enqueue path uses for create failures) and
+ *     complete the held job — re-throwing there would strand the job on a
+ *     queue whose consumer the teardown just paused, then deliver it as a
+ *     zombie after a later rebuild.
+ *   - a terminalize that cannot confirm its own outcome → PROPAGATE the
+ *     original error; the queue retries and the sweep stays the backstop.
  */
 
 import {
   AgentErrorCode,
+  ConversationOwnedElsewhereError,
   createLogger,
   getErrorMessage,
   type MessagePayload,
@@ -89,7 +99,11 @@ export class StaleWorkerError extends Error {
 
   constructor(
     message: string,
-    readonly reason: "prior-turn-live" | "recycled" | "older-turn-pending"
+    readonly reason:
+      | "prior-turn-live"
+      | "recycled"
+      | "older-turn-pending"
+      | "ownership-handoff"
   ) {
     super(message);
     this.name = "StaleWorkerError";
@@ -135,9 +149,11 @@ export type DispatchDecision = "deliver" | "drop";
  *    delivery happens on the retry (the queue is paused until the new worker
  *    connects, so the retry does not burn attempts against a half-booted
  *    worker).
- * 6. Rebuild FAILED → terminalize the turn and return "drop" (see the module
- *    doc); any other error → propagate (fail closed; never deliver to the
- *    stale worker).
+ * 6. Recycle FAILED → classified, never collapsed (see the module doc): a
+ *    cross-pod ownership handoff defers, any other rebuild failure terminalizes
+ *    the turn and returns "drop", and anything the terminalize itself cannot
+ *    confirm propagates. Every other error on the path propagates too (fail
+ *    closed; never deliver to the stale worker).
  */
 export async function gateDispatchOnStaleness(args: {
   deploymentName: string;
@@ -223,6 +239,32 @@ export async function gateDispatchOnStaleness(args: {
   try {
     await recycler.recycleWorkerDeployment(deploymentName, payload);
   } catch (error) {
+    // This catch spans BOTH a teardown and a rebuild, so classify before
+    // acting — the failure modes reachable here do not share an outcome.
+    //
+    // `ConversationOwnedElsewhereError` is not a failure at all: it is the
+    // cross-pod handoff signal. The teardown released this conversation's
+    // advisory lock, another replica won it, and that replica is bringing up
+    // the worker under the SAME name — the fresh worker will register its
+    // queue consumer on THAT pod. Terminalizing here would surface a spurious
+    // WORKER_STARTUP_FAILED to the user and race the winner's reply to
+    // discharge the shared turn marker, which is exactly what this typed error
+    // exists to prevent (see its doc in `@lobu/core`). Defer instead: the job
+    // stays durable and undelivered, and the new owner's consumer delivers it.
+    // Termination is bounded — the winner holds the lock only for its worker
+    // subprocess lifetime, and if that worker dies the lock releases and the
+    // retry re-runs this gate against a deployment whose pod-local tooling
+    // state the teardown already cleared.
+    if (error instanceof ConversationOwnedElsewhereError) {
+      logger.info(
+        { deploymentName },
+        "Conversation claimed by another replica mid-recycle — deferring delivery to the new owner"
+      );
+      throw new StaleWorkerError(
+        `Deployment ${deploymentName} was rebuilt by another replica — delivery retries under its new owner`,
+        "ownership-handoff"
+      );
+    }
     logger.error(
       { deploymentName, error: getErrorMessage(error) },
       "Deployment recycle failed — terminalizing the held turn"

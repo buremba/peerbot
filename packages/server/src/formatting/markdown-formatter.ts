@@ -1149,7 +1149,6 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
     window_token,
     window_start,
     window_end,
-    prompt_rendered,
     extraction_schema,
     sources,
     classifiers,
@@ -1168,10 +1167,6 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
       md += `- **Sources**: ${Object.keys(sources).join(', ')}\n`;
     }
     md += '\n';
-
-    if (prompt_rendered) {
-      md += `### Rendered Prompt\n\n\`\`\`\n${prompt_rendered.substring(0, 1000)}${prompt_rendered.length > 1000 ? '...' : ''}\n\`\`\`\n\n`;
-    }
 
     if (extraction_schema) {
       md += `### Extraction Schema\n\n\`\`\`json\n${JSON.stringify(extraction_schema, null, 2)}\n\`\`\`\n\n`;

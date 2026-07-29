@@ -44,7 +44,6 @@ import {
   requireReadAccess,
 } from '../utils/organization-access';
 
-import { renderPromptPreview } from '../watchers/template-renderer';
 import {
   buildBehaviorUrl,
   getOrganizationSlug,
@@ -243,19 +242,6 @@ interface WatcherQueryRow {
   sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
-  // jsonb_agg of entities (folded entityCheck/watcherEntityQuery)
-  entities:
-    | Array<{
-        id: string | number;
-        name: string;
-        entity_type: string;
-        slug: string;
-        parent_id: string | number | null;
-        parent_slug: string | null;
-        parent_entity_type: string | null;
-        organization_id: string;
-      }>
-    | null;
   // jsonb_agg of identity scopes for primary entity
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
@@ -352,38 +338,6 @@ async function getBehaviorImpl(
   }
 
   await requireWatcherReadAccess(pgSql, args.behavior_id, ctx);
-
-  // Entity resolution is deferred — for the typical case (only watcher_id
-  // given), the watcher metadata query below already returns the watcher's
-  // entities as a nested jsonb_agg, so we build entitiesForTemplate from that
-  // single result rather than firing a
-  // dedicated entity lookup.
-  //
-  // The exception is when args.entity_id is passed and we need to validate
-  // the entity exists / is accessible — that's a cheap PK check we keep
-  // up-front so we throw early. (The page doesn't pass entity_id on default
-  // load, so this branch is rare.)
-  let entitiesForTemplate: Array<{ name: string; type: string }> = [];
-
-  if (args.entity_id) {
-    const entityCheck = await sql`
-      SELECT e.id, e.name, et.slug AS entity_type
-      FROM entities e
-      JOIN entity_types et ON et.id = e.entity_type_id
-      WHERE e.id = ${args.entity_id}
-    `;
-
-    if (entityCheck.length === 0) {
-      throw new Error(`Entity with ID ${args.entity_id} not found`);
-    }
-
-    entitiesForTemplate = [
-      {
-        name: String(entityCheck[0].name ?? ''),
-        type: String(entityCheck[0].entity_type ?? ''),
-      },
-    ];
-  }
 
   const page = Math.max(1, args.page || 1);
   const pageSize = Math.min(500, Math.max(1, args.page_size || 50));
@@ -608,22 +562,6 @@ async function getBehaviorImpl(
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
         (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
-        -- Entities for prompt-template context.
-        (SELECT jsonb_agg(jsonb_build_object(
-          'id', e.id,
-          'name', e.name,
-          'entity_type', et.slug,
-          'slug', e.slug,
-          'parent_id', e.parent_id,
-          'parent_slug', parent.slug,
-          'parent_entity_type', pet.slug,
-          'organization_id', e.organization_id
-        ))
-        FROM entities e
-        JOIN entity_types et ON et.id = e.entity_type_id
-        LEFT JOIN entities parent ON e.parent_id = parent.id
-        LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
-        WHERE e.id = ANY(i.entity_ids)) as entities,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -717,16 +655,6 @@ async function getBehaviorImpl(
   if (watcherQueryPromise) {
     const watcherQuery = await watcherQueryPromise;
     watcherRow = watcherQuery.length > 0 ? (watcherQuery[0] as unknown as WatcherQueryRow) : null;
-  }
-
-  // Resolve entitiesForTemplate from the entities array folded into the
-  // Behavior metadata query. When args.entity_id is set we already populated
-  // it above from the dedicated entityCheck query.
-  if (!args.entity_id && watcherRow?.entities && watcherRow.entities.length > 0) {
-    entitiesForTemplate = watcherRow.entities.map((e) => ({
-      name: String(e.name),
-      type: String(e.entity_type),
-    }));
   }
 
   // ============================================
@@ -861,9 +789,6 @@ async function getBehaviorImpl(
       classifiers: (version?.classifiers as unknown[] | null | undefined) ?? undefined,
       reactions_guidance:
         (version?.reactions_guidance as string | null | undefined) ?? undefined,
-      rendered_prompt: version?.prompt
-        ? renderPromptPreview(version.prompt as string, entitiesForTemplate)
-        : undefined,
       ...(availableVersions !== undefined && { available_versions: availableVersions }),
       reaction_script: watcherRow.reaction_script || undefined,
       behavior_run:

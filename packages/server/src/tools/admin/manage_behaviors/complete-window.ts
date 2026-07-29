@@ -69,8 +69,9 @@ export async function handleCompleteWindow(
     args.run_metadata && typeof args.run_metadata === 'object' && !Array.isArray(args.run_metadata)
       ? { ...(args.run_metadata as Record<string, unknown>) }
       : {};
-  // The rendered task is stamped by get_content from the server-side prompt.
-  // A completion payload may add provenance but must not replace that source.
+  // Historical runs carry a server-stamped `prompt_rendered` in run_metadata
+  // (the pre-literal-prompt templating era), and the run-thread view reads it
+  // back. A completion payload must never introduce or replace that key.
   delete provenanceMetadata.prompt_rendered;
   // Public arg is `behavior_run_id`; the persisted provenance jsonb key stays
   // the internal `watcher_run_id` (run_metadata is not part of the API surface).

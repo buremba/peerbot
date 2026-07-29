@@ -68,12 +68,21 @@ export const GetContentResultSchema = Type.Object({
   window_token: Type.Optional(Type.String()),
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
-  prompt_rendered: Type.Optional(Type.String()),
   extraction_schema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   sources: Type.Optional(Type.Record(Type.String(), Type.Array(Type.Unknown()))),
+  /**
+   * Behavior-bound entities as structured rows (id, name, type, metadata,
+   * field_controls). field_controls marks human-owned field values the agent
+   * must not overwrite without new evidence.
+   */
+  entities: Type.Optional(Type.Array(Type.Unknown())),
   classifiers: Type.Optional(Type.Array(Type.Unknown())),
   unprocessed_ranges: Type.Optional(Type.Array(Type.Unknown())),
   reactions_guidance: Type.Optional(Type.String()),
+  /** Summary of this Behavior's recent reactions (self-learning context). */
+  past_reactions: Type.Optional(Type.String()),
+  /** Summary of recent human feedback on this Behavior's output. */
+  past_feedback: Type.Optional(Type.String()),
   available_operations: Type.Optional(
     Type.Array(
       Type.Object({

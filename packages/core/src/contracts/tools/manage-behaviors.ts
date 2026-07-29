@@ -329,7 +329,7 @@ export const ManageBehaviorsSchema = Type.Object(
     prompt: Type.Optional(
       Type.String({
         description:
-          "[create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.",
+          "[create/create_version] Literal LLM instruction text for the Behavior. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload.",
       })
     ),
     sources: Type.Optional(

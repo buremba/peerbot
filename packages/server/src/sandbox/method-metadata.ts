@@ -538,7 +538,7 @@ export default async (ctx, client) => {
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from the window content.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
 		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
@@ -546,7 +546,7 @@ export default async (_ctx, client) => {
   return client.behaviors.create({
     slug: 'pricing',
     agent_id: 'agt_123',
-    prompt: 'Extract current pricing records from {{content}}.',
+    prompt: 'Extract current pricing records from the window content.',
     keying_config: {
       entity_type: 'price',
       entity_path: 'prices',

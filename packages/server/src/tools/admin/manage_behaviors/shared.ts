@@ -11,7 +11,6 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../../utils/organization-access';
-import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import {
   validateWatcherSourceRef,
@@ -160,9 +159,10 @@ function validateWatcherConfig(input: {
     return 'prompt is required and must be a string';
   }
 
-  const templateValidation = validateTemplate(input.prompt);
-  if (templateValidation) {
-    return `prompt: ${templateValidation}`;
+  // Prompts are literal instruction text — no templating layer. Any `{{` is
+  // legal prose. Only reject an effectively empty prompt.
+  if (input.prompt.trim().length === 0) {
+    return 'prompt cannot be empty';
   }
 
   // The output contract is no longer authored on the watcher. An entity-typed

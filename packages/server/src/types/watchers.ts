@@ -154,7 +154,6 @@ export const WatcherMetadataSchema = Type.Object({
    *  the empty-form-state clobber). */
   classifiers: Type.Optional(Type.Array(Type.Unknown())),
   reactions_guidance: Type.Optional(Type.String()),
-  rendered_prompt: Type.Optional(Type.String()),
   available_versions: Type.Optional(Type.Array(WatcherVersionInfoSchema)),
   reaction_script: Type.Optional(Type.String()),
   behavior_run: Type.Optional(WatcherRunSchema),

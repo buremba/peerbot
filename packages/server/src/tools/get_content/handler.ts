@@ -184,7 +184,6 @@ async function getContentImpl(
     if (args.behavior_id) {
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
-        sourceConversationId: ctx.sourceContext?.conversationId ?? null,
       });
     }
 

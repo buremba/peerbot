@@ -50,41 +50,16 @@ export function handleGetComponentReference(): {
           },
         },
       ],
-      template_variables: [
-        {
-          variable: '{{entities}}',
-          description: 'Comma-separated entity names.',
-        },
-        {
-          variable: '{{#each entities}}{{name}}, {{type}}, {{id}}{{/each}}',
-          description: 'Iterate over entities with access to name, type, and id.',
-        },
-        {
-          variable: '{{content}}',
-          description: 'All content items formatted as readable text.',
-        },
-        {
-          variable: '{{sources.name}}',
-          description: 'Content from a specific named source.',
-        },
-        {
-          variable: '{{data.name}}',
-          description: 'Results from a named SQL data source.',
-        },
-        {
-          variable: '{{#each sources}}{{name}}, {{content}}, {{count}}{{/each}}',
-          description: 'Iterate over all sources.',
-        },
-      ],
       security_restrictions: [
-        'Templates are declarative; arbitrary JavaScript execution is not supported.',
+        'Prompts are literal instruction text; no template expansion or code execution happens inside them.',
         'SQL queries are restricted to read-only SELECT/WITH statements.',
       ],
       complete_examples: [
         {
           name: 'Problem Detection',
           description: 'Extracts recurring product issues from source content.',
-          prompt: 'Analyze {{entities}} feedback and extract recurring problems.',
+          prompt:
+            "Analyze the bound entities' feedback in the window content and extract recurring problems.",
           keying_config: {
             entity_type: 'problem',
             entity_path: 'problems',

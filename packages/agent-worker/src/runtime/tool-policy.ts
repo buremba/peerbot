@@ -203,6 +203,68 @@ function blankQuotedSpans(text: string): string {
 }
 
 /**
+ * Words whose operands are DATA rather than a command to run: a printer or
+ * lookup command (`echo uvx cowsay`, `man nix run`) and a pattern/message
+ * option (`git log --grep nix run`, `git commit -m nix shell support`). What
+ * follows one of these is dropped before the install patterns run, which is
+ * what closes the #2279 false positives.
+ *
+ * Deliberately short, and holding nothing that can EXEC its arguments — `sudo`,
+ * `env`, `time`, `timeout`, `flock`, `chroot`, `xargs` and friends stay out, so
+ * a manager behind any of them still fires. A word belongs here only when its
+ * operand cannot be a command; see the asymmetry note on
+ * {@link isDirectPackageInstallCommand}.
+ */
+const ARGUMENT_DATA_WORDS = new Set([
+  "echo",
+  "printf",
+  "man",
+  "whatis",
+  "apropos",
+  "which",
+  "whereis",
+  "type",
+  "ls",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "-m",
+  "--message",
+  "--grep",
+  "--regexp",
+]);
+
+/**
+ * Run `matches` over each command in `text`, dropping the tail that an
+ * {@link ARGUMENT_DATA_WORDS} word consumes as data.
+ *
+ * Commands are split on the separators the install patterns already treat as
+ * opening a command position (`;`, `|`, `&`, parens, newline), so
+ * `echo uvx cowsay | npm install x` still flags the half that runs.
+ *
+ * This is the ONLY narrowing applied to the base detector and it is
+ * intentionally shallow: a command with no data word keeps its whole text, so
+ * anything this cannot prove to be an argument is still matched. Modelling
+ * wrapper signatures or line-continuation semantics here is the "reimplement
+ * bash" path the header warns about.
+ */
+function matchesBeforeArgumentData(
+  text: string,
+  matches: (candidate: string) => boolean
+): boolean {
+  for (const command of text.split(/[;|&()\n]/)) {
+    const words = command.split(/\s+/).filter(Boolean);
+    const dataAt = words.findIndex((word) => ARGUMENT_DATA_WORDS.has(word));
+    const head = (dataAt === -1 ? words : words.slice(0, dataAt)).join(" ");
+    if (head && matches(head)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Advisory detector for an honestly-typed package-manager install/acquire
  * command, used to return a helpful "declare it in nixPackages instead" message
  * (see {@link enforceBashPreflight}).
@@ -212,8 +274,14 @@ function blankQuotedSpans(text: string): string {
  * name (`"nix" run`, `n\ix run`, `/usr/bin/nix run`), a manager behind an exec
  * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
  * the body of an interpreter reached by path or long option (`/bin/bash -c`,
- * `bash --login -c`). It also over-denies a manager named as a plain argument
- * (`echo uvx cowsay`).
+ * `bash --login -c`). It also over-denies a manager named as an argument in a
+ * position {@link ARGUMENT_DATA_WORDS} does not cover (`for f in npm install`,
+ * `sudo grep nix run x`).
+ *
+ * That direction is chosen, not tolerated: over-denial is a confusing error on
+ * a harmless command, under-detection is a missing guard rail. So every
+ * uncertain case falls back to the base detector and flags, and only a word
+ * whose operand provably cannot be a command narrows it.
  *
  * Those misses are not holes on the local backend: the manager is never a
  * runnable command there. `UNSANDBOXED_INTERPRETERS` in
@@ -242,9 +310,10 @@ export function isDirectPackageInstallCommand(command: string): boolean {
       text.startsWith(prefix.toLowerCase())
     ) || DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(text));
 
-  // Scan the command with quoted DATA blanked out, so only real command
-  // positions can match.
-  if (matches(blankQuotedSpans(trimmed))) {
+  // Scan the command with quoted DATA blanked out and each data word's operands
+  // dropped, so a manager merely NAMED cannot match. Both scrubs are advisory
+  // and fail toward flagging: whatever they cannot prove to be data is matched.
+  if (matchesBeforeArgumentData(blankQuotedSpans(trimmed), matches)) {
     return true;
   }
 
@@ -252,7 +321,7 @@ export function isDirectPackageInstallCommand(command: string): boolean {
   INTERPRETER_DASH_C.lastIndex = 0;
   for (const m of trimmed.matchAll(INTERPRETER_DASH_C)) {
     const body = m[2]?.trim();
-    if (body && matches(blankQuotedSpans(body))) {
+    if (body && matchesBeforeArgumentData(blankQuotedSpans(body), matches)) {
       return true;
     }
   }

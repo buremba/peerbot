@@ -502,4 +502,65 @@ describe("enforceBashCommandPolicy", () => {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }
   });
+
+  test("a manager consumed as data by a word before it is not an install (#2279)", () => {
+    // Plain whitespace precedes every ARGUMENT, so a command that merely NAMES
+    // a manager used to read as an install. #2259 only widened the manager
+    // list, which made the latent bug fire on the far commoner `nix`/`uvx`
+    // spellings — "nix shell" turns up in commit messages and grep patterns.
+    for (const cmd of [
+      // The four spellings reported on the issue.
+      "git commit -m 'document nix shell support'",
+      "echo uvx cowsay",
+      "git log --grep nix run",
+      "man nix run",
+      // …and the rest of the class, from the probes on #2273 / #2277.
+      "echo npm install",
+      "echo if npm install",
+      "echo x{ npm install",
+      "echo iffy nix run",
+      "which nix",
+      "printf %s pip install",
+      "ls -la nix run",
+      "git log --oneline --grep 'apt install'",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("an argument position this cannot prove still flags (#2279)", () => {
+    // The narrowing is one word deep on purpose. A wrapper's own options and
+    // operands are NOT modelled — how many words `timeout`/`flock`/`chroot`
+    // take before the command they run is per-wrapper knowledge this matcher
+    // refuses to encode — so a manager after them keeps firing. Same for a
+    // backslash line continuation, which is shell lexing this does not do.
+    const bs = String.fromCharCode(92);
+    for (const cmd of [
+      "timeout --signal KILL 5 npm install left-pad",
+      "flock -w 10 /tmp/lock npm install left-pad",
+      "chroot --userspec root /jail npm install left-pad",
+      `FOO=bar${bs}\nbaz npm install left-pad`,
+      `sudo -u ro${bs}\not npm install left-pad`,
+      // The full denied list from the issue, so narrowing the false positives
+      // cannot silently trade them for a missed install.
+      "npm install lodash",
+      "FOO=bar npm install lodash",
+      "time npm install lodash",
+      "true; npm install lodash",
+      "true && uvx cowsay",
+      "(nix shell nixpkgs#hello)",
+      "if nix run x; then :; fi",
+      "{ nix run x; }",
+      "! nix run x",
+      "for i in 1; do nix run x; done",
+      "bash -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx x'",
+      // A data word swallows its OWN command, not the rest of the pipeline…
+      "echo uvx cowsay | npm install left-pad",
+      // …and only what comes after it.
+      "npm install echo",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+  });
 });

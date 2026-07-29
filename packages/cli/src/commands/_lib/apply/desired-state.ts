@@ -428,7 +428,7 @@ async function resolveSkill(
 }
 
 /** Byte cap on a Behavior's compiled instruction text (issue #2320). */
-export const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
+const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
 
 /**
  * Compile a Behavior's ordered `skills[]` into its frozen instruction text:

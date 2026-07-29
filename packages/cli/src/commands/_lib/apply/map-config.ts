@@ -522,7 +522,7 @@ function normalizeKeyingConfig(
 }
 
 /** Max skills a Behavior may reference (ordered compile; issue #2320 cap). */
-export const MAX_BEHAVIOR_SKILLS = 5;
+const MAX_BEHAVIOR_SKILLS = 5;
 
 /**
  * Skills-presence rule. An event trigger executing as "turn" carries its own

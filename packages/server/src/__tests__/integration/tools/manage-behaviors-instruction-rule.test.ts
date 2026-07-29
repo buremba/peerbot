@@ -19,9 +19,11 @@ import { cleanupTestDatabase } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestAgent,
+	createTestEntity,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
+import { getTestDb } from "../../setup/test-db";
 
 const TEST_ENV: Env = {
 	ENVIRONMENT: "test",
@@ -302,40 +304,65 @@ describe("manage_behaviors — instruction-presence rule", () => {
 	});
 
 	it("rejects blanking a group-shared prompt while a schedule sibling still needs it", async () => {
-		// Root: event-turn with empty prompt (ok for turn).
+		const sql = getTestDb();
+		const rootEntity = await createTestEntity({
+			name: "IR Group Root Entity",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+		const siblingEntity = await createTestEntity({
+			name: "IR Group Sibling Entity",
+			organization_id: orgId,
+			created_by: ownerCtx.userId!,
+		});
+
+		// Root assignment: schedule + shared instructions (entity-bound so
+		// create_from_version can fan out another assignment in the group).
 		const root = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create",
 				slug: "ir-group-root",
 				agent_id: agentId,
-				triggers: [TURN_TRIGGER],
+				entity_id: rootEntity.id,
+				prompt: "Shared scheduled instructions.",
+				triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
 			},
 			TEST_ENV,
 			ownerCtx
 		)) as { behavior_id?: string };
 		const rootId = root.behavior_id!;
 
-		// Promote root to a schedule with instructions so clones share that version.
-		await executeTool(
+		const [rootRow] = await sql`
+			SELECT current_version_id, watcher_group_id FROM watchers WHERE id = ${Number(rootId)}
+		`;
+		const versionId = Number(rootRow.current_version_id);
+
+		// Real second assignment in the same group — keeps schedule triggers
+		// and shares the version/prompt with the root.
+		const cloned = (await executeTool(
 			"manage_behaviors",
 			{
-				action: "create_version",
-				behavior_id: rootId,
-				prompt: "Shared scheduled instructions.",
-				triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
-				set_as_current: true,
+				action: "create_from_version",
+				version_id: String(versionId),
+				entity_ids: [siblingEntity.id],
 			},
 			TEST_ENV,
 			ownerCtx
-		);
+		)) as { created?: Array<{ behavior_id: string }> };
+		expect(cloned.created?.[0]?.behavior_id).toBeTruthy();
+		const siblingId = Number(cloned.created![0].behavior_id);
 
-		// Second assignment in the same group: keep schedule triggers (needs prompt).
-		// create_from_version shares the group + version; we approximate by creating
-		// a second Behavior then re-pointing is hard in tests — instead create another
-		// schedule Behavior and assert blanking via create_version on a single
-		// schedule assignment (already covered). For true group coverage: blanking
-		// the root prompt while it is still schedule-shaped must fail.
+		const siblings = await sql`
+			SELECT id, triggers FROM watchers
+			WHERE watcher_group_id = ${Number(rootRow.watcher_group_id)}
+			ORDER BY id
+		`;
+		expect(siblings).toHaveLength(2);
+
+		// Switch ONLY the targeted root to event-turn with a blank prompt.
+		// The sibling still has schedule triggers → group-shared blank prompt
+		// must be rejected (incoming triggers on the target do not exempt siblings).
 		await expect(
 			executeTool(
 				"manage_behaviors",
@@ -343,8 +370,7 @@ describe("manage_behaviors — instruction-presence rule", () => {
 					action: "create_version",
 					behavior_id: rootId,
 					prompt: "",
-					// Keep schedule triggers (incoming) — must not clear instructions.
-					triggers: [{ kind: "schedule", cron: "0 10 * * *" }],
+					triggers: [TURN_TRIGGER],
 					set_as_current: true,
 				},
 				TEST_ENV,
@@ -352,19 +378,11 @@ describe("manage_behaviors — instruction-presence rule", () => {
 			)
 		).rejects.toThrow(/needs instructions/i);
 
-		// Targeted assignment can switch to turn AND blank prompt in one call.
-		const ok = (await executeTool(
-			"manage_behaviors",
-			{
-				action: "create_version",
-				behavior_id: rootId,
-				prompt: "",
-				triggers: [TURN_TRIGGER],
-				set_as_current: true,
-			},
-			TEST_ENV,
-			ownerCtx
-		)) as { version?: number };
-		expect(ok.version).toBeGreaterThan(1);
+		// Sibling still scheduled after the rejected write.
+		const [siblingAfter] = await sql`
+			SELECT triggers FROM watchers WHERE id = ${siblingId}
+		`;
+		const siblingTriggers = siblingAfter.triggers as Array<{ kind: string }>;
+		expect(siblingTriggers.some((t) => t.kind === "schedule")).toBe(true);
 	});
 });

@@ -29,9 +29,9 @@ guard_call_count="$(
 [ "$guard_call_count" -eq 3 ] ||
   fail "review.sh must re-check the upstream at all three publication boundaries"
 
-# A clone whose upstream is a real remote, so the guard's `git fetch` is
-# exercised rather than stubbed — a stale remote-tracking ref is precisely the
-# failure this guard exists to catch.
+# A real remote, so the guard's `git ls-remote` talks to one rather than being
+# stubbed — comparing against the local remote-tracking ref is precisely the
+# mistake this guard must not make, since that ref goes stale on its own.
 # Pin the branch because Git's default differs across developer and CI hosts.
 new_clone() {
   local name="$1"

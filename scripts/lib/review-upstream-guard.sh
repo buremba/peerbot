@@ -33,12 +33,15 @@ review_assert_head_is_current() {
 
   # Ask the remote directly. The remote-tracking ref goes stale on its own, so
   # comparing against it would pass exactly when it matters most — but a
-  # `git fetch` is the wrong way to refresh it here: fetch writes FETCH_HEAD,
-  # which is per-worktree shared scratch, and review.sh runs reviews of
-  # different commits concurrently. Reading a FETCH_HEAD another command had
-  # already overwritten produced an unparseable sha and a silent fail-OPEN —
-  # the guard would allow precisely the case it exists to catch.
-  # `ls-remote` writes nothing and needs no object download.
+  # `git fetch` is the wrong way to refresh it here: it writes FETCH_HEAD,
+  # per-worktree scratch shared with every other git command in the worktree,
+  # and downloads objects this check never needs. `ls-remote` writes nothing.
+  #
+  # No concurrent-corruption bug was ever demonstrated — fetch rewrites
+  # FETCH_HEAD immediately before the read, so a seeded value never survived
+  # to be misread. The reason to prefer `ls-remote` is simply that a read-only
+  # check should not mutate shared state, which is also the one property the
+  # test can actually assert.
   upstream_sha="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
   if [ -z "$upstream_sha" ]; then
     # Offline, or the branch is gone from the remote. Fail open: this guard

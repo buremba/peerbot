@@ -214,8 +214,14 @@ function blankQuotedSpans(text: string): string {
  * operand cannot be a command; see the asymmetry note on
  * {@link isDirectPackageInstallCommand}.
  */
-const ARGUMENT_DATA_WORDS = new Set([
-  // Printer and lookup commands: they display or resolve their operands.
+/**
+ * Printer and lookup commands: they display or resolve their operands, so what
+ * follows is data. These only narrow in COMMAND POSITION (the first word of a
+ * command) — as any later word they are an operand of whatever runs them, and
+ * dropping the tail there loses a real install: in `sudo -u ls npm install`,
+ * `ls` is a USERNAME and npm still runs.
+ */
+const ARGUMENT_DATA_COMMANDS = new Set([
   "echo",
   "printf",
   "man",
@@ -229,18 +235,22 @@ const ARGUMENT_DATA_WORDS = new Set([
   "egrep",
   "fgrep",
   "rg",
-  // Long PATTERN options, whose operand is a regex in every tool that spells
-  // them. Short options are deliberately absent: a single letter means
-  // different things to different commands, and reading one without knowing its
-  // owner loses a real install — `-m` is git's message but `parallel`'s
-  // max-args, and `parallel -m npm install lodash ::: left-pad` RUNS npm.
-  "--grep",
-  "--regexp",
 ]);
 
 /**
+ * Long PATTERN options, whose operand is a regex in every tool that spells
+ * them. These narrow at any position, because a long option is never a bare
+ * operand. Short options are deliberately absent: a single letter means
+ * different things to different commands, and reading one without knowing its
+ * owner loses a real install — `-m` is git's message but `parallel`'s max-args,
+ * and `parallel -m npm install lodash ::: left-pad` RUNS npm.
+ */
+const ARGUMENT_DATA_OPTIONS = new Set(["--grep", "--regexp"]);
+
+/**
  * Run `matches` over each command in `text`, dropping the tail that an
- * {@link ARGUMENT_DATA_WORDS} word consumes as data.
+ * {@link ARGUMENT_DATA_COMMANDS} or {@link ARGUMENT_DATA_OPTIONS} word
+ * consumes as data.
  *
  * Commands are split on the separators the install patterns already treat as
  * opening a command position (`;`, `|`, `&`, parens, newline), so
@@ -258,7 +268,13 @@ function matchesBeforeArgumentData(
 ): boolean {
   for (const command of text.split(/[;|&()\n]/)) {
     const words = command.split(/\s+/).filter(Boolean);
-    const dataAt = words.findIndex((word) => ARGUMENT_DATA_WORDS.has(word));
+    // A printer/lookup name only consumes data when it is the word being RUN.
+    // An option consumes data wherever it appears.
+    const dataAt = words.findIndex(
+      (word, index) =>
+        ARGUMENT_DATA_OPTIONS.has(word) ||
+        (index === 0 && ARGUMENT_DATA_COMMANDS.has(word))
+    );
     const head = (dataAt === -1 ? words : words.slice(0, dataAt)).join(" ");
     if (head && matches(head)) {
       return true;
@@ -278,7 +294,7 @@ function matchesBeforeArgumentData(
  * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
  * the body of an interpreter reached by path or long option (`/bin/bash -c`,
  * `bash --login -c`). It also over-denies a manager named as an argument in a
- * position {@link ARGUMENT_DATA_WORDS} does not cover (`for f in npm install`,
+ * position the argument-data words do not cover (`for f in npm install`,
  * `sudo grep nix run x`).
  *
  * That direction is chosen, not tolerated: over-denial is a confusing error on

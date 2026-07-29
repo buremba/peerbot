@@ -570,4 +570,48 @@ describe("enforceBashCommandPolicy", () => {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }
   });
+
+  test("a data word is only data in command position (#2279)", () => {
+    // A printer/lookup name narrows ONLY as the word being run. Anywhere else
+    // it is an operand of whatever precedes it — a username, a path, a file —
+    // and dropping the tail there would silence a real install. Every case
+    // below has a data word (`ls`, `type`, `grep`) sitting in an operand slot.
+    for (const cmd of [
+      "sudo -u ls npm install evil",
+      "flock ls npm install evil",
+      "timeout --foreground -k ls 5 npm install evil",
+      "xargs -a ls npm install evil",
+      "git -C ls exec npm install evil",
+      "env -u type npm install evil",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // Not in this class: a payload living entirely inside quotes is dropped by
+    // the #2259 quote blanking before any narrowing runs, so it reads false on
+    // origin/main too. Pinned so it is not mistaken for a regression here.
+    expect(
+      isDirectPackageInstallCommand(
+        'docker run --entrypoint sh grep -c "npm install evil"'
+      )
+    ).toBe(false);
+    // …and in command position it still narrows, which is the whole point.
+    for (const cmd of ["ls npm install", "grep npm install file", "type npm"]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("an interpreter body gets the same narrowing (#2279)", () => {
+    // The `-c` body is scanned separately, so it needs its own coverage: a
+    // manager merely echoed inside the body is not an install…
+    expect(isDirectPackageInstallCommand('bash -c "echo npm install"')).toBe(
+      false
+    );
+    // …while one actually run inside the body still is.
+    expect(isDirectPackageInstallCommand('bash -c "npm install evil"')).toBe(
+      true
+    );
+    expect(
+      isDirectPackageInstallCommand('sh -c "sudo -u ls npm install"')
+    ).toBe(true);
+  });
 });

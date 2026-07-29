@@ -576,12 +576,16 @@ describe("bump-version input validation (subprocess)", () => {
   });
 
   it("leaves every workspace manifest byte-identical, not just the published ones", () => {
-    // Deliberately re-enumerates the filesystem rather than reusing
-    // `manifests`. That independence is the whole point: the bug was the
-    // restore list silently narrowing to the publish set, and a test sharing
-    // that list cannot see it happen again. Measured, not assumed — reverting
-    // `manifests` to `__testing.PACKAGES` takes this suite to 27 pass / 1 fail,
-    // and this is the one that fails.
+    // Re-enumerates the filesystem rather than reusing `manifests`, so it
+    // still sees writes to a package that list does not cover.
+    //
+    // What it guards changed with the temp-tree runner. It no longer catches a
+    // narrowed restore list — narrowing `manifests` now fails the accepted-semver
+    // assertions instead, because the sandbox copy would omit a package
+    // bump-version writes. What it catches now is the subprocess being pointed
+    // back at the checkout. Measured, not assumed: restoring `cwd` to REPO_ROOT
+    // takes this suite to 24 pass / 4 fail and leaves 10 real manifests dirty,
+    // the root one included.
     const everyManifest = readdirSync(join(REPO_ROOT, "packages"), {
       withFileTypes: true,
     })

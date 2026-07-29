@@ -55,6 +55,7 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
+  requiredCapability: string,
   source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
 ): Promise<void> {
   const sql = getDb();
@@ -112,6 +113,54 @@ async function ensureDeviceConnectorWired(
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
         AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
+    `;
+    // The statement above repairs only the row we were handed, but an org holds
+    // one connection PER DEVICE and the fast path resolves just one of them
+    // (`GROUP BY … LIMIT 1`, no ORDER BY). When it returns the row that is
+    // already correctly pinned, the UPDATE no-ops — and a sibling left pinned to
+    // a device that has dropped out is never revisited, so it stays bound to a
+    // worker that will never poll again. Sweep every live row instead: a pin
+    // outside the fresh set is stale by definition, and NULL is strictly better
+    // than a dead pin (unpinned is claimable by any polling device; a vanished
+    // device is claimable by nobody).
+    //
+    // Safe for the multi-fresh case — pins INSIDE the fresh set are deliberate
+    // and untouched — and the empty-fleet case never reaches here, because
+    // `reconcileDeviceCapabilities` only calls this connector's wire pass when
+    // `matchingDeviceIds.length > 0` (an offline fleet routes to
+    // `pauseStaleDeviceFeeds`, which must not unpin anything).
+    // Re-check freshness against `device_workers` AT MUTATION TIME rather than
+    // trusting `matchingDeviceIds`, which is snapshotted before the advisory
+    // lock is taken (see `reconcileDeviceCapabilities`). A concurrent poll on
+    // another replica can refresh a device's heartbeat between this pass's
+    // snapshot and its commit; sweeping from the stale list would unpin a
+    // device that is live again. The NOT EXISTS makes the sweep self-verifying:
+    // a row is cleared only if its worker is genuinely absent, stale, or no
+    // longer advertising the capability as of this statement.
+    await db`
+      UPDATE connections c
+      SET device_worker_id = NULL, updated_at = NOW()
+      WHERE c.organization_id = ${organizationId}
+        AND c.connector_key = ${connectorKey}
+        AND c.deleted_at IS NULL
+        -- The device-connector identity: auto-wire's own INSERT writes NULL to
+        -- BOTH profile columns, so anything with either set is credential-backed
+        -- and user-created. Unpinning one would hand it to any capable device
+        -- while the poll withholds credentials from unpinned connections —
+        -- breaking a connection this pass never created.
+        AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
+        AND c.device_worker_id IS NOT NULL
+        -- Deliberately NOT also gated on matchingDeviceIds: ANDing the stale
+        -- snapshot in would let a device that has since dropped the capability
+        -- survive, by short-circuiting this check.
+        AND NOT EXISTS (
+          SELECT 1 FROM device_workers dw
+          WHERE dw.id = c.device_worker_id
+            AND dw.user_id = ${userId}
+            AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+            AND dw.capabilities @> ${db.json([requiredCapability])}
+        )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
     // connection is not stuck as active + red "Device was removed".
@@ -173,6 +222,12 @@ async function ensureDeviceConnectorWired(
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
        AND c.auth_profile_id IS NULL
+       -- Auto-wire's own INSERT writes NULL to BOTH profile columns, so a row
+       -- with either one set is credential-backed and user-created. Matching on
+       -- auth_profile_id alone let the fast path adopt an app-auth-backed
+       -- connection and re-pin it — the poll withholds credentials from
+       -- unpinned connections, so that breaks a connection this pass never made.
+       AND c.app_auth_profile_id IS NULL
        AND c.deleted_at IS NULL
       LEFT JOIN feeds f
         ON f.connection_id = c.id
@@ -330,6 +385,7 @@ async function ensureDeviceConnectorWired(
         WHERE organization_id = ${organizationId}
           AND connector_key = ${connectorKey}
           AND auth_profile_id IS NULL
+          AND app_auth_profile_id IS NULL
           AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT 1
@@ -444,6 +500,7 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
         AND c.connector_key = ${connectorKey}
         AND c.created_by = ${userId}
         AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
         AND c.deleted_at IS NULL
         AND f.status = 'active'
         AND f.deleted_at IS NULL
@@ -687,6 +744,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             dc.key,
             dc.feedKeys,
             matchingDeviceIds,
+            dc.requiredCapability,
             'source' in dc && dc.source === 'device-manifest'
               ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
               : undefined

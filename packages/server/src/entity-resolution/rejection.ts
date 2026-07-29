@@ -1,13 +1,16 @@
 import type { DbClient } from "../db/client";
 
-/** Serialize decisions for one candidate across pods and watcher windows. */
-export async function lockResolutionFingerprint(
+/** Serialize decisions for one entity group across pods and evidence versions. */
+export async function lockResolutionCandidate(
 	db: DbClient,
-	input: { organizationId: string; fingerprint: string },
+	input: { organizationId: string; winnerId: number; loserIds: number[] },
 ): Promise<void> {
+	const entityIds = [...new Set([input.winnerId, ...input.loserIds])].sort(
+		(left, right) => left - right,
+	);
 	await db`
 		SELECT pg_advisory_xact_lock(
-			hashtextextended(${`${input.organizationId}:${input.fingerprint}`}, 0)
+			hashtextextended(${`${input.organizationId}:${entityIds.join(",")}`}, 0)
 		)
 	`;
 }

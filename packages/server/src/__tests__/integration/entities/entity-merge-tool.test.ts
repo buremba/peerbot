@@ -288,17 +288,23 @@ describe("manage_entity merge action", () => {
 			WHERE id = ${queued.approval_run_id}
 		`;
 
+		// These two entities share nothing, so re-assessment proves no more than
+		// the reviewer saw. An unverifiable fingerprint with no gain in evidence is
+		// re-presented, not applied.
 		const refreshed = await manageOperations(
 			{ action: "approve", run_id: queued.approval_run_id },
 			env,
 			ctx(org.id, user.id, "owner"),
 		);
 		expect("error" in refreshed && refreshed.error).toMatch(
-			/without a known current matching format/i,
+			/re-checked.*approve again to apply/i,
+		);
+		// The reviewer-facing text must not leak fingerprint-format vocabulary:
+		// this string is what the approval card renders.
+		expect("error" in refreshed && refreshed.error).not.toMatch(
+			/fingerprint|resolution format|matching format/i,
 		);
 
-		// The merge must NOT have applied — the reviewer approved evidence the
-		// server could not verify, so their click does not carry over.
 		const [untouched] =
 			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
 		expect(untouched.merged_into).toBeNull();
@@ -307,12 +313,16 @@ describe("manage_entity merge action", () => {
 		// ...but the proposal is now approvable: pending, restamped, and carrying
 		// a fingerprint the server can actually check.
 		const [reset] = await sql`
-			SELECT approval_status, status, action_input FROM runs WHERE id = ${queued.approval_run_id}
+			SELECT approval_status, status, action_input, error_message FROM runs WHERE id = ${queued.approval_run_id}
 		`;
 		expect(reset).toMatchObject({
 			approval_status: "pending",
 			status: "pending",
 		});
+		// error_message is the column the card reads, so it carries the reviewer
+		// message rather than the internal exception text.
+		expect(reset.error_message).toMatch(/approve again to apply/i);
+		expect(reset.error_message).not.toMatch(/resolution format/i);
 		const resetInput = reset.action_input as Record<string, unknown>;
 		expect(resetInput.resolution_fingerprint_version).toBe(
 			RESOLUTION_FINGERPRINT_VERSION,
@@ -347,6 +357,168 @@ describe("manage_entity merge action", () => {
 			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
 		expect(Number(merged.merged_into)).toBe(winner.id);
 		expect(merged.deleted_at).not.toBeNull();
+	});
+
+	it("applies a legacy merge in one approval when re-assessment proves more", async () => {
+		// A legacy proposal can have an unstamped fingerprint, evidence [] at
+		// review time, and a phone both sides actually share.
+		// Re-assessment gains that phone and drops nothing, so the reviewer's
+		// approval already covers this merge and must not be asked for twice.
+		const org = await createTestOrganization({ name: "Strengthened Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+			VALUES
+				(${org.id}, ${winner.id}, 'phone', '+44 7700 900 123'),
+				(${org.id}, ${loser.id}, 'phone', '447700900123')
+		`;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+		expect(queued.approval_queued).toBe(true);
+
+		// Strip the evidence and version stamp to reproduce the legacy shape: the
+		// reviewer saw no recorded proof and the digest cannot be compared.
+		const [minted] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		const stale = {
+			...(minted.action_input as Record<string, unknown>),
+			resolution_fingerprint: "0".repeat(64),
+			evidence: [],
+		};
+		delete stale.resolution_fingerprint_version;
+		await sql`
+			UPDATE runs SET action_input = ${sql.json(stale)}
+			WHERE id = ${queued.approval_run_id}
+		`;
+
+		const applied = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("approved" in applied && applied.approved).toBe(true);
+
+		const [merged] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(Number(merged.merged_into)).toBe(winner.id);
+		expect(merged.deleted_at).not.toBeNull();
+	});
+
+	it("re-presents when new matching proof arrives with unmatched identity changes", async () => {
+		const org = await createTestOrganization({ name: "Mixed Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+
+		// The shared phone strengthens the proof, but the two different emails are
+		// also new. Evidence lists matches only, so an evidence-only comparison
+		// would hide the unmatched changes and apply a materially different merge.
+		await sql`
+			INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+			VALUES
+				(${org.id}, ${winner.id}, 'phone', '+44 7700 900 123'),
+				(${org.id}, ${loser.id}, 'phone', '447700900123'),
+				(${org.id}, ${winner.id}, 'email', 'winner@example.com'),
+				(${org.id}, ${loser.id}, 'email', 'loser@example.com')
+		`;
+
+		const refused = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("error" in refused && refused.error).toMatch(
+			/re-checked.*approve again to apply/i,
+		);
+
+		const [untouched] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(untouched.merged_into).toBeNull();
+		expect(untouched.deleted_at).toBeNull();
+	});
+
+	it("re-presents a merge whose reviewed evidence no longer holds", async () => {
+		// The case a second look can actually catch: the reviewer approved on a
+		// shared phone, and that phone is gone by the time they clicked.
+		const org = await createTestOrganization({ name: "Weakened Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+			VALUES
+				(${org.id}, ${winner.id}, 'phone', '+44 7700 900 123'),
+				(${org.id}, ${loser.id}, 'phone', '447700900123')
+		`;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_run_id: number };
+		const [minted] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(
+			(minted.action_input as { evidence: unknown[] }).evidence.length,
+		).toBeGreaterThan(0);
+
+		// The phone that justified the merge is corrected away after review.
+		await sql`
+			UPDATE entity_identities SET deleted_at = now()
+			WHERE organization_id = ${org.id} AND entity_id = ${loser.id}
+		`;
+
+		const refused = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("error" in refused && refused.error).toMatch(
+			/no longer supports what you reviewed/i,
+		);
+		// The message must name the specific proof that stopped holding.
+		expect("error" in refused && refused.error).toMatch(/447700900123/);
+
+		const [untouched] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(untouched.merged_into).toBeNull();
+		expect(untouched.deleted_at).toBeNull();
+
+		const [card] = await sql`
+			SELECT title FROM current_event_records WHERE run_id = ${queued.approval_run_id}
+		`;
+		expect(card.title).toBe(
+			"entity_merge — evidence no longer supports the merge",
+		);
 	});
 
 	it("does not downgrade a merge fingerprint from a newer format", async () => {
@@ -1103,6 +1275,23 @@ describe("manage_entity merge action", () => {
 			watcherCtx(7102),
 		)) as unknown as { approval_run_id: number };
 		expect(second.approval_run_id).not.toBe(first.approval_run_id);
+
+		// Make the second run look legacy. Its stored fingerprint differs from the
+		// current candidate, so approval must check rejection memory against both
+		// the reviewed and re-assessed fingerprints.
+		const [secondRun] = await sql`
+			SELECT action_input FROM runs WHERE id = ${second.approval_run_id}
+		`;
+		const legacySecond = {
+			...(secondRun.action_input as Record<string, unknown>),
+			resolution_fingerprint: "0".repeat(64),
+			evidence: [],
+		};
+		delete legacySecond.resolution_fingerprint_version;
+		await sql`
+			UPDATE runs SET action_input = ${sql.json(legacySecond)}
+			WHERE id = ${second.approval_run_id}
+		`;
 
 		await manageOperations(
 			{ action: "reject", run_id: first.approval_run_id },

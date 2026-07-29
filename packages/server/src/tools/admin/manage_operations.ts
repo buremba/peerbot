@@ -47,9 +47,11 @@ import {
 	pgTextArray,
 } from "../../db/client";
 import {
-	lockResolutionFingerprint,
+	lockResolutionCandidate,
 	wasResolutionRejected,
 } from "../../entity-resolution/rejection";
+import { droppedEvidence } from "../../entity-resolution/evidence-strength";
+import { ResolutionFingerprintError } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
@@ -93,14 +95,15 @@ export {
 	formatActivityAttentionBlock,
 	listOrgActivity,
 } from "./manage_operations/activity-feed";
-import { ResolutionFingerprintError } from "../../entity-resolution/staleness";
 import {
 	applyEntityChangeProposal,
 	asMergeProposal,
 	ENTITY_CHANGE_ACTION_KEYS,
 	type EntityChangeProposal,
+	type MergeApprovalResolution,
 	mergeReviewEventMetadata,
 	refreshMergeProposalFingerprint,
+	resolveMergeApproval,
 } from "./entity-field-approval";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
@@ -2193,6 +2196,7 @@ async function tryApproveEntityChangeRun(
 	const completeApproval = async (
 		db: DbClient,
 		proposal: EntityChangeProposal,
+		mergeResolution?: MergeApprovalResolution,
 	): Promise<ManageOperationsResult> => {
 		const operation = entityChangeOperation(proposal);
 		const description = describeEntityChange(proposal);
@@ -2211,7 +2215,13 @@ async function tryApproveEntityChangeRun(
 			db,
 		);
 
-		const result = await applyEntityChangeProposal(proposal, ctx, env, db);
+		const result = await applyEntityChangeProposal(
+			proposal,
+			ctx,
+			env,
+			db,
+			mergeResolution,
+		);
 		const staleFields =
 			operation === "update" &&
 			result &&
@@ -2266,25 +2276,36 @@ async function tryApproveEntityChangeRun(
 		};
 	};
 
-	// A fingerprint without a known current input-format stamp cannot be compared
-	// safely, only recomputed. Failing it like drift makes a genuinely old
-	// proposal permanently unapprovable: every retry recomputes the same mismatch
-	// and there is no blocker the reviewer can clear. Re-present it instead — the
-	// run stays pending with evidence rebuilt under the current format.
-	const refreshIncomparableFingerprint = async (
+	// Re-present a proposal when the current resolution keys are not a strict,
+	// matching-only extension of what the reviewer saw. This also gives an
+	// unstamped proposal a current fingerprint, so a later approval can succeed.
+	const refreshStaleFingerprint = async (
 		error: unknown,
 		proposal: EntityChangeProposal,
 		db: DbClient,
 	): Promise<ManageOperationsResult | null> => {
 		if (
 			!(error instanceof ResolutionFingerprintError) ||
-			error.failure !== "incomparable" ||
 			entityChangeOperation(proposal) !== "merge"
 		) {
 			return null;
 		}
+		const dropped = droppedEvidence(
+			asMergeProposal(proposal).evidence ?? [],
+			error.assessment.evidence,
+		);
+		// Name what stopped holding in the reviewer's terms; the internal
+		// fingerprint failure does not describe their contact evidence.
+		const lostSummary =
+			dropped.length > 0
+				? ` No longer proven: ${dropped.map((item) => `${item.kind} ${item.identifier}`).join(", ")}.`
+				: "";
+		const reviewerMessage =
+			dropped.length > 0
+				? `Evidence has been re-checked and no longer supports what you reviewed.${lostSummary} Current finding: ${error.assessment.reason} Review it and approve again to apply, or reject it.`
+				: `Evidence has been re-checked against the workspace as it stands now. Current finding: ${error.assessment.reason} Review it and approve again to apply, or reject it.`;
 		const reset = await db`
-      UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${error.message}
+      UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${reviewerMessage}
       WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
 		AND approval_status = 'approved' AND status = 'running'
 		RETURNING id
@@ -2301,8 +2322,10 @@ async function tryApproveEntityChangeRun(
 			args.run_id,
 			ctx.organizationId,
 			"pending",
-			"entity_merge — evidence re-checked, still pending",
-			`This merge was proposed without a known current matching format, so its recorded evidence could not be verified. It has been re-checked against the workspace as it stands now: ${error.assessment.reason} Review the updated evidence and approve again, or reject it.`,
+			dropped.length > 0
+				? "entity_merge — evidence no longer supports the merge"
+				: "entity_merge — evidence re-checked, still pending",
+			reviewerMessage,
 			mergeReviewEventMetadata(refreshedProposal),
 			reviewer,
 			db,
@@ -2313,10 +2336,7 @@ async function tryApproveEntityChangeRun(
 				"Cannot refresh merge approval because its approval event is missing",
 			);
 		}
-		return {
-			error:
-				"This merge was recorded without a known current matching format. Its evidence has been re-checked and the approval is pending again — review the updated evidence and approve once more, or reject it.",
-		};
+		return { error: reviewerMessage };
 	};
 
 	const applyFailure = async (
@@ -2357,52 +2377,42 @@ async function tryApproveEntityChangeRun(
 		};
 	};
 
+	const cancelPreviouslyRejectedMerge = async (
+		db: DbClient,
+	): Promise<ManageOperationsResult | null> => {
+		const cancelled = await db`
+			UPDATE runs
+			SET approval_status = 'rejected', status = 'cancelled',
+			    error_message = 'The same resolution candidate was already rejected',
+			    completed_at = NOW()
+			WHERE id = ${args.run_id}
+			  AND organization_id = ${ctx.organizationId}
+			  AND approval_status = 'approved'
+			  AND status = 'running'
+			RETURNING id
+		`;
+		if (cancelled.length === 0) return null;
+		await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"rejected",
+			"entity_merge — rejected",
+			"This unchanged duplicate candidate was already rejected in another Behavior run.",
+			{
+				reject_reason: "The same resolution candidate was already rejected",
+			},
+			null,
+			db,
+		);
+		return {
+			error:
+				"This duplicate candidate was already rejected. Refresh the Behavior run.",
+		};
+	};
+
 	if (pendingOperation === "merge") {
 		try {
 			return await sql.begin(async (tx) => {
-				const fingerprint = resolutionFingerprintOf(pendingProposal);
-				if (fingerprint) {
-					await lockResolutionFingerprint(tx, {
-						organizationId: ctx.organizationId,
-						fingerprint,
-					});
-					if (
-						await wasResolutionRejected(tx, {
-							organizationId: ctx.organizationId,
-							fingerprint,
-						})
-					) {
-						const cancelled = await tx`
-							UPDATE runs
-							SET approval_status = 'rejected', status = 'cancelled',
-							    error_message = 'The same resolution candidate was already rejected',
-							    completed_at = NOW()
-							WHERE id = ${args.run_id}
-							  AND organization_id = ${ctx.organizationId}
-							  AND approval_status = 'pending'
-							  AND status = 'pending'
-							RETURNING id
-						`;
-						if (cancelled.length === 0) return null;
-						await supersedeActionEvent(
-							args.run_id,
-							ctx.organizationId,
-							"rejected",
-							"entity_merge — rejected",
-							"This unchanged duplicate candidate was already rejected in another Behavior run.",
-							{
-								reject_reason:
-									"The same resolution candidate was already rejected",
-							},
-							null,
-							tx,
-						);
-						return {
-							error:
-								"This duplicate candidate was already rejected. Refresh the Behavior run.",
-						};
-					}
-				}
 				const claimed = await claimEntityChangeRun(
 					args.run_id,
 					ctx.organizationId,
@@ -2412,9 +2422,43 @@ async function tryApproveEntityChangeRun(
 				);
 				if (!claimed) return null;
 				try {
-					return await completeApproval(tx, claimed.proposal);
+					const mergeProposal = asMergeProposal(claimed.proposal);
+					await lockResolutionCandidate(tx, {
+						organizationId: ctx.organizationId,
+						winnerId: mergeProposal.winner_entity_id,
+						loserIds:
+							mergeProposal.entity_ids ?? [mergeProposal.entity_id],
+					});
+					const reviewedFingerprint = resolutionFingerprintOf(
+						claimed.proposal,
+					);
+					if (
+						reviewedFingerprint &&
+						(await wasResolutionRejected(tx, {
+							organizationId: ctx.organizationId,
+							fingerprint: reviewedFingerprint,
+						}))
+					) {
+						return cancelPreviouslyRejectedMerge(tx);
+					}
+					const resolution = await resolveMergeApproval(
+						mergeProposal,
+						ctx.organizationId,
+						tx,
+					);
+					if (
+						resolution.fingerprint &&
+						resolution.fingerprint !== reviewedFingerprint &&
+						(await wasResolutionRejected(tx, {
+							organizationId: ctx.organizationId,
+							fingerprint: resolution.fingerprint,
+						}))
+					) {
+						return cancelPreviouslyRejectedMerge(tx);
+					}
+					return await completeApproval(tx, claimed.proposal, resolution);
 				} catch (error) {
-					const refreshed = await refreshIncomparableFingerprint(
+					const refreshed = await refreshStaleFingerprint(
 						error,
 						claimed.proposal,
 						tx,
@@ -2465,6 +2509,7 @@ async function tryRejectEntityChangeRun(
 	if (!pending?.action_input) return null;
 	const reason = args.reason ?? "Rejected by user";
 	const reviewer = await resolveReviewer(ctx);
+	const pendingIsMerge = entityChangeOperation(pending.action_input) === "merge";
 	const reject = async (
 		db: DbClient,
 	): Promise<ManageOperationsResult | null> => {
@@ -2476,6 +2521,14 @@ async function tryRejectEntityChangeRun(
 			db,
 		);
 		if (!claimed) return null;
+		if (pendingIsMerge) {
+			const mergeProposal = asMergeProposal(claimed.proposal);
+			await lockResolutionCandidate(db, {
+				organizationId: ctx.organizationId,
+				winnerId: mergeProposal.winner_entity_id,
+				loserIds: mergeProposal.entity_ids ?? [mergeProposal.entity_id],
+			});
+		}
 		const operation = entityChangeOperation(claimed.proposal);
 		const description = describeEntityChange(claimed.proposal);
 		const eventId = await supersedeActionEvent(
@@ -2502,15 +2555,8 @@ async function tryRejectEntityChangeRun(
 		};
 	};
 
-	const fingerprint = resolutionFingerprintOf(pending.action_input);
-	if (!fingerprint) return reject(sql);
-	return sql.begin(async (tx) => {
-		await lockResolutionFingerprint(tx, {
-			organizationId: ctx.organizationId,
-			fingerprint,
-		});
-		return reject(tx);
-	});
+	if (!pendingIsMerge) return reject(sql);
+	return sql.begin(reject);
 }
 
 async function handleApprove(

@@ -11,6 +11,28 @@ import type { ChatPlatformInstance, PlatformRoutingInfo } from "./types.js";
 
 const logger = createLogger("chat-target-resolver");
 
+/**
+ * Turn off the Chat SDK's message-history cache so every adapter shares one
+ * inbound path.
+ *
+ * The SDK writes that cache in `handleIncomingMessage` BEFORE dispatch, gated
+ * on the adapter's `persistMessageHistory` flag and unguarded; `processMessage`
+ * catches the throw and the webhook still answers 200, so a failing cache write
+ * drops the message before Lobu sees it. Only Telegram and WhatsApp set the
+ * flag. Lobu's durable transcripts use `channel_messages`, and its live-history
+ * path already falls back to `ConversationStateStore` when a platform has no
+ * history API, so delivery must not depend on this secondary cache.
+ */
+export function disableSdkMessageHistory<T extends object>(adapter: T): T {
+  // Declared readonly on the SDK interface, so redefine rather than assign.
+  Object.defineProperty(adapter, "persistMessageHistory", {
+    value: false,
+    configurable: true,
+    writable: true,
+  });
+  return adapter;
+}
+
 /** Drain a Readable into a single Buffer. */
 export async function streamToBuffer(readable: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];

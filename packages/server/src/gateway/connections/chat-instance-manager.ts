@@ -37,7 +37,10 @@ import {
   registerMessageHandlers,
 } from "./message-handler-bridge.js";
 import { getPlatformDescriptor, PLATFORM_REGISTRY } from "./platforms/index.js";
-import { resolveChatTarget } from "./platforms/shared.js";
+import {
+  disableSdkMessageHistory,
+  resolveChatTarget,
+} from "./platforms/shared.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
@@ -1550,7 +1553,14 @@ export class ChatInstanceManager {
         userName: connection.metadata.botUsername || `bot-${connection.id}`,
         adapters: { [adapterKey]: adapter },
         state: stateAdapter,
-        logger: "warn",
+        // Not hardcoded: every SDK-internal inbound drop (duplicate, lock
+        // conflict, and the catch-all in `processMessage`) logs at `debug`, so
+        // pinning this to "warn" made those drops invisible at any LOG_LEVEL —
+        // which is why the history-cache drop above took a production
+        // investigation to find. Default stays "warn"; the SDK is loud at info.
+        logger: process.env.LOG_LEVEL?.toLowerCase() === "debug"
+          ? "debug"
+          : "warn",
       });
 
       const commandDispatcher = new CommandDispatcher({
@@ -1689,7 +1699,8 @@ export class ChatInstanceManager {
     if (!descriptor) {
       throw new Error(`No adapter factory for: ${connection.platform}`);
     }
-    return descriptor.createAdapter(connection.config);
+    const adapter = await descriptor.createAdapter(connection.config);
+    return disableSdkMessageHistory(adapter);
   }
 
   /**

@@ -99,7 +99,7 @@ are site-agnostic until `/oauth/token/accessible-resources` returns cloud ids.
 
 ### Virtual read path — **real**
 
-```
+```text
 manage_feeds / query_sql({feed}) / search_memory(recall)
   → readVirtualFeed (connection.config + feed.config merged; config.query as JQL)
   → connector query() | search()
@@ -139,7 +139,7 @@ Implications:
 
 ## Recommended architecture (post-spike)
 
-```
+```text
 READS     → virtual issues feed (JQL) + prefer per-user token for multi-tenant
 GET ONE   → future action/query getIssue (full fields + comments) on demand
 SIGNALS   → structured webhook lander (issue key, status, origin_id) → Behaviors
@@ -155,7 +155,7 @@ AVOID     → Glean-scale full-site crawl until ACL program is paid for
 
 ```bash
 # Offline JQL construction, pushdown, pagination, and row mapping
-cd .claude/worktrees/jira-virtual-feed
+cd "$(git rev-parse --show-toplevel)"
 bun test packages/connectors/src/__tests__/jira-virtual-pushdown.test.ts
 bun test packages/server/src/gateway/__tests__/app-webhooks.test.ts  # includes Jira raw land
 ```

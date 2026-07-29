@@ -151,7 +151,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               minimum: 1,
               maximum: 500,
               default: 50,
-              description: 'Maximum threads to fetch per sync / virtual page.',
+              description: 'Maximum threads per sync; maximum messages per virtual page.',
             },
             lookback_days: {
               type: 'integer',

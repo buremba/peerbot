@@ -115,7 +115,12 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
       // inferred from the message text. See RuntimeInfrastructureError.
       if (error instanceof RuntimeInfrastructureError) {
         logger.error(
-          { err: error.message, status: error.status, retryable: error.retryable },
+          {
+            err: error.message,
+            status: error.status,
+            retryable: error.retryable,
+            outcome: error.outcome,
+          },
           "Runtime infrastructure failure"
         );
         return c.json(
@@ -123,6 +128,7 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
             error: error.message,
             kind: "infrastructure" as const,
             retryable: error.retryable,
+            outcome: error.outcome,
           },
           error.status === 429 ? 429 : 503
         );

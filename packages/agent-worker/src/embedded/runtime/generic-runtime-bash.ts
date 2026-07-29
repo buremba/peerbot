@@ -12,6 +12,8 @@ type RuntimeExecResponse = {
   kind?: unknown;
   /** Whether re-running the same command later could plausibly succeed. */
   retryable?: unknown;
+  /** "not_started" | "unknown" | "completed" — whether the command ran. */
+  outcome?: unknown;
 };
 
 /**
@@ -94,16 +96,26 @@ export function createGenericRuntimeBashOps(
         // was wrong, rewrote a correct command and retried into an already
         // throttled endpoint. Naming the fault is what stops that loop.
         if (payload.kind === "infrastructure") {
-          // Only a retryable fault is one we know happened BEFORE the command
-          // ran. A non-retryable one may have failed after execution (e.g.
-          // fetching the logs of a command that already completed), so it must
-          // not claim the command did not run, and must not invite a retry that
-          // would duplicate side effects.
-          const detail = payload.retryable
-            ? "your command did not run. This is usually transient — the same command may succeed shortly."
-            : "the command's outcome is unknown. Do NOT re-run it blindly; check whether it took effect first.";
+          // Two independent facts: whether the command RAN (outcome) and
+          // whether retrying is sensible (retryable). Deriving one from the
+          // other misleads both ways — a 403 while provisioning is not
+          // retryable yet definitely never ran, so telling the agent to go
+          // check for side effects sends it hunting for something impossible.
+          const ran =
+            payload.outcome === "not_started"
+              ? "your command did not run"
+              : payload.outcome === "completed"
+                ? "your command RAN but its output could not be retrieved"
+                : "it is unknown whether your command ran";
+          const advice = payload.retryable
+            ? " This is usually transient — the same command may succeed shortly."
+            : payload.outcome === "not_started"
+              ? ""
+              : " Do NOT re-run it blindly; check whether it took effect first.";
           onData(
-            Buffer.from(`lobu: sandbox runtime error — ${detail}\n${message}\n`)
+            Buffer.from(
+              `lobu: sandbox runtime error — ${ran}.${advice}\n${message}\n`
+            )
           );
           // 126 ("command found but not executable") rather than 1: the failure
           // is the runtime's, so it must not read as the command having run and

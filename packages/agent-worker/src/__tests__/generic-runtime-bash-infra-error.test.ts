@@ -50,6 +50,7 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
           "Sandbox runtime failed to run command: Status code 429 is not ok",
         kind: "infrastructure",
         retryable: true,
+        outcome: "not_started",
       })
     );
 
@@ -61,8 +62,28 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
     expect(output).toContain("transient");
   });
 
-  test("a non-retryable fault never claims the command did not run", async () => {
-    // The log-fetch case: runCommand SUCCEEDED and only the output retrieval
+  test("a non-retryable PRE-execution fault still says it did not run", async () => {
+    // Retryability and execution are independent facts. A 403 while
+    // provisioning is not worth retrying, but the command definitely never
+    // ran — advising the agent to check for side effects would send it hunting
+    // for something that cannot exist.
+    const { output, exitCode } = await run(
+      opsWithResponse(503, {
+        error: "Sandbox runtime failed to provision sandbox: bad credentials",
+        kind: "infrastructure",
+        retryable: false,
+        outcome: "not_started",
+      })
+    );
+
+    expect(exitCode).toBe(126);
+    expect(output).toContain("your command did not run");
+    expect(output).not.toContain("check whether it took effect");
+    expect(output).not.toContain("transient");
+  });
+
+  test("a completed-but-unreadable command never invites a retry", async () => {
+    // The log-fetch case: runCommand SUCCEEDED and only output retrieval
     // failed. Telling the agent "your command did not run… retry" would make it
     // repeat a command that already took effect — a duplicated POST or append.
     const { output, exitCode } = await run(
@@ -71,12 +92,13 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
           "Sandbox runtime ran the command but could not retrieve its output: Status code 429 is not ok. The command MAY have completed — do not assume it needs re-running.",
         kind: "infrastructure",
         retryable: false,
+        outcome: "completed",
       })
     );
 
     expect(exitCode).toBe(126);
     expect(output).toContain("sandbox runtime error");
-    expect(output).toContain("outcome is unknown");
+    expect(output).toContain("RAN but its output could not be retrieved");
     expect(output).toContain("Do NOT re-run it blindly");
     // The two claims that would cause a duplicate side effect.
     expect(output).not.toContain("did not run");

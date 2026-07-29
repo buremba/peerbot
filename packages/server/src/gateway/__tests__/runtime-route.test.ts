@@ -212,6 +212,8 @@ describe("createRuntimeRoutes — infrastructure failures", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.kind).toBe("infrastructure");
     expect(body.retryable).toBe(true);
+    // Provisioning precedes dispatch, so the command provably never ran.
+    expect(body.outcome).toBe("not_started");
     expect(String(body.error)).toContain("provision sandbox");
     // The command must never have run.
     expect(runCommandMock).not.toHaveBeenCalled();
@@ -237,6 +239,8 @@ describe("createRuntimeRoutes — infrastructure failures", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.kind).toBe("infrastructure");
     expect(body.retryable).toBe(false);
+    // Not retryable AND never ran — the two facts are independent.
+    expect(body.outcome).toBe("not_started");
   });
 
   test("a log-fetch failure AFTER the command ran is not retryable", async () => {
@@ -266,6 +270,7 @@ describe("createRuntimeRoutes — infrastructure failures", () => {
     expect(body.kind).toBe("infrastructure");
     // Not retryable, despite the underlying 429 — the command already ran.
     expect(body.retryable).toBe(false);
+    expect(body.outcome).toBe("completed");
     expect(res.status).toBe(503);
     expect(String(body.error)).toContain("MAY have completed");
     expect(String(body.error)).not.toContain("did not run");

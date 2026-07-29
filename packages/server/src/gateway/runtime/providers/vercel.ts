@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import { remoteCwd, shellQuote } from "../workspace.js";
-import { RuntimeInfrastructureError } from "../types.js";
+import {
+  RuntimeInfrastructureError,
+  type RuntimeExecutionOutcome,
+} from "../types.js";
 import type {
   GatewayRuntimeProvider,
   RuntimeExecContext,
@@ -208,7 +211,8 @@ function networkPolicyFromDomains(
  */
 function asRuntimeInfrastructureError(
   error: unknown,
-  stage: string
+  stage: string,
+  outcome: RuntimeExecutionOutcome
 ): RuntimeInfrastructureError {
   if (error instanceof RuntimeInfrastructureError) return error;
   const candidate = error as
@@ -219,7 +223,7 @@ function asRuntimeInfrastructureError(
   const detail = error instanceof Error ? error.message : String(error);
   return new RuntimeInfrastructureError(
     `Sandbox runtime failed to ${stage}: ${detail}`,
-    { status, cause: error }
+    { status, outcome, cause: error }
   );
 }
 
@@ -329,7 +333,7 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
         credentials: ctx.credentials.values,
       });
     } catch (error) {
-      throw asRuntimeInfrastructureError(error, "provision sandbox");
+      throw asRuntimeInfrastructureError(error, "provision sandbox", "not_started");
     }
 
     // The cwd is created by the command itself rather than by a separate
@@ -353,8 +357,10 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
         timeoutMs: ctx.timeoutMs,
       });
     } catch (error) {
-      // Dispatch failed: the command demonstrably never ran, so retrying is safe.
-      throw asRuntimeInfrastructureError(error, "run command");
+      // Dispatch rejected. The SDK can reject after the command has started, so
+      // this is "unknown", not "not_started" — retryable, but not a promise that
+      // nothing happened.
+      throw asRuntimeInfrastructureError(error, "run command", "unknown");
     }
 
     // Fetching the logs is a SEPARATE call, and by this point the command has
@@ -370,7 +376,7 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       const detail = error instanceof Error ? error.message : String(error);
       throw new RuntimeInfrastructureError(
         `Sandbox runtime ran the command but could not retrieve its output: ${detail}. The command MAY have completed — do not assume it needs re-running.`,
-        { retryable: false, cause: error }
+        { retryable: false, outcome: "completed", cause: error }
       );
     }
     const exitCode = result.exitCode;

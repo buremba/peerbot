@@ -23,7 +23,6 @@
 
 import { InteractionResourceKind } from '@lobu/core/contracts/interaction-envelope';
 import {
-  type BehaviorTrigger,
   ListBehaviorsResultSchema,
   ListBehaviorsSchema,
   ManageBehaviorsResultSchema,
@@ -163,26 +162,10 @@ async function manageBehaviorsImpl(
     }
   }
 
-  // Instruction-presence rule for create_version, checked UNGATED (the
-  // handler's connection assert runs only when triggers changed): when the
-  // caller writes instruction text, validate it against the Behavior's CURRENT
-  // trigger shape — a schedule/window/manual Behavior cannot publish an empty
-  // instruction version. An omitted prompt inherits the previous version's
-  // text and needs no re-check. Runs after requireWatcherAccess fenced the id
-  // to the caller's organization.
-  if (
-    args.action === 'create_version' &&
-    args.behavior_id &&
-    args.prompt !== undefined
-  ) {
-    const triggerRows = await pgSql`
-      SELECT triggers FROM watchers WHERE id = ${args.behavior_id} LIMIT 1
-    `;
-    assertBehaviorInstructions(
-      (triggerRows[0]?.triggers ?? []) as BehaviorTrigger[],
-      args.prompt
-    );
-  }
+  // Instruction-presence for create_version is enforced in handleCreateVersion
+  // against the *final* resolved (triggers, prompt) pair — not here against
+  // stored triggers + only an explicit prompt write. That incomplete pre-check
+  // let event-turn → schedule transitions keep an empty prompt.
 
   // A watcher IS agent config — it's an autonomous-execution definition (prompt,
   // SQL source, reaction). Gate its create/update/delete under the `agent_config`

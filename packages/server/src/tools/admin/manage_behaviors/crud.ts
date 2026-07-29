@@ -442,9 +442,11 @@ export async function handleUpdate(
 
   await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
-    SELECT organization_id, agent_id, schedule, timezone, triggers
-    FROM watchers
-    WHERE id = ${args.behavior_id}
+    SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
+           cv.prompt AS current_prompt
+    FROM watchers w
+    LEFT JOIN watcher_versions cv ON cv.id = w.current_version_id
+    WHERE w.id = ${args.behavior_id}
     LIMIT 1
   `;
   const currentRow = currentRows[0] as {
@@ -453,6 +455,7 @@ export async function handleUpdate(
     schedule: string | null;
     timezone: string | null;
     triggers: ManageBehaviorsArgs['triggers'];
+    current_prompt: string | null;
   };
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
@@ -463,13 +466,12 @@ export async function handleUpdate(
     !behaviorTriggersEqual(currentRow.triggers ?? [], triggerWrite.triggers)
   ) {
     await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
+    // Trigger shape alone can force the instruction rule (event-turn → schedule
+    // with an empty current prompt must fail). Callers that need to change both
+    // triggers and instructions atomically must use create_version with both
+    // fields — lobu apply does that path.
+    assertBehaviorInstructions(triggerWrite.triggers, currentRow.current_prompt);
   }
-  // NOTE: no instruction-presence assert here. `lobu apply` pushes triggers
-  // (`update`) and compiled instructions (`create_version`) as two non-atomic
-  // calls in that order, so asserting on a trigger write would reject the
-  // legitimate event-turn → schedule transition mid-apply. Creates and
-  // instruction writes are the enforced seams (see assertBehaviorInstructions
-  // in behaviors/triggers.ts).
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
   // a zombie the scheduler will never run (automation joins on

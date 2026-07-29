@@ -188,4 +188,116 @@ describe("manage_behaviors — instruction-presence rule", () => {
 		)) as { version?: number };
 		expect(versioned.version).toBeGreaterThan(1);
 	});
+
+	it("rejects event-turn → schedule via update when the current prompt is empty", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "ir-turn-to-sched-update",
+				agent_id: agentId,
+				triggers: [TURN_TRIGGER],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "update",
+					behavior_id: created.behavior_id!,
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+				},
+				TEST_ENV,
+				ownerCtx
+			)
+		).rejects.toThrow(/needs instructions/i);
+	});
+
+	it("rejects event-turn → schedule via create_version when prompt stays empty", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "ir-turn-to-sched-cv",
+				agent_id: agentId,
+				triggers: [TURN_TRIGGER],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "create_version",
+					behavior_id: created.behavior_id!,
+					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+					set_as_current: true,
+				},
+				TEST_ENV,
+				ownerCtx
+			)
+		).rejects.toThrow(/needs instructions/i);
+	});
+
+	it("create_version accepts event-turn → schedule with instructions in one call", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "ir-turn-to-sched-ok",
+				agent_id: agentId,
+				triggers: [TURN_TRIGGER],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+
+		const versioned = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: created.behavior_id!,
+				prompt: "Now scheduled digest instructions.",
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+				set_as_current: true,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { version?: number };
+		expect(versioned.version).toBeGreaterThan(1);
+	});
+
+	it("create_version accepts schedule → event-turn with an explicit empty prompt", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "ir-sched-to-turn",
+				agent_id: agentId,
+				prompt: "Scheduled instructions.",
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+
+		const versioned = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: created.behavior_id!,
+				prompt: "",
+				triggers: [TURN_TRIGGER],
+				set_as_current: true,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { version?: number };
+		expect(versioned.version).toBeGreaterThan(1);
+	});
 });

@@ -216,14 +216,9 @@ export function behaviorRequiresInstructions(
 }
 
 /**
- * Enforce the instruction-presence rule on a Behavior write. UNGATED — unlike
- * `assertBehaviorTriggerConnections` (which create_version runs only when
- * triggers changed), this runs on every create and on every instruction write
- * (create_version with a prompt). Deliberately NOT on trigger updates:
- * `lobu apply` pushes triggers (`update`) then compiled instructions
- * (`create_version`) as two non-atomic calls, so a trigger-write assert would
- * reject the legitimate event-turn → schedule transition mid-apply; the CLI
- * preflights the full skills[] rule instead.
+ * Enforce the instruction-presence rule on a complete trigger + instruction
+ * pair before either side is stored. Callers must pass the *final* resolved
+ * pair (inherited prompt when omitted, resolved triggers after write-merge).
  */
 export function assertBehaviorInstructions(
 	triggers: BehaviorTrigger[],

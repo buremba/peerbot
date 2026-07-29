@@ -157,8 +157,8 @@ function validateWatcherConfig(input: {
 }): string | null {
   // Instruction PRESENCE is trigger-shape-dependent (event-turn Behaviors may
   // run with no instruction text) and is enforced by assertBehaviorInstructions
-  // (behaviors/triggers.ts) at the create / create_version seams — here an
-  // absent or empty prompt is structurally valid.
+  // when either instructions or triggers change — here an absent or empty
+  // prompt is structurally valid.
   //
   // Prompts are literal instruction text — no templating layer — so `{{` is
   // legal prose and there is nothing else to validate about the shape.

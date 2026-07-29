@@ -20,6 +20,7 @@ import {
   toJsonParam,
 } from './shared';
 import {
+  assertBehaviorInstructions,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -171,8 +172,17 @@ export async function handleCreateVersion(
     );
   }
 
-  const createdBy = ctx.userId ?? 'system';
+  // Final-state instruction rule: inherited prompt + requested/current
+  // triggers. When set_as_current, the new pair becomes live; when not, only
+  // the version row is written and triggers stay on previousTriggers, so
+  // validate the draft prompt against the live trigger shape.
   const setAsCurrent = args.set_as_current !== false;
+  assertBehaviorInstructions(
+    setAsCurrent ? triggerWrite.triggers : previousTriggers,
+    prompt
+  );
+
+  const createdBy = ctx.userId ?? 'system';
   let versionId = 0;
   let lockedNextVersion = nextVersion;
   await sql.begin(async (tx) => {

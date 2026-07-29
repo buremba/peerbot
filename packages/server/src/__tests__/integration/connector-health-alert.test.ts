@@ -443,7 +443,13 @@ describe('connector-health alerter', () => {
     });
 
     const res = await runConnectorHealthCheck();
-    expect(reasonFor(res.details, mostlyOff.id)).toBe('feeds_degraded');
+    // What this pins is that the 8 operator-paused-clean feeds are excluded
+    // from the denominator: with them counted, 3 failing of 11 is neither
+    // "all feeds" nor past degradedFailingRatio, and the connection would be
+    // silently healthy. Excluded, all 3 EXPECTED feeds are failing, so Rule A
+    // claims it before the degraded rule is reached — the stronger and more
+    // accurate reason, and the one an operator can act on directly.
+    expect(reasonFor(res.details, mostlyOff.id)).toBe('all_feeds_failing');
   });
 
   // Guards the degraded threshold against noise: connection 3 ("healthy") has
@@ -499,6 +505,57 @@ describe('connector-health alerter', () => {
       SELECT unhealthy_alerted_at FROM connections WHERE id = ${twoFeed.id}
     `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
     expect(row.unhealthy_alerted_at).toBeNull();
+  });
+
+  // The seam between Rule A and Rule D. Rule A used to compare failures against
+  // ALL feeds while Rule D's floor counts only EXPECTED ones, so a connection
+  // could satisfy neither: 2 of 10 failing is not "all feeds", and 2 expected
+  // feeds is below the three-feed floor. Every feed the operator still expects
+  // is dead and it reported healthy. Both rules now share the same denominator.
+  it('flags a connection whose only expected feeds all fail, below the degraded floor', async () => {
+    const sql = getTestDb();
+    const mostlyPaused = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'notion',
+      slug: 'paused-plus-all-expected-failing',
+      createdAt: OLD,
+    });
+    // Deliberately switched off by an operator (cf=0) — never a health signal.
+    for (let i = 0; i < 8; i++) {
+      await seedFeed({
+        orgId,
+        connectionId: mostlyPaused.id,
+        feedKey: `off-${i}`,
+        status: 'paused',
+        lastSyncStatus: 'success',
+        lastSyncAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        consecutiveFailures: 0,
+      });
+    }
+    // The only two feeds still expected to run, both persistently failing.
+    for (const key of ['bad-a', 'bad-b']) {
+      await seedFeed({
+        orgId,
+        connectionId: mostlyPaused.id,
+        feedKey: key,
+        status: 'active',
+        lastSyncStatus: 'failed',
+        lastSyncAt: new Date(),
+        consecutiveFailures: cfg.failureThreshold,
+        lastError: 'worker_claim_timeout',
+      });
+    }
+
+    const res = await runConnectorHealthCheck();
+    // Below the degraded floor, so Rule D cannot be what catches it.
+    expect(2).toBeLessThan(cfg.degradedMinExpectedFeeds);
+    expect(reasonFor(res.details, mostlyPaused.id)).toBe('all_feeds_failing');
+
+    const [row] = (await sql`
+      SELECT unhealthy_alerted_at FROM connections WHERE id = ${mostlyPaused.id}
+    `) as unknown as Array<{ unhealthy_alerted_at: Date | null }>;
+    expect(row.unhealthy_alerted_at).not.toBeNull();
   });
 
   it('flags a 3-feed connection at the degraded ratio', async () => {

@@ -256,7 +256,6 @@ function classify(
   nowMs: number
 ): UnhealthyReason | null {
   const feedCount = Number(row.feed_count);
-  const failingCount = Number(row.failing_feed_count);
   const activeCount = Number(row.active_feed_count);
   const operatorPausedCount = Number(row.operator_paused_feed_count);
   const persistentlyFailingCount = Number(row.persistently_failing_feed_count);
@@ -271,8 +270,19 @@ function classify(
   // paused-clean feed.
   if (activeCount === 0) return null;
 
-  // Rule A: every non-deleted feed is failing.
-  if (failingCount === feedCount) return 'all_feeds_failing';
+  // Rule A: every feed the operator still EXPECTS to run is failing.
+  //
+  // The denominator is expected feeds, not all feeds — the same one Rule D
+  // uses. Comparing against `feedCount` instead left a hole exactly where the
+  // two rules meet: a connection with 8 deliberately-paused-clean feeds and 2
+  // persistently failing ones satisfies neither `2 === 10` nor Rule D's
+  // three-expected-feed floor, so it reported healthy while 100% of what it was
+  // still expected to collect was dead. Deliberately switching feeds off must
+  // never make the remaining failures harder to see.
+  const expectedCount = feedCount - operatorPausedCount;
+  if (expectedCount > 0 && persistentlyFailingCount === expectedCount) {
+    return 'all_feeds_failing';
+  }
 
   // Rule D: a substantial proportion of the feeds the operator still expects to
   // run are failing, but at least one survivor keeps Rule A from firing. That
@@ -288,7 +298,6 @@ function classify(
   // The min-expected-feeds floor is load-bearing, not belt-and-braces: at 2
   // expected feeds one persistent failure is exactly the ratio and would fire.
   // Small connections that are WHOLLY failing are still caught by Rule A above.
-  const expectedCount = feedCount - operatorPausedCount;
   if (
     expectedCount >= cfg.degradedMinExpectedFeeds &&
     persistentlyFailingCount / expectedCount >= cfg.degradedFailingRatio

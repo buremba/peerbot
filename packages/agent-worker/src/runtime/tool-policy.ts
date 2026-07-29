@@ -234,10 +234,12 @@ function blankQuotedSpans(text: string): string {
  * the body of an interpreter reached by path or long option (`/bin/bash -c`,
  * `bash --login -c`).
  *
- * It matches only at a COMMAND POSITION — start of input, a newline, or just
- * after a shell operator (`;`, `|`, `&`, parens) — so a manager named as a
- * plain argument is left alone: `echo uvx cowsay`, `git log --grep nix run`
- * and `man nix run` all run untouched.
+ * It matches only at a COMMAND POSITION (see {@link CMD_POS}): start of input,
+ * a newline, just after a shell operator (`;`, `|`, `&`, parens, braces), or
+ * just after a reserved word that introduces a command (`if`, `then`, `else`,
+ * `elif`, `do`, `while`, `until`, `!`). A manager named as a plain argument is
+ * left alone: `echo uvx cowsay`, `git log --grep nix run` and `man nix run`
+ * all run untouched.
  *
  * Those misses are not holes on the local backend: the manager is never a
  * runnable command there. `UNSANDBOXED_INTERPRETERS` in

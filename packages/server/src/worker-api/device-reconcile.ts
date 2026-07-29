@@ -143,12 +143,13 @@ async function ensureDeviceConnectorWired(
       WHERE c.organization_id = ${organizationId}
         AND c.connector_key = ${connectorKey}
         AND c.deleted_at IS NULL
-        -- The device-connector identity every other query in this pass uses.
-        -- Auto-wire owns auth-free rows only; an auth-backed connection is
-        -- user-created, and unpinning one would hand it to any capable device
+        -- The device-connector identity: auto-wire's own INSERT writes NULL to
+        -- BOTH profile columns, so anything with either set is credential-backed
+        -- and user-created. Unpinning one would hand it to any capable device
         -- while the poll withholds credentials from unpinned connections —
         -- breaking a connection this pass never created.
         AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
         AND c.device_worker_id IS NOT NULL
         AND NOT (c.device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
         AND NOT EXISTS (
@@ -224,6 +225,12 @@ async function ensureDeviceConnectorWired(
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
        AND c.auth_profile_id IS NULL
+       -- Auto-wire's own INSERT writes NULL to BOTH profile columns, so a row
+       -- with either one set is credential-backed and user-created. Matching on
+       -- auth_profile_id alone let the fast path adopt an app-auth-backed
+       -- connection and re-pin it — the poll withholds credentials from
+       -- unpinned connections, so that breaks a connection this pass never made.
+       AND c.app_auth_profile_id IS NULL
        AND c.deleted_at IS NULL
       LEFT JOIN feeds f
         ON f.connection_id = c.id
@@ -381,6 +388,7 @@ async function ensureDeviceConnectorWired(
         WHERE organization_id = ${organizationId}
           AND connector_key = ${connectorKey}
           AND auth_profile_id IS NULL
+          AND app_auth_profile_id IS NULL
           AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT 1
@@ -495,6 +503,7 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
         AND c.connector_key = ${connectorKey}
         AND c.created_by = ${userId}
         AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
         AND c.deleted_at IS NULL
         AND f.status = 'active'
         AND f.deleted_at IS NULL

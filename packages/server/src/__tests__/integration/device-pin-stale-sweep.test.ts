@@ -206,12 +206,22 @@ describe('device pin stale sweep', () => {
     await sql`
       UPDATE connections SET auth_profile_id = ${prof.id} WHERE id = ${authBacked}
     `;
+    // Same protection for an APP-auth-backed row: auto-wire's own INSERT writes
+    // NULL to both profile columns, so either one being set means the row is
+    // credential-backed and user-created.
+    const dead2 = await seedWorker(userId, orgId, false);
+    const appAuthBacked = await seedConn(orgId, userId, null);
+    await sql`
+      UPDATE connections SET app_auth_profile_id = ${prof.id}, device_worker_id = ${dead2}::uuid
+      WHERE id = ${appAuthBacked}
+    `;
     const autoWired = await seedConn(orgId, userId, fresh);
 
     await reconcileDeviceCapabilities(userId);
 
-    // Stale pin, but not ours to clear.
+    // Stale pins, but not ours to clear.
     expect(await pinOf(authBacked)).toBe(dead);
+    expect(await pinOf(appAuthBacked)).toBe(dead2);
     expect(await pinOf(autoWired)).toBe(fresh);
   });
 

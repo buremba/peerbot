@@ -16,6 +16,10 @@
           {
             "type": "command",
             "command": "bash -c 's=\"${CLAUDE_PROJECT_DIR:+$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-bun.sh}\"; [ -n \"$s\" ] && [ -f \"$s\" ] || s=\"$(git rev-parse --show-toplevel)/.claude/hooks/enforce-bun.sh\"; exec bash \"$s\"'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 's=\"${CLAUDE_PROJECT_DIR:+$CLAUDE_PROJECT_DIR/.claude/hooks/no-truncated-schema-proof.sh}\"; [ -n \"$s\" ] && [ -f \"$s\" ] || s=\"$(git rev-parse --show-toplevel)/.claude/hooks/no-truncated-schema-proof.sh\"; exec bash \"$s\"'"
           }
         ]
       }

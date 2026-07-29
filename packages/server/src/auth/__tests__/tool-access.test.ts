@@ -82,10 +82,14 @@ describe('requiresOwnerAdmin', () => {
     );
   });
 
-  it('should require admin for manage_auth_profiles sensitive actions', () => {
+  it('should allow public auth profile metadata reads and require admin for sensitive actions', () => {
     expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'get_auth_profile' }, false)).toBe(
-      true
+      false
     );
+    expect(
+      getRequiredAccessLevel('manage_auth_profiles', { action: 'get_auth_profile' }, false)
+    ).toBe('read');
+    expect(isPublicReadable('manage_auth_profiles', { action: 'get_auth_profile' })).toBe(true);
     expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'test_auth_profile' }, false)).toBe(
       true
     );
@@ -712,7 +716,7 @@ manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=read+public get=read+public create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_conversations: list=read get=read send=write ?=read
 manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
-manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
+manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=read+public test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin

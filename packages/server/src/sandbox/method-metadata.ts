@@ -896,7 +896,7 @@ export default async (_ctx, client) => {
 	"authProfiles.get": {
 		summary:
 			"Get an auth profile by slug. Returns the sanitized serialization only — never raw credentials or auth_data.",
-		access: "admin",
+		access: "read",
 		signature:
 			"authProfiles.get(auth_profile_slug: string): Promise<unknown> // or authProfiles.get({ auth_profile_slug })",
 		example: "await client.authProfiles.get('google-calendar-account');",

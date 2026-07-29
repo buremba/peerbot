@@ -499,10 +499,14 @@ describe("createRuntimeRoutes", () => {
       keepLastSnapshots: { count: 1, deleteEvicted: true },
     });
     expect(remoteFiles.has("/vercel/sandbox/stale.txt")).toBe(true);
+    // The cwd is created and entered by the command itself — a separate
+    // `sandbox.fs.mkdir()` would cost a second sandbox execution per command.
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({
       cmd: "/bin/bash",
-      args: ["-lc", "pwd"],
-      cwd: "/vercel/sandbox/nested",
+      args: [
+        "-lc",
+        "mkdir -p '/vercel/sandbox/nested' && cd '/vercel/sandbox/nested' && pwd",
+      ],
       timeoutMs: 1_000,
     });
     expect(writeFilesMock).not.toHaveBeenCalled();

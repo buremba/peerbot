@@ -124,10 +124,10 @@ describe("vercel provisionScript", () => {
   });
 
   test("PATH names the exact package set, not the shared profile symlink", () => {
-    // One sandbox serves every conversation for an (org, agent). Pointing PATH
-    // at the mutable `profile` symlink let two execs with DIFFERENT signed
-    // nixPackages resolve the same link — the later writer decided which tool
-    // set the earlier command saw, breaking per-token package isolation.
+    // One persistent conversation sandbox can see different tooling settings
+    // across concurrent turns. Pointing PATH at the mutable `profile` symlink
+    // would let those execs resolve the same link, breaking per-token package
+    // isolation.
     const ghCtx = {
       command: "gh --version",
       nixPackages: ["gh"],
@@ -159,8 +159,12 @@ describe("vercel provisionScript", () => {
     const lockAt = script.indexOf("flock 9");
     expect(lockAt).toBeGreaterThan(-1);
 
-    // Everything that MUTATES shared state must sit after the lock.
+    // Everything that mutates the shared profile selector or package state must
+    // sit after the lock.
     for (const mutation of [
+      'ln -sfn "$PROFILE"',
+      `printf '%s' "marker123" > /opt/lobu-nix/.lobu-packages`,
+      `printf 'experimental-features = nix-command flakes\\n'`,
       "curl -fsSL",
       'rm -f "$PROFILE"',
       "nix profile install",
@@ -171,11 +175,14 @@ describe("vercel provisionScript", () => {
       ).toBeGreaterThan(lockAt);
     }
 
-    // Re-check after acquiring, not only before waiting.
+    // Cache checks also run only after acquiring.
     const cacheChecks = script
       .split("\n")
-      .filter((l) => l.startsWith('if [ -d "$PROFILE/bin" ]'));
+      .filter((l) => l.includes('[ -d "$PROFILE/bin" ]'));
     expect(cacheChecks.length).toBeGreaterThanOrEqual(2);
+    for (const check of cacheChecks) {
+      expect(script.indexOf(check)).toBeGreaterThan(lockAt);
+    }
   });
 
   test("checks the actual single-user nix binary before bootstrapping", () => {

@@ -154,7 +154,7 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
   });
 
   test("PARITY: both mints carry the nix package claim", () => {
-    // The asymmetry this closes: #2234 signed the connector's DOMAINS on both
+    // The asymmetry this closes: #2243 signed the connector's DOMAINS on both
     // mints but not its PACKAGES, so a remote-runtime agent got an
     // authenticated `gh` that was never installed. A mint that drops this claim
     // reproduces exactly that.

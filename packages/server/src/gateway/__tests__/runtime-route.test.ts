@@ -749,6 +749,10 @@ describe("createRuntimeRoutes", () => {
 
     expect(res.status).toBe(200);
     expect(runCommandMock).toHaveBeenCalledTimes(2);
+    // `fs.mkdir({ recursive: true })` is itself a sandbox command in the real
+    // SDK. The fixed workspace root already exists, so provisioning must not
+    // spend a third command (the rate-limit regression this provider avoids).
+    expect(mkdirMock).not.toHaveBeenCalled();
     // Ordering matters: install first, then the agent's command.
     expect(commandScript(0)).toContain("nix profile install");
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });

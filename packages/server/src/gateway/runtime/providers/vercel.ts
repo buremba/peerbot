@@ -468,24 +468,21 @@ function provisionScript(packages: string[], marker: string): string {
     "set -o pipefail",
     `export NIX_HOME=${NIX_HOME}`,
     `PROFILE="$NIX_HOME/profiles/${marker}"`,
+    `mkdir -p "$NIX_HOME/profiles"`,
+    // Serialize every shared profile/marker mutation, including cache hits.
+    // Commands use hash-addressed profiles, but leaving the mutable selector
+    // outside the lock makes the stated cross-replica contract false and causes
+    // avoidable marker churn between concurrent package sets.
+    `exec 9>"${NIX_LOCK_PATH}"`,
+    `flock 9`,
     // Marker + hash-addressed profile match → the exact set is installed. The
     // profile existence check prevents a stale marker from hiding corruption.
     `if [ "$(cat ${PACKAGE_MARKER_PATH} 2>/dev/null || true)" = "${marker}" ] && [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; echo "lobu-packages: cached"; exit 0; fi`,
-    `mkdir -p "$NIX_HOME/profiles"`,
     `export HOME="$NIX_HOME"`,
     `export NIX_CONF_DIR="$NIX_HOME/etc"`,
     `mkdir -p "$NIX_CONF_DIR"`,
     `printf 'experimental-features = nix-command flakes\\n' > "$NIX_CONF_DIR/nix.conf"`,
     // A previously installed exact set can be selected without network access.
-    `if [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}; echo "lobu-packages: cached"; exit 0; fi`,
-    // Everything below MUTATES shared sandbox state (the Nix installation, the
-    // profile, the marker). Serialize it: concurrent execs would otherwise
-    // bootstrap twice, or one would `rm -f "$PROFILE"` while the other was
-    // installing into it. The whole critical section runs under one flock.
-    `exec 9>"${NIX_LOCK_PATH}"`,
-    `flock 9`,
-    // Re-check after acquiring: the holder we waited on may have installed the
-    // exact set already, in which case this exec is a cache hit, not a rebuild.
     `if [ -d "$PROFILE/bin" ]; then ln -sfn "$PROFILE" "$NIX_HOME/profile"; printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}; echo "lobu-packages: cached"; exit 0; fi`,
     // Bootstrap once; subsequent turns reuse the store already in the filesystem.
     `if [ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]; then`,
@@ -511,6 +508,8 @@ function cachedProfileScript(marker: string): string {
     "set -eu",
     `export NIX_HOME=${NIX_HOME}`,
     `PROFILE="$NIX_HOME/profiles/${marker}"`,
+    `exec 9>"${NIX_LOCK_PATH}"`,
+    `flock 9`,
     `if [ ! -d "$PROFILE/bin" ]; then exit 75; fi`,
     `ln -sfn "$PROFILE" "$NIX_HOME/profile"`,
     `printf '%s' "${marker}" > ${PACKAGE_MARKER_PATH}`,
@@ -535,11 +534,10 @@ function cachedProfileScript(marker: string): string {
  * agent a tool the gateway just said it does not have.
  *
  * PATH names the HASH-ADDRESSED profile, never the mutable `profile` symlink:
- * one sandbox serves every conversation for an (org, agent), so two execs with
- * different signed `nixPackages` both resolve that one symlink and the later
- * writer decides which tool set the earlier command sees. Addressing the exact
- * set keeps each exec on the packages ITS token was signed for. The path is
- * derived from `nixPackageSetHash` over route-validated names — a hex digest,
+ * concurrent execs in one persistent conversation sandbox can carry different
+ * signed `nixPackages` after its tooling configuration changes. Addressing the
+ * exact set keeps each exec on the packages ITS token was signed for. The path
+ * is derived from `nixPackageSetHash` over route-validated names — a hex digest,
  * so nothing attacker-influenced reaches the command line.
  */
 function withProvisionedPath(ctx: RuntimeExecContext): string {
@@ -603,7 +601,6 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     const marker = nixPackageSetHash(packages);
     try {
       const sandbox = await sandboxForRequest(ctx);
-      await sandbox.fs.mkdir(REMOTE_WORKSPACE_DIR, { recursive: true });
       if (!nixHostsReachable(ctx)) {
         const cached = await sandbox.runCommand({
           cmd: "/bin/bash",

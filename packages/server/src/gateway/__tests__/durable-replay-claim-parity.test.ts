@@ -61,7 +61,7 @@ describe("durable replay preserves every signed claim", () => {
     // ever sees it — so capture what recordAgentRunInput actually writes.
     const bound: Array<Record<string, unknown>> = [];
     const sql = Object.assign(
-      async (..._args: unknown[]) => {
+      async () => {
         return [];
       },
       {
@@ -109,5 +109,4 @@ describe("durable replay preserves every signed claim", () => {
     expect(decoded?.allowedDomains).toEqual(["api.github.com"]);
     expect(decoded?.nixPackages).toEqual(["gh"]);
   });
-
 });

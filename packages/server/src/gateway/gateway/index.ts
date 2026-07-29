@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
+import { toPublicWebOrigin } from "../../utils/url-builder.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
@@ -741,6 +742,12 @@ export class WorkerGateway {
         mcpContext,
         providerConfig,
         skillsConfig,
+        // The origin an agent can build user-openable Lobu links against.
+        // Deliberately NOT `getRequestBaseUrl(c)`: this endpoint is called by
+        // the worker over the INTERNAL dispatcher address, so the request Host
+        // is a cluster name no user can reach. The configured public origin is
+        // the only value here that is correct off-cluster.
+        webOrigin: toPublicWebOrigin(this.publicGatewayUrl),
       });
     } catch (error) {
       logger.error("Failed to generate session context", { err: error });

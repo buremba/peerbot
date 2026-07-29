@@ -71,6 +71,8 @@ export const EMPTY_AGENT_LAYERS: AgentInstructionLayers = {
 
 interface SessionContextResponse {
   agentLayers: AgentInstructionLayers;
+  /** Absent on an older gateway that predates the field. */
+  webOrigin?: string;
   platformInstructions: string;
   networkInstructions: string;
   skillsInstructions: string;
@@ -87,6 +89,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_SESSION_CONTEXT = {
   agentLayers: EMPTY_AGENT_LAYERS,
   gatewayInstructions: "",
+  webOrigin: "",
   providerConfig: {} as ProviderConfig,
   skillsConfig: [] as SkillContent[],
   mcpStatus: [] as McpStatus[],
@@ -98,6 +101,7 @@ const DEFAULT_SESSION_CONTEXT = {
 let cachedResult: {
   agentLayers: AgentInstructionLayers;
   gatewayInstructions: string;
+  webOrigin: string;
   providerConfig: ProviderConfig;
   skillsConfig: SkillContent[];
   mcpStatus: McpStatus[];
@@ -298,6 +302,12 @@ export async function getAgentSessionContext(
   agentLayers: AgentInstructionLayers;
   /** Platform / network / skills / MCP setup instructions (no identity). */
   gatewayInstructions: string;
+  /**
+   * The gateway's PUBLIC web origin, for links an agent hands to a user.
+   * Empty when the gateway predates the field or has no parseable public
+   * origin configured — callers omit the link rather than guessing one.
+   */
+  webOrigin: string;
   providerConfig: ProviderConfig;
   skillsConfig: SkillContent[];
   mcpStatus: McpStatus[];
@@ -402,6 +412,7 @@ export async function getAgentSessionContext(
     const result = {
       agentLayers,
       gatewayInstructions,
+      webOrigin: data.webOrigin || "",
       providerConfig: data.providerConfig || {},
       skillsConfig: data.skillsConfig || [],
       mcpStatus: data.mcpStatus || [],

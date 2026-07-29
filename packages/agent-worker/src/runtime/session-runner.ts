@@ -419,6 +419,16 @@ export function buildRunContextBlock(input: {
   platform: string | undefined;
   channelId: string | undefined;
   platformMetadata: unknown;
+  agentId?: string | undefined;
+  conversationId?: string | undefined;
+  /**
+   * The WEB origin, not the raw gateway base. In embedded mode the gateway is
+   * mounted at `/lobu` while the admin routes it links to live at the origin,
+   * so the caller strips that suffix (mirroring every server-side URL builder)
+   * before handing it here. Passing the unstripped gateway URL would make the
+   * agent emit `<origin>/lobu/<slug>/...` links that 404.
+   */
+  webOrigin?: string | undefined;
 }): string {
   // The web chat gets no block. This context exists to disambiguate WHICH
   // conversation a run came from when several are possible (a Slack channel, a
@@ -464,12 +474,24 @@ export function buildRunContextBlock(input: {
   const thread = str(md.responseThreadId);
   // Opportunistic: rendered only if the gateway ever plumbs a link through.
   const url = str(md.conversationUrl) ?? str(md.permalink);
+  // Identity of this run. `agentId`/`conversationId` are the worker's own
+  // trusted values, not platform metadata — but they still go through `str`,
+  // because the block's contract is that no field can forge a line.
+  const agent = str(input.agentId) ?? str(md.agentId);
+  const conversation = str(input.conversationId);
+  const origin = str(input.webOrigin);
 
   const lines: string[] = [];
   if (platform) lines.push(`- Platform: ${platform}`);
   if (channel) lines.push(`- Channel: ${channel}`);
-  if (thread) lines.push(`- Thread: ${thread}`);
+  // On a platform with no real threading (Telegram, most DMs) the thread id is
+  // the channel id, and rendering both spends a line of every turn restating
+  // the previous one. Only a thread that actually narrows the channel earns it.
+  if (thread && thread !== channel) lines.push(`- Thread: ${thread}`);
   if (sender) lines.push(`- Triggered by: ${sender}`);
+  if (agent) lines.push(`- Agent: ${agent}`);
+  if (conversation) lines.push(`- Conversation: ${conversation}`);
+  if (origin) lines.push(`- Lobu: ${origin}`);
   if (url) lines.push(`- Link: ${url}`);
 
   if (lines.length === 0) return "";
@@ -1765,6 +1787,12 @@ user references earlier discussion or you need prior context.`);
       platform,
       channelId,
       platformMetadata,
+      agentId,
+      conversationId,
+      // The gateway's configured PUBLIC origin, not DISPATCHER_URL: the worker
+      // reaches the gateway over an internal cluster address, so deriving the
+      // link origin from it would hand the agent a host no user can open.
+      webOrigin: context.webOrigin,
     });
 
     const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${runContext ? `${runContext}\n\n` : ""}${userPrompt}`;

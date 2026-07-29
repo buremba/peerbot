@@ -469,3 +469,32 @@ export function buildContentUrl(
   const queryString = params.toString();
   return queryString ? `${basePath}?${queryString}` : basePath;
 }
+
+/**
+ * The web origin an agent can compose user-openable Lobu links against:
+ * `<webOrigin>/<orgSlug>/agents/<agentId>/conversations/<id>` and friends.
+ *
+ * Takes the gateway's configured PUBLIC base — never a request Host header and
+ * never `DISPATCHER_URL`. The worker reaches the gateway over an internal
+ * cluster address, so both of those resolve to hostnames no user can open.
+ *
+ * The `/lobu` strip mirrors {@link buildAgentSettingsUrl} and friends: prod runs
+ * `PUBLIC_GATEWAY_URL=https://app.lobu.ai/lobu`, the gateway is mounted under
+ * that prefix, and the admin routes these links point at are NOT. Without the
+ * strip every link an agent writes would 404.
+ *
+ * Returns undefined for an unparseable base so the caller omits the link
+ * entirely — a mangled origin pasted into a reply is worse than no link.
+ */
+export function toPublicWebOrigin(
+  publicGatewayUrl: string | undefined
+): string | undefined {
+  if (!publicGatewayUrl?.trim()) return undefined;
+  try {
+    const parsed = new URL(publicGatewayUrl.trim());
+    const path = parsed.pathname.replace(/\/+$/, '').replace(/\/lobu$/, '');
+    return `${parsed.origin}${path}`;
+  } catch {
+    return undefined;
+  }
+}

@@ -29,11 +29,8 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	manage_connections: new Set(["create", "update", "reauthenticate"]),
 	// Members create / reconnect their own oauth_account profile. The handler
 	// gates `profile_kind` against role so env / oauth_app / browser_session
-	// stay admin-only. `get_auth_profile` / `test_auth_profile` are NOT here —
-	// they are owner-admin (see OWNER_ADMIN_ACTIONS). `requiresOwnerAdmin` runs
-	// first so listing them here too was dead (admin still won), but the
-	// duplicate falsely read as "member-write" to any surface that inspects
-	// this map directly.
+	// stay admin-only. `get_auth_profile` is public-read because it returns the
+	// same sanitized metadata as list; `test_auth_profile` stays owner-admin.
 	manage_auth_profiles: new Set(["create_auth_profile", "update_auth_profile"]),
 	// `complete_window` is how watcher AGENTS report results — server-side
 	// agent workers and device CLI runs (the Owletto Mac dispatcher wires the
@@ -109,7 +106,8 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		// `create_auth_profile` and `update_auth_profile` are in
 		// MEMBER_WRITE_ACTIONS — the handler enforces oauth_account-only access
 		// for non-admins so members can't create org-shared credentials.
-		"get_auth_profile",
+		// `get_auth_profile` is in PUBLIC_READ_ACTIONS because it uses the same
+		// credential-free `serializeAuthProfile` payload as `list_auth_profiles`.
 		"test_auth_profile",
 		"delete_auth_profile",
 		"set_default_auth_profile",
@@ -161,7 +159,7 @@ export const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	manage_connections: new Set(["list", "list_connector_groups", "get"]),
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
 	manage_feeds: new Set(["list_feeds", "read_feed", "read_feeds"]),
-	manage_auth_profiles: new Set(["list_auth_profiles"]),
+	manage_auth_profiles: new Set(["list_auth_profiles", "get_auth_profile"]),
 	manage_operations: new Set([
 		"list_available",
 		"list_runs",

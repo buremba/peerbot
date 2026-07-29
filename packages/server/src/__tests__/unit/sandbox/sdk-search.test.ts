@@ -357,13 +357,13 @@ describe("sdkSearch", () => {
 		expect(send.results[0]).toContain("accepted aliases: message → body");
 	});
 
-	it("does NOT advertise authProfiles.get to a read-tier caller (runtime is owner-admin)", async () => {
-		// Discovery must match get_auth_profile's OWNER_ADMIN_ACTIONS tier.
+	it("advertises authProfiles.get to a read-tier caller", async () => {
 		const result = await sdkSearch(
 			{ query: "authProfiles.get", mode: "read" },
 			stubEnv,
 			readCtx
 		);
-		expect(result.match_count).toBe(0);
+		expect(result.match_count).toBe(1);
+		expect(result.results[0]).toContain("authProfiles.get");
 	});
 });

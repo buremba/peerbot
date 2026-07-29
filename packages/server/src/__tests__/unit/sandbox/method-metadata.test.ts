@@ -360,10 +360,8 @@ describe("method-metadata", () => {
 		);
 	});
 
-	it("advertises authProfiles.get at the tier manage_auth_profiles enforces (admin)", () => {
-		// Sanitized serialization does not change the access boundary:
-		// get_auth_profile remains in OWNER_ADMIN_ACTIONS.
-		expect(METHOD_METADATA["authProfiles.get"].access).toBe("admin");
+	it("advertises authProfiles.get at the tier manage_auth_profiles enforces (read)", () => {
+		expect(METHOD_METADATA["authProfiles.get"].access).toBe("read");
 		// Credential-bearing siblings stay gated.
 		expect(METHOD_METADATA["authProfiles.create"].access).toBe("write");
 		expect(METHOD_METADATA["authProfiles.update"].access).toBe("write");

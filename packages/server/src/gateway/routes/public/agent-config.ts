@@ -64,6 +64,7 @@ const getConfigRoute: RouteSpec = {
 	responses: {
 		200: { description: "Configuration", schema: Type.Any() },
 		...errorResponses(ErrorResponseSchema, {
+			400: "Organization context required",
 			401: "Unauthorized",
 		}),
 	},

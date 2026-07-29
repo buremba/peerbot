@@ -93,10 +93,14 @@ export {
 	formatActivityAttentionBlock,
 	listOrgActivity,
 } from "./manage_operations/activity-feed";
+import { ResolutionFingerprintError } from "../../entity-resolution/staleness";
 import {
 	applyEntityChangeProposal,
+	asMergeProposal,
 	ENTITY_CHANGE_ACTION_KEYS,
 	type EntityChangeProposal,
+	mergeReviewEventMetadata,
+	refreshMergeProposalFingerprint,
 } from "./entity-field-approval";
 import { callerIsAdmin } from "./helpers/db-helpers";
 import {
@@ -1566,6 +1570,7 @@ export async function supersedeActionEvent(
 	extraMetadata: Record<string, unknown> = {},
 	reviewer: ApprovalReviewer | null = null,
 	db: DbClient = getDb(),
+	interactionInput?: Record<string, unknown> | null,
 ): Promise<number | undefined> {
   const sql = db;
   const originalEvent = await sql`
@@ -1622,7 +1627,9 @@ export async function supersedeActionEvent(
 				(orig.interaction_input_schema as Record<string, unknown> | null) ??
 				null,
 		interactionInput:
-			(orig.interaction_input as Record<string, unknown> | null) ?? null,
+			interactionInput === undefined
+				? ((orig.interaction_input as Record<string, unknown> | null) ?? null)
+				: interactionInput,
 		interactionOutput:
 			((extraMetadata.output ?? extraMetadata.action_output) as
 				| Record<string, unknown>
@@ -2259,6 +2266,59 @@ async function tryApproveEntityChangeRun(
 		};
 	};
 
+	// A fingerprint without a known current input-format stamp cannot be compared
+	// safely, only recomputed. Failing it like drift makes a genuinely old
+	// proposal permanently unapprovable: every retry recomputes the same mismatch
+	// and there is no blocker the reviewer can clear. Re-present it instead — the
+	// run stays pending with evidence rebuilt under the current format.
+	const refreshIncomparableFingerprint = async (
+		error: unknown,
+		proposal: EntityChangeProposal,
+		db: DbClient,
+	): Promise<ManageOperationsResult | null> => {
+		if (
+			!(error instanceof ResolutionFingerprintError) ||
+			error.failure !== "incomparable" ||
+			entityChangeOperation(proposal) !== "merge"
+		) {
+			return null;
+		}
+		const reset = await db`
+      UPDATE runs SET approval_status = 'pending', status = 'pending', error_message = ${error.message}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+		AND approval_status = 'approved' AND status = 'running'
+		RETURNING id
+    `;
+		if (reset.length === 0) return null;
+		const refreshedProposal = await refreshMergeProposalFingerprint(
+			args.run_id,
+			ctx,
+			asMergeProposal(proposal),
+			error.assessment,
+			db,
+		);
+		const eventId = await supersedeActionEvent(
+			args.run_id,
+			ctx.organizationId,
+			"pending",
+			"entity_merge — evidence re-checked, still pending",
+			`This merge was proposed without a known current matching format, so its recorded evidence could not be verified. It has been re-checked against the workspace as it stands now: ${error.assessment.reason} Review the updated evidence and approve again, or reject it.`,
+			mergeReviewEventMetadata(refreshedProposal),
+			reviewer,
+			db,
+			refreshedProposal as unknown as Record<string, unknown>,
+		);
+		if (eventId === undefined) {
+			throw new Error(
+				"Cannot refresh merge approval because its approval event is missing",
+			);
+		}
+		return {
+			error:
+				"This merge was recorded without a known current matching format. Its evidence has been re-checked and the approval is pending again — review the updated evidence and approve once more, or reject it.",
+		};
+	};
+
 	const applyFailure = async (
 		error: unknown,
 	): Promise<ManageOperationsResult> => {
@@ -2351,7 +2411,17 @@ async function tryApproveEntityChangeRun(
 					tx,
 				);
 				if (!claimed) return null;
-				return completeApproval(tx, claimed.proposal);
+				try {
+					return await completeApproval(tx, claimed.proposal);
+				} catch (error) {
+					const refreshed = await refreshIncomparableFingerprint(
+						error,
+						claimed.proposal,
+						tx,
+					);
+					if (refreshed) return refreshed;
+					throw error;
+				}
 			});
 		} catch (error) {
 			return applyFailure(error);

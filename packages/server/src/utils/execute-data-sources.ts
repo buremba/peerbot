@@ -679,6 +679,7 @@ export function buildScopedQuery(
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd ` +
           `WHERE fd.organization_id = ${orgP} ` +
+          // security-allowed: see block comment above the for-loop
           `AND EXISTS (SELECT 1 FROM public.connections fc ` +
           `WHERE fc.id = fd.connection_id AND fc.organization_id = ${orgP}` +
           connectionRowVisibility('fc') +

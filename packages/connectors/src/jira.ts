@@ -166,6 +166,8 @@ function adfToText(value: unknown): string {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') return '';
   const node = value as { type?: string; text?: string; content?: unknown[] };
+  // Soft line break inside a paragraph (not a block boundary).
+  if (node.type === 'hardBreak') return '\n';
   if (typeof node.text === 'string') return node.text;
   if (Array.isArray(node.content)) {
     let out = '';
@@ -174,6 +176,7 @@ function adfToText(value: unknown): string {
       if (!text) continue;
       const childType =
         child && typeof child === 'object' ? (child as { type?: string }).type : undefined;
+      // hardBreak already contributes '\n' as its text; don't insert a second.
       if (out && childType && ADF_BLOCK_TYPES.has(childType)) out += '\n';
       out += text;
     }

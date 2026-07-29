@@ -244,6 +244,38 @@ describe('Jira virtual-feed pushdown', () => {
     expect(res.total).toBeUndefined();
   });
 
+  test('preserves ADF hardBreak as a newline between words', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap, [
+      {
+        id: '30001',
+        key: 'BRK-1',
+        summary: 'Hard break',
+        status: 'Open',
+        description: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                { type: 'text', text: 'hello' },
+                { type: 'hardBreak' },
+                { type: 'text', text: 'world' },
+              ],
+            },
+          ],
+        },
+        self: 'https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/issue/30001',
+      },
+    ]);
+    const res = await c.query({
+      ...BASE_CTX,
+      query: 'project = BRK',
+      limit: 5,
+    });
+    expect(res.rows[0].description).toBe('hello\nworld');
+  });
+
   test('falls back to config.jql when ctx.query is empty', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);

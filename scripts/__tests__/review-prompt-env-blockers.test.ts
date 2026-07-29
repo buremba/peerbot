@@ -84,8 +84,18 @@ describe("review prompt: environment failures are never blockers", () => {
 
   it("still routes what it cannot run into [env] notes", () => {
     // Deleting the contradictory rule must not delete the guidance with it —
-    // an unrunnable suite has to surface somewhere the reader can see.
-    expect(markdown).toContain("[env]");
+    // an unrunnable suite has to surface somewhere the reader can see. Scope
+    // this to the env-inability rules themselves: a bare `[env]` search over
+    // the whole prompt passes on any unrelated mention, so it would stay green
+    // even if §4 stopped routing what it cannot run into `notes`.
+    const envRules = bullets(markdown).filter((bullet) =>
+      ENV_INABILITY.test(bullet)
+    );
+    expect(
+      envRules.some(
+        (bullet) => /\bnotes\b/i.test(bullet) && /\[env\]/i.test(bullet)
+      )
+    ).toBe(true);
   });
 
   it("keeps blockers tied to a failure the diff caused", () => {

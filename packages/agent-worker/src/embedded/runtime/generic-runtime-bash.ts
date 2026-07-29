@@ -183,12 +183,23 @@ export function createGenericRuntimeBashOps(
 
       const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
       const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
-      // Emitted BEFORE the command's own output so it reads as a preamble
-      // explaining the failure that follows, not a conclusion drawn from it.
-      const notice = provisionNotice(payload.sandbox);
-      if (notice) onData(Buffer.from(notice));
       if (stdout) onData(Buffer.from(stdout));
       if (stderr) onData(Buffer.from(stderr));
+      // Emitted AFTER the command's own output, and that ordering is
+      // load-bearing rather than cosmetic. The bash tool feeds every `onData`
+      // chunk into an OutputAccumulator and snapshots it through `truncateTail`
+      // — only the LAST 2000 lines / 50KB reach the model. A preamble is
+      // exactly what a long-output command drops, so the turn most likely to be
+      // derailed by a missing CLI would be the one that never sees why. The
+      // tail always survives.
+      const notice = provisionNotice(payload.sandbox);
+      if (notice) {
+        // The notice must land on its own line: a command whose output has no
+        // trailing newline would otherwise glue `lobu:` onto its last line.
+        const emitted = `${stdout}${stderr}`;
+        const separator = emitted && !emitted.endsWith("\n") ? "\n" : "";
+        onData(Buffer.from(`${separator}${notice}`));
+      }
       return {
         // The command's OWN exit code, untouched. A contributed CLI that failed
         // to install must not fail a turn whose real work does not need it —

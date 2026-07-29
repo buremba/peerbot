@@ -301,8 +301,9 @@ describe('formatToolResult', () => {
           empty_source: [],
         },
         reactions_guidance: 'Notify only for actionable changes.',
-        past_reactions: 'Recent reaction: sent one notification.',
-        past_feedback: 'Recent feedback: avoid duplicate alerts.',
+        past_reactions: '## Past Reactions\n- Recent reaction: sent one notification.',
+        past_feedback:
+          '## Past Corrections from User Feedback\n- Recent feedback: avoid duplicate alerts.',
       };
 
       const md = formatToolResult('read_knowledge', result);
@@ -315,6 +316,10 @@ describe('formatToolResult', () => {
       expect(md).toContain('Notify only for actionable changes.');
       expect(md).toContain('Recent reaction: sent one notification.');
       expect(md).toContain('Recent feedback: avoid duplicate alerts.');
+      expect(md.match(/^#{2,3} Past Reactions$/gm)).toHaveLength(1);
+      expect(md.match(/^#{2,3} Past (?:Feedback|Corrections from User Feedback)$/gm)).toHaveLength(
+        1
+      );
     });
   });
 

@@ -1198,11 +1198,13 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
     }
 
     if (past_reactions) {
-      md += `### Past Reactions\n\n${past_reactions}\n\n`;
+      const body = past_reactions.replace(/^## Past Reactions\s*\n?/, '');
+      md += `### Past Reactions\n\n${body}\n\n`;
     }
 
     if (past_feedback) {
-      md += `### Past Feedback\n\n${past_feedback}\n\n`;
+      const body = past_feedback.replace(/^## Past Corrections from User Feedback\s*\n?/, '');
+      md += `### Past Feedback\n\n${body}\n\n`;
     }
 
     // Show classifiers for worker extraction

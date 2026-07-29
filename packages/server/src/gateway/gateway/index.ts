@@ -588,6 +588,7 @@ export class WorkerGateway {
       const instructionContext: InstructionContext = {
         userId,
         agentId: agentId || "",
+        connectionId: auth.tokenData.connectionId,
         organizationId: tokenOrgId,
         // Instruction providers skip their by-id settings read when this is
         // false (orgless DB-backed agent) and use the generic branch.

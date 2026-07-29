@@ -398,7 +398,7 @@ SIMPLICITY="$(echo "$VERDICT" | jq -r .simplicity)"
 TESTS_ADEQUATE="$(echo "$VERDICT" | jq -r .tests_adequate)"
 RISK="$(echo "$VERDICT" | jq -r .behavior_change_risk)"
 BLOCKER_COUNT="$(echo "$VERDICT" | jq -r '.blockers|length')"
-HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers, risk $RISK"
+HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers"
 STATUS_STATE="success"
 STATUS_REASONS=()
 [ "$BUG_FREE" -ge "$PI_REVIEW_MIN_BUG_FREE" ] || STATUS_REASONS+=("bug_free<$PI_REVIEW_MIN_BUG_FREE")
@@ -407,11 +407,7 @@ STATUS_REASONS=()
 [ "$SIMPLICITY" -ge "$PI_REVIEW_MIN_SIMPLICITY" ] || STATUS_REASONS+=("simplicity<$PI_REVIEW_MIN_SIMPLICITY")
 [ "$BLOCKER_COUNT" -eq 0 ] || STATUS_REASONS+=("blockers>0")
 [ "$TESTS_ADEQUATE" = "true" ] || STATUS_REASONS+=("tests inadequate")
-# `behavior_change_risk` is REPORTED in the headline but never gates. The check
-# exists so codex reviews the diff for defects before a merge; a self-reported
-# risk tier is not a defect. It also had no rubric in prompts/review-prompt.md
-# and no threshold env var, so "high" fired on essentially every behaviour-
-# changing fix and could only be cleared by editing branch protection.
+[ "$RISK" != "high" ] || STATUS_REASONS+=("high risk needs human approval")
 if [ "${#STATUS_REASONS[@]}" -gt 0 ]; then
   STATUS_STATE="failure"
   STATUS_DESCRIPTION="$HEADLINE; $(IFS=', '; echo "${STATUS_REASONS[*]}")"

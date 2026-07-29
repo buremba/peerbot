@@ -209,17 +209,17 @@ export default async (_ctx, client) => {
 	"entitySchema.createType": {
 		summary:
 			"Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT `properties` — a top-level `properties` key is silently ignored.",
-		access: "write",
+		access: "admin",
 		example:
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
 	},
 	"entitySchema.updateType": {
 		summary: "Update an entity type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.deleteType": {
 		summary: "Delete an entity type.",
-		access: "write",
+		access: "admin",
 		example: "await client.entitySchema.deleteType({ slug: 'widget' });",
 	},
 	"entitySchema.auditType": {
@@ -245,15 +245,15 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.createRelType": {
 		summary: "Create a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.updateRelType": {
 		summary: "Update a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.deleteRelType": {
 		summary: "Delete a relationship type.",
-		access: "write",
+		access: "admin",
 		example: "await client.entitySchema.deleteRelType({ slug: 'works-at' });",
 	},
 	"entitySchema.addRule": {
@@ -864,16 +864,16 @@ export default async (_ctx, client) => {
 	"feeds.create": {
 		summary:
 			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like the feed urls) in `config`.",
-		access: "write",
+		access: "admin",
 		signature:
 			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
-	"feeds.update": { summary: "Update a feed.", access: "write" },
+	"feeds.update": { summary: "Update a feed.", access: "admin" },
 	"feeds.delete": {
 		summary: "Delete a feed.",
-		access: "write",
+		access: "admin",
 		example: "await client.feeds.delete({ feed_id: 42 });",
 	},
 	"feeds.trigger": {
@@ -896,7 +896,7 @@ export default async (_ctx, client) => {
 	"authProfiles.get": {
 		summary:
 			"Get an auth profile by slug. Returns the sanitized serialization only — never raw credentials or auth_data.",
-		access: "read",
+		access: "admin",
 		signature:
 			"authProfiles.get(auth_profile_slug: string): Promise<unknown> // or authProfiles.get({ auth_profile_slug })",
 		example: "await client.authProfiles.get('google-calendar-account');",
@@ -923,7 +923,7 @@ export default async (_ctx, client) => {
 	},
 	"authProfiles.delete": {
 		summary: "Delete an auth profile.",
-		access: "write",
+		access: "admin",
 		signature:
 			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown> // or authProfiles.delete({ auth_profile_slug })",
 		example: "await client.authProfiles.delete('google-calendar-account');",

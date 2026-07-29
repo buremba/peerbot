@@ -21,7 +21,7 @@
  * existing `method-metadata.test.ts` guard.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	MEMBER_WRITE_ACTIONS,
 	OWNER_ADMIN_ACTIONS,
@@ -38,25 +38,125 @@ import { AGENTS_SDK_ACTION } from "../../tools/sdk_search";
  * listed; discovery-only / bespoke namespaces (organizations, knowledge,
  * metrics, ctx, notifications) are intentionally omitted.
  */
-const NAMESPACE_TOOL: Record<string, string> = {
-	entities: "manage_entity",
-	entitySchema: "manage_entity_schema",
-	connections: "manage_connections",
-	authProfiles: "manage_auth_profiles",
-	feeds: "manage_feeds",
-	operations: "manage_operations",
-	watchers: "manage_behaviors",
-	classifiers: "manage_classifiers",
-	viewTemplates: "manage_view_templates",
-	catalog: "manage_catalog",
-	agents: "manage_agents",
-};
+const TIERED_NAMESPACES = [
+	["entities", "manage_entity", "../../tools/admin/manage_entity", "manageEntity"],
+	["entitySchema", "manage_entity_schema", "../../tools/admin/manage_entity_schema", "manageEntitySchema"],
+	["connections", "manage_connections", "../../tools/admin/manage_connections", "manageConnections"],
+	["authProfiles", "manage_auth_profiles", "../../tools/admin/manage_auth_profiles", "manageAuthProfiles"],
+	["feeds", "manage_feeds", "../../tools/admin/manage_feeds", "manageFeeds"],
+	["operations", "manage_operations", "../../tools/admin/manage_operations", "manageOperations"],
+	["behaviors", "manage_behaviors", "../../tools/admin/manage_behaviors", "manageBehaviors"],
+	["classifiers", "manage_classifiers", "../../tools/admin/manage_classifiers", "manageClassifiers"],
+	["viewTemplates", "manage_view_templates", "../../tools/admin/manage_view_templates", "manageViewTemplates"],
+	["catalog", "manage_catalog", "../../tools/admin/manage_catalog", "manageCatalog"],
+	["agents", "manage_agents", "../../tools/admin/manage_agents", "manageAgents"],
+] as const;
+
+const NAMESPACE_TOOL = Object.fromEntries(
+	TIERED_NAMESPACES.map(([namespace, tool]) => [namespace, tool]),
+) as Record<string, string>;
+
+/**
+ * Methods that legitimately resolve to NO (tool, action) pair, with the reason.
+ *
+ * This list is the whole point of the guard being fail-closed: anything in a
+ * tiered namespace that is not here and does not resolve is a FAILURE, not a
+ * silent skip. Adding an entry is a deliberate, reviewable act — the previous
+ * `continue` swallowed 25 methods (all of feeds.*, all of authProfiles.*, all
+ * 12 entitySchema.*, entities.search) without anyone noticing 11 real
+ * authorization drifts hiding among them.
+ */
+const NO_TOOL_ACTION = new Set([
+	// Bypasses the action caller entirely: delegates to the `search` tool, which
+	// carries its own access gate rather than a manage_entity action.
+	"entities.search",
+	// Same shape: delegates to the standalone `get_behavior` tool.
+	"behaviors.get",
+]);
+
+/**
+ * `"<namespace>.<method>"` → internal action, captured by driving every SDK
+ * namespace builder against a stub handler and recording the action payload it
+ * receives.
+ */
+const observed = new Map<string, string>();
+
+/**
+ * Build every tiered namespace against a stub handler and invoke each method so
+ * the real dispatch path records its action string.
+ *
+ * Invocation (rather than static parsing) is REQUIRED: `entity-schema.ts`
+ * computes its action from a runtime payload field, so 12 of its methods have
+ * no action literal in the source. It is also safe — the stub handler replaces
+ * the real `manage_*` module, so nothing touches the DB.
+ *
+ * Uses vi.doMock + vi.resetModules + dynamic import rather than hoisted
+ * vi.mock: this suite runs in the integration project, which shares one module
+ * registry across files (`isolate: false`), where a hoisted vi.mock does not
+ * reliably replace the module.
+ */
+async function captureActionMap(): Promise<void> {
+	vi.resetModules();
+	let activePath: string | null = null;
+	const stub = async (payload: { action?: unknown }) => {
+		if (activePath && typeof payload.action === "string") {
+			observed.set(activePath, payload.action);
+		}
+		return {};
+	};
+	for (const [, , mod, exportName] of TIERED_NAMESPACES) {
+		vi.doMock(mod, () => ({ [exportName]: stub }));
+	}
+
+	const ctx = { organizationId: "o", userId: "u" } as never;
+	const env = { ENVIRONMENT: "test" } as never;
+	const { buildClientSDK } = await import("../../sandbox/client-sdk.js");
+	const sdk = buildClientSDK(ctx, env) as unknown as Record<string, unknown>;
+
+	// Methods take assorted arg shapes, and `idArg` throws BEFORE action() runs
+	// when the shape is wrong (a bare string id vs a bare number id vs an object).
+	// Try each candidate until one gets through; a method that records nothing
+	// under any of them is reported by the coverage assertion below rather than
+	// silently dropped.
+	const candidates: unknown[] = ["probe", 1, {}, { slug: "probe" }];
+	for (const [nsName] of TIERED_NAMESPACES) {
+		const ns = sdk[nsName];
+		for (const method of Object.keys(ns as object)) {
+			if (method === "manage") continue;
+			// Methods that bypass the action caller reach a REAL tool (search /
+			// get_behavior) that the stub handlers above do not replace, so probing
+			// them would hit the database. They are declared in NO_TOOL_ACTION and
+			// contribute no mapping — never invoke them.
+			if (NO_TOOL_ACTION.has(`${nsName}.${method}`)) continue;
+			const fn = (ns as Record<string, unknown>)[method];
+			if (typeof fn !== "function") continue;
+			activePath = `${nsName}.${method}`;
+			for (const arg of candidates) {
+				if (observed.has(activePath)) break;
+				try {
+					await (fn as (a: unknown) => Promise<unknown>)(arg);
+				} catch {
+					// Arg-shape rejections are expected while probing.
+				}
+			}
+		}
+	}
+
+	activePath = null;
+	vi.resetModules();
+	for (const [, , mod] of TIERED_NAMESPACES) {
+		vi.doUnmock(mod);
+	}
+}
+
+beforeAll(captureActionMap);
 
 /**
  * The runtime tier the tool-access maps assign to a (tool, action), by their
- * enforcement precedence: owner-admin → member-write → public-read. Returns
- * null when the action isn't declared in any map (its tier then falls back to
- * a handler readOnly hint this static test can't reproduce).
+ * enforcement precedence: owner-admin → member-write → public-read. Every
+ * manage_* tool checked here has an explicit policy, so an action absent from
+ * all three maps falls through to read tier; return null so the test rejects
+ * that implicit default.
  */
 function declaredRuntimeTier(
 	tool: string,
@@ -96,12 +196,9 @@ describe("access-model cross-check", () => {
 		expect(conflicts).toEqual([]);
 	});
 
-	it("no named SDK method is advertised to a lower tier than the tool enforces", () => {
-		// For each METHOD_METADATA entry whose namespace routes to a manage_*
-		// tool, the discovery tier `sdkMethodVisible` uses must not be MORE
-		// permissive than the tier the tool-access maps enforce for that
-		// (tool, action). A member who sees a method in search_sdk, calls it, and
-		// hits an admin-only error is the drift this guards.
+	it("keeps SDK discovery tiers aligned with runtime enforcement", () => {
+		// Compare the discovery tier `sdkMethodVisible` uses with the tier the
+		// delegated manage_* action enforces.
 		//
 		// `external` is exempt from the exact-match requirement: it is a
 		// side-effect marker (this method calls out to an external system), not a
@@ -111,7 +208,6 @@ describe("access-model cross-check", () => {
 		// operations.execute / feeds.trigger / connections.test stay "external"
 		// while their trigger_feed / execute / test actions are owner-admin). So
 		// `external` only asserts "not read-tier" — never that it equals admin.
-		const RANK: Record<string, number> = { read: 0, write: 1, admin: 2 };
 		const mismatches: string[] = [];
 		for (const [path, meta] of Object.entries(METHOD_METADATA)) {
 			const [namespace, method] = path.split(".");
@@ -121,13 +217,26 @@ describe("access-model cross-check", () => {
 			// namespace's most-privileged tier, not a single action, so it has no
 			// single tool-action to compare against.
 			if (method === "manage") continue;
-			// SDK method names are camelCase; tool action strings are snake_case.
-			const action = method.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+			if (NO_TOOL_ACTION.has(path)) continue;
+			// The action this method REALLY dispatches, recorded from the live
+			// dispatch path. Never guessed: `feeds.list` dispatches `list_feeds`,
+			// which the old camel→snake guess turned into `manage_feeds.list` — a
+			// key present in no tier map, so the method was skipped instead of
+			// checked.
+			const action = observed.get(path);
+			if (!action) {
+				mismatches.push(
+					`${path}: no action recorded — the SDK method is gone, renamed, or no longer routes through createActionCaller. Fix the wiring or add it to NO_TOOL_ACTION with a reason.`,
+				);
+				continue;
+			}
 			const runtimeTier = declaredRuntimeTier(tool, action);
-			// Only assert when the action is actually declared in a tier map;
-			// unlisted actions fall back to a handler readOnly hint this static
-			// test can't reproduce.
-			if (runtimeTier === null) continue;
+			if (runtimeTier === null) {
+				mismatches.push(
+					`${path}: ${tool}.${action} is in no tier map and implicitly falls through to read; declare it explicitly in tool-access.ts`,
+				);
+				continue;
+			}
 			if (meta.access === "external") {
 				// External is write-visible; it must at least be enforced at
 				// write-or-admin (never a read action masquerading as external).
@@ -139,13 +248,25 @@ describe("access-model cross-check", () => {
 				continue;
 			}
 			// read / write / admin must match the enforced tier exactly.
-			if (RANK[meta.access] !== RANK[runtimeTier]) {
+			if (meta.access !== runtimeTier) {
 				mismatches.push(
 					`${path}: SDK=${meta.access} runtime(${tool}.${action})=${runtimeTier}`,
 				);
 			}
 		}
 		expect(mismatches).toEqual([]);
+	});
+
+	it("every tiered SDK method resolves to a real, tier-declared action", () => {
+		const unresolved: string[] = [];
+		for (const path of Object.keys(METHOD_METADATA)) {
+			const [namespace, method] = path.split(".");
+			if (!method || method === "manage") continue;
+			if (!NAMESPACE_TOOL[namespace]) continue;
+			if (NO_TOOL_ACTION.has(path)) continue;
+			if (!observed.get(path)) unresolved.push(path);
+		}
+		expect(unresolved).toEqual([]);
 	});
 
 	it("the agents.* triple agrees (AGENTS_SDK_ACTION ↔ METHOD_METADATA ↔ manage_agents)", () => {
@@ -183,7 +304,9 @@ describe("access-model cross-check", () => {
 
 			const method = path.split(".")[1];
 			if (method === "manage") continue;
-			const action = method.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+			const action = observed.get(path);
+			expect(action, `${path} dispatched no recorded action`).toBeDefined();
+			if (!action) continue;
 			if (isRead) {
 				expect(
 					readAgentActions?.has(action),

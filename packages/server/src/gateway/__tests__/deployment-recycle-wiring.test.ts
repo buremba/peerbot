@@ -104,6 +104,15 @@ class TestConsumer extends MessageConsumer {
       }
     ).recycleStaleDeployment(deploymentName, fingerprint, "trace-1", force);
   }
+
+  /** Sizes of the two per-deployment structures the recycle step owns. */
+  perDeploymentState(): number[] {
+    const self = this as unknown as {
+      deploymentLocks: Set<string>;
+      recycleInFlight: Map<string, unknown>;
+    };
+    return [self.deploymentLocks.size, self.recycleInFlight.size];
+  }
 }
 
 /** The recycle step touches neither the queue nor the input journal. */
@@ -700,6 +709,26 @@ describe("concurrent recycles are serialized", () => {
     await consumer.recycle(DEPLOYMENT, "fp-unchanged");
 
     expect(manager.deleted).toEqual([DEPLOYMENT, DEPLOYMENT]);
+    // Nothing per-deployment survives the recycle. The lock itself is covered
+    // by the second teardown above, but the promise a loser waits on is not:
+    // leaked, it grows unboundedly with the process's deployments and leaves a
+    // settled promise where a live one is meant to be.
+    expect(consumer.perDeploymentState()).toEqual([0, 0]);
+  });
+
+  test("a teardown that throws leaves no per-deployment state behind either", async () => {
+    const { manager, consumer } = build();
+    manager.expiringLeaseFor = DEPLOYMENT;
+    manager.deleteWorkerDeployment = async () => {
+      throw new Error("kill failed");
+    };
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    // The failure path is the one that matters most: a lock or promise stranded
+    // here would hold every later turn on this conversation behind a recycle
+    // that already gave up.
+    expect(consumer.perDeploymentState()).toEqual([0, 0]);
   });
 });
 

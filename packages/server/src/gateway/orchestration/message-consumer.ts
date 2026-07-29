@@ -352,10 +352,12 @@ export class MessageConsumer {
    * bound on its own: unlike a live turn, it is not cleared by anything the
    * message itself waits for, so a handler that keeps converting contention
    * into another hold has no terminating condition at all. Past the budget it
-   * therefore stops holding and awaits the winner instead — bounded, because
-   * the winner is inside `withDeploymentTurnLock`, whose `lock_timeout` caps
-   * the cross-pod acquisition, and releases the local lock in a `finally` on
-   * both the success and the throw path.
+   * therefore stops creating new held rows and awaits the winner instead —
+   * bounded, because the winner is inside `withDeploymentTurnLock`, whose
+   * `lock_timeout` caps the cross-pod acquisition (verified against Postgres:
+   * a contended `pg_advisory_lock` aborts at the timeout with "canceling
+   * statement due to lock timeout"), and it releases the local lock in a
+   * `finally` on both the success and the throw path.
    *
    * Small on purpose: each wait outlives a COMPLETE teardown, and a successful
    * one removes the deployment, so the re-evaluation after the first wait
@@ -824,8 +826,8 @@ export class MessageConsumer {
       // claim the newly-queued turn between the check and the SIGTERM, so a
       // reply would be lost. Nothing below this point is reachable by the
       // worker yet, so a teardown here can only interrupt a PREVIOUS turn —
-      // and `hasExpiringLease`/`hasToolingChanged` are only consulted for a
-      // deployment that has already gone quiet enough to be reusable.
+      // and the durable liveness probe below decides whether that prior turn
+      // requires the recycle to defer.
       const recycleOutcome = await this.recycleStaleDeployment(
         deploymentName,
         toolingFingerprint,
@@ -1227,13 +1229,13 @@ export class MessageConsumer {
    * caller: this worker must not serve the turn, so hold the message rather
    * than dispatch it — see {@link holdMessageForRecycle}.
    *
-   * `force` waives both deferrals: it skips the liveness check, and past the
-   * budget it waits an in-flight recycle out rather than holding again. Only
-   * the caller's deferral budget sets it, so neither a long-running turn nor a
-   * slow teardown can wedge the conversation forever.
+   * `force` waives the liveness deferral, and past the budget it waits an
+   * in-flight recycle out rather than immediately adding another held message.
+   * Only the caller's deferral budget sets it, so a long-running turn cannot
+   * keep extending the hold loop.
    *
-   * Never throws: a stale credential beats a failed turn, and the idle reaper
-   * clears the deployment eventually either way.
+   * Never throws: dispatch continuity wins over a failed recycle, and the
+   * reconcile/idle cleanup paths can retry later.
    */
   private async recycleStaleDeployment(
     deploymentName: string,

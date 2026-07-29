@@ -481,12 +481,16 @@ describe("a worker another handler is tearing down never serves a turn", () => {
     expect(manager.deleted).toEqual([DEPLOYMENT]);
   });
 
-  test("REGRESSION: continuous arrivals under lock contention cannot defer forever", async () => {
-    // Termination, part two — the budget half, and the reason contention
-    // cannot be a second unbounded axis alongside the liveness deferral. The
-    // winner here is wedged for the whole run, so nothing about the worker
-    // improves; the hold counter is the only thing that changes. Once it is
-    // spent the handler must stop holding and wait the teardown out instead.
+  test("REGRESSION: a spent hold budget waits for the active recycle instead of adding held rows", async () => {
+    // The budget prevents local contention from creating an unlimited sequence
+    // of delayed rows. The winner stays parked through the assertions, so
+    // nothing about the worker improves; once the counter is spent the handler
+    // must stop re-queueing and wait for that active teardown instead.
+    //
+    // The other half of the termination argument is the test above: held
+    // messages arm nothing, so they never extend the teardown they wait on.
+    // Together they say a stream of arrivals can neither prolong the recycle
+    // nor keep re-queueing itself behind one.
     const park = parkedTurnLock();
     const { queue, manager, consumer } = build(park.lock);
     const first = consumer.deliver(101, payload({ messageId: "m-1" }));

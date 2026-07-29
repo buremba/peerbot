@@ -905,7 +905,7 @@ export class DeploymentManager {
   private leaseExpiryByDeployment = new Map<string, Date>();
 
   /**
-   * Seconds before a lease's stated expiry at which the deployment stops being
+   * How long before a lease's stated expiry the deployment stops being
    * reusable. A turn that starts inside this window could still be running when
    * the credential dies, so recycle early rather than hand the sandbox a token
    * that expires mid-command.
@@ -913,7 +913,7 @@ export class DeploymentManager {
   private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
 
   /**
-   * Maximum age floor for a newly built deployment. The effective floor is
+   * Normal minimum age for a newly built deployment. The effective floor is
    * capped at the lease's actual expiry: a short-lived credential gets its full
    * usable life without causing per-turn rebuilds, then renews when it expires
    * instead of leaving the sandbox unauthenticated until this whole interval
@@ -1927,6 +1927,7 @@ export class DeploymentManager {
       this.leaseMintedAtByDeployment.set(deploymentName, new Date());
     } else {
       this.leaseExpiryByDeployment.delete(deploymentName);
+      this.leaseMintedAtByDeployment.delete(deploymentName);
     }
     // Remember WHICH connections built this sandbox, so a later turn can tell
     // that one was added, removed, or repointed at a different installation.
@@ -2731,7 +2732,9 @@ export class DeploymentManager {
       if (params.isRetry) {
         // Reached from the async exit handler's self-heal — can't throw to a
         // caller, so fail the in-flight turn(s) with the clear message and
-        // release the lock we were holding across the swap.
+        // release the lock we were holding across the swap. No replacement
+        // child exists, so the env-build state no longer describes a worker.
+        this.forgetDeploymentTooling(deploymentName);
         const lockRelease = releaseLockOnce();
         this.trackConversationLockRelease(deploymentName, lockRelease);
         failTurnsForDeployment(

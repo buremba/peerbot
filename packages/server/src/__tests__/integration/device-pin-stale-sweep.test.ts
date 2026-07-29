@@ -173,6 +173,63 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(lapsedConn)).toBeNull();
   });
 
+  it('pauses only auth-free feeds when the fleet stops serving the capability', async () => {
+    // When no fresh device advertises the capability, the connector routes to
+    // `pauseStaleDeviceFeeds` instead of the wire pass. That statement carries
+    // the same credential filter: an auth- or app-auth-backed connection is
+    // user-created, so pausing its feeds would break a connection auto-wire
+    // never made.
+    // A FRESH device is needed for the manifest to load at all (byKey is built
+    // from fresh workers), but it must NOT advertise the capability — that is
+    // what routes the connector to the pause path instead of the wire pass.
+    const dead = await seedWorker(userId, orgId, false);
+    const freshNoCap = await seedWorker(userId, orgId, true);
+    await sql`
+      UPDATE device_workers SET capabilities = ${sql.json([])} WHERE id = ${freshNoCap}::uuid
+    `;
+
+    const [prof] = (await sql`
+      INSERT INTO auth_profiles (
+        organization_id, slug, display_name, connector_key, profile_kind, created_by
+      ) VALUES (
+        ${orgId}, ${`prof-${Math.random().toString(36).slice(2, 8)}`}, 'Test Profile',
+        ${CONNECTOR}, 'env', ${userId}
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const autoWired = await seedConn(orgId, userId, dead);
+    const authBacked = await seedConn(orgId, userId, null);
+    const appAuthBacked = await seedConn(orgId, userId, null);
+    await sql`UPDATE connections SET auth_profile_id = ${prof.id} WHERE id = ${authBacked}`;
+    await sql`UPDATE connections SET app_auth_profile_id = ${prof.id} WHERE id = ${appAuthBacked}`;
+
+    const feedOf = async (connId: number) => {
+      const [row] = (await sql`
+        INSERT INTO feeds (organization_id, connection_id, feed_key, display_name, status)
+        VALUES (${orgId}, ${connId}, 'items', 'Items', 'active')
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+      return Number(row.id);
+    };
+    const autoFeed = await feedOf(autoWired);
+    const authFeed = await feedOf(authBacked);
+    const appAuthFeed = await feedOf(appAuthBacked);
+
+    // No FRESH device serves the capability, so the pause path runs.
+    await reconcileDeviceCapabilities(userId);
+
+    const statusOf = async (id: number) => {
+      const [row] = (await sql`
+        SELECT status FROM feeds WHERE id = ${id}
+      `) as unknown as Array<{ status: string }>;
+      return row.status;
+    };
+    expect(await statusOf(autoFeed)).toBe('paused');
+    expect(await statusOf(authFeed)).toBe('active');
+    expect(await statusOf(appAuthFeed)).toBe('active');
+  });
+
   it('never touches an auth-backed connection, even on a dead device', async () => {
     // Auto-wire owns auth-FREE rows only — every other query in the wire pass
     // filters `auth_profile_id IS NULL`. An auth-backed connection is
@@ -215,13 +272,4 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(autoWired)).toBe(fresh);
   });
 
-  it('still repairs a lone stale pin to the sole fresh device', async () => {
-    const staleDevice = await seedWorker(userId, orgId, false);
-    const freshDevice = await seedWorker(userId, orgId, true);
-    const only = await seedConn(orgId, userId, staleDevice);
-
-    await reconcileDeviceCapabilities(userId);
-
-    expect(await pinOf(only)).toBe(freshDevice);
-  });
 });

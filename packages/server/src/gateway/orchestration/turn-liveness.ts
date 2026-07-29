@@ -237,15 +237,18 @@ export async function hasLiveTurnForMessage(
  * {@link hasLiveTurnForMessage} — a lapsed-but-unswept marker is a dead worker,
  * not a live turn, and must not block a recycle forever.
  *
- * "In flight" here means a turn the worker has actually RECEIVED. A turn's
- * marker is armed at dispatch, BEFORE its
- * `thread_message_*` job is delivered, so an armed-but-still-queued turn has a
- * live marker while its job sits `pending`/`claimed` on the worker queue. The
- * recycle gate ignores those: it runs while holding one such claimed job, and
- * two queued turns would otherwise each read the other's marker as "a running
- * turn" and defer each other forever. A marker whose `thread_message` job row
- * is gone (completed on delivery receipt) is a turn that reached the worker —
- * exactly the turns a teardown would interrupt.
+ * "In flight" here means a turn the worker has actually RECEIVED, and the
+ * delivery receipt — a COMPLETED `thread_message_*` job row for the marker's
+ * messageId (ack-on-delivery; retained ~30 days, far beyond any turn) — is the
+ * only evidence consulted. A marker is armed at dispatch, BEFORE delivery, so
+ * an armed-but-still-queued turn has a live marker with no completed row: not
+ * in flight (the recycle gate runs while holding one such claimed job, and two
+ * queued turns would otherwise each read the other's marker as "a running
+ * turn" and defer each other forever). The absence of pending/claimed rows
+ * must NOT be read as delivery instead: an SSE reconnect replays the durable
+ * input of a still-RUNNING turn onto the queue (`registerWorker`), and that
+ * pending replay row would masquerade as "undelivered" and let a recycle
+ * SIGTERM the active worker.
  */
 export async function hasLiveTurnForDeployment(
   deploymentName: string
@@ -258,9 +261,9 @@ export async function hasLiveTurnForDeployment(
       AND m.queue_name = ${TURN_TIMEOUT_QUEUE}
       AND m.action_input->>'deploymentName' = ${deploymentName}
       AND m.run_at > now()
-      AND NOT EXISTS (
+      AND EXISTS (
         SELECT 1 FROM public.runs q
-        WHERE q.status IN ('pending', 'claimed')
+        WHERE q.status = 'completed'
           AND q.run_type = 'chat_message'
           AND q.queue_name = ${`thread_message_${deploymentName}`}
           AND q.action_input->>'messageId' = m.action_input->>'messageId'

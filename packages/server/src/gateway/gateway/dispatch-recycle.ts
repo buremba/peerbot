@@ -81,10 +81,10 @@ export type LiveTurnProbe = typeof hasLiveTurnForDeployment;
  *    as today.
  * 2. Fresh (fingerprint matches or unknown, lease not expiring) → deliver.
  * 3. Stale + a PRIOR turn is live on the worker → throw; the queue retries and
- *    the gate re-evaluates on the next claim. The probe excludes turns whose
- *    `thread_message` job is still queued/claimed — including THIS one —
- *    because armed-but-undelivered turns are not running on the worker, and
- *    counting them would let two queued turns defer each other forever.
+ *    the gate re-evaluates on the next claim. The probe counts only DELIVERED
+ *    turns (completed `thread_message` row = delivery receipt), so armed-but-
+ *    undelivered turns — including THIS one — never block: counting them would
+ *    let two queued turns defer each other forever.
  * 4. Stale + quiet → tear down and rebuild under the same name, then throw:
  *    the fresh worker has not SSE-attached inside this handler invocation, so
  *    delivery happens on the retry (the queue is paused until the new worker

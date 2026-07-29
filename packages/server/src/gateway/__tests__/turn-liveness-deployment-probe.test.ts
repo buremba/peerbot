@@ -4,7 +4,7 @@
  * The recycle paths consult this before tearing a worker down, and the
  * dispatch-gate suite injects a stub for it — so without this file the actual
  * SQL is executed by nothing, and inverting its deadline predicate, dropping
- * the deployment filter, or breaking the queued-message exclusion would leave
+ * the deployment filter, or breaking the delivery-receipt join would leave
  * every suite green while the recycle either SIGTERMs live turns or deadlocks
  * queued ones.
  */
@@ -65,6 +65,19 @@ async function seedThreadJob(params: {
   `;
 }
 
+/** Marker + completed job row: a turn the worker has actually received. */
+async function seedDeliveredTurn(
+  messageId: string,
+  markerParams: Parameters<typeof seedMarker>[0] = {}
+): Promise<void> {
+  await seedMarker({ messageId, ...markerParams });
+  await seedThreadJob({
+    messageId,
+    status: "completed",
+    deploymentName: markerParams.deploymentName,
+  });
+}
+
 beforeAll(async () => {
   await ensureDbForGatewayTests();
 });
@@ -78,8 +91,8 @@ describe("hasLiveTurnForDeployment", () => {
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
 
-  test("a live marker for this deployment blocks a recycle", async () => {
-    await seedMarker({ runAtOffsetSec: 60 });
+  test("a delivered turn's live marker blocks a recycle", async () => {
+    await seedDeliveredTurn("m-1", { runAtOffsetSec: 60 });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
   });
@@ -87,16 +100,17 @@ describe("hasLiveTurnForDeployment", () => {
   test("finds a live turn regardless of which message armed it", async () => {
     // Deployment-scoped, unlike hasLiveTurnForMessage: the recycle must not
     // interrupt ANY turn on this worker, not just the current message's.
-    await seedMarker({ messageId: "some-other-message" });
+    await seedDeliveredTurn("some-other-message");
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
   });
 
-  test("a lapsed marker does not block a recycle", async () => {
+  test("a lapsed marker does not block a recycle, even when delivered", async () => {
     // 60s with no worker-driven signal means the worker is silent or dead; the
     // sweep will terminalize that turn anyway. Treating it as live would let a
-    // hung worker block renewal forever.
-    await seedMarker({ runAtOffsetSec: -30 });
+    // hung worker block renewal forever. Delivery receipt seeded so the lapse
+    // is the only thing this test discriminates on.
+    await seedDeliveredTurn("m-1", { runAtOffsetSec: -30 });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
@@ -104,13 +118,13 @@ describe("hasLiveTurnForDeployment", () => {
   test("another deployment's live turn is not ours", async () => {
     // Without the deploymentName predicate, any busy conversation anywhere in
     // the fleet would block every recycle.
-    await seedMarker({ deploymentName: "deploy-somebody-else" });
+    await seedDeliveredTurn("m-1", { deploymentName: "deploy-somebody-else" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
 
   test("a completed turn is not in flight", async () => {
-    await seedMarker({ status: "completed" });
+    await seedDeliveredTurn("m-1", { status: "completed" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
@@ -118,7 +132,7 @@ describe("hasLiveTurnForDeployment", () => {
   test("a non-turn-timeout run is not a turn marker", async () => {
     // The `runs` table carries every queued job; only this queue's rows are
     // turn-liveness markers.
-    await seedMarker({ queueName: "internal:something_else" });
+    await seedDeliveredTurn("m-1", { queueName: "internal:something_else" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
@@ -129,26 +143,26 @@ describe("hasLiveTurnForDeployment", () => {
     // this query on `runs_lobu_claim_idx`'s partial index, so dropping it would
     // both widen the probe and turn an index probe into a scan of the 30-day
     // retention.
-    await seedMarker({ runType: "chat_message" });
+    await seedDeliveredTurn("m-1", { runType: "chat_message" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
 });
 
-describe("hasLiveTurnForDeployment queued-message exclusion", () => {
+describe("hasLiveTurnForDeployment delivery receipt", () => {
   test("REGRESSION: an armed-but-still-queued turn is not a RUNNING turn", async () => {
     // A turn's marker is armed at dispatch, BEFORE its thread_message job is
     // delivered. The dispatch gate holds one such claimed job when it probes,
     // and other turns may sit queued behind it. Counting those markers as
     // live turns would let two queued turns defer each other forever — the
-    // deadlock this predicate exists to prevent.
+    // deadlock the delivery-receipt requirement exists to prevent.
     await seedMarker({ messageId: "m-queued" });
     await seedThreadJob({ messageId: "m-queued", status: "pending" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
 
-  test("a claimed-but-undelivered job is excluded too", async () => {
+  test("a claimed-but-undelivered job is not a running turn either", async () => {
     // The gate's own claimed job is `status='claimed'` while the handler runs.
     await seedMarker({ messageId: "m-claimed" });
     await seedThreadJob({ messageId: "m-claimed", status: "claimed" });
@@ -166,11 +180,26 @@ describe("hasLiveTurnForDeployment queued-message exclusion", () => {
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
   });
 
+  test("REGRESSION: an SSE-reconnect replay row does not hide a running turn", async () => {
+    // registerWorker replays the durable agent_run_input of every
+    // non-terminalized turn when a worker reconnects — including a turn that is
+    // actively RUNNING on that worker. The replay creates a fresh pending
+    // thread_message row for the SAME messageId. Reading "a pending row
+    // exists" as "never delivered" would let a stale-worker recycle SIGTERM
+    // the active worker mid-turn; the completed delivery receipt must win.
+    await seedMarker({ messageId: "m-replayed" });
+    await seedThreadJob({ messageId: "m-replayed", status: "completed" });
+    await seedThreadJob({ messageId: "m-replayed", status: "pending" });
+
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
+  });
+
   test("another deployment's queued job does not shadow OUR delivered turn", async () => {
-    // The exclusion join must be scoped to this deployment's queue: a queued
-    // job elsewhere reusing the same platform messageId (Telegram ids are
+    // Both joins must be scoped to this deployment's queue: a queued job
+    // elsewhere reusing the same platform messageId (Telegram ids are
     // per-chat) must not hide a genuinely running turn here.
     await seedMarker({ messageId: "m-shared" });
+    await seedThreadJob({ messageId: "m-shared", status: "completed" });
     await seedThreadJob({
       deploymentName: "deploy-somebody-else",
       messageId: "m-shared",
@@ -178,5 +207,19 @@ describe("hasLiveTurnForDeployment queued-message exclusion", () => {
     });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
+  });
+
+  test("another deployment's delivery receipt is not OURS", async () => {
+    // The completed-row join is deployment-scoped too: a delivered turn on a
+    // different worker reusing the messageId must not make OUR still-queued
+    // turn look delivered.
+    await seedMarker({ messageId: "m-foreign" });
+    await seedThreadJob({
+      deploymentName: "deploy-somebody-else",
+      messageId: "m-foreign",
+      status: "completed",
+    });
+
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
   });
 });

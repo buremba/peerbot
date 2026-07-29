@@ -19,7 +19,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
-import { isConnectionDevicePinUniqueViolation } from "../../utils/connections";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -150,7 +149,21 @@ describe("connections.update device pin pre-flight", () => {
 		// Loser: pre-flight sees the device free (winner uncommitted), proceeds to
 		// the write, blocks on the index until the winner commits, then loses.
 		await new Promise((r) => setTimeout(r, 50));
-		const [result] = await Promise.all([update(loser, contested), winner]);
+		const [result] = await Promise.all([
+			// A COMBINED update: the rename must roll back with the failed pin, or
+			// the caller sees an error while the database kept half the change.
+			manageConnections(
+				{
+					action: "update",
+					connection_id: loser,
+					display_name: "Renamed By A Lost Race",
+					device_worker_id: contested,
+				},
+				{} as Env,
+				ctx,
+			) as Promise<Record<string, unknown>>,
+			winner,
+		]);
 
 		expect(String(result.error)).toMatch(/already assigned to that device/i);
 		expect(String(result.error)).not.toMatch(/duplicate key|violates unique/i);

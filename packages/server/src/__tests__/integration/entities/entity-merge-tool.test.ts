@@ -329,6 +329,10 @@ describe("manage_entity merge action", () => {
 			RESOLUTION_FINGERPRINT_VERSION,
 		);
 		expect(resetInput.resolution_fingerprint).not.toBe("0".repeat(64));
+		expect(resetInput.evidence_change).toEqual({
+			dropped: [],
+			gained: [],
+		});
 
 		const [recheckedEvent] = await sql`
 			SELECT title, interaction_status, interaction_input, metadata
@@ -343,6 +347,7 @@ describe("manage_entity merge action", () => {
 			current: resetInput.current,
 			proposal: {
 				evidence: resetInput.evidence,
+				evidence_change: resetInput.evidence_change,
 			},
 			reason: resetInput.reason,
 		});
@@ -454,6 +459,15 @@ describe("manage_entity merge action", () => {
 		expect("error" in refused && refused.error).toMatch(
 			/re-checked.*approve again to apply/i,
 		);
+		const [refreshedRun] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(
+			(refreshedRun.action_input as Record<string, unknown>).evidence_change,
+		).toEqual({
+			dropped: [],
+			gained: [{ kind: "phone", identifier: "447700900123" }],
+		});
 
 		const [untouched] =
 			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
@@ -527,11 +541,21 @@ describe("manage_entity merge action", () => {
 		expect(untouched.deleted_at).toBeNull();
 
 		const [card] = await sql`
-			SELECT title FROM current_event_records WHERE run_id = ${queued.approval_run_id}
+			SELECT title, metadata
+			FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id}
 		`;
 		expect(card.title).toBe(
 			"entity_merge — evidence no longer supports the merge",
 		);
+		expect(card.metadata).toMatchObject({
+			proposal: {
+				evidence_change: {
+					dropped: [{ kind: "phone", identifier: "447700900123" }],
+					gained: [],
+				},
+			},
+		});
 	});
 
 	it("does not downgrade a merge fingerprint from a newer format", async () => {

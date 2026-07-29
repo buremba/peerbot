@@ -252,6 +252,9 @@ export function mergeReviewEventMetadata(proposal: EntityMergeProposal) {
 			entity_ids: mergeEntityIds(proposal),
 			winner_entity_id: proposal.winner_entity_id,
 			evidence: proposal.evidence ?? [],
+			...(proposal.evidence_change
+				? { evidence_change: proposal.evidence_change }
+				: {}),
 			names: duplicates.map((entity) => entity.name),
 			name: proposal.current.loser.name,
 			winner_name: proposal.current.winner.name,

@@ -163,6 +163,41 @@ describe('custom guardrails persist through PATCH/GET /config', () => {
     expect(body.guardrailsInline?.[0]?.enabled).toBe(false);
   });
 
+  test('rejects a malformed skillsConfig through the route', async () => {
+    // Drives the real PATCH route, not the exported validator: the plausible
+    // way this ships broken is the helper existing but never being called.
+    // The runtime gates skills on truthiness, so `enabled: "yes"` would enable
+    // a skill the write path never saw as enabled.
+    const app = await importAgentRoutes();
+    const res = await app.request(`/${AGENT}/config`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        skillsConfig: {
+          skills: [{ repo: 'file/x', name: 'x', enabled: 'yes' }],
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string; error_description?: string };
+    expect(body.error).toBe('invalid_skills_config');
+    expect(body.error_description).toMatch(/enabled must be a boolean/);
+  });
+
+  test('accepts a well-formed skillsConfig through the route', async () => {
+    const app = await importAgentRoutes();
+    const res = await app.request(`/${AGENT}/config`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        skillsConfig: {
+          skills: [{ repo: 'file/x', name: 'x', enabled: true }],
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   test('rejects a custom guardrail with no model when no gateway default is set', async () => {
     // EGRESS_JUDGE_MODEL is unset in tests, so a model is required.
     const app = await importAgentRoutes();

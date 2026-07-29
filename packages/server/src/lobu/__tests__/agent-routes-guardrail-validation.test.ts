@@ -16,7 +16,9 @@ import { describe, expect, test } from "bun:test";
 import { installRouteTestMocks } from "./helpers/route-test-mocks";
 
 installRouteTestMocks();
-const { validateGuardrailsInline } = await import("../agent-routes.js");
+const { validateGuardrailsInline, validateSkillsConfig } = await import(
+  "../agent-routes.js"
+);
 
 describe("validateGuardrailsInline", () => {
   test("returns null for an absent payload", () => {
@@ -185,5 +187,60 @@ describe("validateGuardrailsInline", () => {
         },
       ])
     ).toMatch(/model must be a string/);
+  });
+});
+
+/**
+ * `skillsConfig` is spread through the PATCH route and read back as a trusted
+ * SkillConfig, so the structural shape has to hold at the write boundary.
+ */
+describe("validateSkillsConfig", () => {
+  test("accepts absent, empty, and well-formed payloads", () => {
+    expect(validateSkillsConfig(undefined)).toBeNull();
+    expect(validateSkillsConfig({})).toBeNull();
+    expect(validateSkillsConfig({ skills: [] })).toBeNull();
+    expect(
+      validateSkillsConfig({
+        skills: [{ repo: "file/x", name: "x", enabled: true }],
+      })
+    ).toBeNull();
+  });
+
+  test("rejects a non-array skills value", () => {
+    // A non-array throws at the first `.filter()` downstream.
+    expect(validateSkillsConfig({ skills: "nope" })).toMatch(
+      /skills must be an array/
+    );
+  });
+
+  test("rejects a non-boolean enabled", () => {
+    // The runtime gates on truthiness (`s.enabled && …`), so "yes" would enable
+    // a skill that no write-time check ever saw as enabled.
+    for (const enabled of ["yes", 1, {}]) {
+      expect(
+        validateSkillsConfig({ skills: [{ repo: "f/x", name: "x", enabled }] })
+      ).toMatch(/enabled must be a boolean/);
+    }
+    expect(
+      validateSkillsConfig({
+        skills: [{ repo: "f/x", name: "x", enabled: false }],
+      })
+    ).toBeNull();
+  });
+
+  test("requires repo and name", () => {
+    expect(validateSkillsConfig({ skills: [{ name: "x" }] })).toMatch(
+      /repo must be a non-empty string/
+    );
+    expect(validateSkillsConfig({ skills: [{ repo: "f/x", name: "  " }] })).toMatch(
+      /name must be a non-empty string/
+    );
+  });
+
+  test("error paths name the offending entry", () => {
+    const err = validateSkillsConfig({
+      skills: [{ repo: "a", name: "a" }, { repo: "b" }],
+    });
+    expect(err).toContain("skills[1]");
   });
 });

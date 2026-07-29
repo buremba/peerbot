@@ -1699,6 +1699,47 @@ export function validateGuardrailsInline(value: unknown): string | null {
 	return null;
 }
 
+/**
+ * Structural validation for `skillsConfig` at the write boundary.
+ *
+ * The PATCH route spreads settings through untouched, so without this a
+ * malformed payload persists and is then read back as a trusted `SkillConfig`:
+ * a non-array `skills` throws at the first `.filter()` downstream, and a
+ * non-boolean `enabled` diverges from the runtime, which gates on truthiness
+ * (`s.enabled && …`) — so `"yes"` would enable a skill that no write-time check
+ * ever saw as enabled.
+ *
+ * Deliberately shallow. It pins the fields the server actually depends on
+ * (`skills` is an array of objects; `repo`/`name` are non-empty strings;
+ * `enabled` is a boolean) and leaves the rest of the shape to the schema.
+ */
+export function validateSkillsConfig(value: unknown): string | null {
+	if (value === undefined) return null;
+	if (typeof value !== "object" || value === null) {
+		return "skillsConfig must be an object";
+	}
+	const skills = (value as { skills?: unknown }).skills;
+	if (skills === undefined) return null;
+	if (!Array.isArray(skills)) return "skillsConfig.skills must be an array";
+
+	for (let i = 0; i < skills.length; i++) {
+		const skill = skills[i];
+		if (typeof skill !== "object" || skill === null) {
+			return `skillsConfig.skills[${i}] must be an object`;
+		}
+		const s = skill as Record<string, unknown>;
+		for (const key of ["repo", "name"] as const) {
+			if (typeof s[key] !== "string" || (s[key] as string).trim() === "") {
+				return `skillsConfig.skills[${i}].${key} must be a non-empty string`;
+			}
+		}
+		if (s.enabled !== undefined && typeof s.enabled !== "boolean") {
+			return `skillsConfig.skills[${i}].enabled must be a boolean`;
+		}
+	}
+	return null;
+}
+
 routes.patch("/:agentId/config", async (c) => {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
@@ -1718,6 +1759,18 @@ routes.patch("/:agentId/config", async (c) => {
 	if (guardrailError) {
 		return c.json(
 			{ error: "invalid_guardrail", error_description: guardrailError },
+			400
+		);
+	}
+
+	// Structural check on skillsConfig — the settings spread below persists it
+	// verbatim, and the runtime reads it back as a trusted SkillConfig.
+	const skillsConfigError = validateSkillsConfig(
+		(updates as { skillsConfig?: unknown }).skillsConfig
+	);
+	if (skillsConfigError) {
+		return c.json(
+			{ error: "invalid_skills_config", error_description: skillsConfigError },
 			400
 		);
 	}

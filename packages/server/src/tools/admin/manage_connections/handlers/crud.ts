@@ -1843,7 +1843,7 @@ export async function handleUpdate(
       const lockedConnectionConfig = lockedSplit?.connectionConfig ?? null;
       const lockedReplaceConfig = lockedConnectionConfig ?? {};
 
-      return tx`
+      const rows = await tx`
         UPDATE connections
         SET display_name = COALESCE(${args.display_name ?? null}, display_name),
             slug = COALESCE(${nextSlug}, slug),
@@ -1861,6 +1861,38 @@ export async function handleUpdate(
         WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
         RETURNING *
       `;
+      // The device pin writes in THIS transaction, not after it. The pre-flight
+      // above is an unlocked SELECT, so two replicas can both see the device as
+      // free and race into `idx_connections_org_connector_device_live`; the
+      // loser's violation must abort the general update too, or a combined
+      // request reports failure while persisting the display_name/config/auth
+      // changes it claims to have rejected.
+      if (
+        hasDeviceWorkerArg ||
+        (updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
+      ) {
+        await tx`
+          UPDATE connections
+          SET device_worker_id = ${nextDeviceWorkerId},
+              error_message = CASE
+                WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+                THEN NULL
+                ELSE error_message
+              END,
+              status = CASE
+                WHEN ${nextDeviceWorkerId != null}
+                 AND status = 'paused'
+                 AND error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+                THEN 'active'
+                ELSE status
+              END,
+              updated_at = NOW()
+          WHERE id = ${args.connection_id}
+            AND organization_id = ${organizationId}
+            AND deleted_at IS NULL
+        `;
+      }
+      return rows;
     });
     if (updated.length === 0) return { error: "Connection not found" };
   } catch (err) {
@@ -1871,6 +1903,24 @@ export async function handleUpdate(
     }
 		if (isPersonalCredVisibilityViolation(err))
 			return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
+		// A replica won the device between our pre-flight and this write. The
+		// transaction aborted, so nothing was persisted — report the same readable
+		// collision the pre-flight would have.
+		if (isConnectionDevicePinUniqueViolation(err)) {
+			const winner = (await sql`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${existing.connector_key}
+          AND device_worker_id = ${nextDeviceWorkerId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+			return {
+				error: winner[0]
+					? `A ${existing.connector_key} connection (id: ${winner[0].id}) is already assigned to that device in this org.`
+					: `That device is already assigned to another ${existing.connector_key} connection in this org.`,
+			};
+		}
     throw err;
   }
 
@@ -1885,49 +1935,6 @@ export async function handleUpdate(
 			.error_message as string | null;
 		const pinningDevice = nextDeviceWorkerId != null;
 		clearedDeviceTombstone = isDevicePinTombstone(previousError);
-		// The pre-flight above is an unlocked SELECT, so two replicas can both
-		// observe the device as free and race into the index — the loser would
-		// otherwise surface the raw 23505 this fix exists to prevent. The index is
-		// the real arbiter; translate its violation into the same readable error.
-		try {
-			await sql`
-      UPDATE connections
-      SET device_worker_id = ${nextDeviceWorkerId},
-          error_message = CASE
-            WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
-            THEN NULL
-            ELSE error_message
-          END,
-          status = CASE
-            WHEN ${pinningDevice}
-             AND status = 'paused'
-             AND error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
-            THEN 'active'
-            ELSE status
-          END,
-          updated_at = NOW()
-      WHERE id = ${args.connection_id}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-    `;
-		} catch (err) {
-			if (isConnectionDevicePinUniqueViolation(err)) {
-				const winner = (await sql`
-          SELECT id FROM connections
-          WHERE organization_id = ${organizationId}
-            AND connector_key = ${existing.connector_key}
-            AND device_worker_id = ${nextDeviceWorkerId}
-            AND deleted_at IS NULL
-          LIMIT 1
-        `) as unknown as Array<{ id: number }>;
-				return {
-					error: winner[0]
-						? `A ${existing.connector_key} connection (id: ${winner[0].id}) is already assigned to that device in this org.`
-						: `That device is already assigned to another ${existing.connector_key} connection in this org.`,
-				};
-			}
-			throw err;
-		}
 		(updated[0] as Record<string, unknown>).device_worker_id =
 			nextDeviceWorkerId;
 		if (clearedDeviceTombstone) {

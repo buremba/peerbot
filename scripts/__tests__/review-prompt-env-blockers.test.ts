@@ -34,23 +34,29 @@ const PROMPT = join(REPO_ROOT, "prompts/review-prompt.md");
 /** Reviewer-side inability to execute — a fact about the sandbox, not the diff. */
 const ENV_INABILITY =
   /(environment (itself )?is broken|reviewer's environment|sandbox|read-only|EPERM|execution is unavailable|denies the writes|cannot run|can't run|unable to run|could not run)/i;
-/**
- * Same pattern, global — only for `replace`. It cannot be one shared regex:
- * a `/g` regex carries `lastIndex` across `.test()` calls, so sharing it makes
- * the bullet filter skip every other bullet.
- */
-const ENV_INABILITY_ALL = new RegExp(ENV_INABILITY.source, "gi");
 const MENTIONS_BLOCKER = /blocker/i;
-const PROHIBITION = /\b(not|never|n't)\b/i;
-/**
- * Split on clause boundaries, not sentence boundaries. "do not hide it;
- * record it as a blocker" is one sentence whose negation governs a different
- * verb — scoping to the sentence accepts it. Splitting wider risks the
- * reverse error (a negation stranded from the clause it governs), which is
- * the safe direction: a false positive is a loud CI failure on a 250-line
- * document, a false negative is another silent unbypassable gate.
- */
 const CLAUSE_BOUNDARY = /(?<=[.;!?—,])\s*/;
+
+/**
+ * The two ways the prompt may legitimately connect an env failure to
+ * blockers. Anything else inside an env rule is a contradiction.
+ *
+ * This is a whitelist because the three revisions before it were blacklists —
+ * "does this clause contain a negation" — and each died to a negation that
+ * governed a different verb: first across sentences ("Do not retry
+ * indefinitely"), then across a semicolon, then across an "and" ("do not hide
+ * it and record it as a blocker"). Which verb a `not` attaches to is not
+ * something a regex settles, and every patch moved the counter-example one
+ * conjunction further out.
+ *
+ * Inverting it removes the question. A phrasing this does not recognize gets
+ * flagged rather than allowed, so an unanticipated rewrite fails loudly on a
+ * 250-line document instead of silently reopening an unbypassable gate.
+ */
+const PROHIBITS_BLOCKER = [
+  /\b(?:never|not)\s+a\s+`?blockers?`?/i,
+  /\bnot\s+\w+\s+(?:them\s+)?(?:to|under|in|as)\s+`?blockers?`?/i,
+];
 
 /**
  * Every clause that ties a reviewer-side inability to `blockers` without
@@ -62,7 +68,7 @@ function contradictions(markdown: string): string[] {
     .flatMap((bullet) => bullet.split(CLAUSE_BOUNDARY))
     .filter((clause) => MENTIONS_BLOCKER.test(clause))
     .filter(
-      (clause) => !PROHIBITION.test(clause.replace(ENV_INABILITY_ALL, ""))
+      (clause) => !PROHIBITS_BLOCKER.some((allowed) => allowed.test(clause))
     )
     .map((clause) => clause.trim());
 }
@@ -99,8 +105,15 @@ const CONTRADICTORY = [
   // An unrelated negation earlier in the same sentence; defeats a
   // sentence-scoped negation search.
   "- If your sandbox is read-only, do not hide it; record it as a blocker.",
+  // The same, with `and` instead of `;` — no clause boundary at all, which is
+  // what defeated the clause-scoped revision.
+  "- If your sandbox is read-only, do not hide it and record it as a blocker.",
   // Bare copula, no imperative verb to key on.
   "- A read-only sandbox counts as a `blocker`.",
+  // Negation present but attached to something else entirely.
+  "- When the reviewer's environment fails, nothing stops you recording a blocker.",
+  // A verb the whitelist was never written around.
+  "- If you cannot run the suite, escalate it to `blockers`.",
 ];
 
 /** Phrasings that must NOT be flagged, so the guard stays usable. */
@@ -108,6 +121,7 @@ const CONSISTENT = [
   "- If the sandbox is read-only, that is never a `blocker`; put it in `notes`\n  with the `[env]` prefix.",
   "- Environment problems (a read-only sandbox) — DO NOT add them to `blockers`.",
   "- A probe that dies with `EPERM` is not a `blocker`.",
+  "- A sandbox denial does not belong in `blockers`.",
 ];
 
 describe("review prompt: environment failures are never blockers", () => {

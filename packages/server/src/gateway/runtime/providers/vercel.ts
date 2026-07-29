@@ -341,11 +341,9 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     const cwd = remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR);
     // Only the TRANSPORT is wrapped: a non-zero exitCode from the agent's own
     // command is a normal result and must flow through untouched.
-    let stdout: string;
-    let stderr: string;
-    let exitCode: number;
+    let result: Awaited<ReturnType<Sandbox["runCommand"]>>;
     try {
-      const result = await sandbox.runCommand({
+      result = await sandbox.runCommand({
         cmd: "/bin/bash",
         args: [
           "-lc",
@@ -354,11 +352,28 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
         env: ctx.env,
         timeoutMs: ctx.timeoutMs,
       });
-      [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
-      exitCode = result.exitCode;
     } catch (error) {
+      // Dispatch failed: the command demonstrably never ran, so retrying is safe.
       throw asRuntimeInfrastructureError(error, "run command");
     }
+
+    // Fetching the logs is a SEPARATE call, and by this point the command has
+    // already executed. A failure here must never be reported as "your command
+    // did not run" with a retry hint — re-running a command that already
+    // succeeded duplicates its side effects (a POST sent twice, a file appended
+    // twice). Report it as non-retryable and say the outcome is unknown.
+    let stdout: string;
+    let stderr: string;
+    try {
+      [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new RuntimeInfrastructureError(
+        `Sandbox runtime ran the command but could not retrieve its output: ${detail}. The command MAY have completed — do not assume it needs re-running.`,
+        { retryable: false, cause: error }
+      );
+    }
+    const exitCode = result.exitCode;
 
     return {
       stdout,

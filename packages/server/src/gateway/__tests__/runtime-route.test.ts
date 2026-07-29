@@ -239,6 +239,38 @@ describe("createRuntimeRoutes — infrastructure failures", () => {
     expect(body.retryable).toBe(false);
   });
 
+  test("a log-fetch failure AFTER the command ran is not retryable", async () => {
+    // The dangerous case: runCommand succeeded, so the command's side effects
+    // already happened. Claiming it "did not run" and inviting a retry would
+    // duplicate them.
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => {
+        throw apiError(429);
+      },
+      stderr: async () => "",
+    }));
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "curl -X POST https://api.github.com/x" }),
+    });
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    // Not retryable, despite the underlying 429 — the command already ran.
+    expect(body.retryable).toBe(false);
+    expect(res.status).toBe(503);
+    expect(String(body.error)).toContain("MAY have completed");
+    expect(String(body.error)).not.toContain("did not run");
+  });
+
   test("a transport failure during the command is infrastructure, not exit 1", async () => {
     setVercelSystemCreds();
     runCommandMock.mockImplementationOnce(async () => {

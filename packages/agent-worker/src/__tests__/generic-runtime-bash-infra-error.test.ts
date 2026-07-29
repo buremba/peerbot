@@ -55,23 +55,31 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
 
     // Not exit 1 — the command never ran, so it must not read as having failed.
     expect(exitCode).toBe(126);
-    expect(output).toContain("sandbox runtime unavailable");
+    expect(output).toContain("sandbox runtime error");
     expect(output).toContain("your command did not run");
     // Retryable faults say so, so the agent waits instead of rewriting.
     expect(output).toContain("transient");
   });
 
-  test("a non-retryable infrastructure fault omits the retry hint", async () => {
+  test("a non-retryable fault never claims the command did not run", async () => {
+    // The log-fetch case: runCommand SUCCEEDED and only the output retrieval
+    // failed. Telling the agent "your command did not run… retry" would make it
+    // repeat a command that already took effect — a duplicated POST or append.
     const { output, exitCode } = await run(
       opsWithResponse(503, {
-        error: "Sandbox runtime failed to provision sandbox: bad credentials",
+        error:
+          "Sandbox runtime ran the command but could not retrieve its output: Status code 429 is not ok. The command MAY have completed — do not assume it needs re-running.",
         kind: "infrastructure",
         retryable: false,
       })
     );
 
     expect(exitCode).toBe(126);
-    expect(output).toContain("sandbox runtime unavailable");
+    expect(output).toContain("sandbox runtime error");
+    expect(output).toContain("outcome is unknown");
+    expect(output).toContain("Do NOT re-run it blindly");
+    // The two claims that would cause a duplicate side effect.
+    expect(output).not.toContain("did not run");
     expect(output).not.toContain("transient");
   });
 
@@ -82,7 +90,7 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
 
     expect(exitCode).toBe(1);
     expect(output).toContain("Missing command");
-    expect(output).not.toContain("sandbox runtime unavailable");
+    expect(output).not.toContain("sandbox runtime error");
   });
 
   test("a command's own non-zero exit is passed through untouched", async () => {
@@ -97,6 +105,6 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
 
     expect(exitCode).toBe(2);
     expect(output).toContain("no such file");
-    expect(output).not.toContain("sandbox runtime unavailable");
+    expect(output).not.toContain("sandbox runtime error");
   });
 });

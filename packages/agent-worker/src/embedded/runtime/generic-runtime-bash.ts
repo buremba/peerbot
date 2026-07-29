@@ -94,16 +94,20 @@ export function createGenericRuntimeBashOps(
         // was wrong, rewrote a correct command and retried into an already
         // throttled endpoint. Naming the fault is what stops that loop.
         if (payload.kind === "infrastructure") {
-          const retryHint = payload.retryable
-            ? " This is usually transient — the same command may succeed shortly."
-            : "";
+          // Only a retryable fault is one we know happened BEFORE the command
+          // ran. A non-retryable one may have failed after execution (e.g.
+          // fetching the logs of a command that already completed), so it must
+          // not claim the command did not run, and must not invite a retry that
+          // would duplicate side effects.
+          const detail = payload.retryable
+            ? "your command did not run. This is usually transient — the same command may succeed shortly."
+            : "the command's outcome is unknown. Do NOT re-run it blindly; check whether it took effect first.";
           onData(
-            Buffer.from(
-              `lobu: sandbox runtime unavailable — your command did not run.${retryHint}\n${message}\n`
-            )
+            Buffer.from(`lobu: sandbox runtime error — ${detail}\n${message}\n`)
           );
-          // 126 is "command found but not executable": the command never ran, so
-          // it is not reported as having failed.
+          // 126 ("command found but not executable") rather than 1: the failure
+          // is the runtime's, so it must not read as the command having run and
+          // failed. The message above says which of the two cases this is.
           return { exitCode: 126 };
         }
         onData(Buffer.from(`${message}\n`));

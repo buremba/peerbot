@@ -165,9 +165,9 @@ function locateSystemdRun(): string | null {
 }
 
 /**
- * Detect once whether `nix-shell` is available. Skills/agents declare native
- * deps via `nixConfig.packages`, which we normally provision by wrapping the
- * worker in `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
+ * Detect once whether `nix-shell` is available. Agents and connectors declare
+ * native deps via `nixConfig.packages`, which we normally provision by wrapping
+ * the worker in `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
  * image, which bakes Chromium in directly rather than via Nix) won't have it,
  * so we fall back to a plain spawn — mirroring `locateSystemdRun`'s graceful
  * degradation — instead of crashing the worker with `spawn nix-shell ENOENT`.
@@ -582,7 +582,7 @@ function buildShellCommand(command: string, args: string[]): string {
 }
 
 /**
- * Validate a skill-declared Nix package name and return a safe Nix attribute
+ * Validate a declared Nix package name and return a safe Nix attribute
  * reference (`pkgs.<name>`). Delegates to the canonical sanitizer in
  * @lobu/connector-sdk (shared with the connector-worker executor so the two
  * paths can't drift), wrapping failures in an `OrchestratorError` for the
@@ -1656,8 +1656,9 @@ export class DeploymentManager {
       };
     }
     if (agentTooling.packages.length > 0) {
-      // Union, never replace: the agent's own packages and its enabled skills'
-      // are hard requirements of code that will run in the same sandbox.
+      // Union, never replace: the agent's own packages and connector-contributed
+      // packages are hard requirements of code that will run in the same
+      // sandbox.
       validated.nixConfig = {
         ...validated.nixConfig,
         packages: [

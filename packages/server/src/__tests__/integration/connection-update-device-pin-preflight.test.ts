@@ -123,14 +123,24 @@ describe("connections.update device pin pre-flight", () => {
 		expect(await pinOf(mover)).toBe(macBook);
 	});
 
-	it("translates a lost race (raw 23505) into the same readable error", async () => {
+	it("recognises the index violation a lost race would raise", async () => {
 		// The pre-flight is an unlocked SELECT, so two replicas can both observe
-		// the device as free and race into the index; the loser must not surface
-		// the driver's constraint text. A true cross-replica interleaving is not
-		// reachable from a single-process test — the pre-flight always sees the
-		// committed winner — so this drives the recovery path directly: perform
-		// the write the loser would perform, and assert the violation is
-		// recognised as this index's rather than propagating raw.
+		// the device as free and race into the index; `handleUpdate` catches that
+		// violation and returns the same readable error.
+		//
+		// The catch branch is NOT reachable in-process, and deliberately so: the
+		// pre-flight predicate mirrors the index predicate exactly — same
+		// (organization_id, connector_key, device_worker_id), same
+		// `deleted_at IS NULL` — so every row the index would reject, the
+		// pre-flight already caught. Only a genuine cross-process interleaving
+		// gets past it, which a single-process test cannot construct without
+		// stubbing the driver.
+		//
+		// So this asserts the part that IS testable and that the branch depends
+		// on: that a real violation raised by the live index is recognised by
+		// `isConnectionDevicePinUniqueViolation`. If the constraint were renamed
+		// or the driver stopped surfacing `constraint_name`, this fails here
+		// rather than silently leaking raw 23505 text to a user in prod.
 		const contested = await seedDevice("Contested");
 		const holder = await seedConnectionOnDevice(contested);
 		const loser = await seedConnectionOnDevice(null);

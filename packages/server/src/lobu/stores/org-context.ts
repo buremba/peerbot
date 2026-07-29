@@ -45,10 +45,18 @@ export function requireOrgId(explicit: string | null | undefined, caller: string
 }
 
 /**
- * Optional `organization_id` filter as a composable SQL fragment, so the
- * org-scoped and legacy (org-less) query variants share a single statement.
- * Returns an empty fragment when `orgId` is null/undefined.
+ * `organization_id` filter as a composable SQL fragment.
+ *
+ * Fail-closed by construction: `orgId` is required. This used to accept
+ * null/undefined and return an EMPTY fragment, which silently dropped the
+ * tenant predicate — a cross-tenant read on every SELECT that used it, and a
+ * cross-tenant wipe on `GrantStore.revoke`'s DELETE. Nothing signalled it: no
+ * error, no log, just a query answering for every org at once.
+ *
+ * A caller that cannot produce an org must say so explicitly by resolving it
+ * with {@link requireOrgId} (which throws and names the caller) rather than
+ * passing a nullable through and inheriting an unscoped query.
  */
-export function orgScope(sql: ReturnType<typeof getDb>, orgId: string | null | undefined) {
-  return orgId ? sql`AND organization_id = ${orgId}` : sql``;
+export function orgScope(sql: ReturnType<typeof getDb>, orgId: string) {
+  return sql`AND organization_id = ${orgId}`;
 }

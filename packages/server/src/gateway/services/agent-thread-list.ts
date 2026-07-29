@@ -174,10 +174,14 @@ export async function listAgentThreads(args: {
 	// single listing source. This replaces the old
 	// `DISTINCT ON (conversation_id) FROM agent_transcript_snapshot` derive path
 	// AND the workspace-directory scan.
+	//
+	// This is an end-user feed, so "all" means "mine plus the channels I may
+	// read" — `shared`, never the store's `admin`. Admin listing is
+	// `manage_conversations`, which checks a role first.
 	const rows = await listConversations({
 		organizationId,
 		agentId,
-		scope,
+		scope: scope === "all" ? "shared" : "user",
 		userId,
 	});
 

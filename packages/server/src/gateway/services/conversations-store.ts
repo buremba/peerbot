@@ -120,11 +120,9 @@ export interface ConversationListRow {
 	createdAt: Date;
 }
 
-/**
- * Read one conversation row by its full PK. Returns null when the row does not
- * exist (or is soft-deleted). The single get source, mirroring
- * {@link listConversations}'s read of the materialized entity.
- */
+/** Audience a conversation listing is built for. See {@link listConversations}. */
+export type ConversationListScope = "user" | "shared" | "admin";
+
 /**
  * Look up a conversation by its STORED id, without knowing its platform.
  *
@@ -288,8 +286,19 @@ export async function readConversationReply(args: {
 export async function listConversations(args: {
 	organizationId: string;
 	agentId: string;
-	/** "user": only this user's owned conversations. "all": every conversation. */
-	scope: "user" | "all";
+	/**
+	 * Who the listing is for — NOT merely which kinds to include:
+	 * - `"user"`: only this user's owned conversations.
+	 * - `"shared"`: this user's owned conversations plus platform ones. Widening
+	 *   to a channel is not widening to another person's private thread.
+	 * - `"admin"`: every conversation in the org, including other users' owned
+	 *   ones. Only for a caller whose admin/owner role has ALREADY been checked.
+	 *
+	 * `"shared"` and `"admin"` return the same platform rows and differ only on
+	 * other users' owned rows, so the two must stay separate names: one label
+	 * covering both is what let an authorization decision be made by a default.
+	 */
+	scope: ConversationListScope;
 	userId: string;
 }): Promise<ConversationListRow[]> {
 	const { organizationId, agentId, scope, userId } = args;
@@ -313,12 +322,16 @@ export async function listConversations(args: {
       ${
 				scope === "user"
 					? sql`AND kind = 'owned' AND user_id = ${userId}`
-					: // `all` widens to platform conversations, NOT to other users'
-						// private ones. An owned conversation belongs to whoever started
-						// it in every scope; its title is message text, and the read path
-						// now addresses a conversation by its stored id, so listing
-						// someone else's here would hand out a readable id.
-						sql`AND (kind <> 'owned' OR user_id = ${userId})`
+					: scope === "shared"
+						? // `shared` widens to platform conversations, NOT to other users'
+							// private ones. An owned conversation belongs to whoever started
+							// it; its title is message text, and the read path now addresses
+							// a conversation by its stored id, so listing someone else's here
+							// would hand out an id that is readable.
+							sql`AND (kind <> 'owned' OR user_id = ${userId})`
+						: // `admin`: no owner predicate at all. Reaching here means the
+							// caller's admin/owner role was checked upstream.
+							sql``
 			}
     ORDER BY last_activity_at DESC NULLS LAST, created_at DESC
   `;

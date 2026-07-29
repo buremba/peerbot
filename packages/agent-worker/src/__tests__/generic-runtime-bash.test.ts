@@ -100,6 +100,120 @@ describe("createGenericRuntimeBashOps", () => {
     });
   });
 
+  /**
+   * The gateway degrades honestly when a contributed nix package fails to
+   * install: HTTP 200, the command still runs, and the failure is reported in
+   * `sandbox.packages` (shape pinned by
+   * `packages/server/src/gateway/__tests__/runtime-route.test.ts`). Only the
+   * worker can tell the AGENT — if it drops the field, the model sees exit 0
+   * and no hint that the CLI it is about to reach for is absent.
+   */
+  describe("contributed package provisioning", () => {
+    function opsForResponse(payload: unknown): {
+      ops: ReturnType<typeof createGenericRuntimeBashOps>;
+    } {
+      globalThis.fetch = mock(async () =>
+        Response.json(payload as Record<string, unknown>)
+      ) as typeof fetch;
+      const provider = getWorkerRuntimeProvider("vercel");
+      if (!provider) throw new Error("vercel provider not registered");
+      return {
+        ops: createGenericRuntimeBashOps(provider, {
+          gw: {
+            gatewayUrl: "http://127.0.0.1:8787/lobu",
+            workerToken: "worker-token",
+            channelId: "chan",
+            conversationId: "conv",
+          },
+        }),
+      };
+    }
+
+    test("tells the agent which packages are missing instead of exiting silently", async () => {
+      // Verbatim production shape: the route spreads the provider `meta` and
+      // adds `packages` (see runtime.ts `sandbox: { ...result.meta, packages }`).
+      const { ops } = opsForResponse({
+        stdout: "gh: command not found\n",
+        stderr: "",
+        exitCode: 0,
+        sandbox: {
+          name: "lobu-org-agent-hash",
+          persistent: true,
+          cwd: "/vercel/sandbox",
+          packages: {
+            installed: [],
+            failed: ["gh"],
+            cached: false,
+            error: "nix provisioning exited 1",
+          },
+        },
+      });
+
+      const chunks: string[] = [];
+      const result = await ops.exec("gh --version", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 1,
+      });
+
+      const output = chunks.join("");
+      // Named, not merely hinted at — the agent must be able to read WHICH tool
+      // is absent and WHY without guessing from a shell error.
+      expect(output).toContain("lobu:");
+      expect(output).toContain("gh");
+      expect(output).toContain("nix provisioning exited 1");
+      // The notice is a preamble, not a conclusion drawn from the output.
+      expect(output.indexOf("lobu:")).toBeLessThan(
+        output.indexOf("gh: command not found")
+      );
+      // Honest degradation: a missing contributed CLI must NOT fail the turn,
+      // so the command's own exit code is passed through untouched.
+      expect(result.exitCode).toBe(0);
+    });
+
+    test("stays silent when every contributed package provisioned", async () => {
+      const { ops } = opsForResponse({
+        stdout: "gh version 2.0.0\n",
+        stderr: "",
+        exitCode: 0,
+        sandbox: {
+          name: "lobu-org-agent-hash",
+          persistent: true,
+          cwd: "/vercel/sandbox",
+          packages: { installed: ["gh"], failed: [], cached: true },
+        },
+      });
+
+      const chunks: string[] = [];
+      const result = await ops.exec("gh --version", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 1,
+      });
+
+      expect(chunks.join("")).toBe("gh version 2.0.0\n");
+      expect(result.exitCode).toBe(0);
+    });
+
+    test("stays silent when the turn provisioned nothing", async () => {
+      // `sandbox` is the bare provider meta with no `packages` key at all when
+      // the signed claim carried no nix packages.
+      const { ops } = opsForResponse({
+        stdout: "ok\n",
+        stderr: "",
+        exitCode: 0,
+        sandbox: { name: "lobu-org-agent-hash", persistent: true },
+      });
+
+      const chunks: string[] = [];
+      const result = await ops.exec("echo ok", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 1,
+      });
+
+      expect(chunks.join("")).toBe("ok\n");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
   test("surfaces gateway errors as bash failures", async () => {
     globalThis.fetch = mock(async () =>
       Response.json({ error: "not enabled" }, { status: 404 })

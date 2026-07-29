@@ -113,6 +113,30 @@ async function ensureDeviceConnectorWired(
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
         AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
     `;
+    // The statement above repairs only the row we were handed, but an org holds
+    // one connection PER DEVICE and the fast path resolves just one of them
+    // (`GROUP BY … LIMIT 1`, no ORDER BY). When it returns the row that is
+    // already correctly pinned, the UPDATE no-ops — and a sibling left pinned to
+    // a device that has dropped out is never revisited, so it stays bound to a
+    // worker that will never poll again. Sweep every live row instead: a pin
+    // outside the fresh set is stale by definition, and NULL is strictly better
+    // than a dead pin (unpinned is claimable by any polling device; a vanished
+    // device is claimable by nobody).
+    //
+    // Safe for the multi-fresh case — pins INSIDE the fresh set are deliberate
+    // and untouched — and the empty-fleet case never reaches here, because
+    // `reconcileDeviceCapabilities` only calls this connector's wire pass when
+    // `matchingDeviceIds.length > 0` (an offline fleet routes to
+    // `pauseStaleDeviceFeeds`, which must not unpin anything).
+    await db`
+      UPDATE connections
+      SET device_worker_id = NULL, updated_at = NOW()
+      WHERE organization_id = ${organizationId}
+        AND connector_key = ${connectorKey}
+        AND deleted_at IS NULL
+        AND device_worker_id IS NOT NULL
+        AND NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
+    `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
     // connection is not stuck as active + red "Device was removed".
     await clearDevicePinTombstoneIfPinned(db, {

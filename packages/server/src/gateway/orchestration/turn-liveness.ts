@@ -476,6 +476,12 @@ async function enqueueTerminalError(
  * This is the first-writer-wins guarantee for the startup-failure path: if a
  * still-attached worker already produced a terminal reply (which discharged the
  * marker), this no-ops instead of double-signalling the client.
+ *
+ * `false` means exactly "election lost — the turn was already terminalized".
+ * Infrastructure failures THROW instead of returning false: the dispatch gate
+ * completes a held job on the strength of this call, and a swallowed DB error
+ * here would let it drop a turn that never got its terminal event. Callers for
+ * whom this is best-effort (trackFailedDeployment) catch at their call site.
  */
 export async function failTurnIfPending(
   deploymentName: string,
@@ -483,30 +489,22 @@ export async function failTurnIfPending(
   code: AgentErrorCode
 ): Promise<boolean> {
   const key = turnMarkerKey(deploymentName, messageId);
-  try {
-    const sql = getDb();
-    const emitted = await sql.begin(async (tx: DbClient) => {
-      const rows = await tx<{ action_input: unknown }>`
-        DELETE FROM public.runs
-        WHERE idempotency_key = ${key}
-          AND status = 'pending'
-          AND queue_name = ${TURN_TIMEOUT_QUEUE}
-        RETURNING action_input
-      `;
-      const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
-      if (!routing) return false;
-      await enqueueTerminalError(tx, routing, code);
-      return true;
-    });
-    if (emitted) await notifyThreadResponse();
-    return emitted;
-  } catch (err) {
-    logger.error(
-      { key, err: String(err) },
-      "Failed to fail pending turn (startup-failure path)"
-    );
-    return false;
-  }
+  const sql = getDb();
+  const emitted = await sql.begin(async (tx: DbClient) => {
+    const rows = await tx<{ action_input: unknown }>`
+      DELETE FROM public.runs
+      WHERE idempotency_key = ${key}
+        AND status = 'pending'
+        AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      RETURNING action_input
+    `;
+    const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
+    if (!routing) return false;
+    await enqueueTerminalError(tx, routing, code);
+    return true;
+  });
+  if (emitted) await notifyThreadResponse();
+  return emitted;
 }
 
 /**

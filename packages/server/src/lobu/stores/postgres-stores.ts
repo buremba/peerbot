@@ -128,15 +128,13 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 	const store: AgentConfigStore = {
 		async getSettings(agentId) {
 			const sql = getDb();
-			// CROSS-TENANT GUARD: `agents` is keyed (organization_id, id) and has no
-			// global unique index on `id`, so a per-org system agent (`lobu-builder`,
-			// `owletto-default`) has one row per tenant. An unscoped `WHERE id = …`
-			// would return an arbitrary tenant's `models`, `guardrails`,
-			// `pre_approved_tools`, `tools_config`, `nix_config` and `sandbox_id`.
-			// Not hypothetical: `createLobuOrgContextMiddleware` opens no context
-			// when there is no Better Auth user, and the settings-cookie routes
-			// (`/connect/claim` → `GET /api/v1/agents/:agentId/config`) authenticate
-			// without one. Fail closed, as PR #2284 did for agent history.
+			// CROSS-TENANT GUARD: `agents` is keyed (organization_id, id) with no
+			// global unique index on `id`, so a per-org system agent (`lobu-builder`)
+			// has one row per tenant and an id-only read returns an arbitrary one.
+			// The settings-cookie routes authenticate without a Better Auth user, so
+			// `createLobuOrgContextMiddleware` opens no context on a real, externally
+			// reachable path. Callers must prove the tenant and open their own
+			// orgContext; fail closed here, as PR #2284 did for agent history.
 			const orgId = tryGetOrgId();
 			if (!orgId) {
 				logger.warn(
@@ -216,9 +214,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const sql = getDb();
 			// CROSS-TENANT GUARD: same composite-key reasoning as `getSettings`, and
 			// higher stakes — `verifyOwnedAgentAccess` vouches the caller against the
-			// `owner_*` columns of whatever row this returns, so an unscoped read
-			// lets an arbitrary tenant's row decide authorization. PR #2284 fixed the
-			// one caller that had already been traced; this closes the query itself.
+			// `owner_*` columns of whatever row this returns, so an id-only read lets
+			// an arbitrary tenant's row decide authorization.
 			const orgId = tryGetOrgId();
 			if (!orgId) {
 				logger.warn(

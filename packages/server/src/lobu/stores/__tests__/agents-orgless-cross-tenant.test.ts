@@ -1,34 +1,17 @@
 /**
  * Cross-tenant regression test for the org-less `AgentConfigStore` read path.
  *
- * `agents` is keyed `(organization_id, id)` and has exactly two indexes —
- * `agents_pkey UNIQUE (organization_id, id)` and the non-unique
- * `agents_organization_id_idx`. There is NO global unique index on `agents.id`,
- * so a system agent id provisioned per-org (`lobu-builder`, `owletto-default`)
- * exists once per tenant.
- *
- * `getSettings`/`getMetadata` used to fall back to a bare `WHERE id = $agentId`
- * with no `LIMIT` and no `ORDER BY` when no ambient `orgContext` was set,
- * returning `rows[0]` — an arbitrary tenant's row. That leaked `models`,
- * `guardrails`, `pre_approved_tools`, `tools_config`, `nix_config` and
- * `sandbox_id` across tenants, and (via `verifyOwnedAgentAccess`) let an
- * unscoped metadata row decide authorization.
- *
- * The org-less HTTP path is real: `createLobuOrgContextMiddleware` early-returns
- * without opening an `orgContext` when there is no Better Auth user, while
- * `GET /api/v1/agents/:agentId/config` authenticates purely with the
- * `lobu_settings_session` cookie minted by `/connect/claim`. See PR #2284, which
- * fixed the same class in `agent-history.ts`.
- *
- * These reads now fail closed: with no ambient org they resolve nothing rather
- * than guessing a tenant.
+ * `agents` is keyed `(organization_id, id)` with no global unique index on
+ * `id`, so a per-org system agent (`lobu-builder`, `owletto-default`) has one
+ * row per tenant. `getSettings`/`getMetadata` used to fall back to a bare
+ * `WHERE id = $agentId` — no `LIMIT`, no `ORDER BY` — and return `rows[0]`,
+ * leaking an arbitrary tenant's config and letting its `owner_*` columns decide
+ * authorization. The org-less HTTP path is real: the settings-cookie routes
+ * authenticate without a Better Auth user, so no `orgContext` is opened.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	cleanupTestDatabase,
-	getTestDb,
-} from "../../../__tests__/setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../../../__tests__/setup/test-db";
 import { createTestOrganization } from "../../../__tests__/setup/test-fixtures";
 import { orgContext } from "../org-context";
 import { createPostgresAgentConfigStore } from "../postgres-stores";
@@ -47,7 +30,6 @@ describe("org-less agent config reads must not cross tenants", () => {
 		orgB = b.id;
 
 		const config = createPostgresAgentConfigStore();
-		// Both tenants provision the SAME system agent id with DIVERGENT config.
 		for (const [orgId, label] of [
 			[orgA, "A"],
 			[orgB, "B"],
@@ -68,10 +50,7 @@ describe("org-less agent config reads must not cross tenants", () => {
 		}
 	});
 
-	afterEach(async () => {
-		const db = getTestDb();
-		await db`TRUNCATE agents CASCADE`;
-	});
+	afterEach(cleanupTestDatabase);
 
 	it("proves the shared id really has one row per tenant (no global unique on agents.id)", async () => {
 		const db = getTestDb();
@@ -79,26 +58,25 @@ describe("org-less agent config reads must not cross tenants", () => {
 			SELECT organization_id FROM agents WHERE id = ${SHARED_AGENT_ID}
 		`;
 		expect(rows.length).toBe(2);
-		expect(new Set(rows.map((r: { organization_id: string }) => r.organization_id))).toEqual(
-			new Set([orgA, orgB]),
-		);
+		expect(
+			new Set(rows.map((r: { organization_id: string }) => r.organization_id)),
+		).toEqual(new Set([orgA, orgB]));
 	});
 
 	it("getSettings with no ambient org returns null instead of an arbitrary tenant's config", async () => {
 		const config = createPostgresAgentConfigStore();
 
-		// No `orgContext.run` wrapper — exactly the settings-cookie HTTP path.
-		const leaked = await config.getSettings(SHARED_AGENT_ID);
+		const settings = await config.getSettings(SHARED_AGENT_ID);
 
-		expect(leaked).toBeNull();
+		expect(settings).toBeNull();
 	});
 
 	it("getMetadata with no ambient org returns null instead of an arbitrary tenant's row", async () => {
 		const config = createPostgresAgentConfigStore();
 
-		const leaked = await config.getMetadata(SHARED_AGENT_ID);
+		const metadata = await config.getMetadata(SHARED_AGENT_ID);
 
-		expect(leaked).toBeNull();
+		expect(metadata).toBeNull();
 	});
 
 	it("still resolves each tenant's own row when the org context is set", async () => {

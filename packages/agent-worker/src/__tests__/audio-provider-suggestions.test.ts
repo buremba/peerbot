@@ -179,8 +179,8 @@ describe("provider auth classification (no bespoke hint round-trip)", () => {
   test("a raw provider auth error classifies to PROVIDER_AUTH", () => {
     // The worker no longer rewrites the raw error into an admin-guidance
     // sentence that the classifier then re-parses. The raw error classifies
-    // directly to a code; that code selects the reconnect CTA, and the raw
-    // provider message is relayed verbatim as the body.
+    // directly to a code; that code selects the reconnect CTA, and separately
+    // signaled context lets the gateway label/unwrap the user-facing body.
     expect(classifyError(new Error('Authentication failed for "openai"'))).toBe(
       "PROVIDER_AUTH"
     );

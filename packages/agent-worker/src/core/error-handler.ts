@@ -53,9 +53,9 @@ const SESSION_TIMEOUT_MESSAGE = "SESSION_TIMEOUT";
  * rather than re-implementing its own regex. Adding a failure mode = one pattern
  * here + one entry in `AGENT_ERRORS`.
  *
- * The code selects only the CTA link. The user-facing TEXT for provider errors
- * is the provider's own message (relayed verbatim); we do NOT parse or reword
- * it — no reset-time extraction, no provider-label interpolation.
+ * Provider errors reach the gateway unchanged with available provider/model
+ * context. The renderer uses that context to label the source and unwrap the
+ * common JSON message envelope without rewording the provider's sentence.
  */
 export function classifyError(error: unknown): AgentErrorCode | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -121,6 +121,19 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   // PROVIDER_* Sentry alert.
   if (
     /no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message)
+  )
+    return AgentErrorCode.PROVIDER_AUTH;
+  // The provider accepted the credential but refuses to USE it: Anthropic 403s
+  // subscription-OAuth inference for orgs that disallow it
+  // (`oauth_not_allowed_for_organization`). None of the wording above matches —
+  // there is no "api key" or "authentication failed" — so it surfaced as a raw
+  // `Worker crashed: 403 {…}` blob with no CTA. Seen live on Telegram right
+  // after connecting Claude by subscription sign-in. The credential is what the
+  // user must change, so this is the auth class: "Reconnect provider".
+  if (
+    /permission_error|oauth[_\s]not[_\s]allowed|not allowed for this organization/i.test(
+      message
+    )
   )
     return AgentErrorCode.PROVIDER_AUTH;
   // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /

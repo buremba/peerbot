@@ -4,7 +4,11 @@
  * Generates consistent URLs for the frontend application.
  */
 
-import { AGENT_ERRORS, type AgentErrorCode } from '@lobu/core';
+import {
+  AGENT_ERRORS,
+  type AgentErrorCode,
+  type AgentErrorContext,
+} from '@lobu/core';
 import { INFERENCE_ROW_KEY_PREFIX } from '@lobu/core/reserved';
 import { getWorkspaceProvider } from '../workspace';
 import {
@@ -198,26 +202,85 @@ export interface AgentErrorCtaResolvers {
 }
 
 /**
+ * Registry names that cannot be derived by capitalising the slug. This stays
+ * static so reporting an error never depends on registry I/O; the contract test
+ * pins the values to `config/providers.json`.
+ */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  chatgpt: 'ChatGPT',
+  'z-ai': 'z.ai',
+  'together-ai': 'Together AI',
+  nvidia: 'NVIDIA NIM',
+  fireworks: 'Fireworks AI',
+  openrouter: 'OpenRouter',
+  'opencode-zen': 'OpenCode Zen',
+  deepseek: 'DeepSeek',
+  xai: 'xAI',
+  openai: 'OpenAI API',
+  // SDK vendor alias used before a registry slug is available.
+  anthropic: 'Anthropic',
+};
+
+function providerDisplayName(slug: string): string {
+  const known = PROVIDER_DISPLAY_NAMES[slug.toLowerCase()];
+  if (known) return known;
+  return slug.charAt(0).toUpperCase() + slug.slice(1);
+}
+
+/**
+ * Label provider errors and unwrap the common JSON message envelope without
+ * rewording plain-text bodies.
+ */
+export function labelProviderErrorBody(
+  body: string | undefined,
+  provider: string | undefined
+): string | undefined {
+  if (!body) return body;
+  if (!provider) return body;
+
+  // Bodies arrive as `<status> <json>` (e.g. `400 {...}`) or bare JSON. Find the
+  // first brace so the status code does not defeat the parse.
+  const braceAt = body.indexOf('{');
+  let message = body;
+  if (braceAt !== -1) {
+    try {
+      const parsed: unknown = JSON.parse(body.slice(braceAt));
+      const inner =
+        typeof parsed === 'object' && parsed !== null
+          ? ((parsed as { error?: { message?: unknown }; message?: unknown })
+              .error?.message ??
+            (parsed as { message?: unknown }).message)
+          : undefined;
+      if (typeof inner === 'string' && inner.trim()) message = inner.trim();
+    } catch {
+      // Preserve a plain-text body that happens to contain a brace.
+    }
+  }
+
+  return `${providerDisplayName(provider)} returned an error:\n${message}`;
+}
+
+/**
  * THE renderer: turn an `AgentErrorCode` + the raw provider message into the
  * user-facing body and a resolved CTA link. Every surface — Slack/Telegram
  * bridge, browser SSE — calls this so the same error reads identically
  * everywhere.
  *
- * The body is deliberately thin: for provider errors the catalog has no text, so
- * we relay the provider's OWN message verbatim (it already says the useful thing
- * — the reset time, the bad model id). For errors we synthesize (worker/config),
- * the catalog carries the text. The code's only job is to pick the CTA *kind*;
- * this resolves that kind to a concrete URL via the matching injected resolver,
- * so "connect a provider" and "pick a model" land on their own pages instead of
- * collapsing to one.
+ * Provider errors use {@link labelProviderErrorBody}; synthesized worker/config
+ * errors use the catalog message. The catalog's CTA kind is resolved to a URL
+ * through the matching injected resolver.
  */
 export async function renderAgentError(
   code: AgentErrorCode,
   providerMessage: string | undefined,
-  resolvers: AgentErrorCtaResolvers
+  resolvers: AgentErrorCtaResolvers,
+  errorContext?: AgentErrorContext
 ): Promise<RenderedAgentError> {
   const spec = AGENT_ERRORS[code];
-  const text = spec.message ?? providerMessage ?? '';
+  const text =
+    spec.message ??
+    labelProviderErrorBody(providerMessage, errorContext?.provider) ??
+    '';
   let ctaUrl: string | null = null;
   const resolve =
     spec.cta === 'agent-settings' ||

@@ -123,7 +123,7 @@ describe("handleExecutionError", () => {
     expect(errors[0].code).toBe("PROVIDER_BASE_URL_UNRESOLVED");
   });
 
-  test("provider QUOTA (z.ai 429) classifies + relays the raw message verbatim", async () => {
+  test("provider QUOTA (z.ai 429) classifies + signals the raw message", async () => {
     const { transport, deltas, errors } = makeTransport();
 
     // The exact prod shape from the app pod logs.
@@ -131,10 +131,8 @@ describe("handleExecutionError", () => {
       "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
     await handleExecutionError(new Error(raw), transport, { provider: "z-ai" });
 
-    // No worker-formatted delta — the renderer presents it (raw message body +
-    // the code's CTA link). The raw message reaches the wire UNCHANGED: it
-    // already tells the user when the quota resets, so we relay it verbatim
-    // instead of parsing a reset time out of it.
+    // No worker-formatted delta. The raw message reaches the gateway unchanged;
+    // the gateway renderer labels/unwraps it and adds the code's CTA.
     expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_QUOTA_EXHAUSTED");
@@ -158,6 +156,22 @@ describe("classifyError", () => {
           "401 No provider credentials configured. End-user provider setup is not available in chat yet."
         )
       )
+    ).toBe("PROVIDER_AUTH");
+    // Seen live on Telegram after connecting Claude via subscription OAuth:
+    // Anthropic 403s the inference call for orgs that disallow OAuth. The
+    // auth-hint regex misses it (no "api key"/"authentication failed" wording),
+    // so it surfaced as a raw `Worker crashed: 403 {...}` blob with no CTA —
+    // the credential IS the problem, so it belongs in the auth class.
+    expect(
+      classifyError(
+        new Error(
+          '403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}},"request_id":"req_011CdVRTidLfu6D81Mjz76wh"}'
+        )
+      )
+    ).toBe("PROVIDER_AUTH");
+    // The generic shape, not just the one vendor string we happened to see.
+    expect(
+      classifyError(new Error('403 {"error":{"type":"permission_error"}}'))
     ).toBe("PROVIDER_AUTH");
   });
 

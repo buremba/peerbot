@@ -119,12 +119,14 @@ describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {
 });
 
 describe("ApiResponseRenderer.handleError targeting context", () => {
-  test("forwards provider/model context on both browser error events", async () => {
+  test("forwards context and renders the provider body on both browser error events", async () => {
     const { renderer, broadcasts } = makeRenderer();
+    const raw =
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low."},"request_id":"req_123"}';
 
     await renderer.handleError(
       basePayload({
-        error: "quota exhausted",
+        error: raw,
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
         errorContext: { provider: "z-ai", model: "glm-5.2" },
       }),
@@ -133,6 +135,7 @@ describe("ApiResponseRenderer.handleError targeting context", () => {
 
     for (const event of ["error", "agent-error"]) {
       expect(broadcasts.find((b) => b.event === event)?.data).toMatchObject({
+        error: "z.ai returned an error:\nYour credit balance is too low.",
         errorCode: "PROVIDER_QUOTA_EXHAUSTED",
         errorContext: { provider: "z-ai", model: "glm-5.2" },
       });

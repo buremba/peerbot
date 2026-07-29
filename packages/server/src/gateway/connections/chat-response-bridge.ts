@@ -686,26 +686,28 @@ export class ChatResponseBridge implements ResponseRenderer {
       const gatewayUrl = this.manager.getPublicGatewayUrl();
       const orgId = this.resolveOrganizationId(payload, ctx) ?? undefined;
       const agentId = this.resolveAgentId(payload, ctx) ?? undefined;
-      const rendered = await renderAgentError(code, payload.error, {
-        // "pick a model" → the agent's settings tab.
-        'agent-settings': () =>
-          buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
-        // "connect a provider" → the provider's connector detail page, with
-        // the same provider/model targeting + agent context the pre-enqueue
-        // preflight passes (message-handler-bridge parity).
-        'provider-connect': () =>
-          buildProviderConnectUrl(gatewayUrl, orgId, {
-            ...payload.errorContext,
-            agentId,
-          }),
-        // Provider auth/quota/routing → manage the exact existing provider.
-        'provider-management': () =>
-          buildProviderManagementUrl(gatewayUrl, orgId, payload.errorContext),
-      });
+      const rendered = await renderAgentError(
+        code,
+        payload.error,
+        {
+          // "pick a model" → the agent's settings tab.
+          'agent-settings': () =>
+            buildAgentSettingsUrl(gatewayUrl, orgId, agentId),
+          // "connect a provider" → the provider's connector detail page, with
+          // the same provider/model targeting + agent context the pre-enqueue
+          // preflight passes (message-handler-bridge parity).
+          'provider-connect': () =>
+            buildProviderConnectUrl(gatewayUrl, orgId, {
+              ...payload.errorContext,
+              agentId,
+            }),
+          // Provider auth/quota/routing → manage the exact existing provider.
+          'provider-management': () =>
+            buildProviderManagementUrl(gatewayUrl, orgId, payload.errorContext),
+        },
+        payload.errorContext
+      );
       if (rendered.silent) return;
-      // For provider errors `rendered.text` IS the provider's own message (we
-      // relay it verbatim); for our synthesized errors it's the catalog line.
-      // Either way the guardrail scan + plain-text fallback below operate on it.
       payload.error = rendered.text;
       if (rendered.ctaUrl) ctaButton = rendered;
     }

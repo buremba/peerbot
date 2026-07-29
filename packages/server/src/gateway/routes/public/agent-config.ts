@@ -64,7 +64,6 @@ const getConfigRoute: RouteSpec = {
 	responses: {
 		200: { description: "Configuration", schema: Type.Any() },
 		...errorResponses(ErrorResponseSchema, {
-			400: "Organization context required",
 			401: "Unauthorized",
 		}),
 	},
@@ -163,10 +162,17 @@ async function buildResolvedConfigResponse(
 	agentId: string,
 	payload: SettingsTokenPayload | null,
 	providerModels: Record<string, ModelOption[]>,
+	organizationId?: string,
 ): Promise<any> {
 	const [settingsView, grants] = await Promise.all([
 		resolveSettingsView(config, agentId, payload),
-		config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
+		// `grants` rows are keyed by organization, so there is nothing to read
+		// for a declared agent authorized without a tenant. Asking anyway used
+		// to answer across every organization at once.
+		organizationId
+			? (config.grantStore?.listGrants(agentId, organizationId) ??
+				Promise.resolve([]))
+			: Promise.resolve([]),
 	]);
 	const settings = settingsView.settings;
 
@@ -396,14 +402,18 @@ export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 					agentId,
 					payload,
 					providerModels,
+					organizationId,
 				),
 			);
 		};
-		// No org means no tenant to scope to. Running unscoped used to read
-		// grants across every organization, silently — `orgScope` emitted an
-		// empty fragment and the query answered for all tenants at once.
+		// No org here means `verifyToken` authorized a DECLARED agent, whose
+		// settings are org-agnostic — a DB-backed agent without a tenant is
+		// already rejected there with 401. So the config still loads; the org
+		// only decides whether there are grants to read, and
+		// `buildResolvedConfigResponse` skips them rather than querying
+		// unscoped (which used to answer for every tenant at once).
 		if (!organizationId) {
-			return c.json({ error: "Organization context required" }, 400);
+			return loadConfig();
 		}
 		return orgContext.run({ organizationId }, loadConfig);
 	});
@@ -417,6 +427,11 @@ export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 		app.get("/grants", async (c) => {
 			const auth = await requireConfigAuth(c);
 			if (auth instanceof Response) return auth;
+
+			// Same tenant rule as the config route: a declared agent authorized
+			// without an org has no org-scoped rows to list, and `listGrants`
+			// now refuses to run unscoped rather than answering for everyone.
+			if (!auth.organizationId) return c.json([]);
 
 			const grants = await grantStore.listGrants(
 				auth.agentId,

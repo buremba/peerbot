@@ -17,9 +17,14 @@ import { type DbClient, getDb, pgBigintArray } from "../../db/client";
 import {
 	type EntityResolutionAssessment,
 	RESOLUTION_FINGERPRINT_VERSION,
+	type ResolutionEvidence,
 	type ResolutionKeySet,
 } from "../../entity-resolution/policy";
-import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
+import { hasMergeEvidenceStrengthened } from "../../entity-resolution/evidence-strength";
+import {
+	assertResolutionFingerprintCurrent,
+	ResolutionFingerprintError,
+} from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import {
 	formatFieldChangeAction,
@@ -212,6 +217,17 @@ function changedEntityId(proposal: EntityChangeProposal): number {
 
 function mergeEntityIds(proposal: EntityMergeProposal): number[] {
 	return proposal.entity_ids ?? [proposal.entity_id];
+}
+
+function mergeReviewResolutionKeys(
+	proposal: EntityMergeProposal,
+): ResolutionKeySet[] {
+	const duplicates = proposal.current.duplicates ?? [proposal.current.loser];
+	return [proposal.current.winner, ...duplicates].map((entity) => ({
+		id: Number(entity.id),
+		keys:
+			(entity.resolution_keys as Record<string, string[]> | undefined) ?? {},
+	}));
 }
 
 export function mergeReviewEventMetadata(proposal: EntityMergeProposal) {
@@ -545,16 +561,9 @@ export async function proposeEntityMerge(
  * Re-derive a pending merge proposal against the current resolution format and
  * write the result back to its run, leaving it pending.
  *
- * Used when the stored fingerprint is *incomparable* rather than stale — its
- * format stamp is absent or older, so this server cannot safely interpret a
- * digest mismatch. Refreshing re-presents the proposal with evidence recomputed
- * under the current format; the reviewer confirms once more against something
- * the server can actually verify.
- *
- * Deliberately does NOT apply the merge. The reviewer approved a card built
- * from evidence the server can no longer reproduce, so their click does not
- * carry over — silently applying would treat an unverifiable approval as a
- * verified one.
+ * Used when a fingerprint mismatch cannot safely carry the existing approval
+ * forward. The refreshed card contains current evidence and a current-format
+ * fingerprint for the reviewer to approve again.
  */
 export async function refreshMergeProposalFingerprint(
 	runId: number,
@@ -1128,11 +1137,65 @@ export async function applyEntityFieldChangeProposal(
 	});
 }
 
+export interface MergeApprovalResolution {
+	fingerprint: string | null;
+	evidence: ResolutionEvidence[];
+	policyHash: string | null;
+}
+
+export async function resolveMergeApproval(
+	proposal: EntityMergeProposal,
+	organizationId: string,
+	db: DbClient,
+): Promise<MergeApprovalResolution> {
+	const fingerprint = proposal.resolution_fingerprint ?? null;
+	if (!fingerprint) {
+		return {
+			fingerprint: null,
+			evidence: proposal.evidence ?? [],
+			policyHash: proposal.policy_hash ?? null,
+		};
+	}
+
+	let assessment: EntityResolutionAssessment;
+	try {
+		assessment = await assertResolutionFingerprintCurrent(db, {
+			organizationId,
+			winnerId: proposal.winner_entity_id,
+			loserIds: mergeEntityIds(proposal),
+			expectedFingerprint: fingerprint,
+			expectedVersion: proposal.resolution_fingerprint_version ?? null,
+		});
+	} catch (error) {
+		if (
+			!(error instanceof ResolutionFingerprintError) ||
+			!hasMergeEvidenceStrengthened({
+				reviewedEvidence: proposal.evidence ?? [],
+				currentEvidence: error.assessment.evidence,
+				winnerId: proposal.winner_entity_id,
+				loserIds: mergeEntityIds(proposal),
+				reviewedResolutionKeys: mergeReviewResolutionKeys(proposal),
+				currentResolutionKeys: error.assessment.resolutionKeys,
+			})
+		) {
+			throw error;
+		}
+		assessment = error.assessment;
+	}
+
+	return {
+		fingerprint: assessment.fingerprint,
+		evidence: assessment.evidence,
+		policyHash: assessment.policyHash,
+	};
+}
+
 export async function applyEntityChangeProposal(
 	proposal: EntityChangeProposal,
 	ctx: ToolContext,
 	env: Env,
 	db: DbClient,
+	mergeResolution?: MergeApprovalResolution,
 ): Promise<unknown> {
 	const operation = operationOf(proposal);
 	if (operation === "update") {
@@ -1165,16 +1228,9 @@ export async function applyEntityChangeProposal(
 	}
 	if (operation === "merge") {
 		const mergeProposal = asMergeProposal(proposal);
-		if (mergeProposal.resolution_fingerprint) {
-			await assertResolutionFingerprintCurrent(db, {
-				organizationId: ctx.organizationId,
-				winnerId: mergeProposal.winner_entity_id,
-				loserIds: mergeEntityIds(mergeProposal),
-				expectedFingerprint: mergeProposal.resolution_fingerprint,
-				// An unstamped mismatch has unknown provenance and must be refreshed.
-				expectedVersion: mergeProposal.resolution_fingerprint_version ?? null,
-			});
-		}
+		const resolved =
+			mergeResolution ??
+			(await resolveMergeApproval(mergeProposal, ctx.organizationId, db));
 		const params = {
 			orgId: ctx.organizationId,
 			loserIds: mergeEntityIds(mergeProposal),
@@ -1186,8 +1242,8 @@ export async function applyEntityChangeProposal(
 				watcherId: mergeProposal.watcher_id ?? null,
 				windowId:
 					mergeProposal.source_window_id ?? mergeProposal.window_id ?? null,
-				policyHash: mergeProposal.policy_hash ?? null,
-				evidence: mergeProposal.evidence ?? [],
+				policyHash: resolved.policyHash,
+				evidence: resolved.evidence,
 			},
 		};
 		return applyMergeGroupInTransaction(params, db);

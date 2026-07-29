@@ -55,7 +55,7 @@ export async function assertResolutionFingerprintCurrent(
 		 */
 		expectedVersion: number | null;
 	},
-): Promise<void> {
+): Promise<EntityResolutionAssessment> {
 	const ids = [...input.loserIds, input.winnerId].sort((a, b) => a - b);
 	const rows = await db<{
 		id: number;
@@ -119,7 +119,7 @@ export async function assertResolutionFingerprintCurrent(
 	// Exact equality is safe even for an unstamped or older proposal. The version
 	// is needed only to interpret a mismatch: missing/older inputs are
 	// incomparable, while a current-version mismatch proves drift.
-	if (assessment.fingerprint === input.expectedFingerprint) return;
+	if (assessment.fingerprint === input.expectedFingerprint) return assessment;
 	if (
 		input.expectedVersion === null ||
 		input.expectedVersion < RESOLUTION_FINGERPRINT_VERSION

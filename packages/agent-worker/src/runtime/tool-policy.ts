@@ -283,7 +283,13 @@ function matchesBeforeArgumentData(
   matches: (candidate: string) => boolean
 ): boolean {
   for (const command of text.split(/[;|&()\n]/)) {
-    const words = command.split(/\s+/).filter(Boolean);
+    // Blanking a quoted span leaves its quotes behind around whitespace, so a
+    // quoted assignment value splits in two: `foo="bar"` arrives as `foo="`
+    // plus a lone `"`. Dropping the empty-quote residue keeps the assignment
+    // one word, so `foo="bar" echo npm install` still finds `echo` running.
+    const words = command
+      .split(/\s+/)
+      .filter((word) => word && !/^['"]+$/.test(word));
     // Leading `VAR=value` words assign to the command's environment, they are
     // not the command: `foo=bar echo npm install` runs echo. The first word
     // that is not one holds command position.

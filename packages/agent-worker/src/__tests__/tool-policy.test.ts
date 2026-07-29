@@ -638,6 +638,26 @@ describe("enforceBashCommandPolicy", () => {
     expect(isDirectPackageInstallCommand("sudo -u ls npm install evil")).toBe(
       true
     );
+    // A QUOTED or escaped value must keep the assignment one word. Blanking the
+    // span leaves `foo="` plus a lone `"`, and treating that stray quote as the
+    // command word used to push `echo` out of command position.
+    const bs = String.fromCharCode(92);
+    expect(isDirectPackageInstallCommand('FOO="bar" echo npm install')).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand("FOO='bar' man nix run")).toBe(false);
+    // An ESCAPED space inside the value is NOT covered: blanking the escape
+    // pair splits `FOO=ba\ r` into `FOO=ba` and `r`, so `r` takes command
+    // position and `echo` stops narrowing. Pinned as a known over-denial — the
+    // safe direction — rather than chased, since un-splitting it means lexing
+    // escapes properly, which is the bash-reimplementation this file refuses.
+    expect(
+      isDirectPackageInstallCommand(`FOO=ba${bs} r echo npm install`)
+    ).toBe(true);
+    // …and it must not swallow a real install hiding behind the same shape.
+    expect(isDirectPackageInstallCommand('FOO="bar" npm install lodash')).toBe(
+      true
+    );
   });
 
   test("a pattern option is only data for the command that owns it (#2279)", () => {

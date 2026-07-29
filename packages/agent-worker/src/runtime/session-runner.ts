@@ -42,6 +42,10 @@ import {
 } from "./model-resolver";
 import { createLobuResourceLoader } from "./pi-resources";
 import {
+  createLobuSystemPromptRenderer,
+  type LobuSystemPromptRenderer,
+} from "./system-prompt";
+import {
   createPluginLogger,
   createRuntimePluginHost,
 } from "./plugin-composition";
@@ -116,10 +120,22 @@ type BuildAgentSessionOptions = Omit<
    * the same names in `options.tools` so they're active in the first place.
    */
   builtinOverrides?: AgentTool<any>[];
+  /**
+   * Renders the Lobu system prompt. Installed through the resource loader
+   * (which owns both the base prompt and the `before_agent_start` handler that
+   * reinstalls it each turn), because pi offers no system-prompt option on
+   * `createAgentSession` and resets `agent.state.systemPrompt` on every
+   * `prompt()` call.
+   *
+   * Optional for low-level session tests that exercise isolated pi mechanics.
+   * Production must always pass it.
+   */
+  renderSystemPrompt?: LobuSystemPromptRenderer;
 };
 
 export async function buildAgentSession({
   builtinOverrides,
+  renderSystemPrompt,
   ...options
 }: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
   // Pi's defaults persist under ~/.pi and discover resources/config from cwd.
@@ -134,7 +150,7 @@ export async function buildAgentSession({
     AuthStorage.inMemory();
   const modelRegistry =
     options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
-  const resourceLoader = createLobuResourceLoader();
+  const resourceLoader = createLobuResourceLoader(renderSystemPrompt);
 
   const result = await createAgentSession({
     ...options,
@@ -319,44 +335,13 @@ export function getLatestAssistantText(
 }
 
 // ---------------------------------------------------------------------------
-// System-prompt identity replacement
+// Agent identity
 // ---------------------------------------------------------------------------
 
 /**
- * Pi-coding-agent's buildSystemPrompt() (in `@mariozechner/pi-coding-agent`)
- * always opens the system prompt with this exact sentence. Lobu agents can
- * override their identity via IDENTITY.md, but unless we strip out this
- * opener the model sees two competing role declarations and tends to favour
- * "expert coding assistant" because it appears first.
- *
- * This helper substitutes the opener with the agent's identity and keeps the
- * rest of the base prompt (tools list, guidelines, docs paths, cwd) intact.
- *
- * If the upstream package ever changes the opener wording, this becomes a
- * no-op and `replaced === original`. In that case we fall back to prepending
- * the identity with a small framing note so identity still wins ordering.
- */
-const PI_CODING_AGENT_OPENER_RE =
-  /^You are an expert coding assistant operating inside pi, a coding agent harness\.[^\n]*/;
-
-export function replaceBasePromptIdentity(
-  basePrompt: string,
-  identity: string
-): string {
-  if (PI_CODING_AGENT_OPENER_RE.test(basePrompt)) {
-    return basePrompt.replace(PI_CODING_AGENT_OPENER_RE, identity);
-  }
-  // Upstream wording drifted — prepend identity with a framing note rather
-  // than silently letting the upstream opener win.
-  return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
-}
-
-/**
  * Fallback identity used when every configured instruction layer is empty.
- * Without this, the pi-coding-agent opener wins and the agent introduces
- * itself as "an expert coding assistant operating inside pi, a coding agent
- * harness" — leaking harness internals and mis-describing what a Lobu agent
- * actually is.
+ * Without this the document would open with nothing describing the agent at
+ * all, and the model falls back on describing the runtime it can see.
  *
  * Any configured identity, soul, or user layer overrides this fallback.
  *
@@ -406,9 +391,9 @@ function composeAgentInstructions(layers: AgentInstructionLayers): string {
 }
 
 /**
- * Resolve the identity to inject: the agent's own configured instructions when
- * present, otherwise the Lobu default persona. Returns a non-empty string, so
- * the pi opener is always replaced and never reaches the model verbatim.
+ * Resolve the identity the system prompt opens with: the agent's own configured
+ * instructions when present, otherwise the Lobu default persona. Always returns
+ * a non-empty string, so the document never opens with a blank role.
  */
 export function resolveAgentIdentity(
   layers: AgentInstructionLayers | undefined
@@ -1289,10 +1274,20 @@ user references earlier discussion or you need prior context.`);
     sessionKey,
   });
 
+  // The Lobu system prompt for this run. Handed to the session so pi installs
+  // it as the base prompt AND reinstalls it before every turn; nothing here
+  // reads or rewrites pi's own prompt text.
+  const renderSystemPrompt = createLobuSystemPromptRenderer({
+    identity: resolveAgentIdentity(context.agentLayers),
+    gatewayInstructions: finalInstructionsUpdated,
+    cwd: workspaceDir,
+  });
+
   try {
     const createdSession = await buildAgentSession({
       cwd: workspaceDir,
       model,
+      renderSystemPrompt,
       // pi's createAgentSession() uses `tools` only to derive active tool
       // names and rebuilds the base tools internally (bash via getShellEnv()
       // = {...process.env}, no env strip, no embedded BashOperations).
@@ -1338,20 +1333,6 @@ user references earlier discussion or you need prior context.`);
     turnController.attachAbort(() => {
       createdSession.session.agent.abort();
     });
-
-    // Pi-coding-agent's base prompt opens with its own role declaration.
-    // Replace just that opener with the configured instruction block (or Lobu
-    // default) so its tools/guidelines/cwd footer still applies without
-    // anchoring the model to the harness identity.
-    const basePrompt = session.systemPrompt;
-    const identity = resolveAgentIdentity(context.agentLayers);
-    const finalSystemPrompt = [
-      replaceBasePromptIdentity(basePrompt, identity),
-      finalInstructionsUpdated,
-    ]
-      .filter(Boolean)
-      .join("\n\n---\n\n");
-    session.agent.state.systemPrompt = finalSystemPrompt;
 
     let resolveTurnDone: (() => void) | null = null;
     let turnNonce = 0;

@@ -160,6 +160,21 @@ describe("pi resource discovery is contained to Lobu-supplied inputs", () => {
     expect(loader.getExtensions().runtime).toBe(loader.getExtensions().runtime);
   });
 
+  test("the only extension it ever loads is Lobu's own, built in memory", () => {
+    const loader = createLobuResourceLoader(() => "LOBU PROMPT");
+    const { extensions } = loader.getExtensions();
+
+    // One synthetic extension, no path on disk for pi to jiti.import.
+    expect(extensions).toHaveLength(1);
+    expect(extensions[0].path).toBe("<lobu:system-prompt>");
+    expect(extensions[0].tools.size).toBe(0);
+    expect(extensions[0].commands.size).toBe(0);
+    // The handler pi's per-turn reset consults. Without it the prompt below is
+    // reinstated only until the first prompt() call.
+    expect(extensions[0].handlers.get("before_agent_start")).toHaveLength(1);
+    expect(loader.getSystemPrompt()).toBe("LOBU PROMPT");
+  });
+
   test("callers cannot replace the sealed resource loader", async () => {
     seed(".pi/SYSTEM.md", "This prompt came from the workspace.");
     const resourceLoader = {

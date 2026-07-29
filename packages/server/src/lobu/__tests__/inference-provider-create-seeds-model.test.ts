@@ -147,6 +147,49 @@ describe("POST /inference-providers seeds a routable text model", () => {
 		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
 	});
 
+	test("an ALIAS slug with no base_url is NOT seeded and does NOT become the org default", async () => {
+		// `getModelPolicy` keys its module map by SLUG: "my-gemini" matches no
+		// static module, and with no `text.base_url` there is nothing to
+		// synthesize either — so the row cannot route. Seeding it would be worse
+		// than useless: a text model is the predicate the org-default promotion
+		// uses, so an unroutable row would become the default for every
+		// allow-all agent in the org.
+		const res = await createProvider({
+			slug: "my-gemini",
+			kind: "gemini",
+			apiKey: "AIza-test",
+		});
+		expect(res.status).toBe(201);
+
+		const capabilities = (await readCapabilities("my-gemini")) as {
+			text?: { model?: string };
+		};
+		expect(capabilities?.text?.model).toBeUndefined();
+
+		const { getDb } = await import("../../db/client.js");
+		const sql = getDb();
+		const rows = (await sql`
+      SELECT is_default FROM inference_providers
+      WHERE organization_id = ${ORG} AND slug = 'my-gemini' AND deleted_at IS NULL
+    `) as Array<{ is_default: boolean }>;
+		expect(rows[0]?.is_default).toBe(false);
+	});
+
+	test("an alias slug WITH a base_url is seeded — synthesis can route it", async () => {
+		const res = await createProvider({
+			slug: "my-gemini-2",
+			kind: "gemini",
+			apiKey: "AIza-test",
+			capabilities: { text: { base_url: "https://tenant.example.com/v1" } },
+		});
+		expect(res.status).toBe(201);
+
+		const capabilities = (await readCapabilities("my-gemini-2")) as {
+			text?: { model?: string };
+		};
+		expect(capabilities?.text?.model).toBe("gemini-2.5-pro");
+	});
+
 	test("an unknown kind with no model is still created (no catalog default to seed)", async () => {
 		const res = await createProvider({
 			slug: "custom-thing",

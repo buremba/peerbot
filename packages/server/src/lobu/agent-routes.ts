@@ -953,11 +953,23 @@ routes.post("/inference-providers", async (c) => {
 	//
 	// Merge into the caller's text block rather than replacing it — dropping a
 	// tenant `base_url` would silently re-point the org at the catalog URL.
+	//
+	// Seed ONLY a row that will actually route. A text model is also the
+	// predicate `promoteOldestRunnableProvider` uses to choose the org default,
+	// so seeding an unroutable row would promote it to default and break every
+	// allow-all agent in the org. `getModelPolicy` keys its module map by the
+	// row's SLUG, so the row resolves to a module only when either:
+	//   - slug === kind   → the catalog's own static module answers to it, or
+	//   - a text base_url → `synthesizeOrgProviderModule` can build one.
+	// An alias slug with no base_url (slug=my-gemini, kind=gemini) matches
+	// neither and is dropped by the policy — it must not look configured.
 	const requestedCapabilities =
 		(body.capabilities as InferenceCapabilities) ?? {};
 	const hasTextModel = !!requestedCapabilities.text?.model?.trim();
+	const wouldRoute =
+		slug === kind || !!requestedCapabilities.text?.base_url?.trim();
 	const capabilities =
-		hasTextModel || !catalogDefaultModel
+		hasTextModel || !catalogDefaultModel || !wouldRoute
 			? requestedCapabilities
 			: {
 					...requestedCapabilities,
@@ -966,6 +978,16 @@ routes.post("/inference-providers", async (c) => {
 						model: catalogDefaultModel,
 					},
 				};
+	if (!capabilities.text?.model) {
+		// Nothing seeded: unknown kind, no catalog default, or an alias slug with
+		// no upstream to route to. Say so at creation — otherwise the row's only
+		// symptom is a far-away 400 naming a different provider.
+		logger.warn(
+			{ slug, kind, wouldRoute },
+			"[inference-providers POST] created with no text model — this provider will not route until `capabilities.text.model` is set (an alias slug, where slug !== kind, also needs `capabilities.text.base_url`)"
+		);
+	}
+
 	const result = await createInferenceProvider({
 		organizationId: orgId,
 		slug,

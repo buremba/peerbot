@@ -44,6 +44,7 @@ import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
+  EMPTY_AGENT_TOOLING,
   isReservedAgentToolingEnvName,
   resolveAgentTooling,
   type ResolvedAgentTooling,
@@ -1711,20 +1712,20 @@ export class DeploymentManager {
    * build an untracked worker that the claim-side gate then mistakes for fresh.
    * Malformed declarations and provider mint failures still resolve as an
    * absent contribution/credential inside the resolver.
+   *
+   * A payload with no agent/org is not such a failure — connections are scoped
+   * by org, so with no org there are provably zero contributing rows and the
+   * empty contribution (zero-row fingerprint included) is the *known* answer,
+   * identical to what the enqueue-side stamp digests. The deployment stays
+   * tracked, so the dispatch gate still compares a real fingerprint instead of
+   * mistaking an untracked worker for fresh.
    */
   private async resolveConnectorAgentTooling(
     messageData: MessagePayload,
     deploymentName: string
   ): Promise<ResolvedAgentTooling> {
     const { agentId, organizationId } = messageData;
-    if (!agentId || !organizationId) {
-      throw new OrchestratorError(
-        ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        "Missing agentId or organizationId while resolving connector tooling",
-        { deploymentName },
-        true
-      );
-    }
+    if (!agentId || !organizationId) return EMPTY_AGENT_TOOLING;
     return resolveAgentTooling({
       agentId,
       organizationId,

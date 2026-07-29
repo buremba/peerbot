@@ -65,7 +65,15 @@ export interface ResolvedAgentTooling {
   fingerprint: string;
 }
 
-const EMPTY: ResolvedAgentTooling = {
+/**
+ * The contribution of an org that has no eligible connections: nothing to put
+ * on PATH, nothing to authenticate with, and the zero-row fingerprint.
+ *
+ * Exported because a payload with no org is the same *known* state, not an
+ * ambiguous failure: with no org there are no connection rows to read, so the
+ * empty digest is the correct answer rather than a guess.
+ */
+export const EMPTY_AGENT_TOOLING: ResolvedAgentTooling = {
   packages: [],
   env: {},
   domains: [],
@@ -378,7 +386,7 @@ export async function resolveAgentTooling(params: {
   const { agentId, organizationId } = params;
   const rows = await loadToolingConnections(organizationId);
 
-  if (rows.length === 0) return EMPTY;
+  if (rows.length === 0) return EMPTY_AGENT_TOOLING;
 
   const packages = new Set<string>();
   const domains = new Set<string>();

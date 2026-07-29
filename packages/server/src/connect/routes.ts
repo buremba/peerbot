@@ -46,6 +46,11 @@ import { createSyncRun } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
 import {
+  mergeJiraSiteIntoConnectionConfig,
+  resolveJiraCloudSite,
+  type JiraCloudSite,
+} from './atlassian-resources';
+import {
   buildAuthorizationUrl,
   exchangeCodeForTokens,
   fetchUserInfoWithRaw,
@@ -720,6 +725,35 @@ async function handleOAuthCallback(
     return c.redirect(`${baseUrl}/connect/${token}?error=token_exchange_failed`);
   }
 
+  // Jira 3LO tokens are site-agnostic — REST needs cloud_id. Discover the
+  // primary accessible site once here so connection.config + external_tenant_id
+  // are ready before the first virtual feed read / webhook register. Best-effort:
+  // discovery failure does not fail OAuth (connector can lazy-resolve later).
+  let jiraSite: JiraCloudSite | null = null;
+  if (
+    tokenRow.connector_key === 'jira' ||
+    authConfig.provider === 'jira' ||
+    authConfig.provider === 'atlassian'
+  ) {
+    jiraSite = await resolveJiraCloudSite(tokens.accessToken);
+    if (jiraSite) {
+      logger.info(
+        {
+          connector_key: tokenRow.connector_key,
+          cloud_id: jiraSite.cloudId,
+          site_url: jiraSite.siteUrl,
+          site_count: jiraSite.accessibleResources.length,
+        },
+        'Resolved Jira Cloud site after OAuth'
+      );
+    } else {
+      logger.warn(
+        { connector_key: tokenRow.connector_key },
+        'Jira OAuth succeeded but no accessible Atlassian sites were returned'
+      );
+    }
+  }
+
   const { raw: rawUserInfo, normalized: userInfo } = await fetchUserInfoWithRaw({
     provider: authConfig.provider,
     accessToken: tokens.accessToken,
@@ -869,17 +903,50 @@ async function handleOAuthCallback(
           )[0]?.profile_kind
         : undefined;
       const forcePrivate = isPersonalCredentialKind(attachedKind);
-      await tx`
-        UPDATE connections
-        SET account_id = ${resolvedAccountId},
-            auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
-            status = 'active',
-            visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
-            display_name = COALESCE(display_name, ${displayNameOverride}),
-            updated_at = NOW()
-        WHERE id = ${tokenRow.connection_id}
-          AND organization_id = ${tokenRow.organization_id}
-      `;
+
+      // Stamp Jira cloud_id onto connection.config + external_tenant_id so
+      // virtual reads / webhook register merge the site without per-feed config.
+      let nextConfigJson: ReturnType<typeof tx.json> | null = null;
+      let nextExternalTenantId: string | null = null;
+      if (jiraSite) {
+        const existingRows = (await tx`
+          SELECT config FROM connections
+          WHERE id = ${tokenRow.connection_id}
+            AND organization_id = ${tokenRow.organization_id}
+          LIMIT 1
+        `) as Array<{ config: Record<string, unknown> | null }>;
+        const merged = mergeJiraSiteIntoConnectionConfig(existingRows[0]?.config, jiraSite);
+        nextConfigJson = tx.json(merged);
+        nextExternalTenantId = jiraSite.cloudId;
+      }
+
+      if (nextConfigJson) {
+        await tx`
+          UPDATE connections
+          SET account_id = ${resolvedAccountId},
+              auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
+              status = 'active',
+              visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
+              display_name = COALESCE(display_name, ${displayNameOverride}),
+              config = ${nextConfigJson},
+              external_tenant_id = COALESCE(${nextExternalTenantId}, external_tenant_id),
+              updated_at = NOW()
+          WHERE id = ${tokenRow.connection_id}
+            AND organization_id = ${tokenRow.organization_id}
+        `;
+      } else {
+        await tx`
+          UPDATE connections
+          SET account_id = ${resolvedAccountId},
+              auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
+              status = 'active',
+              visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
+              display_name = COALESCE(display_name, ${displayNameOverride}),
+              updated_at = NOW()
+          WHERE id = ${tokenRow.connection_id}
+            AND organization_id = ${tokenRow.organization_id}
+        `;
+      }
 
       await tx`
         UPDATE feeds

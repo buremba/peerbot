@@ -1,10 +1,10 @@
 /**
  * Linear Connector (V1 runtime)
  *
- * Syncs Linear issues via the GraphQL API and subscribes to real-time
- * Issue/Comment deliveries via inbound webhooks (registered at connect time);
- * the raw deliveries are landed downstream (extract-load), so this connector
- * only owns the subscription lifecycle here.
+ * Live-reads Linear issues via GraphQL (`query()` / `search()` for virtual
+ * feeds) and optionally syncs them into events (`sync()` for collected feeds).
+ * Real-time Issue/Comment deliveries arrive via app webhooks; raw deliveries
+ * land downstream (extract-load). Virtual feeds never poll.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -12,7 +12,10 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
+  type QueryContext,
+  type QueryResult,
   requireBearerClient,
+  type SearchContext,
   type SyncContext,
   type SyncCredentials,
   type SyncResult,
@@ -27,7 +30,14 @@ import {
 interface LinearConfig {
   /** Optional team filter (Linear team key, e.g. "ENG"). */
   team_key?: string;
+  /**
+   * Optional free-text scope for virtual-feed reads (platform `config.query`).
+   * Combined with search() terms as containsIgnoreCase on title/description.
+   */
+  query?: string;
   lookback_days?: number;
+  /** Max issues per live virtual-feed page (clamped). Default 50. */
+  max_results?: number;
 }
 
 interface LinearCheckpoint {
@@ -59,8 +69,66 @@ interface LinearIssueNode {
 
 const GRAPHQL_ENDPOINT = 'https://api.linear.app/graphql';
 
+/** Stable column set returned by live `query()`/`search()` pushdown reads. */
+const LINEAR_ISSUE_COLUMNS = [
+  { name: 'id', type: 'string' },
+  { name: 'identifier', type: 'string' },
+  { name: 'title', type: 'string' },
+  { name: 'state', type: 'string' },
+  { name: 'state_type', type: 'string' },
+  { name: 'assignee', type: 'string' },
+  { name: 'created_at', type: 'string' },
+  { name: 'updated_at', type: 'string' },
+  { name: 'description', type: 'string' },
+  { name: 'url', type: 'string' },
+] as const;
+
+const ISSUE_NODE_SELECTION = `
+  id
+  identifier
+  title
+  description
+  url
+  state { name type }
+  assignee { name displayName email }
+  createdAt
+  updatedAt
+`;
+
 function actorName(user: LinearUser | null | undefined): string | undefined {
   return user?.displayName ?? user?.name ?? user?.email ?? undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+/**
+ * Build a Linear GraphQL `IssueFilter` as a serialized object literal.
+ * Bounds live reads to a lookback window so we never scan the full workspace.
+ */
+export function buildLinearIssueFilter(args: {
+  teamKey?: string;
+  textTerms?: string[];
+  updatedAfterIso?: string;
+}): string {
+  const parts: string[] = [];
+  if (args.teamKey) {
+    parts.push(`{ team: { key: { eq: ${JSON.stringify(args.teamKey)} } } }`);
+  }
+  if (args.updatedAfterIso) {
+    parts.push(`{ updatedAt: { gte: ${JSON.stringify(args.updatedAfterIso)} } }`);
+  }
+  const terms = (args.textTerms ?? []).map((t) => t.trim()).filter(Boolean);
+  for (const term of terms) {
+    // Title OR description contains each term (AND across terms).
+    parts.push(
+      `{ or: [ { title: { containsIgnoreCase: ${JSON.stringify(term)} } }, { description: { containsIgnoreCase: ${JSON.stringify(term)} } } ] }`,
+    );
+  }
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return `, filter: ${parts[0]}`;
+  return `, filter: { and: [ ${parts.join(', ')} ] }`;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +139,9 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
   readonly definition: ConnectorDefinition = {
     key: 'linear',
     name: 'Linear',
-    description: 'Syncs Linear issues and receives real-time issue/comment webhooks.',
-    version: '1.0.0',
+    description:
+      'Live-reads Linear issues via GraphQL (virtual feeds) and receives real-time issue/comment webhooks.',
+    version: '1.1.0',
     faviconDomain: 'linear.app',
     webhook: {
       signatureHeader: 'linear-signature',
@@ -108,7 +177,9 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
       issues: {
         key: 'issues',
         name: 'Issues',
-        description: 'Sync Linear issues.',
+        description:
+          'Live Linear issues via GraphQL (virtual by default). Webhooks carry create/update/comment signals; optional collected sync still uses the same filters.',
+        virtual: true,
         configSchema: {
           type: 'object',
           properties: {
@@ -116,14 +187,31 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
               type: 'string',
               description: 'Optional Linear team key filter (e.g. "ENG").',
             },
+            query: {
+              type: 'string',
+              description:
+                'Optional free-text scope for virtual-feed reads (title/description contains).',
+            },
             lookback_days: {
               type: 'integer',
               minimum: 1,
               maximum: 730,
-              default: 365,
-              description: 'Initial sync lookback window.',
+              default: 90,
+              description:
+                'Live-read / collected-sync lookback window (updatedAt). Default 90 for virtual bounds.',
+            },
+            max_results: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+              description: 'Maximum issues to return per virtual-feed read page.',
             },
           },
+        },
+        webhook: {
+          events: ['Issue', 'Comment'],
+          mode: 'store',
         },
         eventKinds: {
           issue: {
@@ -157,7 +245,83 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
   private readonly MAX_PAGES = 50;
 
   // -------------------------------------------------------------------------
-  // sync
+  // Live pushdown (virtual feeds) — read-only, never persisted.
+  // -------------------------------------------------------------------------
+
+  async query(ctx: QueryContext<LinearConfig>): Promise<QueryResult> {
+    return this.liveSearch(ctx, []);
+  }
+
+  async search(ctx: SearchContext<LinearConfig>): Promise<QueryResult> {
+    return this.liveSearch(ctx, ctx.terms ?? []);
+  }
+
+  private async liveSearch(
+    ctx: QueryContext<LinearConfig>,
+    terms: string[],
+  ): Promise<QueryResult> {
+    if (!ctx.credentials?.accessToken) {
+      throw new Error('Linear virtual-feed reads require Linear OAuth credentials.');
+    }
+
+    const textTerms = [
+      asString(ctx.query) ?? asString(ctx.config.query) ?? '',
+      ...terms.map((t) => t.trim()),
+    ].filter(Boolean);
+
+    const lookbackDays = Math.min(Math.max(ctx.config.lookback_days ?? 90, 1), 730);
+    const updatedAfter = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+
+    const filter = buildLinearIssueFilter({
+      teamKey: asString(ctx.config.team_key),
+      textTerms,
+      updatedAfterIso: updatedAfter,
+    });
+
+    const limit = Math.min(
+      Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 50), 1),
+      100,
+    );
+    const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
+    const want = offset + limit;
+
+    const collected: LinearIssueNode[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+
+    while (collected.length < want && pages < this.MAX_PAGES) {
+      pages += 1;
+      const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
+      const pageSize = Math.min(this.PAGE_SIZE, want - collected.length);
+      const gql = `
+        query {
+          issues(first: ${pageSize}${after}, orderBy: updatedAt${filter}) {
+            pageInfo { hasNextPage endCursor }
+            nodes { ${ISSUE_NODE_SELECTION} }
+          }
+        }
+      `;
+      const response = await this.graphql<{
+        issues?: {
+          pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+          nodes?: LinearIssueNode[];
+        };
+      }>(ctx.credentials, gql);
+
+      const nodes = response.issues?.nodes ?? [];
+      collected.push(...nodes);
+      const pageInfo = response.issues?.pageInfo;
+      if (!pageInfo?.hasNextPage || !pageInfo.endCursor || nodes.length === 0) break;
+      cursor = pageInfo.endCursor;
+    }
+
+    const page = collected.slice(offset, offset + limit);
+    const rows = page.map((n) => this.issueRow(n)).filter((r) => r !== null);
+    return { rows, columns: [...LINEAR_ISSUE_COLUMNS] };
+  }
+
+  // -------------------------------------------------------------------------
+  // sync (collected feeds only — virtual feeds never call this)
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext<LinearCheckpoint, LinearConfig>): Promise<SyncResult<LinearCheckpoint>> {
@@ -175,17 +339,7 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
         query {
           issues(first: ${this.PAGE_SIZE}${after}, orderBy: updatedAt${filter}) {
             pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              identifier
-              title
-              description
-              url
-              state { name type }
-              assignee { name displayName email }
-              createdAt
-              updatedAt
-            }
+            nodes { ${ISSUE_NODE_SELECTION} }
           }
         }
       `;
@@ -266,6 +420,22 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
   // -------------------------------------------------------------------------
   // Mapping helpers
   // -------------------------------------------------------------------------
+
+  private issueRow(node: LinearIssueNode | null): Record<string, unknown> | null {
+    if (!node?.id) return null;
+    return {
+      id: node.id,
+      identifier: node.identifier ?? null,
+      title: node.title ?? null,
+      state: node.state?.name ?? null,
+      state_type: node.state?.type ?? null,
+      assignee: actorName(node.assignee) ?? null,
+      created_at: node.createdAt ?? null,
+      updated_at: node.updatedAt ?? null,
+      description: (node.description ?? '').trim() || null,
+      url: node.url ?? null,
+    };
+  }
 
   private issueEvent(node: LinearIssueNode | null): EventEnvelope | null {
     if (!node?.id) return null;

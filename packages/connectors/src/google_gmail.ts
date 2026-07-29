@@ -94,8 +94,9 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   readonly definition: ConnectorDefinition = {
     key: 'google.gmail',
     name: 'Gmail',
-    description: 'Syncs email threads from Gmail and supports sending emails.',
-    version: '1.0.2',
+    description:
+      'Live-reads and syncs Gmail threads; supports sending, drafts, and replies. Virtual threads feeds use query()/search() pushdown (connection.config merged by the platform).',
+    version: '1.0.3',
     faviconDomain: 'mail.google.com',
     authSchema: {
       methods: [
@@ -127,10 +128,19 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         key: 'threads',
         name: 'Threads',
         requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
-        description: 'Syncs email threads from Gmail.',
+        description:
+          'Gmail threads. Create with virtual:true for live query()/search(); collected sync still powers contact promotion (replied attributions).',
+        // Collected remains the default: contact promotion + Behaviors need
+        // durable events. Virtual is fully supported when the caller sets
+        // virtual:true (query() / search() already implemented).
         configSchema: {
           type: 'object',
           properties: {
+            query: {
+              type: 'string',
+              description:
+                'Optional Gmail search scope for virtual-feed reads (platform config.query), e.g. "label:INBOX newer_than:30d".',
+            },
             label: {
               type: 'string',
               default: 'INBOX',
@@ -141,7 +151,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
               minimum: 1,
               maximum: 500,
               default: 50,
-              description: 'Maximum threads to fetch per sync.',
+              description: 'Maximum threads to fetch per sync / virtual page.',
             },
             lookback_days: {
               type: 'integer',

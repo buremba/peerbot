@@ -550,7 +550,12 @@ async function handleCreateFeed(
   // A virtual feed is read LIVE at request time and never synced, so it has no
   // schedule. config.query is an optional scope fence; agents can compose further
   // filters at read time (query_sql feed_query) or pass recall terms.
-  const isVirtual = args.virtual === true;
+  // Default from the connector feed definition (`feeds_schema[key].virtual`) when
+  // the caller omits `virtual` — e.g. Jira issues is virtual by default.
+  // Explicit `args.virtual` always wins (true or false).
+  const schemaDefaultVirtual = feedsSchema?.[args.feed_key]?.virtual === true;
+  const isVirtual =
+    args.virtual === true || (args.virtual !== false && schemaDefaultVirtual);
 
   // Validate config against the connector's declared feed configSchema up
   // front so a mis-shaped config fails HERE, not at sync time. Virtual feeds

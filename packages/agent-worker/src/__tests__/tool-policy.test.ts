@@ -3,6 +3,7 @@ import {
   type BashCommandPolicy,
   buildToolPolicy,
   enforceBashCommandPolicy,
+  isDirectPackageInstallCommand,
   isToolAllowedByPolicy,
   normalizeToolList,
 } from "../runtime/tool-policy";
@@ -265,5 +266,240 @@ describe("enforceBashCommandPolicy", () => {
     expect(() => enforceBashCommandPolicy("rm file.txt", policy)).toThrow(
       "Bash command denied by policy"
     );
+  });
+
+  test("new-style nix CLI and store helpers are denied (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "nix run nixpkgs#hello",
+      "nix shell nixpkgs#git -c git push",
+      "nix develop",
+      "nix build .#pkg",
+      "nix-store --realise /nix/store/abc",
+      "nix-channel --update",
+      "git status && nix run nixpkgs#hello",
+      "sudo nix run nixpkgs#hello",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("ad-hoc package runners are denied (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "uvx cowsay moo",
+      "uv tool install ruff",
+      "true && pipx run cowsay",
+      "pnpm dlx create-react-app x",
+      "yarn dlx create-react-app x",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).toThrow(
+        "Bash command denied by policy"
+      );
+    }
+  });
+
+  test("nix-adjacent and runner-adjacent commands stay allowed (#2259)", () => {
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "nixfmt flake.nix",
+      "npx eslint .",
+      "uv run script.py",
+      "uv tool list",
+      "yarn run dlx-helper",
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+  });
+
+  test("an escaped shell operator is data, not a command boundary (#2259 r8)", () => {
+    // `echo foo\; nix run x` is ONE echo with a literal `;`; bash never runs
+    // `nix run`. The splitter must not treat the escaped `;` as a boundary.
+    const bs = String.fromCharCode(92);
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      `echo foo${bs}; nix run x`,
+      `echo a ${bs}| nix run x`,
+      `echo a ${bs}& nix run x`,
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+    // An UNescaped operator still splits and denies the second command.
+    expect(() =>
+      enforceBashCommandPolicy("echo foo; nix run x", policy)
+    ).toThrow("Bash command denied by policy");
+  });
+
+  test("backslash-newline is line continuation, not literal text (#2259)", () => {
+    // The shell removes backslash-newline before tokenizing, so `r\<nl>m -rf /`
+    // executes as `rm -rf /`. Treating the pair as text would let it split a
+    // deny prefix in half and slip past the policy.
+    const bs = String.fromCharCode(92);
+    const policy = {
+      allowAll: false,
+      allowPrefixes: [] as string[],
+      denyPrefixes: ["rm "],
+    };
+    expect(() =>
+      enforceBashCommandPolicy(`r${bs}\nm -rf /tmp/x`, policy)
+    ).toThrow("Bash command denied by policy");
+    expect(() => enforceBashCommandPolicy("rm -rf /tmp/x", policy)).toThrow(
+      "Bash command denied by policy"
+    );
+    // A continuation inside an allowed command is still harmless.
+    expect(() =>
+      enforceBashCommandPolicy(`echo ${bs}\nhello`, policy)
+    ).not.toThrow();
+  });
+
+  test("the matcher is a hint, not a lexer: quoted/escaped/wrapped forms are the sandbox's job (#2259 r8)", () => {
+    // These evasions are deliberately NOT caught by the text matcher — matching
+    // them means reimplementing bash's lexer and only yields false positives on
+    // honest commands. Enforcement is the sandbox binary-discovery filter (see
+    // embedded-just-bash-bootstrap.test.ts). Documented as ALLOWED here so the
+    // contract is explicit and a future "tighten the regex" change is a
+    // conscious decision, not an accident.
+    // Each form below is a spelling bash really resolves to the `nix` binary
+    // (quote removal runs before the PATH lookup), so every one of them would
+    // execute `nix run` if `nix` were discoverable at all.
+    const bs = String.fromCharCode(92);
+    const policy = buildToolPolicy({}).bashPolicy;
+    for (const cmd of [
+      "$'nix' run nixpkgs#hello", // ANSI-C quoted name
+      `n$'${bs}151'x run nixpkgs#hello`, // name assembled from an octal escape
+      `n${bs}ix run nixpkgs#hello`, // backslash-escaped name
+      "env nix run nixpkgs#hello", // exec wrapper
+      "git commit -m 'nix shell support'", // package phrase as quoted data
+    ]) {
+      expect(() => enforceBashCommandPolicy(cmd, policy)).not.toThrow();
+    }
+  });
+
+  // The preflight hint runs on EVERY bash command, so a package-manager phrase
+  // appearing inside quoted argument data must not be read as a command. The
+  // pattern boundary class deliberately excludes quote characters: only a real
+  // shell operator (start, whitespace, `;`, `|`, `&`, parens) opens a command
+  // position. Before this, `git commit -m 'apt install docs'` threw DIRECT
+  // PACKAGE INSTALL BLOCKED and the new nix entries widened that to the much
+  // likelier `nix shell` phrasing.
+  test("package phrases inside quoted data are not install commands (#2259)", () => {
+    for (const cmd of [
+      "git commit -m 'nix shell support'",
+      'git commit -m "nix shell support"',
+      "git commit -m 'apt install docs'",
+      "echo 'pip install foo'",
+      "echo 'nix run docs'",
+      "grep -r 'uvx' .",
+      "nixfmt file.nix",
+      // The phrase mid-quote is the same data: the whitespace in front of it
+      // is inside the quote and must not open a command position.
+      "git commit -m 'document nix shell support'",
+      "echo 'use uvx here'",
+      "git commit -m 'we should apt install curl'",
+      'git commit -m "then run pipx install black"',
+      // Text after an unquoted `#` is a comment, never executed. `#` opens one
+      // after an operator too, not just after whitespace.
+      "echo done # nix run x",
+      "ls # uvx cowsay",
+      "echo hi;# nix run x",
+      "echo hi ;# nix run x",
+      // An interpreter named in ARGUMENT position runs nothing; only a real
+      // command-position `sh -c` body is a command.
+      "echo sh -c 'nix run x'",
+      "printf 'sh -c nix run'",
+      "git commit -m \"sh -c 'nix run x'\"",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("a command-position `sh -c` body IS scanned (#2259)", () => {
+    for (const cmd of [
+      "bash -c 'nix run x'",
+      "sh -lc 'uvx cowsay'",
+      "true; bash -c 'nix run x'",
+      "(sh -c 'uvx x')",
+      // A newline is a command separator too, so an interpreter on its own
+      // line is in command position and its body must be scanned.
+      "echo ok\nsh -c 'nix run x'",
+      "cd /tmp\nbash -c 'uvx cowsay'",
+      // `c` can sit anywhere in a short-option cluster, and options may be
+      // separate words. Matching only clusters ending in `c` missed all of
+      // these — including the very common `-euo pipefail -c` idiom.
+      "bash -ce 'nix run x'",
+      "sh -cx 'uvx cowsay'",
+      "bash -e -c 'nix run x'",
+      "bash -o pipefail -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx x'",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+  });
+
+  test("option scanning stays linear on adversarial input (#2259, CodeQL 481)", () => {
+    // The command string is agent-controlled, so an ambiguous pattern here is a
+    // worker CPU denial of service, not just a slow path. The option loop used
+    // to offer `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives; since `\S+`
+    // also matches an option, a run of bare `-` words had exponentially many
+    // parses and a non-matching tail made the engine try all of them. Measured
+    // before the fix: 232ms at 34 repetitions, 1.26s at 38, doubling per pair.
+    for (const cmd of [
+      `\nsh ${"- ".repeat(2000)}x`,
+      `bash ${"-e ".repeat(2000)}nope`,
+      `bash ${"-o x ".repeat(1000)}-c 'nix run x'`,
+      `bash -c '${"a;".repeat(3000)}'`,
+    ]) {
+      const started = performance.now();
+      isDirectPackageInstallCommand(cmd);
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
+  });
+
+  test("an interpreter named as an argument is still not a command (#2259)", () => {
+    // The option-cluster widening must not start matching argument text.
+    for (const cmd of [
+      "echo bash -ce 'nix run x'",
+      "git commit -m 'bash -ce nix run'",
+      "bash -x script.sh",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("a mid-token '#' is not a comment (#2259)", () => {
+    // `#` opens a comment only at the start of a word. Mid-token it is data
+    // (`nixpkgs#hello`), so a package manager AFTER such a token must still be
+    // seen — treating the first `#` as a comment would blank the rest of the
+    // line and hide it.
+    expect(isDirectPackageInstallCommand("echo nixpkgs#hello; nix run x")).toBe(
+      true
+    );
+    expect(isDirectPackageInstallCommand("nix run nixpkgs#hello")).toBe(true);
+    // …while a real comment still hides what follows it.
+    expect(isDirectPackageInstallCommand("echo hi # nix run x")).toBe(false);
+  });
+
+  test("a real install still trips the hint, including after an operator (#2259)", () => {
+    for (const cmd of [
+      "nix shell nixpkgs#hello",
+      "nix run nixpkgs#hello",
+      "nix build .#pkg",
+      "nix-shell -p hello",
+      "uvx cowsay",
+      "pipx run black",
+      "pnpm dlx cowsay",
+      "uv tool install ruff",
+      "apt install curl",
+      "sudo nix run x",
+      "true; nix run nixpkgs#hello",
+      "(nix shell nixpkgs#hello)",
+      // An interpreter's `-c` body IS a command position, unlike `-m` data.
+      "bash -c 'nix shell nixpkgs#hello'",
+      "sh -lc 'uvx cowsay'",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
   });
 });

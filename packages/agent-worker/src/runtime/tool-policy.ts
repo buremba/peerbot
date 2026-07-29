@@ -25,7 +25,39 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "brew ",
   "nix-shell ",
   "nix-env ",
-  "nix profile ",
+  // New-style nix CLI. `nix shell`/`run`/`develop` put arbitrary packages on
+  // PATH or fetch-and-execute them and `nix build`/`nix-store` realise arbitrary
+  // derivations — the same capability the old-style commands above already
+  // denied. A bare `nix ` prefix covers every subcommand (conservative, like
+  // `brew `); `nixfmt` and friends keep working because the prefix needs the
+  // trailing space. This matcher only recognizes the honestly-typed leading
+  // command; what actually contains a package manager differs per backend —
+  // see the header on isDirectPackageInstallCommand.
+  "nix ",
+  "nix-build ",
+  "nix-store ",
+  "nix-channel ",
+  "nix-instantiate ",
+  "nix-prefetch-url ",
+  "nix-collect-garbage ",
+  "nix-copy-closure ",
+  // Ad-hoc package runners: fetch-and-run a tool that is not installed.
+  // `npx`/`bunx` are absent — they prefer already-installed local binaries.
+  "uvx ",
+  "uv tool install ",
+  "uv tool run ",
+  "uv tool upgrade ",
+  "uv add ",
+  "pipx install ",
+  "pipx run ",
+  "pipx upgrade ",
+  "pipx upgrade-all ",
+  "pipx inject ",
+  "pipx reinstall ",
+  "pipx reinstall-all ",
+  "pipx runpip ",
+  "pnpm dlx ",
+  "yarn dlx ",
   "sudo apt ",
   "sudo apt-get ",
   "sudo yum ",
@@ -36,7 +68,14 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "sudo brew ",
   "sudo nix-shell ",
   "sudo nix-env ",
-  "sudo nix profile ",
+  "sudo nix ",
+  "sudo nix-build ",
+  "sudo nix-store ",
+  "sudo nix-channel ",
+  "sudo nix-instantiate ",
+  "sudo nix-prefetch-url ",
+  "sudo nix-collect-garbage ",
+  "sudo nix-copy-closure ",
   "pip install ",
   "pip3 install ",
   "uv pip install ",
@@ -56,34 +95,169 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
 ];
 
 const DIRECT_PACKAGE_INSTALL_PATTERNS = [
-  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
-  /(^|[\s"'`;|&()])(?:sudo\s+)?nix\s+profile\b/i,
-  /(^|[\s"'`;|&()])(?:pip|pip3)\s+install\b/i,
-  /(^|[\s"'`;|&()])uv\s+pip\s+install\b/i,
-  /(^|[\s"'`;|&()])npm\s+(?:install|i)\b/i,
-  /(^|[\s"'`;|&()])pnpm\s+(?:install|add)\b/i,
-  /(^|[\s"'`;|&()])yarn\s+(?:install|add|global\s+add)\b/i,
-  /(^|[\s"'`;|&()])bun\s+(?:install|add)\b/i,
-  /(^|[\s"'`;|&()])cargo\s+install\b/i,
-  /(^|[\s"'`;|&()])go\s+install\b/i,
-  /(^|[\s"'`;|&()])gem\s+install\b/i,
-  /(^|[\s"'`;|&()])poetry\s+add\b/i,
-  /(^|[\s"'`;|&()])composer\s+require\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
+  // New-style nix subcommands and the nix-* helpers, recognized after a shell
+  // operator or `sudo` (leading forms are already covered by the prefix list).
+  /(^|[\s;|&()])(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
+  /(^|[\s;|&()])(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
+  /(^|[\s;|&()])(?:pip|pip3)\s+install\b/i,
+  /(^|[\s;|&()])uv\s+pip\s+install\b/i,
+  /(^|[\s;|&()])uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
+  /(^|[\s;|&()])uvx\b/i,
+  /(^|[\s;|&()])pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
+  /(^|[\s;|&()])npm\s+(?:install|i)\b/i,
+  /(^|[\s;|&()])pnpm\s+(?:install|add|dlx)\b/i,
+  /(^|[\s;|&()])yarn\s+(?:install|add|global\s+add|dlx)\b/i,
+  /(^|[\s;|&()])bun\s+(?:install|add)\b/i,
+  /(^|[\s;|&()])cargo\s+install\b/i,
+  /(^|[\s;|&()])go\s+install\b/i,
+  /(^|[\s;|&()])gem\s+install\b/i,
+  /(^|[\s;|&()])poetry\s+add\b/i,
+  /(^|[\s;|&()])composer\s+require\b/i,
 ];
 
+/**
+ * An interpreter invoked with `-c` runs its QUOTED argument as a command, so
+ * that body is a command position and must be scanned. Everywhere else a quote
+ * introduces data (`git commit -m '…'`), which is why the patterns above do not
+ * treat a quote character as a word boundary.
+ *
+ * The interpreter itself must be in COMMAND position — start of the string, a
+ * newline, or just after a shell operator. Without that anchor,
+ * `echo sh -c 'nix run x'` would have its argument text scanned as if it were
+ * executed, and a newline-delimited `sh -c` would be missed entirely.
+ *
+ * `c` may sit anywhere in a short-option cluster and may follow other options
+ * given as separate words, so `-lc`, `-ce`, `-cx` and `bash -euo pipefail -c`
+ * all reach the body. Matching only clusters that END in `c` missed every one
+ * of those, including the very common `set -euo pipefail` idiom.
+ *
+ * The preceding-options loop keeps each word's role UNAMBIGUOUS: an option
+ * starts with `-`, its optional operand does not. An earlier spelling offered
+ * `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives, and since `\S+` also
+ * matches an option, `sh - - - - …` had exponentially many parses: a
+ * backtracking blowup on input the agent controls (CodeQL alert 481).
+ */
+const INTERPRETER_DASH_C =
+  /(?:^|[;|&(\n])[^\S\n]*(?:ba|z|k|a|da)?sh\s+(?:-[a-z]*\s+(?:[^-\s]\S*\s+)?)*-[a-z]*c[a-z]*\s+(['"])([\s\S]*?)\1/gi;
+
+/**
+ * Replace non-command text with spaces, preserving offsets and delimiters:
+ * the contents of quoted spans, and anything after an unquoted `#` comment.
+ * A word boundary inside either then cannot open a command position, so
+ * `git commit -m 'document nix shell support'` and `echo done # nix run x`
+ * no longer match while the surrounding real command is scanned normally.
+ *
+ * Offsets are preserved rather than the span deleted so that `foo'a'bar` does
+ * not collapse into a new adjacent token.
+ *
+ * A heredoc body (`cat <<EOF … EOF`) is NOT stripped: recognizing one means
+ * tracking the delimiter across lines, which is the bash-lexer rabbit hole this
+ * matcher deliberately stays out of. A heredoc that quotes an install command
+ * is therefore still flagged — an over-denial on an unusual command, not a hole.
+ */
+function blankQuotedSpans(text: string): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    if (quote) {
+      // A backslash escape inside double quotes keeps the next char quoted.
+      if (quote === '"' && ch === "\\" && i + 1 < text.length) {
+        out += "  ";
+        i++;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        out += ch;
+        continue;
+      }
+      out += ch === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    // `#` opens a comment only at the START of a word — after whitespace, a
+    // shell operator (`echo hi;# …`), or at the very beginning. Mid-token it is
+    // an ordinary character and must stay one, since `nix run nixpkgs#hello`
+    // depends on it. Blank to end of line, keeping the newline so later lines
+    // are still scanned.
+    if (ch === "#" && (i === 0 || /[\s;|&()]/.test(text[i - 1] as string))) {
+      out += "#";
+      i++;
+      while (i < text.length && text[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      if (i < text.length) out += "\n";
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Advisory detector for an honestly-typed package-manager install/acquire
+ * command, used to return a helpful "declare it in nixPackages instead" message
+ * (see {@link enforceBashPreflight}).
+ *
+ * This is a conservative TEXT hint, NOT the security boundary. It does not try
+ * to out-parse the shell, so it misses a quoted, escaped, or path-qualified
+ * name (`"nix" run`, `n\ix run`, `/usr/bin/nix run`), a manager behind an exec
+ * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
+ * the body of an interpreter reached by path or long option (`/bin/bash -c`,
+ * `bash --login -c`). It also over-denies a manager named as a plain argument
+ * (`echo uvx cowsay`).
+ *
+ * Those misses are not holes on the local backend: the manager is never a
+ * runnable command there. `UNSANDBOXED_INTERPRETERS` in
+ * `just-bash-bootstrap.ts` keeps it out of the just-bash registry, and that
+ * lookup is on the RESOLVED binary name, which quoting and paths cannot
+ * change — so the spellings above end in "command not found" regardless.
+ * Declared `nixPackages` is the sanctioned way to get tooling.
+ *
+ * Remote runtime providers (opt-in, e.g. `vercel`) have no discovery filter,
+ * but the shared preflight runs before dispatch, so these deny prefixes apply
+ * there too and are what keeps a manager from reaching the provider at all.
+ * Loosening that for the sandbox tier would be a deliberate, separate change.
+ *
+ * Making this matcher airtight means reimplementing bash's lexer; attempts to
+ * do so produced false positives on honest commands and no gain in
+ * enforcement. Prefer widening the discovery filter over widening this regex.
+ */
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();
   if (!trimmed) {
     return false;
   }
 
-  return (
+  const matches = (text: string): boolean =>
     DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
-      trimmed.startsWith(prefix.toLowerCase())
-    ) ||
-    DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(trimmed))
-  );
+      text.startsWith(prefix.toLowerCase())
+    ) || DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(text));
+
+  // Scan the command with quoted DATA blanked out, so only real command
+  // positions can match.
+  if (matches(blankQuotedSpans(trimmed))) {
+    return true;
+  }
+
+  // Then scan `sh -c '…'` bodies, where the quoted text IS a command.
+  INTERPRETER_DASH_C.lastIndex = 0;
+  for (const m of trimmed.matchAll(INTERPRETER_DASH_C)) {
+    const body = m[2]?.trim();
+    if (body && matches(blankQuotedSpans(body))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function normalizeToolName(name: string): string {
@@ -264,6 +438,25 @@ function splitShellCommands(command: string): string[] {
       } else {
         current += ch;
       }
+      continue;
+    }
+
+    // Backslash-newline is LINE CONTINUATION: the shell deletes both characters
+    // before tokenizing, so `r\<newline>m -rf /` runs as `rm -rf /`. Drop both
+    // rather than keeping them as text, or a deny prefix can be split in half
+    // and evaded.
+    if (ch === "\\" && next === "\n") {
+      i++;
+      continue;
+    }
+
+    // Any other outside-quote backslash escapes the next character, making an
+    // escaped metacharacter literal data — `echo foo\; nix run` is ONE `echo`,
+    // not two commands. Consume both so the escaped `;`/`|`/`&` is not read as
+    // a segment boundary.
+    if (ch === "\\" && next !== undefined) {
+      current += ch + next;
+      i++;
       continue;
     }
 

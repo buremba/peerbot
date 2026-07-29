@@ -74,6 +74,15 @@ export function buildBinaryInvocation(
  * arbitrary code through them. They are excluded by default; an agent that
  * genuinely needs them must opt in via
  * `LOBU_ALLOW_UNSANDBOXED_EXEC=1` (set per-agent in lobu.config.ts).
+ *
+ * This filter blocks the AGENT from invoking a listed binary DIRECTLY through
+ * the shell: an unregistered name is "command not found". It does NOT stop a
+ * binary that IS registered (a tool not on this list, e.g. `awk`, `sed`) from
+ * re-execing a listed one — a registered command inherits the worker PATH, so
+ * `awk 'BEGIN{system("bunx x")}'` can still reach the manager. Closing that
+ * residual at the child PATH was tried and reverted (it removed co-located
+ * node/git and could not gate an absolute /nix/store re-exec); it belongs at
+ * the process/mount boundary and is tracked separately.
  */
 const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "node",
@@ -108,6 +117,12 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "nix-build",
   "nix-shell",
   "nix-env",
+  "nix-store",
+  "nix-channel",
+  "nix-instantiate",
+  "nix-prefetch-url",
+  "nix-collect-garbage",
+  "nix-copy-closure",
   "npm",
   "npx",
   "pnpm",
@@ -116,10 +131,48 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "pip3",
   "pipx",
   "uv",
+  "uvx",
+  "bunx",
   "poetry",
   "gem",
   "cargo",
   "go",
+  // Exec wrappers: they run an arbitrary trailing argv as a new process with the
+  // worker's PATH, so a registered wrapper re-execs any /nix/store binary —
+  // including one deliberately filtered above (`env sh`, `env nix`, `xargs npm`,
+  // `find … -exec …`). Gating `sh`/`nix` while leaving these registerable would
+  // be a hole: the wrapper is the same arbitrary-code capability by proxy. They
+  // join the same default-off tier and are re-enabled per-agent by
+  // LOBU_ALLOW_UNSANDBOXED_EXEC=1, exactly like the interpreters above.
+  "env",
+  "command",
+  "xargs",
+  "find",
+  "nice",
+  "ionice",
+  "nohup",
+  "setsid",
+  "stdbuf",
+  "timeout",
+  "time",
+  "chrt",
+  "taskset",
+  "watch",
+  "flock",
+  // `make` belongs to the same tier for the same reason: every recipe line is
+  // handed to `/bin/sh -c`, so a registered `make` runs an arbitrary script from
+  // a Makefile the agent just wrote.
+  "make",
+  // Privilege / namespace / trace tools also exec an arbitrary trailing argv
+  // (and `su`, `chroot`, `nsenter` default to a SHELL when given no command),
+  // so registering one is the same proxy hole as `env`.
+  "sudo",
+  "su",
+  "unshare",
+  "nsenter",
+  "chroot",
+  "strace",
+  "ltrace",
 ]);
 
 /**

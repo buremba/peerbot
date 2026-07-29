@@ -281,9 +281,22 @@ describe("createEmbeddedBashOps", () => {
 
       const nixBin = path.join(workspace, "nix", "store", "iface", "bin");
       fs.mkdirSync(nixBin, { recursive: true });
-      const fakeNode = path.join(nixBin, "node");
-      fs.writeFileSync(fakeNode, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
-      fs.chmodSync(fakeNode, 0o755);
+      const gatedNames = [
+        "node",
+        "bunx",
+        "uvx",
+        "nix-store",
+        "nix-channel",
+        "nix-instantiate",
+        "nix-prefetch-url",
+        "nix-collect-garbage",
+        "nix-copy-closure",
+      ];
+      for (const name of gatedNames) {
+        const fake = path.join(nixBin, name);
+        fs.writeFileSync(fake, '#!/bin/sh\necho "interpreter ran"\n', "utf8");
+        fs.chmodSync(fake, 0o755);
+      }
 
       process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
       delete process.env.LOBU_EXEC_SANDBOX;
@@ -292,14 +305,16 @@ describe("createEmbeddedBashOps", () => {
       delete process.env.LOBU_WORKSPACE_BACKEND;
 
       const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
-      const chunks: string[] = [];
-      const result = await ops.exec("node", "/", {
-        onData: (chunk) => chunks.push(chunk.toString()),
-        timeout: 5,
-      });
+      for (const name of gatedNames) {
+        const chunks: string[] = [];
+        const result = await ops.exec(name, "/", {
+          onData: (chunk) => chunks.push(chunk.toString()),
+          timeout: 5,
+        });
 
-      expect(chunks.join("")).not.toContain("interpreter ran");
-      expect(result.exitCode).not.toBe(0);
+        expect(chunks.join("")).not.toContain("interpreter ran");
+        expect(result.exitCode).not.toBe(0);
+      }
     }
   );
 
@@ -622,5 +637,159 @@ describe("buildBinaryInvocation", () => {
       workspaceDir: "/tmp",
     });
     expect(r).toEqual({ command: "/bin/echo", args: ["hi"] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The AGENT-DIRECT package-install boundary: an unregistered package manager
+// resolves to "command not found" (exit 127) when the agent invokes it through
+// the shell, however the token is spelled or wrapped, because the lookup is on
+// the resolved binary name. isDirectPackageInstallCommand is only a hint.
+//
+// SCOPE — not airtight against a registered INTERPRETER re-execing a manager:
+// `awk` is not in UNSANDBOXED_INTERPRETERS, so it registers, inherits the
+// worker PATH, and `awk 'BEGIN{system("bunx x")}'` reaches the binary. That
+// residual is accepted — closing it at the child PATH also removed co-located
+// node/git and could not gate an absolute /nix/store re-exec, so the scrub was
+// reverted. Hardening belongs at the process/mount boundary, tracked separately.
+// ---------------------------------------------------------------------------
+describe("filtered package managers are not runnable via the shell directly", () => {
+  test("nix/npm/uvx resolve to exit 127 through quoting and wrappers", async () => {
+    // A bare just-bash with NO custom commands registered for these tools —
+    // exactly what discoverBinaries() yields after UNSANDBOXED_INTERPRETERS
+    // filtering. just-bash only runs builtins plus registered commands, so an
+    // unregistered binary is "not found".
+    const { Bash, InMemoryFs } = await import("just-bash");
+    const bash = new Bash({ fs: new InMemoryFs() });
+
+    const evasions = [
+      "nix run nixpkgs#hello",
+      '"nix" run nixpkgs#hello',
+      'n"i"x run nixpkgs#hello',
+      "env nix run nixpkgs#hello",
+      'sh -c "nix run nixpkgs#hello"',
+      'echo "nix run nixpkgs#hello" | sh',
+      'git -c alias.x="!nix run x" x',
+      "npm install lodash",
+      "uvx cowsay",
+    ];
+    for (const cmd of evasions) {
+      const r = await bash.exec(cmd);
+      expect(r.exitCode).toBe(127);
+      expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toContain(
+        "command not found"
+      );
+    }
+  });
+
+  test("interpreter spellings the text hint skips are still unreachable", async () => {
+    // isDirectPackageInstallCommand does not scan the body of an interpreter
+    // reached by path, long option, or `env` (documented there). This pins the
+    // reason that is acceptable: the manager is unreachable anyway.
+    //
+    // The mechanism differs per spelling — an unregistered interpreter fails on
+    // its OWN name, while just-bash's `bash` builtin accepts the invocation and
+    // fails on the manager inside the body — so assert only the outcome.
+    const { Bash, InMemoryFs } = await import("just-bash");
+    const bash = new Bash({ fs: new InMemoryFs() });
+
+    for (const cmd of [
+      "/bin/bash -c 'nix run x'",
+      "/usr/bin/env bash -c 'nix run x'",
+      "bash --login -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx cowsay'",
+      "zsh -c 'uvx x'",
+      "dash -c 'uvx x'",
+    ]) {
+      const r = await bash.exec(cmd);
+      expect(r.exitCode).not.toBe(0);
+      // Whatever failed, no package manager ran.
+      expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).not.toContain("installing");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exec wrappers (env, xargs, find, timeout, …). just-bash ships SAFE builtins
+// for these: the builtin `env nix …` resolves `nix` through just-bash's own
+// command registry, so a filtered `nix` is "command not found" and the builtin
+// never re-execs the host. The danger is only when discovery REGISTERS a real
+// /nix/store `env` as a custom command — buildCustomCommands execFile's that
+// host binary, which re-execs its argv with the worker PATH and can reach a
+// filtered interpreter. The wrappers are in UNSANDBOXED_INTERPRETERS so
+// discovery drops them by default, leaving the safe builtin.
+// ---------------------------------------------------------------------------
+describe("exec wrappers are filtered from discovery by default", () => {
+  function seedFixtureWrapper(): { workspace: string; storeBin: string } {
+    const workspace = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-wrapper-"))
+    );
+    tempDirs.push(workspace);
+    // A /nix/store-shaped dir is required: discoverBinaries only scans PATH
+    // entries containing "/nix/store/".
+    const storeBin = path.join(workspace, "nix", "store", "aaaa-env", "bin");
+    fs.mkdirSync(storeBin, { recursive: true });
+    const fakeEnv = path.join(storeBin, "env");
+    // Prints a sentinel if the HOST binary ever runs, so a re-exec is
+    // observable versus the safe builtin (which never prints it).
+    fs.writeFileSync(fakeEnv, '#!/bin/sh\necho "HOST-ENV-RAN"\n', "utf8");
+    fs.chmodSync(fakeEnv, 0o755);
+    return { workspace, storeBin };
+  }
+
+  // Gated on a real sandbox: registration itself requires one (or the opt-in,
+  // which would ALSO lift the discovery filter and defeat the point). Without
+  // it `registerSpawnedBinaries` is false, discoverBinaries() never runs, and
+  // the fixture would be absent for the wrong reason — a vacuous pass. With a
+  // real sandbox the fixture IS discovered and only UNSANDBOXED_INTERPRETERS
+  // keeps it out, which is the assertion we want.
+  (realSandboxAvailable ? test : test.skip)(
+    "default: host env is not registered; env nix cannot reach nix",
+    async () => {
+      const { workspace, storeBin } = seedFixtureWrapper();
+      process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
+      // Opt-in OFF is the point: the discovery filter drops the host `env`, so
+      // the safe builtin handles it. (The opt-in would bypass the filter.)
+      delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+      delete process.env.LOBU_EXEC_SANDBOX;
+      resetSandboxProbeForTests();
+
+      const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+
+      // The host fixture env must never run — the builtin handles `env`.
+      const passthru: string[] = [];
+      await ops.exec("env true", "/", {
+        onData: (chunk) => passthru.push(chunk.toString()),
+        timeout: 5,
+      });
+      expect(passthru.join("")).not.toContain("HOST-ENV-RAN");
+
+      // And `env nix run` cannot reach a nix — the builtin resolves `nix` in the
+      // just-bash registry, where it is filtered → command not found.
+      const chunks: string[] = [];
+      const nixResult = await ops.exec("env nix run nixpkgs#hello", "/", {
+        onData: (chunk) => chunks.push(chunk.toString()),
+        timeout: 5,
+      });
+      expect(nixResult.exitCode).toBe(127);
+      expect(chunks.join("")).toContain("command not found");
+    }
+  );
+
+  test("opt-in ON: the same fixture env IS registered and runs (filter is real)", async () => {
+    const { workspace, storeBin } = seedFixtureWrapper();
+    process.env.PATH = `${storeBin}:${process.env.PATH ?? ""}`;
+    // Opt-in bypasses the filter, so the host `env` is registered and takes
+    // precedence over the builtin; this proves the default suppression above is
+    // the FILTER at work, not a missing fixture.
+    registerWithoutOsSandbox();
+
+    const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
+    const chunks: string[] = [];
+    await ops.exec("env true", "/", {
+      onData: (chunk) => chunks.push(chunk.toString()),
+      timeout: 5,
+    });
+    expect(chunks.join("")).toContain("HOST-ENV-RAN");
   });
 });

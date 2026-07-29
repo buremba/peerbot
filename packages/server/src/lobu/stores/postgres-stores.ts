@@ -128,34 +128,34 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 	const store: AgentConfigStore = {
 		async getSettings(agentId) {
 			const sql = getDb();
-			// Workers/gateway-internal callers run without org context — agent IDs
-			// are globally unique and the worker token already proves authenticity,
-			// so falling back to id-only lookup is safe. HTTP request paths always
-			// have an org context (set by middleware) and get the row scoped to it.
+			// CROSS-TENANT GUARD: `agents` is keyed (organization_id, id) and has no
+			// global unique index on `id`, so a per-org system agent (`lobu-builder`,
+			// `owletto-default`) has one row per tenant. An unscoped `WHERE id = …`
+			// would return an arbitrary tenant's `models`, `guardrails`,
+			// `pre_approved_tools`, `tools_config`, `nix_config` and `sandbox_id`.
+			// Not hypothetical: `createLobuOrgContextMiddleware` opens no context
+			// when there is no Better Auth user, and the settings-cookie routes
+			// (`/connect/claim` → `GET /api/v1/agents/:agentId/config`) authenticate
+			// without one. Fail closed, as PR #2284 did for agent history.
 			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            SELECT models,
-                   network_config, nix_config,
-                   soul_md, user_md, identity_md,
-                   skills_config, tools_config,
-                   verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
-                   sandbox_id, updated_at
-            FROM agents
-            WHERE id = ${agentId} AND organization_id = ${orgId}
-          `
-				: await sql`
-            SELECT models,
-                   network_config, nix_config,
-                   soul_md, user_md, identity_md,
-                   skills_config, tools_config,
-                   verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
-                   sandbox_id, updated_at
-            FROM agents
-            WHERE id = ${agentId}
-          `;
+			if (!orgId) {
+				logger.warn(
+					{ agentId },
+					"[getSettings] no org context — returning null (cross-tenant guard)",
+				);
+				return null;
+			}
+			const rows = await sql`
+          SELECT models,
+                 network_config, nix_config,
+                 soul_md, user_md, identity_md,
+                 skills_config, tools_config,
+                 verbose_logging, show_tool_calls,
+                 pre_approved_tools, guardrails, guardrails_inline,
+                 sandbox_id, updated_at
+          FROM agents
+          WHERE id = ${agentId} AND organization_id = ${orgId}
+        `;
 			if (rows.length === 0) return null;
 			return rowToSettings(rows[0]);
 		},
@@ -214,20 +214,25 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 		},
 		async getMetadata(agentId) {
 			const sql = getDb();
+			// CROSS-TENANT GUARD: same composite-key reasoning as `getSettings`, and
+			// higher stakes — `verifyOwnedAgentAccess` vouches the caller against the
+			// `owner_*` columns of whatever row this returns, so an unscoped read
+			// lets an arbitrary tenant's row decide authorization. PR #2284 fixed the
+			// one caller that had already been traced; this closes the query itself.
 			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   created_at, last_used_at
-            FROM agents
-            WHERE id = ${agentId} AND organization_id = ${orgId}
-          `
-				: await sql`
-            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   created_at, last_used_at
-            FROM agents
-            WHERE id = ${agentId}
-          `;
+			if (!orgId) {
+				logger.warn(
+					{ agentId },
+					"[getMetadata] no org context — returning null (cross-tenant guard)",
+				);
+				return null;
+			}
+			const rows = await sql`
+          SELECT id, organization_id, name, description, owner_platform, owner_user_id,
+                 created_at, last_used_at
+          FROM agents
+          WHERE id = ${agentId} AND organization_id = ${orgId}
+        `;
 			if (rows.length === 0) return null;
 			return rowToMetadata(rows[0]);
 		},

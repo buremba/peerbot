@@ -1,0 +1,129 @@
+/**
+ * Cross-tenant regression test for the org-less `AgentConfigStore` read path.
+ *
+ * `agents` is keyed `(organization_id, id)` and has exactly two indexes —
+ * `agents_pkey UNIQUE (organization_id, id)` and the non-unique
+ * `agents_organization_id_idx`. There is NO global unique index on `agents.id`,
+ * so a system agent id provisioned per-org (`lobu-builder`, `owletto-default`)
+ * exists once per tenant.
+ *
+ * `getSettings`/`getMetadata` used to fall back to a bare `WHERE id = $agentId`
+ * with no `LIMIT` and no `ORDER BY` when no ambient `orgContext` was set,
+ * returning `rows[0]` — an arbitrary tenant's row. That leaked `models`,
+ * `guardrails`, `pre_approved_tools`, `tools_config`, `nix_config` and
+ * `sandbox_id` across tenants, and (via `verifyOwnedAgentAccess`) let an
+ * unscoped metadata row decide authorization.
+ *
+ * The org-less HTTP path is real: `createLobuOrgContextMiddleware` early-returns
+ * without opening an `orgContext` when there is no Better Auth user, while
+ * `GET /api/v1/agents/:agentId/config` authenticates purely with the
+ * `lobu_settings_session` cookie minted by `/connect/claim`. See PR #2284, which
+ * fixed the same class in `agent-history.ts`.
+ *
+ * These reads now fail closed: with no ambient org they resolve nothing rather
+ * than guessing a tenant.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	cleanupTestDatabase,
+	getTestDb,
+} from "../../../__tests__/setup/test-db";
+import { createTestOrganization } from "../../../__tests__/setup/test-fixtures";
+import { orgContext } from "../org-context";
+import { createPostgresAgentConfigStore } from "../postgres-stores";
+
+const SHARED_AGENT_ID = "lobu-builder";
+
+describe("org-less agent config reads must not cross tenants", () => {
+	let orgA: string;
+	let orgB: string;
+
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+		const a = await createTestOrganization({ name: "Tenant A" });
+		const b = await createTestOrganization({ name: "Tenant B" });
+		orgA = a.id;
+		orgB = b.id;
+
+		const config = createPostgresAgentConfigStore();
+		// Both tenants provision the SAME system agent id with DIVERGENT config.
+		for (const [orgId, label] of [
+			[orgA, "A"],
+			[orgB, "B"],
+		] as const) {
+			await orgContext.run({ organizationId: orgId }, async () => {
+				await config.saveMetadata(SHARED_AGENT_ID, {
+					agentId: SHARED_AGENT_ID,
+					name: `Builder ${label}`,
+					owner: { platform: "lobu", userId: `owner-${label}` },
+					createdAt: Date.now(),
+				});
+				await config.saveSettings(SHARED_AGENT_ID, {
+					models: [`provider-${label}/model-${label}`],
+					soulMd: `secret soul for ${label}`,
+					preApprovedTools: [`tool_${label}`],
+				});
+			});
+		}
+	});
+
+	afterEach(async () => {
+		const db = getTestDb();
+		await db`TRUNCATE agents CASCADE`;
+	});
+
+	it("proves the shared id really has one row per tenant (no global unique on agents.id)", async () => {
+		const db = getTestDb();
+		const rows = await db`
+			SELECT organization_id FROM agents WHERE id = ${SHARED_AGENT_ID}
+		`;
+		expect(rows.length).toBe(2);
+		expect(new Set(rows.map((r: { organization_id: string }) => r.organization_id))).toEqual(
+			new Set([orgA, orgB]),
+		);
+	});
+
+	it("getSettings with no ambient org returns null instead of an arbitrary tenant's config", async () => {
+		const config = createPostgresAgentConfigStore();
+
+		// No `orgContext.run` wrapper — exactly the settings-cookie HTTP path.
+		const leaked = await config.getSettings(SHARED_AGENT_ID);
+
+		expect(leaked).toBeNull();
+	});
+
+	it("getMetadata with no ambient org returns null instead of an arbitrary tenant's row", async () => {
+		const config = createPostgresAgentConfigStore();
+
+		const leaked = await config.getMetadata(SHARED_AGENT_ID);
+
+		expect(leaked).toBeNull();
+	});
+
+	it("still resolves each tenant's own row when the org context is set", async () => {
+		const config = createPostgresAgentConfigStore();
+
+		const settingsA = await orgContext.run({ organizationId: orgA }, () =>
+			config.getSettings(SHARED_AGENT_ID),
+		);
+		const settingsB = await orgContext.run({ organizationId: orgB }, () =>
+			config.getSettings(SHARED_AGENT_ID),
+		);
+		const metaA = await orgContext.run({ organizationId: orgA }, () =>
+			config.getMetadata(SHARED_AGENT_ID),
+		);
+		const metaB = await orgContext.run({ organizationId: orgB }, () =>
+			config.getMetadata(SHARED_AGENT_ID),
+		);
+
+		expect(settingsA?.soulMd).toBe("secret soul for A");
+		expect(settingsB?.soulMd).toBe("secret soul for B");
+		expect(settingsA?.models).toEqual(["provider-A/model-A"]);
+		expect(settingsB?.models).toEqual(["provider-B/model-B"]);
+		expect(metaA?.name).toBe("Builder A");
+		expect(metaB?.name).toBe("Builder B");
+		expect(metaA?.organizationId).toBe(orgA);
+		expect(metaB?.organizationId).toBe(orgB);
+	});
+});

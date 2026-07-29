@@ -285,6 +285,52 @@ describe("manage_entity merge action", () => {
 		});
 	});
 
+	it("records the matching values that justify the merge on both sides of the snapshot", async () => {
+		const org = await createTestOrganization({ name: "Snapshot Evidence Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		await sql`
+      UPDATE entities SET metadata = jsonb_build_object('phone', '+90 539 510 22 40')
+      WHERE id = ${winner.id} AND organization_id = ${org.id}
+    `;
+		await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES
+        (${org.id}, ${loser.id}, 'phone', '905395102240'),
+        (${org.id}, ${loser.id}, 'wa_jid', '905395102240@s.whatsapp.net')
+    `;
+
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+
+		expect(queued.approval_queued).toBe(true);
+		const [run] = await sql<{ action_input: Record<string, unknown> }[]>`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		const current = (run.action_input as { current: Record<string, unknown> })
+			.current as {
+			winner: { resolution_keys?: Record<string, string[]> };
+			duplicates: Array<{ resolution_keys?: Record<string, string[]> }>;
+		};
+		expect(current.winner.resolution_keys).toEqual({
+			phone: ["905395102240"],
+		});
+		expect(current.duplicates[0]?.resolution_keys).toEqual({
+			phone: ["905395102240"],
+		});
+		// Persist normalized policy values without copying arbitrary entity metadata.
+		expect(current.winner).not.toHaveProperty("metadata");
+	});
+
 	it("records the agent session that proposed the merge, not an orphan run", async () => {
 		const org = await createTestOrganization({ name: "Initiator Agent Org" });
 		const user = await createTestUser();

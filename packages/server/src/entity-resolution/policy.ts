@@ -19,12 +19,23 @@ interface ResolutionEntity {
 	identities?: ResolutionIdentity[];
 }
 
+/**
+ * One entity's normalized rule keys, grouped under the same labels used by
+ * `evidence.kind`. This is a readable view of the rule evaluation included in
+ * the resolution fingerprint. Rules that normalize no values are omitted.
+ */
+export interface ResolutionKeySet {
+	id: number;
+	keys: Record<string, string[]>;
+}
+
 interface EntityResolutionAssessment {
 	decision: ResolutionDecision;
 	evidence: ResolutionEvidence[];
 	policyHash: string;
 	fingerprint: string;
 	reason: string;
+	resolutionKeys: ResolutionKeySet[];
 }
 
 interface ResolutionRule {
@@ -275,12 +286,31 @@ export function assessEntityResolution(input: {
 		loserIds: input.losers.map((entity) => entity.id).sort((a, b) => a - b),
 		normalizedIdentities,
 	});
+	// Derive the snapshot view from the same normalized values used above without
+	// changing the fingerprint input.
+	const resolutionKeys: ResolutionKeySet[] = normalizedIdentities.map(
+		({ id, values }) => {
+			const keysByLabel = new Map<string, string[]>();
+			values.forEach((ruleKeys, index) => {
+				if (ruleKeys.length === 0) return;
+				const rule = rules[index]!;
+				const label = rule.fields.join(" + ");
+				const existingKeys = keysByLabel.get(label) ?? [];
+				keysByLabel.set(
+					label,
+					[...new Set([...existingKeys, ...ruleKeys])].sort(),
+				);
+			});
+			return { id, keys: Object.fromEntries(keysByLabel) };
+		},
+	);
 
 	return {
 		decision,
 		evidence: deduplicatedEvidence,
 		policyHash,
 		fingerprint,
+		resolutionKeys,
 		// Addressed to the human deciding the approval, so each branch says what
 		// the workspace could verify and what it now needs from them — not what
 		// the rules engine did internally.

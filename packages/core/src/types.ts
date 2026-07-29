@@ -93,7 +93,8 @@ export interface ConversationMessage {
 
 // Agent-settings nested types (NetworkConfig, NixConfig, ToolsConfig,
 // SkillConfig, SkillsConfig, AgentInlineGuardrail, ThinkingLevel) now live in
-// ./contracts/agent-settings.ts as the single TypeBox-schema source (Static<typeof ...>). They are re-exported
+// ./contracts/agent-settings.ts as the single TypeBox-schema source
+// (Static<typeof ...>). They are re-exported
 // from there at the bottom of this file so the @lobu/core public surface and
 // core-internal imports keep resolving. The hand-written duplicates that
 // lived here were structurally identical but a separate drift surface.
@@ -119,14 +120,14 @@ export interface McpOAuthConfig {
 
 // SkillConfig now comes from ./contracts/agent-settings (re-exported at the
 // bottom). The hand-written duplicates that lived here were structurally
-// identical but a separate drift
-// surface; removed when the schema became the single source.
+// identical but a separate drift surface; removed when the schema became the
+// single source.
 
 /**
  * An operator-authored custom guardrail stored on an agent (`AgentSettings.
  * guardrailsInline`). The operator owns the agent, so a custom guardrail may
- * run at any stage. Each one is an inline LLM judge: the `policy` is evaluated by `model` (defaulting to
- * the judge default) and trips when the judge denies.
+ * run at any stage. Each one is an inline LLM judge: the `policy` is evaluated
+ * by `model` (defaulting to the judge default) and trips when the judge denies.
  *
  * `name` is operator-given and must be unique across the agent's guardrails
  * (built-ins included) — it's the catalog id, the detail route key, and the

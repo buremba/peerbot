@@ -419,9 +419,10 @@ export class McpProxy {
 
 	/**
 	* Run the agent's resolved pre-tool guardrails for a `tools/call`. Returns
-	* true if a guardrail tripped and the call must be blocked — the caller then returns a
-	* generic, platform-shaped "blocked by policy" response (the specific reason
-	* is never surfaced to the worker; that would be an evasion oracle).
+	* true if a guardrail tripped and the call must be blocked — the caller then
+	* returns a generic, platform-shaped "blocked by policy" response (the
+	* specific reason is never surfaced to the worker; that would be an evasion
+	* oracle).
 	*
 	* Shared by BOTH tool-call entrypoints — the JSON-RPC forward path
 	* (`handleProxyRequest`) and the REST `handleCallTool` — so neither can

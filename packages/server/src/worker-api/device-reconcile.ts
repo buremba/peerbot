@@ -151,22 +151,14 @@ async function ensureDeviceConnectorWired(
         AND c.auth_profile_id IS NULL
         AND c.app_auth_profile_id IS NULL
         AND c.device_worker_id IS NOT NULL
-        -- Deliberately NOT gated on matchingDeviceIds: that snapshot is taken
-        -- before the advisory lock, so ANDing it in would let a device that has
-        -- since dropped the capability survive the sweep — the snapshot says
-        -- "still serving" and short-circuits the check below. The NOT EXISTS is
-        -- strictly more accurate, being evaluated at mutation time, so it is the
-        -- only condition that decides.
+        -- Deliberately NOT also gated on matchingDeviceIds: ANDing the stale
+        -- snapshot in would let a device that has since dropped the capability
+        -- survive, by short-circuiting this check.
         AND NOT EXISTS (
           SELECT 1 FROM device_workers dw
           WHERE dw.id = c.device_worker_id
             AND dw.user_id = ${userId}
             AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-            -- Freshness alone is not "still serving": a device can be alive and
-            -- have dropped the capability (an app update, a revoked permission).
-            -- Keeping that pin leaves the connection unclaimable, since polling
-            -- is capability-gated. Same membership test devicesWithCapability
-            -- runs, over the same JSONB array.
             AND dw.capabilities @> ${db.json([requiredCapability])}
         )
     `;

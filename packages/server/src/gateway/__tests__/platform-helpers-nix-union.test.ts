@@ -26,85 +26,16 @@ async function resolveNixConfig(
 }
 
 describe("resolveAgentOptions nix union", () => {
-  test("an enabled skill's nixPackages reach nixConfig even when the agent has none", async () => {
-    const resolved = await resolveNixConfig({
-      skillsConfig: {
-        skills: [
-          {
-            repo: "lobu/skills",
-            name: "video",
-            enabled: true,
-            nixPackages: ["ffmpeg"],
-          },
-        ],
-      },
-    });
-
-    expect(resolved?.packages).toEqual(["ffmpeg"]);
-  });
-
-  test("agent packages come first and the union is deduped", async () => {
-    const resolved = await resolveNixConfig({
-      nixConfig: { packages: ["ripgrep", "ffmpeg"] },
-      skillsConfig: {
-        skills: [
-          {
-            repo: "lobu/skills",
-            name: "video",
-            enabled: true,
-            nixPackages: ["ffmpeg", "yt-dlp"],
-          },
-        ],
-      },
-    });
-
-    expect(resolved?.packages).toEqual(["ripgrep", "ffmpeg", "yt-dlp"]);
-  });
-
-  test("base packages survive when settings only add skill packages", async () => {
+  test("per-request and agent packages are unioned and deduped", async () => {
     const resolved = await resolveNixConfig(
-      {
-        skillsConfig: {
-          skills: [
-            {
-              repo: "lobu/skills",
-              name: "video",
-              enabled: true,
-              nixPackages: ["ffmpeg"],
-            },
-          ],
-        },
-      },
-      { packages: ["ripgrep"] },
-    );
-
-    expect(resolved?.packages).toEqual(["ripgrep", "ffmpeg"]);
-  });
-
-  test("per-request, agent and skill packages are all unioned", async () => {
-    // `POST /agents` persists its `nix` on the session and replays it as a base
-    // option, so agent settings must not clobber the caller's packages.
-    const resolved = await resolveNixConfig(
-      {
-        nixConfig: { packages: ["agent-pkg"] },
-        skillsConfig: {
-          skills: [
-            {
-              repo: "lobu/skills",
-              name: "video",
-              enabled: true,
-              nixPackages: ["skill-pkg"],
-            },
-          ],
-        },
-      },
-      { packages: ["request-pkg"] },
+      { nixConfig: { packages: ["agent-pkg", "shared-pkg"] } },
+      { packages: ["request-pkg", "shared-pkg"] },
     );
 
     expect(resolved?.packages).toEqual([
       "request-pkg",
+      "shared-pkg",
       "agent-pkg",
-      "skill-pkg",
     ]);
   });
 
@@ -114,27 +45,11 @@ describe("resolveAgentOptions nix union", () => {
     expect(resolved?.packages).toEqual(["request-pkg"]);
   });
 
-  test("disabled skills contribute nothing", async () => {
+  // Stored legacy rows can still carry `nixPackages`; they must validate but
+  // contribute nothing to provisioning.
+  test("a legacy enabled skill's nixPackages entry is ignored", async () => {
     const resolved = await resolveNixConfig({
       nixConfig: { packages: ["ripgrep"] },
-      skillsConfig: {
-        skills: [
-          {
-            repo: "lobu/skills",
-            name: "video",
-            enabled: false,
-            nixPackages: ["ffmpeg"],
-          },
-        ],
-      },
-    });
-
-    expect(resolved?.packages).toEqual(["ripgrep"]);
-  });
-
-  test("flakeUrl is preserved when skill packages are unioned in", async () => {
-    const resolved = await resolveNixConfig({
-      nixConfig: { flakeUrl: "github:org/flake" },
       skillsConfig: {
         skills: [
           {
@@ -147,8 +62,34 @@ describe("resolveAgentOptions nix union", () => {
       },
     });
 
+    expect(resolved?.packages).toEqual(["ripgrep"]);
+  });
+
+  test("a legacy skill nixPackages entry alone leaves nixConfig unset", async () => {
+    const resolved = await resolveNixConfig({
+      skillsConfig: {
+        skills: [
+          {
+            repo: "lobu/skills",
+            name: "video",
+            enabled: true,
+            nixPackages: ["ffmpeg"],
+          },
+        ],
+      },
+    });
+
+    expect(resolved).toBeUndefined();
+  });
+
+  test("flakeUrl is preserved when the base supplies packages", async () => {
+    const resolved = await resolveNixConfig(
+      { nixConfig: { flakeUrl: "github:org/flake" } },
+      { packages: ["request-pkg"] },
+    );
+
     expect(resolved?.flakeUrl).toBe("github:org/flake");
-    expect(resolved?.packages).toEqual(["ffmpeg"]);
+    expect(resolved?.packages).toEqual(["request-pkg"]);
   });
 
   test("no nix anywhere leaves nixConfig unset (absent stays absent)", async () => {

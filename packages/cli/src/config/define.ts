@@ -582,9 +582,9 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
 // ---------------------------------------------------------------------------
 
 /**
- * A skill an agent can use — an instruction block (`content`) plus the nix
- * packages it declares. Skills are referenced explicitly from
- * {@link Agent.skills}; there is no directory auto-discovery.
+ * A skill an agent can use — an instruction block (`content`). Skills are
+ * referenced explicitly from {@link Agent.skills}; there is no directory
+ * auto-discovery.
  *
  * Build one of two ways, both producing this same object:
  *   - {@link defineSkill} — inline: `content` is a string, the rest is JSON.
@@ -593,9 +593,9 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
  *     fields from its frontmatter + body. `path` is mutually exclusive with the
  *     inline fields.
  *
- * The frontmatter a skill declares (`nixPackages`) is merged into the agent's
- * worker sandbox at apply time — that's why skills are resolved eagerly, not
- * loaded by the worker at run time.
+ * Skills are instruction text only. Packages belong on the agent
+ * ({@link Agent.nixPackages}) or on a connector's `agentTooling` — a skill
+ * declares none.
  */
 export interface Skill {
   readonly kind: "skill";
@@ -608,8 +608,6 @@ export interface Skill {
   description?: string;
   /** The skill body (markdown instructions shown to the agent). */
   content?: string;
-  /** Nix packages provisioned into the worker when this skill is present. */
-  nixPackages?: string[];
   /**
    * Load body + frontmatter from a `SKILL.md`, relative to the config file. Set
    * by {@link skillFromFile}; resolved by the loader. Mutually exclusive with

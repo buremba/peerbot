@@ -124,6 +124,10 @@ export const SkillConfigSchema = Type.Object({
   enabled: Type.Boolean(),
   system: Type.Optional(Type.Boolean()),
   content: Type.Optional(Type.String()),
+  // Legacy compatibility only: runtime package resolution and the CLI ignore
+  // this field. Keep accepting it so existing `skills_config` rows validate
+  // and round-trip through the pinned Owletto editor. Remove it with the
+  // submodule change that deletes the editor field.
   nixPackages: Type.Optional(Type.Array(Type.String())),
   modelPreference: Type.Optional(Type.String()),
   thinkingLevel: Type.Optional(ThinkingLevelSchema),

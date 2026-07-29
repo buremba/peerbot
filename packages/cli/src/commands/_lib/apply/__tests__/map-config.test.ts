@@ -1230,7 +1230,7 @@ describe("mergeAgentDirArtifacts", () => {
     expect(settings.skillsConfig?.skills[0]?.name).toBe("s");
   });
 
-  test("preserves agent network; unions skill nix packages", () => {
+  test("preserves agent network and nix when merging skills", () => {
     const settings: Partial<AgentSettings> = {
       networkConfig: {
         allowedDomains: ["agent.com"],
@@ -1244,14 +1244,11 @@ describe("mergeAgentDirArtifacts", () => {
         name: "s",
         content: "b",
         enabled: true,
-        nixPackages: ["python311", "ffmpeg"],
       },
     ]);
-    // Skills no longer contribute network — the agent's config is untouched.
     expect(settings.networkConfig?.allowedDomains).toEqual(["agent.com"]);
     expect(settings.networkConfig?.deniedDomains).toEqual(["blocked.com"]);
-    // Agent + skill nix packages are unioned + deduped.
-    expect(settings.nixConfig?.packages).toEqual(["ffmpeg", "python311"]);
+    expect(settings.nixConfig?.packages).toEqual(["ffmpeg"]);
   });
 
   test("no markdown / no skills leaves settings untouched", () => {

@@ -393,9 +393,10 @@ function emitAgent(
     });
   }
 
-  // Local skills → skills/<name>/SKILL.md (with frontmatter for net/nix/mcp),
-  // referenced explicitly via `skillFromFile` so the apply loader picks them up
-  // (there is no directory auto-discovery). System/runtime skills are skipped.
+  // Local skills → skills/<name>/SKILL.md (frontmatter is name/description
+  // only — skills are instruction text), referenced explicitly via
+  // `skillFromFile` so the apply loader picks them up (there is no directory
+  // auto-discovery). System/runtime skills are skipped.
   const skillRefs: string[] = [];
   for (const skill of settings?.skillsConfig?.skills ?? []) {
     if (skill.system) continue;
@@ -420,11 +421,6 @@ function emitSkillFile(
 ): string {
   const fm: string[] = [`name: ${skill.name}`];
   if (skill.description) fm.push(`description: ${skill.description}`);
-  if (skill.nixPackages?.length) {
-    fm.push(
-      `nixPackages: [${skill.nixPackages.map((p) => str(p)).join(", ")}]`
-    );
-  }
   const body = skill.content ?? "";
   return `---\n${fm.join("\n")}\n---\n${body}\n`;
 }

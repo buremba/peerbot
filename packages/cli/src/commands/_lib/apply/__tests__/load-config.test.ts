@@ -185,7 +185,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("loads agent-dir markdown + a file skill, merging skill nix", async () => {
+  test("loads agent-dir markdown + a file skill; frontmatter nix is ignored", async () => {
     dir = mkdtempSync(join(import.meta.dir, "agentdir-"));
     const agentDir = join(dir, "agents", "crm");
     mkdirSync(join(agentDir, "skills", "crm-ops"), { recursive: true });
@@ -224,10 +224,11 @@ describe("loadDesiredStateFromConfig", () => {
     expect(settings?.soulMd).toBe("You are the CRM agent.");
     expect(settings?.identityMd).toBe("CRM identity.");
     expect(settings?.skillsConfig?.skills[0]?.name).toBe("crm-ops");
-    // Skills no longer contribute network — only the agent's domains remain.
+    // Skills contribute no network — only the agent's domains remain.
     expect(settings?.networkConfig?.allowedDomains).toEqual(["github.com"]);
-    // Skill nix packages still merge into the agent's worker sandbox.
-    expect(settings?.nixConfig?.packages).toEqual(["jq"]);
+    // A legacy `nixPackages:` frontmatter key is tolerated but ignored.
+    expect(settings?.nixConfig).toBeUndefined();
+    expect(settings?.skillsConfig?.skills[0]).not.toHaveProperty("nixPackages");
   });
 
   test("an inline defineSkill carries content with no files", async () => {

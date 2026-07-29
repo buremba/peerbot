@@ -33,8 +33,8 @@ correction **steers** future runs. The human always wins; the AI proposes, the h
   gate: pending run + `notifyActionApprovalNeeded` (no SSE dep, headless+multi-replica safe) → web
   approve via `/mcp` → apply callback → `supersedeActionEvent`). Emitted **post-commit**, never the
   ephemeral InteractionService plane (that has the runJobToken/connectionId routing trap).
-- **Prompt** → render the entity's current values + owned-field markers (one block from
-  `field_controls`); replaces the separate "Past Corrections" block for entity-typed watchers.
+- **Behavior payload** → return entity values + owned-field markers as structured rows from
+  `behavior-mode.ts`; the literal prompt is delivered separately as the run's task instructions.
 
 ## Build sequence
 1. **Data core (this slice):** `field_controls` column migration + `mergeEntityFields` primitive
@@ -45,8 +45,8 @@ correction **steers** future runs. The human always wins; the AI proposes, the h
    post-commit approval for blocked fields.
 3. **Approval apply:** new `manage_operations` action_key (`entity_field_change`) mirroring
    `tryApproveManageAgentsRun` — approve writes the field + marks owned, supersedes the event.
-4. **Prompt/reaction render:** `behavior-mode.ts` + `template-renderer.ts` render metadata +
-   owned markers; reaction gets the watcher's children + blocked proposals.
+4. **Payload/reaction context:** `behavior-mode.ts` returns entity metadata + owned markers;
+   reaction gets the Behavior's children + blocked proposals.
 5. **Follow-ups:** owletto inline field-edit + annotation UI; device-worker entity context
    (`poll.ts` ships zero entities today); two-tier relevance (post-now vs track/conditional).
 

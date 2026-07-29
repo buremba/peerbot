@@ -29,7 +29,7 @@ export interface RelationshipRule {
 export interface BehaviorSource {
   name: string;
   query: string;
-  /** When true, source is context-only (prompt template), not window body. */
+  /** When true, source is context-only and is not linked into the Behavior window. */
   context?: boolean;
 }
 

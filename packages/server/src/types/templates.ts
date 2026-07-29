@@ -20,10 +20,6 @@ export interface ComponentReferenceDocumentation {
     props?: Record<string, string>;
     example: unknown;
   }>;
-  template_variables: Array<{
-    variable: string;
-    description: string;
-  }>;
   security_restrictions: string[];
   complete_examples: Array<{
     name: string;

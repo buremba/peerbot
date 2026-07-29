@@ -3857,7 +3857,7 @@ export type ManageBehaviorsData = {
      */
     name_pattern?: string;
     /**
-     * [create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.
+     * [create/create_version] Literal LLM instruction text for the Behavior. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload.
      */
     prompt?: string;
     /**
@@ -4455,7 +4455,6 @@ export type GetBehaviorResponses = {
       } | null;
       classifiers?: Array<unknown>;
       reactions_guidance?: string;
-      rendered_prompt?: string;
       available_versions?: Array<{
         version: number;
         name: string;
@@ -4731,16 +4730,27 @@ export type ReadKnowledgeResponses = {
     window_token?: string;
     window_start?: string;
     window_end?: string;
-    prompt_rendered?: string;
     extraction_schema?: {
       [key: string]: unknown;
     };
     sources?: {
       [key: string]: unknown | Array<unknown>;
     };
+    /**
+     * Behavior-bound entities as structured rows (id, name, type, metadata, field_controls). field_controls marks human-owned field values the agent must not overwrite without new evidence.
+     */
+    entities?: Array<unknown>;
     classifiers?: Array<unknown>;
     unprocessed_ranges?: Array<unknown>;
     reactions_guidance?: string;
+    /**
+     * Summary of this Behavior's recent reactions (self-learning context).
+     */
+    past_reactions?: string;
+    /**
+     * Summary of recent human feedback on this Behavior's output.
+     */
+    past_feedback?: string;
     available_operations?: Array<{
       connection_id: number;
       operation_key: string;

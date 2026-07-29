@@ -88,6 +88,9 @@ export async function readWatcherRunThreads(args: {
 		SELECT snapshot.conversation_id,
 		       COALESCE(snapshot.created_at, r.completed_at, r.created_at) AS created_at,
 		       snapshot.snapshot_jsonl, r.id AS run_id, r.status, r.window_id,
+		       -- run_metadata->>'prompt_rendered' only exists on historical runs
+		       -- from the templating era; current runs read the version's
+		       -- literal prompt.
 		       COALESCE(r.run_metadata->>'prompt_rendered', version.prompt) AS prompt
 		FROM selected_runs r
 		LEFT JOIN LATERAL (

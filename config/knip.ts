@@ -155,7 +155,6 @@ const config: KnipConfig = {
         "dotenv",
         "embedded-postgres",
         "esbuild",
-        "handlebars",
         "hono",
         "hono-pino",
         "isomorphic-git",

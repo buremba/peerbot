@@ -319,7 +319,6 @@ export async function handleBehaviorMode(
   sql: DbClient,
   context: {
     organizationId: string;
-    sourceConversationId: string | null;
   }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
@@ -339,7 +338,6 @@ export async function handleBehaviorMode(
       i.sources,
       i.schedule,
       i.organization_id,
-      cv.prompt as template_prompt,
       cv.keying_config as template_keying_config,
       cv.reactions_guidance,
       cv.version_sources,
@@ -363,7 +361,6 @@ export async function handleBehaviorMode(
   const watcherSources =
     versionSources.length > 0 ? versionSources : parseJson(watcher.sources) || [];
   const timeGranularity = inferBehaviorGranularityFromSchedule(watcher.schedule as string | null);
-  const templatePrompt = (watcher.template_prompt as string | null) ?? undefined;
   // The extraction contract is derived from the bound entity type's
   // metadata_schema (entity-typed) — never read from a stored inline schema.
   const templateExtractionSchema = await deriveWatcherExtractionSchema(
@@ -463,21 +460,12 @@ export async function handleBehaviorMode(
     env
   );
 
-  // Render template prompt if available
-  let promptRendered: string | undefined;
-  if (templatePrompt) {
-    const { renderPromptTemplate } = await import('../../watchers/template-renderer');
-
-    const entities = Array.isArray(watcher.entities)
-      ? watcher.entities
-      : (parseJson(watcher.entities) ?? []);
-
-    promptRendered = renderPromptTemplate(templatePrompt, {
-      sources: sourcesContent as Record<string, ContentItem[]>,
-      content: allContent as ContentItem[],
-      entities,
-    });
-  }
+  // Bound entities ride the payload as structured rows (id, name, type,
+  // metadata, field_controls) — field_controls marks human-owned field values
+  // the agent must not clobber without new evidence.
+  const boundEntities: unknown[] = Array.isArray(watcher.entities)
+    ? watcher.entities
+    : (parseJson(watcher.entities) ?? []);
 
   // Compute unprocessed ranges when no specific date range requested
   // This helps agents understand what months need processing
@@ -553,45 +541,6 @@ export async function handleBehaviorMode(
     logger.warn({ err }, '[get_content] Failed to fetch reaction data for behavior mode');
   }
 
-  // Append past reactions, feedback, and guidance to the rendered prompt
-  let enrichedPrompt = promptRendered;
-  if (enrichedPrompt && contentPage?.has_more) {
-    enrichedPrompt +=
-      '\n\n## Pagination\n' +
-      `This page includes ${allContent.length} content items and more items are available in this same Behavior window. ` +
-      'If you need more evidence before completing the window, call read_knowledge again with the same behavior_id/since/until and page.next_cursor as before_occurred_at/before_id.';
-  }
-  if (enrichedPrompt) {
-    if (reactionsGuidance) {
-      enrichedPrompt += `\n\n## Reactions Guidance\n${reactionsGuidance}`;
-    }
-    if (pastReactions) {
-      enrichedPrompt += `\n\n${pastReactions}`;
-    }
-    if (pastFeedback) {
-      enrichedPrompt += `\n\n${pastFeedback}`;
-    }
-  }
-
-  const runMarker = `_watcher_${watcherId}_run_`;
-  const markerIndex = context.sourceConversationId?.lastIndexOf(runMarker) ?? -1;
-  const runIdText =
-    markerIndex >= 0
-      ? context.sourceConversationId?.slice(markerIndex + runMarker.length)
-      : null;
-  const runId = runIdText && /^[1-9][0-9]*$/.test(runIdText) ? Number(runIdText) : null;
-  if (enrichedPrompt && runId !== null && Number.isSafeInteger(runId)) {
-    await sql`
-      UPDATE runs
-      SET run_metadata = COALESCE(run_metadata, '{}'::jsonb)
-        || jsonb_build_object('prompt_rendered', ${enrichedPrompt}::text)
-      WHERE id = ${runId}
-        AND organization_id = ${context.organizationId}
-        AND watcher_id = ${watcherId}
-        AND run_type = 'behavior'
-    `;
-  }
-
   return {
     content: allContent as ContentItem[],
     total: contentIds.length,
@@ -604,12 +553,14 @@ export async function handleBehaviorMode(
     window_token: windowToken,
     window_start: windowStartIso,
     window_end: windowEndIso,
-    prompt_rendered: enrichedPrompt,
     extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,
+    entities: boundEntities.length > 0 ? boundEntities : undefined,
     classifiers: classifiers.length > 0 ? classifiers : undefined,
     unprocessed_ranges: unprocessedRanges,
     reactions_guidance: reactionsGuidance,
+    past_reactions: pastReactions,
+    past_feedback: pastFeedback,
     available_operations: availableOperations,
     // Total stats for the full date range (helps agents estimate tokens)
     total_count: totalCount,

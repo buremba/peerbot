@@ -425,7 +425,8 @@ export interface Behavior {
   /**
    * Named SQL data sources. Value is either a query string or
    * `{ query, context? }` — `context: true` marks a context-only source
-   * (bound into the prompt template but not the watcher window body).
+   * (included in the Behavior payload's `sources` field but not the window's
+   * event set).
    */
   sources?: Record<string, string | { query: string; context?: boolean }>;
   notification?: BehaviorNotification;

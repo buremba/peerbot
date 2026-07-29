@@ -948,6 +948,11 @@ export function buildDispatchMessage(params: {
 	payload: WatcherRunPayload;
 	behaviorInstructions?: string;
 }): string {
+	const behaviorInstructions =
+		typeof params.behaviorInstructions === "string" &&
+		params.behaviorInstructions.trim().length > 0
+			? params.behaviorInstructions
+			: undefined;
 	if (
 		params.payload.dispatch_source === "event" &&
 		params.payload.trigger_execution !== "window"
@@ -965,8 +970,7 @@ export function buildDispatchMessage(params: {
 			`Result delivery: ${params.payload.trigger_output ?? "silent"}`,
 			"",
 			"Behavior instructions:",
-			params.behaviorInstructions?.trim() ||
-				"Interpret and handle the incoming event.",
+			behaviorInstructions || "Interpret and handle the incoming event.",
 			"",
 			"Incoming event(s):",
 			JSON.stringify(signals, null, 2),
@@ -998,9 +1002,13 @@ export function buildDispatchMessage(params: {
 			? [`Pinned template version id: ${params.payload.version_id}`]
 			: []),
 		"",
+		"Behavior instructions:",
+		behaviorInstructions ||
+			"Analyze the window's content and extract findings per the extraction schema.",
+		"",
 		"Required steps:",
 		`1. Call query_sdk with a script that runs client.knowledge.read({ behavior_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
-		"2. Analyze the returned payload using prompt_rendered and extraction_schema.",
+		"2. Follow the Behavior instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id.",
 		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
@@ -1015,7 +1023,7 @@ export function buildDispatchMessage(params: {
 			2
 		),
 		"",
-		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
+		"Analyze every source array in the knowledge-read payload's `sources` field, even when the top-level `content` array is empty.",
 		"Treat the Behavior as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
 	].join("\n");
 }

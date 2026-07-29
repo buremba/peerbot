@@ -91,7 +91,7 @@ async function createAutomatedWatcher() {
 		entity_id: entity.id,
 		slug: "automation-watcher",
 		name: "Automation Watcher",
-		prompt: "Summarize content for {{entities}}.",
+		prompt: "Summarize content for the bound entities.",
 		triggers: [
 			{
 				kind: "schedule",
@@ -246,23 +246,35 @@ describe("watcher automation contract", () => {
 			dbClient,
 			{
 				organizationId: workspace.org.id,
-				sourceConversationId: `${agent.agentId}_watcher_${watcherId}_run_${queued.runId}`,
 			}
 		)) as {
 			window_token: string;
 			window_start: string;
 			window_end: string;
+			entities?: Array<{
+				id: number;
+				name: string;
+				type: string;
+				metadata: Record<string, unknown>;
+			}>;
 		};
 		expect(content.window_start).toBe(windowStart.toISOString());
 		expect(content.window_end).toBe(windowEnd.toISOString());
-		const [promptStampedRun] =
+		expect(content.entities).toEqual([
+			expect.objectContaining({
+				id: entityId,
+				name: "Automation Entity",
+				type: "brand",
+			}),
+		]);
+		// Prompts are literal text delivered via the dispatch message; the read
+		// path no longer stamps a rendered prompt onto the run.
+		const [unstampedRun] =
 			await sql`SELECT run_metadata FROM runs WHERE id = ${queued.runId}`;
 		expect(
-			String(
-				(promptStampedRun.run_metadata as Record<string, unknown>)
-					.prompt_rendered
-			)
-		).toContain("Summarize content for Automation Entity.");
+			(unstampedRun.run_metadata as Record<string, unknown> | null)
+				?.prompt_rendered
+		).toBeUndefined();
 
 		const completion = (await api.behaviors.completeWindow({
 			behavior_id: String(watcherId),
@@ -286,9 +298,11 @@ describe("watcher automation contract", () => {
 		expect(completion.action).toBe("complete_window");
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(completion.window_id);
+		// The forged prompt_rendered from the completion payload must be
+		// stripped — that key is reserved for historical server-stamped runs.
 		expect(
-			String((run.run_metadata as Record<string, unknown>).prompt_rendered)
-		).toContain("Summarize content for Automation Entity.");
+			(run.run_metadata as Record<string, unknown>).prompt_rendered
+		).toBeUndefined();
 		expect((run.run_metadata as Record<string, unknown>).executor).toBe(
 			"lobu-agent"
 		);
@@ -1605,7 +1619,7 @@ describe("watcher automation contract", () => {
 				entity_id: entityB.id,
 				slug: "tick-watcher-b",
 				name: "Tick Watcher B",
-				prompt: "Summarize content for {{entities}}.",
+				prompt: "Summarize content for the bound entities.",
 				triggers: [
 					{
 						kind: "schedule",

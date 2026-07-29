@@ -18,7 +18,7 @@ describe("watcher dispatch message", () => {
 		});
 
 		expect(message).toContain(
-			"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
+			"Analyze every source array in the knowledge-read payload's `sources` field, even when the top-level `content` array is empty.",
 		);
 		expect(message).toContain(
 			"Treat the Behavior as having no data only when `content` and every array in `sources` are empty.",

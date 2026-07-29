@@ -5,10 +5,12 @@
  */
 
 import { type AuthProfile, isSdkCompat } from "@lobu/core";
+import { SkillsConfigSchema } from "@lobu/core/contracts/agent-settings";
 import {
 	type ManageBehaviorsArgs,
 	normalizeBehaviorUpdatePatch,
 } from "@lobu/core/contracts/tools/manage-behaviors";
+import { Value } from "@sinclair/typebox/value";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
@@ -1700,44 +1702,32 @@ export function validateGuardrailsInline(value: unknown): string | null {
 }
 
 /**
- * Structural validation for `skillsConfig` at the write boundary.
+ * Write-boundary validation for `skillsConfig`, the sibling of
+ * {@link validateGuardrailsInline}.
  *
  * The PATCH route spreads settings through untouched, so without this a
- * malformed payload persists and is then read back as a trusted `SkillConfig`:
- * a non-array `skills` throws at the first `.filter()` downstream, and a
- * non-boolean `enabled` diverges from the runtime, which gates on truthiness
- * (`s.enabled && …`) — so `"yes"` would enable a skill that no write-time check
- * ever saw as enabled.
+ * malformed payload persists and is then read back as a trusted `SkillConfig`.
+ * Two concrete failures: a non-array `skills` throws at the first `.filter()`
+ * downstream, and a non-boolean `enabled` diverges from the runtime, which
+ * gates on truthiness (`s.enabled && …`) — so `"yes"` would enable a skill that
+ * no write-time check ever saw as enabled.
  *
- * Deliberately shallow. It pins the fields the server actually depends on
- * (`skills` is an array of objects; `repo`/`name` are non-empty strings;
- * `enabled` is a boolean) and leaves the rest of the shape to the schema.
+ * Checked against `SkillsConfigSchema` in core rather than a hand-rolled shape,
+ * so the write boundary cannot drift from the type the readers rely on. The
+ * schema is the only definition of a skill entry; it no longer carries
+ * guardrails (those are operator-owned and live on `guardrailsInline`), so this
+ * validates the current contract without reintroducing skill-declared ones.
+ *
+ * `Type.Object` admits unknown keys by design: rows written before a field was
+ * dropped still round-trip through the editor's `_original` spread, and
+ * rejecting them would fail a payload the server simply ignores.
  */
 export function validateSkillsConfig(value: unknown): string | null {
 	if (value === undefined) return null;
-	if (typeof value !== "object" || value === null) {
-		return "skillsConfig must be an object";
-	}
-	const skills = (value as { skills?: unknown }).skills;
-	if (skills === undefined) return null;
-	if (!Array.isArray(skills)) return "skillsConfig.skills must be an array";
-
-	for (let i = 0; i < skills.length; i++) {
-		const skill = skills[i];
-		if (typeof skill !== "object" || skill === null) {
-			return `skillsConfig.skills[${i}] must be an object`;
-		}
-		const s = skill as Record<string, unknown>;
-		for (const key of ["repo", "name"] as const) {
-			if (typeof s[key] !== "string" || (s[key] as string).trim() === "") {
-				return `skillsConfig.skills[${i}].${key} must be a non-empty string`;
-			}
-		}
-		if (s.enabled !== undefined && typeof s.enabled !== "boolean") {
-			return `skillsConfig.skills[${i}].enabled must be a boolean`;
-		}
-	}
-	return null;
+	if (Value.Check(SkillsConfigSchema, value)) return null;
+	const first = Value.Errors(SkillsConfigSchema, value).First();
+	if (!first) return "skillsConfig is invalid";
+	return `skillsConfig${first.path}: ${first.message}`;
 }
 
 routes.patch("/:agentId/config", async (c) => {

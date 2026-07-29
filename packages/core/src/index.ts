@@ -96,6 +96,9 @@ export {
 export * from "./secret-refs";
 // Reserved path / entity-type slug lists + kind helpers (single source)
 export * from "./reserved";
+// Steer/cancel classification — shared by the worker (which acts on it) and the
+// gateway dispatch gate (which must not withhold messages the worker acts on).
+export * from "./turn-control";
 // Observability
 export { getSentry, initSentry } from "./sentry";
 export { extractTraceId, generateTraceId } from "./trace";

@@ -46,6 +46,7 @@ import {
   createLogger,
   getErrorMessage,
   type MessagePayload,
+  targetsActiveTurn,
 } from "@lobu/core";
 import { generateDeploymentName } from "../orchestration/deployment-manager.js";
 import {
@@ -143,7 +144,12 @@ export type DispatchDecision = "deliver" | "drop";
  *    the gate re-evaluates on the next claim. The probe counts only DELIVERED
  *    turns (completed `thread_message` row = delivery receipt), so armed-but-
  *    undelivered turns — including THIS one — never block: counting them would
- *    let two queued turns defer each other forever.
+ *    let two queued turns defer each other forever. EXCEPTION: a message that
+ *    acts on the running turn (steer or explicit cancel, per
+ *    `targetsActiveTurn`) is delivered anyway — the turn is already executing on
+ *    these stale credentials and the worker is the only thing that can steer or
+ *    abort it, so deferring would silently drop the user's follow-up or make
+ *    `/cancel` do nothing.
  * 5. Stale + quiet → tear down and rebuild under the same name, then throw:
  *    the fresh worker has not SSE-attached inside this handler invocation, so
  *    delivery happens on the retry (the queue is paused until the new worker
@@ -218,6 +224,20 @@ export async function gateDispatchOnStaleness(args: {
   // there costs the user a reply. Undelivered queued turns (this job included)
   // are excluded: they are protected by this same gate, not by the worker.
   if (await probeLiveTurn(deploymentName)) {
+    // A message that acts on the RUNNING turn — a steer or an explicit cancel —
+    // must still be delivered. Withholding it protects nothing: the turn is
+    // already executing with these stale credentials, and the worker is the only
+    // thing that can steer or abort it. Deferring instead means the user's
+    // follow-up silently does nothing, and `/cancel` silently fails to cancel,
+    // until the turn ends on its own. The recycle is not lost — it happens on
+    // the next claim that finds the worker quiet.
+    if (targetsActiveTurn(payload)) {
+      logger.info(
+        { deploymentName, messageId: payload.messageId },
+        "Delivering a steer/cancel to a stale worker — it acts on the turn already running"
+      );
+      return "deliver";
+    }
     throw new StaleWorkerError(
       `Deployment ${deploymentName} is stale (${
         toolingChanged ? "tooling changed" : "lease expiring"

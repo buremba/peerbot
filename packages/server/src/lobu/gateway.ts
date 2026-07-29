@@ -413,18 +413,36 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		// scale a worker running one long turn to 0 mid-turn (its lastActivity stays
 		// frozen at last dispatch). Both objects exist here; they are built
 		// separately so the wiring lives at the composition root.
-		coreServices
-			.getWorkerGateway()
-			?.setDeploymentActivityTracker(orchestrator.getDeploymentManager());
-
+		//
 		// Claim-side recycle gate: the job router (dispatch chokepoint) consults
 		// the deployment manager's pod-local lease/fingerprint state before
 		// delivering a claimed turn, and recycles a stale worker in place. Wired
 		// here for the same reason as the tracker above — the gateway and the
 		// orchestrator are built separately.
-		coreServices
-			.getWorkerGateway()
-			?.setDispatchRecycler(orchestrator.getDeploymentManager());
+		//
+		// Both wirings are announced, and their absence is announced louder. Each
+		// only takes effect when a worker gateway exists, and both features are
+		// invisible when they silently do not: a missing tracker shows up as a
+		// worker killed mid-turn, and a missing recycle gate shows up as 401s an
+		// hour into a warm conversation. Neither symptom points back here, and
+		// there is no other way to answer "is the gate live on this pod?" — so
+		// the skip is logged rather than swallowed by the optional chain.
+		const workerGatewayToWire = coreServices.getWorkerGateway();
+		if (workerGatewayToWire) {
+			workerGatewayToWire.setDeploymentActivityTracker(
+				orchestrator.getDeploymentManager(),
+			);
+			workerGatewayToWire.setDispatchRecycler(
+				orchestrator.getDeploymentManager(),
+			);
+			logger.info(
+				"[Lobu] Worker idle-clock tracker and claim-side recycle gate wired into the worker gateway",
+			);
+		} else {
+			logger.warn(
+				"[Lobu] No worker gateway on this pod — the idle-clock tracker and the claim-side recycle gate are BOTH inactive; warm workers will not be recycled when their connector lease or tooling goes stale",
+			);
+		}
 
 		// Initialize Chat SDK connection manager for platform connections
 		chatInstanceManager = new ChatInstanceManager();

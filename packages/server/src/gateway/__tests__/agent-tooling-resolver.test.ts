@@ -554,6 +554,12 @@ describe("deployment env assembly", () => {
     );
 
     expect(env.NIX_PACKAGES?.split(",").sort()).toEqual(["gh", "ripgrep"]);
+    // The same union must ride the SIGNED token, or a REMOTE runtime provisions
+    // nothing: NIX_PACKAGES only reaches the LOCAL nix-shell spawn. This claim
+    // is what makes the contributed `gh` portable across backends.
+    expect(
+      verifyWorkerToken(env.WORKER_TOKEN)?.nixPackages?.slice().sort()
+    ).toEqual(["gh", "ripgrep"]);
   });
 
   test("contributed domains are granted on the worker's egress allowlist", async () => {

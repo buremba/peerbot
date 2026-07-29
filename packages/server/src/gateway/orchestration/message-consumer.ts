@@ -257,6 +257,8 @@ export function buildRunJobToken(args: {
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
   deniedDomains?: string[];
+  /** Resolved nix package set for a remote runtime sandbox (signed claim). */
+  nixPackages?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -587,6 +589,9 @@ export class MessageConsumer {
         // deployment-token mint) — the runtime route reads them, never the body.
         allowedDomains: data.networkConfig?.allowedDomains,
         deniedDomains: data.networkConfig?.deniedDomains,
+        // Same rule for the package set: signed, so the remote runtime never
+        // takes a package list off the wire from the worker.
+        nixPackages: data.nixConfig?.packages,
       });
 
       logger.info(

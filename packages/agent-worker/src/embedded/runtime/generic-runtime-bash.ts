@@ -14,7 +14,56 @@ type RuntimeExecResponse = {
   retryable?: unknown;
   /** "not_started" | "unknown" | "completed" — whether the command ran. */
   outcome?: unknown;
+  /**
+   * Provider diagnostics. Carries `packages` (a `PackageProvisionResult`)
+   * whenever the turn had contributed nix packages to provision — the gateway
+   * reports a failed install HERE, at HTTP 200, because a missing CLI must not
+   * fail the turn.
+   */
+  sandbox?: unknown;
 };
+
+/** The names in a `PackageProvisionResult` list, tolerating a malformed body. */
+function packageNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0
+  );
+}
+
+function provisionResult(
+  sandbox: unknown
+): Record<string, unknown> | undefined {
+  if (typeof sandbox !== "object" || sandbox === null) return undefined;
+  const packages = (sandbox as { packages?: unknown }).packages;
+  if (typeof packages !== "object" || packages === null) return undefined;
+  return packages as Record<string, unknown>;
+}
+
+/**
+ * The agent-facing half of the honest-degradation contract. The gateway already
+ * degrades honestly — it logs the failure, withholds the stale package profile
+ * from PATH, and reports `sandbox.packages.failed` — but the AGENT never reads
+ * gateway logs. Without this notice the model sees a plain `command not found`
+ * next to exit 0, concludes its own invocation was wrong, and burns the turn
+ * rewriting a command that can never work.
+ *
+ * Same `lobu:` channel as the infrastructure notice below on purpose: one place
+ * for the agent to learn its environment is degraded.
+ */
+function provisionNotice(sandbox: unknown): string | undefined {
+  const packages = provisionResult(sandbox);
+  if (!packages) return undefined;
+  const failed = packageNames(packages.failed);
+  if (failed.length === 0) return undefined;
+  const error = typeof packages.error === "string" ? packages.error.trim() : "";
+  const why = error ? ` (${error})` : "";
+  return (
+    `lobu: these tools could not be installed and are NOT available in this sandbox: ${failed.join(", ")}${why}. ` +
+    "Commands that need them will fail — do not try to install them yourself; " +
+    "an admin must fix the package configuration.\n"
+  );
+}
 
 /**
  * The worker egresses through a local gateway HTTP proxy (`HTTP_PROXY=…:8118`),
@@ -136,7 +185,26 @@ export function createGenericRuntimeBashOps(
       const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
       if (stdout) onData(Buffer.from(stdout));
       if (stderr) onData(Buffer.from(stderr));
+      // Emitted AFTER the command's own output, and that ordering is
+      // load-bearing rather than cosmetic. The bash tool feeds every `onData`
+      // chunk into an OutputAccumulator and snapshots it through `truncateTail`
+      // — only the LAST 2000 lines / 50KB reach the model. A preamble is
+      // exactly what a long-output command drops, so the turn most likely to be
+      // derailed by a missing CLI would be the one that never sees why. The
+      // tail always survives.
+      const notice = provisionNotice(payload.sandbox);
+      if (notice) {
+        // The notice must land on its own line: a command whose output has no
+        // trailing newline would otherwise glue `lobu:` onto its last line.
+        const emitted = `${stdout}${stderr}`;
+        const separator = emitted && !emitted.endsWith("\n") ? "\n" : "";
+        onData(Buffer.from(`${separator}${notice}`));
+      }
       return {
+        // The command's OWN exit code, untouched. A contributed CLI that failed
+        // to install must not fail a turn whose real work does not need it —
+        // the notice above is how the agent learns, not a synthetic non-zero
+        // exit that would misreport a command which genuinely succeeded.
         exitCode:
           typeof payload.exitCode === "number" &&
           Number.isFinite(payload.exitCode)

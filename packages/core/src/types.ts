@@ -201,6 +201,8 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 export interface InstructionContext {
   userId: string;
   agentId: string;
+  /** Signed chat connection id for connection-scoped instruction lookups. */
+  connectionId?: string;
   /**
    * Owning org of the agent. An agent id can exist in multiple orgs (PK is
    * `(organization_id, id)`), so instruction providers must scope their

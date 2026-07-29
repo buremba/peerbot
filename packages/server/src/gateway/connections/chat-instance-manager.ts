@@ -29,6 +29,7 @@ import {
   resolveSecretValue,
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
+import { ChatIdentityInstructionProvider } from "./chat-identity-instruction-provider.js";
 import { configsEqual } from "./config-equal.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { registerInteractionBridge } from "./interaction-bridge.js";
@@ -2376,12 +2377,10 @@ export class ChatInstanceManager {
 				},
       ) => this.routePlatformMessage(name, token, message, options),
       getFileHandler: (options) => this.getPlatformFileHandler(name, options),
-      ...(descriptor?.getInstructionProvider
-        ? {
-            getInstructionProvider: () =>
-              descriptor.getInstructionProvider!(this),
-          }
-        : {}),
+      // Platform-specific providers extend or replace the shared chat framing.
+      getInstructionProvider: () =>
+        descriptor?.getInstructionProvider?.(this) ??
+        new ChatIdentityInstructionProvider(this, name),
     };
   }
 

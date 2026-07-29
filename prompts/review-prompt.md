@@ -82,9 +82,13 @@ skipped exploration, say so explicitly — don't lie by omission.
 ## 4. Judgment Rules
 
 - ~15 min total compute budget.
-- If the environment itself is broken (e.g. you cannot run even a narrow
-  test file), record that as a `blocker` and finish with a partial
-  verdict. Do not retry indefinitely.
+- If you cannot run tests at all — your sandbox is read-only, a probe dies
+  with `EPERM`, deps are missing — that is never a `blocker`. Your sandbox
+  is not the diff. Record it in `notes` with the `[env]` prefix, keep
+  `bug_free_confidence` in the 70–89 band you can actually defend, and
+  finish the verdict from static review plus the CI snapshot. The
+  deterministic suites are separate required checks and still have to pass
+  on their own. Do not retry indefinitely.
 - The numeric scores must reflect what you empirically verified — don't
   inflate `bugs` from speculation. Confirmed by a CI failure you attributed
   to the diff OR a failure you reproduced locally = a bug. "This looks

@@ -1553,11 +1553,10 @@ export class ChatInstanceManager {
         userName: connection.metadata.botUsername || `bot-${connection.id}`,
         adapters: { [adapterKey]: adapter },
         state: stateAdapter,
-        // Not hardcoded: every SDK-internal inbound drop (duplicate, lock
-        // conflict, and the catch-all in `processMessage`) logs at `debug`, so
-        // pinning this to "warn" made those drops invisible at any LOG_LEVEL —
-        // which is why the history-cache drop above took a production
-        // investigation to find. Default stays "warn"; the SDK is loud at info.
+        // Not hardcoded: the SDK's silent-drop paths (self-authored, duplicate,
+        // lock conflict) log at `debug`, so pinning this to "warn" made a
+        // dropped inbound message leave no trace at any LOG_LEVEL. Default
+        // stays "warn"; the SDK is loud at info.
         logger: process.env.LOG_LEVEL?.toLowerCase() === "debug"
           ? "debug"
           : "warn",

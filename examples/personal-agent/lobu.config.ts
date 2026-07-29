@@ -3,6 +3,7 @@ import {
   defineAgent,
   defineBehavior,
   defineConfig,
+  defineSkill,
   defineConnection,
   defineEntityType,
   defineRelationshipType,
@@ -16,8 +17,24 @@ import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 
+const hourlyTaskCollaboratorSkill = defineSkill({
+  name: "hourly-task-collaborator",
+  content:
+    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.",
+});
+
+const duplicateEntityResolutionRealV3FinalSkill = defineSkill({
+  name: "duplicate-entity-resolution-real-v3-final",
+  content:
+    "Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review. Without that extension, normalized email and phone matches remain review-only and never auto-merge.\n",
+});
+
 const personalAgent = defineAgent({
   id: "personal-agent",
+  skills: [
+    hourlyTaskCollaboratorSkill,
+    duplicateEntityResolutionRealV3FinalSkill,
+  ],
   dir: ".",
   name: "personal-agent",
   description:
@@ -933,8 +950,7 @@ const hourlyTaskCollaborator = defineBehavior({
         "SELECT NULL::bigint AS id, t.name, t.metadata, t.updated_at FROM entities t WHERE t.entity_type = 'task' AND t.deleted_at IS NULL AND (COALESCE(t.metadata->>'status', 'backlog') NOT IN ('done', 'dismissed') OR t.updated_at > now() - interval '14 days') ORDER BY t.updated_at DESC LIMIT 100",
     },
   },
-  prompt:
-    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.",
+  skills: ["hourly-task-collaborator"],
 });
 
 const duplicateEntityResolution = defineBehavior({
@@ -953,8 +969,7 @@ const duplicateEntityResolution = defineBehavior({
   },
   reactionsGuidance:
     "Explain uncertainty; never decide identity from names, aliases, or handles. The server-side entity type policy is the only merge authority.",
-  prompt:
-    "Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review. Without that extension, normalized email and phone matches remain review-only and never auto-merge.\n",
+  skills: ["duplicate-entity-resolution-real-v3-final"],
 });
 
 export default defineConfig({

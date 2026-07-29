@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -9,8 +10,15 @@ import {
 } from "@lobu/cli/config";
 import type StripeChargesConnector from "./stripe-charges.connector.ts";
 
+const customerActivityTrackerSkill = defineSkill({
+  name: "customer-activity-tracker",
+  content:
+    "Monitor customers for new orders, subscription changes, delivery requests, and support interactions.\n",
+});
+
 const ecommerceOps = defineAgent({
   id: "ecommerce-ops",
+  skills: [customerActivityTrackerSkill],
   name: "ecommerce-ops",
   description:
     "Manage subscriptions, process order changes, and resolve customer requests",
@@ -166,8 +174,7 @@ const customerActivityTracker = defineBehavior({
   notification: { priority: "normal" },
   tags: ["ecommerce", "customer-ops"],
   minCooldownSeconds: 300,
-  prompt:
-    "Monitor customers for new orders, subscription changes, delivery requests, and support interactions.\n",
+  skills: ["customer-activity-tracker"],
 });
 
 export default defineConfig({

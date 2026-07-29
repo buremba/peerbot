@@ -96,7 +96,19 @@ export interface DesiredWatcher {
   name?: string;
   description?: string;
   triggers?: DesiredBehaviorTrigger[];
+  /**
+   * Compiled instructions — the join of the referenced skill bodies in order,
+   * produced by `compileBehaviorInstructions` at load time. This is what the
+   * server stores as the version's frozen instruction text (the internal
+   * `prompt` column); it is not author-facing. Empty only for event-turn
+   * Behaviors with no skills (the server-side default applies at run time).
+   */
   prompt: string;
+  /**
+   * Ordered skill names (declarative apply input only — resolved against the
+   * owning agent's skill library at load time, never sent to the server).
+   */
+  skills?: string[];
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: BehaviorSource[];
   /**
@@ -413,6 +425,49 @@ async function resolveSkill(
     source: "inline",
     description: skill.description,
   });
+}
+
+/** Byte cap on a Behavior's compiled instruction text (issue #2320). */
+const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
+
+/**
+ * Compile a Behavior's ordered `skills[]` into its frozen instruction text:
+ * the referenced skill bodies joined in order with a blank line. Fails loud on
+ * a name the owning agent's skill library doesn't declare, an empty body, or
+ * a compiled text over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}. Returns "" for
+ * a Behavior with no skills (event-turn only — the mapper already rejected
+ * every other trigger shape without skills).
+ */
+function compileBehaviorInstructions(
+  watcher: DesiredWatcher,
+  agentSkills: SkillConfigEntry[]
+): string {
+  const names = watcher.skills ?? [];
+  if (names.length === 0) return "";
+  const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
+  const bodies = names.map((name) => {
+    const skill = byName.get(name);
+    if (!skill) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" references skill "${name}", but agent "${watcher.agent}" declares no skill with that name in its skills library`
+      );
+    }
+    const body = skill.content?.trim();
+    if (!body) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — compiled Behavior instructions need text`
+      );
+    }
+    return body;
+  });
+  const compiled = bodies.join("\n\n");
+  const bytes = Buffer.byteLength(compiled, "utf8");
+  if (bytes > MAX_COMPILED_INSTRUCTIONS_BYTES) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" compiles to ${bytes} bytes of instructions — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
+    );
+  }
+  return compiled;
 }
 
 /**
@@ -1005,6 +1060,7 @@ export async function loadDesiredStateFromConfig(
   // Agent artifacts: SOUL/IDENTITY/USER.md (convention, from the agent dir) +
   // skills (explicit `defineAgent({ skills })`, inline or `skillFromFile`). The
   // mapper stays pure (no file IO); we read the files here and merge them in.
+  const skillsByAgentId = new Map<string, SkillConfigEntry[]>();
   await Promise.all(
     typedProject.agents.map(async (agent, i) => {
       const settings = state.agents[i]?.settings;
@@ -1016,8 +1072,20 @@ export async function loadDesiredStateFromConfig(
         opts.cwd
       );
       mergeAgentDirArtifacts(settings, markdown, localSkills);
+      skillsByAgentId.set(agent.id, localSkills);
     })
   );
+
+  // Compile each Behavior's `skills[]` into its frozen instruction text — the
+  // join of the referenced skill bodies in order. This happens BEFORE the diff
+  // reads `prompt`, so compiled-text equality (content only — descriptions
+  // don't compile) is what drives version churn.
+  for (const watcher of state.watchers) {
+    watcher.prompt = compileBehaviorInstructions(
+      watcher,
+      skillsByAgentId.get(watcher.agent) ?? []
+    );
+  }
 
   // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles

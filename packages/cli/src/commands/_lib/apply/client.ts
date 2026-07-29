@@ -1015,6 +1015,8 @@ export class ApplyClient {
     classifiers?: unknown[];
     reactions_guidance?: string;
     change_notes?: string;
+    /** When set, written atomically with the new version (set_as_current). */
+    triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
   }): Promise<{ version?: number }> {
     const { body } = await this.request<{ version?: number }>(
       "POST",
@@ -1033,6 +1035,9 @@ export class ApplyClient {
           : {}),
         ...(payload.reactions_guidance !== undefined
           ? { reactions_guidance: payload.reactions_guidance }
+          : {}),
+        ...(payload.triggers !== undefined
+          ? { triggers: payload.triggers }
           : {}),
         ...(payload.change_notes
           ? { change_notes: payload.change_notes }

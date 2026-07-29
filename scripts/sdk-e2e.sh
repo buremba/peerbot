@@ -94,12 +94,17 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { connectorFromFile, defineAgent, defineBehavior, defineConfig, defineConnection, defineEntityType, defineRelationshipType, reactionFromFile, secret } from "@lobu/cli/config";
+import { connectorFromFile, defineAgent, defineBehavior, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineSkill, reactionFromFile, secret } from "@lobu/cli/config";
 import type PulseConnector from "./connectors/pulse.connector.ts";
 import type digestReaction from "./reactions/digest.reaction.ts";
 
+// The Behavior's instructions live in the agent's skill library; `lobu apply`
+// compiles the referenced bodies into the Behavior version's frozen prompt.
+const digestSkill = defineSkill({ name: "digest", content: "summarize" });
+
 const agent = defineAgent({
   id: "echo", name: "Echo", dir: "./agents/echo",
+  skills: [digestSkill],
   providers: [{ id: "mock", model: "mock-model", key: secret("MOCK_API_KEY") }],
 });
 // `company` exercises the declarative rendering config: event_kinds (with a
@@ -139,7 +144,7 @@ const pulseConn = defineConnection({
 // (the agentic LLM turn never produces the complete_window tool-call against a
 // fixed-reply mock) and asserts the reaction's side effect.
 const digest = defineBehavior({
-  slug: "digest", agent, name: "Digest", prompt: "summarize",
+  slug: "digest", agent, name: "Digest", skills: ["digest"],
   // No inline extraction schema — the reaction OWNS the contract via its exported
   // `input`, which set_reaction_script extracts and surfaces to the worker.
   reaction: reactionFromFile<typeof digestReaction>("./reactions/digest.reaction.ts"),

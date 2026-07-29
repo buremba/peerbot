@@ -20,6 +20,7 @@ import {
   toJsonParam,
 } from './shared';
 import {
+  assertBehaviorInstructions,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -171,8 +172,28 @@ export async function handleCreateVersion(
     );
   }
 
-  const createdBy = ctx.userId ?? 'system';
+  // Final-state instruction rule. The prompt version is group-shared
+  // (cascades to every assignment), while triggers are per-assignment — so
+  // when set_as_current, validate the new prompt against every sibling's
+  // final trigger set (the targeted row uses triggerWrite.triggers).
   const setAsCurrent = args.set_as_current !== false;
+  if (setAsCurrent) {
+    const siblingRows = await sql`
+      SELECT id, triggers FROM watchers WHERE watcher_group_id = ${groupId}
+    `;
+    for (const sibling of siblingRows) {
+      const siblingTriggers =
+        Number(sibling.id) === Number(args.behavior_id)
+          ? triggerWrite.triggers
+          : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
+      assertBehaviorInstructions(siblingTriggers, prompt);
+    }
+  } else {
+    // Draft version only — triggers on the live row do not change.
+    assertBehaviorInstructions(previousTriggers, prompt);
+  }
+
+  const createdBy = ctx.userId ?? 'system';
   let versionId = 0;
   let lockedNextVersion = nextVersion;
   await sql.begin(async (tx) => {

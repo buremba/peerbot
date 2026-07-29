@@ -195,6 +195,42 @@ export function resolveBehaviorTriggerWrite(args: {
 	};
 }
 
+/**
+ * Whether this trigger set runs on stored instructions alone. An event trigger
+ * executing as "turn" carries its own content — the incoming message/event is
+ * the input, and the built-in default instruction applies when the Behavior
+ * has none. Schedule triggers, event triggers with execution "window", and an
+ * empty trigger set (manual runs) have no such content, so they need
+ * instruction text. An omitted event execution defaults to "turn"
+ * (the contract's default).
+ */
+export function behaviorRequiresInstructions(
+	triggers: BehaviorTrigger[]
+): boolean {
+	if (triggers.length === 0) return true;
+	return triggers.some(
+		(trigger) =>
+			trigger.kind === "schedule" ||
+			(trigger.kind === "event" && trigger.execution === "window")
+	);
+}
+
+/**
+ * Enforce the instruction-presence rule on a complete trigger + instruction
+ * pair before either side is stored. Callers must pass the *final* resolved
+ * pair (inherited prompt when omitted, resolved triggers after write-merge).
+ */
+export function assertBehaviorInstructions(
+	triggers: BehaviorTrigger[],
+	instructions: string | null | undefined
+): void {
+	if (!behaviorRequiresInstructions(triggers)) return;
+	if (instructions?.trim()) return;
+	throw new ToolUserError(
+		"This Behavior runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill (their bodies compile into the stored instructions) or provide instruction text. Only event triggers with execution 'turn' may omit instructions."
+	);
+}
+
 /** Validate connection-scoped triggers against the owning organization. */
 export async function assertBehaviorTriggerConnections(
 	sql: DbClient,

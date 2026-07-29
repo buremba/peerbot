@@ -45,6 +45,7 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../utils/organization-access';
+import { assertBehaviorInstructions } from '../../behaviors/triggers';
 import { resolveRunInitiator } from '../initiator';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
@@ -160,6 +161,11 @@ async function manageBehaviorsImpl(
       await requireWriteAccess(pgSql, eid, ctx);
     }
   }
+
+  // Instruction-presence for create_version is enforced in handleCreateVersion
+  // against the *final* resolved (triggers, prompt) pair — not here against
+  // stored triggers + only an explicit prompt write. That incomplete pre-check
+  // let event-turn → schedule transitions keep an empty prompt.
 
   // A watcher IS agent config — it's an autonomous-execution definition (prompt,
   // SQL source, reaction). Gate its create/update/delete under the `agent_config`
@@ -451,7 +457,9 @@ function buildWatcherProposal(
   }
   if (args.action === 'create') {
     if (!args.slug) throw new ToolUserError('slug is required for create action');
-    if (!args.prompt) throw new ToolUserError('prompt is required for create action');
+    // Instruction text is required only for trigger shapes that run on it
+    // alone — event-turn Behaviors may omit prompt (built-in default).
+    assertBehaviorInstructions(args.triggers ?? [], args.prompt);
     if (!args.agent_id) {
       throw new ToolUserError(
         'agent_id is required to create a Behavior (the agent that executes it).'

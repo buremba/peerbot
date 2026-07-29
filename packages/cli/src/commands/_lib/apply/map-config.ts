@@ -521,6 +521,48 @@ function normalizeKeyingConfig(
   return out;
 }
 
+/** Max skills a Behavior may reference (ordered compile; issue #2320 cap). */
+const MAX_BEHAVIOR_SKILLS = 5;
+
+/**
+ * Skills-presence rule. An event trigger executing as "turn" carries its own
+ * content (the incoming message/event), so it may run with zero skills on the
+ * built-in default instruction. Everything else — schedule triggers, event
+ * triggers with execution "window", and Behaviors with no triggers at all
+ * (manual runs) — runs on its compiled instructions alone and must reference
+ * at least one skill.
+ *
+ * This CLI preflight mirrors the server rule on the stored instruction text
+ * (the server cannot see `skills[]`, a declarative-only concept). When both
+ * triggers and compiled instructions change, apply sends them together through
+ * create_version so the final pair is validated atomically.
+ */
+function assertBehaviorSkills(watcher: DesiredWatcher): void {
+  const skills = watcher.skills ?? [];
+  const duplicates = skills.filter((name, i) => skills.indexOf(name) !== i);
+  if (duplicates.length > 0) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
+    );
+  }
+  if (skills.length > MAX_BEHAVIOR_SKILLS) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" references ${skills.length} skills — the maximum is ${MAX_BEHAVIOR_SKILLS}`
+    );
+  }
+  const triggers = watcher.triggers ?? [];
+  const requiresSkills =
+    triggers.length === 0 ||
+    triggers.some(
+      (trigger) => trigger.kind === "schedule" || trigger.execution === "window"
+    );
+  if (requiresSkills && skills.length === 0) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" needs at least one skill: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on their compiled skill instructions alone. Only event triggers with execution "turn" may omit skills.`
+    );
+  }
+}
+
 function mapBehavior(behavior: Behavior): DesiredWatcher {
   const watcher = behavior;
   const sources = watcher.sources
@@ -591,7 +633,12 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
   return {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
-    prompt: watcher.prompt,
+    // Compiled at load time from the referenced skill bodies (see
+    // `compileBehaviorInstructions` in desired-state.ts). The mapper stays pure
+    // — it cannot read skill files — so the placeholder holds until the loader
+    // overwrites it. Event-turn Behaviors with no skills legitimately keep "".
+    prompt: "",
+    ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
     ...(watcher.keyingConfig
       ? { keyingConfig: normalizeKeyingConfig(watcher.keyingConfig) }
       : {}),
@@ -868,6 +915,7 @@ export function mapProjectToDesiredState(
         `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
+    assertBehaviorSkills(watcher);
     for (const trigger of watcher.triggers ?? []) {
       if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
       const connection = (project.connections ?? []).find(

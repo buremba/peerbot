@@ -881,38 +881,47 @@ export async function executePlan(
         const scalarChanges = [...changed].filter(
           (f) => !versionBound.has(f) && f !== "reaction_script"
         );
+        // When triggers and compiled instructions both change, send them
+        // together through create_version so the server validates the final
+        // pair atomically. A separate update(triggers) would reject
+        // event-turn → schedule mid-apply (empty current prompt + new shape).
+        const triggersWithPrompt =
+          scalarChanges.includes("triggers") && versionBound.has("prompt");
+        const scalarForUpdate = triggersWithPrompt
+          ? scalarChanges.filter((f) => f !== "triggers")
+          : scalarChanges;
         // a) Scalar fields → manage_behaviors update
-        if (scalarChanges.length > 0) {
+        if (scalarForUpdate.length > 0) {
           await ctx.client.updateBehavior({
             behavior_id: watcherId,
-            ...(scalarChanges.includes("triggers")
+            ...(scalarForUpdate.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
-            ...(scalarChanges.includes("agent_id")
+            ...(scalarForUpdate.includes("agent_id")
               ? { agent_id: w.agent }
               : {}),
-            ...(scalarChanges.includes("device_worker_id")
+            ...(scalarForUpdate.includes("device_worker_id")
               ? { device_worker_id: w.deviceWorkerId ?? null }
               : {}),
-            ...(scalarChanges.includes("scheduler_client_id")
+            ...(scalarForUpdate.includes("scheduler_client_id")
               ? { scheduler_client_id: w.schedulerClientId ?? null }
               : {}),
-            ...(scalarChanges.includes("notification_channel") &&
+            ...(scalarForUpdate.includes("notification_channel") &&
             w.notificationChannel
               ? { notification_channel: w.notificationChannel }
               : {}),
-            ...(scalarChanges.includes("notification_priority") &&
+            ...(scalarForUpdate.includes("notification_priority") &&
             w.notificationPriority
               ? { notification_priority: w.notificationPriority }
               : {}),
-            ...(scalarChanges.includes("min_cooldown_seconds") &&
+            ...(scalarForUpdate.includes("min_cooldown_seconds") &&
             w.minCooldownSeconds !== undefined
               ? { min_cooldown_seconds: w.minCooldownSeconds }
               : {}),
-            ...(scalarChanges.includes("tags") && w.tags
+            ...(scalarForUpdate.includes("tags") && w.tags
               ? { tags: w.tags }
               : {}),
-            ...(scalarChanges.includes("agent_kind")
+            ...(scalarForUpdate.includes("agent_kind")
               ? { agent_kind: w.agentKind ?? null }
               : {}),
           });
@@ -920,7 +929,10 @@ export async function executePlan(
         // b) Version-bound fields → manage_behaviors create_version (server
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys).
-        if (row.versionBoundFields && row.versionBoundFields.length > 0) {
+        if (
+          (row.versionBoundFields && row.versionBoundFields.length > 0) ||
+          triggersWithPrompt
+        ) {
           await ctx.client.createBehaviorVersion({
             behavior_id: watcherId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
@@ -938,6 +950,7 @@ export async function executePlan(
             ...(versionBound.has("classifiers") && w.classifiers !== undefined
               ? { classifiers: w.classifiers }
               : {}),
+            ...(triggersWithPrompt ? { triggers: w.triggers ?? [] } : {}),
           });
         }
       }

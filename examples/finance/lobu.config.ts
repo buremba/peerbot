@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -11,8 +12,15 @@ import {
 import type QuickBooksTransactionsConnector from "./quickbooks-transactions.connector.ts";
 import type reconciliationMonitorReaction from "./reconciliation-monitor.reaction.ts";
 
+const reconciliationMonitorSkill = defineSkill({
+  name: "reconciliation-monitor",
+  content:
+    "Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.\n",
+});
+
 const finance = defineAgent({
   id: "finance",
+  skills: [reconciliationMonitorSkill],
   name: "finance",
   description:
     "Help finance teams reconcile data, explain variance, and prepare reporting runs",
@@ -178,8 +186,7 @@ const reconciliationMonitor = defineBehavior({
   reaction: reactionFromFile<typeof reconciliationMonitorReaction>(
     "./reconciliation-monitor.reaction.ts"
   ),
-  prompt:
-    "Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.\n",
+  skills: ["reconciliation-monitor"],
 });
 
 export default defineConfig({

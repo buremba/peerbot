@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -11,8 +12,15 @@ import {
 import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
 import type opportunityMatcherReaction from "./opportunity-matcher.reaction.ts";
 
+const opportunityMatcherSkill = defineSkill({
+  name: "opportunity-matcher",
+  content:
+    "Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.\n",
+});
+
 const agentCommunity = defineAgent({
   id: "agent-community",
+  skills: [opportunityMatcherSkill],
   name: "agent-community",
   description:
     "Discover aligned members, explain why they should meet, and draft warm introductions",
@@ -153,8 +161,7 @@ const opportunityMatcher = defineBehavior({
   reaction: reactionFromFile<typeof opportunityMatcherReaction>(
     "./opportunity-matcher.reaction.ts"
   ),
-  prompt:
-    "Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.\n",
+  skills: ["opportunity-matcher"],
 });
 
 export default defineConfig({

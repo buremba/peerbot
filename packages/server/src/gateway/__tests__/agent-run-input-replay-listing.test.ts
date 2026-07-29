@@ -129,6 +129,19 @@ describe("listPendingAgentRunInputs queue-row predicate", () => {
     expect(await listedMessageIds()).toEqual([]);
   });
 
+  test("REGRESSION: a failed (never-delivered) row does not suppress the replay", async () => {
+    // Ack-on-delivery marks delivered rows completed, so `failed` can only
+    // mean the retry budget died with the turn never delivered — the queue
+    // has given the turn up and no longer owns it. Suppressing here would
+    // strand a marker-live turn (never delivered, never terminalized, marker
+    // kept fresh by the busy worker's heartbeats) until the sweep.
+    await seedInput("m-failed");
+    await seedMarker("m-failed");
+    await seedThreadJob({ messageId: "m-failed", status: "failed" });
+
+    expect(await listedMessageIds()).toEqual(["m-failed"]);
+  });
+
   test("another deployment's queue row does not suppress OUR replay", async () => {
     // Platform message ids (e.g. Telegram) are only unique per chat; the
     // predicate must be scoped to this deployment's queue.

@@ -149,13 +149,17 @@ export async function listPendingAgentRunInputs(
 ): Promise<PendingAgentRunInput[]> {
   const sql = getDb();
   // The replay exists to restore turns whose QUEUE ROW is gone (expired-pending
-  // cleanup deletes jobs a disconnected worker never claimed). A row in ANY
-  // state means the queue still owns the turn: pending/claimed is the original
-  // job awaiting delivery or a dispatch-gate deferral retry, completed is a
+  // cleanup deletes jobs a disconnected worker never claimed). A surviving row
+  // means the queue still owns the turn: pending/claimed is the original job
+  // awaiting delivery or a dispatch-gate deferral retry, completed is a
   // delivered turn the (reconnecting) worker is already running. Re-sending
   // over such a row delivers the same turn twice — the recycle path holds its
   // claimed job across the rebuild, so without this predicate every recycle
-  // would double-deliver the very turn that triggered it.
+  // would double-deliver the very turn that triggered it. A FAILED row is the
+  // one exception: delivery marks a row completed (ack-on-delivery), so failed
+  // = retry budget exhausted with the turn NEVER delivered — the queue has
+  // given the turn up, and suppressing its replay would strand it (still
+  // marker-live, never delivered, never terminalized) until the sweep.
   const rows = await sql<{
     payload: MessagePayload;
     token_claims: DurableRunTokenClaims;
@@ -180,6 +184,7 @@ export async function listPendingAgentRunInputs(
         WHERE q.run_type = 'chat_message'
           AND q.queue_name = 'thread_message_' || input.deployment_name
           AND q.action_input->>'messageId' = input.message_id
+          AND q.status != 'failed'
       )
     ORDER BY input.created_at, input.message_id
   `;

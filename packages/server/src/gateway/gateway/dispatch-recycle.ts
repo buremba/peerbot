@@ -73,6 +73,14 @@ export interface DispatchRecycler {
  * log triage can tell a deliberate deferral from a genuine failure.
  */
 export class StaleWorkerError extends Error {
+  /** Queue deferral contract (`isDeferralError`): reschedule WITHOUT consuming
+   *  an attempt. Every reason here is a wait with an external termination
+   *  bound — a prior turn's marker sweep, head-of-line progress, or a one-shot
+   *  recycle — not a failure, and burning the attempt budget on it would let a
+   *  legitimately hour-long prior turn strand the follower turn as a failed,
+   *  never-delivered row. */
+  readonly deferral = true;
+
   constructor(
     message: string,
     readonly reason: "prior-turn-live" | "recycled" | "older-turn-pending"

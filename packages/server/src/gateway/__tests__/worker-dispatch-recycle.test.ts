@@ -382,6 +382,10 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
       .catch((e: unknown) => e);
     expect(fenceError).toBeInstanceOf(StaleWorkerError);
     expect((fenceError as StaleWorkerError).reason).toBe("older-turn-pending");
+    // Every StaleWorkerError is a queue deferral: retried WITHOUT consuming
+    // an attempt, so waiting out a long prior turn can never exhaust the
+    // budget and strand the follower as a failed, never-delivered row.
+    expect((fenceError as StaleWorkerError).deferral).toBe(true);
     expect(deliveredJobs()).toHaveLength(0);
     expect(recycler.recycled).toHaveLength(1); // fence ran, staleness never consulted
 

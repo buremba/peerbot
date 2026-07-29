@@ -215,18 +215,6 @@ function blankQuotedSpans(text: string): string {
 }
 
 /**
- * Words whose operands are DATA rather than a command to run: a printer or
- * lookup command (`echo uvx cowsay`, `man nix run`) and a pattern option
- * (`git log --grep nix run`). What follows one of these is dropped before the
- * install patterns run, which is what closes the #2279 false positives.
- *
- * Deliberately short, and holding nothing that can EXEC its arguments — `sudo`,
- * `env`, `time`, `timeout`, `flock`, `chroot`, `xargs` and friends stay out, so
- * a manager behind any of them still fires. A word belongs here only when its
- * operand cannot be a command; see the asymmetry note on
- * {@link isDirectPackageInstallCommand}.
- */
-/**
  * Printer and lookup commands: they display or resolve their operands, so what
  * follows is data. These only narrow in COMMAND POSITION (the word being run:
  * the first that is not a `VAR=value` assignment prefix) — as any later word
@@ -251,14 +239,29 @@ const ARGUMENT_DATA_COMMANDS = new Set([
 ]);
 
 /**
- * Long PATTERN options, whose operand is a regex in every tool that spells
- * them. These narrow at any position, because a long option is never a bare
- * operand. Short options are deliberately absent: a single letter means
- * different things to different commands, and reading one without knowing its
- * owner loses a real install — `-m` is git's message but `parallel`'s max-args,
- * and `parallel -m npm install lodash ::: left-pad` RUNS npm.
+ * Long PATTERN options, whose operand is a regex — but ONLY when the command
+ * running them is one that owns the spelling. An option is not self-evidently
+ * an option: `env -u --grep npm install evil` passes `--grep` as the VARIABLE
+ * NAME to unset and then execs the rest, so honouring it anywhere hid a real
+ * install behind any exec wrapper that takes a value.
+ *
+ * Short options are absent entirely: a single letter means different things to
+ * different commands, and reading one without knowing its owner loses a real
+ * install — `-m` is git's message but `parallel`'s max-args, and
+ * `parallel -m npm install lodash ::: left-pad` RUNS npm.
  */
 const ARGUMENT_DATA_OPTIONS = new Set(["--grep", "--regexp"]);
+
+/** Commands that own {@link ARGUMENT_DATA_OPTIONS}; anything else exec's. */
+const ARGUMENT_DATA_OPTION_OWNERS = new Set([
+  "git",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "ack",
+]);
 
 /**
  * Run `matches` over each command in `text`, dropping the tail that an
@@ -287,11 +290,16 @@ function matchesBeforeArgumentData(
     const commandAt = words.findIndex(
       (word) => !/^[a-z_][a-z0-9_]*=/.test(word)
     );
-    // A printer/lookup name only consumes data when it is the word being RUN.
-    // An option consumes data wherever it appears.
+    // Both narrowings need the word to be doing its own job, not sitting in
+    // someone else's operand slot: a printer/lookup name only consumes data as
+    // the word being RUN, and a pattern option only when the command running it
+    // is the one that owns that spelling.
+    const runs = commandAt === -1 ? undefined : words[commandAt];
+    const ownsDataOptions =
+      runs !== undefined && ARGUMENT_DATA_OPTION_OWNERS.has(runs);
     const dataAt = words.findIndex(
       (word, index) =>
-        ARGUMENT_DATA_OPTIONS.has(word) ||
+        (ownsDataOptions && ARGUMENT_DATA_OPTIONS.has(word)) ||
         (index === commandAt && ARGUMENT_DATA_COMMANDS.has(word))
     );
     const head = (dataAt === -1 ? words : words.slice(0, dataAt)).join(" ");

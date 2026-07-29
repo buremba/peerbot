@@ -640,6 +640,28 @@ describe("enforceBashCommandPolicy", () => {
     );
   });
 
+  test("a pattern option is only data for the command that owns it (#2279)", () => {
+    // An option is not self-evidently an option. `env -u NAME` takes a VARIABLE
+    // NAME and then execs the rest, so `--grep` there is an operand — honouring
+    // it anywhere hid a real install behind any exec wrapper taking a value.
+    for (const cmd of [
+      "env -u --grep npm install evil",
+      "env -u --regexp npm install evil",
+      "sudo -u --grep npm install evil",
+      "timeout --signal --grep 5 npm install evil",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // Owned by the command that spells it, so it still narrows.
+    for (const cmd of [
+      "git log --grep nix run",
+      "grep --regexp nix run file",
+      "rg --regexp uvx cowsay",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
   test("an interpreter body gets the same narrowing (#2279)", () => {
     // The `-c` body is scanned separately, so it needs its own coverage: a
     // manager merely echoed inside the body is not an install…

@@ -12,6 +12,7 @@ import {
 	assessEntityResolution,
 	RESOLUTION_FINGERPRINT_VERSION,
 } from "../../../entity-resolution/policy";
+import { lockResolutionCandidate } from "../../../entity-resolution/rejection";
 import { assertResolutionFingerprintCurrent } from "../../../entity-resolution/staleness";
 import type { Env } from "../../../index";
 import { manageEntity } from "../../../tools/admin/manage_entity";
@@ -1639,6 +1640,80 @@ describe("manage_entity merge action", () => {
 			});
 		} finally {
 			await writer.end();
+		}
+	});
+
+	it("serializes decisions for one entity group across differing fingerprints", async () => {
+		// The lock used to be keyed on the resolution fingerprint. Refresh rotates
+		// that fingerprint, so two reviewers holding different reviewed digests for
+		// the SAME pair took two different locks and could race past each other's
+		// rejection memory. Keying on the entity group is what makes them contend.
+		const org = await createTestOrganization({ name: "Candidate Lock Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const other = await createTestEntity({
+			name: "Unrelated",
+			entity_type: "person",
+			organization_id: org.id,
+			created_by: user.id,
+		});
+		const sql = getTestDb();
+		const contender = postgres(process.env.DATABASE_URL as string, {
+			max: 1,
+			onnotice: () => {},
+			...PROD_PG_VALUE_OPTIONS,
+		});
+		try {
+			await sql.begin(async (tx) => {
+				await lockResolutionCandidate(tx, {
+					organizationId: org.id,
+					winnerId: winner.id,
+					loserIds: [loser.id],
+				});
+
+				// Same pair, and the caller need not even know the fingerprint: it is
+				// no longer part of the key, so this must block.
+				await expect(
+					contender.begin(async (contenderTx) => {
+						await contenderTx`SET LOCAL lock_timeout = '150ms'`;
+						await lockResolutionCandidate(contenderTx, {
+							organizationId: org.id,
+							winnerId: winner.id,
+							loserIds: [loser.id],
+						});
+					}),
+				).rejects.toMatchObject({ code: "55P03" });
+
+				// Order must not matter either — the key is the sorted group, so the
+				// same pair with winner and loser swapped is the same candidate.
+				await expect(
+					contender.begin(async (contenderTx) => {
+						await contenderTx`SET LOCAL lock_timeout = '150ms'`;
+						await lockResolutionCandidate(contenderTx, {
+							organizationId: org.id,
+							winnerId: loser.id,
+							loserIds: [winner.id],
+						});
+					}),
+				).rejects.toMatchObject({ code: "55P03" });
+
+				// ...but an unrelated candidate must NOT be serialized, or every merge
+				// in the workspace would queue behind one review.
+				await expect(
+					contender.begin(async (contenderTx) => {
+						await contenderTx`SET LOCAL lock_timeout = '150ms'`;
+						await lockResolutionCandidate(contenderTx, {
+							organizationId: org.id,
+							winnerId: winner.id,
+							loserIds: [other.id],
+						});
+						return "acquired";
+					}),
+				).resolves.toBe("acquired");
+			});
+		} finally {
+			await contender.end();
 		}
 	});
 

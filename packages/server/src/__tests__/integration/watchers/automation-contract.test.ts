@@ -22,13 +22,13 @@ import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
 import { handleBehaviorMode } from "../../../tools/get_content/behavior-mode";
 import {
-	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
 	materializeDueWatcherRuns,
 	reconcileWatcherRuns,
 	runWatcherAutomationTick,
 	sweepStaleWatcherRuns,
 } from "../../../watchers/automation";
+import { advanceWatcherSchedule } from "../../../watchers/schedule-cursor";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createCanvasWindow,

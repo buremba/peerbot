@@ -24,7 +24,7 @@ import {
   processWatcherClassifications,
   stripFields,
 } from '../../../watchers/classifier-extraction';
-import { advanceWatcherSchedule } from '../../../watchers/automation';
+import { advanceWatcherSchedule } from '../../../watchers/schedule-cursor';
 import { executeReaction } from '../../../watchers/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
 import type { KeyingConfig } from '../../../types/watchers';

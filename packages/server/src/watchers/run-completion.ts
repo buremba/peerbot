@@ -2,6 +2,7 @@ import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
+import { advanceWatcherSchedule } from "./schedule-cursor";
 
 type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
@@ -86,15 +87,29 @@ async function markWatcherRunFailed(
 	sql: DbClient,
 	runId: number,
 	message: string
-): Promise<void> {
-	await sql`
-    UPDATE runs
-    SET status = 'failed',
-        completed_at = current_timestamp,
-        error_message = ${message}
-    WHERE id = ${runId}
-      AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-  `;
+): Promise<boolean> {
+	return sql.begin(async (tx) => {
+		const [failed] = await tx<{
+			watcher_id: string | number | null;
+			dispatch_source: string | null;
+		}>`
+      UPDATE runs
+      SET status = 'failed',
+          completed_at = current_timestamp,
+          error_message = ${message}
+      WHERE id = ${runId}
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+    `;
+		if (!failed) return false;
+		if (failed.dispatch_source !== "event") {
+			await advanceWatcherSchedule(
+				tx,
+				failed.watcher_id == null ? null : Number(failed.watcher_id)
+			);
+		}
+		return true;
+	});
 }
 
 /**
@@ -156,8 +171,7 @@ export async function resolveWatcherRunsByMessageIds(
 		if (!Number.isFinite(runId)) continue;
 
 		if (!result.ok) {
-			await markWatcherRunFailed(sql, runId, result.error);
-			resolved++;
+			if (await markWatcherRunFailed(sql, runId, result.error)) resolved++;
 			continue;
 		}
 
@@ -187,15 +201,18 @@ export async function resolveWatcherRunsByMessageIds(
 				continue;
 			}
 
-			await markWatcherRunFailed(
-				sql,
-				runId,
-				"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
-					(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
-					". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
-					"run_sdk tools are approved for it."
-			);
-			resolved++;
+			if (
+				await markWatcherRunFailed(
+					sql,
+					runId,
+					"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
+						(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
+						". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
+						"run_sdk tools are approved for it."
+				)
+			) {
+				resolved++;
+			}
 			continue;
 		}
 

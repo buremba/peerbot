@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../db/client';
 import { ClientSdkActionError } from '../../sandbox/namespaces/action-call';
 import { nextRunAt } from '../../utils/cron';
-import { advanceWatcherSchedule } from '../../watchers/automation';
+import { advanceWatcherSchedule } from '../../watchers/schedule-cursor';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
   createTestAgent,

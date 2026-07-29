@@ -54,7 +54,7 @@ import {
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
-import { advanceWatcherSchedule } from "../watchers/automation";
+import { advanceWatcherSchedule } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
 type DbClient = ReturnType<typeof getDb>;
@@ -911,29 +911,31 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	// The stdout tail is stashed for diagnosis (why didn't the agent call
 	// complete_window?); the worker redacts before sending.
 	const failRun = async (reason: string): Promise<boolean> => {
-		const failedRows = (await sql`
-      UPDATE runs
-      SET status = 'failed',
-          completed_at = current_timestamp,
-          error_message = ${reason},
-          output_tail = ${output ? output.slice(-2000) : null},
-          exit_code = ${body.exit_code ?? null},
-          exit_signal = ${body.exit_signal ?? null},
-          exit_reason = ${body.exit_reason ?? "error_message"}
-      WHERE id = ${runId}
-        AND status = 'running'
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-		if (failedRows.length === 0) return false;
-		await sql`
-      UPDATE watchers
-      SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
-    `;
-		if (approved.dispatch_source !== "event") {
-			await advanceWatcherSchedule(sql, watcherId);
-		}
-		return true;
+		return sql.begin(async (tx) => {
+			const failedRows = (await tx`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${reason},
+            output_tail = ${output ? output.slice(-2000) : null},
+            exit_code = ${body.exit_code ?? null},
+            exit_signal = ${body.exit_signal ?? null},
+            exit_reason = ${body.exit_reason ?? "error_message"}
+        WHERE id = ${runId}
+          AND status = 'running'
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+			if (failedRows.length === 0) return false;
+			await tx`
+        UPDATE watchers
+        SET last_fired_at = NOW(), updated_at = NOW()
+        WHERE id = ${watcherId}
+      `;
+			if (approved.dispatch_source !== "event") {
+				await advanceWatcherSchedule(tx, watcherId);
+			}
+			return true;
+		});
 	};
 
 	const emitCompletionEvent = (

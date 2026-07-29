@@ -27,6 +27,7 @@ import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import { computePendingWindow } from "../utils/window-utils";
+import { advanceWatcherSchedule } from "./schedule-cursor";
 import {
 	findWindowIdForRun,
 	markWatcherRunCompleted,
@@ -336,69 +337,25 @@ async function markWatcherRunFailedIdempotent(
 	runId: number,
 	message: string
 ): Promise<void> {
-	const failedRows = await sql`
-    UPDATE runs
-    SET status = 'failed',
-        completed_at = current_timestamp,
-        error_message = ${message}
-    WHERE id = ${runId}
-      AND status IN ('running', 'claimed', 'pending')
-    RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
-  `;
-	// Advance next_run_at on terminal failure too — otherwise a permanently
-	// broken scheduled/manual run re-materializes + re-dispatches every minute.
-	// Event delivery is independent of the cron cursor and must not skip its next
-	// scheduled activation.
-	if (failedRows[0]?.dispatch_source !== "event") {
+	await sql.begin(async (tx) => {
+		const [failed] = await tx<{
+			watcher_id: string | number | null;
+			dispatch_source: string | null;
+		}>`
+      UPDATE runs
+      SET status = 'failed',
+          completed_at = current_timestamp,
+          error_message = ${message}
+      WHERE id = ${runId}
+        AND status IN ('running', 'claimed', 'pending')
+      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+    `;
+		if (!failed || failed.dispatch_source === "event") return;
 		await advanceWatcherSchedule(
-			sql,
-			failedRows[0]?.watcher_id as number | undefined
+			tx,
+			failed.watcher_id == null ? null : Number(failed.watcher_id)
 		);
-	}
-}
-
-/**
- * Move a watcher's `next_run_at` forward to the next cron tick after now.
- * Reused by:
- *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
- *   - client.behaviors.completeWindow on successful completion
- *   - the device-side `/api/workers/me/runs/:id/complete-behavior` endpoint
- *
- * Idempotent: the target is always `nextRunAt(schedule, now)`, so duplicate
- * completions and manually-triggered runs converge to the same upcoming tick.
- * (Basing it on `max(now, next_run_at)` instead compounded the schedule: each
- * manual trigger's completion pushed an already-future `next_run_at` one more
- * tick out, so N manual runs silently skipped N cron slots.)
- *
- * Pass either the singleton `sql` client or a transaction handle from
- * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
- * watchers (manual-only) are no-ops. Read failures are logged and swallowed —
- * a missed schedule tick is preferable to failing the surrounding write.
- */
-export async function advanceWatcherSchedule(
-	sql: DbClient,
-	watcherId: number | undefined
-): Promise<void> {
-	if (watcherId === undefined || watcherId === null) return;
-	try {
-		const rows = await sql`
-      SELECT schedule, timezone
-      FROM watchers
-      WHERE id = ${watcherId}
-      LIMIT 1
-    `;
-		const schedule = (rows[0]?.schedule as string | null) ?? null;
-		const timezone = (rows[0]?.timezone as string | null) ?? null;
-		if (!schedule) return;
-		await sql`
-      UPDATE watchers
-      SET next_run_at = ${nextRunAt(schedule, new Date(), timezone)}::timestamptz,
-          updated_at = NOW()
-      WHERE id = ${watcherId}
-    `;
-	} catch (err) {
-		logger.warn(`[watchers] failed to advance next_run_at: ${err}`);
-	}
+	});
 }
 
 export async function getWatcherRunInfo(
@@ -877,7 +834,18 @@ export async function materializeDueWatcherRuns(
 			);
 			// Don't leave next_run_at in the past — that would re-select this watcher
 			// on every 60s tick. Push it forward per the watcher's cron schedule.
-			await advanceWatcherSchedule(sql, watcher.id);
+			// An unparseable schedule parks itself and does not throw; this catch
+			// exists for DATABASE errors, which would otherwise escape a hook that
+			// materializeDueItems does not guard and abort the tick for every org.
+			try {
+				await advanceWatcherSchedule(sql, watcher.id);
+			} catch (advanceError) {
+				logger.error(
+					{ error: advanceError, watcherId: watcher.id },
+					"[watcher-automation] Failed to advance Behavior schedule after materialization error"
+				);
+				// Leaving the cursor due lets a later tick retry.
+			}
 		},
 	});
 

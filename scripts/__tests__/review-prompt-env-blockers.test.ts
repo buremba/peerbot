@@ -14,12 +14,14 @@
  * Three other sections (§2, §6, and the Blockers list) already say the
  * opposite: environment problems are `[env]` notes and blockers require a
  * failure the diff caused. This pins that the prompt says it in ONE
- * direction.
+ * direction, matching the *shape* of the rule rather than its wording — an
+ * exact-string assertion would fail on any honest rewrite while still letting
+ * a freshly-worded contradiction through.
  *
- * It deliberately matches the *shape* of the rule rather than its wording.
- * An exact-string assertion would fail on any honest rewrite while still
- * letting a freshly-worded contradiction through — the guard has to catch
- * the class, since the class is what the reviewer resolved wrongly.
+ * The fixtures below are the point of the file. Three revisions of this guard
+ * were wrong in three different ways, each one passing against a prompt that
+ * contradicted itself, so the guard is tested against known-bad and known-good
+ * phrasings rather than trusted to be correct by inspection.
  */
 
 import { readFileSync } from "node:fs";
@@ -34,31 +36,34 @@ const ENV_INABILITY =
   /(environment (itself )?is broken|reviewer's environment|sandbox|read-only|EPERM|execution is unavailable|denies the writes|cannot run|can't run|unable to run|could not run)/i;
 /**
  * Same pattern, global — only for `replace`. It cannot be one shared regex:
- * a `/g` regex carries `lastIndex` across `.test()` calls, so sharing it
- * makes the filter below skip every other bullet. That defect shipped in a
- * draft of this file and let an added contradictory bullet through.
+ * a `/g` regex carries `lastIndex` across `.test()` calls, so sharing it makes
+ * the bullet filter skip every other bullet.
  */
 const ENV_INABILITY_ALL = new RegExp(ENV_INABILITY.source, "gi");
 const MENTIONS_BLOCKER = /blocker/i;
-/**
- * A prohibition ("never a `blocker`", "DO NOT add them to `blockers`") is the
- * rule we want; an instruction ("record that as a `blocker`") is the bug.
- *
- * Two traps make the obvious check useless, and the first revision of this
- * guard fell into both — it passed against the very prompt that broke #2306:
- *   1. Scope. The offending bullet ended "Do not retry indefinitely", so a
- *      negation search over the whole bullet matched a `not` belonging to a
- *      different sentence. Scope to the sentence that says `blocker`.
- *   2. The env phrase negates itself. "you cannot run even a narrow test
- *      file" sits in the same sentence, so its `cannot` reads as the
- *      prohibition. Strip the env phrasing before looking for negation.
- *
- * Kept to bare negatives on purpose: "rather than" / "instead of" appear in
- * the rule's own causation clause, so accepting them as prohibitions would
- * let "record it as a `blocker` rather than a note" pass.
- */
 const PROHIBITION = /\b(not|never|n't)\b/i;
-const SENTENCES = /[^.!?]+[.!?]?/g;
+/**
+ * Split on clause boundaries, not sentence boundaries. "do not hide it;
+ * record it as a blocker" is one sentence whose negation governs a different
+ * verb — scoping to the sentence accepts it. Splitting wider risks the
+ * reverse error (a negation stranded from the clause it governs), which is
+ * the safe direction: a false positive is a loud CI failure on a 250-line
+ * document, a false negative is another silent unbypassable gate.
+ */
+const CLAUSE_BOUNDARY = /(?<=[.;!?—,])\s*/;
+
+/**
+ * Every clause that ties a reviewer-side inability to `blockers` without
+ * prohibiting it. Empty means the prompt states the rule in one direction.
+ */
+function contradictions(markdown: string): string[] {
+  return bullets(markdown)
+    .filter((bullet) => ENV_INABILITY.test(bullet))
+    .flatMap((bullet) => bullet.split(CLAUSE_BOUNDARY))
+    .filter((clause) => MENTIONS_BLOCKER.test(clause))
+    .filter((clause) => !PROHIBITION.test(clause.replace(ENV_INABILITY_ALL, "")))
+    .map((clause) => clause.trim());
+}
 
 /**
  * Markdown bullets, joined with their indented continuation lines — the rule
@@ -82,20 +87,40 @@ function bullets(markdown: string): string[] {
   return out;
 }
 
+/** Phrasings that must be flagged. Each one defeated an earlier revision. */
+const CONTRADICTORY = [
+  // The literal §4 rule that red-flagged #2306 twice.
+  "- If the environment itself is broken (e.g. you cannot run even a narrow\n  test file), record that as a `blocker` and finish with a partial verdict.",
+  // Added alongside a correct rule instead of replacing it — the realistic
+  // drift, and what an exact-string guard misses entirely.
+  "- When your sandbox denies the writes a narrow test needs, list that under\n  `blockers` so the gap stays visible to the merger.",
+  // An unrelated negation earlier in the same sentence; defeats a
+  // sentence-scoped negation search.
+  "- If your sandbox is read-only, do not hide it; record it as a blocker.",
+  // Bare copula, no imperative verb to key on.
+  "- A read-only sandbox counts as a `blocker`.",
+];
+
+/** Phrasings that must NOT be flagged, so the guard stays usable. */
+const CONSISTENT = [
+  "- If the sandbox is read-only, that is never a `blocker`; put it in `notes`\n  with the `[env]` prefix.",
+  "- Environment problems (a read-only sandbox) — DO NOT add them to `blockers`.",
+  "- A probe that dies with `EPERM` is not a `blocker`.",
+];
+
 describe("review prompt: environment failures are never blockers", () => {
   const markdown = readFileSync(PROMPT, "utf8");
 
   it("states the env-vs-blocker rule in only one direction", () => {
-    const offenders = bullets(markdown)
-      .filter((bullet) => ENV_INABILITY.test(bullet))
-      .flatMap((bullet) => bullet.match(SENTENCES) ?? [])
-      .filter((sentence) => MENTIONS_BLOCKER.test(sentence))
-      .filter(
-        (sentence) => !PROHIBITION.test(sentence.replace(ENV_INABILITY_ALL, ""))
-      )
-      .map((sentence) => sentence.trim());
+    expect(contradictions(markdown)).toEqual([]);
+  });
 
-    expect(offenders).toEqual([]);
+  it.each(CONTRADICTORY)("flags: %s", (fixture) => {
+    expect(contradictions(fixture)).not.toEqual([]);
+  });
+
+  it.each(CONSISTENT)("allows: %s", (fixture) => {
+    expect(contradictions(fixture)).toEqual([]);
   });
 
   it("still routes what it cannot run into [env] notes", () => {

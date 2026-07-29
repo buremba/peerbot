@@ -94,27 +94,47 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "composer require ",
 ];
 
+/**
+ * A command position: the start of input, a shell operator or newline, a brace,
+ * or a reserved word that introduces a command (`if npm install`, `do uvx x`,
+ * `! nix run x`). Anchoring here is what keeps a manager named as a plain
+ * ARGUMENT — `echo uvx cowsay`, `git log --grep nix run` — from matching, while
+ * still catching an install wherever the shell would actually run one.
+ */
+const CMD_POS = String.raw`(?:^|[;|&(){}\n]|(?<![^\s;|&(){}])(?:if|then|else|elif|do|while|until|!)\s)[^\S\n]*`;
+
+/** Build an install pattern anchored at a command position. */
+const atCmd = (body: string): RegExp => new RegExp(CMD_POS + body, "i");
+
 const DIRECT_PACKAGE_INSTALL_PATTERNS = [
-  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?(?:nix-shell|nix-env)\b/i,
+  atCmd(
+    String.raw`(?:sudo\s+)?(?:apt|apt-get|yum|dnf|apk|pacman|zypper|brew)\s+(?:install|upgrade|add)\b`
+  ),
+  atCmd(String.raw`(?:sudo\s+)?(?:nix-shell|nix-env)\b`),
   // New-style nix subcommands and the nix-* helpers, recognized after a shell
   // operator or `sudo` (leading forms are already covered by the prefix list).
-  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*(?:pip|pip3)\s+install\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*uv\s+pip\s+install\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*uvx\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*npm\s+(?:install|i)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*pnpm\s+(?:install|add|dlx)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*yarn\s+(?:install|add|global\s+add|dlx)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*bun\s+(?:install|add)\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*cargo\s+install\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*go\s+install\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*gem\s+install\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*poetry\s+add\b/i,
-  /(?:^|[;|&()\n])[^\S\n]*composer\s+require\b/i,
+  atCmd(
+    String.raw`(?:sudo\s+)?nix\s+(?:profile|shell|run|develop|build|eval|flake|store|copy|bundle|repl|search|edit|print-dev-env|why-depends|derivation|realisation|registry|upgrade-nix)\b`
+  ),
+  atCmd(
+    String.raw`(?:sudo\s+)?nix-(?:build|store|channel|instantiate|prefetch-url|collect-garbage|copy-closure)\b`
+  ),
+  atCmd(String.raw`(?:pip|pip3)\s+install\b`),
+  atCmd(String.raw`uv\s+pip\s+install\b`),
+  atCmd(String.raw`uv\s+(?:tool\s+(?:install|run|upgrade)|add)\b`),
+  atCmd(String.raw`uvx\b`),
+  atCmd(
+    String.raw`pipx\s+(?:install|run|upgrade|upgrade-all|inject|reinstall|reinstall-all|runpip)\b`
+  ),
+  atCmd(String.raw`npm\s+(?:install|i)\b`),
+  atCmd(String.raw`pnpm\s+(?:install|add|dlx)\b`),
+  atCmd(String.raw`yarn\s+(?:install|add|global\s+add|dlx)\b`),
+  atCmd(String.raw`bun\s+(?:install|add)\b`),
+  atCmd(String.raw`cargo\s+install\b`),
+  atCmd(String.raw`go\s+install\b`),
+  atCmd(String.raw`gem\s+install\b`),
+  atCmd(String.raw`poetry\s+add\b`),
+  atCmd(String.raw`composer\s+require\b`),
 ];
 
 /**

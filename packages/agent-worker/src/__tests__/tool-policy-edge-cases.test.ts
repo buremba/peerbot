@@ -131,8 +131,23 @@ describe("isDirectPackageInstallCommand", () => {
       "echo hi | uvx cowsay",
       "(nix shell nixpkgs#hello)",
       "true\nnix run x",
+      // A reserved word opens a command position too. Anchoring only on
+      // operators missed every one of these.
+      "if nix run x; then :; fi",
+      "{ nix run x; }",
+      "! nix run x",
+      "for i in 1; do nix run x; done",
+      "while :; do uvx x; done",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+  });
+
+  test("a keyword lookalike does not open a command position", () => {
+    // `if`/`do` only count as reserved words on their own, so a longer word
+    // starting with those letters stays ordinary argument text.
+    for (const cmd of ["echo iffy nix run", "echo dofile nix run"]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
     }
   });
 });

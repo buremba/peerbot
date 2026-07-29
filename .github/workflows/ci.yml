@@ -619,6 +619,7 @@ jobs:
           bash scripts/lib/__tests__/review-commit-lock.test.sh
           bash scripts/lib/__tests__/review-process.test.sh
           bash scripts/lib/__tests__/review-reviewer.test.sh
+          bash scripts/lib/__tests__/review-upstream-guard.test.sh
 
   typecheck:
     runs-on: blacksmith-4vcpu-ubuntu-2404

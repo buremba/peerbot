@@ -55,6 +55,7 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
+  requiredCapability: string,
   source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
 ): Promise<void> {
   const sql = getDb();
@@ -149,6 +150,12 @@ async function ensureDeviceConnectorWired(
           WHERE dw.id = c.device_worker_id
             AND dw.user_id = ${userId}
             AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+            -- Freshness alone is not "still serving": a device can be alive and
+            -- have dropped the capability (an app update, a revoked permission).
+            -- Keeping that pin leaves the connection unclaimable, since polling
+            -- is capability-gated. Same membership test devicesWithCapability
+            -- runs, over the same JSONB array.
+            AND dw.capabilities @> ${db.json([requiredCapability])}
         )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
@@ -725,6 +732,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             dc.key,
             dc.feedKeys,
             matchingDeviceIds,
+            dc.requiredCapability,
             'source' in dc && dc.source === 'device-manifest'
               ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
               : undefined

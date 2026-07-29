@@ -200,6 +200,25 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(goneConn)).toBeNull();
   });
 
+  it('unpins a device that is alive but no longer advertises the capability', async () => {
+    // Freshness alone is not "still serving". A device can keep heartbeating
+    // after an app update or a revoked permission drops the capability; polling
+    // is capability-gated, so leaving that pin in place strands the connection
+    // on a worker that will never claim its runs.
+    const serving = await seedWorker(userId, orgId, true);
+    const lapsed = await seedWorker(userId, orgId, true);
+    await sql`
+      UPDATE device_workers SET capabilities = ${sql.json([])} WHERE id = ${lapsed}::uuid
+    `;
+    const servingConn = await seedConn(orgId, userId, serving);
+    const lapsedConn = await seedConn(orgId, userId, lapsed);
+
+    await reconcileDeviceCapabilities(userId);
+
+    expect(await pinOf(servingConn)).toBe(serving);
+    expect(await pinOf(lapsedConn)).toBeNull();
+  });
+
   it('still repairs a lone stale pin to the sole fresh device', async () => {
     const staleDevice = await seedWorker(userId, orgId, false);
     const freshDevice = await seedWorker(userId, orgId, true);

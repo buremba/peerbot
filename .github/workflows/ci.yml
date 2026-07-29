@@ -580,6 +580,14 @@ jobs:
         # disables that alarm, so it is pinned by tests like the tag logic above.
         run: bun test scripts/__tests__/audit-release-images.test.ts
 
+      - name: Merge integrity decision table
+        # #2273 was based on another feature branch; squashing that base away
+        # left GitHub reporting it MERGED with its fix absent from main, while
+        # #2279 stayed open describing that exact bug. Every required check was
+        # green. Same reasoning as the gates above — the guard is pinned here so
+        # it cannot quietly stop catching the thing it exists for.
+        run: bun test scripts/__tests__/check-merge-integrity.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

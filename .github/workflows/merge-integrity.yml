@@ -1,0 +1,67 @@
+name: Merge Integrity
+
+# Proves that a PR GitHub reports as "merged" actually reached main.
+#
+# PR #2273 was opened against `feat/nix-deny-list-gap`. Squashing that base away
+# left GitHub reporting #2273 as MERGED, its branch deleted, and its fix absent
+# from main — while issue #2279 stayed open describing the very bug it claimed
+# to fix. Every required check was green; none of them asked whether the
+# commits landed.
+#
+# NOTE: there is deliberately no `branches:` filter below. That filter matches
+# the BASE branch, so it would skip exactly the mis-based PRs this catches.
+
+on:
+  pull_request:
+    types:
+      [opened, synchronize, reopened, edited, labeled, unlabeled, closed]
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Prevention. Configure this job as a required check so it blocks the merge
+  # button before the damage.
+  base-branch-guard:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Base must be main (or carry an explicit stacked-pr label)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          node scripts/check-merge-integrity.mjs base \
+            --base "$BASE_REF" --labels-json "$PR_LABELS_JSON"
+
+  # Detection. Catches whatever the base gate did not — the per-PR run fires at
+  # merge; the daily sweep is the durable alarm if that run is ever missed.
+  merged-reachability:
+    if: |
+      github.event_name != 'pull_request'
+      || (github.event.action == 'closed' && github.event.pull_request.merged == true)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Ancestry needs real history on both sides; a shallow clone reports
+          # every merge commit as unreachable and the gate becomes noise.
+          fetch-depth: 0
+
+      - name: Assert the merge commit is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PR_NUMBER:-}" ]; then
+            node scripts/check-merge-integrity.mjs reach --pr "$PR_NUMBER"
+          else
+            node scripts/check-merge-integrity.mjs reach --sweep --limit 100
+          fi

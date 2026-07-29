@@ -43,6 +43,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-process.sh"
 # shellcheck source=scripts/lib/review-reviewer.sh
 . "$SCRIPT_DIR/lib/review-reviewer.sh"
+# shellcheck source=scripts/lib/review-upstream-guard.sh
+. "$SCRIPT_DIR/lib/review-upstream-guard.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -104,6 +106,11 @@ echo ">> cwd:  $(pwd)"
 echo ">> base: $BASE_BRANCH (merge-base $MERGE_BASE)"
 echo ">> head: $HEAD_SHA"
 echo ">> reviewer: $REVIEWER_CLI_SELECTED"
+
+# Before spending a reviewer run, make sure the verdict can actually land on
+# the PR head. Runs ahead of the build and the commit lock so a superseded
+# HEAD costs nothing.
+review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT" || exit 2
 
 post_review_status() {
   [ "$GH_AVAILABLE" = "1" ] || return 0

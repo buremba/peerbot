@@ -227,6 +227,34 @@ function asRuntimeInfrastructureError(
   );
 }
 
+/**
+ * argv for running `command` with `cwd` established, in ONE sandbox execution.
+ *
+ * The outer non-login shell only creates and enters the directory, then `exec`s
+ * the real `/bin/bash -lc "$2"`, replacing the process. Both values are argv
+ * entries rather than interpolated text, for two reasons learned the hard way:
+ *
+ *  - Prepending `mkdir -p X && cd X &&` textually changed the submitted
+ *    command's meaning. `&&` binds tighter than `&`, so `sleep 0 & pwd`
+ *    backgrounded the cwd setup and ran `pwd` in the default directory; a
+ *    comment-only command made the trailing `&&` a syntax error.
+ *  - Running it with `eval` in the outer shell leaked that shell's positional
+ *    state: `$0` was "lobu-exec", `$1` the cwd, `$#` 2 — where a plain
+ *    `bash -lc` gives "bash", "" and 0.
+ *
+ * A separate `sandbox.fs.mkdir()` is not used because the SDK implements its
+ * recursive branch as a real command execution, doubling the command-API rate.
+ */
+export function execArgv(cwd: string, command: string): string[] {
+  return [
+    "-c",
+    'mkdir -p -- "$1" && cd -- "$1" && exec /bin/bash -lc "$2"',
+    "lobu-exec",
+    cwd,
+    command,
+  ];
+}
+
 async function getSandbox(params: {
   name: string;
   networkPolicy: NetworkPolicy;
@@ -281,7 +309,7 @@ async function getSandbox(params: {
  * deterministic per (org, agent, conversation) so messages resume the same
  * filesystem; the filesystem is the persistent source of truth (no file sync).
  */
-export const __testOnly = { networkPolicyFromDomains };
+export const __testOnly = { networkPolicyFromDomains, execArgv };
 
 export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
   id: "vercel",
@@ -349,19 +377,7 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     try {
       result = await sandbox.runCommand({
         cmd: "/bin/bash",
-        // The cwd and the command are POSITIONAL ARGUMENTS, never interpolated
-        // into the script. Textual prepending changed shell semantics: `&&`
-        // binds tighter than `&`, so `sleep 0 & pwd` backgrounded the cwd setup
-        // and ran `pwd` in the default directory, and a comment-only command
-        // turned the trailing `&&` into a syntax error. `eval "$2"` runs the
-        // submitted command as its own program, so its parse is unchanged.
-        args: [
-          "-lc",
-          'mkdir -p -- "$1" && cd -- "$1" && eval "$2"',
-          "lobu-exec",
-          cwd,
-          ctx.command,
-        ],
+        args: execArgv(cwd, ctx.command),
         env: ctx.env,
         timeoutMs: ctx.timeoutMs,
       });

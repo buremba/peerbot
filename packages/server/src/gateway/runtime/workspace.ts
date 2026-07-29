@@ -7,6 +7,18 @@ import { sanitizeConversationId } from "@lobu/core";
  * path-escape / token-context checks are security, not Vercel-specific.
  */
 
+/**
+ * Quote a path for safe interpolation into a `/bin/bash -lc` string.
+ *
+ * Single quotes disable every form of shell expansion, so the only character
+ * needing care is the single quote itself: it is closed, escaped literally, and
+ * reopened. A cwd derives from agent-controlled input, so an unquoted path would
+ * let `; rm -rf /` out of a directory name.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 export function errorStatus(error: Error): 400 | 500 {
   if (
     error.message === "Invalid agentId" ||

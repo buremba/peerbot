@@ -8,6 +8,10 @@ type RuntimeExecResponse = {
   stderr?: unknown;
   exitCode?: unknown;
   error?: unknown;
+  /** "infrastructure" when the RUNTIME failed and the command never ran. */
+  kind?: unknown;
+  /** Whether re-running the same command later could plausibly succeed. */
+  retryable?: unknown;
 };
 
 /**
@@ -84,6 +88,24 @@ export function createGenericRuntimeBashOps(
           typeof payload.error === "string"
             ? payload.error
             : `Runtime exec failed with HTTP ${response.status}`;
+        // The SANDBOX failed, not the command. Say so in the agent's own terms:
+        // an unlabelled provider message on stdout with exit 1 is exactly what a
+        // genuinely failing command produces, so the agent concluded its syntax
+        // was wrong, rewrote a correct command and retried into an already
+        // throttled endpoint. Naming the fault is what stops that loop.
+        if (payload.kind === "infrastructure") {
+          const retryHint = payload.retryable
+            ? " This is usually transient — the same command may succeed shortly."
+            : "";
+          onData(
+            Buffer.from(
+              `lobu: sandbox runtime unavailable — your command did not run.${retryHint}\n${message}\n`
+            )
+          );
+          // 126 is "command found but not executable": the command never ran, so
+          // it is not reported as having failed.
+          return { exitCode: 126 };
+        }
         onData(Buffer.from(`${message}\n`));
         return { exitCode: 1 };
       }

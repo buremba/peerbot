@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
-import { remoteCwd } from "../workspace.js";
+import { remoteCwd, shellQuote } from "../workspace.js";
+import { RuntimeInfrastructureError } from "../types.js";
 import type {
   GatewayRuntimeProvider,
   RuntimeExecContext,
@@ -197,6 +198,32 @@ function networkPolicyFromDomains(
     : "deny-all";
 }
 
+/**
+ * Normalize a provider SDK throw into a {@link RuntimeInfrastructureError}.
+ *
+ * The Vercel SDK raises an `APIError` whose message is literally
+ * `Status code ${status} is not ok` and which carries a `response`. Its own
+ * retry gives up when the upstream `Retry-After` exceeds its ceiling, so a
+ * sustained 429 reaches us unretried. Reading the status off the error keeps the
+ * route from having to recover it by matching that message text.
+ */
+function asRuntimeInfrastructureError(
+  error: unknown,
+  stage: string
+): RuntimeInfrastructureError {
+  if (error instanceof RuntimeInfrastructureError) return error;
+  const candidate = error as
+    | { response?: { status?: unknown }; status?: unknown }
+    | undefined;
+  const raw = candidate?.response?.status ?? candidate?.status;
+  const status = typeof raw === "number" ? raw : undefined;
+  const detail = error instanceof Error ? error.message : String(error);
+  return new RuntimeInfrastructureError(
+    `Sandbox runtime failed to ${stage}: ${detail}`,
+    { status, cause: error }
+  );
+}
+
 async function getSandbox(params: {
   name: string;
   networkPolicy: NetworkPolicy;
@@ -293,30 +320,60 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       ctx.allowedDomains,
       ctx.deniedDomains
     );
-    const sandbox = await getSandbox({
-      name: sandboxName,
-      networkPolicy,
-      credentials: ctx.credentials.values,
-    });
+    // Provisioning happens before the agent's command exists, so ANY failure
+    // here is the runtime's, never the command's. Wrapped so the route reports
+    // it as an infrastructure fault carrying the real upstream status instead of
+    // flattening it to a 500 and handing the agent a failed-command signal.
+    let sandbox: Sandbox;
+    try {
+      sandbox = await getSandbox({
+        name: sandboxName,
+        networkPolicy,
+        credentials: ctx.credentials.values,
+      });
+    } catch (error) {
+      throw asRuntimeInfrastructureError(error, "provision sandbox");
+    }
 
-    await sandbox.fs.mkdir(REMOTE_WORKSPACE_DIR, { recursive: true });
-
-    const result = await sandbox.runCommand({
-      cmd: "/bin/bash",
-      args: ["-lc", ctx.command],
-      cwd: remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR),
-      env: ctx.env,
-      timeoutMs: ctx.timeoutMs,
-    });
-    const [stdout, stderr] = await Promise.all([
-      result.stdout(),
-      result.stderr(),
-    ]);
+    // The working directory is created by the command itself, not by a separate
+    // `sandbox.fs.mkdir()`. The SDK implements the recursive branch as a real
+    // command execution (`runCommand("mkdir", ["-p", …])`), so a standalone call
+    // DOUBLED the command-API rate for every command — including ones that touch
+    // no filesystem at all. Sustained, that trips Vercel's rate limit, and the
+    // resulting 429 arrives as a failure of the agent's own command: a bare
+    // `echo hello > /tmp/x` reported "Status code 429 is not ok", so the agent
+    // rewrote a correct command and retried into an already-throttled endpoint.
+    //
+    // `cd` after `mkdir -p` rather than passing `cwd`, so the directory exists
+    // before the shell enters it, in one execution instead of two.
+    const cwd = remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR);
+    // Only the TRANSPORT is wrapped. A non-zero exitCode from the agent's own
+    // command is a normal result and must keep flowing through untouched — the
+    // point of the distinction is that a throttled provider no longer looks
+    // like one.
+    let stdout: string;
+    let stderr: string;
+    let exitCode: number;
+    try {
+      const result = await sandbox.runCommand({
+        cmd: "/bin/bash",
+        args: [
+          "-lc",
+          `mkdir -p ${shellQuote(cwd)} && cd ${shellQuote(cwd)} && ${ctx.command}`,
+        ],
+        env: ctx.env,
+        timeoutMs: ctx.timeoutMs,
+      });
+      [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
+      exitCode = result.exitCode;
+    } catch (error) {
+      throw asRuntimeInfrastructureError(error, "run command");
+    }
 
     return {
       stdout,
       stderr,
-      exitCode: result.exitCode,
+      exitCode,
       meta: {
         name: sandbox.name,
         persistent: sandbox.persistent,

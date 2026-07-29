@@ -175,6 +175,93 @@ afterAll(() => {
   readSandboxSecretSpy.mockRestore();
 });
 
+describe("createRuntimeRoutes — infrastructure failures", () => {
+  /**
+   * A provider fault must not be reported as the agent's command failing.
+   * Previously a 429 was flattened to a 500 whose message went to the command's
+   * own stdout with exit 1, so the agent rewrote a correct command and retried
+   * into an already-throttled endpoint.
+   */
+  function apiError(status: number): Error & { response: { status: number } } {
+    // Shape of the Vercel SDK's APIError: message carries the status as text,
+    // and the real status hangs off `response`.
+    const error = new Error(
+      `Status code ${status} is not ok`
+    ) as Error & { response: { status: number } };
+    error.response = { status };
+    return error;
+  }
+
+  test("a throttled provision surfaces 429 + retryable, not a command failure", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    expect(String(body.error)).toContain("provision sandbox");
+    // The command must never have run.
+    expect(runCommandMock).not.toHaveBeenCalled();
+  });
+
+  test("a non-retryable provider fault surfaces 503 + retryable false", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(403);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(false);
+  });
+
+  test("a transport failure during the command is infrastructure, not exit 1", async () => {
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(String(body.error)).toContain("run command");
+  });
+});
+
 describe("createRuntimeRoutes", () => {
   test("404s when the token selects no runtime provider", async () => {
     const router = createRuntimeRoutes();
@@ -499,8 +586,9 @@ describe("createRuntimeRoutes", () => {
       keepLastSnapshots: { count: 1, deleteEvicted: true },
     });
     expect(remoteFiles.has("/vercel/sandbox/stale.txt")).toBe(true);
-    // The cwd is created and entered by the command itself — a separate
-    // `sandbox.fs.mkdir()` would cost a second sandbox execution per command.
+    // The cwd is established BY the command, not by a `cwd` option paired with a
+    // separate `fs.mkdir()`. That mkdir was a real command execution in the SDK,
+    // so it doubled the command-API rate and got the sandbox rate-limited.
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({
       cmd: "/bin/bash",
       args: [
@@ -509,6 +597,9 @@ describe("createRuntimeRoutes", () => {
       ],
       timeoutMs: 1_000,
     });
+    expect(runCommandMock.mock.calls[0]?.[0]).not.toHaveProperty("cwd");
+    // The regression this guards: one exec must cost exactly one execution.
+    expect(mkdirMock).not.toHaveBeenCalled();
     expect(writeFilesMock).not.toHaveBeenCalled();
     expect(readFileToBufferMock).not.toHaveBeenCalled();
     expect(rmMock).not.toHaveBeenCalled();

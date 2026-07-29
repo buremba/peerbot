@@ -201,11 +201,10 @@ function networkPolicyFromDomains(
 /**
  * Normalize a provider SDK throw into a {@link RuntimeInfrastructureError}.
  *
- * The Vercel SDK raises an `APIError` whose message is literally
- * `Status code ${status} is not ok` and which carries a `response`. Its own
- * retry gives up when the upstream `Retry-After` exceeds its ceiling, so a
- * sustained 429 reaches us unretried. Reading the status off the error keeps the
- * route from having to recover it by matching that message text.
+ * The SDK's `APIError` carries the status on `response` and repeats it in the
+ * message text; its own retry gives up when `Retry-After` exceeds its ceiling,
+ * so a sustained 429 arrives here unretried. Reading the status off the error
+ * avoids recovering it by matching that message.
  */
 function asRuntimeInfrastructureError(
   error: unknown,
@@ -321,9 +320,7 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       ctx.deniedDomains
     );
     // Provisioning happens before the agent's command exists, so ANY failure
-    // here is the runtime's, never the command's. Wrapped so the route reports
-    // it as an infrastructure fault carrying the real upstream status instead of
-    // flattening it to a 500 and handing the agent a failed-command signal.
+    // here is the runtime's, never the command's.
     let sandbox: Sandbox;
     try {
       sandbox = await getSandbox({
@@ -335,22 +332,15 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       throw asRuntimeInfrastructureError(error, "provision sandbox");
     }
 
-    // The working directory is created by the command itself, not by a separate
-    // `sandbox.fs.mkdir()`. The SDK implements the recursive branch as a real
-    // command execution (`runCommand("mkdir", ["-p", …])`), so a standalone call
-    // DOUBLED the command-API rate for every command — including ones that touch
-    // no filesystem at all. Sustained, that trips Vercel's rate limit, and the
-    // resulting 429 arrives as a failure of the agent's own command: a bare
-    // `echo hello > /tmp/x` reported "Status code 429 is not ok", so the agent
-    // rewrote a correct command and retried into an already-throttled endpoint.
-    //
-    // `cd` after `mkdir -p` rather than passing `cwd`, so the directory exists
-    // before the shell enters it, in one execution instead of two.
+    // The cwd is created by the command itself rather than by a separate
+    // `sandbox.fs.mkdir()`: the SDK implements its recursive branch as a real
+    // command execution, so a standalone call doubled the command-API rate for
+    // every command — including ones touching no filesystem — and trips the
+    // provider's rate limit. `mkdir -p` then `cd` gives the same guarantee in
+    // one execution.
     const cwd = remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR);
-    // Only the TRANSPORT is wrapped. A non-zero exitCode from the agent's own
-    // command is a normal result and must keep flowing through untouched — the
-    // point of the distinction is that a throttled provider no longer looks
-    // like one.
+    // Only the TRANSPORT is wrapped: a non-zero exitCode from the agent's own
+    // command is a normal result and must flow through untouched.
     let stdout: string;
     let stderr: string;
     let exitCode: number;

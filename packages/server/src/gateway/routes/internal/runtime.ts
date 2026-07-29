@@ -111,11 +111,8 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         sandbox: result.meta,
       });
     } catch (error) {
-      // An infrastructure fault carries its own upstream status, so it is
-      // reported as itself rather than inferred from the message text. The
-      // worker branches on `kind` to tell the agent the SANDBOX failed — without
-      // it, a 429 arrived as the agent's own command failing and the agent
-      // rewrote a correct command and retried into a throttled endpoint.
+      // Reported as itself, with the upstream status it carries, rather than
+      // inferred from the message text. See RuntimeInfrastructureError.
       if (error instanceof RuntimeInfrastructureError) {
         logger.error(
           { err: error.message, status: error.status, retryable: error.retryable },

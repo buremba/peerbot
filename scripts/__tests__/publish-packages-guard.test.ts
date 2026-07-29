@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -493,14 +494,15 @@ describe("installed worker entry point is actually published", () => {
  * the real script and assert it refuses BEFORE writing anything.
  */
 describe("bump-version input validation (subprocess)", () => {
-  // bump-version writes the root manifest AND every workspace package it lists,
-  // so all of them are snapshotted and restored. Restoring only the root left
-  // 9 packages bumped to the test's version — a test must never mutate the repo.
+  // Snapshot workspace manifests independently of the publish list:
+  // bump-version still versions plugin-api and plugin-host even though the
+  // publish script does not publish them.
   const manifests = [
     join(REPO_ROOT, "package.json"),
-    ...__testing.PACKAGES.map((p: { dir: string }) =>
-      join(REPO_ROOT, p.dir, "package.json")
-    ),
+    ...readdirSync(join(REPO_ROOT, "packages"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(REPO_ROOT, "packages", entry.name, "package.json"))
+      .filter((file) => existsSync(file)),
   ];
 
   function runBump(arg: string) {
@@ -545,5 +547,31 @@ describe("bump-version input validation (subprocess)", () => {
     const { result, wrote } = runBump(good);
     expect(result.status).toBe(0);
     expect(wrote).toBe(true);
+  });
+
+  it("leaves every workspace manifest byte-identical, not just the published ones", () => {
+    // Deliberately re-enumerates the filesystem rather than reusing
+    // `manifests`. That independence is the whole point: the bug was the
+    // restore list silently narrowing to the publish set, and a test sharing
+    // that list cannot see it happen again. Measured, not assumed — reverting
+    // `manifests` to `__testing.PACKAGES` takes this suite to 27 pass / 1 fail,
+    // and this is the one that fails.
+    const everyManifest = readdirSync(join(REPO_ROOT, "packages"), {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(REPO_ROOT, "packages", entry.name, "package.json"))
+      .filter((file) => existsSync(file));
+
+    const before = new Map(
+      everyManifest.map((file) => [file, readFileSync(file, "utf8")])
+    );
+
+    runBump("9.9.9");
+
+    const dirty = everyManifest.filter(
+      (file) => readFileSync(file, "utf8") !== before.get(file)
+    );
+    expect(dirty).toEqual([]);
   });
 });

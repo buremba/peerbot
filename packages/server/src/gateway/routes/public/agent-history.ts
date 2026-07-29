@@ -431,9 +431,10 @@ export function createAgentHistoryRoutes(deps: {
 		// Apply the resolver's admin bypass and agent-binding restriction before
 		// selecting a tenant from the ambient request.
 		if (session.isAdmin) {
+			if (!ambientOrgId) return null;
 			return {
 				agentId,
-				organizationId: ambientOrgId ?? undefined,
+				organizationId: ambientOrgId,
 				userId,
 			};
 		}
@@ -458,11 +459,21 @@ export function createAgentHistoryRoutes(deps: {
 			return null;
 		}
 
+		// History DB reads and worker/file fallbacks all require a proven tenant.
+		// Metadata can be org-less here, so resolve the tenant independently from
+		// the authoritative per-org owner mapping.
 		const result = await resolveOwnership(session, agentId);
 		if (!result.authorized) return null;
+		const ownerOrganizations =
+			await deps.userAgentsStore?.findAgentOrganizations(
+				result.ownerPlatform ?? session.platform,
+				result.ownerUserId ?? userId,
+				agentId,
+			);
+		if (ownerOrganizations?.length !== 1) return null;
 		return {
 			agentId,
-			organizationId: resolveOrgId(result.organizationId) ?? undefined,
+			organizationId: ownerOrganizations[0],
 			userId,
 		};
 	}

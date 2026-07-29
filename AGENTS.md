@@ -33,6 +33,7 @@
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title, e.g. `fix(server): …`).
 8. `make review` **once** on the settled HEAD. It posts the `pi-review` status, which is a REQUIRED check.
 9. Merge squash once CI is green: `gh pr merge <n> --squash --admin`. Never `--admin` past a check that has not reported.
+10. Prod-visible surface? Verify it live after rollout. Set a self-rescheduling `ScheduleWakeup` (~1500s) carrying the rollout gate: poll the deployed SHA, then `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` with `MERGE_SHA=$(gh pr view <n> --json mergeCommit --jq .mergeCommit.oid)`. Two ways this gate silently never opens — **gate on the squash commit, not your branch head** (a squash merge writes a new commit with no ancestry link to the branch, so the branch head exits 1 forever: PR #2280 has identical trees and still fails), and **keep that argument order** (merge commit first; reversed, it accepts a stale deploy). Run the live check when it lands, and write the result back to memory.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.
@@ -48,6 +49,7 @@
 - Do repetitive multi-file edits (renames, signature changes, import rewrites) inline or with one script. Reserve subagents for read-only breadth or genuinely isolated parallel work.
 - Before adding an env var, grep for the one the codebase already reads. Do not rename existing vars to a "cleaner" convention unasked.
 - Deleting code needs structural evidence (dangling import, completed migration, superseded impl). Low prod usage is not a delete signal; trace the workflow, not just the import graph — docs and help text are load-bearing too.
+- **Absence is never proven by a grep on a working tree.** To prove code does *not* exist, run `git fetch -q origin && git grep <pattern> origin/main` — the fetch is load-bearing, `origin/main` itself goes stale. Applies to every existence check, including the deletion-evidence rule above.
 - Slack link pasted (`slack.com/archives/…?thread_ts=`) → run `scripts/slack-thread-viewer.js "<link>"` first.
 - To drive the user's real logged-in browser, use the paired Owletto extension — recipe in `docs/BROWSER_TESTING.md`. Do **not** assume CDP/browser-auth is required.
 - Unsure in planning → ask before making conflicting or irreversible choices. Mid-execution, block on a question only for irreversible/destructive actions or decisions that are genuinely the user's; for reversible choices with a clear recommended option, take it and flag the choice in your summary.
@@ -56,4 +58,5 @@
 - Never poll in the foreground (`sleep`/`until`/`while` wait loops, repeated `tail`). Run long waits (dev-server boot, CI, deploys) in the background and act on the completion notification.
 - Prefer DOM reads (`get_page_text`, `read_page`, `javascript_tool`) over screenshots; screenshot only when visual layout itself is under test. Screenshots are the #1 context-bloat source.
 - Read a file before editing it, and re-read it after any external change (a fixer pass, another agent, a rebase). Blind edits fail and cost a retry round-trip.
+- Read PR status compactly: `gh pr view <n> --json number,title,isDraft,mergeStateStatus,reviewDecision` plus `gh pr checks <n> --required`. Never `--json statusCheckRollup` — measured on PR 2280 it is 7520 bytes against 861, 8.7x larger and less legible.
 - Batch narrow fixes into one commit, verified once at the end of the batch — not per fix. It never justifies skipping a reproducer or a correctness-critical test. For a one-line or config-only change, take one CI snapshot and move on.

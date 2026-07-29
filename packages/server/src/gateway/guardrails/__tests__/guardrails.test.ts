@@ -594,7 +594,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
         },
       ],
     });
-    expect(out.names.input).not.toContain("off-rail");
+    expect(out.byStage.input.map((g) => g.name)).not.toContain("off-rail");
   });
 
   test("inline guardrail with an invalid stage is skipped, not thrown", () => {
@@ -618,9 +618,11 @@ describe("resolveAgentGuardrails (aggregator)", () => {
         ],
       });
     }).not.toThrow();
-    expect(out.names.input).not.toContain("bad-stage");
-    expect(out.names.output).not.toContain("bad-stage");
-    expect(out.names["pre-tool"]).not.toContain("bad-stage");
+    expect(out.byStage.input.map((g) => g.name)).not.toContain("bad-stage");
+    expect(out.byStage.output.map((g) => g.name)).not.toContain("bad-stage");
+    expect(out.byStage["pre-tool"].map((g) => g.name)).not.toContain(
+      "bad-stage"
+    );
   });
 
   test("inline judge carries the operator name + stage onto the instance", () => {
@@ -661,7 +663,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
         },
       ],
     });
-    expect(out.names.output.filter((n) => n === "pii-scan").length).toBe(1);
+    expect(out.byStage.output.map((g) => g.name).filter((n) => n === "pii-scan").length).toBe(1);
   });
 
   test("agent inline judge resolves under its operator name and respects exclude", () => {
@@ -677,7 +679,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       reg,
       { inline: [entry] }
     );
-    expect(out.names.output).toContain("no-passwords");
+    expect(out.byStage.output.map((g) => g.name)).toContain("no-passwords");
 
     const excluded = resolveAgentGuardrails(
       {},
@@ -686,7 +688,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       inline: [entry],
       disabled: ["no-passwords"],
     });
-    expect(excluded.names.output).not.toContain("no-passwords");
+    expect(excluded.byStage.output.map((g) => g.name)).not.toContain("no-passwords");
   });
 
   test("agent inline judges: distinct operator names -> distinct guardrails", () => {
@@ -713,8 +715,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
         },
       ],
     });
-    expect(out.names["pre-tool"]).toContain("no-fs-write");
-    expect(out.names["pre-tool"]).toContain("no-fs-delete");
+    const preToolNames = out.byStage["pre-tool"].map((g) => g.name);
+    expect(preToolNames).toContain("no-fs-write");
+    expect(preToolNames).toContain("no-fs-delete");
   });
 });
 

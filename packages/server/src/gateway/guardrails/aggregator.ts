@@ -41,16 +41,13 @@ export function enabledInlineGuardrails(
 }
 
 interface ResolvedAgentGuardrails {
-  /** Effective per-stage guardrail instances, after merge + dedup + exclude. */
-  byStage: Record<GuardrailStage, Guardrail[]>;
   /**
-   * Names per stage in resolution order — useful for logging and for any
-   * caller that wants to pass `enabled` to `runGuardrails(registry, …)` via
-   * the registry. Ad-hoc inline guardrails are NOT registered globally on the
-   * shared registry — the aggregator returns them already-resolved so the
-   * gateway can run them directly.
+   * Effective per-stage guardrail instances, after merge + dedup + exclude.
+   * Inline judges are NOT registered on the shared registry — the aggregator
+   * constructs them in-place and returns them already-resolved so the gateway
+   * can run them directly.
    */
-  names: Record<GuardrailStage, string[]>;
+  byStage: Record<GuardrailStage, Guardrail[]>;
 }
 
 function emptyByStage(): Record<GuardrailStage, Guardrail[]> {
@@ -60,10 +57,6 @@ function emptyByStage(): Record<GuardrailStage, Guardrail[]> {
   // message-pipeline stages so nothing is ever pushed into it.
   return { input: [], output: [], "pre-tool": [], egress: [] };
 }
-function emptyNames(): Record<GuardrailStage, string[]> {
-  return { input: [], output: [], "pre-tool": [], egress: [] };
-}
-
 /**
  * Resolve the full set of guardrails to run for an agent. Combines:
  *   1. `agentSettings.guardrails` — built-in / globally-registered names.
@@ -85,7 +78,6 @@ export function resolveAgentGuardrails(
   extras: AgentGuardrailExtras = {}
 ): ResolvedAgentGuardrails {
   const byStage = emptyByStage();
-  const names = emptyNames();
   // Per-stage name -> Guardrail map, used for dedup.
   const seen: Record<GuardrailStage, Map<string, Guardrail>> = {
     input: new Map(),
@@ -178,9 +170,8 @@ export function resolveAgentGuardrails(
     for (const [name, g] of seen[stage]) {
       if (disabled.has(name)) continue;
       byStage[stage].push(g);
-      names[stage].push(name);
     }
   }
 
-  return { byStage, names };
+  return { byStage };
 }

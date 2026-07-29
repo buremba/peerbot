@@ -16,7 +16,8 @@ import { describe, expect, test } from "bun:test";
 import { installRouteTestMocks } from "./helpers/route-test-mocks";
 
 installRouteTestMocks();
-const { validateGuardrailsInline } = await import("../agent-routes.js");
+const { validateGuardrailsInline, validateSkillsConfigGuardrails } =
+  await import("../agent-routes.js");
 
 describe("validateGuardrailsInline", () => {
   test("returns null for an absent payload", () => {
@@ -185,5 +186,165 @@ describe("validateGuardrailsInline", () => {
         },
       ])
     ).toMatch(/model must be a string/);
+  });
+});
+
+/**
+ * `skillsConfig[].guardrails["pre-tool"]` had no write-boundary validation: the
+ * PATCH route spreads `skillsConfig` through untouched, so a malformed entry was
+ * persisted verbatim and then ran on every `tools/call`. These pin the sibling
+ * validator against `SkillPreToolGuardrailSchema`.
+ */
+describe("validateSkillsConfigGuardrails", () => {
+  const wrap = (guardrails: unknown) => ({
+    skills: [{ repo: "file/x", name: "x", enabled: true, guardrails }],
+  });
+
+  test("returns null for payloads with nothing to check", () => {
+    expect(validateSkillsConfigGuardrails(undefined)).toBeNull();
+    expect(validateSkillsConfigGuardrails({})).toBeNull();
+    expect(validateSkillsConfigGuardrails({ skills: [] })).toBeNull();
+    // A skill with no guardrails is the overwhelmingly common shape.
+    expect(
+      validateSkillsConfigGuardrails({
+        skills: [{ repo: "file/x", name: "x", enabled: true }],
+      })
+    ).toBeNull();
+  });
+
+  test("accepts the two valid arms", () => {
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "builtin", name: "secret-scan" }] })
+      )
+    ).toBeNull();
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({
+          "pre-tool": [
+            {
+              kind: "judge",
+              policy: "no destructive commands",
+              tools: ["Bash"],
+              model: "anthropic/claude-haiku-4-5",
+            },
+          ],
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("rejects a missing or unknown kind", () => {
+    // Unlike guardrailsInline, an omitted `kind` is NOT defaulted here: the core
+    // union makes it a required literal on both arms.
+    expect(
+      validateSkillsConfigGuardrails(wrap({ "pre-tool": [{ policy: "x" }] }))
+    ).toMatch(/kind must be "builtin" or "judge"/);
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "require-tool", policy: "x" }] })
+      )
+    ).toMatch(/kind must be "builtin" or "judge"/);
+  });
+
+  test("rejects a judge with an empty policy", () => {
+    // createJudgeGuardrail hashes the policy; an empty one judges nothing.
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "judge", policy: "   " }] })
+      )
+    ).toMatch(/policy must be a non-empty string/);
+  });
+
+  test("rejects fields the builtin arm silently ignores", () => {
+    // The aggregator drops these for built-ins by design, so persisting them
+    // would misrepresent what actually runs.
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "builtin", name: "s", model: "x" }] })
+      )
+    ).toMatch(/model is not supported for kind "builtin"/);
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "builtin", name: "s", tools: ["Bash"] }] })
+      )
+    ).toMatch(/tools is not supported for kind "builtin"/);
+  });
+
+  test("rejects malformed optional fields on a judge", () => {
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "judge", policy: "p", model: 42 }] })
+      )
+    ).toMatch(/model must be a string/);
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "judge", policy: "p", tools: [1] }] })
+      )
+    ).toMatch(/tools must be an array of strings/);
+  });
+
+  test("rejects a present-but-empty judge model", () => {
+    // judge-runner resolves `input.model ?? defaultModel`, so "" is passed
+    // through rather than falling back to EGRESS_JUDGE_MODEL. Omitting the key
+    // is the way to inherit the default.
+    for (const model of ["", "   "]) {
+      expect(
+        validateSkillsConfigGuardrails(
+          wrap({ "pre-tool": [{ kind: "judge", policy: "p", model }] })
+        )
+      ).toMatch(/model must be a non-empty string when present/);
+    }
+    // Absent is fine — that is the inherit-the-default path.
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "judge", policy: "p" }] })
+      )
+    ).toBeNull();
+  });
+
+  test("rejects a non-boolean enabled", () => {
+    // The runtime tests `s.enabled &&` (truthiness), so a truthy non-boolean
+    // would materialize while skipping the route's judge-model check, which
+    // compares against `true`. Pinning the type keeps the two in agreement.
+    for (const enabled of ["yes", 1, {}]) {
+      expect(
+        validateSkillsConfigGuardrails({
+          skills: [{ repo: "f/x", name: "x", enabled }],
+        })
+      ).toMatch(/enabled must be a boolean/);
+    }
+    expect(
+      validateSkillsConfigGuardrails({
+        skills: [{ repo: "f/x", name: "x", enabled: false }],
+      })
+    ).toBeNull();
+  });
+
+  test("rejects malformed containers", () => {
+    expect(validateSkillsConfigGuardrails({ skills: "nope" })).toMatch(
+      /skills must be an array/
+    );
+    expect(validateSkillsConfigGuardrails(wrap("nope"))).toMatch(
+      /guardrails must be an object/
+    );
+    expect(validateSkillsConfigGuardrails(wrap({ "pre-tool": {} }))).toMatch(
+      /must be an array/
+    );
+  });
+
+  test("error paths name the offending entry", () => {
+    const err = validateSkillsConfigGuardrails({
+      skills: [
+        { repo: "a", name: "a", enabled: true },
+        {
+          repo: "b",
+          name: "b",
+          enabled: true,
+          guardrails: { "pre-tool": [{ kind: "builtin", name: "ok" }, {}] },
+        },
+      ],
+    });
+    expect(err).toContain('skills[1].guardrails["pre-tool"][1]');
   });
 });

@@ -163,6 +163,82 @@ describe('custom guardrails persist through PATCH/GET /config', () => {
     expect(body.guardrailsInline?.[0]?.enabled).toBe(false);
   });
 
+  /**
+   * `skillsConfig` is spread into the settings row verbatim and read back as a
+   * trusted `SkillConfig`, so a malformed payload has to be rejected AT the
+   * write boundary — the readers have no second chance.
+   *
+   * Driven through the real PATCH route rather than the exported validator: the
+   * plausible way this ships broken is the helper existing but never being
+   * called, which a direct unit test cannot see.
+   */
+  const MALFORMED_SKILLS_CONFIGS: Array<[label: string, skillsConfig: unknown]> =
+    [
+      // The runtime gates skills on truthiness (`s.enabled && …`), so "yes"
+      // would enable a skill the write path never saw as enabled.
+      [
+        'a non-boolean enabled',
+        { skills: [{ repo: 'file/x', name: 'x', enabled: 'yes' }] },
+      ],
+      // A non-array throws at the first `.filter()` downstream.
+      ['a non-array skills', { skills: 'nope' }],
+    ];
+
+  for (const [label, skillsConfig] of MALFORMED_SKILLS_CONFIGS) {
+    test(`rejects ${label} and persists nothing`, async () => {
+      const app = await importAgentRoutes();
+
+      // Seed a good value first, so "not persisted" means the row still holds
+      // the last valid write — not merely that the field was never set.
+      const good = { skills: [{ repo: 'file/ok', name: 'ok', enabled: true }] };
+      const seed = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillsConfig: good }),
+      });
+      expect(seed.status).toBe(200);
+
+      const res = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillsConfig }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error?: string;
+        error_description?: string;
+      };
+      expect(body.error).toBe('invalid_skills_config');
+      // The message names the offending path so the UI can point at the field.
+      expect(body.error_description).toContain('skillsConfig/skills');
+
+      // The rejected payload never reached the row.
+      const get = await app.request(`/${AGENT}/config`);
+      expect(get.status).toBe(200);
+      const after = (await get.json()) as { skillsConfig?: unknown };
+      expect(after.skillsConfig).toEqual(good);
+    });
+  }
+
+  test('accepts a well-formed skillsConfig through the route', async () => {
+    // Guards the other direction: a validator that rejected everything would
+    // pass the tests above while breaking every real save.
+    const app = await importAgentRoutes();
+    const skillsConfig = {
+      skills: [{ repo: 'file/x', name: 'x', enabled: true }],
+    };
+    const res = await app.request(`/${AGENT}/config`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ skillsConfig }),
+    });
+    expect(res.status).toBe(200);
+
+    const get = await app.request(`/${AGENT}/config`);
+    const body = (await get.json()) as { skillsConfig?: unknown };
+    expect(body.skillsConfig).toEqual(skillsConfig);
+  });
+
   test('rejects a custom guardrail with no model when no gateway default is set', async () => {
     // EGRESS_JUDGE_MODEL is unset in tests, so a model is required.
     const app = await importAgentRoutes();
@@ -363,128 +439,4 @@ describe('GET /agents/:agentId/guardrail-trips', () => {
     expect(((await garbage.json()) as { trips: unknown[] }).trips).toHaveLength(3);
   });
 
-  // These drive the real PATCH route, not the exported validator: the plausible
-  // way this ships broken is the helper existing but never being called.
-  test('rejects a malformed skill pre-tool guardrail through the route', async () => {
-    const app = await importAgentRoutes();
-    const res = await app.request(`/${AGENT}/config`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        skillsConfig: {
-          skills: [
-            {
-              repo: 'file/x',
-              name: 'x',
-              enabled: true,
-              // No `kind` — the core union requires it on both arms.
-              guardrails: { 'pre-tool': [{ policy: 'deny everything' }] },
-            },
-          ],
-        },
-      }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error?: string; error_description?: string };
-    expect(body.error).toBe('invalid_guardrail');
-    expect(body.error_description).toContain('pre-tool');
-  });
-
-  test('rejects a skill judge guardrail with no model when no gateway default is set', async () => {
-    const app = await importAgentRoutes();
-    const res = await app.request(`/${AGENT}/config`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        skillsConfig: {
-          skills: [
-            {
-              repo: 'file/x',
-              name: 'needs-model',
-              enabled: true,
-              guardrails: { 'pre-tool': [{ kind: 'judge', policy: 'deny' }] },
-            },
-          ],
-        },
-      }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error?: string };
-    expect(body.error).toBe('guardrail_model_required');
-  });
-
-  test('accepts a well-formed skill guardrail payload', async () => {
-    const app = await importAgentRoutes();
-    const res = await app.request(`/${AGENT}/config`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        skillsConfig: {
-          skills: [
-            {
-              repo: 'file/x',
-              name: 'x',
-              enabled: true,
-              guardrails: {
-                'pre-tool': [
-                  { kind: 'builtin', name: 'secret-scan' },
-                  { kind: 'judge', policy: 'no rm -rf', model: 'anthropic/claude-haiku-4-5' },
-                ],
-              },
-            },
-          ],
-        },
-      }),
-    });
-    expect(res.status).toBe(200);
-  });
-
-  test('a truthy non-boolean enabled cannot bypass the model requirement', async () => {
-    // The runtime enables on truthiness, so `enabled: "yes"` would run while
-    // skipping a `enabled === true` model check. Rejected at the boundary.
-    const app = await importAgentRoutes();
-    const res = await app.request(`/${AGENT}/config`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        skillsConfig: {
-          skills: [
-            {
-              repo: 'file/x',
-              name: 'sneaky',
-              enabled: 'yes',
-              guardrails: { 'pre-tool': [{ kind: 'judge', policy: 'deny' }] },
-            },
-          ],
-        },
-      }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error?: string; error_description?: string };
-    expect(body.error).toBe('invalid_guardrail');
-    expect(body.error_description).toMatch(/enabled must be a boolean/);
-  });
-
-  test('a disabled skill is not subject to the judge-model requirement', async () => {
-    // Matches the aggregator: a disabled skill never materializes, so rejecting
-    // it would fail a payload that cannot run.
-    const app = await importAgentRoutes();
-    const res = await app.request(`/${AGENT}/config`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        skillsConfig: {
-          skills: [
-            {
-              repo: 'file/x',
-              name: 'off',
-              enabled: false,
-              guardrails: { 'pre-tool': [{ kind: 'judge', policy: 'deny' }] },
-            },
-          ],
-        },
-      }),
-    });
-    expect(res.status).toBe(200);
-  });
 });

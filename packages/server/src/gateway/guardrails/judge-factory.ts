@@ -48,9 +48,9 @@ export function inlineJudgeHash(
 
 interface JudgeGuardrailOptions {
   /**
-   * Override the auto-generated `inline:<stage>:<hash8>` name. Used by the
-   * aggregator to give skill-provided inline judges a name that survives the
-   * dedup pass.
+   * Override the auto-generated `inline:<stage>:<hash8>` name. The aggregator
+   * passes the operator's own name for agent-declared inline judges, so they
+   * stay addressable by `guardrails_disabled`.
    */
   name?: string;
   /** Override the shared TextJudge — primarily for tests. */
@@ -82,8 +82,8 @@ export function createJudgeGuardrail<S extends GuardrailStage>(
   options: JudgeGuardrailOptions = {}
 ): Guardrail<S> {
   // See `inlineJudgeHash` for why `tools` factors into the default name.
-  // Caller-supplied `options.name` wins (aggregator gives skill-inline
-  // judges a stable prefix).
+  // Caller-supplied `options.name` wins (the aggregator passes the operator's
+  // name for agent-declared inline judges).
   const name =
     options.name ?? `inline:${stage}:${inlineJudgeHash(policy, options.tools)}`;
   const toolFilter =

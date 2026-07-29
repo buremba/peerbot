@@ -16,8 +16,9 @@ import { describe, expect, test } from "bun:test";
 import { installRouteTestMocks } from "./helpers/route-test-mocks";
 
 installRouteTestMocks();
-const { validateGuardrailsInline, validateSkillsConfigGuardrails } =
-  await import("../agent-routes.js");
+const { validateGuardrailsInline, validateSkillsConfig } = await import(
+  "../agent-routes.js"
+);
 
 describe("validateGuardrailsInline", () => {
   test("returns null for an absent payload", () => {
@@ -190,161 +191,94 @@ describe("validateGuardrailsInline", () => {
 });
 
 /**
- * `skillsConfig[].guardrails["pre-tool"]` had no write-boundary validation: the
- * PATCH route spreads `skillsConfig` through untouched, so a malformed entry was
- * persisted verbatim and then ran on every `tools/call`. These pin the sibling
- * validator against `SkillPreToolGuardrailSchema`.
+ * `skillsConfig` is spread through the PATCH route and read back as a trusted
+ * `SkillConfig`, so the shape has to hold at the write boundary.
+ *
+ * These assert the validator agrees with `SkillsConfigSchema` — the same schema
+ * the readers' types are derived from. That equivalence is the whole point of
+ * checking against the schema instead of a hand-rolled shape, so it is worth
+ * pinning both directions.
  */
-describe("validateSkillsConfigGuardrails", () => {
-  const wrap = (guardrails: unknown) => ({
-    skills: [{ repo: "file/x", name: "x", enabled: true, guardrails }],
+describe("validateSkillsConfig", () => {
+  const skill = { repo: "file/x", name: "x", enabled: true };
+
+  test("accepts an absent payload", () => {
+    // PATCH is a partial merge: omitting the key must not be an error.
+    expect(validateSkillsConfig(undefined)).toBeNull();
   });
 
-  test("returns null for payloads with nothing to check", () => {
-    expect(validateSkillsConfigGuardrails(undefined)).toBeNull();
-    expect(validateSkillsConfigGuardrails({})).toBeNull();
-    expect(validateSkillsConfigGuardrails({ skills: [] })).toBeNull();
-    // A skill with no guardrails is the overwhelmingly common shape.
+  test("accepts well-formed payloads, including optional fields", () => {
+    expect(validateSkillsConfig({ skills: [] })).toBeNull();
+    expect(validateSkillsConfig({ skills: [skill] })).toBeNull();
     expect(
-      validateSkillsConfigGuardrails({
-        skills: [{ repo: "file/x", name: "x", enabled: true }],
+      validateSkillsConfig({
+        skills: [
+          {
+            ...skill,
+            enabled: false,
+            description: "d",
+            instructions: "i",
+            content: "c",
+            system: true,
+            nixPackages: ["ripgrep"],
+            modelPreference: "anthropic/claude-haiku-4-5",
+            thinkingLevel: "low",
+          },
+        ],
       })
     ).toBeNull();
   });
 
-  test("accepts the two valid arms", () => {
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "builtin", name: "secret-scan" }] })
-      )
-    ).toBeNull();
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({
-          "pre-tool": [
-            {
-              kind: "judge",
-              policy: "no destructive commands",
-              tools: ["Bash"],
-              model: "anthropic/claude-haiku-4-5",
-            },
-          ],
-        })
-      )
-    ).toBeNull();
+  test("rejects a non-object skillsConfig", () => {
+    expect(validateSkillsConfig("nope")).not.toBeNull();
+    expect(validateSkillsConfig(null)).not.toBeNull();
   });
 
-  test("rejects a missing or unknown kind", () => {
-    // Unlike guardrailsInline, an omitted `kind` is NOT defaulted here: the core
-    // union makes it a required literal on both arms.
-    expect(
-      validateSkillsConfigGuardrails(wrap({ "pre-tool": [{ policy: "x" }] }))
-    ).toMatch(/kind must be "builtin" or "judge"/);
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "require-tool", policy: "x" }] })
-      )
-    ).toMatch(/kind must be "builtin" or "judge"/);
-  });
-
-  test("rejects a judge with an empty policy", () => {
-    // createJudgeGuardrail hashes the policy; an empty one judges nothing.
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "judge", policy: "   " }] })
-      )
-    ).toMatch(/policy must be a non-empty string/);
-  });
-
-  test("rejects fields the builtin arm silently ignores", () => {
-    // The aggregator drops these for built-ins by design, so persisting them
-    // would misrepresent what actually runs.
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "builtin", name: "s", model: "x" }] })
-      )
-    ).toMatch(/model is not supported for kind "builtin"/);
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "builtin", name: "s", tools: ["Bash"] }] })
-      )
-    ).toMatch(/tools is not supported for kind "builtin"/);
-  });
-
-  test("rejects malformed optional fields on a judge", () => {
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "judge", policy: "p", model: 42 }] })
-      )
-    ).toMatch(/model must be a string/);
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "judge", policy: "p", tools: [1] }] })
-      )
-    ).toMatch(/tools must be an array of strings/);
-  });
-
-  test("rejects a present-but-empty judge model", () => {
-    // judge-runner resolves `input.model ?? defaultModel`, so "" is passed
-    // through rather than falling back to EGRESS_JUDGE_MODEL. Omitting the key
-    // is the way to inherit the default.
-    for (const model of ["", "   "]) {
-      expect(
-        validateSkillsConfigGuardrails(
-          wrap({ "pre-tool": [{ kind: "judge", policy: "p", model }] })
-        )
-      ).toMatch(/model must be a non-empty string when present/);
+  test("rejects a non-array skills value", () => {
+    // A non-array throws at the first `.filter()` downstream.
+    for (const skills of ["nope", 1, {}, null]) {
+      expect(validateSkillsConfig({ skills })).toContain("/skills");
     }
-    // Absent is fine — that is the inherit-the-default path.
-    expect(
-      validateSkillsConfigGuardrails(
-        wrap({ "pre-tool": [{ kind: "judge", policy: "p" }] })
-      )
-    ).toBeNull();
+    // `skills` is required by the schema — an empty object is not a valid config.
+    expect(validateSkillsConfig({})).not.toBeNull();
   });
 
   test("rejects a non-boolean enabled", () => {
-    // The runtime tests `s.enabled &&` (truthiness), so a truthy non-boolean
-    // would materialize while skipping the route's judge-model check, which
-    // compares against `true`. Pinning the type keeps the two in agreement.
-    for (const enabled of ["yes", 1, {}]) {
+    // The runtime gates on truthiness (`s.enabled && …`), so "yes" would enable
+    // a skill that no write-time check ever saw as enabled.
+    for (const enabled of ["yes", 1, {}, null]) {
       expect(
-        validateSkillsConfigGuardrails({
-          skills: [{ repo: "f/x", name: "x", enabled }],
-        })
-      ).toMatch(/enabled must be a boolean/);
+        validateSkillsConfig({ skills: [{ ...skill, enabled }] })
+      ).toContain("/skills/0/enabled");
     }
-    expect(
-      validateSkillsConfigGuardrails({
-        skills: [{ repo: "f/x", name: "x", enabled: false }],
-      })
-    ).toBeNull();
+    // `enabled` is required, not merely typed — a missing one reads as disabled.
+    expect(validateSkillsConfig({ skills: [{ repo: "f/x", name: "x" }] })).toContain(
+      "/skills/0/enabled"
+    );
   });
 
-  test("rejects malformed containers", () => {
-    expect(validateSkillsConfigGuardrails({ skills: "nope" })).toMatch(
-      /skills must be an array/
+  test("requires repo and name to be strings", () => {
+    expect(validateSkillsConfig({ skills: [{ name: "x", enabled: true }] })).toContain(
+      "/skills/0/repo"
     );
-    expect(validateSkillsConfigGuardrails(wrap("nope"))).toMatch(
-      /guardrails must be an object/
-    );
-    expect(validateSkillsConfigGuardrails(wrap({ "pre-tool": {} }))).toMatch(
-      /must be an array/
-    );
+    expect(
+      validateSkillsConfig({ skills: [{ repo: "f/x", name: 7, enabled: true }] })
+    ).toContain("/skills/0/name");
   });
 
   test("error paths name the offending entry", () => {
-    const err = validateSkillsConfigGuardrails({
-      skills: [
-        { repo: "a", name: "a", enabled: true },
-        {
-          repo: "b",
-          name: "b",
-          enabled: true,
-          guardrails: { "pre-tool": [{ kind: "builtin", name: "ok" }, {}] },
-        },
-      ],
-    });
-    expect(err).toContain('skills[1].guardrails["pre-tool"][1]');
+    // Without the index a UI cannot point at the row that failed.
+    expect(
+      validateSkillsConfig({ skills: [skill, { repo: "b", enabled: true }] })
+    ).toContain("/skills/1/name");
+  });
+
+  test("tolerates unknown keys left over from dropped fields", () => {
+    // The editor round-trips the stored entry via `_original`, so a row written
+    // before a field was removed still carries it. The server ignores it;
+    // rejecting it would fail a save the user did not make.
+    expect(
+      validateSkillsConfig({ skills: [{ ...skill, guardrails: { "pre-tool": [] } }] })
+    ).toBeNull();
   });
 });

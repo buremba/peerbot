@@ -5,10 +5,12 @@
  */
 
 import { type AuthProfile, isSdkCompat } from "@lobu/core";
+import { SkillsConfigSchema } from "@lobu/core/contracts/agent-settings";
 import {
 	type ManageBehaviorsArgs,
 	normalizeBehaviorUpdatePatch,
 } from "@lobu/core/contracts/tools/manage-behaviors";
+import { Value } from "@sinclair/typebox/value";
 import { Hono } from "hono";
 import { ensureBuilderAgent } from "../auth/builder-provisioning";
 import { mcpAuth } from "../auth/middleware";
@@ -1700,108 +1702,32 @@ export function validateGuardrailsInline(value: unknown): string | null {
 }
 
 /**
- * Write-boundary validation for `skillsConfig[].guardrails["pre-tool"]`, the
- * sibling of {@link validateGuardrailsInline}.
+ * Write-boundary validation for `skillsConfig`, the sibling of
+ * {@link validateGuardrailsInline}.
  *
- * A skill's pre-tool guardrails run on EVERY `tools/call` (see the MCP proxy's
- * pre-tool gate) and a tripped one blocks the call, so a malformed entry is not
- * inert: an unknown `kind` reaches the aggregator's exhaustiveness guard, and a
- * judge with an empty `policy` yields a guardrail that judges nothing. Both are
- * persisted verbatim today because the PATCH route spreads `skillsConfig`
- * through without checking it.
+ * The PATCH route spreads settings through untouched, so without this a
+ * malformed payload persists and is then read back as a trusted `SkillConfig`.
+ * Two concrete failures: a non-array `skills` throws at the first `.filter()`
+ * downstream, and a non-boolean `enabled` diverges from the runtime, which
+ * gates on truthiness (`s.enabled && …`) — so `"yes"` would enable a skill that
+ * no write-time check ever saw as enabled.
  *
- * Validated against `SkillPreToolGuardrailSchema` in core. Two deliberate
- * differences from the `guardrailsInline` rules:
- *  - `kind` is REQUIRED on both arms here. The core schema makes it a literal
- *    on each union member, so an omitted `kind` would persist a value the
- *    schema rejects (`AgentInlineGuardrailSchema` defaults it to "judge" for
- *    backward compatibility with rows written before `kind` existed; the skill
- *    union has no such legacy).
- *  - The `builtin` arm rejects `policy`/`model`/`tools`. The aggregator ignores
- *    them for built-ins by design, so accepting them persists a lie about what
- *    will actually run.
+ * Checked against `SkillsConfigSchema` in core rather than a hand-rolled shape,
+ * so the write boundary cannot drift from the type the readers rely on. The
+ * schema is the only definition of a skill entry; it no longer carries
+ * guardrails (those are operator-owned and live on `guardrailsInline`), so this
+ * validates the current contract without reintroducing skill-declared ones.
+ *
+ * `Type.Object` admits unknown keys by design: rows written before a field was
+ * dropped still round-trip through the editor's `_original` spread, and
+ * rejecting them would fail a payload the server simply ignores.
  */
-export function validateSkillsConfigGuardrails(value: unknown): string | null {
+export function validateSkillsConfig(value: unknown): string | null {
 	if (value === undefined) return null;
-	if (typeof value !== "object" || value === null) {
-		return "skillsConfig must be an object";
-	}
-	const skills = (value as { skills?: unknown }).skills;
-	if (skills === undefined) return null;
-	if (!Array.isArray(skills)) return "skillsConfig.skills must be an array";
-
-	for (let i = 0; i < skills.length; i++) {
-		const skill = skills[i];
-		if (typeof skill !== "object" || skill === null) {
-			return `skillsConfig.skills[${i}] must be an object`;
-		}
-		// `enabled` gates whether a skill's guardrails materialize at runtime, and
-		// the runtime tests it for TRUTHINESS (`s.enabled && …`). A non-boolean
-		// truthy value (`"yes"`, `1`) would therefore run while skipping the
-		// judge-model check below, which compares against `true`. Pin the type
-		// here so the write boundary and the runtime cannot disagree.
-		const enabled = (skill as { enabled?: unknown }).enabled;
-		if (enabled !== undefined && typeof enabled !== "boolean") {
-			return `skillsConfig.skills[${i}].enabled must be a boolean`;
-		}
-
-		const guardrails = (skill as { guardrails?: unknown }).guardrails;
-		if (guardrails === undefined) continue;
-		if (typeof guardrails !== "object" || guardrails === null) {
-			return `skillsConfig.skills[${i}].guardrails must be an object`;
-		}
-		const preTool = (guardrails as Record<string, unknown>)["pre-tool"];
-		if (preTool === undefined) continue;
-		if (!Array.isArray(preTool)) {
-			return `skillsConfig.skills[${i}].guardrails["pre-tool"] must be an array`;
-		}
-
-		for (let j = 0; j < preTool.length; j++) {
-			const path = `skillsConfig.skills[${i}].guardrails["pre-tool"][${j}]`;
-			const entry = preTool[j];
-			if (typeof entry !== "object" || entry === null) {
-				return `${path} must be an object`;
-			}
-			const g = entry as Record<string, unknown>;
-			if (g.kind !== "builtin" && g.kind !== "judge") {
-				return `${path}.kind must be "builtin" or "judge"`;
-			}
-			if (g.kind === "builtin") {
-				if (typeof g.name !== "string" || g.name.trim() === "") {
-					return `${path}.name must be a non-empty string`;
-				}
-				for (const unsupported of ["policy", "model", "tools"]) {
-					if (g[unsupported] !== undefined) {
-						return `${path}.${unsupported} is not supported for kind "builtin"`;
-					}
-				}
-				continue;
-			}
-			// judge
-			if (typeof g.policy !== "string" || g.policy.trim() === "") {
-				return `${path}.policy must be a non-empty string`;
-			}
-			// A present-but-empty model is worse than an absent one: the runner
-			// resolves `input.model ?? defaultModel`, so `""` is NOT replaced by
-			// the gateway default — it is passed through as the model. Omit the
-			// key to inherit the default.
-			if (g.model !== undefined) {
-				if (typeof g.model !== "string") {
-					return `${path}.model must be a string`;
-				}
-				if (g.model.trim() === "") {
-					return `${path}.model must be a non-empty string when present (omit it to use the gateway default)`;
-				}
-			}
-			if (
-				g.tools !== undefined &&
-				(!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== "string"))
-			) {
-				return `${path}.tools must be an array of strings`;
-			}
-		}
-	}
-	return null;
+	if (Value.Check(SkillsConfigSchema, value)) return null;
+	const first = Value.Errors(SkillsConfigSchema, value).First();
+	if (!first) return "skillsConfig is invalid";
+	return `skillsConfig${first.path}: ${first.message}`;
 }
 
 routes.patch("/:agentId/config", async (c) => {
@@ -1827,15 +1753,14 @@ routes.patch("/:agentId/config", async (c) => {
 		);
 	}
 
-	// Same gate for guardrails carried on skills. Without this a payload the
-	// `guardrailsInline` path would reject lands verbatim via the
-	// `...settingsUpdates` spread below, and then runs on every tools/call.
-	const skillGuardrailError = validateSkillsConfigGuardrails(
+	// Structural check on skillsConfig — the settings spread below persists it
+	// verbatim, and the runtime reads it back as a trusted SkillConfig.
+	const skillsConfigError = validateSkillsConfig(
 		(updates as { skillsConfig?: unknown }).skillsConfig
 	);
-	if (skillGuardrailError) {
+	if (skillsConfigError) {
 		return c.json(
-			{ error: "invalid_guardrail", error_description: skillGuardrailError },
+			{ error: "invalid_skills_config", error_description: skillsConfigError },
 			400
 		);
 	}
@@ -1870,47 +1795,6 @@ routes.patch("/:agentId/config", async (c) => {
 				},
 				400
 			);
-		}
-	}
-
-	// Same requirement for judge guardrails declared on a skill: with no gateway
-	// default they fail closed at runtime and block every tools/call. Scoped to
-	// ENABLED skills, matching the aggregator — a disabled skill never
-	// materializes, so rejecting it would fail a harmless payload.
-	if (!judgeDefault) {
-		const skillList = (
-			updates as {
-				skillsConfig?: {
-					skills?: Array<{
-						name?: string;
-						enabled?: boolean;
-						guardrails?: {
-							"pre-tool"?: Array<{ kind?: string; model?: string }>;
-						};
-					}>;
-				};
-			}
-		).skillsConfig?.skills;
-		if (Array.isArray(skillList)) {
-			for (const skill of skillList) {
-				if (skill?.enabled !== true) continue;
-				const entries = skill.guardrails?.["pre-tool"];
-				if (!Array.isArray(entries)) continue;
-				const needsModel = entries.find(
-					(e) =>
-						e?.kind === "judge" &&
-						(typeof e.model !== "string" || e.model.trim() === "")
-				);
-				if (needsModel) {
-					return c.json(
-						{
-							error: "guardrail_model_required",
-							error_description: `Skill "${skill.name ?? "(unnamed)"}" declares a judge guardrail that needs a model: the gateway has no default judge model (EGRESS_JUDGE_MODEL is unset).`,
-						},
-						400
-					);
-				}
-			}
 		}
 	}
 

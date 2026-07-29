@@ -32,10 +32,8 @@ export interface Skill {
   enabled: boolean;
   system?: boolean;
   content?: string;
-  contentFetchedAt?: number;
   nixPackages?: string[];
   permissions?: string[];
-  providers?: string[];
   modelPreference?: string;
   thinkingLevel?: string;
 }

@@ -63,7 +63,42 @@ async function ensureDeviceConnectorWired(
   // (the WHERE matches nothing when the pin is already a valid fresh device), and
   // runs even on the fast path so a stale pin doesn't silently strand the feeds.
   const reconcilePin = async (db: typeof sql, connectionId: number) => {
-    const target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    let target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    // `idx_connections_org_connector_device_live` is UNIQUE on
+    // (organization_id, connector_key, device_worker_id) for live rows, and an
+    // org legitimately holds one connection PER DEVICE (same shape as
+    // `idx_connections_org_connector_account_live` for OAuth accounts). So the
+    // row we were handed is not necessarily the one that owns `target`: retiring
+    // a Mac leaves its connection pinned to the stale device while the new Mac's
+    // connection holds the only fresh one, and pinning the former to the latter's
+    // device violates the index, aborts the whole wire transaction, and retries
+    // forever (~8/min in prod for apple.computer_use).
+    //
+    // Never steal a pin another live connection holds — the same guard
+    // `resolveOnlineChromeConnection` already carries for this index (see
+    // `findOwnerOf` in dispatch-chrome-action.ts, where it used to 500 the
+    // dispatcher). Fall back to NULL rather than skipping the UPDATE: NULL still
+    // clears the dead pin (a connection pinned to a vanished device is claimable
+    // by nobody, while an unpinned one is claimable by any polling device), so
+    // the documented stale-pin repair survives.
+    if (target) {
+      const owner = (await db`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${connectorKey}
+          AND device_worker_id = ${target}::uuid
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+      const ownerId = owner[0]?.id;
+      if (ownerId != null && Number(ownerId) !== connectionId) {
+        logger.warn(
+          { userId, connectorKey, connectionId, ownerConnectionId: ownerId, deviceWorkerId: target },
+          '[device-connectors] Device already pinned to another connection — unpinning instead'
+        );
+        target = null;
+      }
+    }
     // Compare via text on both sides — passing a `pgTextArray(...)` literal
     // through a `::uuid[]` cast trips a postgres "malformed array literal"
     // failure under the extended-protocol path postgres.js uses (the bound
@@ -212,7 +247,16 @@ async function ensureDeviceConnectorWired(
           }
         });
       } else {
-        await reconcilePin(sql, readyConnectionId);
+        // Same advisory lock as the `source` branch above: reconcilePin's owner
+        // check is read-then-write, so two replicas polling concurrently could
+        // both observe "nobody owns this device" and race into the unique index.
+        // (No bundled device connectors ship today, so this branch is currently
+        // unreachable — keep it serialized anyway rather than leave the race
+        // armed for the first one that does.)
+        await sql.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+          await reconcilePin(tx, readyConnectionId);
+        });
       }
       return;
     }

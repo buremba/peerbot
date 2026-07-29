@@ -42,6 +42,17 @@ describe("replaceBasePromptIdentity", () => {
     expect(out.startsWith(identity)).toBe(true);
     expect(out).toContain("Available tools:");
   });
+
+  test("removes the Pi documentation block to avoid confusing the model", () => {
+    const base = `${PI_OPENER}\n\nAvailable tools:\n- read\n\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /path/to/README.md\n- Always read pi .md files\n\n# Project Context\n\nsome context`;
+    const identity = "You are a lobu bot.";
+    const out = replaceBasePromptIdentity(base, identity);
+
+    expect(out).not.toContain("Pi documentation");
+    expect(out).not.toContain("/path/to/README.md");
+    expect(out).toContain("# Project Context");
+    expect(out).toContain("some context");
+  });
 });
 
 describe("resolveAgentIdentity", () => {

@@ -44,8 +44,10 @@ import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
+  EMPTY_AGENT_TOOLING,
   isReservedAgentToolingEnvName,
   resolveAgentTooling,
+  resolveAgentToolingDeclaration,
   type ResolvedAgentTooling,
 } from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
@@ -884,6 +886,160 @@ export class DeploymentManager {
    * writes.
    */
   private grantSyncCache = new Map<string, Set<string>>();
+
+  /**
+   * Earliest connector-lease expiry per deployment, recorded at env-build time.
+   *
+   * Pod-local by design, and NOT the multi-replica trap: the entry describes a
+   * worker THIS pod spawned, and dispatch to that worker happens only on this
+   * pod (its `thread_message_*` queue is registered by the pod it SSE-connects
+   * to), so the pod that reads this state is always the pod that wrote it. A
+   * different replica serving the same conversation spawns its own worker and
+   * mints its own lease — nothing here is shared state.
+   */
+  private leaseExpiryByDeployment = new Map<string, Date>();
+
+  /**
+   * How long before a lease's stated expiry the deployment stops being
+   * reusable. A turn that starts inside this window could still be running when
+   * the credential dies, so recycle early rather than hand the sandbox a token
+   * that expires mid-command.
+   */
+  private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
+
+  /**
+   * Normal minimum age for a newly built deployment. The effective floor is
+   * capped at the lease's actual expiry: a short-lived credential gets its full
+   * usable life without causing per-turn rebuilds, then renews when it expires
+   * instead of leaving the sandbox unauthenticated until this whole interval
+   * elapses.
+   */
+  private static readonly MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS = 10 * 60 * 1000;
+
+  /**
+   * Tooling fingerprint each deployment was BORN with, so the dispatch gate
+   * can tell that the org's connections changed underneath a warm worker.
+   */
+  private toolingFingerprintByDeployment = new Map<string, string>();
+
+  /** When each deployment's lease was minted — see the recycle age floor. */
+  private leaseMintedAtByDeployment = new Map<string, Date>();
+
+  /**
+   * True when a warm deployment holds a connector lease that has expired or is
+   * about to. The caller tears the deployment down so the normal create path
+   * re-mints — a worker reads its env once at process start, so refreshing the
+   * credential in place is not possible.
+   */
+  hasExpiringLease(deploymentName: string, now: Date = new Date()): boolean {
+    const expiresAt = this.leaseExpiryByDeployment.get(deploymentName);
+    if (!expiresAt) return false;
+
+    // A deployment built moments ago holds the freshest credential the provider
+    // will give us. If that is ALREADY inside the margin, rebuilding on every
+    // turn cannot improve it. Suppress recycling until the earlier of the
+    // normal age floor and the credential's own expiry: this prevents per-turn
+    // churn without keeping an already-expired token for the remainder of a
+    // ten-minute floor.
+    const builtAt = this.leaseMintedAtByDeployment.get(deploymentName);
+    if (
+      builtAt &&
+      now.getTime() <
+        Math.min(
+          builtAt.getTime() +
+            DeploymentManager.MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS,
+          expiresAt.getTime()
+        )
+    ) {
+      return false;
+    }
+
+    return (
+      expiresAt.getTime() - now.getTime() <=
+      DeploymentManager.LEASE_RECYCLE_MARGIN_MS
+    );
+  }
+
+  /**
+   * True when a job's enqueue-time fingerprint stamp differs from the one this
+   * deployment was built with. A mismatch is a SIGNAL, not a verdict: the
+   * stamp may simply predate the deployment's (re)build, so the dispatch gate
+   * confirms via {@link hasToolingDrifted} before acting on it.
+   *
+   * Same root cause as {@link hasExpiringLease}: env is read once at process
+   * start. Without this, connecting GitHub mid-conversation leaves the agent
+   * with no `gh` and no GH_TOKEN until something else recycles it, and
+   * switching installations keeps it acting as the previous identity.
+   *
+   * Unknown deployment → false. A deployment this pod did not build is not
+   * evidence of a change, and recycling on every unknown name would tear down
+   * healthy workers after a pod restart.
+   */
+  hasToolingStampMismatch(deploymentName: string, fingerprint: string): boolean {
+    const known = this.toolingFingerprintByDeployment.get(deploymentName);
+    if (known === undefined) return false;
+    return known !== fingerprint;
+  }
+
+  /**
+   * DB-truth confirmation for a stamp mismatch: has the org's tooling ACTUALLY
+   * drifted from what this deployment was built with?
+   *
+   * A mismatching stamp alone cannot be acted on, and no chronology proxy can
+   * rescue it: `runs.id` order is not processing order (message claims run
+   * concurrently across replicas), so a job with a LOWER runId can carry a
+   * NEWER observation. Instead of ordering observations, re-read the truth:
+   * resolve the org's current declaration digest — the same mint-free resolver
+   * the enqueue-side stamp uses — and compare it against the deployment's born
+   * fingerprint. current == born means the stamp is merely outdated (deliver);
+   * current != born means the worker is genuinely stale (recycle). The rebuild
+   * records the current digest as the new born value, so outdated stamps can
+   * never churn a fresh worker and a recycle loop cannot form.
+   *
+   * Resolution failures propagate (fail closed — an error is not evidence of
+   * freshness). Unknown deployment → false, mirroring the stamp check.
+   */
+  async hasToolingDrifted(
+    deploymentName: string,
+    payload: MessagePayload
+  ): Promise<boolean> {
+    const born = this.toolingFingerprintByDeployment.get(deploymentName);
+    if (born === undefined) return false;
+    const current = await resolveAgentToolingDeclaration({
+      organizationId: payload.organizationId,
+    });
+    return current.fingerprint !== born;
+  }
+
+  /** Drop connector-tooling state for a deployment that no longer exists. */
+  protected forgetDeploymentTooling(deploymentName: string): void {
+    this.leaseExpiryByDeployment.delete(deploymentName);
+    this.leaseMintedAtByDeployment.delete(deploymentName);
+    this.toolingFingerprintByDeployment.delete(deploymentName);
+  }
+
+  private trackConversationLockRelease(
+    deploymentName: string,
+    release: Promise<void>
+  ): void {
+    this.conversationLockReleases.set(deploymentName, release);
+    const clear = () => {
+      if (this.conversationLockReleases.get(deploymentName) === release) {
+        this.conversationLockReleases.delete(deploymentName);
+      }
+    };
+    // Handle both outcomes on the derived promise. `finally()` would mirror a
+    // release rejection into an unobserved promise on crash/exit paths that
+    // have nobody awaiting `conversationLockReleases`.
+    void release.then(clear, (error) => {
+      clear();
+      logger.error(
+        { deploymentName, error: getErrorMessage(error) },
+        "Failed to release the conversation lock after worker exit"
+      );
+    });
+  }
+
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
    * concurrent calls within a single gateway process so the orchestrator-
@@ -895,6 +1051,8 @@ export class DeploymentManager {
   private inFlightCreates = new Map<string, Promise<void>>();
 
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
+  /** Conversation-lock releases started by child exit handlers. */
+  private conversationLockReleases = new Map<string, Promise<void>>();
   /** Deployments currently being torn down deliberately (scale-to-0, idle
    *  reap, delete) via {@link killWorker}. The exit handler consumes the entry
    *  so a deliberate stop is NOT surfaced to the user as a worker crash; any
@@ -1549,41 +1707,35 @@ export class DeploymentManager {
   /**
    * Resolve what the org's connections contribute to this agent's sandbox.
    *
-   * Fails soft by design: connector tooling is an enhancement, so a resolution
-   * error (DB blip, malformed declaration, provider outage) must degrade to "no
-   * contribution" rather than block the deployment. The agent then runs without
-   * the CLI and says so, instead of the user seeing a worker that never starts.
+   * Infrastructure failures propagate. The fingerprint becomes durable
+   * dispatch state: treating a failed DB lookup as "no contribution" would
+   * build an untracked worker that the claim-side gate then mistakes for fresh.
+   * Malformed declarations and provider mint failures still resolve as an
+   * absent contribution/credential inside the resolver.
+   *
+   * A payload with no agent/org is not such a failure — connections are scoped
+   * by org, so with no org there are provably zero contributing rows and the
+   * empty contribution (zero-row fingerprint included) is the *known* answer,
+   * identical to what the enqueue-side stamp digests. The deployment stays
+   * tracked, so the dispatch gate still compares a real fingerprint instead of
+   * mistaking an untracked worker for fresh.
    */
   private async resolveConnectorAgentTooling(
     messageData: MessagePayload,
     deploymentName: string
   ): Promise<ResolvedAgentTooling> {
-    const empty: ResolvedAgentTooling = {
-      packages: [],
-      env: {},
-      domains: [],
-    };
     const { agentId, organizationId } = messageData;
-    if (!agentId || !organizationId) return empty;
-
-    try {
-      return await resolveAgentTooling({
-        agentId,
-        organizationId,
-        deploymentName,
-        // No registry wired (tests, or a gateway with no lease providers) still
-        // contributes packages and domains — an empty registry mints nothing,
-        // so lease vars are simply absent rather than the whole contribution.
-        leaseRegistry: this.leaseRegistry ?? EMPTY_LEASE_REGISTRY,
-        runId: messageData.runId,
-      });
-    } catch (error) {
-      logger.warn(
-        { agentId, organizationId, deploymentName, error },
-        "Failed to resolve connector-contributed agent tooling — deploying without it"
-      );
-      return empty;
-    }
+    if (!agentId || !organizationId) return EMPTY_AGENT_TOOLING;
+    return resolveAgentTooling({
+      agentId,
+      organizationId,
+      deploymentName,
+      // No registry wired (tests, or a gateway with no lease providers) still
+      // contributes packages and domains — an empty registry mints nothing,
+      // so lease vars are simply absent rather than the whole contribution.
+      leaseRegistry: this.leaseRegistry ?? EMPTY_LEASE_REGISTRY,
+      runId: messageData.runId,
+    });
   }
 
   /**
@@ -1740,6 +1892,28 @@ export class DeploymentManager {
       }
       envVars[key] = value;
     }
+
+    // Remember when this deployment's credential dies. A worker reads its env
+    // once at process start, so the only way to hand it a fresh token is to
+    // recycle it — `hasExpiringLease` lets the dispatch gate do that on the
+    // turn BEFORE the credential lapses instead of serving a sandbox whose
+    // `gh` has started 401ing.
+    if (agentTooling.leaseExpiresAt) {
+      this.leaseExpiryByDeployment.set(
+        deploymentName,
+        agentTooling.leaseExpiresAt
+      );
+      this.leaseMintedAtByDeployment.set(deploymentName, new Date());
+    } else {
+      this.leaseExpiryByDeployment.delete(deploymentName);
+      this.leaseMintedAtByDeployment.delete(deploymentName);
+    }
+    // Remember WHICH connections built this sandbox, so a later turn can tell
+    // that one was added, removed, or repointed at a different installation.
+    this.toolingFingerprintByDeployment.set(
+      deploymentName,
+      agentTooling.fingerprint
+    );
 
     // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {
@@ -1965,6 +2139,56 @@ export class DeploymentManager {
         true
       );
     }
+  }
+
+  /**
+   * Tear a stale worker down and rebuild it under the SAME name, so the next
+   * delivery reaches a sandbox with current tooling and a fresh lease.
+   * Called from the dispatch chokepoint (the owner pod's job router) while it
+   * holds the claimed-but-undelivered job whose payload proved the staleness.
+   *
+   * Same name is load-bearing: agent_run_input replay, secret paths, and
+   * worker tokens are all keyed on the deployment name, so a recycle is
+   * invisible to everything but the worker process itself. The teardown goes
+   * through {@link deleteWorkerDeployment} (never the low-level delete) so the
+   * secret placeholder mappings and backing `deployments/{name}/` secrets are
+   * cleared — a recycle can fire once per credential lifetime per
+   * conversation, so leaking those would accumulate.
+   *
+   * Throws on any failure — the caller must NOT deliver to the worker it just
+   * asked us to tear down, and the queue's native retry re-runs the gate.
+   */
+  async recycleWorkerDeployment(
+    deploymentName: string,
+    payload: MessagePayload
+  ): Promise<void> {
+    // The payload is about to become the create input; if it does not name
+    // THIS deployment, deleting `deploymentName` and creating some other name
+    // would orphan the queue this job was claimed from. Refuse instead —
+    // fail-closed, the job retries and fails visibly rather than being
+    // delivered to a stale worker.
+    const derivedName = generateDeploymentName({
+      userId: payload.userId,
+      conversationId: payload.conversationId,
+      channelId: payload.channelId,
+      platform: payload.platform,
+      agentId: payload.agentId,
+      organizationId: payload.organizationId,
+    });
+    if (derivedName !== deploymentName) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        `Refusing to recycle ${deploymentName}: payload derives deployment ${derivedName}`,
+        { deploymentName, derivedName },
+        true
+      );
+    }
+    await this.deleteWorkerDeployment(deploymentName);
+    await this.createWorkerDeployment(
+      payload.userId,
+      payload.conversationId,
+      payload
+    );
   }
 
   /**
@@ -2201,13 +2425,10 @@ export class DeploymentManager {
     // underlying reserved pg connection) to avoid leaking a per-conversation
     // lock until the gateway recycles. Codex P1#2 on PR #865. Defined before
     // the try so the catch and the spawn handlers share one idempotent release.
-    let lockReleased = false;
-    const releaseLockOnce = async (): Promise<void> => {
-      if (lockReleased) return;
-      lockReleased = true;
-      if (convLock) {
-        await convLock.release();
-      }
+    let lockReleasePromise: Promise<void> | null = null;
+    const releaseLockOnce = (): Promise<void> => {
+      lockReleasePromise ??= convLock?.release() ?? Promise.resolve();
+      return lockReleasePromise;
     };
 
     let commonEnvVars: Record<string, string>;
@@ -2304,7 +2525,8 @@ export class DeploymentManager {
       // Pre-spawn throw (generateEnvironmentVariables, nix package validation,
       // getWorkerEntryPoint, the cloud sandbox gate, or a synchronous spawn()
       // failure). No child exists yet, so no exit handler will fire to release
-      // the lock — release it here before re-throwing.
+      // the lock or clear the tooling state recorded during env assembly.
+      this.forgetDeploymentTooling(deploymentName);
       await releaseLockOnce();
       throw err;
     }
@@ -2389,8 +2611,10 @@ export class DeploymentManager {
       if (params.isRetry) {
         // Reached from the async exit handler's self-heal — can't throw to a
         // caller, so fail the in-flight turn(s) with the clear message and
-        // release the lock we were holding across the swap.
-        void releaseLockOnce();
+        // release the lock we were holding across the swap. No replacement
+        // child exists, so the env-build state no longer describes a worker.
+        this.forgetDeploymentTooling(deploymentName);
+        this.trackConversationLockRelease(deploymentName, releaseLockOnce());
         failTurnsForDeployment(
           deploymentName,
           AgentErrorCode.WORKER_SANDBOX_REQUIRED
@@ -2455,7 +2679,11 @@ export class DeploymentManager {
         `Embedded worker ${deploymentName} spawn error: ${err.message}`
       );
       this.workers.delete(deploymentName);
-      void releaseLockOnce();
+      // The worker never existed, so its recorded lease/fingerprint state is
+      // stale the moment the entry goes. Leaving it would let the next create
+      // for this name see a "known" fingerprint it was never built with.
+      this.forgetDeploymentTooling(deploymentName);
+      this.trackConversationLockRelease(deploymentName, releaseLockOnce());
       // A spawn error is never a deliberate stop. Fail any in-flight turn(s)
       // for this deployment so the client gets a terminal error instead of a
       // hang. No-op if nothing is in flight (markers already discharged).
@@ -2527,7 +2755,15 @@ export class DeploymentManager {
         return;
       }
 
-      void releaseLockOnce();
+      // Past the self-heal branch the worker is gone for good, so drop its
+      // lease/fingerprint state here — the single authoritative point, same as
+      // the intentional-exit flag above. deleteDeployment() already clears it,
+      // but a crash and an idle scale-to-0 (which calls killWorker directly)
+      // do not, and a stale expiry would arm a recycle for a worker that no
+      // longer exists. Safe against a rebuild: killWorker awaits the child's
+      // exit, and this runs synchronously after workers.delete().
+      this.forgetDeploymentTooling(deploymentName);
+      this.trackConversationLockRelease(deploymentName, releaseLockOnce());
       if (signal) {
         logger.info(
           `Embedded worker ${deploymentName} exited with signal ${signal}`
@@ -2595,9 +2831,17 @@ export class DeploymentManager {
   }
 
   async deleteDeployment(deploymentName: string): Promise<void> {
+    this.forgetDeploymentTooling(deploymentName);
     const entry = this.workers.get(deploymentName);
     if (entry) {
       await this.killWorker(entry, deploymentName);
+      // Wait for the exit handler's conversation-lock release to COMPLETE, not
+      // just start. A recycle re-creates this deployment immediately under the
+      // same name; if the session-level advisory lock were still held by the
+      // old child's reserved connection, the create would read its own
+      // teardown as "conversation owned elsewhere" and silently drop the
+      // spawn.
+      await this.conversationLockReleases.get(deploymentName);
       logger.info(`Stopped embedded worker: ${deploymentName}`);
     }
   }

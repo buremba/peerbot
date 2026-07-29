@@ -162,6 +162,9 @@ describe("WorkerJobRouter", () => {
         "thread_message_worker-1",
         replayed,
         {
+          // Genuine-failure budget only — gate deferrals are rescheduled
+          // without consuming attempts (isDeferralError), so waiting out a
+          // long prior turn never needs a large limit.
           retryLimit: 3,
           retryDelay: 2,
           priority: 10,

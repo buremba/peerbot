@@ -8,6 +8,13 @@ import {
   type PendingAgentRunInput,
 } from "../orchestration/agent-run-input.js";
 import type { WorkerConnectionManager } from "./connection-manager.js";
+import {
+  type DispatchRecycler,
+  gateDispatchOnStaleness,
+  type LiveTurnProbe,
+  type OlderTurnProbe,
+  type TurnTerminalizer,
+} from "./dispatch-recycle.js";
 
 const logger = createLogger("worker-job-router");
 
@@ -24,6 +31,15 @@ interface PendingJob {
  */
 export class WorkerJobRouter {
   private pendingJobs: Map<string, PendingJob> = new Map(); // In-memory timeouts only
+  /**
+   * Claim-side recycle seam (the DeploymentManager in production). Optional:
+   * unwired (tests, partial boots) means the gate is skipped and jobs deliver
+   * exactly as before the gate existed.
+   */
+  private dispatchRecycler?: DispatchRecycler;
+  private probeLiveTurn?: LiveTurnProbe;
+  private terminalizeTurn?: TurnTerminalizer;
+  private probeOlderTurn?: OlderTurnProbe;
 
   constructor(
     private queue: IMessageQueue,
@@ -32,6 +48,23 @@ export class WorkerJobRouter {
       deploymentName: string
     ) => Promise<PendingAgentRunInput[]> = listPendingAgentRunInputs,
   ) {}
+
+  /**
+   * Wire the deployment manager into the dispatch-time staleness gate. Called
+   * from the composition root alongside `setDeploymentActivityTracker` — the
+   * router and the orchestrator are built separately.
+   */
+  setDispatchRecycler(
+    recycler: DispatchRecycler,
+    probeLiveTurn?: LiveTurnProbe,
+    terminalizeTurn?: TurnTerminalizer,
+    probeOlderTurn?: OlderTurnProbe
+  ): void {
+    this.dispatchRecycler = recycler;
+    this.probeLiveTurn = probeLiveTurn;
+    this.terminalizeTurn = terminalizeTurn;
+    this.probeOlderTurn = probeOlderTurn;
+  }
 
   /**
    * Register a worker to receive jobs from its deployment queue
@@ -61,6 +94,10 @@ export class WorkerJobRouter {
     for (const input of pendingInputs) {
       const payload = attachFreshRunJobToken(input);
       await this.queue.send(queueName, payload, {
+        // Genuine-failure budget only: a replayed input claimed while the
+        // reconnected worker is stale/mid-turn is deferred by the dispatch
+        // gate via `StaleWorkerError`, which the queue reschedules WITHOUT
+        // consuming an attempt (isDeferralError) — waiting never burns this.
         retryLimit: 3,
         retryDelay: 2,
         priority: 10,
@@ -108,6 +145,33 @@ export class WorkerJobRouter {
    * stale SSE connection (e.g., after a container dies without cleanly closing TCP).
    */
   private async handleJob(deploymentName: string, job: unknown): Promise<void> {
+    // Extract job data and ID
+    const jobData = (job as { data?: unknown }).data;
+
+    // Claim-side recycle gate: never deliver onto a worker whose connector
+    // lease is dying or whose tooling no longer matches the org's connections.
+    // Runs BEFORE the connection lookup — a recycle replaces the connection.
+    // Deliberately un-caught: a throw here (deferral, recycle, or a genuine
+    // failure) keeps the job undelivered and the queue retries it (fail
+    // closed). Delivering on error would hand the turn to a sandbox holding a
+    // dead or wrong credential, which is the defect this gate exists to stop.
+    if (this.dispatchRecycler) {
+      const decision = await gateDispatchOnStaleness({
+        deploymentName,
+        // RunsQueue job ids are the numeric runs-row id; NaN (absent/foreign
+        // id) skips the FIFO fence inside the gate.
+        jobRunId: Number((job as { id?: string }).id),
+        jobData,
+        recycler: this.dispatchRecycler,
+        probeLiveTurn: this.probeLiveTurn,
+        terminalizeTurn: this.terminalizeTurn,
+        probeOlderTurn: this.probeOlderTurn,
+      });
+      // "drop": the gate terminalized the turn (recycle rebuild failed) —
+      // returning completes the held job so it cannot resurface as a zombie.
+      if (decision === "drop") return;
+    }
+
     const connection = this.connectionManager.getConnection(deploymentName);
 
     if (!connection) {
@@ -116,9 +180,6 @@ export class WorkerJobRouter {
       );
       throw new Error("Worker not connected");
     }
-
-    // Extract job data and ID
-    const jobData = (job as { data?: unknown }).data;
     const jobId =
       (job as { id?: string }).id ||
       `job-${Date.now()}-${Math.random().toString(36).substring(7)}`;

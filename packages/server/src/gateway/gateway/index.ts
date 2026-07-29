@@ -37,6 +37,7 @@ import {
   type SSEWriter,
   WorkerConnectionManager,
 } from "./connection-manager.js";
+import type { DispatchRecycler } from "./dispatch-recycle.js";
 import { WorkerJobRouter } from "./job-router.js";
 import { createTranscriptRoutes } from "./transcript-routes.js";
 
@@ -119,6 +120,16 @@ export class WorkerGateway {
    */
   setDeploymentActivityTracker(tracker: DeploymentActivityTracker): void {
     this.deploymentActivityTracker = tracker;
+  }
+
+  /**
+   * Wire the deployment manager into the job router's claim-side recycle gate
+   * (see `dispatch-recycle.ts`). Same composition-root pattern as
+   * `setDeploymentActivityTracker`: the gateway and the orchestrator are built
+   * separately, and the router runs without it (jobs deliver ungated).
+   */
+  setDispatchRecycler(recycler: DispatchRecycler): void {
+    this.jobRouter.setDispatchRecycler(recycler);
   }
 
   /**

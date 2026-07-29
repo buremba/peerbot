@@ -564,7 +564,13 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      await this.foldConnectorTooling(data, traceId);
+      // Stamp the resolved tooling fingerprint onto the payload so the
+      // dispatch chokepoint (the owner pod's job router) can compare it
+      // against the fingerprint the target deployment was built with, without
+      // re-resolving per delivery attempt. Resolution failures propagate: a
+      // DB error is not evidence that a worker is fresh, so the outer queue
+      // handler retries instead of delivering on unknown durable state.
+      data.toolingFingerprint = await this.foldConnectorTooling(data);
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
@@ -945,7 +951,16 @@ export class MessageConsumer {
       // Create the thread-specific queue if it doesn't exist
       await this.queue.createQueue(threadQueueName);
 
-      // Send message to thread-specific queue
+      // Send message to thread-specific queue.
+      //
+      // The retry budget bounds GENUINE failures only. Dispatch-gate deferrals
+      // (stale worker mid-turn, FIFO fence, recycle) throw `StaleWorkerError`,
+      // which carries the queue's deferral contract (`isDeferralError`) and is
+      // rescheduled every `retryDelay` seconds WITHOUT consuming an attempt —
+      // so a follow-up can wait out an arbitrarily long prior turn on this
+      // small budget, while a genuinely undeliverable job still fails fast
+      // instead of surviving long enough to zombie-deliver after its
+      // turn-liveness marker has been swept.
       const jobId = await this.queue.send(threadQueueName, data, {
         expireInSeconds: this.config.queues.expireInSeconds,
         retryLimit: this.config.queues.retryLimit,
@@ -1009,45 +1024,37 @@ export class MessageConsumer {
    * `nixConfig.packages` — folding domains alone lets that reconcile revoke the
    * substituter hosts the contributed packages depend on.
    *
-   * Never throws: a resolution failure leaves the payload untouched and the
-   * sandbox runs without the contribution, rather than failing the turn.
+   * Infrastructure failures propagate so the queue retries the enclosing
+   * dispatch. Once the fingerprint participates in the delivery gate, a failed
+   * lookup cannot safely mean "no evidence of change."
    */
-  protected async foldConnectorTooling(
-    data: MessagePayload,
-    traceId: string
-  ): Promise<void> {
-    try {
-      const contribution = await resolveAgentToolingDeclaration({
-        organizationId: data.organizationId,
-      });
-      if (contribution.domains.length > 0) {
-        data.networkConfig = {
-          ...data.networkConfig,
-          allowedDomains: [
-            ...new Set([
-              ...(data.networkConfig?.allowedDomains ?? []),
-              ...contribution.domains,
-            ]),
-          ],
-        };
-      }
-      if (contribution.packages.length > 0) {
-        data.nixConfig = {
-          ...data.nixConfig,
-          packages: [
-            ...new Set([
-              ...(data.nixConfig?.packages ?? []),
-              ...contribution.packages,
-            ]),
-          ],
-        };
-      }
-    } catch (error) {
-      logger.warn(
-        { traceId, agentId: data.agentId, error: getErrorMessage(error) },
-        "Failed to resolve connector tooling contribution; continuing without it"
-      );
+  protected async foldConnectorTooling(data: MessagePayload): Promise<string> {
+    const contribution = await resolveAgentToolingDeclaration({
+      organizationId: data.organizationId,
+    });
+    if (contribution.domains.length > 0) {
+      data.networkConfig = {
+        ...data.networkConfig,
+        allowedDomains: [
+          ...new Set([
+            ...(data.networkConfig?.allowedDomains ?? []),
+            ...contribution.domains,
+          ]),
+        ],
+      };
     }
+    if (contribution.packages.length > 0) {
+      data.nixConfig = {
+        ...data.nixConfig,
+        packages: [
+          ...new Set([
+            ...(data.nixConfig?.packages ?? []),
+            ...contribution.packages,
+          ]),
+        ],
+      };
+    }
+    return contribution.fingerprint;
   }
 
   private async ensureWorkerExists(

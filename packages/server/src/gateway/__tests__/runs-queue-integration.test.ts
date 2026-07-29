@@ -152,6 +152,75 @@ describe("RunsQueue — caller options", () => {
   });
 });
 
+describe("RunsQueue — deferral retries (isDeferralError contract)", () => {
+  test("a deferral-flagged throw reschedules without consuming an attempt", async () => {
+    // retryLimit 1: a PLAIN error would markFailed on the first throw (see the
+    // companion test). Two deferral throws followed by success proves the
+    // dispatch gate can wait out a prior turn longer than the attempt budget
+    // without the follower job being stranded as failed-never-delivered.
+    if (!queue) throw new Error("queue not started");
+    let calls = 0;
+    let done = false;
+    await queue.send(
+      "test-deferral",
+      { tag: "waiting" },
+      { retryLimit: 1, retryDelay: 0 },
+    );
+    await queue.work("test-deferral", async () => {
+      calls += 1;
+      if (calls <= 2) {
+        const err = new Error("prior turn still live") as Error & {
+          deferral: boolean;
+        };
+        err.deferral = true;
+        throw err;
+      }
+      done = true;
+    });
+
+    const start = Date.now();
+    while (!done && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(done).toBe(true);
+    expect(calls).toBe(3);
+
+    const sql = getDb();
+    const rows = await sql<{ status: string; attempts: number | string }>`
+      SELECT status, attempts FROM runs WHERE queue_name = 'test-deferral'
+    `;
+    expect(rows[0]?.status).toBe("completed");
+    expect(Number(rows[0]?.attempts ?? -1)).toBe(0);
+  });
+
+  test("a plain throw at the same budget fails the job — the flag is what spares it", async () => {
+    if (!queue) throw new Error("queue not started");
+    let calls = 0;
+    await queue.send(
+      "test-deferral-plain",
+      { tag: "doomed" },
+      { retryLimit: 1, retryDelay: 0 },
+    );
+    await queue.work("test-deferral-plain", async () => {
+      calls += 1;
+      throw new Error("boom");
+    });
+
+    const sql = getDb();
+    let status = "";
+    const start = Date.now();
+    while (status !== "failed" && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 50));
+      const rows = await sql<{ status: string }>`
+        SELECT status FROM runs WHERE queue_name = 'test-deferral-plain'
+      `;
+      status = rows[0]?.status ?? "";
+    }
+    expect(status).toBe("failed");
+    expect(calls).toBe(1);
+  });
+});
+
 describe("RunsQueue — action_input JSONB shape", () => {
   test("send() persists action_input as a JSONB object, not a double-encoded JSONB string", async () => {
     // Regression: pre-fix, the INSERT bound `JSON.stringify(data)` to a

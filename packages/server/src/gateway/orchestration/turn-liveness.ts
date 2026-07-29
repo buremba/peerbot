@@ -222,6 +222,99 @@ export async function hasLiveTurnForMessage(
 }
 
 /**
+ * True when ANY turn is still in flight on `deploymentName`.
+ *
+ * Deployment-scoped sibling of {@link hasLiveTurnForMessage}, for callers that
+ * are about to tear a worker down and must not interrupt a turn already
+ * running on it — recycling a deployment for a stale credential must never
+ * SIGTERM a live run and cost the user a reply.
+ *
+ * Postgres-backed rather than pod-local, so it is correct with N replicas: the
+ * turn may have been started by a different pod than the one deciding to
+ * recycle.
+ *
+ * Same index probe and same `run_at > now()` deadline predicate as
+ * {@link hasLiveTurnForMessage} — a lapsed-but-unswept marker is a dead worker,
+ * not a live turn, and must not block a recycle forever.
+ *
+ * "In flight" here means a turn the worker has actually RECEIVED, and the
+ * delivery receipt — a COMPLETED `thread_message_*` job row for the marker's
+ * messageId (ack-on-delivery; retained ~30 days, far beyond any turn) — is the
+ * only evidence consulted. A marker is armed at dispatch, BEFORE delivery, so
+ * an armed-but-still-queued turn has a live marker with no completed row: not
+ * in flight (the recycle gate runs while holding one such claimed job, and two
+ * queued turns would otherwise each read the other's marker as "a running
+ * turn" and defer each other forever). The absence of pending/claimed rows
+ * must NOT be read as delivery instead: an SSE reconnect replays the durable
+ * input of a still-RUNNING turn onto the queue (`registerWorker`), and that
+ * pending replay row would masquerade as "undelivered" and let a recycle
+ * SIGTERM the active worker.
+ */
+export async function hasLiveTurnForDeployment(
+  deploymentName: string
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs m
+    WHERE m.status = 'pending'
+      AND m.run_type = 'internal'
+      AND m.queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND m.action_input->>'deploymentName' = ${deploymentName}
+      AND m.run_at > now()
+      AND EXISTS (
+        SELECT 1 FROM public.runs q
+        WHERE q.status = 'completed'
+          AND q.run_type = 'chat_message'
+          AND q.queue_name = ${`thread_message_${deploymentName}`}
+          AND q.action_input->>'messageId' = m.action_input->>'messageId'
+      )
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Is a sibling job that OUTRANKS `jobRunId` in claim order still pending on
+ * the same queue?
+ *
+ * FIFO fence for the dispatch gate. `claimOne` orders claims by
+ * (priority DESC, run_at ASC, id ASC), and a deferral retry pushes `run_at`
+ * into the future — so after a recycle, the recycled head job re-enters the
+ * queue BEHIND a younger sibling that kept its original `run_at`, and two
+ * back-to-back user messages would reach the fresh worker in reversed order.
+ * The fence re-derives claim rank from the columns that don't move: a sibling
+ * at higher priority, or at the same priority with a smaller id (= enqueued
+ * earlier), would have been claimed first were it not sitting out a retry
+ * delay, so this job must defer to it. The top-ranked pending job never has
+ * such a sibling, so the lane always makes progress.
+ *
+ * `expires_at` mirrors `claimOne`'s eligibility exactly: an expired row will
+ * never be claimed again (the expired-pending cleanup deletes it and the
+ * durable-input replay re-enqueues the turn), so it must not fence its
+ * siblings forever.
+ */
+export async function hasOlderQueuedTurn(jobRunId: number): Promise<boolean> {
+  const sql = getDb();
+  // `me` is a primary-key probe; `sib` matches the partial predicate and
+  // leading columns of `runs_lobu_claim_idx` (status='pending', run_type,
+  // queue_name), so this never scans the 30-day runs retention.
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs me
+    JOIN public.runs sib ON sib.queue_name = me.queue_name
+    WHERE me.id = ${jobRunId}
+      AND sib.run_type = 'chat_message'
+      AND sib.status = 'pending'
+      AND (sib.expires_at IS NULL OR sib.expires_at > now())
+      AND (
+        sib.priority > me.priority
+        OR (sib.priority = me.priority AND sib.id < me.id)
+      )
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
  * caller gets the rows, and the terminal error is enqueued in the same
@@ -424,6 +517,12 @@ async function enqueueTerminalError(
  * This is the first-writer-wins guarantee for the startup-failure path: if a
  * still-attached worker already produced a terminal reply (which discharged the
  * marker), this no-ops instead of double-signalling the client.
+ *
+ * `false` means exactly "election lost — the turn was already terminalized".
+ * Infrastructure failures THROW instead of returning false: the dispatch gate
+ * completes a held job on the strength of this call, and a swallowed DB error
+ * here would let it drop a turn that never got its terminal event. Callers for
+ * whom this is best-effort (trackFailedDeployment) catch at their call site.
  */
 export async function failTurnIfPending(
   deploymentName: string,
@@ -431,30 +530,22 @@ export async function failTurnIfPending(
   code: AgentErrorCode
 ): Promise<boolean> {
   const key = turnMarkerKey(deploymentName, messageId);
-  try {
-    const sql = getDb();
-    const emitted = await sql.begin(async (tx: DbClient) => {
-      const rows = await tx<{ action_input: unknown }>`
-        DELETE FROM public.runs
-        WHERE idempotency_key = ${key}
-          AND status = 'pending'
-          AND queue_name = ${TURN_TIMEOUT_QUEUE}
-        RETURNING action_input
-      `;
-      const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
-      if (!routing) return false;
-      await enqueueTerminalError(tx, routing, code);
-      return true;
-    });
-    if (emitted) await notifyThreadResponse();
-    return emitted;
-  } catch (err) {
-    logger.error(
-      { key, err: String(err) },
-      "Failed to fail pending turn (startup-failure path)"
-    );
-    return false;
-  }
+  const sql = getDb();
+  const emitted = await sql.begin(async (tx: DbClient) => {
+    const rows = await tx<{ action_input: unknown }>`
+      DELETE FROM public.runs
+      WHERE idempotency_key = ${key}
+        AND status = 'pending'
+        AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      RETURNING action_input
+    `;
+    const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
+    if (!routing) return false;
+    await enqueueTerminalError(tx, routing, code);
+    return true;
+  });
+  if (emitted) await notifyThreadResponse();
+  return emitted;
 }
 
 /**

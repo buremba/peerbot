@@ -43,7 +43,10 @@ export interface InstallationTokenProvider {
    * {@link InstallationTokenError} on mint failure (caller surfaces it as a
    * connection error rather than crashing).
    */
-  mintToken(install: AppInstallationRow): Promise<MintedInstallationToken>;
+  mintToken(
+    install: AppInstallationRow,
+    options?: MintTokenOptions
+  ): Promise<MintedInstallationToken>;
 }
 
 /**
@@ -83,6 +86,16 @@ function isMintableStatus(status: AppInstallationRow["status"]): boolean {
   return status === "active";
 }
 
+/** Per-call minting constraints. */
+export interface MintTokenOptions {
+  /**
+   * Reject a cached token with less than this much life left, forcing a fresh
+   * mint. Used by the credential-lease path, whose token is baked into a
+   * sandbox at startup and cannot be refreshed in place.
+   */
+  minTtlMs?: number;
+}
+
 /**
  * Per-pod, in-memory token cache shared by provider implementations.
  *
@@ -102,17 +115,33 @@ export class InMemoryInstallationTokenCache {
     this.refreshSkewMs = options?.refreshSkewMs ?? 60_000;
   }
 
-  /** Cached token for `key` if present AND not within the refresh window; else null. */
-  get(key: string): MintedInstallationToken | null {
+  /**
+   * Cached token for `key` if present AND not within the refresh window; else
+   * null.
+   *
+   * `minTtlMs` lets a caller demand a longer runway than the default skew.
+   * A credential LEASE needs this: it is baked into a sandbox that reads its
+   * env once at startup, so handing back a token with two minutes left means
+   * the sandbox is born nearly dead. Callers that re-read the token per
+   * request (the egress proxy) are fine with the default.
+   */
+  get(key: string, minTtlMs?: number): MintedInstallationToken | null {
     const entry = this.entries.get(key);
     if (!entry) return null;
     const expMs = Date.parse(entry.expiresAt);
+    const now = Date.now();
     // An unparseable expiry is treated as already-stale: re-mint rather than
-    // trust a token we can't reason about the lifetime of.
-    if (!Number.isFinite(expMs) || expMs - this.refreshSkewMs <= Date.now()) {
+    // trust a token we can't reason about the lifetime of. Only the default
+    // skew evicts, because that is the point past which the entry is useless
+    // to every caller.
+    if (!Number.isFinite(expMs) || expMs - this.refreshSkewMs <= now) {
       this.entries.delete(key);
       return null;
     }
+    // A caller demanding a longer runway than the default just misses: the
+    // entry is still perfectly serviceable to per-request callers, so evicting
+    // it here would make one lease mint invalidate the egress proxy's token.
+    if (minTtlMs != null && expMs - minTtlMs <= now) return null;
     return entry;
   }
 
@@ -156,7 +185,10 @@ export class InstallationTokenRegistry {
    * install's `provider` (`provider_unsupported`) or the install is not active
    * (`install_inactive`); otherwise delegates to the provider's `mintToken`.
    */
-  async mintFor(install: AppInstallationRow): Promise<MintedInstallationToken> {
+  async mintFor(
+    install: AppInstallationRow,
+    options?: MintTokenOptions
+  ): Promise<MintedInstallationToken> {
     if (!isMintableStatus(install.status)) {
       throw new InstallationTokenError(
         "install_inactive",
@@ -170,6 +202,6 @@ export class InstallationTokenRegistry {
         `No InstallationTokenProvider registered for provider '${install.provider}'`
       );
     }
-    return provider.mintToken(install);
+    return provider.mintToken(install, options);
   }
 }

@@ -1151,8 +1151,12 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
     window_end,
     extraction_schema,
     sources,
+    entities,
     classifiers,
     unprocessed_ranges,
+    reactions_guidance,
+    past_reactions,
+    past_feedback,
   } = result;
 
   let md = `# \uD83D\uDCDD Content (${total} total)\n\n`;
@@ -1170,6 +1174,35 @@ function formatGetContentResult(result: any, _options: FormatterOptions): string
 
     if (extraction_schema) {
       md += `### Extraction Schema\n\n\`\`\`json\n${JSON.stringify(extraction_schema, null, 2)}\n\`\`\`\n\n`;
+    }
+
+    if (entities?.length > 0) {
+      md += `### Bound Entities (${entities.length})\n\n`;
+      md += formatTable(entities, {
+        fieldOrder: ['id', 'name', 'type', 'metadata', 'field_controls'],
+        maxCellLength: 300,
+      });
+    }
+
+    if (sources && Object.keys(sources).length > 0) {
+      md += '### Named Sources\n\n';
+      for (const [name, rows] of Object.entries(sources)) {
+        const sourceRows = Array.isArray(rows) ? rows : [];
+        md += `#### ${name} (${sourceRows.length})\n\n`;
+        md += formatTable(sourceRows, { maxCellLength: 300 });
+      }
+    }
+
+    if (reactions_guidance) {
+      md += `### Reactions Guidance\n\n${reactions_guidance}\n\n`;
+    }
+
+    if (past_reactions) {
+      md += `### Past Reactions\n\n${past_reactions}\n\n`;
+    }
+
+    if (past_feedback) {
+      md += `### Past Feedback\n\n${past_feedback}\n\n`;
     }
 
     // Show classifiers for worker extraction

@@ -251,9 +251,22 @@ describe("watcher automation contract", () => {
 			window_token: string;
 			window_start: string;
 			window_end: string;
+			entities?: Array<{
+				id: number;
+				name: string;
+				type: string;
+				metadata: Record<string, unknown>;
+			}>;
 		};
 		expect(content.window_start).toBe(windowStart.toISOString());
 		expect(content.window_end).toBe(windowEnd.toISOString());
+		expect(content.entities).toEqual([
+			expect.objectContaining({
+				id: entityId,
+				name: "Automation Entity",
+				type: "brand",
+			}),
+		]);
 		// Prompts are literal text delivered via the dispatch message; the read
 		// path no longer stamps a rendered prompt onto the run.
 		const [unstampedRun] =

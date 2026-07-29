@@ -7,7 +7,7 @@ import { buildDispatchMessage } from "../../../watchers/automation";
 // The templating layer is gone; prompts are literal text and ride the
 // dispatch message verbatim.
 describe("behavior prompt text is literal", () => {
-	const prompt = "Ping {{word arg}} when done";
+	const prompt = "  Ping {{word arg}} when done\n";
 
 	it("window dispatch embeds the frozen prompt verbatim, braces included", () => {
 		const message = buildDispatchMessage({

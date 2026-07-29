@@ -39,7 +39,7 @@ export interface KnowledgeSaveInput {
 export interface KnowledgeReadInput {
 	/** Fetch specific content events by id. */
 	content_ids?: number[];
-	/** Fetch knowledge for a watcher window (prompt rendering). */
+	/** Fetch structured knowledge for a Behavior window. */
 	behavior_id?: number;
 	since?: string;
 	until?: string;

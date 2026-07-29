@@ -980,6 +980,11 @@ export function buildDispatchMessage(params: {
 	payload: WatcherRunPayload;
 	behaviorInstructions?: string;
 }): string {
+	const behaviorInstructions =
+		typeof params.behaviorInstructions === "string" &&
+		params.behaviorInstructions.trim().length > 0
+			? params.behaviorInstructions
+			: undefined;
 	if (
 		params.payload.dispatch_source === "event" &&
 		params.payload.trigger_execution !== "window"
@@ -997,8 +1002,7 @@ export function buildDispatchMessage(params: {
 			`Result delivery: ${params.payload.trigger_output ?? "silent"}`,
 			"",
 			"Behavior instructions:",
-			params.behaviorInstructions?.trim() ||
-				"Interpret and handle the incoming event.",
+			behaviorInstructions || "Interpret and handle the incoming event.",
 			"",
 			"Incoming event(s):",
 			JSON.stringify(signals, null, 2),
@@ -1031,7 +1035,7 @@ export function buildDispatchMessage(params: {
 			: []),
 		"",
 		"Behavior instructions:",
-		params.behaviorInstructions?.trim() ||
+		behaviorInstructions ||
 			"Analyze the window's content and extract findings per the extraction schema.",
 		"",
 		"Required steps:",
@@ -1051,7 +1055,7 @@ export function buildDispatchMessage(params: {
 			2
 		),
 		"",
-		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
+		"Analyze every source array in the knowledge-read payload's `sources` field, even when the top-level `content` array is empty.",
 		"Treat the Behavior as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
 	].join("\n");
 }

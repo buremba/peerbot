@@ -40,7 +40,10 @@ import {
   buildDeploymentInfoSummary,
   runInBatches,
 } from "./deployment-utils.js";
-import { failTurnsForDeployment } from "./turn-liveness.js";
+import {
+  failTurnsForDeployment,
+  hasLiveTurnForDeployment,
+} from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
@@ -817,14 +820,13 @@ export interface OrchestratorConfig {
     startupTimeoutSeconds?: number;
     idleCleanupMinutes: number;
     /**
-     * Hard cap on how long a worker may serve turns before it is retired, in
-     * minutes. A worker resolves its connector credentials into env once at
-     * spawn and cannot be updated in place, so a continuously busy worker
-     * eventually holds an expired credential and 401s mid-turn. Optional so
-     * partially-built configs (tests, embedded callers) keep working; 0 or
-     * absent disables the cap.
+     * Age after which a worker is retired at its next verified quiet window,
+     * in minutes. A worker resolves connector credentials into env at spawn
+     * and cannot update them in place. A live turn is never interrupted, so
+     * this is a retirement threshold rather than a hard lifetime bound.
+     * 0 disables age-based retirement.
      */
-    maxAgeMinutes?: number;
+    maxAgeMinutes: number;
     maxDeployments: number;
     env?: Record<string, string | number | boolean>;
   };
@@ -843,9 +845,8 @@ export interface DeploymentInfo {
   replicas: number;
   isIdle: boolean;
   isVeryOld: boolean;
-  /** Alive past `worker.maxAgeMinutes` — its credentials may already be dead,
-   *  so it is retired at its first quiet moment instead of after the full idle
-   *  threshold. Always false when the cap is disabled. */
+  /** Alive past `worker.maxAgeMinutes`, making it eligible for retirement at
+   *  its next verified quiet window. Always false when disabled. */
   isPastMaxAge: boolean;
 }
 
@@ -2017,6 +2018,21 @@ export class DeploymentManager {
           toDelete.push(deploymentName);
         } else if (isIdle && replicas > 0) {
           if (isPastMaxAge) {
+            try {
+              if (await this.hasLiveTurn(deploymentName)) {
+                logger.debug(
+                  { deploymentName },
+                  "Deferring max-age retirement while the worker has a live turn"
+                );
+                continue;
+              }
+            } catch (error) {
+              logger.error(
+                { deploymentName, error: getErrorMessage(error) },
+                "Could not verify turn liveness; deferring max-age retirement"
+              );
+              continue;
+            }
             // Distinguish credential-driven retirement from ordinary idleness:
             // this is the signal that tells us whether the age cap is doing
             // anything in prod, and at what rate.
@@ -2585,8 +2601,8 @@ export class DeploymentManager {
       process: child,
       env: commonEnvVars,
       lastActivity: new Date(),
-      // Spawn time, never refreshed — this is what bounds the lifetime of the
-      // credentials baked into `commonEnvVars` above.
+      // Spawn time, never refreshed — age-based retirement measures the
+      // credentials baked into `commonEnvVars` from this point.
       startedAt: new Date(),
       workspaceDir,
       // Expose the idempotent release on the entry for introspection /
@@ -2658,6 +2674,10 @@ export class DeploymentManager {
     if (entry) {
       entry.lastActivity = new Date();
     }
+  }
+
+  protected hasLiveTurn(deploymentName: string): Promise<boolean> {
+    return hasLiveTurnForDeployment(deploymentName);
   }
 
   /** Send SIGTERM, then SIGKILL after timeout. Resolves on child exit.

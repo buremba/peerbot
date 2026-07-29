@@ -47,6 +47,7 @@ const TEST_CONFIG: OrchestratorConfig = {
   },
   worker: {
     idleCleanupMinutes: 30,
+    maxAgeMinutes: 0,
     maxDeployments: 10,
   },
   cleanup: { initialDelayMs: 5000, intervalMs: 60000, veryOldDays: 7 },

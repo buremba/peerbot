@@ -221,6 +221,23 @@ export async function hasLiveTurnForMessage(
   return rows.length > 0;
 }
 
+/** Whether this deployment has any turn whose durable deadline is still live. */
+export async function hasLiveTurnForDeployment(
+  deploymentName: string
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs
+    WHERE status = 'pending'
+      AND run_type = 'internal'
+      AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND action_input->>'deploymentName' = ${deploymentName}
+      AND run_at > now()
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
 /**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this

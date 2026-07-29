@@ -27,6 +27,7 @@ import {
   extendTurnDeadlines,
   failTurnIfPending,
   failTurnsForDeployment,
+  hasLiveTurnForDeployment,
   hasLiveTurnForMessage,
   sweepExpiredTurns,
   type TurnRouting,
@@ -405,6 +406,25 @@ describe("turn-liveness", () => {
     await commitTerminalReply("dep-A", ["same"], reply("dep-A", "same"), null);
     expect(await markerCount("dep-A")).toBe(0);
     expect(await markerCount("dep-B")).toBe(1);
+  });
+});
+
+describe("hasLiveTurnForDeployment (worker-retirement gate)", () => {
+  test("tracks live work across every turn on one deployment", async () => {
+    expect(await hasLiveTurnForDeployment("dep-retire")).toBe(false);
+
+    await armTurnTimeout(queue, routing("dep-retire", "m1"));
+    await armTurnTimeout(queue, routing("dep-retire", "m2"));
+    expect(await hasLiveTurnForDeployment("dep-retire")).toBe(true);
+    expect(await hasLiveTurnForDeployment("dep-other")).toBe(false);
+
+    await commitTerminalReply(
+      "dep-retire",
+      ["m1", "m2"],
+      reply("dep-retire", "m2"),
+      null
+    );
+    expect(await hasLiveTurnForDeployment("dep-retire")).toBe(false);
   });
 });
 

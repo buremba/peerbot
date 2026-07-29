@@ -105,6 +105,7 @@ const TEST_CONFIG: OrchestratorConfig = {
     entryPoint: "/fake/agent-worker/src/index.ts",
     binPathEntries: ["/fake/node_modules/.bin"],
     idleCleanupMinutes: 30,
+    maxAgeMinutes: 0,
     maxDeployments: 10,
   },
   cleanup: {
@@ -133,6 +134,12 @@ function makePayload(overrides?: Partial<MessagePayload>): MessagePayload {
 
 function makeManager(overrides?: Partial<OrchestratorConfig>): DeploymentManager {
   return new DeploymentManager({ ...TEST_CONFIG, ...overrides });
+}
+
+class LiveTurnDeploymentManager extends DeploymentManager {
+  protected async hasLiveTurn(): Promise<boolean> {
+    return true;
+  }
 }
 
 // ── Suite setup ──────────────────────────────────────────────────────────────
@@ -492,6 +499,38 @@ describe("reconcileDeployments — stale/orphaned cleanup", () => {
 
       expect(await mgr.listDeployments()).toHaveLength(1);
     } finally {
+      mkdirSpy.mockRestore();
+    }
+  });
+
+  test("a past-max-age worker with a live turn is not retired", async () => {
+    const mgr = new LiveTurnDeploymentManager({
+      ...TEST_CONFIG,
+      worker: {
+        ...TEST_CONFIG.worker,
+        idleCleanupMinutes: 0,
+        maxAgeMinutes: 0.00001,
+      },
+    });
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+    try {
+      await mgr.ensureDeployment(
+        "worker-1",
+        "user-1",
+        "user-1",
+        makePayload()
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const before = await mgr.listDeployments();
+      expect(before[0].isPastMaxAge).toBe(true);
+      expect(before[0].isIdle).toBe(true);
+
+      await mgr.reconcileDeployments();
+
+      expect(await mgr.listDeployments()).toHaveLength(1);
+    } finally {
+      await mgr.deleteDeployment("worker-1");
       mkdirSpy.mockRestore();
     }
   });

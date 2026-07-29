@@ -32,7 +32,7 @@ const AGENT = "agent-1";
 
 const CONFIG: OrchestratorConfig = {
   queues: { retryLimit: 3, retryDelay: 5, expireInSeconds: 300 },
-  worker: { idleCleanupMinutes: 60, maxDeployments: 10 },
+  worker: { idleCleanupMinutes: 60, maxAgeMinutes: 0, maxDeployments: 10 },
   cleanup: { initialDelayMs: 5000, intervalMs: 60000, veryOldDays: 7 },
 };
 

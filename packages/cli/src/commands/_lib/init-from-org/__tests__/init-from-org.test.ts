@@ -383,6 +383,10 @@ describe("lobu init --from-org", () => {
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
+    // Skills-first round trip: the stored instruction text was emitted as a
+    // generated skill named after the Behavior slug, and compiling it back
+    // reproduces the exact frozen text (no version churn on re-apply).
+    expect(w?.skills).toEqual(["account-health"]);
     expect(w?.prompt).toBe("Poll CRM data.");
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",

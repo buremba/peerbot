@@ -23,6 +23,7 @@
 
 import { InteractionResourceKind } from '@lobu/core/contracts/interaction-envelope';
 import {
+  type BehaviorTrigger,
   ListBehaviorsResultSchema,
   ListBehaviorsSchema,
   ManageBehaviorsResultSchema,
@@ -45,6 +46,7 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../utils/organization-access';
+import { assertBehaviorInstructions } from '../../behaviors/triggers';
 import { resolveRunInitiator } from '../initiator';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
@@ -159,6 +161,27 @@ async function manageBehaviorsImpl(
     for (const eid of args.entity_ids) {
       await requireWriteAccess(pgSql, eid, ctx);
     }
+  }
+
+  // Instruction-presence rule for create_version, checked UNGATED (the
+  // handler's connection assert runs only when triggers changed): when the
+  // caller writes instruction text, validate it against the Behavior's CURRENT
+  // trigger shape — a schedule/window/manual Behavior cannot publish an empty
+  // instruction version. An omitted prompt inherits the previous version's
+  // text and needs no re-check. Runs after requireWatcherAccess fenced the id
+  // to the caller's organization.
+  if (
+    args.action === 'create_version' &&
+    args.behavior_id &&
+    args.prompt !== undefined
+  ) {
+    const triggerRows = await pgSql`
+      SELECT triggers FROM watchers WHERE id = ${args.behavior_id} LIMIT 1
+    `;
+    assertBehaviorInstructions(
+      (triggerRows[0]?.triggers ?? []) as BehaviorTrigger[],
+      args.prompt
+    );
   }
 
   // A watcher IS agent config — it's an autonomous-execution definition (prompt,
@@ -451,7 +474,9 @@ function buildWatcherProposal(
   }
   if (args.action === 'create') {
     if (!args.slug) throw new ToolUserError('slug is required for create action');
-    if (!args.prompt) throw new ToolUserError('prompt is required for create action');
+    // Instruction text is required only for trigger shapes that run on it
+    // alone — event-turn Behaviors may omit prompt (built-in default).
+    assertBehaviorInstructions(args.triggers ?? [], args.prompt);
     if (!args.agent_id) {
       throw new ToolUserError(
         'agent_id is required to create a Behavior (the agent that executes it).'

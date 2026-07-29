@@ -230,7 +230,8 @@ export const ManageBehaviorsSchema = Type.Object(
     action: Type.Union(
       [
         Type.Literal("create", {
-          description: "Create a Behavior with prompt + sources.",
+          description:
+            "Create a Behavior. Author instructions as agent skills where possible; prompt is the compiled instruction text and may be omitted for event triggers with execution 'turn'.",
         }),
         Type.Literal("list", { description: "List Behaviors." }),
         Type.Literal("update", { description: "Patch Behavior config." }),
@@ -329,7 +330,7 @@ export const ManageBehaviorsSchema = Type.Object(
     prompt: Type.Optional(
       Type.String({
         description:
-          "[create/create_version] Literal LLM instruction text for the Behavior. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload.",
+          "[create/create_version] Literal LLM instruction text for the Behavior, frozen into the version. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Prefer authoring instructions as skills on the owning agent and compiling them here (declarative configs join the referenced skill bodies in order). Required for schedule triggers, event triggers with execution 'window', and Behaviors with no triggers; omit it for event triggers with execution 'turn' to use the built-in default.",
       })
     ),
     sources: Type.Optional(

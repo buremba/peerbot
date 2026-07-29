@@ -44,6 +44,7 @@ import {
   extractReactionInputSchema,
 } from '../../../watchers/reaction-executor';
 import {
+  assertBehaviorInstructions,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -93,15 +94,15 @@ export async function handleCreate(
 }> {
   const sql = getDb();
 
-  // Require slug + prompt for create. The output contract is not authored
+  // Require slug for create. Instruction text (prompt) is required only when
+  // the trigger shape runs on instructions alone — event-turn Behaviors may
+  // omit it and run on the built-in default (see assertBehaviorInstructions,
+  // called after triggers resolve below). The output contract is not authored
   // here: an entity-typed watcher (keying_config.entity_type) derives it from
   // entity_types.metadata_schema at runtime, and an untyped watcher uses the
   // worker's free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
-  }
-  if (!args.prompt) {
-    throw new ToolUserError('prompt is required for create action');
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
@@ -121,7 +122,7 @@ export async function handleCreate(
   //      — the backend derives them so the UI sends only the raw prompt.
   //   2. explicit `args.sources` (API callers / legacy).
   // If neither yields anything, fall back to a default all-events source.
-  const promptSources = extractSourcesFromPromptTokens(args.prompt);
+  const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);
   const sources: Array<{ name: string; query: string }> =
@@ -214,6 +215,7 @@ export async function handleCreate(
     triggers: args.triggers,
   });
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
+  assertBehaviorInstructions(triggerWrite.triggers, args.prompt);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -300,7 +302,7 @@ export async function handleCreate(
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
-        ${args.prompt}, ${toJsonParam(tx, sources)},
+        ${args.prompt ?? ''}, ${toJsonParam(tx, sources)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
@@ -397,7 +399,7 @@ export async function handleCreate(
         notification_channel: args.notification_channel ?? 'canvas',
         notification_priority: args.notification_priority ?? 'normal',
         min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
-        prompt: args.prompt,
+        prompt: args.prompt ?? '',
         description: args.description ?? null,
         keying_config: keyingConfig ?? null,
         classifiers: classifiers ?? null,
@@ -462,6 +464,12 @@ export async function handleUpdate(
   ) {
     await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
   }
+  // NOTE: no instruction-presence assert here. `lobu apply` pushes triggers
+  // (`update`) and compiled instructions (`create_version`) as two non-atomic
+  // calls in that order, so asserting on a trigger write would reject the
+  // legitimate event-turn → schedule transition mid-apply. Creates and
+  // instruction writes are the enforced seams (see assertBehaviorInstructions
+  // in behaviors/triggers.ts).
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
   // a zombie the scheduler will never run (automation joins on

@@ -405,7 +405,18 @@ export interface Behavior {
   description?: string;
   /** Connector events and/or cadence that activate this Behavior. */
   triggers?: BehaviorTriggerConfig[];
-  prompt: string;
+  /**
+   * Ordered skill names from the owning agent's skill library
+   * ({@link Agent.skills}). `lobu apply` compiles the referenced skill bodies —
+   * joined in this order — into the Behavior's frozen instructions; editing the
+   * library later does not change existing Behaviors until re-apply.
+   *
+   * Optional for event triggers with execution `"turn"` (chat/webhook listen —
+   * the incoming event is the content and a built-in default applies).
+   * Required (≥1) for schedule triggers, event triggers with execution
+   * `"window"`, and Behaviors with no triggers (manual runs).
+   */
+  skills?: string[];
   /**
    * Stable key generation for promoted entities. When `entityType` is set, the
    * Behavior is entity-typed: its output schema derives from that entity type's

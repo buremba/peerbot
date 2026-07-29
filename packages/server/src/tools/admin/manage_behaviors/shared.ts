@@ -155,14 +155,15 @@ function validateWatcherConfig(input: {
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): string | null {
-  if (!input.prompt || typeof input.prompt !== 'string') {
-    return 'prompt is required and must be a string';
-  }
-
-  // Prompts are literal instruction text — no templating layer. Any `{{` is
-  // legal prose. Only reject an effectively empty prompt.
-  if (input.prompt.trim().length === 0) {
-    return 'prompt cannot be empty';
+  // Instruction PRESENCE is trigger-shape-dependent (event-turn Behaviors may
+  // run with no instruction text) and is enforced by assertBehaviorInstructions
+  // (behaviors/triggers.ts) at the create / create_version seams — here an
+  // absent or empty prompt is structurally valid.
+  //
+  // Prompts are literal instruction text — no templating layer — so `{{` is
+  // legal prose and there is nothing else to validate about the shape.
+  if (input.prompt !== undefined && typeof input.prompt !== 'string') {
+    return 'prompt must be a string';
   }
 
   // The output contract is no longer authored on the watcher. An entity-typed

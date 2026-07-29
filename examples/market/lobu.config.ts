@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -13,8 +14,21 @@ import type founderActivityTrackerReaction from "./founder-activity-tracker.reac
 
 const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
 
+const founderActivityTrackerSkill = defineSkill({
+  name: "founder-activity-tracker",
+  content:
+    "You are a venture capital analyst tracking the public activity of startup founders in your portfolio.\n\nThe founders are the entities bound to this Behavior — the payload's `entities` array lists each founder's name, type, and ID. Their recent public activity arrives in the payload's `founder_posts` source.\n\nProduce a structured founder activity report:\n1. **Executive Summary**: 2-3 sentence overview of founder activity and signals.\n2. **Per-Founder Analysis**: For each active founder, summarize their messaging themes, engagement level, and signals about company direction.\n3. **Cross-Portfolio Patterns**: Themes multiple founders discuss.\n4. **Notable Signals**: Flag potential announcements, strategic shifts, or concerns.\n\nBe specific and cite actual tweets/posts as evidence.\n",
+});
+
+const opportunityMatcherSkill = defineSkill({
+  name: "opportunity-matcher",
+  content:
+    "You are a community intelligence agent for a private founder community managed by a venture capital fund.\nYour job is to monitor founder activity and identify high-quality introduction opportunities between portfolio founders.\n\nThe community members are the entities bound to this Behavior — the payload's `entities` array carries each member's name, type, and metadata (title, role). Their recent activity arrives in the payload's `content` source.\n\n## Instructions\n1. Scan all new content for signals: launches, posts, hiring announcements, funding news, project updates, and collaboration signals.\n2. For each signal, identify which other community founders are likely to care and explain why.\n3. Suggest a concrete action: warm intro draft, shared-interest notification, or flagging for community ops review.\n4. Only suggest introductions where there is a clear, specific overlap — not generic \"both work in tech\" matches.\n5. Rate each signal's strength (high/medium/low) based on timeliness and relevance.\n",
+});
+
 const vcTracking = defineAgent({
   id: "vc-tracking",
+  skills: [founderActivityTrackerSkill, opportunityMatcherSkill],
   name: "vc-tracking",
   description:
     "Track companies, founders, and investment opportunities for venture firms",
@@ -463,8 +477,7 @@ const founderActivityTracker = defineBehavior({
   reaction: reactionFromFile<typeof founderActivityTrackerReaction>(
     "./founder-activity-tracker.reaction.ts"
   ),
-  prompt:
-    "You are a venture capital analyst tracking the public activity of startup founders in your portfolio.\n\nThe founders are the entities bound to this Behavior — the payload's `entities` array lists each founder's name, type, and ID. Their recent public activity arrives in the payload's `founder_posts` source.\n\nProduce a structured founder activity report:\n1. **Executive Summary**: 2-3 sentence overview of founder activity and signals.\n2. **Per-Founder Analysis**: For each active founder, summarize their messaging themes, engagement level, and signals about company direction.\n3. **Cross-Portfolio Patterns**: Themes multiple founders discuss.\n4. **Notable Signals**: Flag potential announcements, strategic shifts, or concerns.\n\nBe specific and cite actual tweets/posts as evidence.\n",
+  skills: ["founder-activity-tracker"],
   sources: {
     founder_posts:
       "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE connector_key IN ('x') AND origin_type IN ('tweet', 'reply') ORDER BY occurred_at DESC LIMIT 300\n",
@@ -481,8 +494,7 @@ const opportunityMatcher = defineBehavior({
   notification: { priority: "normal" },
   tags: ["vc", "matching"],
   minCooldownSeconds: 600,
-  prompt:
-    "You are a community intelligence agent for a private founder community managed by a venture capital fund.\nYour job is to monitor founder activity and identify high-quality introduction opportunities between portfolio founders.\n\nThe community members are the entities bound to this Behavior — the payload's `entities` array carries each member's name, type, and metadata (title, role). Their recent activity arrives in the payload's `content` source.\n\n## Instructions\n1. Scan all new content for signals: launches, posts, hiring announcements, funding news, project updates, and collaboration signals.\n2. For each signal, identify which other community founders are likely to care and explain why.\n3. Suggest a concrete action: warm intro draft, shared-interest notification, or flagging for community ops review.\n4. Only suggest introductions where there is a clear, specific overlap — not generic \"both work in tech\" matches.\n5. Rate each signal's strength (high/medium/low) based on timeliness and relevance.\n",
+  skills: ["opportunity-matcher"],
   sources: {
     content:
       "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE entity_id IN (SELECT id FROM entities WHERE entity_type = 'founder') ORDER BY occurred_at DESC LIMIT 300\n",

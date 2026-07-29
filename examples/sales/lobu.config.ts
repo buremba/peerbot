@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -11,8 +12,15 @@ import {
 import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
 import type accountHealthMonitorReaction from "./account-health-monitor.reaction.ts";
 
+const accountHealthMonitorSkill = defineSkill({
+  name: "account-health-monitor",
+  content:
+    "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
+});
+
 const sales = defineAgent({
   id: "sales",
+  skills: [accountHealthMonitorSkill],
   name: "sales",
   description:
     "Help revenue teams track account health, rollout progress, and renewal signals",
@@ -193,8 +201,7 @@ const accountHealthMonitor = defineBehavior({
   reaction: reactionFromFile<typeof accountHealthMonitorReaction>(
     "./account-health-monitor.reaction.ts"
   ),
-  prompt:
-    "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
+  skills: ["account-health-monitor"],
 });
 
 export default defineConfig({

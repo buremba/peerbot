@@ -152,12 +152,12 @@ describe("mapProjectToDesiredState", () => {
     const w1 = defineBehavior({
       slug: "w",
       agent: a,
-      prompt: "p",
+      skills: ["s"],
     });
     const w2 = defineBehavior({
       slug: "w",
       agent: a,
-      prompt: "p",
+      skills: ["s"],
     });
     expect(() =>
       mapProjectToDesiredState(
@@ -466,7 +466,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: crm,
       slug: "health",
-      prompt: "assess",
+      skills: ["s"],
       sources: {
         accounts: "SELECT 1",
         ctx: { query: "SELECT 2", context: true },
@@ -537,7 +537,6 @@ describe("mapProjectToDesiredState", () => {
       defineBehavior({
         agent: crm,
         slug: "review-pr",
-        prompt: "Review it",
         triggers: [
           {
             kind: "event",
@@ -582,7 +581,6 @@ describe("mapProjectToDesiredState", () => {
             defineBehavior({
               agent: crm,
               slug: "review-pr",
-              prompt: "Review it",
               triggers: [
                 {
                   kind: "event",
@@ -607,7 +605,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: crm,
       slug: "w",
-      prompt: "p",
+      skills: ["s"],
       reactionsGuidance: "Notify the account owner.",
       agentKind: "notifier",
     });
@@ -623,7 +621,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: crm,
       slug: "pricing",
-      prompt: "extract",
+      skills: ["s"],
       keyingConfig: {
         entityType: "price",
         entityPath: "prices",
@@ -648,7 +646,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: "ghost",
       slug: "x",
-      prompt: "p",
+      skills: ["s"],
     });
     expect(() =>
       mapProjectToDesiredState(
@@ -778,7 +776,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: crm,
       slug: "w",
-      prompt: "p",
+      skills: ["s"],
       triggers: [{ kind: "schedule", cron: "not-a-cron" }],
     });
     expect(() =>
@@ -793,7 +791,7 @@ describe("mapProjectToDesiredState", () => {
     const watcher = defineBehavior({
       agent: crm,
       slug: "w",
-      prompt: "p",
+      skills: ["s"],
       triggers: [{ kind: "schedule", cron: "*/30 * * * * *" }],
     });
     expect(() =>
@@ -808,7 +806,7 @@ describe("mapProjectToDesiredState", () => {
     const behavior = defineBehavior({
       agent: crm,
       slug: "w",
-      prompt: "p",
+      skills: ["s"],
       triggers: [
         { kind: "schedule", cron: "0 8 * * *" },
         { kind: "schedule", cron: "0 9 * * *" },
@@ -819,6 +817,94 @@ describe("mapProjectToDesiredState", () => {
         defineConfig({ agents: [crm], behaviors: [behavior] })
       )
     ).toThrow(/more than one schedule trigger/i);
+  });
+
+  test("requires >=1 skill for schedule, window-event, and manual Behaviors", () => {
+    const crm = defineAgent({ id: "crm" });
+    const map = (behavior: ReturnType<typeof defineBehavior>) => () =>
+      mapProjectToDesiredState(
+        defineConfig({ agents: [crm], behaviors: [behavior] })
+      );
+    // Schedule trigger, no skills → rejected.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "sched",
+          triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+        })
+      )
+    ).toThrow(/needs at least one skill/i);
+    // Event trigger with execution "window", no skills → rejected.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "win",
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "github",
+              event_types: ["pull_request.created"],
+              execution: "window",
+            },
+          ],
+        })
+      )
+    ).toThrow(/needs at least one skill/i);
+    // No triggers (manual-only), no skills → rejected.
+    expect(map(defineBehavior({ agent: crm, slug: "manual" }))).toThrow(
+      /needs at least one skill/i
+    );
+  });
+
+  test("event-turn Behaviors may omit skills; mapper carries skills + empty prompt", () => {
+    const crm = defineAgent({ id: "crm" });
+    const listen = defineBehavior({
+      agent: crm,
+      slug: "listen",
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "slack",
+          event_types: ["message.created"],
+          // execution omitted → defaults to "turn"
+        },
+      ],
+    });
+    const packs = defineBehavior({
+      agent: crm,
+      slug: "packs",
+      skills: ["triage", "sql-style"],
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "slack",
+          event_types: ["message.created"],
+          execution: "turn",
+        },
+      ],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], behaviors: [listen, packs] })
+    );
+    // The mapper cannot read skill files — prompt is compiled by the loader.
+    expect(state.watchers[0]?.prompt).toBe("");
+    expect(state.watchers[0]?.skills).toBeUndefined();
+    expect(state.watchers[1]?.skills).toEqual(["triage", "sql-style"]);
+  });
+
+  test("rejects duplicate and over-cap Behavior skills", () => {
+    const crm = defineAgent({ id: "crm" });
+    const map = (skills: string[]) => () =>
+      mapProjectToDesiredState(
+        defineConfig({
+          agents: [crm],
+          behaviors: [defineBehavior({ agent: crm, slug: "w", skills })],
+        })
+      );
+    expect(map(["a", "b", "a"])).toThrow(/duplicate skill/i);
+    expect(map(["a", "b", "c", "d", "e", "f"])).toThrow(/maximum is 5/i);
   });
 
   test("rejects credentials on an interactive auth profile", () => {
@@ -920,7 +1006,6 @@ describe("mapProjectToDesiredState", () => {
     const behavior = defineBehavior({
       agent: crm,
       slug: "review-pr",
-      prompt: "Review it",
       triggers: [
         {
           kind: "event",
@@ -950,7 +1035,6 @@ describe("mapProjectToDesiredState", () => {
     const behavior = defineBehavior({
       agent: crm,
       slug: "review-pr",
-      prompt: "Review it",
       triggers: [
         {
           kind: "event",

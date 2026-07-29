@@ -369,12 +369,12 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
-        `const crm = defineAgent({ id: "crm" });`,
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill, reactionFromFile } from "@lobu/cli/config";`,
+        `const crm = defineAgent({ id: "crm", skills: [defineSkill({ name: "s", content: "p" })] });`,
         `export default defineConfig({`,
         `  agents: [crm],`,
         `  behaviors: [defineBehavior({`,
-        `    agent: crm, slug: "health", prompt: "p",`,
+        `    agent: crm, slug: "health", skills: ["s"],`,
         `    reaction: reactionFromFile("./reactions/health.reaction.ts"),`,
         `  })],`,
         `});`,
@@ -394,10 +394,10 @@ describe("loadDesiredStateFromConfig", () => {
       writeFileSync(
         join(dir, "lobu.config.ts"),
         [
-          `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
-          `const crm = defineAgent({ id: "crm" });`,
+          `import { defineAgent, defineConfig, defineBehavior, defineSkill, reactionFromFile } from "@lobu/cli/config";`,
+          `const crm = defineAgent({ id: "crm", skills: [defineSkill({ name: "s", content: "p" })] });`,
           `export default defineConfig({ agents: [crm], behaviors: [defineBehavior({`,
-          `  agent: crm, slug: "w", prompt: "p", reaction: reactionFromFile(${JSON.stringify(reaction)}),`,
+          `  agent: crm, slug: "w", skills: ["s"], reaction: reactionFromFile(${JSON.stringify(reaction)}),`,
           `})] });`,
           ``,
         ].join("\n")
@@ -429,10 +429,10 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineBehavior } from "@lobu/cli/config";`,
-        `const crm = defineAgent({ id: "crm" });`,
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill } from "@lobu/cli/config";`,
+        `const crm = defineAgent({ id: "crm", skills: [defineSkill({ name: "s", content: "p" })] });`,
         `export default defineConfig({ agents: [crm], behaviors: [defineBehavior({`,
-        `  agent: crm, slug: "w", prompt: "p", reaction: "./reactions/x.reaction.ts",`,
+        `  agent: crm, slug: "w", skills: ["s"], reaction: "./reactions/x.reaction.ts",`,
         `})] });`,
         ``,
       ].join("\n")
@@ -452,11 +452,11 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineBehavior, reactionFromFile } from "@lobu/cli/config";`,
-        `const a = defineAgent({ id: "a" });`,
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill, reactionFromFile } from "@lobu/cli/config";`,
+        `const a = defineAgent({ id: "a", skills: [defineSkill({ name: "s", content: "p" })] });`,
         `export default defineConfig({ agents: [a], behaviors: [`,
-        `  defineBehavior({ agent: a, slug: "first", prompt: "p" }),`,
-        `  defineBehavior({ agent: a, slug: "second", prompt: "p", reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
+        `  defineBehavior({ agent: a, slug: "first", skills: ["s"] }),`,
+        `  defineBehavior({ agent: a, slug: "second", skills: ["s"], reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
         `] });`,
         ``,
       ].join("\n")
@@ -468,6 +468,72 @@ describe("loadDesiredStateFromConfig", () => {
     expect(state.watchers[1]?.slug).toBe("second");
     expect(state.watchers[1]?.reactionScript?.sourcePath).toContain(
       "second.reaction.ts"
+    );
+  });
+
+  test("compiles Behavior skills[] into prompt: ordered join, content-only", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "compile-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill } from "@lobu/cli/config";`,
+        `const a = defineAgent({ id: "a", skills: [`,
+        `  defineSkill({ name: "triage", description: "d1", content: "Triage rules." }),`,
+        `  defineSkill({ name: "style", description: "d2", content: "Style rules." }),`,
+        `] });`,
+        `export default defineConfig({ agents: [a], behaviors: [`,
+        `  defineBehavior({ agent: a, slug: "w", skills: ["style", "triage"] }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    // Join follows the Behavior's order, not the library's; descriptions do
+    // not compile (a description-only skill edit must not churn versions).
+    expect(state.watchers[0]?.prompt).toBe("Style rules.\n\nTriage rules.");
+  });
+
+  test("rejects a Behavior skill that is missing or has an empty body", async () => {
+    const write = (skills: string, behaviorSkills: string) => {
+      dir = mkdtempSync(join(import.meta.dir, "badskill-"));
+      writeFileSync(
+        join(dir, "lobu.config.ts"),
+        [
+          `import { defineAgent, defineConfig, defineBehavior, defineSkill } from "@lobu/cli/config";`,
+          `const a = defineAgent({ id: "a", skills: [${skills}] });`,
+          `export default defineConfig({ agents: [a], behaviors: [`,
+          `  defineBehavior({ agent: a, slug: "w", skills: [${behaviorSkills}] }),`,
+          `] });`,
+          ``,
+        ].join("\n")
+      );
+      return loadDesiredStateFromConfig({ cwd: dir });
+    };
+    await expect(
+      write(`defineSkill({ name: "real", content: "x" })`, `"ghost"`)
+    ).rejects.toThrow(/no skill with that name/);
+    rmSync(dir, { recursive: true, force: true });
+    await expect(
+      write(`defineSkill({ name: "empty", content: "  " })`, `"empty"`)
+    ).rejects.toThrow(/body is empty/);
+  });
+
+  test("rejects compiled instructions over the 32KB cap", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "cap-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill } from "@lobu/cli/config";`,
+        `const big = "x".repeat(33 * 1024);`,
+        `const a = defineAgent({ id: "a", skills: [defineSkill({ name: "big", content: big })] });`,
+        `export default defineConfig({ agents: [a], behaviors: [`,
+        `  defineBehavior({ agent: a, slug: "w", skills: ["big"] }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /maximum is 32768/
     );
   });
 

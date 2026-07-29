@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type AgentInstructionLayers,
+  EMPTY_AGENT_LAYERS,
+} from "../runtime/session-context";
+import {
   LOBU_DEFAULT_IDENTITY,
   replaceBasePromptIdentity,
   resolveAgentIdentity,
@@ -44,20 +48,67 @@ describe("replaceBasePromptIdentity", () => {
   });
 });
 
+function layers(
+  partial: Partial<AgentInstructionLayers> = {}
+): AgentInstructionLayers {
+  return { ...EMPTY_AGENT_LAYERS, ...partial };
+}
+
 describe("resolveAgentIdentity", () => {
-  test("uses the agent's own IDENTITY.md when present", () => {
+  test("uses the agent's own identity when it is the only layer set", () => {
     const identity = "You are Aria, Acme's support agent.";
-    expect(resolveAgentIdentity(identity)).toBe(identity);
+    expect(resolveAgentIdentity(layers({ identityMd: identity }))).toBe(
+      `## Agent Identity\n\n${identity}`
+    );
   });
 
-  test("trims surrounding whitespace from a present identity", () => {
-    expect(resolveAgentIdentity("  You are Aria.  \n")).toBe("You are Aria.");
+  test("trims surrounding whitespace from each layer", () => {
+    expect(
+      resolveAgentIdentity(layers({ identityMd: "  You are Aria.  \n" }))
+    ).toBe("## Agent Identity\n\nYou are Aria.");
   });
 
-  test("falls back to the Lobu default when identity is empty", () => {
-    expect(resolveAgentIdentity("")).toBe(LOBU_DEFAULT_IDENTITY);
-    expect(resolveAgentIdentity("   \n  ")).toBe(LOBU_DEFAULT_IDENTITY);
+  test("falls back to the Lobu default when every layer is empty", () => {
+    expect(resolveAgentIdentity(layers())).toBe(LOBU_DEFAULT_IDENTITY);
+    expect(
+      resolveAgentIdentity(
+        layers({ identityMd: "   \n  ", soulMd: " ", userMd: "\t" })
+      )
+    ).toBe(LOBU_DEFAULT_IDENTITY);
     expect(resolveAgentIdentity(undefined)).toBe(LOBU_DEFAULT_IDENTITY);
+  });
+
+  test("composes identity, soul and user in that order with their headings", () => {
+    expect(
+      resolveAgentIdentity(
+        layers({
+          identityMd: "I am Aria.",
+          soulMd: "Be terse.",
+          userMd: "Acme staff.",
+        })
+      )
+    ).toBe(
+      "## Agent Identity\n\nI am Aria.\n\n" +
+        "## Agent Instructions\n\nBe terse.\n\n" +
+        "## User Context\n\nAcme staff."
+    );
+  });
+
+  test("omits the heading of every layer that is blank", () => {
+    expect(resolveAgentIdentity(layers({ soulMd: "Be terse." }))).toBe(
+      "## Agent Instructions\n\nBe terse."
+    );
+    expect(resolveAgentIdentity(layers({ userMd: "Acme staff." }))).toBe(
+      "## User Context\n\nAcme staff."
+    );
+  });
+
+  test("the unconfigured notice stands in for the whole block, not the default", () => {
+    // The gateway supplies this only when every configured layer is blank.
+    const notice = "## Agent Configuration Notice\n\nAsk an admin.";
+    expect(resolveAgentIdentity(layers({ unconfiguredNotice: notice }))).toBe(
+      notice
+    );
   });
 
   test("the Lobu default never leaks the pi harness framing", () => {
@@ -77,7 +128,10 @@ describe("resolveAgentIdentity", () => {
 
   test("default identity replaces the pi opener end-to-end", () => {
     const base = `${PI_OPENER}\n\nAvailable tools:\n- read`;
-    const out = replaceBasePromptIdentity(base, resolveAgentIdentity(""));
+    const out = replaceBasePromptIdentity(
+      base,
+      resolveAgentIdentity(EMPTY_AGENT_LAYERS)
+    );
     expect(out).not.toContain("expert coding assistant");
     expect(out).toContain("Lobu agent");
     expect(out).toContain("Available tools:");

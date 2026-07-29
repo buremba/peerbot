@@ -48,6 +48,12 @@ let savedEncryptionKey: string | undefined;
  */
 const ORG = "org-worker-ctx-fallback";
 const AGENT = "agent-worker-ctx";
+const EMPTY_AGENT_LAYERS = {
+  identityMd: "",
+  soulMd: "",
+  userMd: "",
+  unconfiguredNotice: "",
+};
 
 function buildGatewayNoCatalog(getSettings: () => Promise<any>): WorkerGateway {
   return new WorkerGateway(
@@ -56,7 +62,7 @@ function buildGatewayNoCatalog(getSettings: () => Promise<any>): WorkerGateway {
     { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
     {
       getSessionContext: async () => ({
-        agentInstructions: "",
+        agentLayers: EMPTY_AGENT_LAYERS,
         platformInstructions: "",
         networkInstructions: "",
         skillsInstructions: "",
@@ -229,7 +235,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -282,7 +288,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -340,7 +346,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -406,7 +412,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -448,7 +454,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",

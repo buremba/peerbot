@@ -93,9 +93,16 @@ describe("prompt assembly (real pi base prompt)", () => {
     const custom = "You are Aria, Acme's support agent.";
     const finalSystemPrompt = replaceBasePromptIdentity(
       base,
-      resolveAgentIdentity(custom)
+      resolveAgentIdentity({
+        identityMd: custom,
+        soulMd: "",
+        userMd: "",
+        unconfiguredNotice: "",
+      })
     );
-    expect(finalSystemPrompt.startsWith(custom)).toBe(true);
+    expect(finalSystemPrompt.startsWith(`## Agent Identity\n\n${custom}`)).toBe(
+      true
+    );
     expect(finalSystemPrompt).not.toContain("You are a Lobu agent");
     expect(finalSystemPrompt).not.toContain(
       "expert coding assistant operating inside pi"

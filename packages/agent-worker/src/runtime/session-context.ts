@@ -49,8 +49,28 @@ interface SkillContent {
   content: string;
 }
 
+/**
+ * The agent's configured instruction sources, kept apart on the wire so prompt
+ * assembly does not have to recover their boundaries from operator-authored
+ * headings.
+ */
+export interface AgentInstructionLayers {
+  identityMd: string;
+  soulMd: string;
+  userMd: string;
+  /** Non-empty only when identity, soul and user are all blank. */
+  unconfiguredNotice: string;
+}
+
+export const EMPTY_AGENT_LAYERS: AgentInstructionLayers = {
+  identityMd: "",
+  soulMd: "",
+  userMd: "",
+  unconfiguredNotice: "",
+};
+
 interface SessionContextResponse {
-  agentInstructions: string;
+  agentLayers: AgentInstructionLayers;
   platformInstructions: string;
   networkInstructions: string;
   skillsInstructions: string;
@@ -65,7 +85,7 @@ interface SessionContextResponse {
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const DEFAULT_SESSION_CONTEXT = {
-  agentInstructions: "",
+  agentLayers: EMPTY_AGENT_LAYERS,
   gatewayInstructions: "",
   providerConfig: {} as ProviderConfig,
   skillsConfig: [] as SkillContent[],
@@ -76,7 +96,7 @@ const DEFAULT_SESSION_CONTEXT = {
 
 // Module-level cache for session context
 let cachedResult: {
-  agentInstructions: string;
+  agentLayers: AgentInstructionLayers;
   gatewayInstructions: string;
   providerConfig: ProviderConfig;
   skillsConfig: SkillContent[];
@@ -270,13 +290,12 @@ export async function getAgentSessionContext(
   opts: { mcpExposure?: "tools" | "cli" } = {}
 ): Promise<{
   /**
-   * Identity/soul/user instructions for this agent. Returned separately from
-   * `gatewayInstructions` so the worker can prepend identity BEFORE the
+   * The agent's identity/soul/user sources, still separate. Returned apart
+   * from `gatewayInstructions` because their composed block belongs BEFORE the
    * pi-coding-agent base prompt (which would otherwise anchor the model with
-   * "You are an expert coding assistant" before the agent's real persona is
-   * declared).
+   * "You are an expert coding assistant" before the agent's real persona).
    */
-  agentInstructions: string;
+  agentLayers: AgentInstructionLayers;
   /** Platform / network / skills / MCP setup instructions (no identity). */
   gatewayInstructions: string;
   providerConfig: ProviderConfig;
@@ -358,9 +377,8 @@ export async function getAgentSessionContext(
     const mcpCliInstructions =
       mcpExposure === "cli" ? buildMcpCliInstructions(data.mcpStatus) : "";
 
-    // Identity/soul/user instructions are returned separately so the worker
-    // can prepend them BEFORE the pi-coding-agent base prompt.
-    const agentInstructions = data.agentInstructions || "";
+    // Keep the wire-level boundaries intact until prompt assembly.
+    const agentLayers = data.agentLayers;
 
     const gatewayInstructions = [
       data.platformInstructions,
@@ -376,13 +394,13 @@ export async function getAgentSessionContext(
     const mcpTools = data.mcpTools || {};
 
     logger.info(
-      `Built gateway instructions: agent (${agentInstructions.length} chars, prepended) + platform (${data.platformInstructions.length} chars) + network (${data.networkInstructions.length} chars) + skills (${(data.skillsInstructions || "").length} chars) + MCP setup (${mcpSetupInstructions.length} chars) + MCP server instructions (${mcpServerInstructions.length} chars), mcpTools: ${Object.keys(mcpTools).length} servers`
+      `Built gateway instructions: agent (identity ${agentLayers.identityMd.length} / soul ${agentLayers.soulMd.length} / user ${agentLayers.userMd.length} chars, prepended) + platform (${data.platformInstructions.length} chars) + network (${data.networkInstructions.length} chars) + skills (${(data.skillsInstructions || "").length} chars) + MCP setup (${mcpSetupInstructions.length} chars) + MCP server instructions (${mcpServerInstructions.length} chars), mcpTools: ${Object.keys(mcpTools).length} servers`
     );
 
     const mcpContext = data.mcpContext || {};
 
     const result = {
-      agentInstructions,
+      agentLayers,
       gatewayInstructions,
       providerConfig: data.providerConfig || {},
       skillsConfig: data.skillsConfig || [],

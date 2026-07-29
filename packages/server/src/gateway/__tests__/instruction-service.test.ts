@@ -55,15 +55,45 @@ describe("InstructionService", () => {
       { settingsUrl: "http://localhost:8080/api/v1/agents/agent-1/config" }
     );
 
-    expect(sessionContext.agentInstructions).toContain(
+    expect(sessionContext.agentLayers.unconfiguredNotice).toContain(
       "## Agent Configuration Notice"
     );
-    expect(sessionContext.agentInstructions).toContain(
+    expect(sessionContext.agentLayers.unconfiguredNotice).toContain(
       "IDENTITY.md, SOUL.md, USER.md"
     );
-    expect(sessionContext.agentInstructions).not.toContain(
+    expect(sessionContext.agentLayers.unconfiguredNotice).not.toContain(
       "Do not invent product capabilities"
     );
+  });
+
+  test("keeps identity, soul and user in their own fields (no welded blob)", async () => {
+    // Joining here would force prompt assembly to recover boundaries from
+    // headings that operators can also use in their own content.
+    await seedAgentRow("layered", { organizationId: "org-a" });
+    await orgContext.run({ organizationId: "org-a" }, () =>
+      store.saveSettings("layered", {
+        identityMd: "I am Aria.",
+        soulMd: "Always answer in British English.",
+        userMd: "Your audience is Acme's support team.",
+      } as any)
+    );
+
+    const ctx = await service.getSessionContext("telegram", {
+      agentId: "layered",
+      organizationId: "org-a",
+      userId: "user-1",
+      workingDirectory: "/workspace/thread-1",
+    } as any);
+
+    expect(ctx.agentLayers.identityMd).toBe("I am Aria.");
+    expect(ctx.agentLayers.soulMd).toBe("Always answer in British English.");
+    expect(ctx.agentLayers.userMd).toBe(
+      "Your audience is Acme's support team."
+    );
+    // Configured agents get no notice, and no layer absorbs another.
+    expect(ctx.agentLayers.unconfiguredNotice).toBe("");
+    expect(ctx.agentLayers.identityMd).not.toContain("British English");
+    expect(ctx.agentLayers.soulMd).not.toContain("Aria");
   });
 
   test("resolves agent identity scoped to the caller's org (shared agent id across orgs)", async () => {
@@ -94,14 +124,14 @@ describe("InstructionService", () => {
     } as any);
 
     // org-b's identity resolved — not org-a's (the unscoped-read bug).
-    expect(ctxB.agentInstructions).toContain("I am the ORG-B builder.");
-    expect(ctxB.agentInstructions).not.toContain("I am the ORG-A builder.");
+    expect(ctxB.agentLayers.identityMd).toContain("I am the ORG-B builder.");
+    expect(ctxB.agentLayers.identityMd).not.toContain("I am the ORG-A builder.");
   });
 
-  test("does NOT inject org guidance into agentInstructions (delivered via lobu-memory MCP, not duplicated)", async () => {
+  test("does NOT inject org guidance into the agent layers (delivered via lobu-memory MCP, not duplicated)", async () => {
     // Single source of truth: guidance reaches the worker prompt through the
     // lobu-memory MCP server's instructions (buildWorkspaceInstructions renders
-    // the "Organization Context" section). Injecting it into agentInstructions
+    // the "Organization Context" section). Injecting it into the agent layers
     // here too — under the same org-scope gate — would duplicate it in the
     // prompt. This test pins that the session-context path stays out of it.
     await seedAgentRow("agent-guided", { organizationId: "org-a" });
@@ -114,8 +144,10 @@ describe("InstructionService", () => {
       workingDirectory: "/workspace/thread-1",
     } as any);
 
-    expect(ctxA.agentInstructions).not.toContain("## Organization Context");
-    expect(ctxA.agentInstructions).not.toContain(
+    expect(JSON.stringify(ctxA.agentLayers)).not.toContain(
+      "## Organization Context"
+    );
+    expect(JSON.stringify(ctxA.agentLayers)).not.toContain(
       "Fiscal year starts in February."
     );
   });

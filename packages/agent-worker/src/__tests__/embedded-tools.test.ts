@@ -758,7 +758,12 @@ describe("session context cache TTL", () => {
 
   function makeSessionResponse() {
     return {
-      agentInstructions: "test agent",
+      agentLayers: {
+        identityMd: "test agent",
+        soulMd: "",
+        userMd: "",
+        unconfiguredNotice: "",
+      },
       platformInstructions: "test platform",
       networkInstructions: "test network",
       skillsInstructions: "test skills",
@@ -799,6 +804,7 @@ describe("session context cache TTL", () => {
     const second = await getAgentSessionContext();
 
     expect(fetchCount).toBe(1);
+    expect(first.agentLayers).toEqual(makeSessionResponse().agentLayers);
     expect(first.mcpContext).toEqual({ lobu: "Check memory" });
     expect(second.mcpContext).toEqual({ lobu: "Check memory" });
   });

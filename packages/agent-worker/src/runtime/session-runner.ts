@@ -50,6 +50,7 @@ import { resetSessionForProviderChange } from "./provider-session";
 import { buildRuntimeShellInstructions } from "./runtime-shell-instructions";
 import { checkSandboxLeak } from "./sandbox-leak";
 import {
+  type AgentInstructionLayers,
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "./session-context";
@@ -351,14 +352,13 @@ export function replaceBasePromptIdentity(
 }
 
 /**
- * Fallback identity used when an agent ships no IDENTITY.md (i.e.
- * `context.agentInstructions` is empty). Without this, the pi-coding-agent
- * opener wins and the agent introduces itself as "an expert coding assistant
- * operating inside pi, a coding agent harness" — leaking harness internals and
- * mis-describing what a Lobu agent actually is.
+ * Fallback identity used when every configured instruction layer is empty.
+ * Without this, the pi-coding-agent opener wins and the agent introduces
+ * itself as "an expert coding assistant operating inside pi, a coding agent
+ * harness" — leaking harness internals and mis-describing what a Lobu agent
+ * actually is.
  *
- * A custom IDENTITY.md still fully overrides this; it only applies when the
- * agent has declared no identity of its own.
+ * Any configured identity, soul, or user layer overrides this fallback.
  *
  * The capabilities section is grounded in what every Lobu agent has by
  * construction (shared memory, connectors, actions, channel presence) rather
@@ -384,15 +384,37 @@ export const LOBU_DEFAULT_IDENTITY = `You are a Lobu agent — a persistent, mem
 Introduce yourself in terms of who you help and what you can do for them — concretely and specifically to this organization — not in terms of the software you are running on.`;
 
 /**
- * Resolve the identity to inject: the agent's own IDENTITY.md when present,
- * otherwise the Lobu default persona. Returns a non-empty string, so the pi
- * opener is always replaced and never reaches the model verbatim.
+ * Compose configured layers in their existing prompt order. The worker owns
+ * this step because prompt placement is a worker concern.
+ *
+ * `unconfiguredNotice` replaces the whole block rather than appending to it:
+ * the gateway only sets it when all three sources are blank.
+ */
+function composeAgentInstructions(layers: AgentInstructionLayers): string {
+  const sections: string[] = [];
+  if (layers.identityMd.trim()) {
+    sections.push(`## Agent Identity\n\n${layers.identityMd.trim()}`);
+  }
+  if (layers.soulMd.trim()) {
+    sections.push(`## Agent Instructions\n\n${layers.soulMd.trim()}`);
+  }
+  if (layers.userMd.trim()) {
+    sections.push(`## User Context\n\n${layers.userMd.trim()}`);
+  }
+  const composed = sections.join("\n\n");
+  return composed || layers.unconfiguredNotice;
+}
+
+/**
+ * Resolve the identity to inject: the agent's own configured instructions when
+ * present, otherwise the Lobu default persona. Returns a non-empty string, so
+ * the pi opener is always replaced and never reaches the model verbatim.
  */
 export function resolveAgentIdentity(
-  agentInstructions: string | undefined
+  layers: AgentInstructionLayers | undefined
 ): string {
-  const trimmed = agentInstructions?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : LOBU_DEFAULT_IDENTITY;
+  const composed = layers ? composeAgentInstructions(layers).trim() : "";
+  return composed.length > 0 ? composed : LOBU_DEFAULT_IDENTITY;
 }
 
 /**
@@ -1317,17 +1339,12 @@ user references earlier discussion or you need prior context.`);
       createdSession.session.agent.abort();
     });
 
-    // Pi-coding-agent's base prompt opens with "You are an expert coding
-    // assistant operating inside pi, a coding agent harness…" — that anchor
-    // overrides any IDENTITY.md the agent ships with. Replace just that
-    // opener with the agent's real identity (or the lobu default) so the
-    // tools/guidelines/cwd footer below it still applies, but the role on
-    // top is the one we actually want.
+    // Pi-coding-agent's base prompt opens with its own role declaration.
+    // Replace just that opener with the configured instruction block (or Lobu
+    // default) so its tools/guidelines/cwd footer still applies without
+    // anchoring the model to the harness identity.
     const basePrompt = session.systemPrompt;
-    // Resolve the identity from the agent's IDENTITY.md, falling back to the
-    // Lobu default persona when the agent declares none. Either way we replace
-    // the pi opener so it never reaches the model verbatim.
-    const identity = resolveAgentIdentity(context.agentInstructions);
+    const identity = resolveAgentIdentity(context.agentLayers);
     const finalSystemPrompt = [
       replaceBasePromptIdentity(basePrompt, identity),
       finalInstructionsUpdated,

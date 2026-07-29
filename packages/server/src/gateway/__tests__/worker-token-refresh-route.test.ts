@@ -78,7 +78,12 @@ function makeGateway(): WorkerGateway {
     { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
     {
       getSessionContext: async () => ({
-        agentInstructions: "",
+        agentLayers: {
+          identityMd: "",
+          soulMd: "",
+          userMd: "",
+          unconfiguredNotice: "",
+        },
         platformInstructions: "",
         networkInstructions: "",
         skillsInstructions: "",

@@ -76,6 +76,33 @@ describe("ChatIdentityInstructionProvider", () => {
     expect(result).toContain("@current-bot");
   });
 
+  test("no connectionId on the turn: framing WITHOUT identity, by design", async () => {
+    // Identity resolution deliberately has no agent+platform fallback: there is
+    // exactly one InstructionContext construction site (`gateway/index.ts`) and
+    // it always carries the signed `connectionId`, which `enqueueUserTurn` sets
+    // on every inbound chat turn. Guessing a connection when the field is
+    // missing would pick an arbitrary one for an agent with several.
+    //
+    // Pinning the DEGRADATION so it stays intentional: the handle drops, the
+    // framing does not. If a future caller builds a context without the field,
+    // the agent still knows it is a participant.
+    const provider = new ChatIdentityInstructionProvider(
+      {
+        getConnection: async () => {
+          throw new Error("must not be called without a connection id");
+        },
+      } as never,
+      "slack"
+    );
+
+    const result = await provider.getInstructions(
+      ctx({ organizationId: "acme", connectionId: undefined })
+    );
+
+    expect(result).toContain("participant in this conversation");
+    expect(result).not.toContain("@");
+  });
+
   test("orgless declared context emits generic framing without reading connections", async () => {
     let getCalled = false;
     const provider = new ChatIdentityInstructionProvider(
@@ -129,6 +156,23 @@ describe("ChatIdentityInstructionProvider", () => {
     const provider = new ChatIdentityInstructionProvider(
       managerReturning(null),
       "gchat"
+    );
+
+    const result = await provider.getInstructions(
+      ctx({ organizationId: "acme" })
+    );
+
+    expect(result).toContain("participant in this conversation");
+  });
+
+  test("connection lookup failure still emits participant framing", async () => {
+    const provider = new ChatIdentityInstructionProvider(
+      {
+        getConnection: async () => {
+          throw new Error("store unavailable");
+        },
+      } as never,
+      "telegram"
     );
 
     const result = await provider.getInstructions(

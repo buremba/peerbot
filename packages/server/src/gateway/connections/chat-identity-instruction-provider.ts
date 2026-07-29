@@ -1,12 +1,44 @@
 /**
  * Shared identity and participant framing for chat platforms.
  *
- * This is part of the cached gateway prefix. Keep it connection-scoped; sender,
- * channel, message, and session details belong in the per-turn run context.
+ * An agent reached over chat needs two facts nothing else in the prompt
+ * supplies: WHO it is in the conversation, and that the messages it receives
+ * are addressed TO it. Without them it has only its identity/soul markdown,
+ * which describes the principal in the third person ("you work on the user's
+ * data on their behalf") and never says the person currently typing IS that
+ * principal. The model resolves that ambiguity per turn, often the wrong way:
+ * it treats the message as observed conversation about a third party and
+ * narrates it back — "Burak is asking … how would you like to respond?" — to an
+ * operator who does not exist. Slack never showed this only because its
+ * provider happened to say "You are reachable in Slack as `@x`", which implies
+ * participation; every platform declaring no provider got nothing.
+ *
+ * Identity is best-effort, the framing is not. `Adapter.botUserId` is optional
+ * in the Chat SDK, a turn may carry no `connectionId`, and the store can fail —
+ * in all three cases the handle is omitted but the framing still renders, since
+ * the framing is the half that resolves the ambiguity.
+ *
+ * PROMPT-CACHE CONTRACT — read before adding a line here.
+ * This block sits at the FRONT of `gatewayInstructions` (`session-context.ts`),
+ * and the openai-completions path has no explicit cache breakpoints: reuse is
+ * longest-common-prefix only. Everything emitted here must be CONNECTION-scoped
+ * (platform, bot handle, bot id) — constant for the life of the connection, so
+ * every conversation on it shares one prefix. Never interpolate anything
+ * CONVERSATION-scoped (sender name, channel/chat id, message text, timestamps):
+ * that hands every new conversation a unique prefix and forfeits the cache for
+ * all of them. Those belong in the per-turn run context, which is not cached.
+ * A test pins this by rendering two users/sessions on one connection and
+ * asserting byte equality.
  */
-import { BaseInstructionProvider, type InstructionContext } from "@lobu/core";
+import {
+  BaseInstructionProvider,
+  createLogger,
+  type InstructionContext,
+} from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
+
+const logger = createLogger("chat-identity-instructions");
 
 const PLATFORM_LABELS: Record<string, string> = {
   slack: "Slack",
@@ -63,7 +95,15 @@ export class ChatIdentityInstructionProvider extends BaseInstructionProvider {
   protected async buildInstructions(
     context: InstructionContext
   ): Promise<string> {
-    const identity = await this.resolveIdentity(context);
+    let identity: ChatBotIdentity | null = null;
+    try {
+      identity = await this.resolveIdentity(context);
+    } catch (error) {
+      logger.warn(
+        { error, connectionId: context.connectionId },
+        "Failed to resolve chat identity; using generic framing"
+      );
+    }
     return this.renderIdentity(identity ?? {});
   }
 

@@ -19,8 +19,31 @@ interface McpStatus {
   requiresInput: boolean;
 }
 
+/**
+ * The agent's configured instruction sources, kept apart rather than welded
+ * into one blob. Keeping the wire-level boundaries lets the worker own prompt
+ * assembly without parsing headings that may also appear in operator content.
+ *
+ * `unconfiguredNotice` is rendered here rather than in the worker because it
+ * embeds the settings URL, which only the gateway knows. It is non-empty only
+ * when all three sources are blank.
+ */
+interface AgentInstructionLayers {
+  identityMd: string;
+  soulMd: string;
+  userMd: string;
+  unconfiguredNotice: string;
+}
+
+const EMPTY_AGENT_LAYERS: AgentInstructionLayers = {
+  identityMd: "",
+  soulMd: "",
+  userMd: "",
+  unconfiguredNotice: "",
+};
+
 interface SessionContextData {
-  agentInstructions: string;
+  agentLayers: AgentInstructionLayers;
   platformInstructions: string;
   networkInstructions: string;
   skillsInstructions: string;
@@ -278,10 +301,10 @@ export class InstructionService {
       logger.error("Failed to get network instructions:", error);
     }
 
-    // Build agent instructions from identity/soul/user settings. Skip the by-id
-    // read for an orgless DB-backed agent (`orgScoped === false`) — it would
-    // id-only read another org's identity/soul/user for a shared id.
-    let agentInstructions = "";
+    // Read the agent's identity/soul/user settings. Skip the by-id read for an
+    // orgless DB-backed agent (`orgScoped === false`) — it would id-only read
+    // another org's identity/soul/user for a shared id.
+    let agentLayers: AgentInstructionLayers = EMPTY_AGENT_LAYERS;
     if (
       this.agentSettingsStore &&
       context.agentId &&
@@ -292,32 +315,25 @@ export class InstructionService {
           context.agentId,
           { organizationId: context.organizationId }
         );
-        if (settings) {
-          const sections: string[] = [];
-          if (settings.identityMd?.trim()) {
-            sections.push(`## Agent Identity\n\n${settings.identityMd.trim()}`);
-          }
-          if (settings.soulMd?.trim()) {
-            sections.push(`## Agent Instructions\n\n${settings.soulMd.trim()}`);
-          }
-          if (settings.userMd?.trim()) {
-            sections.push(`## User Context\n\n${settings.userMd.trim()}`);
-          }
-          agentInstructions = sections.join("\n\n");
-        }
-
-        // When soul is unconfigured, tell the agent to defer to admin config.
-        if (!agentInstructions.trim()) {
-          agentInstructions = buildUnconfiguredAgentNotice(
-            options?.settingsUrl
-          );
-        }
+        const identityMd = settings?.identityMd?.trim() ?? "";
+        const soulMd = settings?.soulMd?.trim() ?? "";
+        const userMd = settings?.userMd?.trim() ?? "";
+        // When nothing is configured, tell the agent to defer to admin config.
+        const unconfigured = !identityMd && !soulMd && !userMd;
+        agentLayers = {
+          identityMd,
+          soulMd,
+          userMd,
+          unconfiguredNotice: unconfigured
+            ? buildUnconfiguredAgentNotice(options?.settingsUrl)
+            : "",
+        };
 
         logger.info(
-          `Built agent instructions (${agentInstructions.length} chars)`
+          `Read agent layers (identity ${identityMd.length} chars, soul ${soulMd.length} chars, user ${userMd.length} chars${unconfigured ? ", unconfigured" : ""})`
         );
       } catch (error) {
-        logger.error("Failed to build agent instructions:", error);
+        logger.error("Failed to read agent instruction layers:", error);
       }
     }
 
@@ -357,7 +373,7 @@ export class InstructionService {
     }
 
     return {
-      agentInstructions,
+      agentLayers,
       platformInstructions,
       networkInstructions,
       skillsInstructions,

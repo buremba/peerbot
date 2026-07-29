@@ -33,7 +33,12 @@ describe("WorkerGateway session context", () => {
       } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: {
+            identityMd: "I am Aria.",
+            soulMd: "Be concise.",
+            userMd: "Acme support.",
+            unconfiguredNotice: "",
+          },
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions:
@@ -74,10 +79,22 @@ describe("WorkerGateway session context", () => {
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as {
+      agentLayers: {
+        identityMd: string;
+        soulMd: string;
+        userMd: string;
+        unconfiguredNotice: string;
+      };
       skillsConfig: Array<{ name: string; content: string }>;
       skillsInstructions: string;
     };
 
+    expect(body.agentLayers).toEqual({
+      identityMd: "I am Aria.",
+      soulMd: "Be concise.",
+      userMd: "Acme support.",
+      unconfiguredNotice: "",
+    });
     expect(body.skillsConfig).toEqual([
       { name: "custom-skill", content: "# Custom Skill\n" },
     ]);

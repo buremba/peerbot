@@ -725,12 +725,12 @@ export class WorkerGateway {
       const mergedSkillsInstructions = contextData.skillsInstructions || "";
 
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentInstructions.length} chars agent instructions, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({
         mcpConfig,
-        agentInstructions: contextData.agentInstructions,
+        agentLayers: contextData.agentLayers,
         platformInstructions: contextData.platformInstructions,
         networkInstructions: contextData.networkInstructions,
         skillsInstructions: mergedSkillsInstructions,

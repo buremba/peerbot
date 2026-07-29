@@ -93,7 +93,7 @@ describe("session-context cross-tenant guard (R6) — all agent-scoped reads", (
     );
 
     // Identity/soul/user: NOT the foreign tenant's.
-    expect(result.agentInstructions).not.toContain("FOREIGN");
+    expect(JSON.stringify(result.agentLayers)).not.toContain("FOREIGN");
     // Skills: generic discovery blurb, NOT the foreign skill content.
     expect(result.skillsInstructions).not.toContain("FOREIGN SKILL");
     // No by-id settings read happened at all.
@@ -116,7 +116,7 @@ describe("session-context cross-tenant guard (R6) — all agent-scoped reads", (
     );
 
     // The declared agent's own identity/soul resolve.
-    expect(result.agentInstructions).toContain("FOREIGN IDENTITY");
+    expect(result.agentLayers.identityMd).toContain("FOREIGN IDENTITY");
   });
 
   test("normal org-scoped agent: identity + skills + MCP all intact (regression)", async () => {
@@ -133,7 +133,7 @@ describe("session-context cross-tenant guard (R6) — all agent-scoped reads", (
     expect(reads.length).toBeGreaterThan(0);
     expect(reads.every((r) => r.organizationId === "acme-org")).toBe(true);
     // Identity + skills resolve.
-    expect(result.agentInstructions).toContain("FOREIGN IDENTITY");
+    expect(result.agentLayers.identityMd).toContain("FOREIGN IDENTITY");
     expect(result.skillsInstructions).toContain("foreign-skill");
     // MCP resolved with the org → a lobu-memory status entry exists.
     expect(result.mcpStatus.length).toBeGreaterThan(0);

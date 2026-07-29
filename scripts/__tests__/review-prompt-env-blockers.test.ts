@@ -14,7 +14,12 @@
  * Three other sections (§2, §6, and the Blockers list) already say the
  * opposite: environment problems are `[env]` notes and blockers require a
  * failure the diff caused. This pins that the prompt says it in ONE
- * direction, because the contradiction is what the reviewer resolved wrongly.
+ * direction.
+ *
+ * It deliberately matches the *shape* of the rule rather than its wording.
+ * An exact-string assertion would fail on any honest rewrite while still
+ * letting a freshly-worded contradiction through — the guard has to catch
+ * the class, since the class is what the reviewer resolved wrongly.
  */
 
 import { readFileSync } from "node:fs";
@@ -26,7 +31,14 @@ const PROMPT = join(REPO_ROOT, "prompts/review-prompt.md");
 
 /** Reviewer-side inability to execute — a fact about the sandbox, not the diff. */
 const ENV_INABILITY =
-  /(environment (itself )?is broken|sandbox|read-only|EPERM|cannot run|can't run|unable to run|could not run)/i;
+  /(environment (itself )?is broken|reviewer's environment|sandbox|read-only|EPERM|execution is unavailable|denies the writes|cannot run|can't run|unable to run|could not run)/i;
+/**
+ * Same pattern, global — only for `replace`. It cannot be one shared regex:
+ * a `/g` regex carries `lastIndex` across `.test()` calls, so sharing it
+ * makes the filter below skip every other bullet. That defect shipped in a
+ * draft of this file and let an added contradictory bullet through.
+ */
+const ENV_INABILITY_ALL = new RegExp(ENV_INABILITY.source, "gi");
 const MENTIONS_BLOCKER = /blocker/i;
 /**
  * A prohibition ("never a `blocker`", "DO NOT add them to `blockers`") is the
@@ -40,8 +52,12 @@ const MENTIONS_BLOCKER = /blocker/i;
  *   2. The env phrase negates itself. "you cannot run even a narrow test
  *      file" sits in the same sentence, so its `cannot` reads as the
  *      prohibition. Strip the env phrasing before looking for negation.
+ *
+ * Kept to bare negatives on purpose: "rather than" / "instead of" appear in
+ * the rule's own causation clause, so accepting them as prohibitions would
+ * let "record it as a `blocker` rather than a note" pass.
  */
-const PROHIBITION = /\b(not|never|n't|rather than|instead of)\b/i;
+const PROHIBITION = /\b(not|never|n't)\b/i;
 const SENTENCES = /[^.!?]+[.!?]?/g;
 
 /**
@@ -75,7 +91,7 @@ describe("review prompt: environment failures are never blockers", () => {
       .flatMap((bullet) => bullet.match(SENTENCES) ?? [])
       .filter((sentence) => MENTIONS_BLOCKER.test(sentence))
       .filter(
-        (sentence) => !PROHIBITION.test(sentence.replace(ENV_INABILITY, ""))
+        (sentence) => !PROHIBITION.test(sentence.replace(ENV_INABILITY_ALL, ""))
       )
       .map((sentence) => sentence.trim());
 

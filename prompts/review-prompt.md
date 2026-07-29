@@ -82,9 +82,10 @@ skipped exploration, say so explicitly — don't lie by omission.
 ## 4. Judgment Rules
 
 - ~15 min total compute budget.
-- If you cannot run tests at all — your sandbox is read-only, a probe dies
-  with `EPERM`, deps are missing — that is never a `blocker`. Your sandbox
-  is not the diff. Record it in `notes` with the `[env]` prefix, keep
+- If test execution is unavailable because of the reviewer's environment
+  rather than the diff — for example, the sandbox is read-only or a probe
+  dies with `EPERM` — that is never a `blocker`. Record it in `notes` with
+  the `[env]` prefix, keep
   `bug_free_confidence` in the 70–89 band you can actually defend, and
   finish the verdict from static review plus the CI snapshot. The
   deterministic suites are separate required checks and still have to pass

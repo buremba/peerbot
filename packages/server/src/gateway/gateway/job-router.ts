@@ -12,6 +12,7 @@ import {
   type DispatchRecycler,
   gateDispatchOnStaleness,
   type LiveTurnProbe,
+  type OlderTurnProbe,
   type TurnTerminalizer,
 } from "./dispatch-recycle.js";
 
@@ -38,6 +39,7 @@ export class WorkerJobRouter {
   private dispatchRecycler?: DispatchRecycler;
   private probeLiveTurn?: LiveTurnProbe;
   private terminalizeTurn?: TurnTerminalizer;
+  private probeOlderTurn?: OlderTurnProbe;
 
   constructor(
     private queue: IMessageQueue,
@@ -55,11 +57,13 @@ export class WorkerJobRouter {
   setDispatchRecycler(
     recycler: DispatchRecycler,
     probeLiveTurn?: LiveTurnProbe,
-    terminalizeTurn?: TurnTerminalizer
+    terminalizeTurn?: TurnTerminalizer,
+    probeOlderTurn?: OlderTurnProbe
   ): void {
     this.dispatchRecycler = recycler;
     this.probeLiveTurn = probeLiveTurn;
     this.terminalizeTurn = terminalizeTurn;
+    this.probeOlderTurn = probeOlderTurn;
   }
 
   /**
@@ -154,10 +158,14 @@ export class WorkerJobRouter {
     if (this.dispatchRecycler) {
       const decision = await gateDispatchOnStaleness({
         deploymentName,
+        // RunsQueue job ids are the numeric runs-row id; NaN (absent/foreign
+        // id) skips the FIFO fence inside the gate.
+        jobRunId: Number((job as { id?: string }).id),
         jobData,
         recycler: this.dispatchRecycler,
         probeLiveTurn: this.probeLiveTurn,
         terminalizeTurn: this.terminalizeTurn,
+        probeOlderTurn: this.probeOlderTurn,
       });
       // "drop": the gate terminalized the turn (recycle rebuild failed) —
       // returning completes the held job so it cannot resurface as a zombie.

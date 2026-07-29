@@ -126,6 +126,8 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
   let terminalizeError: Error | null;
   /** What the election reports: false = it lost, the turn was already terminal. */
   let terminalizeResult: boolean;
+  /** Runs-row ids the FIFO fence reports an outranking pending sibling for. */
+  let fencedRunIds: Set<number>;
   let res: MockResponse;
 
   /** SSE `job` events written to the current connection's writer. */
@@ -136,11 +138,19 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
   }
 
   /** One claim attempt: delivers (acking the receipt) or rejects. */
-  async function attemptOnce(payload: MessagePayload): Promise<void> {
-    const attempt = queue.addJob(QUEUE, { id: "run-100", data: payload });
-    // Ack a delivery receipt if one was sent, so a successful delivery
-    // resolves instead of timing out.
-    await Promise.resolve();
+  async function attemptOnce(
+    payload: MessagePayload,
+    id = "run-100"
+  ): Promise<void> {
+    const before = deliveredJobs().length;
+    const attempt = queue.addJob(QUEUE, { id, data: payload });
+    // Ack a delivery receipt once one is sent, so a successful delivery
+    // resolves instead of timing out. The gate's async probes take a variable
+    // number of microtask ticks before the SSE write, so drain a bounded
+    // number rather than exactly one.
+    for (let i = 0; i < 32 && deliveredJobs().length === before; i++) {
+      await Promise.resolve();
+    }
     const jobEvent = deliveredJobs().at(-1) as
       | { data?: { jobId?: string } }
       | undefined;
@@ -162,6 +172,7 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     terminalized = [];
     terminalizeError = null;
     terminalizeResult = true;
+    fencedRunIds = new Set();
     router.setDispatchRecycler(
       recycler,
       async (deploymentName) => {
@@ -172,7 +183,8 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
         if (terminalizeError) throw terminalizeError;
         terminalized.push({ deploymentName, messageId, code });
         return terminalizeResult;
-      }
+      },
+      async (jobRunId) => fencedRunIds.has(jobRunId)
     );
     res = new MockResponse();
     connectionManager.addConnection(
@@ -333,6 +345,57 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     ).rejects.toThrow("secret-store unavailable");
     expect(deliveredJobs()).toHaveLength(0);
     expect(terminalized).toHaveLength(0);
+  });
+
+  test("FIFO fence: a recycled head turn still reaches the worker before a younger sibling", async () => {
+    // The reorder defect: the recycle's queue-native retry pushes head job A's
+    // run_at forward while younger job B keeps its original one, so claim
+    // order becomes B, A and two back-to-back user messages reach the fresh
+    // worker reversed. The gate must defer B while an outranking sibling (A)
+    // is still pending — and the fence, not staleness, is what defers it: by
+    // the time B is claimed the rebuilt worker is already fresh.
+    recycler.bornFingerprint = "fp-old";
+    const payloadA = makePayload({ messageId: "m-A" });
+    const payloadB = makePayload({ messageId: "m-B" });
+
+    // A claims first: stale + quiet → recycle, then queue-native retry.
+    await expect(
+      queue.addJob(QUEUE, { id: "1", data: payloadA })
+    ).rejects.toBeInstanceOf(StaleWorkerError);
+    expect(recycler.recycled).toHaveLength(1);
+
+    // The fresh worker attaches. B is claimed while A sits out its retry
+    // delay — without the fence it would deliver here and reverse the
+    // conversation.
+    connectionManager.removeConnection(DEPLOYMENT);
+    res = new MockResponse();
+    connectionManager.addConnection(
+      DEPLOYMENT,
+      IDENTITY.userId,
+      "thread-1",
+      IDENTITY.agentId,
+      res as never
+    );
+    fencedRunIds.add(2);
+    const fenceError = await queue
+      .addJob(QUEUE, { id: "2", data: payloadB })
+      .catch((e: unknown) => e);
+    expect(fenceError).toBeInstanceOf(StaleWorkerError);
+    expect((fenceError as StaleWorkerError).reason).toBe("older-turn-pending");
+    expect(deliveredJobs()).toHaveLength(0);
+    expect(recycler.recycled).toHaveLength(1); // fence ran, staleness never consulted
+
+    // A's retry claims and delivers; A's row is gone, so B follows.
+    await attemptOnce(payloadA, "1");
+    fencedRunIds.delete(2);
+    await attemptOnce(payloadB, "2");
+
+    const order = deliveredJobs().map(
+      (e) =>
+        (e as { data?: { payload?: { messageId?: string } } }).data?.payload
+          ?.messageId
+    );
+    expect(order).toEqual(["m-A", "m-B"]);
   });
 
   test("stale job observed BEFORE the rebuild does not tear the fresh worker down again", async () => {

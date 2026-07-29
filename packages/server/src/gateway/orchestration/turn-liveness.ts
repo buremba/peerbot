@@ -274,6 +274,47 @@ export async function hasLiveTurnForDeployment(
 }
 
 /**
+ * Is a sibling job that OUTRANKS `jobRunId` in claim order still pending on
+ * the same queue?
+ *
+ * FIFO fence for the dispatch gate. `claimOne` orders claims by
+ * (priority DESC, run_at ASC, id ASC), and a deferral retry pushes `run_at`
+ * into the future — so after a recycle, the recycled head job re-enters the
+ * queue BEHIND a younger sibling that kept its original `run_at`, and two
+ * back-to-back user messages would reach the fresh worker in reversed order.
+ * The fence re-derives claim rank from the columns that don't move: a sibling
+ * at higher priority, or at the same priority with a smaller id (= enqueued
+ * earlier), would have been claimed first were it not sitting out a retry
+ * delay, so this job must defer to it. The top-ranked pending job never has
+ * such a sibling, so the lane always makes progress.
+ *
+ * `expires_at` mirrors `claimOne`'s eligibility exactly: an expired row will
+ * never be claimed again (the expired-pending cleanup deletes it and the
+ * durable-input replay re-enqueues the turn), so it must not fence its
+ * siblings forever.
+ */
+export async function hasOlderQueuedTurn(jobRunId: number): Promise<boolean> {
+  const sql = getDb();
+  // `me` is a primary-key probe; `sib` matches the partial predicate and
+  // leading columns of `runs_lobu_claim_idx` (status='pending', run_type,
+  // queue_name), so this never scans the 30-day runs retention.
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs me
+    JOIN public.runs sib ON sib.queue_name = me.queue_name
+    WHERE me.id = ${jobRunId}
+      AND sib.run_type = 'chat_message'
+      AND sib.status = 'pending'
+      AND (sib.expires_at IS NULL OR sib.expires_at > now())
+      AND (
+        sib.priority > me.priority
+        OR (sib.priority = me.priority AND sib.id < me.id)
+      )
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
  * caller gets the rows, and the terminal error is enqueued in the same

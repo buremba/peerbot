@@ -11,7 +11,10 @@
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../db/client.js";
-import { hasLiveTurnForDeployment } from "../orchestration/turn-liveness.js";
+import {
+  hasLiveTurnForDeployment,
+  hasOlderQueuedTurn,
+} from "../orchestration/turn-liveness.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -46,23 +49,32 @@ async function seedMarker(params: {
   `;
 }
 
-/** Insert a `thread_message_*` job row the way the consumer's enqueue does. */
+/** Insert a `thread_message_*` job row the way the consumer's enqueue does.
+ *  Returns the row id so fence tests can rank siblings the way `claimOne`
+ *  does. `expiresAtOffsetSec => NULL` leaves `expires_at` NULL (never expires). */
 async function seedThreadJob(params: {
   deploymentName?: string;
   messageId?: string;
   status?: string;
-}): Promise<void> {
+  priority?: number;
+  /** Seconds from now the row expires; negative = already expired. */
+  expiresAtOffsetSec?: number;
+}): Promise<number> {
   const sql = getDb();
-  await sql`
-    INSERT INTO runs (run_type, queue_name, status, run_at, action_input)
+  const rows = await sql<{ id: number | string }>`
+    INSERT INTO runs (run_type, queue_name, status, run_at, action_input, priority, expires_at)
     VALUES (
       'chat_message',
       ${`thread_message_${params.deploymentName ?? DEPLOYMENT}`},
       ${params.status ?? "pending"},
       now(),
-      ${sql.json({ messageId: params.messageId ?? "m-1" })}
+      ${sql.json({ messageId: params.messageId ?? "m-1" })},
+      ${params.priority ?? 0},
+      now() + make_interval(secs => ${params.expiresAtOffsetSec ?? null}::float8)
     )
+    RETURNING id
   `;
+  return Number(rows[0]?.id);
 }
 
 /** Marker + completed job row: a turn the worker has actually received. */
@@ -221,5 +233,92 @@ describe("hasLiveTurnForDeployment delivery receipt", () => {
     });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
+  });
+});
+
+describe("hasOlderQueuedTurn (FIFO fence)", () => {
+  // The gate holds its job as `claimed` while it decides, so "me" is always a
+  // claimed row; siblings rank by `claimOne`'s order (priority DESC, id ASC).
+
+  test("a lone claimed job has nothing to defer to", async () => {
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
+  });
+
+  test("REGRESSION: an earlier pending sibling at the same priority fences delivery", async () => {
+    // The recycle's queue-native retry pushed A's run_at forward, so B was
+    // claimed first — the exact reorder this fence exists to stop.
+    await seedThreadJob({ messageId: "m-A", status: "pending" });
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(true);
+  });
+
+  test("a completed earlier sibling does not fence", async () => {
+    await seedThreadJob({ messageId: "m-A", status: "completed" });
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
+  });
+
+  test("an expired earlier sibling does not fence", async () => {
+    // An expired row will never be claimed again — the expired-pending cleanup
+    // deletes it and the durable-input replay re-enqueues its turn. Counting
+    // it would fence every later turn on the lane forever.
+    await seedThreadJob({
+      messageId: "m-A",
+      status: "pending",
+      expiresAtOffsetSec: -30,
+    });
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
+  });
+
+  test("a younger pending sibling does not fence the head job", async () => {
+    // The top-ranked job must never defer — that is what guarantees progress.
+    const me = await seedThreadJob({ messageId: "m-A", status: "claimed" });
+    await seedThreadJob({ messageId: "m-B", status: "pending" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
+  });
+
+  test("another conversation's queue does not fence ours", async () => {
+    await seedThreadJob({
+      deploymentName: "deploy-somebody-else",
+      messageId: "m-A",
+      status: "pending",
+    });
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
+  });
+
+  test("a replayed input (higher priority) fences even with a larger id", async () => {
+    // registerWorker re-enqueues expired-then-deleted turns at priority 10 —
+    // OLDER turns under a new, larger id. claimOne ranks priority first, so
+    // the fence must too, or the replay-first ordering inverts.
+    const me = await seedThreadJob({ messageId: "m-B", status: "claimed" });
+    await seedThreadJob({
+      messageId: "m-A",
+      status: "pending",
+      priority: 10,
+    });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(true);
+  });
+
+  test("a lower-priority earlier sibling does not fence a replayed input", async () => {
+    // Mirror image: when the replayed input is the one being dispatched,
+    // claim order puts it ahead of ordinary pending rows regardless of id.
+    await seedThreadJob({ messageId: "m-B", status: "pending" });
+    const me = await seedThreadJob({
+      messageId: "m-A",
+      status: "claimed",
+      priority: 10,
+    });
+
+    expect(await hasOlderQueuedTurn(me)).toBe(false);
   });
 });

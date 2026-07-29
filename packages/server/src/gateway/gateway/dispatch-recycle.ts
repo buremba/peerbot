@@ -41,6 +41,7 @@ import { generateDeploymentName } from "../orchestration/deployment-manager.js";
 import {
   failTurnIfPending,
   hasLiveTurnForDeployment,
+  hasOlderQueuedTurn,
 } from "../orchestration/turn-liveness.js";
 
 const logger = createLogger("dispatch-recycle");
@@ -74,7 +75,7 @@ export interface DispatchRecycler {
 export class StaleWorkerError extends Error {
   constructor(
     message: string,
-    readonly reason: "prior-turn-live" | "recycled"
+    readonly reason: "prior-turn-live" | "recycled" | "older-turn-pending"
   ) {
     super(message);
     this.name = "StaleWorkerError";
@@ -85,6 +86,8 @@ export class StaleWorkerError extends Error {
 export type LiveTurnProbe = typeof hasLiveTurnForDeployment;
 /** Injectable terminalizer (tests); production uses the marker election. */
 export type TurnTerminalizer = typeof failTurnIfPending;
+/** Injectable FIFO-fence probe (tests); production uses the Postgres probe. */
+export type OlderTurnProbe = typeof hasOlderQueuedTurn;
 
 /** The caller may deliver, or must complete the job WITHOUT delivering. */
 export type DispatchDecision = "deliver" | "drop";
@@ -96,31 +99,44 @@ export type DispatchDecision = "deliver" | "drop";
  * 1. No recycler wired, payload not fingerprint-bearing, or the job is not a
  *    conversation-deployment dispatch (`api-*` family, exec lanes) → deliver
  *    as today.
- * 2. Fresh (fingerprint matches or unknown, lease not expiring) → deliver.
- * 3. Stale + a PRIOR turn is live on the worker → throw; the queue retries and
+ * 2. FIFO fence: a sibling job that outranks this one in claim order is still
+ *    pending → throw. A deferral retry pushes the deferred job's `run_at`
+ *    forward, so after a recycle the head turn would otherwise re-enter the
+ *    queue BEHIND a younger sibling and two user messages would reach the
+ *    fresh worker reversed. The fence also means only the true head-of-line
+ *    job ever consults staleness or triggers a recycle. The top-ranked job is
+ *    never fenced, so the lane always makes progress.
+ * 3. Fresh (fingerprint matches or unknown, lease not expiring) → deliver.
+ * 4. Stale + a PRIOR turn is live on the worker → throw; the queue retries and
  *    the gate re-evaluates on the next claim. The probe counts only DELIVERED
  *    turns (completed `thread_message` row = delivery receipt), so armed-but-
  *    undelivered turns — including THIS one — never block: counting them would
  *    let two queued turns defer each other forever.
- * 4. Stale + quiet → tear down and rebuild under the same name, then throw:
+ * 5. Stale + quiet → tear down and rebuild under the same name, then throw:
  *    the fresh worker has not SSE-attached inside this handler invocation, so
  *    delivery happens on the retry (the queue is paused until the new worker
  *    connects, so the retry does not burn attempts against a half-booted
  *    worker).
- * 5. Rebuild FAILED → terminalize the turn and return "drop" (see the module
+ * 6. Rebuild FAILED → terminalize the turn and return "drop" (see the module
  *    doc); any other error → propagate (fail closed; never deliver to the
  *    stale worker).
  */
 export async function gateDispatchOnStaleness(args: {
   deploymentName: string;
+  /** The claimed `runs` row id, for the FIFO fence. `RunsQueue` job ids are
+   *  always the numeric row id; a non-numeric id (harness fakes, legacy lanes)
+   *  has no row to rank against, so the fence is skipped, never guessed. */
+  jobRunId?: number;
   jobData: unknown;
   recycler: DispatchRecycler;
   probeLiveTurn?: LiveTurnProbe;
   terminalizeTurn?: TurnTerminalizer;
+  probeOlderTurn?: OlderTurnProbe;
 }): Promise<DispatchDecision> {
   const { deploymentName, recycler } = args;
   const probeLiveTurn = args.probeLiveTurn ?? hasLiveTurnForDeployment;
   const terminalizeTurn = args.terminalizeTurn ?? failTurnIfPending;
+  const probeOlderTurn = args.probeOlderTurn ?? hasOlderQueuedTurn;
 
   const payload = asDispatchPayload(args.jobData);
   if (!payload) return "deliver";
@@ -130,6 +146,20 @@ export async function gateDispatchOnStaleness(args: {
   // of scope — recycling them from a conversation payload would delete one
   // deployment and recreate another. Deliver as before this gate existed.
   if (generateDeploymentName(payload) !== deploymentName) return "deliver";
+
+  // FIFO fence (step 2 above): defer to any sibling that outranks this job in
+  // claim order — it is only behind us because a deferral retry pushed its
+  // `run_at` forward, and delivering now would reorder the conversation.
+  if (
+    typeof args.jobRunId === "number" &&
+    Number.isFinite(args.jobRunId) &&
+    (await probeOlderTurn(args.jobRunId))
+  ) {
+    throw new StaleWorkerError(
+      `An earlier turn for ${deploymentName} is still queued — deferring delivery to preserve message order`,
+      "older-turn-pending"
+    );
+  }
 
   const fingerprint =
     typeof payload.toolingFingerprint === "string" &&

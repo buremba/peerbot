@@ -61,7 +61,9 @@ function contradictions(markdown: string): string[] {
     .filter((bullet) => ENV_INABILITY.test(bullet))
     .flatMap((bullet) => bullet.split(CLAUSE_BOUNDARY))
     .filter((clause) => MENTIONS_BLOCKER.test(clause))
-    .filter((clause) => !PROHIBITION.test(clause.replace(ENV_INABILITY_ALL, "")))
+    .filter(
+      (clause) => !PROHIBITION.test(clause.replace(ENV_INABILITY_ALL, ""))
+    )
     .map((clause) => clause.trim());
 }
 

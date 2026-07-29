@@ -271,6 +271,84 @@ export async function assertWatcherSourcesResolve(
 }
 
 // ============================================
+// Foreign-key-shaped reference validation
+// ============================================
+
+/**
+ * Resolve `agent_id` against the caller's org before it is persisted.
+ *
+ * `watchers.agent_id` is NOT NULL but carries NO foreign key to `agents`, so a
+ * typo'd or cross-org id is accepted by the database and only surfaces as a
+ * Behavior that reports status 'active' / health 'healthy' and never runs — the
+ * scheduler joins watchers to agents on `agent_id` (see watchers/automation.ts),
+ * so an unresolvable owner silently drops the row out of every scheduling pass.
+ * `behaviors.create` already documents `throws: ["EntityNotFound"]` for this
+ * case in src/sandbox/method-metadata.ts; this honours that contract.
+ *
+ * Org-scoped by design: `agents` ids are unique only WITHIN an org, so resolving
+ * without the org fence would let one tenant name another tenant's agent.
+ * Matches the 404 shape manage_agents' own get/update handlers emit.
+ */
+export async function assertAgentExists(
+  sql: DbClient,
+  organizationId: string,
+  agentId: string | null | undefined
+): Promise<void> {
+  if (agentId == null) return;
+  const rows = await sql<{ id: string }>`
+    SELECT id FROM agents
+    WHERE organization_id = ${organizationId} AND id = ${agentId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(`Agent "${agentId}" not found`, 404);
+  }
+}
+
+/**
+ * Resolve `keying_config.entity_type` against the org before it is persisted.
+ *
+ * An entity-typed Behavior derives its whole output contract from the named
+ * type's `metadata_schema`. When the type does not exist,
+ * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
+ * extraction validation entirely — so a typo does not fail loudly, it silently
+ * VOIDS the contract the Behavior was created to enforce. Its sibling
+ * `entity_id` is already existence-checked at create, so validating here makes
+ * the pair consistent.
+ *
+ * Uses the same tenant-first-then-public-catalog visibility rule as
+ * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
+ * that derivation CAN see is never rejected here — checking existence only, as
+ * a type legitimately may carry no metadata_schema yet.
+ */
+export async function assertKeyingConfigEntityTypeExists(
+  sql: DbClient,
+  organizationId: string,
+  keyingConfig: Record<string, unknown> | null | undefined
+): Promise<void> {
+  const rawType = keyingConfig?.entity_type;
+  if (typeof rawType !== 'string') return;
+  const entityType = rawType.trim();
+  if (!entityType) return;
+
+  const rows = await sql<{ id: number }>`
+    SELECT et.id
+    FROM entity_types et
+    LEFT JOIN organization o ON o.id = et.organization_id
+    WHERE et.slug = ${entityType}
+      AND et.deleted_at IS NULL
+      AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(
+      `Unknown entity type '${entityType}' in keying_config. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+      422
+    );
+  }
+}
+
+// ============================================
 // Watcher access control
 // ============================================
 

@@ -32,7 +32,7 @@ import { expandSearchQueries } from '../utils/query-expansion';
 import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
-import { withValidatedArgs } from './validate-args';
+import { markAcceptedInternalFields, withValidatedArgs } from './validate-args';
 import { getErrorMessage } from '@lobu/core';
 
 // ============================================
@@ -79,7 +79,8 @@ export const SearchSchema = Type.Object({
   ),
   min_similarity: Type.Optional(
     Type.Number({
-      description: 'Minimum similarity threshold for fuzzy matching (0.0-1.0)',
+      description:
+        'Minimum similarity threshold (0.0-1.0) applied to BOTH fuzzy entity-name matching and recalled content. Raise it to cut weak matches, lower it to widen recall.',
       default: 0.3,
       minimum: 0,
       maximum: 1,
@@ -120,7 +121,7 @@ export const SearchSchema = Type.Object({
   agent_id: Type.Optional(
     Type.String({
       description:
-        "Limit results to memory written by this agent. Filters events where `metadata.agent_id` matches the given id; pass the same id here to scope recall to that agent's own writes.",
+        "Scope recalled CONTENT to memory written by this agent — filters events where `metadata.agent_id` matches the given id. Entity resolution is NOT filtered by it: entities are workspace nouns with no writing agent, so scoping them here would report an existing entity as not-found.",
     })
   ),
   limit: Type.Optional(
@@ -140,6 +141,17 @@ export const SearchSchema = Type.Object({
 });
 
 /**
+ * Accepted by the handler, but NOT advertised on `tools/list` (see
+ * {@link PublicSearchSchema}). Listed here so the arg validator keeps them
+ * VALID while omitting them from the "valid arguments are: …" text of an
+ * unknown-argument error — otherwise a mistyped arg teaches an agent that
+ * `agent_id` / `query_embedding` exist, which is exactly the accepted-but-
+ * unadvertised trap this split is meant to close.
+ */
+const PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS = ['query_embedding', 'agent_id'];
+markAcceptedInternalFields(SearchSchema, PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS);
+
+/**
  * Schema advertised on `tools/list`. Drops the server-internal fields that
  * `SearchSchema` still accepts (so validation passes for internal callers and
  * tests): `query_embedding` (a pre-computed vector the content-search layer
@@ -147,7 +159,6 @@ export const SearchSchema = Type.Object({
  * resolved from auth context — clients asserting it cross-agent within an org
  * is a footgun, not an affordance). See `ToolDefinition.publicInputSchema`.
  */
-const PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS = ['query_embedding', 'agent_id'];
 export const PublicSearchSchema = Type.Object(
   Object.fromEntries(
     Object.entries(SearchSchema.properties).filter(
@@ -360,7 +371,8 @@ async function fetchContentSnippets(
   contentLimit: number,
   env: Env,
   queryEmbedding?: number[],
-  agentId?: string
+  agentId?: string,
+  minSimilarity?: number
 ): Promise<ContentSnippet[]> {
   const result = await searchContentByText(
     query,
@@ -376,7 +388,14 @@ async function fetchContentSnippets(
         userId: gate.principal,
       },
       limit: contentLimit,
-      min_similarity: 0.4,
+      // The caller's `min_similarity` is the advertised recall floor (schema:
+      // 0.0-1.0, default 0.3). It used to be hardcoded to 0.4 here, so the knob
+      // was completely inert: sweeping 0 → 1.0 never changed the result set, and
+      // the documented default was silently overridden. Pass `undefined` through
+      // rather than defaulting here — `search-path.ts` already applies the SAME
+      // documented 0.3 (and clamps it to [0,1]); a second copy of the constant
+      // could silently drift from the one that actually reaches the SQL.
+      min_similarity: minSimilarity,
       query_embedding: queryEmbedding,
       agent_id: agentId,
       // Recall wants the most *relevant* matching content, not the most recent.
@@ -572,6 +591,9 @@ export interface RecallContext {
   contentLimit: number;
   env: Env;
   queryEmbedding?: number[];
+  /** Caller-supplied similarity floor for recalled content (schema 0.0-1.0,
+   * default 0.3). Undefined means "use the documented default". */
+  minSimilarity?: number;
 }
 
 /**
@@ -637,9 +659,15 @@ const knowledgeSource: RecallSource = {
       ctx.contentLimit,
       ctx.env,
       ctx.queryEmbedding,
-      ctx.contentAgentId
+      ctx.contentAgentId,
+      ctx.minSimilarity
     );
-    return content.length > 0 ? { content } : {};
+    // ALWAYS emit the facet, even empty. An ABSENT `content` key and an empty
+    // one are indistinguishable to an agent reading raw JSON, so omitting it on
+    // zero hits reads as "content search never ran" — the agent then concludes
+    // the workspace knows nothing and answers from nothing. `[]` says "we
+    // looked and found nothing", which is the honest answer.
+    return { content };
   },
 };
 
@@ -893,6 +921,7 @@ async function searchImpl(
             contentLimit,
             env,
             queryEmbedding: args.query_embedding,
+            minSimilarity: args.min_similarity,
           }
         )
       : Promise.resolve({});
@@ -1155,7 +1184,30 @@ async function queryEntities(
   // Query match condition: text match OR vector match
   if (query) {
     if (fuzzyEnabled) {
-      const textCondition = `(LOWER(e.name) LIKE '%' || LOWER($${queryParamIdx}) || '%' OR LOWER(e.name) = LOWER($${queryParamIdx}) OR similarity(LOWER(e.name), LOWER($${queryParamIdx})) > 0.3 OR e.content_tsv @@ websearch_to_tsquery('english', $${queryParamIdx}))`;
+      // `min_similarity` is the caller-facing knob whose schema declares it
+      // applies to BOTH fuzzy entity-name matching and recalled content. This
+      // predicate is the entity-name half, so it must read the caller's value
+      // rather than a hardcoded constant. Clamped to [0,1] (an out-of-range
+      // value would make the arm always-true / always-false) and defaulted to
+      // the SAME 0.3 the schema advertises, so an omitted value keeps today's
+      // behaviour exactly.
+      //
+      // Bound as a param with an explicit `::numeric` cast, mirroring
+      // content-search/search-path.ts: `packages/server` runs `fetch_types:
+      // false`, so an uncast placeholder leaves postgres.js without a type to
+      // infer. `similarity()` returns `real`; `real > numeric` resolves fine.
+      // No index is lost by parameterizing: the only trigram index in the
+      // schema is `idx_events_raw_content_trgm` on `events.payload_text`, and
+      // the sole index on this column, `idx_entities_name`, is a BTREE over
+      // `lower(name)` — a btree can never serve `similarity()` at any
+      // threshold, literal or bound. It still serves the `LOWER(e.name) =
+      // LOWER($n)` arm of this same OR, which is untouched.
+      const rawMinSimilarity = Number(args.min_similarity ?? 0.3);
+      const nameSimFloor = Number.isFinite(rawMinSimilarity)
+        ? Math.max(0, Math.min(1, rawMinSimilarity))
+        : 0.3;
+      const minSimParamIdx = addParam(nameSimFloor);
+      const textCondition = `(LOWER(e.name) LIKE '%' || LOWER($${queryParamIdx}) || '%' OR LOWER(e.name) = LOWER($${queryParamIdx}) OR similarity(LOWER(e.name), LOWER($${queryParamIdx})) > $${minSimParamIdx}::numeric OR e.content_tsv @@ websearch_to_tsquery('english', $${queryParamIdx}))`;
       conditions.push(
         hasEmbedding ? `(${textCondition} OR e.embedding IS NOT NULL)` : textCondition
       );
@@ -1201,16 +1253,15 @@ async function queryEntities(
     }
   }
 
-  // Structured agent_id filter. The top-level `agent_id` arg is the only
-  // accepted form — it's server-internal (resolved from auth context in
-  // searchImpl, or passed by server-internal callers); it is NOT advertised
-  // on the public schema (see PublicSearchSchema). Do NOT honor
-  // `metadata_filter.agent_id` — `metadata_filter` is public, so honoring it
-  // would re-expose the cross-agent footgun the field split hides.
-  const agentIdFilter = args.agent_id;
-  if (agentIdFilter) {
-    conditions.push(`e.metadata->>'agent_id' = $${addParam(agentIdFilter)}`);
-  }
+  // NOTE: `agent_id` is deliberately NOT an entity filter. It is a MEMORY-SCOPE
+  // axis over `events.metadata->>'agent_id'` (which agent WROTE a memory) — see
+  // RecallContext.contentAgentId, where it is applied. Entities are workspace
+  // nouns with no writing agent, so almost none carry `metadata.agent_id`;
+  // applying it here matched ~nothing and made an exact-name lookup for an
+  // entity that DOES exist return `not_found` plus "call client.entities.create()"
+  // coaching — turning a read-scope filter into DUPLICATE WRITES.
+  // Do NOT honor `metadata_filter.agent_id` here either: `metadata_filter` is on
+  // the public schema, so honoring it would re-expose the cross-agent footgun.
 
   const whereClause = conditions.join(' AND ');
 

@@ -27,6 +27,8 @@ import {
   type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
+  assertAgentExists,
+  assertKeyingConfigEntityTypeExists,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   parseJsonInput,
@@ -196,6 +198,12 @@ export async function handleCreate(
   if (!organizationId) {
     throw new ToolUserError('Cannot resolve Behavior sources without an organization');
   }
+  // Both of these are free-text columns with NO database foreign key, so an
+  // unresolvable id is accepted by the INSERT and only shows up as a Behavior
+  // that never runs (agent_id) or one whose output contract is silently voided
+  // (keying_config.entity_type). Resolve them BEFORE the row is written.
+  await assertAgentExists(sql, organizationId, args.agent_id);
+  await assertKeyingConfigEntityTypeExists(sql, organizationId, keyingConfig);
   await assertWatcherSourcesResolve(
     sql,
     organizationId,
@@ -472,6 +480,11 @@ export async function handleUpdate(
       );
     }
   }
+  // Same unresolvable-reference hole as create: `agent_id` has no FK, so
+  // re-pointing a Behavior at a nonexistent/cross-org agent would silently
+  // strand it (the scheduler joins on agents). Fence on ctx.organizationId —
+  // the same org the UPDATE below scopes to.
+  await assertAgentExists(sql, ctx.organizationId, args.agent_id);
 
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
@@ -719,6 +732,12 @@ export async function handleCreateFromVersion(
       `Source Behavior version ${args.version_id} has no agent_id; assign an agent on the source before cloning.`
     );
   }
+
+  // The source's agent_id is copied verbatim onto every clone, and a version can
+  // outlive the agent it named (agent_id has no FK, so a deleted agent leaves the
+  // reference dangling). Resolve it once here so the fan-out cannot mint a whole
+  // batch of Behaviors the scheduler will never run.
+  await assertAgentExists(sql, organizationId, version.agent_id as string);
 
   // Reject cross-org entity_ids before cloning: a watcher attached to another
   // org's entity links its synced/extracted content to a non-existent in-org

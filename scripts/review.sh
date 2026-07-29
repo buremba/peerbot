@@ -134,6 +134,14 @@ post_review_status() {
 REVIEW_STATUS_STARTED=0
 REVIEW_STATUS_FINALIZED=0
 finalize_review_status() {
+  # The upstream can move during the reviewer run. Do not finalize a verdict
+  # on a commit that is no longer the PR head.
+  if [ "$GH_AVAILABLE" = "1" ] &&
+     ! review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT"; then
+    # Suppress the EXIT trap's fallback error status on the same stale commit.
+    REVIEW_STATUS_FINALIZED=1
+    return 2
+  fi
   post_review_status "$1" "$2" "${3:-}"
   REVIEW_STATUS_FINALIZED=1
 }
@@ -428,6 +436,9 @@ finalize_review_status "$STATUS_STATE" "$STATUS_DESCRIPTION" "$PR_URL"
 if [ -z "$PR_NUMBER" ]; then
   echo ">> no PR for current branch; skipping GitHub comment"
 else
+  # A push between the final status and this comment would make the displayed
+  # verdict stale even though branch protection correctly blocks the new head.
+  review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT" || exit 2
   NOTES="$(echo "$VERDICT" | jq -r '.notes // ""')"
   PRETTY="$(echo "$VERDICT" | jq .)"
   SUGGESTIONS_TABLE="$(echo "$VERDICT" | jq -r '

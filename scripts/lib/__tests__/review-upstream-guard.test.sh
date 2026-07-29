@@ -3,6 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+review_script="$repo_root/scripts/review.sh"
 # shellcheck source=scripts/lib/review-upstream-guard.sh
 . "$repo_root/scripts/lib/review-upstream-guard.sh"
 
@@ -18,33 +19,44 @@ fail() {
   exit 1
 }
 
+# The remote can move while the reviewer is running. Guard the cheap
+# preflight, the final commit status, and the PR comment independently.
+# shellcheck disable=SC2016
+guard_call_count="$(
+  grep -Fc 'review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT"' \
+    "$review_script" || true
+)"
+[ "$guard_call_count" -eq 3 ] ||
+  fail "review.sh must re-check the upstream at all three publication boundaries"
+
 # A clone whose upstream is a real remote, so the guard's `git fetch` is
 # exercised rather than stubbed — a stale remote-tracking ref is precisely the
 # failure this guard exists to catch.
+# Pin the branch because Git's default differs across developer and CI hosts.
 new_clone() {
-  local name="$1" origin="$tmp/$1-origin.git" work="$tmp/$1"
-  # Pin the branch name: with init.defaultBranch=master (git's default when the
-  # environment leaves it unset, as CI does) the bare HEAD would point at a ref
-  # that never gets created, and the later clone would start an unrelated root
-  # commit on master instead of building on main.
-  git init -q --bare -b main "$origin"
-  git init -q -b main "$work"
+  local name="$1"
+  local origin="$tmp/$name-origin.git"
+  local work="$tmp/$name"
+  git init -q --bare "$origin"
+  git -C "$origin" symbolic-ref HEAD refs/heads/main
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
   git -C "$work" config user.email t@t.t
   git -C "$work" config user.name t
   git -C "$work" commit -q --allow-empty -m base
   git -C "$work" remote add origin "$origin"
-  git -C "$work" push -q -u origin HEAD:refs/heads/main 2>/dev/null
+  git -C "$work" push -q -u origin main
   printf '%s\n' "$work"
 }
 
 # Simulates Codex pushing to the branch from elsewhere.
 push_from_elsewhere() {
   local work="$1" other="$tmp/other-$RANDOM"
-  git clone -q "$(git -C "$work" remote get-url origin)" "$other"
+  git clone -q -b main "$(git -C "$work" remote get-url origin)" "$other"
   git -C "$other" config user.email c@c.c
   git -C "$other" config user.name Codesmith
   git -C "$other" commit -q --allow-empty -m "style: apply biome formatting"
-  git -C "$other" push -q origin HEAD:main
+  git -C "$other" push -q origin main
 }
 
 run_guard() {

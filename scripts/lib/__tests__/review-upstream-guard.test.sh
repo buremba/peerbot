@@ -68,6 +68,18 @@ run_guard() {
 work="$(new_clone insync)"
 run_guard "$work" || fail "rejected a HEAD that matches its upstream"
 
+# 1b. Reading the remote must write nothing locally. `git fetch` would answer
+#     the same question but clobbers FETCH_HEAD — per-worktree scratch state
+#     shared with every other git command running there — and downloads
+#     objects this check never needs. `ls-remote` asks the remote directly.
+#     This is the assertion that separates the two: under fetch the sentinel
+#     below is destroyed.
+fetch_head="$(cd "$work" && git rev-parse --git-path FETCH_HEAD)"
+printf 'sentinel\n' >"$work/$fetch_head"
+run_guard "$work" || fail "rejected a HEAD that matches its upstream"
+[ "$(cat "$work/$fetch_head")" = "sentinel" ] \
+  || fail "guard wrote FETCH_HEAD — it must not touch shared worktree state"
+
 # 2. Local commits not yet pushed. review.sh reviews unpushed commits by
 #    design (the CI snapshot is just empty), so being AHEAD must stay allowed.
 work="$(new_clone ahead)"

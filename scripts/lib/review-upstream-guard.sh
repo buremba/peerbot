@@ -31,20 +31,26 @@ review_assert_head_is_current() {
   remote="${upstream%%/*}"
   branch="${upstream#*/}"
 
-  # The remote-tracking ref goes stale on its own, so the fetch is
-  # load-bearing — without it this compares against whatever was last seen
-  # locally and passes exactly when it matters most.
-  if ! git fetch -q "$remote" "$branch" 2>/dev/null; then
-    # Offline or the branch is gone from the remote. Fail open: this guard
+  # Ask the remote directly. The remote-tracking ref goes stale on its own, so
+  # comparing against it would pass exactly when it matters most — but a
+  # `git fetch` is the wrong way to refresh it here: fetch writes FETCH_HEAD,
+  # which is per-worktree shared scratch, and review.sh runs reviews of
+  # different commits concurrently. Reading a FETCH_HEAD another command had
+  # already overwritten produced an unparseable sha and a silent fail-OPEN —
+  # the guard would allow precisely the case it exists to catch.
+  # `ls-remote` writes nothing and needs no object download.
+  upstream_sha="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk 'NR==1{print $1}')"
+  if [ -z "$upstream_sha" ]; then
+    # Offline, or the branch is gone from the remote. Fail open: this guard
     # exists to stop a wasted verdict, not to gate correctness, and a review
     # that cannot run at all is worse than one posted from stale information.
-    printf '>> warning: could not fetch %s — skipping stale-head check\n' "$upstream" >&2
+    printf '>> warning: could not read %s from %s — skipping stale-head check\n' \
+      "$branch" "$remote" >&2
     return 0
   fi
 
-  upstream_sha="$(git rev-parse FETCH_HEAD 2>/dev/null || true)"
-  [ -n "$upstream_sha" ] || return 0
-
+  # An unknown object means the remote holds a commit this checkout has never
+  # seen, so `--is-ancestor` errors and the guard refuses — which is right.
   git merge-base --is-ancestor "$upstream_sha" "$head_sha" 2>/dev/null && return 0
 
   printf '!! %s is at %s, which HEAD (%s) does not contain.\n' \

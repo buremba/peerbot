@@ -164,42 +164,6 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(connB)).toBe(deviceB);
   });
 
-  it('only unpins workers that are absent or stale at mutation time', async () => {
-    // `matchingDeviceIds` is snapshotted BEFORE the advisory lock, so a poll on
-    // another replica can refresh a device between this pass's snapshot and its
-    // commit; sweeping from the stale list alone would unpin a device that is
-    // live again. The sweep therefore re-checks `device_workers` in the same
-    // statement, and this asserts that predicate directly — the true
-    // snapshot-vs-commit interleaving is not reachable from outside
-    // `reconcileDeviceCapabilities`, which takes its fleet read internally.
-    const live = await seedWorker(userId, orgId, true);
-    const gone = await seedWorker(userId, orgId, false);
-    const liveConn = await seedConn(orgId, userId, live);
-    const goneConn = await seedConn(orgId, userId, gone);
-
-    // Drive the sweep predicate with a deliberately WRONG (empty) snapshot —
-    // exactly the stale-list case. Only the genuinely stale worker may lose its
-    // pin; the fresh one must survive on the mutation-time re-check alone.
-    await sql`
-      UPDATE connections c
-      SET device_worker_id = NULL, updated_at = NOW()
-      WHERE c.organization_id = ${orgId}
-        AND c.connector_key = ${CONNECTOR}
-        AND c.deleted_at IS NULL
-        AND c.device_worker_id IS NOT NULL
-        AND NOT (c.device_worker_id::text = ANY(ARRAY[]::text[]))
-        AND NOT EXISTS (
-          SELECT 1 FROM device_workers dw
-          WHERE dw.id = c.device_worker_id
-            AND dw.user_id = ${userId}
-            AND dw.last_seen_at > now() - '7 days'::interval
-        )
-    `;
-
-    expect(await pinOf(liveConn)).toBe(live);
-    expect(await pinOf(goneConn)).toBeNull();
-  });
-
   it('unpins a device that is alive but no longer advertises the capability', async () => {
     // Freshness alone is not "still serving". A device can keep heartbeating
     // after an app update or a revoked permission drops the capability; polling

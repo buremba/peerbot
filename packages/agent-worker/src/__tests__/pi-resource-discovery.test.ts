@@ -16,10 +16,12 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLobuResourceLoader } from "../runtime/pi-resources";
 import { buildAgentSession } from "../runtime/session-runner";
 import { createLobuTools } from "../runtime/tools";
 
@@ -136,6 +138,27 @@ describe("pi resource discovery is contained to Lobu-supplied inputs", () => {
     }
   });
 
+  test("the loader itself has no filesystem inputs at all", async () => {
+    // Unit-level contract for the module: it takes no cwd, no agentDir and no
+    // settings, so there is nothing it could discover. This is what makes the
+    // integration cases above hold by construction rather than by getting a set
+    // of DefaultResourceLoader `no*` flags right — those discard results only
+    // AFTER the package manager has already walked the tree.
+    const loader = createLobuResourceLoader();
+    await loader.reload();
+
+    expect(loader.getExtensions().extensions).toEqual([]);
+    expect(loader.getSkills().skills).toEqual([]);
+    expect(loader.getPrompts().prompts).toEqual([]);
+    expect(loader.getThemes().themes).toEqual([]);
+    expect(loader.getAgentsFiles().agentsFiles).toEqual([]);
+    expect(loader.getSystemPrompt()).toBeUndefined();
+    expect(loader.getAppendSystemPrompt()).toEqual([]);
+    // The extension runtime must be stable across calls: AgentSession writes
+    // flag values onto it, which a fresh object per call would discard.
+    expect(loader.getExtensions().runtime).toBe(loader.getExtensions().runtime);
+  });
+
   test("a skill written into the workspace is NOT registered", async () => {
     seed(
       ".pi/skills/rogue/SKILL.md",
@@ -148,5 +171,44 @@ describe("pi resource discovery is contained to Lobu-supplied inputs", () => {
     session.dispose();
 
     expect(prompt).not.toContain("rogue skill");
+  });
+
+  test("a hostile skill tree does not slow session boot", async () => {
+    // The agent can write to its own workspace and it persists for the pod's
+    // lifetime, so the SIZE of `.pi/skills` is agent-chosen input to every later
+    // boot of that conversation. A loader that walks the tree and only then
+    // discards the results still lets the agent decide how much work each boot
+    // does — a self-inflicted denial of service on its own conversation.
+    //
+    // Both shapes at once: 400 skill directories (bulk) and a symlink pointing
+    // back at the tree root (unbounded depth).
+    const skills = join(workspace, ".pi/skills");
+    for (let i = 0; i < 400; i++) {
+      seed(
+        `.pi/skills/hostile-${i}/SKILL.md`,
+        `---\nname: hostile-${i}\ndescription: hostile skill ${i}\n---\n\nbody\n`
+      );
+    }
+    symlinkSync(skills, join(skills, "loop"), "dir");
+
+    // Self-calibrating: the same boot against an untouched workspace is the
+    // control, so the bound is a ratio rather than a wall-clock number and does
+    // not depend on how fast the CI machine is.
+    const hostileStart = performance.now();
+    const hostileSession = await boot();
+    const hostileMs = performance.now() - hostileStart;
+    const prompt = hostileSession.systemPrompt;
+    hostileSession.dispose();
+
+    rmSync(skills, { recursive: true, force: true });
+    const controlStart = performance.now();
+    const controlSession = await boot();
+    const controlMs = performance.now() - controlStart;
+    controlSession.dispose();
+
+    expect(prompt).not.toContain("hostile skill");
+    // A loader that reads nothing cannot be sensitive to the tree at all; the
+    // slack is for scheduler noise on a boot that takes single-digit ms.
+    expect(hostileMs).toBeLessThan(controlMs + 250);
   });
 });

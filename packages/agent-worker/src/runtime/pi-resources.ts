@@ -1,5 +1,5 @@
 /**
- * pi resource loader with filesystem discovery turned off.
+ * A pi resource loader that reads nothing from disk.
  *
  * pi's `DefaultResourceLoader` auto-discovers extensions, prompt templates,
  * skills, themes, context files and SYSTEM.md from `cwd` and `agentDir`, all
@@ -15,76 +15,60 @@
  *   environment allowlist entirely.
  * - `<cwd>/.pi/prompts/*.md` replace a user message beginning with `/<name>`.
  * - `<cwd>/.pi/SYSTEM.md` replaces the whole system prompt; `APPEND_SYSTEM.md`
- *   appends to it. Neither is covered by a `no*` flag — only by the overrides
- *   below.
+ *   appends to it.
  * - `<cwd>/.pi/skills`, the ancestor `.agents/skills` walk (shared by every
  *   conversation under one workspace root), and `AGENTS.md`/`CLAUDE.md` all
  *   feed the prompt.
  *
- * Everything Lobu wants the agent to have — skills, platform/network
- * instructions, MCP servers — arrives from the gateway as session context, not
- * from the workspace filesystem. So all discovery is off.
+ * `DefaultResourceLoader`'s `noExtensions`/`noSkills`/... flags would leave the
+ * property resting on getting six flags right, and they only discard results
+ * AFTER `reload()` has already walked the tree via the package manager. That
+ * walk recurses into subdirectories and follows symlinks (`collectSkillEntries`
+ * stats the link target and recurses when it is a directory), so the agent
+ * still gets to decide how much work every later boot of the conversation does.
+ * (A symlink cycle does not hang: the recursion overflows the stack and
+ * `collectSkillEntries`'s own catch-all swallows it. Measured, not assumed.)
  *
- * `agentDir` is pinned to a fixed empty directory rather than left to default
- * (`~/.pi/agent`): otherwise whatever happens to be installed in the image's or
- * developer's home leaks into every agent's prompt, which makes the prompt a
- * function of the host rather than of the agent's configuration. `HOME` is
- * itself pinned to the workspace volume for the worker, so the default would
- * resolve inside the tree this module exists to keep out of resolution.
+ * So this implements pi's `ResourceLoader` interface with no filesystem access
+ * at all. Everything Lobu wants the agent to have — skills, platform/network
+ * instructions, MCP servers — arrives from the gateway as session context, so
+ * there is nothing legitimate to discover here.
  *
- * This configures pi's own loader rather than substituting a stub implementing
- * `ResourceLoader`, because `extensionFactories` (in-process extension
- * registration, the supported per-turn hook) is only reachable through
- * `DefaultResourceLoader` — `loadExtensionFromFactory` is not exported from the
- * package root. `noExtensions` filters DISCOVERED extension paths only, so
- * in-process factories still load alongside these flags.
+ * The coupling to pi is the exported `ResourceLoader` interface: if a future pi
+ * adds a method, this fails at compile time rather than silently reopening a
+ * discovery path.
  */
-import * as path from "node:path";
 import {
-  DefaultResourceLoader,
-  type SettingsManager,
+  createExtensionRuntime,
+  type LoadExtensionsResult,
+  type ResourceLoader,
 } from "@mariozechner/pi-coding-agent";
 
-/**
- * Fixed, Lobu-owned pi agent directory. Deliberately neither the agent's
- * workspace nor the host default, so resource resolution can never depend on
- * either.
- *
- * It is a path that does not exist, and is never created. With every discovery
- * flag off, pi only ever `existsSync`-probes `<agentDir>/{extensions,skills,
- * prompts,themes}` and `<agentDir>/AGENTS.md`, so a missing directory is the
- * strongest available form of "empty" and needs no writable location.
- *
- * `os.tmpdir()` is deliberately NOT the base: it is env-derived
- * (TMPDIR/TMP/TEMP), and the gateway pins the worker's `TMPDIR` to
- * `/workspace/.tmp` — inside the very volume this module keeps out of resource
- * resolution, and a path that cannot be created at all when the worker runs
- * embedded on a developer or CI host (`EACCES: mkdir '/workspace'`).
- */
-const LOBU_PI_AGENT_DIR = path.join(path.sep, "nonexistent", "lobu-pi-agent");
+export function createLobuResourceLoader(): ResourceLoader {
+  // Built once, not per call: `AgentSession._buildRuntime` reads this result and
+  // writes extension flag values onto `runtime`, which a fresh object per call
+  // would silently discard.
+  const extensions: LoadExtensionsResult = {
+    extensions: [],
+    errors: [],
+    runtime: createExtensionRuntime(),
+  };
 
-export async function createLobuResourceLoader(options: {
-  cwd: string;
-  settingsManager: SettingsManager;
-}): Promise<DefaultResourceLoader> {
-  const loader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: LOBU_PI_AGENT_DIR,
-    settingsManager: options.settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    // The `no*` flags do not cover the system-prompt files. These overrides are
-    // what stop `<cwd>/.pi/SYSTEM.md` and `.pi/APPEND_SYSTEM.md` being picked
-    // up. Returning undefined/[] leaves pi to build its own base prompt exactly
-    // as before: this module changes what is DISCOVERED, not what the prompt
-    // says.
-    systemPromptOverride: () => undefined,
-    appendSystemPromptOverride: () => [],
-  });
-
-  await loader.reload();
-  return loader;
+  return {
+    getExtensions: () => extensions,
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => undefined,
+    getAppendSystemPrompt: () => [],
+    extendResources: () => {
+      // pi calls this when an extension's `resources_discover` hook returns
+      // paths. With no extensions loaded it never fires; ignoring the paths
+      // keeps the "nothing is read from disk" property even if one is added.
+    },
+    reload: async () => {
+      // Nothing to re-read: every getter above is a constant.
+    },
+  };
 }

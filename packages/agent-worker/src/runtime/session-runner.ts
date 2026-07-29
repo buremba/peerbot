@@ -128,9 +128,7 @@ export async function buildAgentSession({
     AuthStorage.inMemory();
   const modelRegistry =
     options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
-  const resourceLoader =
-    options.resourceLoader ??
-    (await createLobuResourceLoader({ cwd, settingsManager }));
+  const resourceLoader = options.resourceLoader ?? createLobuResourceLoader();
 
   const result = await createAgentSession({
     ...options,

@@ -128,14 +128,28 @@ async function ensureDeviceConnectorWired(
     // `reconcileDeviceCapabilities` only calls this connector's wire pass when
     // `matchingDeviceIds.length > 0` (an offline fleet routes to
     // `pauseStaleDeviceFeeds`, which must not unpin anything).
+    // Re-check freshness against `device_workers` AT MUTATION TIME rather than
+    // trusting `matchingDeviceIds`, which is snapshotted before the advisory
+    // lock is taken (see `reconcileDeviceCapabilities`). A concurrent poll on
+    // another replica can refresh a device's heartbeat between this pass's
+    // snapshot and its commit; sweeping from the stale list would unpin a
+    // device that is live again. The NOT EXISTS makes the sweep self-verifying:
+    // a row is cleared only if its worker is genuinely absent, stale, or no
+    // longer advertising the capability as of this statement.
     await db`
-      UPDATE connections
+      UPDATE connections c
       SET device_worker_id = NULL, updated_at = NOW()
-      WHERE organization_id = ${organizationId}
-        AND connector_key = ${connectorKey}
-        AND deleted_at IS NULL
-        AND device_worker_id IS NOT NULL
-        AND NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
+      WHERE c.organization_id = ${organizationId}
+        AND c.connector_key = ${connectorKey}
+        AND c.deleted_at IS NULL
+        AND c.device_worker_id IS NOT NULL
+        AND NOT (c.device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM device_workers dw
+          WHERE dw.id = c.device_worker_id
+            AND dw.user_id = ${userId}
+            AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+        )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
     // connection is not stuck as active + red "Device was removed".

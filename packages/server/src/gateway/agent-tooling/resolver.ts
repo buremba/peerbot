@@ -233,16 +233,22 @@ async function loadToolingConnections(
      AND cd.status = 'active'
     LEFT JOIN app_installations ai
       -- connections.config is a jsonb blob written by the install path, not a
-      -- typed column, so a non-numeric installation_ref is representable. A bare
-      -- ::bigint cast on one raises invalid_text_representation, which aborts
-      -- this whole query — and both callers fail open to "no contribution", so
-      -- one malformed row would strip packages, domains and leases from every
-      -- connection in the org. Cast only what is provably numeric; anything
-      -- else joins to NULL, exactly like an absent ref.
+      -- typed column, so a malformed installation_ref is representable. A bare
+      -- ::bigint cast can raise on non-digits OR an out-of-range digit string,
+      -- aborting this whole query; both callers then fail open to "no
+      -- contribution", stripping packages, domains and leases from every
+      -- connection in the org. Normalize leading zeroes and cast only a
+      -- positive safe integer; anything else joins to NULL like an absent ref.
       ON ai.id = (
            CASE
-             WHEN c.config->>'installation_ref' ~ '^[0-9]+$'
-               THEN (c.config->>'installation_ref')::bigint
+             WHEN (
+                c.config->>'installation_ref' ~ '^0*[1-9][0-9]{0,14}$'
+                OR (
+                  c.config->>'installation_ref' ~ '^0*[1-9][0-9]{15}$'
+                  AND ltrim(c.config->>'installation_ref', '0') <= '9007199254740991'
+                )
+              )
+               THEN ltrim(c.config->>'installation_ref', '0')::bigint
            END
          )
      AND ai.organization_id = c.organization_id
@@ -508,11 +514,13 @@ function buildLeaseSubject(
   const parsedRef =
     typeof rawRef === "number"
       ? rawRef
-      : typeof rawRef === "string" && rawRef.trim()
+      : typeof rawRef === "string" && /^[0-9]+$/.test(rawRef)
         ? Number(rawRef)
         : null;
   const installationRef =
-    parsedRef != null && Number.isFinite(parsedRef) ? parsedRef : null;
+    parsedRef != null && Number.isSafeInteger(parsedRef) && parsedRef > 0
+      ? parsedRef
+      : null;
 
   const method = getAppInstallationAuthMethods(
     normalizeConnectorAuthSchema(row.auth_schema)

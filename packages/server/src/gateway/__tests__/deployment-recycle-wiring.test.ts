@@ -30,6 +30,7 @@ const CONFIG: OrchestratorConfig = {
 /** Records what the consumer asked of the manager, and what it tore down. */
 class RecordingManager extends DeploymentManager {
   deleted: string[] = [];
+  terminalized: string[] = [];
   lowLevelDeleted: string[] = [];
   expiringLeaseFor: string | null = null;
   changedFingerprint: string | null = null;
@@ -63,8 +64,14 @@ class RecordingManager extends DeploymentManager {
    * that also clears secret placeholder mappings and the backing deployment
    * secrets. Calling the low-level one leaks both on every recycle.
    */
-  async deleteWorkerDeployment(name: string): Promise<void> {
+  async deleteWorkerDeployment(
+    name: string,
+    options?: { failInFlightTurns?: boolean }
+  ): Promise<void> {
     this.deleted.push(name);
+    if (options?.failInFlightTurns) {
+      this.terminalized.push(name);
+    }
     await this.deleteDeployment(name);
   }
   hasExpiringLease(name: string): boolean {
@@ -206,6 +213,7 @@ describe("stale-deployment recycling", () => {
       "recycled"
     );
     expect(manager.deleted).toEqual([DEPLOYMENT]);
+    expect(manager.terminalized).toEqual([DEPLOYMENT]);
   });
 
   test("forcing still leaves a HEALTHY worker alone", async () => {
@@ -473,6 +481,7 @@ describe("multi-replica backstop (reconcile loop)", () => {
     }
 
     expect(manager.deleted).toEqual([DEPLOYMENT]);
+    expect(manager.terminalized).toEqual([DEPLOYMENT]);
     // Bounded, and it did wait several cycles first rather than SIGTERMing the
     // very first live turn it saw.
     expect(cycles).toBeGreaterThan(1);

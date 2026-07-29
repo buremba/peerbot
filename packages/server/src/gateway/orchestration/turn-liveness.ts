@@ -258,10 +258,10 @@ export async function hasLiveTurnForDeployment(
 }
 
 /**
- * Fast path: fail every in-flight turn of a deployment whose worker has just
- * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
- * caller gets the rows, and the terminal error is enqueued in the same
- * transaction.
+ * Fast path: fail every in-flight turn of a deployment whose worker stopped
+ * before replying, whether from a crash or a bounded forced recycle. Atomic per
+ * the `DELETE … RETURNING` election — only this caller gets the rows, and the
+ * terminal error is enqueued in the same transaction.
  *
  * @returns the number of turns failed (0 if the worker already replied / was a
  *          deliberate stop with nothing in flight).
@@ -302,14 +302,14 @@ export async function failTurnsForDeployment(
       await notifyThreadResponse();
       logger.info(
         { deploymentName, failed },
-        "Worker died unexpectedly — emitted terminal error for in-flight turn(s)"
+        "Worker stopped before replying — emitted terminal error for in-flight turn(s)"
       );
     }
     return failed;
   } catch (err) {
     logger.error(
       { deploymentName, err: String(err) },
-      "Failed to fail turns for dead deployment"
+      "Failed to fail turns for stopped deployment"
     );
     return 0;
   }

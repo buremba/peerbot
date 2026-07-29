@@ -337,10 +337,10 @@ export class MessageConsumer {
    * For that case the budget is the backstop: `RECYCLE_DEFER_DELAY_MS *
    * MAX_RECYCLE_DEFERRALS` ≈ 4 minutes, against the manager's 5-minute
    * lease-recycle margin. So the forced teardown lands with roughly a minute of
-   * credential life left — the turn we interrupt was about to fail on an expired
-   * token anyway, and it is terminalized cleanly by the worker-exit fast path
-   * (`failTurnsForDeployment`) rather than hanging. Without the budget, one
-   * runaway turn would wedge its conversation forever.
+   * credential life left — the turn we interrupt was about to fail on an
+   * expired token anyway, and the forced delete explicitly terminalizes it
+   * through `failTurnsForDeployment` rather than leaving it hanging. Without
+   * the budget, one runaway turn would wedge its conversation forever.
    */
   private static readonly MAX_RECYCLE_DEFERRALS = 16;
 
@@ -539,12 +539,13 @@ export class MessageConsumer {
         delete data.platformMetadata[RECYCLE_DEFERRAL_KEY];
       }
 
-      // The message exactly as delivered. `handleMessage` enriches `data` in
-      // place from here on (folded nix/network config, a minted per-run token),
-      // and a hold re-queues THIS message — which must go back unenriched. The
-      // retry recomputes all of it, and re-queueing a minted `runJobToken`
-      // bound to a run that has already completed would ship a dead claim.
+      // The message as delivered, minus the claimed row id stamped above.
+      // `handleMessage` enriches `data` in place from here on (folded
+      // nix/network config, a minted per-run token), and a hold re-queues THIS
+      // message — which must go back unenriched. The retry assigns its own
+      // `runId` and recomputes the rest.
       const asDelivered: MessagePayload = structuredClone(data);
+      delete asDelivered.runId;
 
       // Materialize the `conversations` listing row for this turn (the single
       // sidebar source). Watcher runs stay derived from transcript snapshots
@@ -1284,7 +1285,9 @@ export class MessageConsumer {
           // `deployments/{name}/` secret entries. A recycle can fire once per
           // credential lifetime per conversation, so leaking those would
           // accumulate (and AWS Secrets Manager entries would leak permanently).
-          await this.deploymentManager.deleteWorkerDeployment(deploymentName);
+          await this.deploymentManager.deleteWorkerDeployment(deploymentName, {
+            failInFlightTurns: force,
+          });
           return "recycled";
         }
       );

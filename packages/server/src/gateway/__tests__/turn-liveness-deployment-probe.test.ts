@@ -14,6 +14,11 @@ import {
   withDeploymentTurnLock,
 } from "../infrastructure/deployment-turn-lock.js";
 import { RunsQueue } from "../infrastructure/queue/index.js";
+import {
+  DeploymentManager,
+  type DeploymentInfo,
+  type OrchestratorConfig,
+} from "../orchestration/deployment-manager.js";
 import { hasLiveTurnForDeployment } from "../orchestration/turn-liveness.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
@@ -174,5 +179,73 @@ describe("deployment turn lock", () => {
     } finally {
       await queue.stop();
     }
+  });
+});
+
+describe("a forced recycle terminalizes the turn it interrupts", () => {
+  /** Only the resource cleanup is stubbed; the marker handling is the real one. */
+  class Manager extends DeploymentManager {
+    async listDeployments(): Promise<DeploymentInfo[]> {
+      return [];
+    }
+    protected async spawnDeployment(): Promise<void> {}
+    async scaleDeployment(): Promise<void> {}
+    async deleteDeployment(): Promise<void> {}
+    async updateDeploymentActivity(): Promise<void> {}
+    async validateWorkerImage(): Promise<void> {}
+    protected getDispatcherHost(): string {
+      return "localhost";
+    }
+  }
+
+  const CONFIG: OrchestratorConfig = {
+    queues: { retryLimit: 3, retryDelay: 5, expireInSeconds: 300 },
+    worker: { idleCleanupMinutes: 60, maxDeployments: 10 },
+    cleanup: { initialDelayMs: 5000, intervalMs: 60000, veryOldDays: 7 },
+  };
+
+  async function terminalErrorRows(): Promise<
+    Array<{ action_input: { messageId?: string; errorCode?: string } }>
+  > {
+    const sql = getDb();
+    return (await sql`
+      SELECT action_input FROM runs
+      WHERE queue_name = 'thread_response' AND status = 'pending'
+    `) as unknown as Array<{
+      action_input: { messageId?: string; errorCode?: string };
+    }>;
+  }
+
+  test("REGRESSION: the interrupted client gets a terminal error, not a hang", async () => {
+    // The deferral budget lets a recycle SIGTERM a worker that is mid-turn. The
+    // marker is that turn's only record of an owed reply, so unless the delete
+    // discharges it the client waits out the whole liveness deadline for an
+    // error the gateway already knew about. Asserted against the real
+    // `failTurnsForDeployment` SQL — the wiring suites stub the manager, so a
+    // delete that quietly skipped this would leave them green.
+    await seedMarker({ messageId: "m-interrupted", runAtOffsetSec: 600 });
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
+
+    await new Manager(CONFIG).deleteWorkerDeployment(DEPLOYMENT, {
+      failInFlightTurns: true,
+    });
+
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
+    const rows = await terminalErrorRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].action_input.messageId).toBe("m-interrupted");
+    expect(rows[0].action_input.errorCode).toBe("WORKER_DIED");
+  });
+
+  test("an ordinary delete leaves in-flight turns to the normal paths", async () => {
+    // Idle reaping, scale-down and the quiet recycle all delete deployments
+    // that are not mid-turn. Terminalizing unconditionally would race a worker
+    // that is about to reply and hand the user a spurious error.
+    await seedMarker({ messageId: "m-untouched", runAtOffsetSec: 600 });
+
+    await new Manager(CONFIG).deleteWorkerDeployment(DEPLOYMENT);
+
+    expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
+    expect(await terminalErrorRows()).toHaveLength(0);
   });
 });

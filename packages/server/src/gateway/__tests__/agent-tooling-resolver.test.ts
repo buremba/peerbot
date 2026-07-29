@@ -398,6 +398,31 @@ describe("resolveAgentTooling", () => {
     expect(Object.keys(resolved.env)).toEqual(["GH_TOKEN"]);
   });
 
+  test("an out-of-range installation_ref cannot break valid tooling rows", async () => {
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    const malformed = await seedConnection({ connectorKey: "github" });
+    await getDb()`
+      UPDATE connections
+         SET config = ${getDb().json({
+           installation_ref: "999999999999999999999999999999999999",
+         })}
+       WHERE id = ${malformed}
+    `;
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+
+    const resolved = await resolve({ registry: buildLeaseRegistry() });
+
+    // The malformed row contributes only its declaration. In particular, its
+    // bigint cast must not abort the org-wide query before the valid row mints.
+    expect(resolved.packages).toEqual(["gh"]);
+    expect(resolved.env.GH_TOKEN).toBe(MINTED_TOKEN);
+  });
+
   test("a connector that declares no agentTooling contributes nothing", async () => {
     await seedConnectorDef({ key: "linear" });
     await seedConnection({ connectorKey: "linear" });
@@ -1029,7 +1054,7 @@ describe("deployment env assembly", () => {
     expect(resolved.leaseExpiresAt).toBeInstanceOf(Date);
   });
 
-  test("REGRESSION: a just-built deployment is never recycled, however short its lease", async () => {
+  test("REGRESSION: a short lease renews at expiry without per-turn recycling", async () => {
     // Without an age floor, a provider issuing tokens already inside the
     // 5-minute margin would make every turn recycle: rebuild, still expiring,
     // rebuild again, forever — each one a cold start.
@@ -1055,11 +1080,12 @@ describe("deployment env assembly", () => {
 
     await manager.buildEnv(buildPayload());
 
-    // Expiring by the raw margin, but too young to recycle.
+    // Expiring by the raw margin, but still usable and too young to recycle.
     expect(manager.hasExpiringLease("deploy-1")).toBe(false);
-    // Past the floor, the normal expiry rule applies again.
+    // Once the short credential itself has expired, the age floor must not
+    // leave the sandbox unauthenticated for the rest of ten minutes.
     expect(
-      manager.hasExpiringLease("deploy-1", new Date(Date.now() + 11 * 60_000))
+      manager.hasExpiringLease("deploy-1", new Date(Date.now() + 3 * 60_000))
     ).toBe(true);
   });
 

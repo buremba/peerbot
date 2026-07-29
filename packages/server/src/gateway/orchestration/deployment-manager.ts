@@ -913,9 +913,11 @@ export class DeploymentManager {
   private static readonly LEASE_RECYCLE_MARGIN_MS = 5 * 60 * 1000;
 
   /**
-   * A deployment is never recycled for expiry within this long of being built.
-   * Makes a recycle loop structurally impossible: one rebuild always buys at
-   * least this much quiet, however short-lived the credential turns out to be.
+   * Maximum age floor for a newly built deployment. The effective floor is
+   * capped at the lease's actual expiry: a short-lived credential gets its full
+   * usable life without causing per-turn rebuilds, then renews when it expires
+   * instead of leaving the sandbox unauthenticated until this whole interval
+   * elapses.
    */
   private static readonly MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS = 10 * 60 * 1000;
 
@@ -946,8 +948,8 @@ export class DeploymentManager {
    * credential that is expiring or on a connection that was repointed or
    * revoked. At the default 60s cadence this bounds that at ~4 minutes, inside
    * the 5-minute lease-recycle margin, so the interrupted turn was about to lose
-   * its credential regardless — and it is terminalized cleanly by the
-   * worker-exit fast path rather than left hanging.
+   * its credential regardless — and the forced delete explicitly terminalizes
+   * its turn marker rather than leaving the client hanging.
    *
    * This also bounds the probe's fail-safe: {@link isServingLiveTurn} reports
    * "busy" when it cannot reach Postgres, and a probe that has been failing for
@@ -974,17 +976,20 @@ export class DeploymentManager {
     if (!expiresAt) return false;
 
     // A deployment built moments ago holds the freshest credential the provider
-    // will give us. If that is ALREADY inside the margin, the provider is
-    // issuing short-lived tokens (clock skew, or a fault) and recycling cannot
-    // improve it — re-minting returns the same token for the same
-    // installation. Without this floor the deployment would recycle on every
-    // turn and never converge; with it, the sandbox runs out the credential's
-    // real life and renews normally once a longer-lived token is issued.
+    // will give us. If that is ALREADY inside the margin, rebuilding on every
+    // turn cannot improve it. Suppress recycling until the earlier of the
+    // normal age floor and the credential's own expiry: this prevents per-turn
+    // churn without keeping an already-expired token for the remainder of a
+    // ten-minute floor.
     const builtAt = this.leaseMintedAtByDeployment.get(deploymentName);
     if (
       builtAt &&
-      now.getTime() - builtAt.getTime() <
-        DeploymentManager.MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS
+      now.getTime() <
+        Math.min(
+          builtAt.getTime() +
+            DeploymentManager.MIN_DEPLOYMENT_AGE_BEFORE_RECYCLE_MS,
+          expiresAt.getTime()
+        )
     ) {
       return false;
     }
@@ -1029,10 +1034,20 @@ export class DeploymentManager {
     release: Promise<void>
   ): void {
     this.conversationLockReleases.set(deploymentName, release);
-    void release.finally(() => {
+    const clear = () => {
       if (this.conversationLockReleases.get(deploymentName) === release) {
         this.conversationLockReleases.delete(deploymentName);
       }
+    };
+    // Handle both outcomes on the derived promise. `finally()` would mirror a
+    // release rejection into an unobserved promise on crash/exit paths that
+    // have nobody awaiting `conversationLockReleases`.
+    void release.then(clear, (error) => {
+      clear();
+      logger.error(
+        { deploymentName, error: getErrorMessage(error) },
+        "Failed to release the conversation lock after worker exit"
+      );
     });
   }
 
@@ -2119,7 +2134,10 @@ export class DeploymentManager {
   /**
    * Delete a worker deployment and associated resources
    */
-  async deleteWorkerDeployment(deploymentName: string): Promise<void> {
+  async deleteWorkerDeployment(
+    deploymentName: string,
+    options?: { failInFlightTurns?: boolean }
+  ): Promise<void> {
     try {
       // Clean up secret placeholder mappings
       deleteSecretMappings(deploymentName);
@@ -2149,6 +2167,17 @@ export class DeploymentManager {
       }
 
       await this.deleteDeployment(deploymentName);
+      // Deliberate exits normally suppress the worker-crash fast path. A
+      // bounded stale-credential recycle is the exception: once its deferral
+      // budget is exhausted it may intentionally interrupt a live turn, which
+      // must receive a terminal error now rather than hang until the deadline
+      // sweep.
+      if (options?.failInFlightTurns) {
+        await failTurnsForDeployment(
+          deploymentName,
+          AgentErrorCode.WORKER_DIED
+        );
+      }
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_DELETE_FAILED,
@@ -2311,8 +2340,10 @@ export class DeploymentManager {
             // Bounded deferral: a live turn buys the worker a few cycles, not
             // an indefinite reprieve. See MAX_RECYCLE_DEFERRALS.
             const deferrals = this.recycleDeferralsByDeployment.get(name) ?? 0;
+            const forceRecycle =
+              deferrals >= DeploymentManager.MAX_RECYCLE_DEFERRALS;
             if (
-              deferrals < DeploymentManager.MAX_RECYCLE_DEFERRALS &&
+              !forceRecycle &&
               (await this.isServingLiveTurn(name))
             ) {
               this.recycleDeferralsByDeployment.set(name, deferrals + 1);
@@ -2330,7 +2361,9 @@ export class DeploymentManager {
               { deploymentName: name },
               "Reaping a deployment whose connector tooling or lease is stale"
             );
-            await this.deleteWorkerDeployment(name);
+            await this.deleteWorkerDeployment(name, {
+              failInFlightTurns: forceRecycle,
+            });
             recycledCount += 1;
           });
         },
@@ -2699,7 +2732,8 @@ export class DeploymentManager {
         // Reached from the async exit handler's self-heal — can't throw to a
         // caller, so fail the in-flight turn(s) with the clear message and
         // release the lock we were holding across the swap.
-        void releaseLockOnce();
+        const lockRelease = releaseLockOnce();
+        this.trackConversationLockRelease(deploymentName, lockRelease);
         failTurnsForDeployment(
           deploymentName,
           AgentErrorCode.WORKER_SANDBOX_REQUIRED

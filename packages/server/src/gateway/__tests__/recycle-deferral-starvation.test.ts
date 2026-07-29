@@ -246,6 +246,7 @@ describe("a stale worker never serves an overlapping turn", () => {
     // The user's message is held, not dropped: exactly one re-queue.
     expect(queue.requeued).toHaveLength(1);
     expect(heldBack(queue)?.messageId).toBe("m-2");
+    expect(heldBack(queue)?.runId).toBeUndefined();
   });
 
   test("the held message is re-queued with a delay and a fresh idempotency key", async () => {

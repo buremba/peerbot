@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "@sinclair/typebox";
 import { getAllTools, getTool } from "../../tools/registry";
-import { validateToolArgs, validateToolResult, withValidatedArgs } from "../../tools/validate-args";
+import {
+  markAcceptedInternalFields,
+  validateToolArgs,
+  validateToolResult,
+  withValidatedArgs,
+} from "../../tools/validate-args";
 import { ToolUserError } from "../../utils/errors";
 
 describe("validateToolArgs coercion", () => {
@@ -404,5 +409,69 @@ describe("registry outputSchema normalization (MCP spec: must be an object schem
     const byName = new Map(getAllTools().map((t) => [t.name, t]));
     const search = byName.get("search_memory") as { outputSchema?: any } | undefined;
     expect(search?.outputSchema?.type).toBe("object");
+  });
+});
+
+describe("accepted-but-unadvertised arg annotation", () => {
+  const schema = Type.Object({
+    query: Type.String(),
+    limit: Type.Optional(Type.Number()),
+    agent_id: Type.Optional(Type.String()),
+  });
+  markAcceptedInternalFields(schema, ["agent_id"]);
+
+  it("omits annotated fields from the unknown-argument error's valid-args list", () => {
+    let msg = "";
+    try {
+      validateToolArgs("t", schema, { query: "q", nope: 1 });
+    } catch (err) {
+      msg = (err as ToolUserError).message;
+    }
+    expect(msg).toContain("unknown argument(s): nope");
+    // The whole point: an error message must not publish an arg the tool's
+    // advertised schema deliberately hides.
+    expect(msg).not.toContain("agent_id");
+    // …while still naming the genuinely public ones.
+    expect(msg).toContain("query");
+    expect(msg).toContain("limit");
+  });
+
+  it("still ACCEPTS the annotated field — it is hidden, not rejected", () => {
+    const out = validateToolArgs("t", schema, { query: "q", agent_id: "a1" }) as Record<
+      string,
+      unknown
+    >;
+    expect(out.agent_id).toBe("a1");
+  });
+
+  it("keeps search_memory's server-internal args out of the ADVERTISED inputSchema", () => {
+    // The published schema is what an agent reads to learn the tool's surface.
+    // `agent_id` and `query_embedding` stay accepted by the handler but must
+    // not be advertised — and the marker that hides them from error text must
+    // not sneak into the advertised payload either.
+    const byName = new Map(getAllTools().map((t) => [t.name, t]));
+    const search = byName.get("search_memory") as { inputSchema?: any } | undefined;
+    const props = Object.keys(search?.inputSchema?.properties ?? {});
+    expect(props).not.toContain("agent_id");
+    expect(props).not.toContain("query_embedding");
+    // The public knobs are still there.
+    expect(props).toContain("query");
+    expect(props).toContain("min_similarity");
+    expect(JSON.stringify(search?.inputSchema)).not.toContain(
+      "x-lobu-accepted-internal-fields"
+    );
+  });
+
+  it("does not serialize the marker into JSON.stringify(schema)", () => {
+    // A TypeBox schema is routinely stringified into tools/list payloads and
+    // discovery metadata. An ENUMERABLE marker would ship the hidden field
+    // names straight to clients — publishing exactly what the annotation
+    // exists to suppress. Non-enumerable is what makes the marker inert for a
+    // future tool that opts in WITHOUT declaring a separate publicInputSchema.
+    const serialized = JSON.stringify(schema);
+    expect(serialized).not.toContain("x-lobu-accepted-internal-fields");
+    expect(Object.keys(schema)).not.toContain("x-lobu-accepted-internal-fields");
+    // Spread/clone paths must drop it too, for the same reason.
+    expect(JSON.stringify({ ...schema })).not.toContain("x-lobu-accepted-internal-fields");
   });
 });

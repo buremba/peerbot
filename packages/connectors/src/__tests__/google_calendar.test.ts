@@ -104,6 +104,129 @@ describe('GoogleCalendarConnector full sync', () => {
   });
 });
 
+/**
+ * Drives an incremental-then-full sync where the first (incremental) request
+ * fails with `status`/`body`, and every later request is a healthy full-sync
+ * page. Returns the recorded query params so the test can assert the poisoned
+ * token was dropped rather than replayed.
+ */
+function rejectingTokenHttp(status: number, body: string) {
+  const calls: Array<Record<string, string | null>> = [];
+  let call = 0;
+  return {
+    calls,
+    client: {
+      raw: async (url: string) => {
+        const u = new URL(url);
+        calls.push({
+          syncToken: u.searchParams.get('syncToken'),
+          pageToken: u.searchParams.get('pageToken'),
+          timeMin: u.searchParams.get('timeMin'),
+        });
+        call++;
+        if (call === 1) {
+          return {
+            ok: false,
+            status,
+            json: async () => JSON.parse(body),
+            text: async () => body,
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            kind: 'calendar#events',
+            items: [calEvent('full-1', '2026-02-01T10:00:00Z')],
+            nextSyncToken: 'FRESH',
+          }),
+          text: async () => '',
+        } as unknown as Response;
+      },
+    },
+  };
+}
+
+/** The exact body prod returns for a syncToken minted under a stale grant. */
+const SCOPE_REJECTION_BODY = JSON.stringify({
+  error: {
+    code: 403,
+    message: 'Request had insufficient authentication scopes.',
+    status: 'PERMISSION_DENIED',
+    errors: [{ reason: 'insufficientPermissions' }],
+    details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }],
+  },
+});
+
+describe('GoogleCalendarConnector poisoned sync token recovery', () => {
+  test('a 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT on the incremental request drops the token and full-syncs', async () => {
+    const connector = new GoogleCalendarConnector();
+    const { client, calls } = rejectingTokenHttp(403, SCOPE_REJECTION_BODY);
+    connector.client = () => client;
+
+    const result = await connector.sync({
+      config: { calendar_id: 'primary', max_results: 100 },
+      credentials: { accessToken: 'tok' },
+      checkpoint: { sync_token: 'POISONED' },
+    });
+
+    // The poisoned token was tried once...
+    expect(calls[0]?.syncToken).toBe('POISONED');
+    // ...then abandoned: the next request is a full sync (windowed by timeMin,
+    // carrying no syncToken at all).
+    expect(calls[1]?.syncToken).toBeNull();
+    expect(calls[1]?.timeMin).toBeTruthy();
+
+    // Recovery produced real events and a fresh checkpoint that no longer
+    // carries the poisoned token.
+    expect(result.events).toHaveLength(1);
+    expect(result.checkpoint.sync_token).toBe('FRESH');
+  });
+
+  test('a genuinely missing scope still fails loudly instead of looping full syncs', async () => {
+    const connector = new GoogleCalendarConnector();
+    // Both the incremental AND the full-sync retry are rejected — the signature
+    // of a scope the user never granted. Recovery must not mask this.
+    connector.client = () => ({
+      raw: async () =>
+        ({
+          ok: false,
+          status: 403,
+          json: async () => JSON.parse(SCOPE_REJECTION_BODY),
+          text: async () => SCOPE_REJECTION_BODY,
+        }) as unknown as Response,
+    });
+
+    await expect(
+      connector.sync({
+        config: { calendar_id: 'primary', max_results: 100 },
+        credentials: { accessToken: 'tok' },
+        checkpoint: { sync_token: 'POISONED' },
+      })
+    ).rejects.toThrow(/insufficient authentication scopes/);
+  });
+
+  test('an unrelated 403 is not treated as a poisoned token', async () => {
+    const connector = new GoogleCalendarConnector();
+    const forbidden = JSON.stringify({
+      error: { code: 403, message: 'Daily Limit Exceeded', status: 'PERMISSION_DENIED' },
+    });
+    const { client, calls } = rejectingTokenHttp(403, forbidden);
+    connector.client = () => client;
+
+    await expect(
+      connector.sync({
+        config: { calendar_id: 'primary', max_results: 100 },
+        credentials: { accessToken: 'tok' },
+        checkpoint: { sync_token: 'GOOD' },
+      })
+    ).rejects.toThrow(/Daily Limit Exceeded/);
+
+    // Only the incremental attempt ran — no full-sync fallback was triggered.
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe('GoogleCalendarConnector incremental sync', () => {
   test('an expired syncToken (410) falls through to a full sync', async () => {
     const connector = new GoogleCalendarConnector();

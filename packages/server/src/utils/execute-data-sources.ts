@@ -31,6 +31,7 @@ import {
   type ColumnDef,
   formatUnknownTablesError,
   QUERYABLE_TABLE_NAMES,
+  RETIRED_RELATION_NAMES,
   SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
@@ -592,12 +593,22 @@ export function buildScopedQuery(
           connectionRowVisibility('cn') +
           ')'
       );
-    } else if (table === 'watchers') {
+    } else if (table === 'behaviors') {
+      // Scoped on `watchers.organization_id` (NOT NULL), NOT through an
+      // entity-existence join.
+      //
+      // The old predicate was `EXISTS (SELECT 1 FROM entities ent WHERE ent.id =
+      // ANY(i.entity_ids) AND ent.organization_id = $org)`. `entity_ids` is
+      // NULLABLE and org-scoped Behaviors carry NULL, so every entity-less
+      // Behavior was structurally invisible — `SELECT count(*) FROM behaviors`
+      // returned a confident wrong number while `behaviors.list` showed them.
+      // The direct column is both COMPLETE (no row can lack it) and strictly
+      // fail-closed (it is the tenancy key itself, so this cannot widen
+      // cross-org visibility the way an EXISTS over a joined table could).
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.watchers i WHERE EXISTS (` +
-          'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(i.entity_ids) ' +
-          `AND ent.organization_id = ${orgP}))`
+        `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.watchers i ` +
+          `WHERE i.organization_id = ${orgP})`
       );
     } else if (table === 'canvas_windows') {
       // Watcher windows as canvas chains (view over events; migration
@@ -623,13 +634,17 @@ export function buildScopedQuery(
           eventResourceVisibility('ev') +
           '))'
       );
-    } else if (table === 'watcher_versions') {
+    } else if (table === 'behavior_versions') {
+      // `watcher_versions` carries no organization_id of its own, so it inherits
+      // the parent Behavior's. Same fix as the `behaviors` CTE: the previous
+      // entity-existence join hid every version of an entity-less Behavior. The
+      // INNER JOIN is the tenancy boundary — a version whose parent is missing
+      // or in another org yields no row, so this stays fail-closed.
       // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.watcher_versions wv ` +
-          'JOIN public.watchers w ON w.id = wv.watcher_id WHERE EXISTS (' +
-          'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(w.entity_ids) ' +
-          `AND ent.organization_id = ${orgP}))`
+          'JOIN public.watchers w ON w.id = wv.watcher_id ' +
+          `WHERE w.organization_id = ${orgP})`
       );
     } else if (table === 'oauth_clients') {
       ctes.push(
@@ -649,11 +664,25 @@ export function buildScopedQuery(
       // Every feed derives from a connection (`connection_id` NOT NULL), so a
       // private connection's feeds (display_name, config, last_error) are
       // per-user too — gate via the owning connection's visibility.
+      //
+      // This uses the ROW form (`compileConnectionRowVisibility`), matching
+      // `manage_feeds`. It previously used the FK form, which is built for
+      // EVENT tables and additionally requires `vc.deleted_at IS NULL` — so a
+      // live feed on a soft-deleted connection vanished from SQL while
+      // `client.feeds.get` still returned it. Feeds carry their own
+      // `deleted_at`; the CONNECTION's soft-delete is not the feed's, and
+      // query_sql is an audit surface. Same structural-visibility class as the
+      // Behaviors defect: the SDK and the SQL view must agree on what exists.
+      // The row form also honors the legacy-unowned (`created_by IS NULL`)
+      // admin arm, which is the other half of the SDK/SQL disagreement.
       // security-allowed: see block comment above the for-loop
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd WHERE fd.organization_id = ${orgP}` +
-          eventConnVisibility('fd') +
-          ')'
+        `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd ` +
+          `WHERE fd.organization_id = ${orgP} ` +
+          `AND EXISTS (SELECT 1 FROM public.connections fc ` +
+          `WHERE fc.id = fd.connection_id AND fc.organization_id = ${orgP}` +
+          connectionRowVisibility('fc') +
+          '))'
       );
     } else if (table === 'channel_messages') {
       // Chat transcript rows. `text` is verbatim channel content, so the CTE
@@ -878,6 +907,23 @@ export async function executeDataSources(
         if (restricted.length > 0) {
           throw new Error(
             `Source '${name}': table(s) require admin access: ${[...new Set(restricted)].join(', ')}`
+          );
+        }
+
+        // A source saved against a RETIRED relation name must fail loudly. The
+        // agent-facing relations were renamed (`watchers` → `behaviors`), and
+        // unknown refs compile as entity-type CTEs rather than erroring — so a
+        // previously-saved `FROM watchers` would silently resolve to a
+        // nonexistent entity type and return ZERO ROWS instead of the Behaviors
+        // it used to. This check runs on every execution (not just save, where
+        // `validateEntitySlugs` applies) precisely because the rows it protects
+        // were saved BEFORE the rename.
+        const retired = tableRefs.filter((t) => RETIRED_RELATION_NAMES.has(t));
+        if (retired.length > 0) {
+          throw new Error(
+            `Source '${name}': table(s) renamed: ${[...new Set(retired)]
+              .map((t) => `${t} → ${RETIRED_RELATION_NAMES.get(t)}`)
+              .join(', ')}. Update the query to use the current name.`
           );
         }
 

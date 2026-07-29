@@ -8,6 +8,8 @@
  *   - ClientSDK discovery metadata, aliases, or namespace method names
  *   - the connector-sdk public reaction contract
  *   - server and web-client response types for shared public tool payloads
+ *   - query_sql's queryable-relation allowlist (QUERYABLE_SCHEMA table names),
+ *     which the unknown-table error enumerates verbatim to the caller
  *
  * TypeBox schema initializers are scanned under the core tool contracts and the
  * server's tool/type sources. Other source scans are deliberately limited to
@@ -392,6 +394,67 @@ function scanNamespaceSurface(file: string, violations: Violation[]): void {
   scanFile(file, null);
 }
 
+/**
+ * query_sql's queryable-relation allowlist.
+ *
+ * BLIND SPOT THIS CLOSES: `QUERYABLE_SCHEMA` in
+ * `packages/server/src/utils/table-schema.ts` is agent-facing vocabulary — the
+ * allowlist error enumerates every relation name verbatim to the caller — but
+ * `utils/` was in NO scanned directory, and the name reaches the agent through
+ * a runtime `[...QUERYABLE_TABLE_NAMES].join(', ')` rather than a static
+ * literal, so neither the directory scans nor the literal scans could have
+ * seen it. `watchers` / `watcher_versions` were exposed to agents for the
+ * entire life of this guard while it reported clean.
+ *
+ * Scanning the whole file would fire on every legitimate internal use (physical
+ * table names in the CTE builder, `watcher_id` columns, comments). What is
+ * agent-facing is precisely the `name:` of each entry in the
+ * `QUERYABLE_SCHEMA.tables` array, so that is what is checked — the exposed
+ * relation names only, not the physical mapping beside them.
+ */
+function scanQueryableRelationNames(
+  file: string,
+  violations: Violation[]
+): void {
+  const source = parse(file);
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "QUERYABLE_SCHEMA" &&
+      node.initializer &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      for (const property of node.initializer.properties) {
+        if (
+          !ts.isPropertyAssignment(property) ||
+          propertyNameText(property.name) !== "tables" ||
+          !ts.isArrayLiteralExpression(property.initializer)
+        ) {
+          continue;
+        }
+        for (const entry of property.initializer.elements) {
+          if (!ts.isObjectLiteralExpression(entry)) continue;
+          for (const field of entry.properties) {
+            if (
+              ts.isPropertyAssignment(field) &&
+              propertyNameText(field.name) === "name" &&
+              ts.isStringLiteral(field.initializer) &&
+              BANNED.test(field.initializer.text)
+            ) {
+              addViolation(violations, file, source, field.initializer);
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(source);
+}
+
 /** Published declaration text, including JSDoc. */
 function scanFullText(file: string, violations: Violation[]): void {
   const lines = readFileSync(file, "utf8").split("\n");
@@ -425,6 +488,13 @@ for (const dir of [
     scanTypeBoxSchemas(file, violations);
   }
 }
+
+// query_sql's queryable-relation allowlist: enumerated verbatim to agents in
+// the unknown-table error, so the relation names are agent-facing vocabulary.
+scanQueryableRelationNames(
+  join(REPO_ROOT, "packages/server/src/utils/table-schema.ts"),
+  violations
+);
 
 // Tool names/descriptions/titles and SDK discovery text/names/aliases.
 for (const file of [

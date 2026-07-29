@@ -39,6 +39,46 @@ interface SchemaWithVariants {
 }
 
 /**
+ * Schema-level annotation listing fields a tool ACCEPTS but does not ADVERTISE
+ * (server-internal args populated from auth context or a server pre-compute).
+ * Such fields stay valid input, but must not appear in the "valid arguments
+ * are: …" list of an unknown-argument error — an error message is not a place
+ * to publish an affordance the tool's advertised schema deliberately hides.
+ */
+const ACCEPTED_INTERNAL_FIELDS = 'x-lobu-accepted-internal-fields';
+
+/**
+ * Annotate `schema` with the args it accepts but does not advertise.
+ *
+ * The annotation is defined NON-ENUMERABLE on purpose. A TypeBox schema object
+ * is routinely handed to `JSON.stringify` (tools/list payloads, ClientSDK
+ * discovery metadata, snapshot fixtures), and an enumerable own property would
+ * serialize straight into that JSON — publishing the very field names the
+ * annotation exists to keep unpublished. `search_memory` happens to be safe
+ * today because it declares a marker-free `publicInputSchema`, but the marker
+ * must be inert-by-construction for the next tool that opts in without one.
+ * `Object.keys` / spread / `{...schema}` skip it for the same reason; readers
+ * go through `advertisedArgNames`, which reads the key directly.
+ */
+export function markAcceptedInternalFields(schema: TSchema, fields: readonly string[]): void {
+  Object.defineProperty(schema, ACCEPTED_INTERNAL_FIELDS, {
+    value: [...fields],
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+}
+
+/** Public argument names to name in error text: declared properties minus the
+ * accepted-but-unadvertised ones. */
+function advertisedArgNames(schema: TSchema): string[] {
+  const { properties } = schema as { properties?: Record<string, unknown> };
+  const internal = (schema as Record<string, unknown>)[ACCEPTED_INTERNAL_FIELDS];
+  const hidden = new Set(Array.isArray(internal) ? internal.map(String) : []);
+  return Object.keys(properties ?? {}).filter((key) => !hidden.has(key));
+}
+
+/**
  * For a `Type.Union` of per-action variants, validation must dispatch on the
  * `action` literal and check ONLY the matched variant: the schema advertised
  * to MCP clients is the FLATTENED union (registry `flattenUnionSchema`), so a
@@ -212,9 +252,7 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
 
   if (checkPassed) {
     if (unknown && unknown.length > 0) {
-      const valid = Object.keys(
-        (schema as { properties?: Record<string, unknown> }).properties ?? {}
-      );
+      const valid = advertisedArgNames(schema);
       throw new ToolUserError(
         `Invalid arguments for ${toolName}: unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${valid.join(', ')}`
       );
@@ -250,9 +288,7 @@ function checkAgainst(toolName: string, schema: TSchema, args: unknown): unknown
   // caller who supplied the wrong field name (dropping the required one) sees
   // both problems at once instead of fixing them serially.
   if (unknown && unknown.length > 0) {
-    const valid = Object.keys(
-      (schema as { properties?: Record<string, unknown> }).properties ?? {}
-    );
+    const valid = advertisedArgNames(schema);
     errs.push(
       `unknown argument(s): ${unknown.join(', ')} — valid arguments${scope} are: ${valid.join(', ')}`
     );

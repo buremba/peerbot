@@ -229,6 +229,26 @@ interface YouTubeCheckpoint {
   next_page_token?: string;
 }
 
+/**
+ * Does this search.list failure mean the persisted `pageToken` is no longer
+ * usable? YouTube rejects a stale/foreign page token with 400
+ * `invalidPageToken`; 410 GONE is the generic Google "this cursor is dead"
+ * signal. Either way the token must be dropped and the sync restarted from the
+ * first page, because the run-lifecycle preserves the checkpoint on failure —
+ * so a rejected token that keeps throwing wedges the feed permanently.
+ *
+ * Deliberately narrow: a quota/auth 403 is NOT a token rejection and must keep
+ * throwing so the real problem surfaces.
+ *
+ * Termination is guaranteed by the caller, not by this predicate: every token
+ * it rejects is recorded and never requested again, so each distinct cursor can
+ * trigger at most one restart and pagination cannot re-enter a dead one.
+ */
+function isPageTokenRejection(status: number, body: string): boolean {
+  if (status === 410) return true;
+  return status === 400 && body.includes('invalidPageToken');
+}
+
 // ---------------------------------------------------------------------------
 // Connector
 // ---------------------------------------------------------------------------
@@ -573,6 +593,10 @@ export default class YouTubeConnector extends ConnectorRuntime {
   private readonly BASE_URL = 'https://www.googleapis.com/youtube/v3';
   private readonly RATE_LIMIT_MS = 200;
   private readonly COMMENT_PAGE_LIMIT = 3;
+  // Hard ceiling on cursor pagination, matching the Calendar connector's
+  // MAX_PAGES. Defensive only: every loop below also stops on its own item
+  // budget. This is the backstop for an API that keeps handing back a cursor.
+  private readonly MAX_PAGES = 200;
   private readonly http = createHttpClient({ errorPrefix: 'YouTube API' });
 
   // -------------------------------------------------------------------------
@@ -731,7 +755,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         const data = (await response.json()) as YouTubePlaylistResponse;
         return { items: data.items ?? [], nextCursor: data.nextPageToken };
       },
-      { delayMs: this.RATE_LIMIT_MS }
+      { maxPages: this.MAX_PAGES, delayMs: this.RATE_LIMIT_MS }
     );
     for await (const batch of pages) {
       for (const playlist of batch) {
@@ -816,7 +840,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         const data = (await response.json()) as YouTubePlaylistResponse;
         return { items: data.items ?? [], nextCursor: data.nextPageToken };
       },
-      { delayMs: this.RATE_LIMIT_MS }
+      { maxPages: this.MAX_PAGES, delayMs: this.RATE_LIMIT_MS }
     );
 
     for await (const playlists of playlistPages) {
@@ -887,7 +911,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         const data = (await response.json()) as YouTubeSubscriptionResponse;
         return { items: data.items ?? [], nextCursor: data.nextPageToken };
       },
-      { delayMs: this.RATE_LIMIT_MS }
+      { maxPages: this.MAX_PAGES, delayMs: this.RATE_LIMIT_MS }
     );
 
     for await (const subscriptions of pages) {
@@ -947,24 +971,57 @@ export default class YouTubeConnector extends ConnectorRuntime {
 
     let pageToken: string | undefined = checkpoint.next_page_token;
     let totalCollected = 0;
+    // Cursors YouTube rejected during this run. Remembering the token itself —
+    // not merely "a recovery happened" — is what makes the restart safe: page
+    // one legitimately re-advertises the same nextPageToken that just died, so
+    // a bare flag would let the paginator walk right back into the dead cursor.
+    const rejectedPageTokens = new Set<string>();
+
+    // One page fetch, including the single restart-from-page-one recovery.
+    const fetchSearchPage = async (cursor: string | null): Promise<YouTubeSearchResponse> => {
+      const pageSize = Math.min(50, maxResults - totalCollected);
+      const response = await this.apiGet(
+        this.buildSearchUrl(searchQuery, pageSize, cursor ?? undefined),
+        auth
+      );
+      if (response.ok) return (await response.json()) as YouTubeSearchResponse;
+
+      // Read the body exactly once — it drives both the rejection test and the
+      // error message, and a Response body cannot be consumed twice.
+      const body = await response.text();
+      if (!cursor || !isPageTokenRejection(response.status, body)) {
+        throw new Error(`YouTube Search API error (${response.status}): ${body}`);
+      }
+
+      // Stale cursor: remember it so pagination can never follow it again, then
+      // restart from page one so the feed recovers instead of failing forever.
+      rejectedPageTokens.add(cursor);
+      const restart = await this.apiGet(this.buildSearchUrl(searchQuery, pageSize), auth);
+      if (!restart.ok) {
+        throw new Error(`YouTube Search API error (${restart.status}): ${await restart.text()}`);
+      }
+      return (await restart.json()) as YouTubeSearchResponse;
+    };
 
     const searchPages = paginateByCursor<YouTubeSearchItem, string>(
       async (cursor) => {
-        const pageSize = Math.min(50, maxResults - totalCollected);
-        const searchUrl = this.buildSearchUrl(searchQuery, pageSize, cursor ?? undefined);
-
-        const searchResponse = await this.apiGet(searchUrl, auth);
-        if (!searchResponse.ok) {
-          throw new Error(
-            `YouTube Search API error (${searchResponse.status}): ${await searchResponse.text()}`
-          );
-        }
-
-        const searchData = (await searchResponse.json()) as YouTubeSearchResponse;
-        pageToken = searchData.nextPageToken;
-        return { items: searchData.items, nextCursor: searchData.nextPageToken };
+        const searchData = await fetchSearchPage(cursor);
+        // Stop rather than follow a cursor this run has already seen rejected.
+        // Page one legitimately re-advertises the token that just died, so
+        // without this the restart would walk straight back into it. Dropping
+        // it here also keeps it out of the persisted checkpoint below.
+        const next =
+          searchData.nextPageToken && rejectedPageTokens.has(searchData.nextPageToken)
+            ? undefined
+            : searchData.nextPageToken;
+        pageToken = next;
+        return { items: searchData.items, nextCursor: next };
       },
-      { initialCursor: checkpoint.next_page_token ?? null, delayMs: this.RATE_LIMIT_MS }
+      {
+        initialCursor: checkpoint.next_page_token ?? null,
+        maxPages: this.MAX_PAGES,
+        delayMs: this.RATE_LIMIT_MS,
+      }
     );
 
     for await (const searchItems of searchPages) {
@@ -1143,7 +1200,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         const data = (await response.json()) as YouTubePlaylistItemResponse;
         return { items: data.items ?? [], nextCursor: data.nextPageToken };
       },
-      { delayMs: this.RATE_LIMIT_MS }
+      { maxPages: this.MAX_PAGES, delayMs: this.RATE_LIMIT_MS }
     );
 
     for await (const items of itemPages) {
@@ -1323,7 +1380,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
         const data = (await response.json()) as YouTubePlaylistItemResponse;
         return { items: data.items ?? [], nextCursor: data.nextPageToken };
       },
-      { delayMs: this.RATE_LIMIT_MS }
+      { maxPages: this.MAX_PAGES, delayMs: this.RATE_LIMIT_MS }
     );
     for await (const items of pages) {
       for (const item of items) {

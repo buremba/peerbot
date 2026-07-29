@@ -12,6 +12,7 @@ import { extractSourcesFromPromptTokens, mergePromptSources } from '../../../wat
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
+  assertKeyingConfigEntityTypeExists,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   parseJsonInput,
@@ -140,6 +141,12 @@ export async function handleCreateVersion(
   // entity_ids so {{entityId}} validates as it runs.
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
   if (versionOrganizationId) {
+    // Only validate a CALLER-SUPPLIED keying_config. An inherited value comes
+    // from the stored previous version, and a metadata-only bump (name/schedule)
+    // must not start failing because of a type that was already persisted.
+    if (args.keying_config !== undefined) {
+      await assertKeyingConfigEntityTypeExists(sql, versionOrganizationId, keyingConfig);
+    }
     await assertWatcherSourcesResolve(
       sql,
       versionOrganizationId,

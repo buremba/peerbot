@@ -119,34 +119,24 @@ describe('device pin stale sweep', () => {
     await cleanupTestDatabase();
   });
 
-  it('clears a retired pin even when the fast path selects the already-correct row', async () => {
-    const staleDevice = await seedWorker(userId, orgId, false);
+  it('clears EVERY retired pin, which one selected row never could', async () => {
+    // Deterministic by construction, not by scan order: with TWO stale
+    // connections the single-row path can clear at most the one row the
+    // unordered `GROUP BY … LIMIT 1` happened to return, so without the sweep
+    // at least one stale pin survives no matter which row that is.
+    const staleA = await seedWorker(userId, orgId, false);
+    const staleB = await seedWorker(userId, orgId, false);
     const freshDevice = await seedWorker(userId, orgId, true);
 
-    // The CURRENT connection is inserted first, so it holds the lower id and an
-    // unordered `LIMIT 1` tends to return it — the pin UPDATE then no-ops and,
-    // before the sweep, the retired row below is never touched.
     const current = await seedConn(orgId, userId, freshDevice);
-    const retired = await seedConn(orgId, userId, staleDevice);
-    expect(current).toBeLessThan(retired);
+    const retiredA = await seedConn(orgId, userId, staleA);
+    const retiredB = await seedConn(orgId, userId, staleB);
 
     await reconcileDeviceCapabilities(userId);
 
     expect(await pinOf(current)).toBe(freshDevice);
-    expect(await pinOf(retired)).toBeNull();
-  });
-
-  it('clears the retired pin in the other selection order too', async () => {
-    const staleDevice = await seedWorker(userId, orgId, false);
-    const freshDevice = await seedWorker(userId, orgId, true);
-
-    const retired = await seedConn(orgId, userId, staleDevice);
-    const current = await seedConn(orgId, userId, freshDevice);
-
-    await reconcileDeviceCapabilities(userId);
-
-    expect(await pinOf(current)).toBe(freshDevice);
-    expect(await pinOf(retired)).toBeNull();
+    expect(await pinOf(retiredA)).toBeNull();
+    expect(await pinOf(retiredB)).toBeNull();
   });
 
   it('leaves every pin alone when several devices are fresh', async () => {

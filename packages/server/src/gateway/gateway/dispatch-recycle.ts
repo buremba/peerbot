@@ -184,6 +184,11 @@ export async function gateDispatchOnStaleness(args: {
     // terminalize fails, re-throw the original error: the queue retries and
     // the sweep remains the backstop (fail closed, never deliver).
     try {
+      // The election returns false ONLY when it lost — the marker was already
+      // gone, and a marker is deleted exclusively by the transaction that
+      // emits that turn's terminal event — so false is a VERIFIED terminal
+      // turn and completing the job is still correct. An outcome it cannot
+      // confirm (a DB failure) throws instead, and is handled below.
       await terminalizeTurn(
         deploymentName,
         payload.messageId,

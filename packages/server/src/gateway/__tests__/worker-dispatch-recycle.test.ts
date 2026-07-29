@@ -124,6 +124,8 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     code: AgentErrorCode;
   }>;
   let terminalizeError: Error | null;
+  /** What the election reports: false = it lost, the turn was already terminal. */
+  let terminalizeResult: boolean;
   let res: MockResponse;
 
   /** SSE `job` events written to the current connection's writer. */
@@ -159,6 +161,7 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     );
     terminalized = [];
     terminalizeError = null;
+    terminalizeResult = true;
     router.setDispatchRecycler(
       recycler,
       async (deploymentName) => {
@@ -168,7 +171,7 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
       async (deploymentName, messageId, code) => {
         if (terminalizeError) throw terminalizeError;
         terminalized.push({ deploymentName, messageId, code });
-        return true;
+        return terminalizeResult;
       }
     );
     res = new MockResponse();
@@ -297,6 +300,23 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
         code: AgentErrorCode.WORKER_STARTUP_FAILED,
       },
     ]);
+  });
+
+  test("scenario (e): rebuild fails and the election reports the turn already terminal → the held job still completes", async () => {
+    // The election returns false only when it LOST, i.e. the marker was
+    // already gone — and a marker is deleted exclusively by the transaction
+    // that emits that turn's terminal event (a racing worker reply, the fast
+    // path, or the sweep). The turn is answered, so the held job must still be
+    // consumed rather than retried into a zombie. An outcome the election
+    // cannot confirm throws instead, pinned by the next test.
+    recycler.bornFingerprint = "fp-old";
+    recycler.recycleError = new Error("secret-store unavailable");
+    terminalizeResult = false;
+
+    await queue.addJob(QUEUE, { id: "run-100", data: makePayload() });
+
+    expect(deliveredJobs()).toHaveLength(0);
+    expect(terminalized).toHaveLength(1);
   });
 
   test("scenario (e) FAIL-CLOSED PIN: rebuild AND terminalize fail → the original error propagates, nothing delivered", async () => {

@@ -121,7 +121,7 @@ export interface ConversationListRow {
 }
 
 /** Audience a conversation listing is built for. See {@link listConversations}. */
-export type ConversationListScope = "user" | "shared" | "admin";
+type ConversationListScope = "user" | "shared" | "admin";
 
 /**
  * Look up a conversation by its STORED id, without knowing its platform.

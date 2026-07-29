@@ -68,6 +68,7 @@ async function createDueWatcherWithDispatchedRun(opts: {
 
   return {
     sql,
+    organizationId: workspace.org.id,
     watcherId,
     runId: Number(run.id),
     staleCursor,
@@ -257,4 +258,104 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
       expect(queries).toBe(failAtQuery);
     });
   }
+});
+
+describe("finalize-miss diagnostics", () => {
+  it("names the pending tool approval instead of blaming the agent", async () => {
+    const { sql, organizationId, watcherId, runId } =
+      await createDueWatcherWithDispatchedRun({
+        slug: "finalize-miss-names-approval",
+        messageId: "msg-gated-approval",
+        nudgeCount: 99,
+      });
+    await sql`
+      INSERT INTO oauth_states (id, scope, payload, expires_at)
+      VALUES (
+        ${`ta_test_${runId}`},
+        'pending-tool',
+        ${sql.json({
+          mcpId: "lobu-memory",
+          toolName: "run_sdk",
+          agentId: "advance-agent-finalize-miss-names-approval",
+          userId: "u1",
+          organizationId,
+          args: {},
+          conversationId: `personal-agent_watcher_${watcherId}_run_${runId}`,
+        })},
+        NOW() + INTERVAL '1 hour'
+      )
+    `;
+
+    await resolveWatcherRunsByMessageIds(["msg-gated-approval"], { ok: true });
+
+    const [run] =
+      await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+    expect(run.error_message).toMatch(/blocked on tool approval/);
+    expect(run.error_message).toMatch(/lobu-memory\/run_sdk/);
+    expect(run.error_message).not.toMatch(/finished without calling/);
+  });
+
+  it("ignores approvals outside the run's tenant and conversation", async () => {
+    const { sql, organizationId, watcherId, runId } =
+      await createDueWatcherWithDispatchedRun({
+        slug: "finalize-miss-scopes-approval",
+        messageId: "msg-scoped-approval",
+        nudgeCount: 99,
+      });
+    const pending = (
+      id: string,
+      toolName: string,
+      org: string,
+      behaviorId: number
+    ) => sql`
+        INSERT INTO oauth_states (id, scope, payload, expires_at)
+        VALUES (
+          ${id},
+          'pending-tool',
+          ${sql.json({
+            mcpId: "lobu-memory",
+            toolName,
+            agentId: "advance-agent-finalize-miss-scopes-approval",
+            userId: "u1",
+            organizationId: org,
+            args: {},
+            conversationId:
+              `personal-agent_watcher_${behaviorId}_run_${runId}`,
+          })},
+          NOW() + INTERVAL '1 hour'
+        )
+      `;
+    await pending(`ta_wrong_org_${runId}`, "wrong_org", "other-org", watcherId);
+    await pending(
+      `ta_wrong_behavior_${runId}`,
+      "wrong_behavior",
+      organizationId,
+      watcherId + 1
+    );
+
+    await resolveWatcherRunsByMessageIds(["msg-scoped-approval"], { ok: true });
+
+    const [run] =
+      await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+    expect(run.error_message).toMatch(/No active tool approval was found/);
+    expect(run.error_message).not.toMatch(/wrong_org|wrong_behavior/);
+  });
+
+  it("falls back to the agent-miss message when nothing is pending", async () => {
+    const { sql, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "finalize-miss-no-approval",
+      messageId: "msg-no-approval",
+      nudgeCount: 99,
+    });
+
+    await resolveWatcherRunsByMessageIds(["msg-no-approval"], { ok: true });
+
+    const [run] =
+      await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+    expect(run.error_message).toMatch(/finished without calling/);
+    expect(run.error_message).toMatch(/No active tool approval was found/);
+  });
 });

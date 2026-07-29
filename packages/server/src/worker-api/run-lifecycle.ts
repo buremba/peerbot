@@ -54,7 +54,7 @@ import {
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
-import { advanceWatcherSchedule } from "../watchers/schedule-cursor";
+import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
 type DbClient = ReturnType<typeof getDb>;
@@ -905,9 +905,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			? Math.max(0, Math.floor(body.duration_ms))
 			: null;
 
-	// Mark the run failed and tick the schedule forward — but only when the
-	// UPDATE actually transitioned the row (RETURNING guard), so a concurrent
-	// duplicate POST can't double-advance `next_run_at` and skip a window.
+	// Mark the run failed and, for non-event dispatches, tick the schedule
+	// forward. The RETURNING guard keeps a concurrent duplicate POST from
+	// advancing `next_run_at` twice and skipping a window.
 	// The stdout tail is stashed for diagnosis (why didn't the agent call
 	// complete_window?); the worker redacts before sending.
 	const failRun = async (reason: string): Promise<boolean> => {
@@ -931,9 +931,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
         SET last_fired_at = NOW(), updated_at = NOW()
         WHERE id = ${watcherId}
       `;
-			if (approved.dispatch_source !== "event") {
-				await advanceWatcherSchedule(tx, watcherId);
-			}
+			await advanceScheduleAfterTerminalFailure(
+				tx,
+				watcherId,
+				typeof approved.dispatch_source === "string"
+					? approved.dispatch_source
+					: null
+			);
 			return true;
 		});
 	};

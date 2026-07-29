@@ -1,5 +1,19 @@
 # Changelog
 
+## [14.7.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.7.0...lobu-v14.7.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **agent-worker:** deliver Lobu's system prompt to the model ([#2319](https://github.com/lobu-ai/lobu/issues/2319)) ([b8e66f0](https://github.com/lobu-ai/lobu/commit/b8e66f022a18d491d405ad19e844a9527d0b5560))
+* **agent-worker:** stop pi discovering resources from the agent's workspace ([#2313](https://github.com/lobu-ai/lobu/issues/2313)) ([99b50cc](https://github.com/lobu-ai/lobu/commit/99b50cc65ea3ca7e4183276dec35ed36857a63d6))
+* **ci:** refuse to post a review verdict onto a superseded commit ([#2311](https://github.com/lobu-ai/lobu/issues/2311)) ([01e1a07](https://github.com/lobu-ai/lobu/commit/01e1a07521cac6491c361720aa6c0b132c9c70cf))
+* **ci:** stop the reviewer's own sandbox from blocking merges ([#2308](https://github.com/lobu-ai/lobu/issues/2308)) ([468c398](https://github.com/lobu-ai/lobu/commit/468c39888a9c8851bf9fa3e741ad0bee779f8e11))
+* **server:** reclaim expired chat-state claims instead of blocking forever ([#2314](https://github.com/lobu-ai/lobu/issues/2314)) ([0862364](https://github.com/lobu-ai/lobu/commit/0862364360475219258973c1f5c3adab85e50847))
+* **server:** record why a merge was proposed, not just who ([#2321](https://github.com/lobu-ai/lobu/issues/2321)) ([4bdae93](https://github.com/lobu-ai/lobu/commit/4bdae93c4f1812679fda54f442765235c27a65a9))
+* **server:** stop provider rows being created unroutable, and log the fallback ([#2316](https://github.com/lobu-ai/lobu/issues/2316)) ([92f8c38](https://github.com/lobu-ai/lobu/commit/92f8c3855c446ef565664bd34ef7af0ab50763d7))
+* **server:** tell every chat agent it is a participant, not an observer ([#2318](https://github.com/lobu-ai/lobu/issues/2318)) ([30a4bd8](https://github.com/lobu-ai/lobu/commit/30a4bd836fefb14569e20e7edac7e1055f5c9b7a))
+
 ## [14.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.6.0...lobu-v14.7.0) (2026-07-29)
 
 

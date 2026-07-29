@@ -207,64 +207,29 @@ function blankQuotedSpans(text: string): string {
  * command, used to return a helpful "declare it in nixPackages instead" message
  * (see {@link enforceBashPreflight}).
  *
- * This is a conservative TEXT hint, not the security boundary, and it does NOT
- * try to out-parse the shell: a quoted or escaped executable name (`"nix" run`,
- * `n\ix run`, `$'n\x69x' run`), a path-qualified one (`/usr/bin/nix run`,
- * `/nix/store/<hash>/bin/nix run`), a package manager launched through an exec
- * wrapper (`env nix run`, `xargs npm install`), or a name assembled at runtime
- * is NOT recognized here. The same goes for an interpreter reached by a path or
- * a long option before `-c` (`/bin/bash -c '…'`, `bash --login -c '…'`,
- * `env bash -c '…'`): the body is not scanned.
+ * This is a conservative TEXT hint, NOT the security boundary. It does not try
+ * to out-parse the shell, so it misses a quoted, escaped, or path-qualified
+ * name (`"nix" run`, `n\ix run`, `/usr/bin/nix run`), a manager behind an exec
+ * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
+ * the body of an interpreter reached by path or long option (`/bin/bash -c`,
+ * `bash --login -c`). It also over-denies a manager named as a plain argument
+ * (`echo uvx cowsay`).
  *
- * None of those are holes on the local backend, because the package manager
- * itself is never a runnable command there: `UNSANDBOXED_INTERPRETERS` in
+ * Those misses are not holes on the local backend: the manager is never a
+ * runnable command there. `UNSANDBOXED_INTERPRETERS` in
  * `just-bash-bootstrap.ts` keeps it out of the just-bash registry, and that
- * lookup is on the RESOLVED binary name, which quoting and paths cannot change.
- * Verified — each of these exits 127 with the manager never running:
+ * lookup is on the RESOLVED binary name, which quoting and paths cannot
+ * change — so the spellings above end in "command not found" regardless.
+ * Declared `nixPackages` is the sanctioned way to get tooling.
  *
- *   /bin/bash -c 'nix run x'        -> bash: nix: command not found
- *   /usr/bin/env bash -c 'nix run x'-> bash: nix: command not found
- *   bash --login -c 'nix run x'     -> bash: --login: No such file or directory
- *   zsh -c 'uvx x'                  -> bash: zsh: command not found
+ * Remote runtime providers (opt-in, e.g. `vercel`) have no discovery filter,
+ * but the shared preflight runs before dispatch, so these deny prefixes apply
+ * there too and are what keeps a manager from reaching the provider at all.
+ * Loosening that for the sandbox tier would be a deliberate, separate change.
  *
- * Note the mechanism varies: an unregistered interpreter (`zsh`) fails on its
- * own name, while just-bash's `bash` builtin accepts the invocation and fails
- * on `nix` inside the body. Either way the install does not happen.
- *
- * Trying to make this matcher airtight means reimplementing bash's lexer. That
- * was attempted across several rounds of review on #2259 and produced a steady
- * stream of false positives on honest commands (`git commit -m 'nix shell
- * support'`, `echo done # nix run x`, `echo sh -c '…'`) for no gain in
+ * Making this matcher airtight means reimplementing bash's lexer; attempts to
+ * do so produced false positives on honest commands and no gain in
  * enforcement. Prefer widening the discovery filter over widening this regex.
- *
- * KNOWN OVER-DENIAL: the patterns treat any whitespace as a command boundary,
- * so a manager named as a plain ARGUMENT is flagged too — `echo uvx cowsay`,
- * `git log --grep nix run`, `man nix run`. That is deliberate on main (see the
- * "intentionally conservative" cases in tool-policy-edge-cases.test.ts, which
- * pin `echo npm install` as detected) and predates the nix entries here.
- * Anchoring the patterns to real command positions fixes it for every manager,
- * but flips that documented contract, so it belongs in its own change rather
- * than riding along with this one.
- *
- * It is advisory on BOTH bash backends, for different reasons:
- *
- *  - Local embedded just-bash (the default, and the unattended/scheduled path):
- *    enforcement is the binary-discovery filter (`UNSANDBOXED_INTERPRETERS` in
- *    `just-bash-bootstrap.ts`). A package manager that is not registered as a
- *    runnable command resolves to "command not found" (exit 127) however it is
- *    spelled, quoted, or path-qualified, because the lookup is on the RESOLVED
- *    binary name. Declared `nixPackages` is the sanctioned way to get tooling.
- *
- *  - Remote runtime providers (opt-in, e.g. `vercel`): the runtime is itself a
- *    sandbox — read-only base image rooted at its own workspace, egress under
- *    the provider's network policy — so an install there escapes neither into
- *    the worker nor into a later scheduled run, and there is no discovery
- *    filter on that path. The shared preflight still runs before dispatch,
- *    though, so the deny prefixes below apply to remote execution too: this
- *    hint is what keeps `nix`/`apt` from reaching the provider at all. That
- *    predates this change (`apt `, `nix-shell `, `nix-env ` were already
- *    denied); loosening it for the sandbox tier would be a deliberate,
- *    separate decision, not a side effect of widening the nix entries.
  */
 export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();

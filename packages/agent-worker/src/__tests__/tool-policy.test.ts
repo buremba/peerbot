@@ -438,28 +438,16 @@ describe("enforceBashCommandPolicy", () => {
     }
   });
 
-  test("the `-c` scan does not backtrack exponentially (#2259, CodeQL 481)", () => {
-    // The option loop used to offer two overlapping alternatives, so a run of
-    // bare `-` words had exponentially many parses and a non-matching tail
-    // made the engine try all of them. The agent controls this string, so the
-    // blowup is reachable: the old spelling took 4.9ms at 26 repetitions,
-    // 232ms at 34 and 1.26s at 38, doubling with every further pair.
-    const pathological = `\nsh ${"- ".repeat(2000)}x`;
-    const started = performance.now();
-    expect(isDirectPackageInstallCommand(pathological)).toBe(false);
-    expect(performance.now() - started).toBeLessThan(1000);
-  });
-
-  test("option scanning stays linear on adversarial input (#2259)", () => {
+  test("option scanning stays linear on adversarial input (#2259, CodeQL 481)", () => {
     // The command string is agent-controlled, so an ambiguous pattern here is a
-    // worker CPU denial of service, not just a slow path. An earlier spelling
-    // offered `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives; because
-    // `\S+` also matches an option, inputs like `sh - - - …` had exponentially
-    // many parses. Measured before the fix: 34 repeated options took 1.9s,
-    // growing ~7x per four more (CodeQL alert 481).
+    // worker CPU denial of service, not just a slow path. The option loop used
+    // to offer `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives; since `\S+`
+    // also matches an option, a run of bare `-` words had exponentially many
+    // parses and a non-matching tail made the engine try all of them. Measured
+    // before the fix: 232ms at 34 repetitions, 1.26s at 38, doubling per pair.
     for (const cmd of [
+      `\nsh ${"- ".repeat(2000)}x`,
       `bash ${"-e ".repeat(2000)}nope`,
-      `sh ${"- ".repeat(60)}nope`,
       `bash ${"-o x ".repeat(1000)}-c 'nix run x'`,
       `bash -c '${"a;".repeat(3000)}'`,
     ]) {

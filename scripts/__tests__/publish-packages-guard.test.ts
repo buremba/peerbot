@@ -11,12 +11,14 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { buildPublishedDeclaration } from "../../packages/agent-worker/scripts/published-declaration.mjs";
@@ -505,23 +507,47 @@ describe("bump-version input validation (subprocess)", () => {
       .filter((file) => existsSync(file)),
   ];
 
+  /**
+   * Runs bump-version against a throwaway copy of the manifests rather than the
+   * checkout.
+   *
+   * This used to spawn with `cwd: REPO_ROOT` and put the files back afterwards.
+   * Restoring is not the same as not writing: the restore list was built from
+   * the publish set while the script writes a different set, so plugin-api and
+   * plugin-host were rewritten to the fixture version and left there by a green
+   * suite. bump-version resolves its root from `process.cwd()`, so pointing it
+   * at a temp tree makes the checkout untouchable by construction instead of by
+   * a cleanup step that has to be kept in sync — and an interrupted run can no
+   * longer strand a downgrade in the working tree.
+   */
   function runBump(arg: string) {
-    const before = new Map(
-      manifests.map((file) => [file, readFileSync(file, "utf8")])
-    );
-    const result = spawnSync(
-      process.execPath,
-      [join(REPO_ROOT, "scripts/bump-version.mjs"), arg],
-      { cwd: REPO_ROOT, encoding: "utf8" }
-    );
-    let wrote = false;
-    for (const [file, original] of before) {
-      if (readFileSync(file, "utf8") !== original) {
-        wrote = true;
-        writeFileSync(file, original);
+    const sandbox = mkdtempSync(join(tmpdir(), "bump-version-"));
+    try {
+      for (const file of manifests) {
+        const target = join(sandbox, relative(REPO_ROOT, file));
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, readFileSync(file, "utf8"));
       }
+      const before = new Map(
+        manifests.map((file) => [
+          file,
+          readFileSync(join(sandbox, relative(REPO_ROOT, file)), "utf8"),
+        ])
+      );
+      const result = spawnSync(
+        process.execPath,
+        [join(REPO_ROOT, "scripts/bump-version.mjs"), arg],
+        { cwd: sandbox, encoding: "utf8" }
+      );
+      let wrote = false;
+      for (const [file, original] of before) {
+        const copy = join(sandbox, relative(REPO_ROOT, file));
+        if (readFileSync(copy, "utf8") !== original) wrote = true;
+      }
+      return { result, wrote };
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
     }
-    return { result, wrote };
   }
 
   it.each([

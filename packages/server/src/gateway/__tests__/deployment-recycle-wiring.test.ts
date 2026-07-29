@@ -619,6 +619,77 @@ describe("concurrent recycles are serialized", () => {
     expect(manager.deleted).toEqual([DEPLOYMENT]);
   });
 
+  test("REGRESSION: the handler that LOSES the lock must not dispatch either", async () => {
+    // Serializing the teardown is only half the job. The loser still has a
+    // message in hand, and reporting "nothing to do" sends it to the very
+    // worker the winner is tearing down for an expiring or revoked credential
+    // — the same defect as dispatching after a liveness deferral, reached
+    // through the local lock instead. Interleaved deliberately: the first
+    // handler parks inside the cross-pod lock while the second runs.
+    const manager = new RecordingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    let releaseFirst!: () => void;
+    const parked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const consumer = new TestConsumer(
+      CONFIG,
+      manager,
+      NOOP_QUEUE,
+      async () => {},
+      async () => false,
+      async (_name, action) => {
+        await parked;
+        return action();
+      }
+    );
+
+    const first = consumer.recycle(DEPLOYMENT, "fp-unchanged");
+    // Let the first handler take the local lock and block on the turn lock.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(await consumer.recycle(DEPLOYMENT, "fp-unchanged")).toBe("deferred");
+    expect(manager.deleted).toEqual([]);
+
+    releaseFirst();
+    expect(await first).toBe("recycled");
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("lock contention over a HEALTHY worker still dispatches", async () => {
+    // Staleness is read before the lock is contended for, so an unrelated
+    // handler holding it (a create, say) cannot stall turns on a worker that
+    // needs nothing. Holding every contended turn would be a fresh starvation.
+    const manager = new RecordingManager(CONFIG);
+    let releaseFirst!: () => void;
+    const parked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const consumer = new TestConsumer(
+      CONFIG,
+      manager,
+      NOOP_QUEUE,
+      async () => {},
+      async () => false,
+      async (_name, action) => {
+        await parked;
+        return action();
+      }
+    );
+    manager.expiringLeaseFor = DEPLOYMENT;
+    const first = consumer.recycle(DEPLOYMENT, "fp-unchanged");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // This turn's own view: nothing stale about the worker it wants.
+    manager.expiringLeaseFor = null;
+    expect(await consumer.recycle(DEPLOYMENT, "fp-unchanged")).toBe(
+      "unchanged"
+    );
+
+    releaseFirst();
+    await first;
+  });
+
   test("the lock is released, so a later turn can still recycle", async () => {
     // A lock leaked on the success path would disable recycling for the rest
     // of the process's life.

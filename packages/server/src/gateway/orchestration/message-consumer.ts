@@ -1208,20 +1208,6 @@ export class MessageConsumer {
     traceId: string,
     force: boolean
   ): Promise<RecycleOutcome> {
-    // The same per-deployment lock the create path uses, so teardown and
-    // create are mutually exclusive. Without it two handlers can both pass the
-    // liveness check, both tear down, and the SECOND delete lands on the
-    // REPLACEMENT worker — killing a turn that was already enqueued to it.
-    // Losing the lock means another handler is already recycling or creating;
-    // this turn simply proceeds, and the trigger is recomputed state so
-    // nothing is missed.
-    if (!this.acquireDeploymentLock(deploymentName)) {
-      logger.info(
-        { traceId, deploymentName },
-        "Skipping deployment recycle: another handler holds the deployment lock"
-      );
-      return "unchanged";
-    }
     try {
       // Establish there IS a warm deployment before reading any lease state.
       // On a cold start nothing has been minted yet, so those reads are
@@ -1233,73 +1219,139 @@ export class MessageConsumer {
         return "unchanged";
       }
 
-      return await this.runWithDeploymentTurnLock(
-        deploymentName,
-        async (): Promise<RecycleOutcome> => {
-          // Re-check after taking the cross-pod lock: another owner may have
-          // removed the worker while this caller waited.
-          const current = await this.deploymentManager.listDeployments();
-          if (!current.some((d) => d.deploymentName === deploymentName)) {
-            return "unchanged";
-          }
+      // Read staleness BEFORE contending for the per-deployment lock. Both
+      // reads are pod-local and cheap, and the answer decides what losing the
+      // lock MEANS: for a healthy worker it means nothing, but for a stale one
+      // it means a teardown is already under way and this turn must not be
+      // dispatched onto the worker that is about to disappear.
+      if (!this.isRecycleNeeded(deploymentName, toolingFingerprint)) {
+        return "unchanged";
+      }
 
-          const toolingChanged =
-            toolingFingerprint != null &&
-            this.deploymentManager.hasToolingChanged(
-              deploymentName,
-              toolingFingerprint
-            );
-          const leaseExpiring =
-            this.deploymentManager.hasExpiringLease(deploymentName);
-          if (!toolingChanged && !leaseExpiring) return "unchanged";
-
-          // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may
-          // still be running on the worker: message 1 starts a long turn,
-          // message 2 arrives and would SIGTERM it before enqueueing, costing
-          // the user message 1's reply. The durable turn marker is the
-          // authority here — Postgres-backed, so it sees a turn started by
-          // another replica too. The same advisory lock is taken by the
-          // transaction that arms a turn marker, so a concurrent turn either
-          // lands first and is seen here, or waits until teardown has completed
-          // before it can enqueue.
-          if (!force && (await this.hasLiveTurn(deploymentName))) {
-            // Interrupting a live turn loses a reply outright, so the previous
-            // turn is allowed to finish. What the CALLER must not do is take
-            // that as permission to run this turn on the worker anyway — see
-            // the `deferred` branch in handleMessage.
-            logger.info(
-              { traceId, deploymentName, tooling_changed: toolingChanged },
-              "Deferring deployment recycle: a turn is still in flight"
-            );
-            return "deferred";
-          }
-
-          logger.info(
-            { traceId, deploymentName, tooling_changed: toolingChanged },
-            toolingChanged
-              ? "Connector tooling changed — recycling deployment to pick it up"
-              : "Connector lease expiring — recycling deployment to re-mint"
-          );
-          // deleteWorkerDeployment, not the low-level deleteDeployment: it also
-          // clears the secret placeholder mappings and the backing
-          // `deployments/{name}/` secret entries. A recycle can fire once per
-          // credential lifetime per conversation, so leaking those would
-          // accumulate (and AWS Secrets Manager entries would leak permanently).
-          await this.deploymentManager.deleteWorkerDeployment(deploymentName, {
-            failInFlightTurns: force,
-          });
-          return "recycled";
-        }
-      );
+      // The same per-deployment lock the create path uses, so teardown and
+      // create are mutually exclusive. Without it two handlers can both pass
+      // the liveness check, both tear down, and the SECOND delete lands on the
+      // REPLACEMENT worker — killing a turn that was already enqueued to it.
+      //
+      // Losing it means another handler in this process is already recycling
+      // this deployment. Reporting that as `unchanged` is the same defect the
+      // liveness deferral has: the loser would arm its marker and enqueue onto
+      // the expiring or revoked worker the winner is mid-way through replacing.
+      // Hold instead — the winner finishes, and the retry re-evaluates against
+      // recomputed state.
+      if (!this.acquireDeploymentLock(deploymentName)) {
+        logger.info(
+          { traceId, deploymentName },
+          "Holding this turn: another handler is already recycling this deployment"
+        );
+        return "deferred";
+      }
+      try {
+        return await this.recycleUnderTurnLock(
+          deploymentName,
+          toolingFingerprint,
+          traceId,
+          force
+        );
+      } finally {
+        this.releaseDeploymentLock(deploymentName);
+      }
     } catch (error) {
       logger.warn(
         { traceId, deploymentName, error: getErrorMessage(error) },
         "Failed to recycle a stale deployment; continuing with the existing worker"
       );
       return "unchanged";
-    } finally {
-      this.releaseDeploymentLock(deploymentName);
     }
+  }
+
+  /**
+   * Is this deployment's connector state stale enough to need a rebuild?
+   *
+   * `toolingFingerprint === null` means resolution failed this turn, which is
+   * absence of evidence, not evidence of change — treating it as a change would
+   * recycle every warm worker on a transient DB blip.
+   */
+  private isRecycleNeeded(
+    deploymentName: string,
+    toolingFingerprint: string | null
+  ): boolean {
+    const toolingChanged =
+      toolingFingerprint != null &&
+      this.deploymentManager.hasToolingChanged(
+        deploymentName,
+        toolingFingerprint
+      );
+    return (
+      toolingChanged || this.deploymentManager.hasExpiringLease(deploymentName)
+    );
+  }
+
+  /** The teardown itself, serialized cross-pod. Callers hold the pod-local lock. */
+  private async recycleUnderTurnLock(
+    deploymentName: string,
+    toolingFingerprint: string | null,
+    traceId: string,
+    force: boolean
+  ): Promise<RecycleOutcome> {
+    return await this.runWithDeploymentTurnLock(
+      deploymentName,
+      async (): Promise<RecycleOutcome> => {
+        // Re-check after taking the cross-pod lock: another owner may have
+        // removed the worker while this caller waited.
+        const current = await this.deploymentManager.listDeployments();
+        if (!current.some((d) => d.deploymentName === deploymentName)) {
+          return "unchanged";
+        }
+
+        const toolingChanged =
+          toolingFingerprint != null &&
+          this.deploymentManager.hasToolingChanged(
+            deploymentName,
+            toolingFingerprint
+          );
+        const leaseExpiring =
+          this.deploymentManager.hasExpiringLease(deploymentName);
+        if (!toolingChanged && !leaseExpiring) return "unchanged";
+
+        // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may
+        // still be running on the worker: message 1 starts a long turn,
+        // message 2 arrives and would SIGTERM it before enqueueing, costing
+        // the user message 1's reply. The durable turn marker is the
+        // authority here — Postgres-backed, so it sees a turn started by
+        // another replica too. The same advisory lock is taken by the
+        // transaction that arms a turn marker, so a concurrent turn either
+        // lands first and is seen here, or waits until teardown has completed
+        // before it can enqueue.
+        if (!force && (await this.hasLiveTurn(deploymentName))) {
+          // Interrupting a live turn loses a reply outright, so the previous
+          // turn is allowed to finish. What the CALLER must not do is take
+          // that as permission to run this turn on the worker anyway — see
+          // the `deferred` branch in handleMessage.
+          logger.info(
+            { traceId, deploymentName, tooling_changed: toolingChanged },
+            "Deferring deployment recycle: a turn is still in flight"
+          );
+          return "deferred";
+        }
+
+        logger.info(
+          { traceId, deploymentName, tooling_changed: toolingChanged },
+          toolingChanged
+            ? "Connector tooling changed — recycling deployment to pick it up"
+            : "Connector lease expiring — recycling deployment to re-mint"
+        );
+        // deleteWorkerDeployment, not the low-level deleteDeployment: it also
+        // clears the secret placeholder mappings and the backing
+        // `deployments/{name}/` secret entries. A recycle can fire once per
+        // credential lifetime per conversation, so leaking those would
+        // accumulate (and AWS Secrets Manager entries would leak permanently).
+        await this.deploymentManager.deleteWorkerDeployment(deploymentName, {
+          failInFlightTurns: force,
+        });
+        return "recycled";
+      }
+    );
   }
 
   /**

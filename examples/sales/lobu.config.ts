@@ -33,6 +33,9 @@ const sales = defineAgent({
       ".npmjs.org",
     ],
   },
+  // Packages live on the agent, not on skills — `jq` backs the account-brief
+  // skill's news filtering.
+  nixPackages: ["jq"],
 });
 
 const organization = defineEntityType({

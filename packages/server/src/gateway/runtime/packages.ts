@@ -6,9 +6,9 @@ import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
  * Generic, provider-agnostic handling of the signed `nixPackages` claim.
  *
  * Portability is the point: the same `["gh"]` declaration must mean the same
- * thing on every backend, so nix — already the vocabulary in
- * `SkillConfig.nixPackages` and `ConnectorDefinition.runtime.nix` — is the one
- * package language, not the base image's apt/apk/yum.
+ * thing on every backend, so nix — already the vocabulary in the agent's
+ * `nixConfig` and `ConnectorDefinition.runtime.nix` — is the one package
+ * language, not the base image's apt/apk/yum.
  */
 
 const logger = createLogger("runtime-packages");

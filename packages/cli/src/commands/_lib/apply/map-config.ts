@@ -274,10 +274,9 @@ export interface AgentMarkdown {
  * settings. Pure (no file IO — the loader reads the files and passes the
  * results in) so it can be unit-tested directly.
  *
- * Mirrors `buildAgentSettings`'s skill-merge semantics exactly: agent-level
- * nix is laid down first (already in `settings`), then skill nix packages are
- * unioned on top (deduped). Skills are prompt/behavior only — they no longer
- * contribute network or MCP config.
+ * Skills are instruction text only — they contribute no nix, network, or MCP
+ * config. Packages come from the agent (`nixConfig`, already in `settings`) or
+ * connector `agentTooling`, never from skills.
  */
 export function mergeAgentDirArtifacts(
   settings: Partial<AgentSettings>,
@@ -290,18 +289,6 @@ export function mergeAgentDirArtifacts(
 
   if (localSkills.length > 0) {
     settings.skillsConfig = { skills: localSkills };
-  }
-
-  // Nix merge — agent packages first, then skill packages, deduped.
-  const nixPackages = [
-    ...(settings.nixConfig?.packages ?? []),
-    ...localSkills.flatMap((s) => s.nixPackages ?? []),
-  ];
-  if (nixPackages.length > 0) {
-    settings.nixConfig = {
-      ...settings.nixConfig,
-      packages: [...new Set(nixPackages)],
-    };
   }
 }
 

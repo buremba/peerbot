@@ -93,28 +93,20 @@ export async function resolveAgentOptions(
   if (settings.guardrailsInline?.length) {
     mergedOptions.guardrailsInline = settings.guardrailsInline;
   }
-  // Nix packages come from three places and every one of them is a hard
-  // requirement of some code that will run in the spawned worker, so union
-  // them rather than letting the last writer win:
+  // Nix packages come from two places and both are hard requirements of code
+  // that will run in the spawned worker, so union them rather than letting the
+  // last writer win:
   //   1. baseOptions.nixConfig  — per-request `nix` (POST /agents supplies it),
-  //   2. settings.nixConfig     — the agent's own packages (CLI apply bakes the
-  //                               skill union at apply time into this too),
-  //   3. enabled skills' nixPackages — skills enabled via the UI/catalog write
-  //                               only `skills_config`, so nothing recomputes
-  //                               `nixConfig` and their packages never reached
-  //                               provisioning before this.
+  //   2. settings.nixConfig     — the agent's own packages.
+  // Legacy skill-level `nixPackages` entries are deliberately ignored.
   // Absent stays absent: with no nix anywhere, `nixConfig` is left unset so the
   // worker spawns without a nix-shell wrap.
-  const skillNixPackages = (settings.skillsConfig?.skills ?? [])
-    .filter((skill) => skill.enabled)
-    .flatMap((skill) => skill.nixPackages ?? []);
   const baseNixConfig = mergedOptions.nixConfig as NixConfig | undefined;
-  if (baseNixConfig || settings.nixConfig || skillNixPackages.length > 0) {
+  if (baseNixConfig || settings.nixConfig) {
     const packages = [
       ...new Set([
         ...(baseNixConfig?.packages ?? []),
         ...(settings.nixConfig?.packages ?? []),
-        ...skillNixPackages,
       ]),
     ];
     mergedOptions.nixConfig = {

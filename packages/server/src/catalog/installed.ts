@@ -140,7 +140,6 @@ export async function listAgentInstalled(
 				enabled: skill.enabled,
 				description: skill.description,
 				system: skill.system,
-				nix_packages: skill.nixPackages,
 			},
 		}));
 		result.skills = {

@@ -8,8 +8,9 @@
  * previously stayed nested inside `agentOptions` and was silently dropped.
  * These tests drive both of them — `ChatInstanceManager.routePlatformMessage`
  * and the direct-API `POST /api/v1/agents/{agentId}/messages` — with a
- * capturing queue, asserting the union (per-request ∪ agent settings ∪ enabled
- * skills) lands on `payload.nixConfig` and NOT in `payload.agentOptions`.
+ * capturing queue, asserting the union (per-request ∪ agent settings) lands on
+ * `payload.nixConfig` and NOT in `payload.agentOptions`. Legacy skill-level
+ * `nixPackages` entries are unsupported and must contribute nothing.
  */
 
 import { beforeEach, describe, expect, mock, test } from "bun:test";
@@ -29,17 +30,18 @@ const AGENT_SETTINGS = {
   nixConfig: { packages: ["agent-pkg"] },
   skillsConfig: {
     skills: [
+      // Neither legacy entry may reach nixConfig.
       {
         repo: "lobu/skills",
         name: "video",
         enabled: true,
-        nixPackages: ["skill-pkg"],
+        nixPackages: ["must-not-appear-enabled"],
       },
       {
         repo: "lobu/skills",
         name: "disabled-one",
         enabled: false,
-        nixPackages: ["must-not-appear"],
+        nixPackages: ["must-not-appear-disabled"],
       },
     ],
   },
@@ -87,7 +89,7 @@ describe("enqueued payload carries the resolved nixConfig", () => {
 
     expect(enqueued).toHaveLength(1);
     const payload = enqueued[0]!;
-    expect(payload.nixConfig?.packages).toEqual(["agent-pkg", "skill-pkg"]);
+    expect(payload.nixConfig?.packages).toEqual(["agent-pkg"]);
     // The worker reads the top-level field; a copy left in agentOptions would
     // mean the lift never happened.
     expect(
@@ -95,7 +97,7 @@ describe("enqueued payload carries the resolved nixConfig", () => {
     ).toBeUndefined();
   });
 
-  test("the direct API path unions request, agent and skill packages", async () => {
+  test("the direct API path unions request and agent packages", async () => {
     // `POST /agents` persists its `nix` on the session; before the fix that
     // value was replayed into resolveAgentOptions and then dropped, so a
     // caller-supplied package never reached the worker.
@@ -150,11 +152,7 @@ describe("enqueued payload carries the resolved nixConfig", () => {
     expect(res.status).toBe(200);
     expect(enqueued).toHaveLength(1);
     const payload = enqueued[0]!;
-    expect(payload.nixConfig?.packages).toEqual([
-      "request-pkg",
-      "agent-pkg",
-      "skill-pkg",
-    ]);
+    expect(payload.nixConfig?.packages).toEqual(["request-pkg", "agent-pkg"]);
     expect(
       (payload.agentOptions as Record<string, unknown> | undefined)?.nixConfig,
     ).toBeUndefined();

@@ -317,7 +317,6 @@ export interface DesiredState {
 interface SkillFrontmatter {
   name?: string;
   description?: string;
-  nixPackages?: string[];
 }
 
 async function parseSkillFrontmatter(raw: string): Promise<{
@@ -341,16 +340,14 @@ type SkillConfigEntry = NonNullable<
 /**
  * Map a resolved skill (inline `defineSkill` or file-loaded `skillFromFile`)
  * into a `SkillConfig` entry — the shape stored on agent settings and synced to
- * the worker's `.skills/`. The nix packages here merge into the agent's worker
- * sandbox at apply time, which is why skills resolve eagerly. Skills are
- * prompt/behavior only — they declare no network or MCP config.
+ * the worker's `.skills/`. Skills are instruction text only — they declare no
+ * nix, network, or MCP config.
  */
 function skillToConfig(args: {
   name: string;
   content: string;
   source: "inline" | "file";
   description?: string;
-  nixPackages?: string[];
 }): SkillConfigEntry {
   const skill: SkillConfigEntry = {
     repo: `${args.source}/${args.name}`,
@@ -359,7 +356,6 @@ function skillToConfig(args: {
     enabled: true,
   };
   if (args.description) skill.description = args.description;
-  if (args.nixPackages?.length) skill.nixPackages = args.nixPackages;
   return skill;
 }
 
@@ -406,7 +402,6 @@ async function resolveSkill(
       content,
       source: "file",
       description: fm?.description,
-      nixPackages: fm?.nixPackages,
     });
   }
   if (!skill.name) {
@@ -417,7 +412,6 @@ async function resolveSkill(
     content: skill.content ?? "",
     source: "inline",
     description: skill.description,
-    nixPackages: skill.nixPackages,
   });
 }
 

@@ -101,7 +101,12 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * preserving every other aspect of `createAgentSession` (model resolution,
  * session restore, image blocking, extension/custom-tool wiring).
  */
-type BuildAgentSessionOptions = CreateAgentSessionOptions & {
+type BuildAgentSessionOptions = Omit<
+  CreateAgentSessionOptions,
+  "resourceLoader"
+> & {
+  /** Resource isolation is a Lobu invariant, not a caller override. */
+  resourceLoader?: never;
   /**
    * Lobu's hardened built-in tool instances (read/bash/edit/write/…). pi's
    * `createAgentSession` only takes built-in NAMES via `options.tools` and
@@ -128,7 +133,7 @@ export async function buildAgentSession({
     AuthStorage.inMemory();
   const modelRegistry =
     options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
-  const resourceLoader = options.resourceLoader ?? createLobuResourceLoader();
+  const resourceLoader = createLobuResourceLoader();
 
   const result = await createAgentSession({
     ...options,

@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -159,6 +160,32 @@ describe("pi resource discovery is contained to Lobu-supplied inputs", () => {
     expect(loader.getExtensions().runtime).toBe(loader.getExtensions().runtime);
   });
 
+  test("callers cannot replace the sealed resource loader", async () => {
+    seed(".pi/SYSTEM.md", "This prompt came from the workspace.");
+    const resourceLoader = {
+      ...createLobuResourceLoader(),
+      getSystemPrompt: () =>
+        readFileSync(join(workspace, ".pi/SYSTEM.md"), "utf-8"),
+    };
+    const tools = createLobuTools(workspace);
+    const options = {
+      cwd: workspace,
+      tools: tools.map((t) => t.name),
+      builtinOverrides: tools,
+      customTools: [],
+      resourceLoader,
+    };
+
+    // Exercise the runtime boundary as an untyped JavaScript caller could.
+    const { session } = await buildAgentSession(
+      options as Parameters<typeof buildAgentSession>[0]
+    );
+    const prompt = session.systemPrompt;
+    session.dispose();
+
+    expect(prompt).not.toContain("This prompt came from the workspace.");
+  });
+
   test("a skill written into the workspace is NOT registered", async () => {
     seed(
       ".pi/skills/rogue/SKILL.md",
@@ -191,9 +218,8 @@ describe("pi resource discovery is contained to Lobu-supplied inputs", () => {
     }
     symlinkSync(skills, join(skills, "loop"), "dir");
 
-    // Self-calibrating: the same boot against an untouched workspace is the
-    // control, so the bound is a ratio rather than a wall-clock number and does
-    // not depend on how fast the CI machine is.
+    // The same boot against an untouched workspace is the control, so the
+    // assertion measures the hostile tree's added cost on the same host.
     const hostileStart = performance.now();
     const hostileSession = await boot();
     const hostileMs = performance.now() - hostileStart;

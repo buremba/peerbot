@@ -20,10 +20,10 @@
  *   conversation under one workspace root), and `AGENTS.md`/`CLAUDE.md` all
  *   feed the prompt.
  *
- * `DefaultResourceLoader`'s `noExtensions`/`noSkills`/... flags would leave the
- * property resting on getting six flags right, and they only discard results
- * AFTER `reload()` has already walked the tree via the package manager. That
- * walk recurses into subdirectories and follows symlinks (`collectSkillEntries`
+ * `DefaultResourceLoader`'s suppression options would leave the property
+ * resting on several flags and overrides, and they only discard results AFTER
+ * `reload()` has already walked the tree via the package manager. That walk
+ * recurses into subdirectories and follows symlinks (`collectSkillEntries`
  * stats the link target and recurses when it is a directory), so the agent
  * still gets to decide how much work every later boot of the conversation does.
  * (A symlink cycle does not hang: the recursion overflows the stack and

@@ -589,8 +589,7 @@ describe('YouTubeConnector stale page-token recovery', () => {
     connector.RATE_LIMIT_MS = 0;
     let calls = 0;
     connector.http = {
-      raw: async (url: string) => {
-        const u = new URL(url);
+      raw: async () => {
         calls++;
         // Runaway guard well above the 200-page ceiling: without maxPages this
         // endpoint would page forever, since it always advertises a new cursor

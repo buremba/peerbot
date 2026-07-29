@@ -1,8 +1,9 @@
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
+import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
 import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { advanceWatcherSchedule } from "./schedule-cursor";
+import { advanceScheduleAfterTerminalFailure } from "./schedule-cursor";
 
 type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
@@ -102,12 +103,11 @@ async function markWatcherRunFailed(
       RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return false;
-		if (failed.dispatch_source !== "event") {
-			await advanceWatcherSchedule(
-				tx,
-				failed.watcher_id == null ? null : Number(failed.watcher_id)
-			);
-		}
+		await advanceScheduleAfterTerminalFailure(
+			tx,
+			failed.watcher_id == null ? null : Number(failed.watcher_id),
+			failed.dispatch_source
+		);
 		return true;
 	});
 }
@@ -205,10 +205,7 @@ export async function resolveWatcherRunsByMessageIds(
 				await markWatcherRunFailed(
 					sql,
 					runId,
-					"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
-						(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
-						". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
-						"run_sdk tools are approved for it."
+					await describeFinalizeMiss(sql, runId, budget)
 				)
 			) {
 				resolved++;
@@ -221,4 +218,48 @@ export async function resolveWatcherRunsByMessageIds(
 	}
 
 	return { resolved };
+}
+
+async function describeFinalizeMiss(
+	sql: DbClient,
+	runId: number,
+	budget: number
+): Promise<string> {
+	const attempts = budget > 0 ? ` after ${budget + 1} attempt(s)` : "";
+	const agentMiss =
+		"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
+		attempts;
+	let pending: Array<{ mcpId: string; toolName: string }>;
+	try {
+		pending = await listPendingToolsForRun(runId, sql);
+	} catch (error) {
+		logger.warn(
+			{ error, run_id: runId },
+			"[watchers] Could not check pending tool approvals for a finalize miss"
+		);
+		return (
+			agentMiss +
+			". Tool approval status could not be checked; inspect the warning log " +
+			"before attributing the miss to the agent."
+		);
+	}
+
+	if (pending.length > 0) {
+		const tools = pending.map((p) => `${p.mcpId}/${p.toolName}`).join(", ");
+		const grants = pending
+			.map((p) => `/mcp/${p.mcpId}/tools/${p.toolName}`)
+			.join(", ");
+		return (
+			`Behavior run blocked on tool approval${attempts}: ${tools} queued for ` +
+			"human approval, so complete_window never ran. Headless Behavior runs " +
+			`cannot answer approval cards; grant standing access (${grants}) and ` +
+			"retry the Behavior."
+		);
+	}
+
+	return (
+		agentMiss +
+		". No active tool approval was found, so check that the assigned agent has the " +
+		"lobu-memory MCP attached and that query_sdk / run_sdk are available to it."
+	);
 }

@@ -27,7 +27,10 @@ import logger from "../utils/logger";
 import { isUniqueViolation } from "../utils/pg-errors";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import { computePendingWindow } from "../utils/window-utils";
-import { advanceWatcherSchedule } from "./schedule-cursor";
+import {
+	advanceScheduleAfterTerminalFailure,
+	advanceWatcherSchedule,
+} from "./schedule-cursor";
 import {
 	findWindowIdForRun,
 	markWatcherRunCompleted,
@@ -347,13 +350,14 @@ async function markWatcherRunFailedIdempotent(
           completed_at = current_timestamp,
           error_message = ${message}
       WHERE id = ${runId}
-        AND status IN ('running', 'claimed', 'pending')
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
       RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
     `;
-		if (!failed || failed.dispatch_source === "event") return;
-		await advanceWatcherSchedule(
+		if (!failed) return;
+		await advanceScheduleAfterTerminalFailure(
 			tx,
-			failed.watcher_id == null ? null : Number(failed.watcher_id)
+			failed.watcher_id == null ? null : Number(failed.watcher_id),
+			failed.dispatch_source
 		);
 	});
 }

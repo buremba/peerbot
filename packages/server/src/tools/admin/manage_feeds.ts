@@ -559,8 +559,13 @@ async function handleCreateFeed(
 
   // Validate config against the connector's declared feed configSchema up
   // front so a mis-shaped config fails here instead of at sync or live-read
-  // time. The schema describes both collected and virtual feed configuration.
-  const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {});
+  // time. The schema describes both collected and virtual feed configuration,
+  // but its `required` fields are the sync contract only, and a virtual feed is
+  // never synced, so a missing one must not gate creation (rss `articles`
+  // requires feed_urls; a virtual read of it needs only the query fence).
+  const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {}, {
+    ignoreRequired: isVirtual,
+  });
   if (configError) return { error: configError };
 
   // Omit / empty schedule = manual only (no automatic poll). Virtual feeds
@@ -755,10 +760,13 @@ async function handleUpdateFeed(
         : { ...parseJsonObject(feedRow.config), ...restoredConfig }
       : null;
     if (effectiveConfig) {
+      // Same split as create_feed: shape always, `required` only for feeds that
+      // actually sync (virtual/streaming configs are not the sync contract).
       const configError = validateFeedConfig(
         feedRow.feeds_schema as Record<string, FeedDefinition> | null,
         String(feedRow.feed_key),
-        effectiveConfig
+        effectiveConfig,
+        { ignoreRequired: feedRow.kind !== 'collected' }
       );
       if (configError) return { error: configError } as const;
     }

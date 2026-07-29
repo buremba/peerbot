@@ -20,7 +20,11 @@ import {
 	type ResolutionEvidence,
 	type ResolutionKeySet,
 } from "../../entity-resolution/policy";
-import { hasMergeEvidenceStrengthened } from "../../entity-resolution/evidence-strength";
+import {
+	droppedEvidence,
+	gainedEvidence,
+	hasMergeEvidenceStrengthened,
+} from "../../entity-resolution/evidence-strength";
 import {
 	assertResolutionFingerprintCurrent,
 	ResolutionFingerprintError,
@@ -149,6 +153,15 @@ export interface EntityMergeProposal {
 	 * last input-format change, so a mismatch is refreshed rather than guessed.
 	 */
 	resolution_fingerprint_version?: number | null;
+	/**
+	 * How the last re-check changed the evidence, against what the reviewer was
+	 * previously shown. Written only by `refreshMergeProposalFingerprint`; absent
+	 * on a first-time proposal, where there is nothing to compare against.
+	 */
+	evidence_change?: {
+		dropped: ResolutionEvidence[];
+		gained: ResolutionEvidence[];
+	} | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 	/**
@@ -577,6 +590,7 @@ export async function refreshMergeProposalFingerprint(
 		winnerEntityId: proposal.winner_entity_id,
 		resolutionKeys: assessment.resolutionKeys,
 	});
+	const reviewedEvidence = proposal.evidence ?? [];
 	const refreshed: EntityMergeProposal = {
 		...proposal,
 		current,
@@ -585,6 +599,14 @@ export async function refreshMergeProposalFingerprint(
 		policy_hash: assessment.policyHash,
 		resolution_fingerprint: assessment.fingerprint,
 		resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
+		// Record the delta against what the reviewer was last shown. Only this
+		// side sees both snapshots — the card receives the refreshed proposal
+		// alone — so computing it here is what lets the card say what moved
+		// instead of re-presenting an identical-looking card.
+		evidence_change: {
+			dropped: droppedEvidence(reviewedEvidence, assessment.evidence),
+			gained: gainedEvidence(reviewedEvidence, assessment.evidence),
+		},
 	};
 	await db`
 		UPDATE runs

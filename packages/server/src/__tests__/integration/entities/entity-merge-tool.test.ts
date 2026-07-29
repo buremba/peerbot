@@ -509,6 +509,18 @@ describe("manage_entity merge action", () => {
 		// The message must name the specific proof that stopped holding.
 		expect("error" in refused && refused.error).toMatch(/447700900123/);
 
+		// The card renders the delta from evidence_change, so the refreshed proposal
+		// must carry it — naming the proof that was lost, and gaining nothing.
+		const [refreshedRun] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(
+			(refreshedRun.action_input as Record<string, unknown>).evidence_change,
+		).toEqual({
+			dropped: [{ kind: "phone", identifier: "447700900123" }],
+			gained: [],
+		});
+
 		const [untouched] =
 			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
 		expect(untouched.merged_into).toBeNull();

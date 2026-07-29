@@ -27,6 +27,13 @@ const GATEWAY_DEFAULTS = {
   QUEUE_MESSAGE_QUEUE: "message_queue",
   WORKER_STARTUP_TIMEOUT_SECONDS: 90,
   WORKER_IDLE_CLEANUP_MINUTES: 60,
+  // A worker resolves its connector credentials into env ONCE at spawn and
+  // cannot be updated in place, so its useful life is bounded by the shortest
+  // credential it holds. A GitHub App installation token lives 1h; 45 minutes
+  // leaves margin for a turn that starts just before the cap. Past this age a
+  // worker is retired at its first quiet moment (see MAX_AGE_IDLE_GRACE_MINUTES)
+  // rather than serving turns with a token that is about to die.
+  WORKER_MAX_AGE_MINUTES: 45,
   MAX_WORKER_DEPLOYMENTS: 100,
   WORKER_STALE_TIMEOUT_MINUTES: 10,
   CLEANUP_INITIAL_DELAY_MS: TIME.FIVE_SECONDS_MS,
@@ -357,6 +364,12 @@ export function buildGatewayConfig(
         idleCleanupMinutes: getOptionalNumber(
           "WORKER_IDLE_CLEANUP_MINUTES",
           DEFAULTS.WORKER_IDLE_CLEANUP_MINUTES
+        ),
+        // 0 disables the age cap entirely (a worker then lives until idle
+        // cleanup or the very-old sweep, which is the pre-cap behavior).
+        maxAgeMinutes: getOptionalNumber(
+          "WORKER_MAX_AGE_MINUTES",
+          DEFAULTS.WORKER_MAX_AGE_MINUTES
         ),
         maxDeployments: getOptionalNumber(
           "MAX_WORKER_DEPLOYMENTS",

@@ -50,23 +50,54 @@ export async function runInBatches<T>(
   return fulfilled;
 }
 
+/**
+ * How quiet a past-max-age worker must be before it is retired. Small but
+ * non-zero: a worker that just acked a job over SSE has fresh activity but has
+ * not started the turn yet, and retiring inside that window would cost the user
+ * a reply. One reconcile tick (the loop runs every 60s) is enough for the turn
+ * to register activity and hold the worker.
+ */
+export const MAX_AGE_IDLE_GRACE_MINUTES = 1;
+
 export function buildDeploymentInfoSummary({
   deploymentName,
   lastActivity,
+  startedAt,
   now,
   idleThresholdMinutes,
+  maxAgeMinutes,
   veryOldDays,
   replicas,
 }: {
   deploymentName: string;
   lastActivity: Date;
+  /** When this worker was spawned. Absent = age unknown, so the cap cannot
+   *  apply (callers that do not track spawn time keep the old behavior). */
+  startedAt?: Date;
   now: number;
   idleThresholdMinutes: number;
+  /** 0 or absent disables the age cap. */
+  maxAgeMinutes?: number;
   veryOldDays: number;
   replicas: number;
 }): DeploymentInfo {
   const minutesIdle = (now - lastActivity.getTime()) / (1000 * 60);
   const daysSinceActivity = minutesIdle / (60 * 24);
+
+  // Age is what bounds a worker's credentials; idleness is what makes retiring
+  // it safe. Past the cap we only shorten the idle threshold — never lengthen a
+  // deployment's existing one, and never retire a worker mid-turn, because a
+  // busy worker is not idle by definition.
+  const minutesAlive =
+    startedAt === undefined ? null : (now - startedAt.getTime()) / (1000 * 60);
+  const isPastMaxAge =
+    minutesAlive !== null &&
+    maxAgeMinutes !== undefined &&
+    maxAgeMinutes > 0 &&
+    minutesAlive >= maxAgeMinutes;
+  const effectiveIdleThreshold = isPastMaxAge
+    ? Math.min(idleThresholdMinutes, MAX_AGE_IDLE_GRACE_MINUTES)
+    : idleThresholdMinutes;
 
   return {
     deploymentName,
@@ -74,7 +105,8 @@ export function buildDeploymentInfoSummary({
     minutesIdle,
     daysSinceActivity,
     replicas,
-    isIdle: minutesIdle >= idleThresholdMinutes,
+    isIdle: minutesIdle >= effectiveIdleThreshold,
     isVeryOld: daysSinceActivity >= veryOldDays,
+    isPastMaxAge,
   };
 }

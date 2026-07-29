@@ -258,6 +258,10 @@ interface EmbeddedWorkerEntry {
   process: ChildProcess;
   env: Record<string, string>;
   lastActivity: Date;
+  /** When the subprocess was spawned. Fixed for the worker's lifetime — the
+   *  credentials in `env` were resolved at this instant and cannot be
+   *  refreshed in place, so this is what the age cap measures. */
+  startedAt: Date;
   workspaceDir: string;
   /**
    * Release the cross-pod advisory lock held for this conversation while the
@@ -812,6 +816,15 @@ export interface OrchestratorConfig {
     binPathEntries?: string[];
     startupTimeoutSeconds?: number;
     idleCleanupMinutes: number;
+    /**
+     * Hard cap on how long a worker may serve turns before it is retired, in
+     * minutes. A worker resolves its connector credentials into env once at
+     * spawn and cannot be updated in place, so a continuously busy worker
+     * eventually holds an expired credential and 401s mid-turn. Optional so
+     * partially-built configs (tests, embedded callers) keep working; 0 or
+     * absent disables the cap.
+     */
+    maxAgeMinutes?: number;
     maxDeployments: number;
     env?: Record<string, string | number | boolean>;
   };
@@ -830,6 +843,10 @@ export interface DeploymentInfo {
   replicas: number;
   isIdle: boolean;
   isVeryOld: boolean;
+  /** Alive past `worker.maxAgeMinutes` — its credentials may already be dead,
+   *  so it is retired at its first quiet moment instead of after the full idle
+   *  threshold. Always false when the cap is disabled. */
+  isPastMaxAge: boolean;
 }
 
 /** Check if an env var name looks like a secret (API key / token / secret / password). */
@@ -1993,11 +2010,21 @@ export class DeploymentManager {
       const toScaleDown: string[] = [];
 
       for (const analysis of sortedDeployments) {
-        const { deploymentName, replicas, isIdle, isVeryOld } = analysis;
+        const { deploymentName, replicas, isIdle, isVeryOld, isPastMaxAge } =
+          analysis;
 
         if (isVeryOld) {
           toDelete.push(deploymentName);
         } else if (isIdle && replicas > 0) {
+          if (isPastMaxAge) {
+            // Distinguish credential-driven retirement from ordinary idleness:
+            // this is the signal that tells us whether the age cap is doing
+            // anything in prod, and at what rate.
+            logger.info(
+              { deploymentName, minutesIdle: analysis.minutesIdle },
+              "Retiring worker past its max age — its connector credentials may be expired"
+            );
+          }
           toScaleDown.push(deploymentName);
         }
       }
@@ -2558,6 +2585,9 @@ export class DeploymentManager {
       process: child,
       env: commonEnvVars,
       lastActivity: new Date(),
+      // Spawn time, never refreshed — this is what bounds the lifetime of the
+      // credentials baked into `commonEnvVars` above.
+      startedAt: new Date(),
       workspaceDir,
       // Expose the idempotent release on the entry for introspection /
       // tests. The exit handler is the authoritative release site;
@@ -2602,6 +2632,7 @@ export class DeploymentManager {
   async listDeployments(): Promise<DeploymentInfo[]> {
     const now = Date.now();
     const idleThresholdMinutes = this.config.worker.idleCleanupMinutes;
+    const maxAgeMinutes = this.config.worker.maxAgeMinutes;
     const veryOldDays = this.config.cleanup?.veryOldDays ?? 7;
 
     const results: DeploymentInfo[] = [];
@@ -2610,8 +2641,10 @@ export class DeploymentManager {
         buildDeploymentInfoSummary({
           deploymentName,
           lastActivity: entry.lastActivity,
+          startedAt: entry.startedAt,
           now,
           idleThresholdMinutes,
+          maxAgeMinutes,
           veryOldDays,
           replicas: 1,
         })

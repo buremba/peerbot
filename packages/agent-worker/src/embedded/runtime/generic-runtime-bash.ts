@@ -107,10 +107,16 @@ export function createGenericRuntimeBashOps(
               : payload.outcome === "completed"
                 ? "your command RAN but its output could not be retrieved"
                 : "it is unknown whether your command ran";
-          const advice = payload.retryable
-            ? " This is usually transient — the same command may succeed shortly."
-            : payload.outcome === "not_started"
-              ? ""
+          // Safety is decided by the OUTCOME, never by retryability. Replay is
+          // only safe when the command provably never started; `retryable` then
+          // just says whether it is worth trying now. A dispatch 429 is
+          // retryable AND "unknown" — advising a retry there could repeat a
+          // command that already took effect.
+          const advice =
+            payload.outcome === "not_started"
+              ? payload.retryable
+                ? " This is usually transient — the same command may succeed shortly."
+                : ""
               : " Do NOT re-run it blindly; check whether it took effect first.";
           onData(
             Buffer.from(

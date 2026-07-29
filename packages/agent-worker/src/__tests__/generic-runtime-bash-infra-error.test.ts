@@ -82,6 +82,28 @@ describe("generic runtime bash — infrastructure vs command failure", () => {
     expect(output).not.toContain("transient");
   });
 
+  test("a retryable fault with an UNKNOWN outcome still warns against replay", async () => {
+    // The dangerous combination: the SDK can reject a dispatch after the
+    // command has started, so a 429 here is retryable but NOT provably
+    // unstarted. Retry advice keyed on `retryable` alone would invite a replay
+    // that duplicates side effects.
+    const { output, exitCode } = await run(
+      opsWithResponse(429, {
+        error:
+          "Sandbox runtime failed to run command: Status code 429 is not ok",
+        kind: "infrastructure",
+        retryable: true,
+        outcome: "unknown",
+      })
+    );
+
+    expect(exitCode).toBe(126);
+    expect(output).toContain("unknown whether your command ran");
+    expect(output).toContain("Do NOT re-run it blindly");
+    // Retryability must not license a blind replay of a possibly-run command.
+    expect(output).not.toContain("may succeed shortly");
+  });
+
   test("a completed-but-unreadable command never invites a retry", async () => {
     // The log-fetch case: runCommand SUCCEEDED and only output retrieval
     // failed. Telling the agent "your command did not run… retry" would make it

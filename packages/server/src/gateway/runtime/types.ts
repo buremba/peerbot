@@ -81,6 +81,20 @@ export interface GatewayRuntimeProvider {
 }
 
 /**
+ * Whether the agent's command actually ran. Independent of `retryable`: the two
+ * answer different questions, and conflating them misleads in both directions.
+ * A 403 while provisioning is not retryable but definitely never ran, while a
+ * throttled log fetch may have run and completed.
+ */
+export type RuntimeExecutionOutcome =
+  /** Failed before dispatch. The command did not run; no side effects. */
+  | "not_started"
+  /** Dispatch itself failed. Unlikely to have run, but not provable. */
+  | "unknown"
+  /** The command ran; only retrieving its output failed. */
+  | "completed";
+
+/**
  * A failure of the RUNTIME, not of the agent's command.
  *
  * The distinction is load-bearing. A provider rate limit, an auth rejection or a
@@ -95,20 +109,6 @@ export interface GatewayRuntimeProvider {
  * string-matching the message, and the worker can tell the agent "the sandbox
  * is unavailable" instead of "your command failed".
  */
-/**
- * Whether the agent's command actually ran. Independent of `retryable`: the two
- * answer different questions, and conflating them misleads in both directions.
- * A 403 while provisioning is not retryable but definitely never ran, while a
- * throttled log fetch may have run and completed.
- */
-export type RuntimeExecutionOutcome =
-  /** Failed before dispatch. The command did not run; no side effects. */
-  | "not_started"
-  /** Dispatch itself failed. Unlikely to have run, but not provable. */
-  | "unknown"
-  /** The command ran; only retrieving its output failed. */
-  | "completed";
-
 export class RuntimeInfrastructureError extends Error {
   /** Upstream HTTP status when the provider reported one. */
   readonly status?: number;

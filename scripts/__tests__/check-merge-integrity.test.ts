@@ -12,15 +12,52 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // @ts-expect-error — plain .mjs script, no type declarations by design.
 import {
+  ACKNOWLEDGED_LABEL,
   CANONICAL_BASE,
   checkBaseBranch,
   classifyMergedPrs,
+  partitionAcknowledged,
   STACKED_PR_LABEL,
 } from "../check-merge-integrity.mjs";
 
 const SCRIPT = fileURLToPath(
   new URL("../check-merge-integrity.mjs", import.meta.url)
 );
+
+/**
+ * #2273's merge commit is gone for good, so the sweep would flag it every day
+ * forever. A permanently red alarm is one nobody reads — which is the exact
+ * failure this whole gate exists to prevent — so a known-lost PR can be retired
+ * by an explicit human label, and never by the script deciding on its own.
+ */
+describe("partitionAcknowledged", () => {
+  const plain = { number: 1, labels: [{ name: "bug" }] };
+  const retired = {
+    number: 2273,
+    labels: [{ name: "bug" }, { name: ACKNOWLEDGED_LABEL }],
+  };
+
+  it("retires only PRs carrying the label", () => {
+    const { kept, acknowledged } = partitionAcknowledged([plain, retired]);
+    expect(kept.map((p: { number: number }) => p.number)).toEqual([1]);
+    expect(acknowledged.map((p: { number: number }) => p.number)).toEqual([
+      2273,
+    ]);
+  });
+
+  it("keeps a PR with no labels at all", () => {
+    const { kept, acknowledged } = partitionAcknowledged([{ number: 9 }]);
+    expect(kept).toHaveLength(1);
+    expect(acknowledged).toEqual([]);
+  });
+
+  it("does not match a label that merely contains the name", () => {
+    const { acknowledged } = partitionAcknowledged([
+      { number: 3, labels: [{ name: `not-${ACKNOWLEDGED_LABEL}` }] },
+    ]);
+    expect(acknowledged).toEqual([]);
+  });
+});
 
 function runReach(pr: {
   number: number;
@@ -37,9 +74,19 @@ function runReach(pr: {
   writeFileSync(
     git,
     `#!/usr/bin/env node
-const [command, flag, sha] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const [command, flag] = args;
+const sha = command === "rev-parse" ? args[3] : args[2];
 if (command === "fetch") process.exit(0);
+if (command === "rev-parse" && flag === "--verify") {
+  if (String(sha).startsWith("probe-failed")) process.exit(128);
+  process.exit(String(sha).startsWith("gone") ? 1 : 0);
+}
 if (command === "merge-base" && flag === "--is-ancestor") {
+  if (String(sha).startsWith("gone")) process.exit(128);
+  if (String(sha).startsWith("probe-failed")) process.exit(128);
+  if (String(sha) === "signaled") process.kill(process.pid, "SIGTERM");
+  if (String(sha) === "brokenrepo") process.exit(128);
   process.exit(sha === "on-main" ? 0 : 1);
 }
 process.exit(2);
@@ -256,5 +303,41 @@ describe("reach CLI", () => {
     const run = runReach({ ...pr, state: "OPEN" });
     expect(run.status).toBe(2);
     expect(run.stderr).toContain("is OPEN, not MERGED");
+  });
+
+  it("reports a missing merge commit object instead of crashing", () => {
+    const run = runReach({
+      ...pr,
+      baseRefName: "feat/deleted-base",
+      mergeCommit: { oid: "gone-cb85c1ef" },
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("is not reachable from origin/main");
+    expect(run.stderr).not.toContain("ENOENT");
+    expect(run.stderr).not.toContain("at classifyMergedPrs");
+  });
+
+  it("still crashes loudly when git fails but the object exists", () => {
+    const run = runReach({ ...pr, mergeCommit: { oid: "brokenrepo" } });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("Command failed");
+    expect(run.stderr).not.toContain("is not reachable from origin/main");
+  });
+
+  it("still crashes loudly when the object probe itself fails", () => {
+    const run = runReach({
+      ...pr,
+      mergeCommit: { oid: "probe-failed" },
+    });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("Command failed");
+    expect(run.stderr).not.toContain("is not reachable from origin/main");
+  });
+
+  it("still crashes loudly when git is terminated by a signal", () => {
+    const run = runReach({ ...pr, mergeCommit: { oid: "signaled" } });
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("Command failed");
+    expect(run.stderr).not.toContain("is not reachable from origin/main");
   });
 });

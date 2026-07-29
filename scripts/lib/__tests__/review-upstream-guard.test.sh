@@ -23,8 +23,12 @@ fail() {
 # failure this guard exists to catch.
 new_clone() {
   local name="$1" origin="$tmp/$1-origin.git" work="$tmp/$1"
-  git init -q --bare "$origin"
-  git init -q "$work"
+  # Pin the branch name: with init.defaultBranch=master (git's default when the
+  # environment leaves it unset, as CI does) the bare HEAD would point at a ref
+  # that never gets created, and the later clone would start an unrelated root
+  # commit on master instead of building on main.
+  git init -q --bare -b main "$origin"
+  git init -q -b main "$work"
   git -C "$work" config user.email t@t.t
   git -C "$work" config user.name t
   git -C "$work" commit -q --allow-empty -m base

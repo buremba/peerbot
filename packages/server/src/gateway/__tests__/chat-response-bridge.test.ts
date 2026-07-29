@@ -291,6 +291,27 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     expect(posted).not.toContain("Worker crashed");
   });
 
+  test("handleError labels and unwraps a provider error body", async () => {
+    const { target, plainPosts } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleError(
+      {
+        ...basePayload,
+        error:
+          '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low."},"request_id":"req_123"}',
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        errorContext: { provider: "anthropic" },
+      },
+      "s"
+    );
+
+    expect(plainPosts).toContain(
+      "Error: Anthropic returned an error:\nYour credit balance is too low."
+    );
+  });
+
   test("isFullReplacement closes prior stream and opens a new one", async () => {
     const { target } = createStreamingTarget();
     const { manager } = createHarness(target);

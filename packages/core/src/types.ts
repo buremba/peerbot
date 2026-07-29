@@ -286,9 +286,9 @@ export interface ThreadResponsePayload {
    */
   toolsUsed?: string[];
   /**
-   * Raw error message. For provider errors this is relayed verbatim as the
-   * user-facing body (the provider's own text already says the useful thing,
-   * e.g. the quota reset time); `errorCode` only selects the CTA link.
+   * Raw error message. When provider context is available, the gateway labels
+   * the source and unwraps the common JSON message envelope without rewording
+   * the provider's sentence; `errorCode` selects the CTA link.
    */
   error?: string;
   errorCode?: string;

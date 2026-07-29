@@ -59,13 +59,15 @@ describe("partitionAcknowledged", () => {
   });
 });
 
-function runReach(pr: {
-  number: number;
-  title: string;
-  baseRefName: string;
-  mergeCommit: { oid: string } | null;
-  state: string;
-}) {
+/**
+ * Drives the real CLI with `git` and `gh` faked on PATH. `reach --pr` reads a
+ * single object from the fake `gh`; `reach --sweep` reads an array from the
+ * same place, so both modes share one harness.
+ */
+function runCli(
+  args: string[],
+  fakeJson: unknown
+): ReturnType<typeof spawnSync> {
   const root = mkdtempSync(join(tmpdir(), "merge-integrity-test-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -104,21 +106,39 @@ process.stdout.write(process.env.FAKE_PR_JSON ?? "");
   chmodSync(gh, 0o755);
 
   try {
-    return spawnSync(
-      process.execPath,
-      [SCRIPT, "reach", "--pr", `${pr.number}`],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_PR_JSON: JSON.stringify(pr),
-          PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
-        },
-      }
-    );
+    return spawnSync(process.execPath, [SCRIPT, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_PR_JSON: JSON.stringify(fakeJson),
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+      },
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function runReach(pr: {
+  number: number;
+  title: string;
+  baseRefName: string;
+  mergeCommit: { oid: string } | null;
+  state: string;
+}) {
+  return runCli(["reach", "--pr", `${pr.number}`], pr);
+}
+
+function runSweep(
+  prs: Array<{
+    number: number;
+    title: string;
+    baseRefName: string;
+    mergeCommit: { oid: string } | null;
+    labels?: Array<{ name: string }>;
+  }>
+) {
+  return runCli(["reach", "--sweep", "--limit", "50"], prs);
 }
 
 /**
@@ -339,5 +359,68 @@ describe("reach CLI", () => {
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain("Command failed");
     expect(run.stderr).not.toContain("is not reachable from origin/main");
+  });
+});
+
+/**
+ * The sweep is what runs unattended at 13:00, so the acknowledgement path has
+ * to be exercised through the CLI and not only as a helper: a label that
+ * retired every PR, or none, would look identical at the unit level.
+ */
+describe("reach --sweep CLI", () => {
+  const onMain = {
+    number: 2295,
+    title: "landed",
+    baseRefName: "main",
+    mergeCommit: { oid: "on-main" },
+  };
+  const lost = {
+    number: 2273,
+    title: "merged but absent",
+    baseRefName: "feat/nix-deny-list-gap",
+    mergeCommit: { oid: "gone-cb85c1ef" },
+  };
+  const otherLost = {
+    number: 9999,
+    title: "also absent",
+    baseRefName: "feat/other",
+    mergeCommit: { oid: "gone-deadbeef" },
+  };
+
+  it("fails and names an unreachable PR", () => {
+    const run = runSweep([onMain, lost]);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain("1 on main, 1 missing");
+    expect(run.stderr).toContain("#2273");
+  });
+
+  it("passes once the only unreachable PR is acknowledged, and says so", () => {
+    const run = runSweep([
+      onMain,
+      { ...lost, labels: [{ name: ACKNOWLEDGED_LABEL }] },
+    ]);
+    expect(run.status).toBe(0);
+    // Never a silent skip — the run must state what it retired.
+    expect(run.stdout).toContain(ACKNOWLEDGED_LABEL);
+    expect(run.stdout).toContain("#2273");
+  });
+
+  it("retires ONLY the labelled PR — another lost PR still fails the run", () => {
+    const run = runSweep([
+      onMain,
+      { ...lost, labels: [{ name: ACKNOWLEDGED_LABEL }] },
+      otherLost,
+    ]);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("#9999");
+    expect(run.stderr).not.toContain("#2273");
+  });
+
+  it("does not retire on a near-miss label name", () => {
+    const run = runSweep([
+      { ...lost, labels: [{ name: `not-${ACKNOWLEDGED_LABEL}` }] },
+    ]);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("#2273");
   });
 });

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { resolveRuntimeCredentials } from "../../runtime/credentials.js";
 import { getGatewayRuntimeProvider } from "../../runtime/index.js";
 import { commandEnv, errorStatus, resolveWorkspacePath } from "../../runtime/workspace.js";
+import { RuntimeInfrastructureError } from "../../runtime/types.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -110,6 +111,28 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         sandbox: result.meta,
       });
     } catch (error) {
+      // Reported as itself, with the upstream status it carries, rather than
+      // inferred from the message text. See RuntimeInfrastructureError.
+      if (error instanceof RuntimeInfrastructureError) {
+        logger.error(
+          {
+            err: error.message,
+            status: error.status,
+            retryable: error.retryable,
+            outcome: error.outcome,
+          },
+          "Runtime infrastructure failure"
+        );
+        return c.json(
+          {
+            error: error.message,
+            kind: "infrastructure" as const,
+            retryable: error.retryable,
+            outcome: error.outcome,
+          },
+          error.status === 429 ? 429 : 503
+        );
+      }
       logger.error(
         { err: error instanceof Error ? error.message : String(error) },
         "Runtime exec failed"

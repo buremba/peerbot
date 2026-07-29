@@ -79,3 +79,63 @@ export interface GatewayRuntimeProvider {
   canSelfAuth?(): boolean;
   exec(ctx: RuntimeExecContext): Promise<RuntimeExecResult>;
 }
+
+/**
+ * Whether the agent's command actually ran. Independent of `retryable`: the two
+ * answer different questions, and conflating them misleads in both directions.
+ * A 403 while provisioning is not retryable but definitely never ran, while a
+ * throttled log fetch may have run and completed.
+ */
+export type RuntimeExecutionOutcome =
+  /** Failed before dispatch. The command did not run; no side effects. */
+  | "not_started"
+  /** Dispatch itself failed. Unlikely to have run, but not provable. */
+  | "unknown"
+  /** The command ran; only retrieving its output failed. */
+  | "completed";
+
+/**
+ * A failure of the RUNTIME, not of the agent's command.
+ *
+ * The distinction is load-bearing. A provider rate limit, an auth rejection or a
+ * network fault used to reach the agent as `exitCode 1` with the provider's
+ * message written into the command's own stdout — indistinguishable from a
+ * command that genuinely failed. Observed in production: a bare
+ * `echo hello > /tmp/x` reported "Status code 429 is not ok", so the agent
+ * assumed its shell syntax was wrong, rewrote a correct command, and retried
+ * into an already-throttled endpoint.
+ *
+ * Carrying the upstream status means the route no longer has to infer one by
+ * string-matching the message, and the worker can tell the agent "the sandbox
+ * is unavailable" instead of "your command failed".
+ */
+export class RuntimeInfrastructureError extends Error {
+  /** Upstream HTTP status when the provider reported one. */
+  readonly status?: number;
+  /** True when retrying the same command later could plausibly succeed. */
+  readonly retryable: boolean;
+  /** What is known about whether the command executed. */
+  readonly outcome: RuntimeExecutionOutcome;
+
+  constructor(
+    message: string,
+    options?: {
+      status?: number;
+      retryable?: boolean;
+      outcome?: RuntimeExecutionOutcome;
+      cause?: unknown;
+    }
+  ) {
+    super(message, options?.cause ? { cause: options.cause } : undefined);
+    this.name = "RuntimeInfrastructureError";
+    this.status = options?.status;
+    // A rate limit or a 5xx is worth retrying; a 4xx auth/config error is not.
+    this.retryable =
+      options?.retryable ??
+      (options?.status === 429 || (options?.status ?? 0) >= 500);
+    // Default to the safe answer: only claim a command did not run when the
+    // caller says so. Advising a retry for something that may have taken effect
+    // is the costlier mistake.
+    this.outcome = options?.outcome ?? "unknown";
+  }
+}

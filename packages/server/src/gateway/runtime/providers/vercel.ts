@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import { remoteCwd } from "../workspace.js";
+import {
+  RuntimeInfrastructureError,
+  type RuntimeExecutionOutcome,
+} from "../types.js";
 import type {
   GatewayRuntimeProvider,
   RuntimeExecContext,
@@ -197,6 +201,60 @@ function networkPolicyFromDomains(
     : "deny-all";
 }
 
+/**
+ * Normalize a provider SDK throw into a {@link RuntimeInfrastructureError}.
+ *
+ * The SDK's `APIError` carries the status on `response` and repeats it in the
+ * message text; its own retry gives up when `Retry-After` exceeds its ceiling,
+ * so a sustained 429 arrives here unretried. Reading the status off the error
+ * avoids recovering it by matching that message.
+ */
+function asRuntimeInfrastructureError(
+  error: unknown,
+  stage: string,
+  outcome: RuntimeExecutionOutcome
+): RuntimeInfrastructureError {
+  if (error instanceof RuntimeInfrastructureError) return error;
+  const candidate = error as
+    | { response?: { status?: unknown }; status?: unknown }
+    | undefined;
+  const raw = candidate?.response?.status ?? candidate?.status;
+  const status = typeof raw === "number" ? raw : undefined;
+  const detail = error instanceof Error ? error.message : String(error);
+  return new RuntimeInfrastructureError(
+    `Sandbox runtime failed to ${stage}: ${detail}`,
+    { status, outcome, cause: error }
+  );
+}
+
+/**
+ * argv for running `command` with `cwd` established, in ONE sandbox execution.
+ *
+ * The outer non-login shell only creates and enters the directory, then `exec`s
+ * the real `/bin/bash -lc "$2"`, replacing the process. Both values are argv
+ * entries rather than interpolated text, for two reasons learned the hard way:
+ *
+ *  - Prepending `mkdir -p X && cd X &&` textually changed the submitted
+ *    command's meaning. `&&` binds tighter than `&`, so `sleep 0 & pwd`
+ *    backgrounded the cwd setup and ran `pwd` in the default directory; a
+ *    comment-only command made the trailing `&&` a syntax error.
+ *  - Running it with `eval` in the outer shell leaked that shell's positional
+ *    state: `$0` was "lobu-exec", `$1` the cwd, `$#` 2 — where a plain
+ *    `bash -lc` gives "bash", "" and 0.
+ *
+ * A separate `sandbox.fs.mkdir()` is not used because the SDK implements its
+ * recursive branch as a real command execution, doubling the command-API rate.
+ */
+export function execArgv(cwd: string, command: string): string[] {
+  return [
+    "-c",
+    'mkdir -p -- "$1" && cd -- "$1" && exec /bin/bash -lc "$2"',
+    "lobu-exec",
+    cwd,
+    command,
+  ];
+}
+
 async function getSandbox(params: {
   name: string;
   networkPolicy: NetworkPolicy;
@@ -251,7 +309,7 @@ async function getSandbox(params: {
  * deterministic per (org, agent, conversation) so messages resume the same
  * filesystem; the filesystem is the persistent source of truth (no file sync).
  */
-export const __testOnly = { networkPolicyFromDomains };
+export const __testOnly = { networkPolicyFromDomains, execArgv };
 
 export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
   id: "vercel",
@@ -293,30 +351,65 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
       ctx.allowedDomains,
       ctx.deniedDomains
     );
-    const sandbox = await getSandbox({
-      name: sandboxName,
-      networkPolicy,
-      credentials: ctx.credentials.values,
-    });
+    // Provisioning happens before the agent's command exists, so ANY failure
+    // here is the runtime's, never the command's.
+    let sandbox: Sandbox;
+    try {
+      sandbox = await getSandbox({
+        name: sandboxName,
+        networkPolicy,
+        credentials: ctx.credentials.values,
+      });
+    } catch (error) {
+      throw asRuntimeInfrastructureError(error, "provision sandbox", "not_started");
+    }
 
-    await sandbox.fs.mkdir(REMOTE_WORKSPACE_DIR, { recursive: true });
+    // The cwd is created by the command itself rather than by a separate
+    // `sandbox.fs.mkdir()`: the SDK implements its recursive branch as a real
+    // command execution, so a standalone call doubled the command-API rate for
+    // every command — including ones touching no filesystem — and trips the
+    // provider's rate limit. `mkdir -p` then `cd` gives the same guarantee in
+    // one execution.
+    const cwd = remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR);
+    // Only the TRANSPORT is wrapped: a non-zero exitCode from the agent's own
+    // command is a normal result and must flow through untouched.
+    let result: Awaited<ReturnType<Sandbox["runCommand"]>>;
+    try {
+      result = await sandbox.runCommand({
+        cmd: "/bin/bash",
+        args: execArgv(cwd, ctx.command),
+        env: ctx.env,
+        timeoutMs: ctx.timeoutMs,
+      });
+    } catch (error) {
+      // Dispatch rejected. The SDK can reject after the command has started, so
+      // this is "unknown", not "not_started" — retryable, but not a promise that
+      // nothing happened.
+      throw asRuntimeInfrastructureError(error, "run command", "unknown");
+    }
 
-    const result = await sandbox.runCommand({
-      cmd: "/bin/bash",
-      args: ["-lc", ctx.command],
-      cwd: remoteCwd(ctx.cwd, ctx.workspaceDir, REMOTE_WORKSPACE_DIR),
-      env: ctx.env,
-      timeoutMs: ctx.timeoutMs,
-    });
-    const [stdout, stderr] = await Promise.all([
-      result.stdout(),
-      result.stderr(),
-    ]);
+    // Fetching the logs is a SEPARATE call, and by this point the command has
+    // already executed. A failure here must never be reported as "your command
+    // did not run" with a retry hint — re-running a command that already
+    // succeeded duplicates its side effects (a POST sent twice, a file appended
+    // twice). Report it as non-retryable and say the outcome is unknown.
+    let stdout: string;
+    let stderr: string;
+    try {
+      [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new RuntimeInfrastructureError(
+        `Sandbox runtime ran the command but could not retrieve its output: ${detail}. The command MAY have completed — do not assume it needs re-running.`,
+        { retryable: false, outcome: "completed", cause: error }
+      );
+    }
+    const exitCode = result.exitCode;
 
     return {
       stdout,
       stderr,
-      exitCode: result.exitCode,
+      exitCode,
       meta: {
         name: sandbox.name,
         persistent: sandbox.persistent,

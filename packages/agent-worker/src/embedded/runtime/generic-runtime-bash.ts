@@ -8,6 +8,12 @@ type RuntimeExecResponse = {
   stderr?: unknown;
   exitCode?: unknown;
   error?: unknown;
+  /** "infrastructure" when the RUNTIME failed and the command never ran. */
+  kind?: unknown;
+  /** Whether re-running the same command later could plausibly succeed. */
+  retryable?: unknown;
+  /** "not_started" | "unknown" | "completed" — whether the command ran. */
+  outcome?: unknown;
 };
 
 /**
@@ -84,6 +90,44 @@ export function createGenericRuntimeBashOps(
           typeof payload.error === "string"
             ? payload.error
             : `Runtime exec failed with HTTP ${response.status}`;
+        // The SANDBOX failed, not the command. Say so in the agent's own terms:
+        // an unlabelled provider message on stdout with exit 1 is exactly what a
+        // genuinely failing command produces, so the agent concluded its syntax
+        // was wrong, rewrote a correct command and retried into an already
+        // throttled endpoint. Naming the fault is what stops that loop.
+        if (payload.kind === "infrastructure") {
+          // Two independent facts: whether the command RAN (outcome) and
+          // whether retrying is sensible (retryable). Deriving one from the
+          // other misleads both ways — a 403 while provisioning is not
+          // retryable yet definitely never ran, so telling the agent to go
+          // check for side effects sends it hunting for something impossible.
+          const ran =
+            payload.outcome === "not_started"
+              ? "your command did not run"
+              : payload.outcome === "completed"
+                ? "your command RAN but its output could not be retrieved"
+                : "it is unknown whether your command ran";
+          // Safety is decided by the OUTCOME, never by retryability. Replay is
+          // only safe when the command provably never started; `retryable` then
+          // just says whether it is worth trying now. A dispatch 429 is
+          // retryable AND "unknown" — advising a retry there could repeat a
+          // command that already took effect.
+          const advice =
+            payload.outcome === "not_started"
+              ? payload.retryable
+                ? " This is usually transient — the same command may succeed shortly."
+                : ""
+              : " Do NOT re-run it blindly; check whether it took effect first.";
+          onData(
+            Buffer.from(
+              `lobu: sandbox runtime error — ${ran}.${advice}\n${message}\n`
+            )
+          );
+          // 126 ("command found but not executable") rather than 1: the failure
+          // is the runtime's, so it must not read as the command having run and
+          // failed. The message above says which of the two cases this is.
+          return { exitCode: 126 };
+        }
         onData(Buffer.from(`${message}\n`));
         return { exitCode: 1 };
       }

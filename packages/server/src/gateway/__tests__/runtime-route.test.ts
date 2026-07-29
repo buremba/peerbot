@@ -28,7 +28,9 @@ const rmMock = mock(async (remotePath: string) => {
 const writeFilesMock = mock(async () => undefined);
 const readFileToBufferMock = mock(async () => null);
 const runCommandMock = mock(async (params: { args?: string[] }) => {
-  const command = params.args?.[1] ?? "";
+  // args = ["-lc", <wrapper script>, "lobu-exec", <cwd>, <command>] — the
+  // submitted command is the last positional, not the script at index 1.
+  const command = params.args?.[4] ?? "";
   let stdout = "command stdout\n";
   let exitCode = 0;
   if (command.includes("echo remote output > output.txt")) {
@@ -92,6 +94,7 @@ const readSandboxSecretSpy = spyOn(
 // registers the Vercel provider. The @vercel/sandbox mock above is installed
 // first so the provider module binds to it.
 const { createRuntimeRoutes } = await import("../routes/internal/runtime.js");
+const { execArgv } = (await import("../runtime/providers/vercel.js")).__testOnly;
 
 const originalEnv = {
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
@@ -173,6 +176,134 @@ afterEach(async () => {
 
 afterAll(() => {
   readSandboxSecretSpy.mockRestore();
+});
+
+describe("createRuntimeRoutes — infrastructure failures", () => {
+  /**
+   * A provider fault must not be reported as the agent's command failing.
+   * Previously a 429 was flattened to a 500 whose message went to the command's
+   * own stdout with exit 1, so the agent rewrote a correct command and retried
+   * into an already-throttled endpoint.
+   */
+  function apiError(status: number): Error & { response: { status: number } } {
+    // Shape of the Vercel SDK's APIError: message carries the status as text,
+    // and the real status hangs off `response`.
+    const error = new Error(
+      `Status code ${status} is not ok`
+    ) as Error & { response: { status: number } };
+    error.response = { status };
+    return error;
+  }
+
+  test("a throttled provision surfaces 429 + retryable, not a command failure", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    // Provisioning precedes dispatch, so the command provably never ran.
+    expect(body.outcome).toBe("not_started");
+    expect(String(body.error)).toContain("provision sandbox");
+    // The command must never have run.
+    expect(runCommandMock).not.toHaveBeenCalled();
+  });
+
+  test("a non-retryable provider fault surfaces 503 + retryable false", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(403);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(false);
+    // Not retryable AND never ran — the two facts are independent.
+    expect(body.outcome).toBe("not_started");
+  });
+
+  test("a log-fetch failure AFTER the command ran is not retryable", async () => {
+    // The dangerous case: runCommand succeeded, so the command's side effects
+    // already happened. Claiming it "did not run" and inviting a retry would
+    // duplicate them.
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => {
+        throw apiError(429);
+      },
+      stderr: async () => "",
+    }));
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "curl -X POST https://api.github.com/x" }),
+    });
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    // Not retryable, despite the underlying 429 — the command already ran.
+    expect(body.retryable).toBe(false);
+    expect(body.outcome).toBe("completed");
+    expect(res.status).toBe(503);
+    expect(String(body.error)).toContain("MAY have completed");
+    expect(String(body.error)).not.toContain("did not run");
+  });
+
+  test("a transport failure during the command is infrastructure, not exit 1", async () => {
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    // Dispatch can reject after the command has already started, so this must
+    // never report "not_started" — that would invite an unsafe retry.
+    expect(body.outcome).toBe("unknown");
+    expect(String(body.error)).toContain("run command");
+  });
 });
 
 describe("createRuntimeRoutes", () => {
@@ -499,12 +630,19 @@ describe("createRuntimeRoutes", () => {
       keepLastSnapshots: { count: 1, deleteEvicted: true },
     });
     expect(remoteFiles.has("/vercel/sandbox/stale.txt")).toBe(true);
+    // The cwd is established BY the command, not by a `cwd` option paired with a
+    // separate `fs.mkdir()`. That mkdir was a real command execution in the SDK,
+    // so it doubled the command-API rate and got the sandbox rate-limited.
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({
       cmd: "/bin/bash",
-      args: ["-lc", "pwd"],
-      cwd: "/vercel/sandbox/nested",
+      // cwd and command are positional args, never interpolated. Asserted via
+      // the provider's own builder so this cannot drift from production.
+      args: execArgv("/vercel/sandbox/nested", "pwd"),
       timeoutMs: 1_000,
     });
+    expect(runCommandMock.mock.calls[0]?.[0]).not.toHaveProperty("cwd");
+    // The regression this guards: one exec must cost exactly one execution.
+    expect(mkdirMock).not.toHaveBeenCalled();
     expect(writeFilesMock).not.toHaveBeenCalled();
     expect(readFileToBufferMock).not.toHaveBeenCalled();
     expect(rmMock).not.toHaveBeenCalled();

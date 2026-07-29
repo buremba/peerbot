@@ -398,9 +398,13 @@ export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 				),
 			);
 		};
-		return organizationId
-			? orgContext.run({ organizationId }, loadConfig)
-			: loadConfig();
+		// No org means no tenant to scope to. Running unscoped used to read
+		// grants across every organization, silently — `orgScope` emitted an
+		// empty fragment and the query answered for all tenants at once.
+		if (!organizationId) {
+			return c.json({ error: "Organization context required" }, 400);
+		}
+		return orgContext.run({ organizationId }, loadConfig);
 	});
 
 	// ===== Grant Endpoints (read-only) =====

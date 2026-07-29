@@ -8,7 +8,10 @@
 import postgres from "postgres";
 import { beforeEach, describe, expect, it } from "vitest";
 import { PROD_PG_VALUE_OPTIONS } from "../../../db/client";
-import { assessEntityResolution } from "../../../entity-resolution/policy";
+import {
+	assessEntityResolution,
+	RESOLUTION_FINGERPRINT_VERSION,
+} from "../../../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../../../entity-resolution/staleness";
 import type { Env } from "../../../index";
 import { manageEntity } from "../../../tools/admin/manage_entity";
@@ -245,6 +248,157 @@ describe("manage_entity merge action", () => {
 			WHERE run_id = ${queued.approval_run_id}
 		`;
 		expect(completedEvent.interaction_status).toBe("completed");
+	});
+
+	it("re-presents a merge whose fingerprint predates the current format instead of dead-ending it", async () => {
+		// Replicates an unversioned proposal minted before #2152 added
+		// entity_identities to the hashed inputs. Before this fix every approval
+		// bounced the run back to pending with a mismatch the reviewer could not
+		// clear.
+		const org = await createTestOrganization({ name: "Stranded Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+
+		const watcherCtx = {
+			...ctx(org.id, user.id, "owner"),
+			userId: null,
+			agentId: "personal-agent",
+		} as ToolContext;
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			watcherCtx,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+		expect(queued.approval_queued).toBe(true);
+
+		// Rewrite the stored proposal into the pre-#2152 shape: a digest from the
+		// old input set and no version stamp at all.
+		const [minted] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		const stale = {
+			...(minted.action_input as Record<string, unknown>),
+			resolution_fingerprint: "0".repeat(64),
+		};
+		delete stale.resolution_fingerprint_version;
+		await sql`
+			UPDATE runs SET action_input = ${sql.json(stale)}
+			WHERE id = ${queued.approval_run_id}
+		`;
+
+		const refreshed = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("error" in refreshed && refreshed.error).toMatch(
+			/without a known current matching format/i,
+		);
+
+		// The merge must NOT have applied — the reviewer approved evidence the
+		// server could not verify, so their click does not carry over.
+		const [untouched] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(untouched.merged_into).toBeNull();
+		expect(untouched.deleted_at).toBeNull();
+
+		// ...but the proposal is now approvable: pending, restamped, and carrying
+		// a fingerprint the server can actually check.
+		const [reset] = await sql`
+			SELECT approval_status, status, action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(reset).toMatchObject({
+			approval_status: "pending",
+			status: "pending",
+		});
+		const resetInput = reset.action_input as Record<string, unknown>;
+		expect(resetInput.resolution_fingerprint_version).toBe(
+			RESOLUTION_FINGERPRINT_VERSION,
+		);
+		expect(resetInput.resolution_fingerprint).not.toBe("0".repeat(64));
+
+		const [recheckedEvent] = await sql`
+			SELECT title, interaction_status, interaction_input, metadata
+			FROM current_event_records
+			WHERE run_id = ${queued.approval_run_id}
+		`;
+		expect(recheckedEvent.title).toBe(
+			"entity_merge — evidence re-checked, still pending",
+		);
+		expect(recheckedEvent.interaction_input).toEqual(resetInput);
+		expect(recheckedEvent.metadata).toMatchObject({
+			current: resetInput.current,
+			proposal: {
+				evidence: resetInput.evidence,
+			},
+			reason: resetInput.reason,
+		});
+
+		// Approving the re-presented card applies, ending the dead end.
+		const applied = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("approved" in applied && applied.approved).toBe(true);
+		const [merged] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(Number(merged.merged_into)).toBe(winner.id);
+		expect(merged.deleted_at).not.toBeNull();
+	});
+
+	it("does not downgrade a merge fingerprint from a newer format", async () => {
+		const org = await createTestOrganization({ name: "Future Merge Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const { winner, loser } = await twoEntities(org.id, user.id);
+		const sql = getTestDb();
+		const queued = (await manageEntity(
+			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },
+			env,
+			{
+				...ctx(org.id, user.id, "owner"),
+				userId: null,
+				agentId: "personal-agent",
+			} as ToolContext,
+		)) as unknown as { approval_queued: boolean; approval_run_id: number };
+		expect(queued.approval_queued).toBe(true);
+
+		const [minted] = await sql`
+			SELECT action_input FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		const future = {
+			...(minted.action_input as Record<string, unknown>),
+			resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION + 1,
+		};
+		await sql`
+			UPDATE runs SET action_input = ${sql.json(future)}
+			WHERE id = ${queued.approval_run_id}
+		`;
+
+		const result = await manageOperations(
+			{ action: "approve", run_id: queued.approval_run_id },
+			env,
+			ctx(org.id, user.id, "owner"),
+		);
+		expect("error" in result && result.error).toMatch(
+			/newer resolution format/i,
+		);
+		const [reset] = await sql`
+			SELECT approval_status, status, action_input
+			FROM runs WHERE id = ${queued.approval_run_id}
+		`;
+		expect(reset).toMatchObject({
+			approval_status: "pending",
+			status: "pending",
+		});
+		expect(reset.action_input).toEqual(future);
+		const [untouched] =
+			await sql`SELECT merged_into, deleted_at FROM entities WHERE id = ${loser.id}`;
+		expect(untouched.merged_into).toBeNull();
+		expect(untouched.deleted_at).toBeNull();
 	});
 
 	it("queues review evidence for a phone shared only through entity_identities", async () => {
@@ -1279,6 +1433,7 @@ describe("manage_entity merge action", () => {
 					winnerId: winner.id,
 					loserIds: [loser.id],
 					expectedFingerprint: assessment.fingerprint,
+					expectedVersion: RESOLUTION_FINGERPRINT_VERSION,
 				});
 				await expect(
 					writer.begin(async (writerTx) => {

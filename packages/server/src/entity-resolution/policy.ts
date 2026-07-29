@@ -1,5 +1,21 @@
 import { createHash } from "node:crypto";
 
+/**
+ * Version of the inputs `assessEntityResolution` hashes into `fingerprint`.
+ *
+ * Bump this whenever the hashed input set changes shape — adding a field,
+ * changing normalization, reading a new source. A fingerprint mismatch only
+ * proves drift within the same version: across versions the digests can differ
+ * even when nothing about the entities changed.
+ *
+ * v1 → v2: #2152 added `entity_identities` rows alongside `entities.metadata`
+ * as rule-field inputs. Proposals minted before it stored metadata-only
+ * digests, which current recomputation cannot compare. Because the version
+ * stamp was added later, unstamped mismatches are conservatively refreshed:
+ * their exact historical format cannot be inferred from the digest alone.
+ */
+export const RESOLUTION_FINGERPRINT_VERSION = 2;
+
 type ResolutionDecision = "auto_merge" | "review";
 
 export interface ResolutionEvidence {
@@ -29,7 +45,7 @@ export interface ResolutionKeySet {
 	keys: Record<string, string[]>;
 }
 
-interface EntityResolutionAssessment {
+export interface EntityResolutionAssessment {
 	decision: ResolutionDecision;
 	evidence: ResolutionEvidence[];
 	policyHash: string;

@@ -14,7 +14,11 @@ import {
 } from "@lobu/core/contracts/interaction-envelope";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
-import type { ResolutionKeySet } from "../../entity-resolution/policy";
+import {
+	type EntityResolutionAssessment,
+	RESOLUTION_FINGERPRINT_VERSION,
+	type ResolutionKeySet,
+} from "../../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import {
@@ -134,6 +138,12 @@ export interface EntityMergeProposal {
 	source_run_id?: number | null;
 	policy_hash?: string | null;
 	resolution_fingerprint?: string | null;
+	/**
+	 * Which version of the hashed input set produced `resolution_fingerprint`.
+	 * An absent stamp cannot distinguish proposals minted before and after the
+	 * last input-format change, so a mismatch is refreshed rather than guessed.
+	 */
+	resolution_fingerprint_version?: number | null;
 	attribution?: ApprovalAttributionType;
 	reason?: string | null;
 	/**
@@ -184,7 +194,9 @@ function asCreateProposal(
 	);
 }
 
-function asMergeProposal(proposal: EntityChangeProposal): EntityMergeProposal {
+export function asMergeProposal(
+	proposal: EntityChangeProposal,
+): EntityMergeProposal {
 	if (proposal.operation === "merge") return proposal;
 	throw new Error(
 		`Expected merge proposal, got ${proposal.operation ?? "update"}`,
@@ -200,6 +212,23 @@ function changedEntityId(proposal: EntityChangeProposal): number {
 
 function mergeEntityIds(proposal: EntityMergeProposal): number[] {
 	return proposal.entity_ids ?? [proposal.entity_id];
+}
+
+export function mergeReviewEventMetadata(proposal: EntityMergeProposal) {
+	const duplicates = proposal.current.duplicates ?? [proposal.current.loser];
+	return {
+		current: proposal.current,
+		proposal: {
+			entity_id: proposal.entity_id,
+			entity_ids: mergeEntityIds(proposal),
+			winner_entity_id: proposal.winner_entity_id,
+			evidence: proposal.evidence ?? [],
+			names: duplicates.map((entity) => entity.name),
+			name: proposal.current.loser.name,
+			winner_name: proposal.current.winner.name,
+		},
+		reason: proposal.reason ?? null,
+	};
 }
 
 function entityChangeIdempotencyKey(
@@ -442,18 +471,25 @@ export async function proposeEntityCreate(
 	return proposeEntityChange(ctx, { ...proposal, operation: "create" });
 }
 
-export async function proposeEntityMerge(
+/**
+ * Build the `current` snapshot a reviewer reads for a merge. Shared by the
+ * propose path and the refresh path so a refreshed card is built exactly the
+ * same way as a freshly proposed one — a refresh that produced a differently
+ * shaped snapshot would be indistinguishable from a bug to whoever reads it.
+ */
+async function buildMergeReviewSnapshot(
 	ctx: ToolContext,
-	proposal: Omit<EntityMergeProposal, "operation" | "current" | "entity_id"> & {
-		entity_ids: number[];
+	input: {
+		entityIds: number[];
+		winnerEntityId: number;
+		resolutionKeys: readonly ResolutionKeySet[];
 	},
-	resolutionKeys: readonly ResolutionKeySet[],
-): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	const ids = [...new Set([...proposal.entity_ids, proposal.winner_entity_id])];
+): Promise<EntityMergeProposal["current"]> {
+	const ids = [...new Set([...input.entityIds, input.winnerEntityId])];
 	const snapshots = await loadEntitySnapshots(ctx, ids);
 	const byId = new Map(snapshots.map((entity) => [Number(entity.id), entity]));
 	const keysById = new Map(
-		resolutionKeys.map((entry) => [Number(entry.id), entry.keys]),
+		input.resolutionKeys.map((entry) => [Number(entry.id), entry.keys]),
 	);
 	const requireSnapshot = (entityId: number) => {
 		const snapshot = byId.get(entityId);
@@ -468,7 +504,7 @@ export async function proposeEntityMerge(
 		return keys;
 	};
 	const urlContext = await getOrgUrlContext(ctx);
-	const linkedDuplicates = proposal.entity_ids.map((entityId) =>
+	const linkedDuplicates = input.entityIds.map((entityId) =>
 		toEntityReviewSnapshot(
 			urlContext,
 			requireSnapshot(entityId),
@@ -477,17 +513,77 @@ export async function proposeEntityMerge(
 	);
 	const linkedWinner = toEntityReviewSnapshot(
 		urlContext,
-		requireSnapshot(proposal.winner_entity_id),
-		requireResolutionKeys(proposal.winner_entity_id),
+		requireSnapshot(input.winnerEntityId),
+		requireResolutionKeys(input.winnerEntityId),
 	);
 	const [loser, ...rest] = linkedDuplicates;
 	if (!loser) throw new Error("At least one duplicate entity is required");
+	return { loser, duplicates: [loser, ...rest], winner: linkedWinner };
+}
+
+export async function proposeEntityMerge(
+	ctx: ToolContext,
+	proposal: Omit<EntityMergeProposal, "operation" | "current" | "entity_id"> & {
+		entity_ids: number[];
+	},
+	resolutionKeys: readonly ResolutionKeySet[],
+): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
+	const current = await buildMergeReviewSnapshot(ctx, {
+		entityIds: proposal.entity_ids,
+		winnerEntityId: proposal.winner_entity_id,
+		resolutionKeys,
+	});
 	return proposeEntityChange(ctx, {
 		...proposal,
-		entity_id: loser.id,
+		entity_id: current.loser.id as number,
 		operation: "merge",
-		current: { loser, duplicates: [loser, ...rest], winner: linkedWinner },
+		current,
 	});
+}
+
+/**
+ * Re-derive a pending merge proposal against the current resolution format and
+ * write the result back to its run, leaving it pending.
+ *
+ * Used when the stored fingerprint is *incomparable* rather than stale — its
+ * format stamp is absent or older, so this server cannot safely interpret a
+ * digest mismatch. Refreshing re-presents the proposal with evidence recomputed
+ * under the current format; the reviewer confirms once more against something
+ * the server can actually verify.
+ *
+ * Deliberately does NOT apply the merge. The reviewer approved a card built
+ * from evidence the server can no longer reproduce, so their click does not
+ * carry over — silently applying would treat an unverifiable approval as a
+ * verified one.
+ */
+export async function refreshMergeProposalFingerprint(
+	runId: number,
+	ctx: ToolContext,
+	proposal: EntityMergeProposal,
+	assessment: EntityResolutionAssessment,
+	db: DbClient = getDb(),
+): Promise<EntityMergeProposal> {
+	const current = await buildMergeReviewSnapshot(ctx, {
+		entityIds: mergeEntityIds(proposal),
+		winnerEntityId: proposal.winner_entity_id,
+		resolutionKeys: assessment.resolutionKeys,
+	});
+	const refreshed: EntityMergeProposal = {
+		...proposal,
+		current,
+		evidence: assessment.evidence,
+		reason: assessment.reason,
+		policy_hash: assessment.policyHash,
+		resolution_fingerprint: assessment.fingerprint,
+		resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
+	};
+	await db`
+		UPDATE runs
+		SET action_input = ${db.json(refreshed as unknown as Record<string, unknown>)}
+		WHERE id = ${runId}
+		  AND organization_id = ${ctx.organizationId}
+	`;
+	return refreshed;
 }
 
 export async function proposeEntityChange(
@@ -511,6 +607,9 @@ export async function proposeEntityChange(
 		operation === "create" ? asCreateProposal(proposal) : null;
 	const mergeProposal =
 		operation === "merge" ? asMergeProposal(proposal) : null;
+	const mergeEventMetadata = mergeProposal
+		? mergeReviewEventMetadata(mergeProposal)
+		: null;
 	const actionKey =
 		operation === "update"
 			? ENTITY_FIELD_CHANGE_ACTION_KEY
@@ -680,29 +779,17 @@ export async function proposeEntityChange(
 					action: operation === "update" ? "change" : operation,
 					entity_id: "entity_id" in proposal ? proposal.entity_id : null,
 					fields: updateProposal ? updateProposal.fields : null,
-					current: updateProposal
-						? (updateProposal.current ?? null)
-						: deleteProposal
-							? deleteProposal.current
-							: mergeProposal
-								? mergeProposal.current
+					current: mergeEventMetadata
+						? mergeEventMetadata.current
+						: updateProposal
+							? (updateProposal.current ?? null)
+							: deleteProposal
+								? deleteProposal.current
 								: null,
 					proposal: createProposal
 						? createProposal.proposal
-						: mergeProposal
-							? {
-									entity_id: mergeProposal.entity_id,
-									entity_ids: mergeEntityIds(mergeProposal),
-									winner_entity_id: mergeProposal.winner_entity_id,
-									evidence: mergeProposal.evidence ?? [],
-									names: (
-										mergeProposal.current.duplicates ?? [
-											mergeProposal.current.loser,
-										]
-									).map((entity) => entity.name),
-									name: mergeProposal.current.loser.name,
-									winner_name: mergeProposal.current.winner.name,
-								}
+						: mergeEventMetadata
+							? mergeEventMetadata.proposal
 							: deleteProposal
 								? {
 										entity_id: deleteProposal.entity_id,
@@ -732,7 +819,9 @@ export async function proposeEntityChange(
 						kind: initiatorColumns.initiatorKind,
 						...initiatorColumns.initiatorRef,
 					},
-					reason: proposal.reason ?? null,
+					reason: mergeEventMetadata
+						? mergeEventMetadata.reason
+						: (proposal.reason ?? null),
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
 					run_id: runId,
@@ -1082,6 +1171,8 @@ export async function applyEntityChangeProposal(
 				winnerId: mergeProposal.winner_entity_id,
 				loserIds: mergeEntityIds(mergeProposal),
 				expectedFingerprint: mergeProposal.resolution_fingerprint,
+				// An unstamped mismatch has unknown provenance and must be refreshed.
+				expectedVersion: mergeProposal.resolution_fingerprint_version ?? null,
 			});
 		}
 		const params = {

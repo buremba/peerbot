@@ -39,7 +39,10 @@ import {
 } from "../../authz/entity-policy";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
 import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
-import { assessEntityResolution } from "../../entity-resolution/policy";
+import {
+	assessEntityResolution,
+	RESOLUTION_FINGERPRINT_VERSION,
+} from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
@@ -762,6 +765,7 @@ async function handleMerge(
 				source_run_id: ctx.actingRunId ?? null,
 				policy_hash: resolution.policyHash,
 				resolution_fingerprint: resolution.fingerprint,
+				resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
 				attribution,
 				reason: resolution.reason,
 				// The proposer's own words, kept strictly separate from `reason` (the

@@ -558,6 +558,39 @@ describe('connector-health alerter', () => {
     expect(row.unhealthy_alerted_at).not.toBeNull();
   });
 
+  // Rule A must stay sensitive to a SINGLE bad run. Narrowing its numerator to
+  // persistent failures (the degraded rule's stricter count) would let a
+  // connection whose every expected feed just failed report healthy until the
+  // consecutive counters climbed to the threshold — silence during exactly the
+  // window where the failure is newest.
+  it('flags a connection whose expected feeds all failed once, below the failure threshold', async () => {
+    const freshlyBroken = await seedConnection({
+      orgId,
+      userId,
+      connectorKey: 'notion',
+      slug: 'fresh-total-failure',
+      createdAt: OLD,
+    });
+    for (const key of ['a', 'b']) {
+      await seedFeed({
+        orgId,
+        connectionId: freshlyBroken.id,
+        feedKey: key,
+        status: 'active',
+        lastSyncStatus: 'failed',
+        lastSyncAt: new Date(),
+        // One failed run: BELOW failureThreshold, so the persistent-failure
+        // count is 0 and only the latest-run half of the predicate catches it.
+        consecutiveFailures: 1,
+        lastError: 'worker_claim_timeout',
+      });
+    }
+
+    const res = await runConnectorHealthCheck();
+    expect(1).toBeLessThan(cfg.failureThreshold);
+    expect(reasonFor(res.details, freshlyBroken.id)).toBe('all_feeds_failing');
+  });
+
   it('flags a 3-feed connection at the degraded ratio', async () => {
     const threeFeed = await seedConnection({
       orgId,

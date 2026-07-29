@@ -179,6 +179,7 @@ interface UnhealthyRow {
   active_feed_count: string;
   operator_paused_feed_count: string;
   persistently_failing_feed_count: string;
+  failing_expected_feed_count: string;
   newest_sync_at: Date | null;
   last_error: string | null;
 }
@@ -232,6 +233,18 @@ async function loadConnectionHealthRows(
       COUNT(f.id) FILTER (
         WHERE f.consecutive_failures >= ${cfg.failureThreshold}
       ) AS persistently_failing_feed_count,
+      -- Rule A's numerator: the SAME "failing" predicate as
+      -- failing_feed_count (a single most-recent-run failure counts), but over
+      -- expected feeds only. Rule A must stay sensitive to one bad run —
+      -- narrowing it to persistent failures would let a connection whose every
+      -- expected feed just failed report healthy until the counters climb.
+      COUNT(f.id) FILTER (
+        WHERE NOT (f.status = 'paused' AND f.consecutive_failures = 0)
+          AND (
+            f.last_sync_status = 'failed'
+            OR f.consecutive_failures >= ${cfg.failureThreshold}
+          )
+      ) AS failing_expected_feed_count,
       MAX(f.last_sync_at) FILTER (WHERE f.last_sync_status = 'success') AS newest_sync_at,
       (ARRAY_AGG(f.last_error) FILTER (WHERE f.last_error IS NOT NULL))[1] AS last_error
     FROM connections c
@@ -259,6 +272,7 @@ function classify(
   const activeCount = Number(row.active_feed_count);
   const operatorPausedCount = Number(row.operator_paused_feed_count);
   const persistentlyFailingCount = Number(row.persistently_failing_feed_count);
+  const failingExpectedCount = Number(row.failing_expected_feed_count);
 
   // Rule B: active connection, zero non-deleted feeds. (Grace handled by the
   // query's min-age window — a connection that has existed > min age and still
@@ -279,8 +293,15 @@ function classify(
   // three-expected-feed floor, so it reported healthy while 100% of what it was
   // still expected to collect was dead. Deliberately switching feeds off must
   // never make the remaining failures harder to see.
+  //
+  // The PREDICATE is unchanged from the original rule — a feed counts as
+  // failing if its latest sync failed OR it is past the failure threshold.
+  // Only the denominator narrowed. Reusing the degraded rule's stricter
+  // persistent-failure count here would have been a second regression: a
+  // connection whose every expected feed just failed once would report healthy
+  // until the counters climbed to the threshold.
   const expectedCount = feedCount - operatorPausedCount;
-  if (expectedCount > 0 && persistentlyFailingCount === expectedCount) {
+  if (expectedCount > 0 && failingExpectedCount === expectedCount) {
     return 'all_feeds_failing';
   }
 

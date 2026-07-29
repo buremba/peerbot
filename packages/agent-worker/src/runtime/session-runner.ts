@@ -20,7 +20,7 @@ import {
   type CreateAgentSessionResult,
   createAgentSession,
   ModelRegistry,
-  type SessionManager,
+  SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { ProgressUpdate, SessionExecutionResult } from "../core/types";
@@ -40,6 +40,7 @@ import {
   registerDynamicProvider,
   resolveModelRef,
 } from "./model-resolver";
+import { createLobuResourceLoader } from "./pi-resources";
 import {
   createPluginLogger,
   createRuntimePluginHost,
@@ -115,7 +116,31 @@ export async function buildAgentSession({
   builtinOverrides,
   ...options
 }: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
-  const result = await createAgentSession(options);
+  // Pi's defaults persist under ~/.pi and discover resources/config from cwd.
+  // Lobu supplies explicit production state; keep every fallback in memory so
+  // a worker session never depends on host or agent-writable workspace files.
+  const cwd = options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd();
+  const settingsManager = options.settingsManager ?? SettingsManager.inMemory();
+  const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
+  const authStorage =
+    options.authStorage ??
+    options.modelRegistry?.authStorage ??
+    AuthStorage.inMemory();
+  const modelRegistry =
+    options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
+  const resourceLoader =
+    options.resourceLoader ??
+    (await createLobuResourceLoader({ cwd, settingsManager }));
+
+  const result = await createAgentSession({
+    ...options,
+    cwd,
+    settingsManager,
+    sessionManager,
+    authStorage,
+    modelRegistry,
+    resourceLoader,
+  });
   const { session } = result;
 
   const lobuBuiltins = new Map<string, AgentTool<any>>();

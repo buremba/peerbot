@@ -551,8 +551,7 @@ async function handleCreateFeed(
   // schedule. config.query is an optional scope fence; agents can compose further
   // filters at read time (query_sql feed_query) or pass recall terms.
   // Default from the connector feed definition (`feeds_schema[key].virtual`) when
-  // the caller omits `virtual` — e.g. Jira issues is virtual by default.
-  // Explicit `args.virtual` always wins (true or false).
+  // the caller omits `virtual`. Explicit `args.virtual` always wins (true or false).
   const schemaDefaultVirtual = feedsSchema?.[args.feed_key]?.virtual === true;
   const isVirtual =
     args.virtual === true || (args.virtual !== false && schemaDefaultVirtual);

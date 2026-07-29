@@ -95,8 +95,8 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       mode: 'query',
       feedKey: p.feedKey ?? null,
       query: p.query,
-      // Same merge as feed-sync / worker poll: connection.config (e.g. Jira
-      // cloud_id stamped at OAuth) under credentials + caller overrides.
+      // Same merge as feed-sync / worker poll: connection.config under
+      // credentials + caller overrides (any connector-level config).
       // ONLY the connection's own credentials reach ctx.config — deliberately NOT
       // the gateway's process.env, so a connection missing DATABASE_URL fails
       // cleanly instead of falling back to Lobu's own DB. The egress policy is the
@@ -232,8 +232,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   });
 
   // Same merge order as feed-sync / worker poll:
-  // connection.config (Jira cloud_id) → credentials → feed config → egress.
-  // Feed-level keys win over connection-level so a feed can override site/JQL.
+  // connection.config → credentials → feed config → egress.
+  // Feed-level keys win so a feed can override connection-level settings.
   const config = {
     ...mergeExecutionConfig(feed.connection_config, connectionCredentials, feedConfig),
     ...dbEgressConfig(),

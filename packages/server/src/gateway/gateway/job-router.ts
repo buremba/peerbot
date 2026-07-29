@@ -8,6 +8,11 @@ import {
   type PendingAgentRunInput,
 } from "../orchestration/agent-run-input.js";
 import type { WorkerConnectionManager } from "./connection-manager.js";
+import {
+  type DispatchRecycler,
+  gateDispatchOnStaleness,
+  type LiveTurnProbe,
+} from "./dispatch-recycle.js";
 
 const logger = createLogger("worker-job-router");
 
@@ -24,6 +29,13 @@ interface PendingJob {
  */
 export class WorkerJobRouter {
   private pendingJobs: Map<string, PendingJob> = new Map(); // In-memory timeouts only
+  /**
+   * Claim-side recycle seam (the DeploymentManager in production). Optional:
+   * unwired (tests, partial boots) means the gate is skipped and jobs deliver
+   * exactly as before the gate existed.
+   */
+  private dispatchRecycler?: DispatchRecycler;
+  private probeLiveTurn?: LiveTurnProbe;
 
   constructor(
     private queue: IMessageQueue,
@@ -32,6 +44,19 @@ export class WorkerJobRouter {
       deploymentName: string
     ) => Promise<PendingAgentRunInput[]> = listPendingAgentRunInputs,
   ) {}
+
+  /**
+   * Wire the deployment manager into the dispatch-time staleness gate. Called
+   * from the composition root alongside `setDeploymentActivityTracker` — the
+   * router and the orchestrator are built separately.
+   */
+  setDispatchRecycler(
+    recycler: DispatchRecycler,
+    probeLiveTurn?: LiveTurnProbe
+  ): void {
+    this.dispatchRecycler = recycler;
+    this.probeLiveTurn = probeLiveTurn;
+  }
 
   /**
    * Register a worker to receive jobs from its deployment queue
@@ -61,7 +86,11 @@ export class WorkerJobRouter {
     for (const input of pendingInputs) {
       const payload = attachFreshRunJobToken(input);
       await this.queue.send(queueName, payload, {
-        retryLimit: 3,
+        // Same deferral-aware budget as the consumer's thread-queue send: a
+        // replayed input can also be claimed while the (reconnected) worker is
+        // stale and mid-turn, and the dispatch gate defers it by throwing —
+        // see sendToWorkerQueue in message-consumer.ts for the full rationale.
+        retryLimit: 1800,
         retryDelay: 2,
         priority: 10,
       });
@@ -108,6 +137,25 @@ export class WorkerJobRouter {
    * stale SSE connection (e.g., after a container dies without cleanly closing TCP).
    */
   private async handleJob(deploymentName: string, job: unknown): Promise<void> {
+    // Extract job data and ID
+    const jobData = (job as { data?: unknown }).data;
+
+    // Claim-side recycle gate: never deliver onto a worker whose connector
+    // lease is dying or whose tooling no longer matches the org's connections.
+    // Runs BEFORE the connection lookup — a recycle replaces the connection.
+    // Deliberately un-caught: a throw here (deferral, recycle, or a genuine
+    // failure) keeps the job undelivered and the queue retries it (fail
+    // closed). Delivering on error would hand the turn to a sandbox holding a
+    // dead or wrong credential, which is the defect this gate exists to stop.
+    if (this.dispatchRecycler) {
+      await gateDispatchOnStaleness({
+        deploymentName,
+        jobData,
+        recycler: this.dispatchRecycler,
+        probeLiveTurn: this.probeLiveTurn,
+      });
+    }
+
     const connection = this.connectionManager.getConnection(deploymentName);
 
     if (!connection) {
@@ -116,9 +164,6 @@ export class WorkerJobRouter {
       );
       throw new Error("Worker not connected");
     }
-
-    // Extract job data and ID
-    const jobData = (job as { data?: unknown }).data;
     const jobId =
       (job as { id?: string }).id ||
       `job-${Date.now()}-${Math.random().toString(36).substring(7)}`;

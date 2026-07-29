@@ -11,6 +11,7 @@
  * database, never connector code. Nothing here loads or executes a connector.
  */
 
+import { createHash } from "node:crypto";
 import {
   createLogger,
   isValidDomainPattern,
@@ -35,6 +36,17 @@ import type {
 
 const logger = createLogger("agent-tooling-resolver");
 
+/**
+ * Mirrors `DeploymentManager.LEASE_RECYCLE_MARGIN_MS`. A lease minted with less
+ * life than this is reported immediately. Its expiry is still recorded; the
+ * deployment age floor prevents a recycle loop while preserving later renewal.
+ */
+const RECYCLE_MARGIN_MS = 5 * 60_000;
+
+function isWithinRecycleMargin(expiresAt: Date): boolean {
+  return expiresAt.getTime() - Date.now() <= RECYCLE_MARGIN_MS;
+}
+
 /** The sandbox contribution of every eligible connection, already unioned. */
 export interface ResolvedAgentTooling {
   /** Nix packages to union into the agent's `nixConfig.packages`. */
@@ -43,12 +55,25 @@ export interface ResolvedAgentTooling {
   env: Record<string, string>;
   /** Domains to grant on the worker's egress allowlist. */
   domains: string[];
+  /**
+   * Earliest expiry across every minted lease, or null when nothing minted (or
+   * no provider reported one). The deployment stores this so the warm path can
+   * recycle the worker before its credential lapses.
+   */
+  leaseExpiresAt: Date | null;
+  /** See {@link ResolvedAgentToolingDeclaration.fingerprint}. */
+  fingerprint: string;
 }
 
 const EMPTY: ResolvedAgentTooling = {
   packages: [],
   env: {},
   domains: [],
+  leaseExpiresAt: null,
+  // Must equal what `resolveAgentToolingDeclaration` digests for zero rows, or
+  // an org with no tooling connections would look "changed" on every turn and
+  // recycle its worker forever.
+  fingerprint: toolingFingerprint([]),
 };
 
 /**
@@ -100,6 +125,12 @@ interface ToolingConnectionRow {
   config: Record<string, unknown> | null;
   agent_tooling: unknown;
   auth_schema: unknown;
+  /** Install state, fingerprint-only — see the query comment. */
+  installation_status: string | null;
+  installation_provider: string | null;
+  installation_provider_instance: string | null;
+  installation_app_id: string | null;
+  installation_tenant: string | null;
 }
 
 /**
@@ -158,7 +189,8 @@ export function parseAgentTooling(value: unknown): ConnectorAgentTooling | null 
   // Accepted entries are normalized to the form grants are stored and matched
   // in, so a declaration spelling it `GitHub.COM` or `*.GitHub.COM` joins the
   // existing `github.com`/`.github.com` grant instead of adding a second row
-  // for the same host.
+  // for the same host — and the fingerprint (which digests this declaration)
+  // stops treating a re-cased spelling as a tooling change.
   const domains = Array.isArray(raw.domains)
     ? (raw.domains as unknown[])
         .filter(isValidDomainPattern)
@@ -184,12 +216,42 @@ async function loadToolingConnections(
            c.connector_key,
            c.config,
            cd.agent_tooling,
-           cd.auth_schema
+           cd.auth_schema,
+           -- Lease AUTHORITY, joined only for the fingerprint: revoking or
+           -- transferring an installation must invalidate a warm worker that
+           -- is still holding a token minted under it. These fields do not
+           -- change the declared packages/domains, so nothing else reads them.
+           ai.status AS installation_status,
+           ai.provider AS installation_provider,
+           ai.provider_instance AS installation_provider_instance,
+           ai.provider_app_id AS installation_app_id,
+           ai.external_tenant_id AS installation_tenant
     FROM connections c
     JOIN connector_definitions cd
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
+    LEFT JOIN app_installations ai
+      -- connections.config is a jsonb blob written by the install path, not a
+      -- typed column, so a malformed installation_ref is representable. A bare
+      -- ::bigint cast can raise on non-digits OR an out-of-range digit string,
+      -- aborting this whole query; both callers then fail open to "no
+      -- contribution", stripping packages, domains and leases from every
+      -- connection in the org. Normalize leading zeroes and cast only a
+      -- positive safe integer; anything else joins to NULL like an absent ref.
+      ON ai.id = (
+           CASE
+             WHEN (
+                c.config->>'installation_ref' ~ '^0*[1-9][0-9]{0,14}$'
+                OR (
+                  c.config->>'installation_ref' ~ '^0*[1-9][0-9]{15}$'
+                  AND ltrim(c.config->>'installation_ref', '0') <= '9007199254740991'
+                )
+              )
+               THEN ltrim(c.config->>'installation_ref', '0')::bigint
+           END
+         )
+     AND ai.organization_id = c.organization_id
     WHERE c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
       AND c.status = 'active'
@@ -198,10 +260,63 @@ async function loadToolingConnections(
   `) as unknown as ToolingConnectionRow[];
 }
 
+/**
+ * One connection's contribution to the tooling fingerprint: which connection,
+ * which installation, and what it declares. Shared by both resolvers so the
+ * cold and warm paths can never disagree about whether tooling changed.
+ */
+function toolingIdentityEntry(
+  row: ToolingConnectionRow,
+  tooling: ConnectorAgentTooling | null
+): string {
+  const installationRef = parseJsonObject(row.config).installation_ref;
+  const method = getAppInstallationAuthMethods(
+    normalizeConnectorAuthSchema(row.auth_schema)
+  )[0];
+  return JSON.stringify([
+    String(row.connection_id),
+    row.connector_key,
+    installationRef == null ? null : String(installationRef),
+    method
+      ? [
+          method.provider,
+          method.providerInstance ?? null,
+          method.appIdKey ?? null,
+          method.privateKeyKey ?? null,
+        ]
+      : null,
+    row.installation_status,
+    row.installation_provider,
+    row.installation_provider_instance,
+    row.installation_app_id,
+    row.installation_tenant,
+    tooling,
+  ]);
+}
+
+/** Digest the per-connection identity entries into a stable fingerprint. */
+function toolingFingerprint(entries: string[]): string {
+  return createHash("sha256")
+    .update(entries.join("\n"))
+    .digest("hex")
+    .slice(0, 32);
+}
+
 /** The declaration-only half of the contribution: no credential is minted. */
 export interface ResolvedAgentToolingDeclaration {
   packages: string[];
   domains: string[];
+  /**
+   * Stable digest of WHICH connections contribute and WHAT they declare —
+   * connection id, its `installation_ref`, and the validated declaration.
+   *
+   * A worker reads its env once at process start, so a warm deployment keeps
+   * whatever tooling it was born with. Comparing this across turns is how the
+   * warm path notices that a connection was added, removed, or repointed at a
+   * different installation, and recycles instead of serving an agent that is
+   * missing a CLI or still authenticating as the previous identity.
+   */
+  fingerprint: string;
 }
 
 /**
@@ -219,12 +334,25 @@ export async function resolveAgentToolingDeclaration(params: {
 }): Promise<ResolvedAgentToolingDeclaration> {
   const packages = new Set<string>();
   const domains = new Set<string>();
+  const identity: string[] = [];
+  // `loadToolingConnections` is ORDER BY c.id, so the digest is stable across
+  // turns and replicas without sorting here.
   for (const row of await loadToolingConnections(params.organizationId)) {
     const tooling = parseAgentTooling(row.agent_tooling);
     for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
+
+    // Identity, not just capability: two connections can declare identical
+    // tooling while pointing at different installations, and swapping between
+    // them changes WHO the agent is. The installation ref therefore has to be
+    // in the digest even though it contributes nothing to packages/domains.
+    identity.push(toolingIdentityEntry(row, tooling));
   }
-  return { packages: [...packages], domains: [...domains] };
+  return {
+    packages: [...packages],
+    domains: [...domains],
+    fingerprint: toolingFingerprint(identity),
+  };
 }
 
 /**
@@ -255,9 +383,16 @@ export async function resolveAgentTooling(params: {
   const packages = new Set<string>();
   const domains = new Set<string>();
   const env: Record<string, string> = {};
+  /** env name → the connection whose lease is in `env`, for collision logging. */
+  const envSource = new Map<string, number>();
+  const identity: string[] = [];
+  let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
     const tooling = parseAgentTooling(row.agent_tooling);
+    // Recorded for EVERY row, including ones that contribute nothing: removing
+    // a malformed connection still changes the org's tooling identity.
+    identity.push(toolingIdentityEntry(row, tooling));
     if (!tooling) {
       // Covers both a structurally malformed value and one whose every entry
       // was filtered out (an unknown credential tier, an invalid package name,
@@ -287,21 +422,35 @@ export async function resolveAgentTooling(params: {
     };
 
     for (const entry of tooling.env) {
-      // First successfully minted value wins. Two connections of the same
-      // connector (e.g. two GitHub orgs) would otherwise fight over one env var
-      // and the sandbox would silently use whichever sorted last.
+      // One env var, one credential: a sandbox has a single $GH_TOKEN, so when
+      // two connections of the same connector (two GitHub installations, say)
+      // both claim it, someone loses. Lowest connection id wins — arbitrary,
+      // but STABLE, so the agent does not silently swap identity between turns
+      // as rows are added.
+      //
+      // This is a real limitation, not a resolved case: the agent can only see
+      // what the winning installation can see, so a repo that lives only under
+      // the other one is invisible to it. Logged at WARN with both connection
+      // ids because the symptom an operator hits ("gh says 404 on a repo I can
+      // see in the browser") is otherwise undiagnosable from the sandbox.
+      // Fixing it properly means per-connection env naming or repo-aware
+      // selection, which is a contract change, not a patch.
       // Own properties only: `env` is a plain object literal, so `in` would
       // report `toString`/`constructor`/`valueOf` as already claimed before
-      // anything is minted — all pass the identifier check and none is
-      // reserved, so such an entry would be dropped with a bogus collision.
+      // anything is minted — all of them pass the identifier check and none is
+      // reserved, so such an entry would be dropped with a bogus collision WARN
+      // naming an undefined `using_connection_id`.
       if (Object.hasOwn(env, entry.name)) {
-        logger.info(
+        logger.warn(
           {
             env_name: entry.name,
             connector_key: row.connector_key,
             connection_id: connectionId,
+            using_connection_id: envSource.get(entry.name),
+            organization_id: organizationId,
+            agent_id: agentId,
           },
-          "Agent-tooling env var already contributed by an earlier connection — skipping"
+          "Two connections claim the same agent-tooling env var; keeping the lower connection id. Repositories reachable only by the skipped connection will not be visible to the agent."
         );
         continue;
       }
@@ -310,6 +459,34 @@ export async function resolveAgentTooling(params: {
       const lease = await params.leaseRegistry.mintFor(subject, scope);
       if (!lease) continue;
       env[entry.name] = lease.token;
+      envSource.set(entry.name, connectionId);
+      // Earliest wins: the deployment is only good until its FIRST credential
+      // lapses, not its last.
+      //
+      // A freshly minted token that is ALREADY inside the recycle margin means
+      // the provider is issuing short-lived credentials (clock skew, or a
+      // fault). It is still delivered — a short life beats none — and its
+      // expiry is still recorded so renewal happens. The deployment manager's
+      // minimum-age floor is what prevents this from becoming a recycle loop;
+      // suppressing the expiry here instead would leave the deployment unable
+      // to renew at all.
+      if (lease.expiresAt && isWithinRecycleMargin(lease.expiresAt)) {
+        logger.warn(
+          {
+            env_name: entry.name,
+            connector_key: row.connector_key,
+            connection_id: connectionId,
+            expires_at: lease.expiresAt.toISOString(),
+          },
+          "Provider issued a lease that is already near expiry; the sandbox may lose this credential mid-conversation"
+        );
+      }
+      if (
+        lease.expiresAt &&
+        (!leaseExpiresAt || lease.expiresAt < leaseExpiresAt)
+      ) {
+        leaseExpiresAt = lease.expiresAt;
+      }
     }
   }
 
@@ -317,6 +494,8 @@ export async function resolveAgentTooling(params: {
     packages: [...packages],
     env,
     domains: [...domains],
+    leaseExpiresAt,
+    fingerprint: toolingFingerprint(identity),
   };
 }
 
@@ -335,11 +514,13 @@ function buildLeaseSubject(
   const parsedRef =
     typeof rawRef === "number"
       ? rawRef
-      : typeof rawRef === "string" && rawRef.trim()
+      : typeof rawRef === "string" && /^[0-9]+$/.test(rawRef)
         ? Number(rawRef)
         : null;
   const installationRef =
-    parsedRef != null && Number.isFinite(parsedRef) ? parsedRef : null;
+    parsedRef != null && Number.isSafeInteger(parsedRef) && parsedRef > 0
+      ? parsedRef
+      : null;
 
   const method = getAppInstallationAuthMethods(
     normalizeConnectorAuthSchema(row.auth_schema)

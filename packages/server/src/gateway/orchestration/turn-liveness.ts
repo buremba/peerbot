@@ -222,6 +222,55 @@ export async function hasLiveTurnForMessage(
 }
 
 /**
+ * True when ANY turn is still in flight on `deploymentName`.
+ *
+ * Deployment-scoped sibling of {@link hasLiveTurnForMessage}, for callers that
+ * are about to tear a worker down and must not interrupt a turn already
+ * running on it — recycling a deployment for a stale credential must never
+ * SIGTERM a live run and cost the user a reply.
+ *
+ * Postgres-backed rather than pod-local, so it is correct with N replicas: the
+ * turn may have been started by a different pod than the one deciding to
+ * recycle.
+ *
+ * Same index probe and same `run_at > now()` deadline predicate as
+ * {@link hasLiveTurnForMessage} — a lapsed-but-unswept marker is a dead worker,
+ * not a live turn, and must not block a recycle forever.
+ *
+ * "In flight" here means a turn the worker has actually RECEIVED. A turn's
+ * marker is armed at dispatch, BEFORE its
+ * `thread_message_*` job is delivered, so an armed-but-still-queued turn has a
+ * live marker while its job sits `pending`/`claimed` on the worker queue. The
+ * recycle gate ignores those: it runs while holding one such claimed job, and
+ * two queued turns would otherwise each read the other's marker as "a running
+ * turn" and defer each other forever. A marker whose `thread_message` job row
+ * is gone (completed on delivery receipt) is a turn that reached the worker —
+ * exactly the turns a teardown would interrupt.
+ */
+export async function hasLiveTurnForDeployment(
+  deploymentName: string
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs m
+    WHERE m.status = 'pending'
+      AND m.run_type = 'internal'
+      AND m.queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND m.action_input->>'deploymentName' = ${deploymentName}
+      AND m.run_at > now()
+      AND NOT EXISTS (
+        SELECT 1 FROM public.runs q
+        WHERE q.status IN ('pending', 'claimed')
+          AND q.run_type = 'chat_message'
+          AND q.queue_name = ${`thread_message_${deploymentName}`}
+          AND q.action_input->>'messageId' = m.action_input->>'messageId'
+      )
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
  * caller gets the rows, and the terminal error is enqueued in the same

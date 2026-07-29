@@ -160,6 +160,24 @@ export interface MessagePayload {
   preApprovedTools?: string[];
 
   /**
+   * Digest of the org's connector-contributed agent tooling (which connections
+   * contribute, which installation each points at, and what it declares),
+   * resolved and stamped by the gateway at ENQUEUE time
+   * (`MessageConsumer.foldConnectorTooling`).
+   *
+   * Read at the dispatch chokepoint (the owner pod's job router) and compared
+   * against the fingerprint the target deployment was BUILT with: a worker
+   * reads its env once at process start, so a mismatch means the warm sandbox
+   * is missing a CLI/credential or still authenticating as a repointed
+   * installation, and must be recycled before this turn is delivered. Absent
+   * means the enqueue path predates the stamp, so the dispatch gate treats it
+   * as "no evidence of change". Not a secret (it is a SHA-256 digest of
+   * connection identity, never of credential material), so it is safe on the
+   * worker-visible payload.
+   */
+  toolingFingerprint?: string;
+
+  /**
    * Job ID from the gateway (set when the payload rode through the worker
    * SSE stream). Optional — direct-enqueue paths leave it unset.
    */

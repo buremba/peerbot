@@ -417,6 +417,15 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			.getWorkerGateway()
 			?.setDeploymentActivityTracker(orchestrator.getDeploymentManager());
 
+		// Claim-side recycle gate: the job router (dispatch chokepoint) consults
+		// the deployment manager's pod-local lease/fingerprint state before
+		// delivering a claimed turn, and recycles a stale worker in place. Wired
+		// here for the same reason as the tracker above — the gateway and the
+		// orchestrator are built separately.
+		coreServices
+			.getWorkerGateway()
+			?.setDispatchRecycler(orchestrator.getDeploymentManager());
+
 		// Initialize Chat SDK connection manager for platform connections
 		chatInstanceManager = new ChatInstanceManager();
 		try {

@@ -162,7 +162,9 @@ describe("WorkerJobRouter", () => {
         "thread_message_worker-1",
         replayed,
         {
-          retryLimit: 3,
+          // Deferral-aware retry budget — must match the consumer's
+          // thread-queue send (see sendToWorkerQueue).
+          retryLimit: 1800,
           retryDelay: 2,
           priority: 10,
         },

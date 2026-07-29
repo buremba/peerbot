@@ -564,7 +564,13 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      await this.foldConnectorTooling(data, traceId);
+      // Stamp the resolved tooling fingerprint onto the payload so the
+      // dispatch chokepoint (the owner pod's job router) can compare it
+      // against the fingerprint the target deployment was built with, without
+      // re-resolving per delivery attempt. Resolution failures propagate: a
+      // DB error is not evidence that a worker is fresh, so the outer queue
+      // handler retries instead of delivering on unknown durable state.
+      data.toolingFingerprint = await this.foldConnectorTooling(data);
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
@@ -945,10 +951,21 @@ export class MessageConsumer {
       // Create the thread-specific queue if it doesn't exist
       await this.queue.createQueue(threadQueueName);
 
-      // Send message to thread-specific queue
+      // Send message to thread-specific queue.
+      //
+      // The retry budget doubles as the dispatch gate's deferral clock: a job
+      // claimed while its worker is stale AND mid-turn is thrown back
+      // undelivered and re-claimed every `retryDelay` seconds until the prior
+      // turn terminalizes (see worker-dispatch-recycle). The budget must
+      // therefore outlast a long prior turn, not merely a transient SSE
+      // hiccup — the old limit of 3 would fail any follow-up sent while a
+      // stale worker ran a turn longer than ~4s. A large limit costs nothing
+      // in the failure modes the old one bounded: a DISCONNECTED worker pauses
+      // its queue (no claim churn at all), and the user-visible failure is
+      // always the turn-liveness marker, never this row's terminal status.
       const jobId = await this.queue.send(threadQueueName, data, {
         expireInSeconds: this.config.queues.expireInSeconds,
-        retryLimit: this.config.queues.retryLimit,
+        retryLimit: Math.max(this.config.queues.retryLimit, 1800),
         retryDelay: 2, // 2 seconds — fast retry for stale connection recovery
         priority: 10, // Thread messages have high priority
       });
@@ -1009,45 +1026,37 @@ export class MessageConsumer {
    * `nixConfig.packages` — folding domains alone lets that reconcile revoke the
    * substituter hosts the contributed packages depend on.
    *
-   * Never throws: a resolution failure leaves the payload untouched and the
-   * sandbox runs without the contribution, rather than failing the turn.
+   * Infrastructure failures propagate so the queue retries the enclosing
+   * dispatch. Once the fingerprint participates in the delivery gate, a failed
+   * lookup cannot safely mean "no evidence of change."
    */
-  protected async foldConnectorTooling(
-    data: MessagePayload,
-    traceId: string
-  ): Promise<void> {
-    try {
-      const contribution = await resolveAgentToolingDeclaration({
-        organizationId: data.organizationId,
-      });
-      if (contribution.domains.length > 0) {
-        data.networkConfig = {
-          ...data.networkConfig,
-          allowedDomains: [
-            ...new Set([
-              ...(data.networkConfig?.allowedDomains ?? []),
-              ...contribution.domains,
-            ]),
-          ],
-        };
-      }
-      if (contribution.packages.length > 0) {
-        data.nixConfig = {
-          ...data.nixConfig,
-          packages: [
-            ...new Set([
-              ...(data.nixConfig?.packages ?? []),
-              ...contribution.packages,
-            ]),
-          ],
-        };
-      }
-    } catch (error) {
-      logger.warn(
-        { traceId, agentId: data.agentId, error: getErrorMessage(error) },
-        "Failed to resolve connector tooling contribution; continuing without it"
-      );
+  protected async foldConnectorTooling(data: MessagePayload): Promise<string> {
+    const contribution = await resolveAgentToolingDeclaration({
+      organizationId: data.organizationId,
+    });
+    if (contribution.domains.length > 0) {
+      data.networkConfig = {
+        ...data.networkConfig,
+        allowedDomains: [
+          ...new Set([
+            ...(data.networkConfig?.allowedDomains ?? []),
+            ...contribution.domains,
+          ]),
+        ],
+      };
     }
+    if (contribution.packages.length > 0) {
+      data.nixConfig = {
+        ...data.nixConfig,
+        packages: [
+          ...new Set([
+            ...(data.nixConfig?.packages ?? []),
+            ...contribution.packages,
+          ]),
+        ],
+      };
+    }
+    return contribution.fingerprint;
   }
 
   private async ensureWorkerExists(

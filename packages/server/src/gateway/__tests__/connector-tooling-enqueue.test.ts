@@ -52,12 +52,12 @@ class NoopManager extends DeploymentManager {
 
 /** Exposes the protected fold. */
 class TestConsumer extends MessageConsumer {
-  fold(data: MessagePayload): Promise<void> {
+  fold(data: MessagePayload): Promise<string> {
     return (
       this as unknown as {
-        foldConnectorTooling(d: MessagePayload, t: string): Promise<void>;
+        foldConnectorTooling(d: MessagePayload): Promise<string>;
       }
-    ).foldConnectorTooling(data, "trace-1");
+    ).foldConnectorTooling(data);
   }
 }
 
@@ -188,15 +188,12 @@ describe("connector tooling on the enqueue path", () => {
     expect(data.networkConfig).toBeUndefined();
   });
 
-  test("a resolution failure never fails the turn", async () => {
-    // The whole point of folding defensively: a sandbox without the CLI is a
-    // recoverable degradation, a failed turn is not.
+  test("a resolution failure propagates so durable tooling state is not guessed", async () => {
     await seedGitHubTooling();
-    const data = payload();
-    const consumer = buildConsumer();
-    // A payload with no org cannot resolve; the fold must still return cleanly.
-    const orgless = { ...data, organizationId: undefined as unknown as string };
+    const data = payload({
+      organizationId: undefined as unknown as string,
+    });
 
-    await expect(consumer.fold(orgless)).resolves.toBeUndefined();
+    await expect(buildConsumer().fold(data)).rejects.toBeDefined();
   });
 });

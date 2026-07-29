@@ -968,7 +968,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     // `releaseLockOnce` closure, defined BEFORE the try so both the catch and
     // the child handlers share one release.
     expect(spawnBody).toMatch(/let commonEnvVars: Record<string, string>;/);
-    expect(spawnBody).toMatch(/const releaseLockOnce = async/);
+    expect(spawnBody).toMatch(/const releaseLockOnce = \(\): Promise<void>/);
 
     // The catch block must release the lock (idempotent closure) and re-throw.
     expect(spawnBody).toMatch(
@@ -1009,7 +1009,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     // The exit handler must use an idempotent shared closure so the
     // error path + exit path can both fire safely.
     expect(src).toMatch(/releaseLockOnce/);
-    expect(src).toMatch(/let lockReleased = false/);
+    expect(src).toMatch(/let lockReleasePromise: Promise<void> \| null = null/);
   });
 
   test("P2 tenant isolation: /api/v1/agents/:id/history/threads/:threadId/messages reads orgA's snapshot only, not orgB's, when both share the agentId", async () => {

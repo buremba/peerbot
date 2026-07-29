@@ -929,6 +929,34 @@ export class DeploymentManager {
   private leaseMintedAtByDeployment = new Map<string, Date>();
 
   /**
+   * Consecutive reconcile cycles a stale deployment has skipped its reap
+   * because a turn was in flight. Pod-local like the rest of the recycle state:
+   * only the pod that spawned a worker can reap it.
+   */
+  private recycleDeferralsByDeployment = new Map<string, number>();
+
+  /**
+   * Reconcile cycles a stale deployment may defer its reap before it is forced.
+   *
+   * The deferral alone does not terminate. A turn ends, but the NEXT turn arms
+   * its own marker, and at N>1 replicas most messages are claimed by a pod that
+   * does not own the worker — so it evaluates no recycle, arms, and enqueues.
+   * Under a steady arrival rate the owner's reconcile then sees an unbroken run
+   * of live turns and never reaps, while every one of those turns executes on a
+   * credential that is expiring or on a connection that was repointed or
+   * revoked. At the default 60s cadence this bounds that at ~4 minutes, inside
+   * the 5-minute lease-recycle margin, so the interrupted turn was about to lose
+   * its credential regardless — and it is terminalized cleanly by the
+   * worker-exit fast path rather than left hanging.
+   *
+   * This also bounds the probe's fail-safe: {@link isServingLiveTurn} reports
+   * "busy" when it cannot reach Postgres, and a probe that has been failing for
+   * the whole window is not evidence of a live turn. The alternative is never
+   * reaping an expiring credential for as long as the database is unhealthy.
+   */
+  private static readonly MAX_RECYCLE_DEFERRALS = 4;
+
+  /**
    * Org each deployment was built for. The deployment name is a hash of the
    * conversation identity, so the org is not recoverable from it — but the
    * reconcile loop needs it to re-resolve the CURRENT tooling fingerprint.
@@ -993,6 +1021,7 @@ export class DeploymentManager {
     this.leaseMintedAtByDeployment.delete(deploymentName);
     this.toolingFingerprintByDeployment.delete(deploymentName);
     this.organizationByDeployment.delete(deploymentName);
+    this.recycleDeferralsByDeployment.delete(deploymentName);
   }
 
   private trackConversationLockRelease(
@@ -2273,9 +2302,30 @@ export class DeploymentManager {
               !this.hasExpiringLease(name) &&
               !(await this.hasStaleTooling(name))
             ) {
+              // Another owner rebuilt it, or the tooling matches again. Clear
+              // the run of deferrals so a later, unrelated staleness gets the
+              // full budget rather than an inherited one.
+              this.recycleDeferralsByDeployment.delete(name);
               return;
             }
-            if (await this.isServingLiveTurn(name)) return;
+            // Bounded deferral: a live turn buys the worker a few cycles, not
+            // an indefinite reprieve. See MAX_RECYCLE_DEFERRALS.
+            const deferrals = this.recycleDeferralsByDeployment.get(name) ?? 0;
+            if (
+              deferrals < DeploymentManager.MAX_RECYCLE_DEFERRALS &&
+              (await this.isServingLiveTurn(name))
+            ) {
+              this.recycleDeferralsByDeployment.set(name, deferrals + 1);
+              logger.info(
+                {
+                  deploymentName: name,
+                  deferrals: deferrals + 1,
+                  maxDeferrals: DeploymentManager.MAX_RECYCLE_DEFERRALS,
+                },
+                "Deferring stale-deployment reap: a turn is still in flight"
+              );
+              return;
+            }
             logger.info(
               { deploymentName: name },
               "Reaping a deployment whose connector tooling or lease is stale"

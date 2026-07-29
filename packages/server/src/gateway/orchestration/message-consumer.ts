@@ -284,7 +284,66 @@ export function buildRunJobToken(args: {
   );
 }
 
+/**
+ * What the recycle step did for this turn.
+ *  - `recycled`  — the stale worker was torn down; the create path rebuilds it.
+ *  - `unchanged` — nothing to do (healthy worker, cold start, or a failure we
+ *                  deliberately swallow so a stale credential beats a lost turn).
+ *  - `deferred`  — a recycle IS needed but a PREVIOUS turn is still running on
+ *                  the worker. The caller must NOT dispatch onto it.
+ */
+type RecycleOutcome = "recycled" | "unchanged" | "deferred";
+
+/**
+ * `platformMetadata` slot counting how many times a message has been held back
+ * waiting for its worker to become recyclable. Gateway-internal — stripped
+ * before the payload is signed into a token or handed to a worker.
+ */
+const RECYCLE_DEFERRAL_KEY = "lobuRecycleDeferrals";
+
+/**
+ * Read the hold counter off a delivered payload. Anything that is not a
+ * positive finite number reads as zero — the value round-trips through JSONB
+ * and is the only thing bounding the hold loop, so a malformed one must fail
+ * towards dispatching, never towards holding forever.
+ */
+function readRecycleDeferrals(
+  metadata: Record<string, unknown> | undefined
+): number {
+  const raw = metadata?.[RECYCLE_DEFERRAL_KEY];
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.floor(raw);
+}
+
 export class MessageConsumer {
+  /**
+   * How long a held-back message waits before it is reconsidered. Long enough
+   * that a short turn finishes inside one hop, short enough that the user's
+   * message is not visibly stalled.
+   */
+  private static readonly RECYCLE_DEFER_DELAY_MS = 15_000;
+
+  /**
+   * How many times one message may be held back before the recycle is forced.
+   *
+   * Termination has two independent guarantees and this is the second one. The
+   * first is structural: a held message arms no turn marker, so a stream of
+   * arrivals cannot itself keep the deployment looking live — once the turns
+   * already in flight terminalize (reply, worker crash, or the liveness
+   * deadline sweep), the next arrival recycles. That covers everything except a
+   * single turn that runs, and keeps heartbeating, for longer than a credential
+   * has left.
+   *
+   * For that case the budget is the backstop: `RECYCLE_DEFER_DELAY_MS *
+   * MAX_RECYCLE_DEFERRALS` ≈ 4 minutes, against the manager's 5-minute
+   * lease-recycle margin. So the forced teardown lands with roughly a minute of
+   * credential life left — the turn we interrupt was about to fail on an expired
+   * token anyway, and it is terminalized cleanly by the worker-exit fast path
+   * (`failTurnsForDeployment`) rather than hanging. Without the budget, one
+   * runaway turn would wedge its conversation forever.
+   */
+  private static readonly MAX_RECYCLE_DEFERRALS = 16;
+
   private queue: IMessageQueue;
   private deploymentManager: DeploymentManager;
   private config: OrchestratorConfig;
@@ -470,6 +529,22 @@ export class MessageConsumer {
           true
         );
       }
+
+      // How many times this message has already been held back waiting for its
+      // worker to become recyclable. Read and stripped here, before anything
+      // signs or forwards the payload, so the counter never reaches a token
+      // claim or a worker.
+      const recycleDeferrals = readRecycleDeferrals(data.platformMetadata);
+      if (data.platformMetadata) {
+        delete data.platformMetadata[RECYCLE_DEFERRAL_KEY];
+      }
+
+      // The message exactly as delivered. `handleMessage` enriches `data` in
+      // place from here on (folded nix/network config, a minted per-run token),
+      // and a hold re-queues THIS message — which must go back unenriched. The
+      // retry recomputes all of it, and re-queueing a minted `runJobToken`
+      // bound to a run that has already completed would ship a dead claim.
+      const asDelivered: MessagePayload = structuredClone(data);
 
       // Materialize the `conversations` listing row for this turn (the single
       // sidebar source). Watcher runs stay derived from transcript snapshots
@@ -721,11 +796,35 @@ export class MessageConsumer {
       // worker yet, so a teardown here can only interrupt a PREVIOUS turn —
       // and `hasExpiringLease`/`hasToolingChanged` are only consulted for a
       // deployment that has already gone quiet enough to be reusable.
-      await this.recycleStaleDeployment(
+      const recycleOutcome = await this.recycleStaleDeployment(
         deploymentName,
         toolingFingerprint,
-        traceId
+        traceId,
+        // Budget exhausted: stop deferring and tear the worker down even though
+        // a turn is in flight. See MAX_RECYCLE_DEFERRALS for why that is the
+        // right end state rather than serving another turn on a dead credential.
+        recycleDeferrals >= MessageConsumer.MAX_RECYCLE_DEFERRALS
       );
+
+      // A recycle that could not run means this worker is unfit to serve
+      // another turn: its credential is expiring, or the connection behind its
+      // tooling was repointed or revoked. Dispatching anyway is what made the
+      // deferral self-perpetuating — the new turn arms its own liveness marker,
+      // that marker keeps the deployment looking busy, and under a steady
+      // arrival rate the recycle never gets its quiet moment while every turn
+      // runs on the stale credential. So hold the message instead: nothing is
+      // armed, nothing is enqueued, and the deployment goes quiet on schedule.
+      if (recycleOutcome === "deferred") {
+        await this.holdMessageForRecycle(
+          asDelivered,
+          deploymentName,
+          recycleDeferrals,
+          traceId
+        );
+        queueSpan?.setStatus({ code: SpanStatusCode.OK });
+        queueSpan?.end();
+        return;
+      }
 
       // Arm the turn-liveness marker BEFORE the message is deliverable to the
       // worker. The marker is the durable record that this turn owes the client
@@ -1092,14 +1191,22 @@ export class MessageConsumer {
    * - A PREVIOUS turn may still be running, which ordering alone cannot rule
    *   out, so the durable turn marker is consulted before any teardown.
    *
+   * Returns `deferred` when a recycle is needed but a previous turn is live.
+   * The caller must then hold its message rather than dispatch it — see
+   * {@link holdMessageForRecycle}.
+   *
+   * `force` skips the liveness deferral. Only the caller's deferral budget sets
+   * it, so a single long-running turn cannot wedge the conversation forever.
+   *
    * Never throws: a stale credential beats a failed turn, and the idle reaper
    * clears the deployment eventually either way.
    */
   private async recycleStaleDeployment(
     deploymentName: string,
     toolingFingerprint: string | null,
-    traceId: string
-  ): Promise<void> {
+    traceId: string,
+    force: boolean
+  ): Promise<RecycleOutcome> {
     // The same per-deployment lock the create path uses, so teardown and
     // create are mutually exclusive. Without it two handlers can both pass the
     // liveness check, both tear down, and the SECOND delete lands on the
@@ -1112,7 +1219,7 @@ export class MessageConsumer {
         { traceId, deploymentName },
         "Skipping deployment recycle: another handler holds the deployment lock"
       );
-      return;
+      return "unchanged";
     }
     try {
       // Establish there IS a warm deployment before reading any lease state.
@@ -1121,66 +1228,134 @@ export class MessageConsumer {
       // the cold path (as the owned-elsewhere suite's fake deliberately does)
       // would throw on them.
       const deployments = await this.deploymentManager.listDeployments();
-      if (!deployments.some((d) => d.deploymentName === deploymentName)) return;
+      if (!deployments.some((d) => d.deploymentName === deploymentName)) {
+        return "unchanged";
+      }
 
-      await this.runWithDeploymentTurnLock(deploymentName, async () => {
-        // Re-check after taking the cross-pod lock: another owner may have
-        // removed the worker while this caller waited.
-        const current = await this.deploymentManager.listDeployments();
-        if (!current.some((d) => d.deploymentName === deploymentName)) return;
+      return await this.runWithDeploymentTurnLock(
+        deploymentName,
+        async (): Promise<RecycleOutcome> => {
+          // Re-check after taking the cross-pod lock: another owner may have
+          // removed the worker while this caller waited.
+          const current = await this.deploymentManager.listDeployments();
+          if (!current.some((d) => d.deploymentName === deploymentName)) {
+            return "unchanged";
+          }
 
-        const toolingChanged =
-          toolingFingerprint != null &&
-          this.deploymentManager.hasToolingChanged(
-            deploymentName,
-            toolingFingerprint
-          );
-        const leaseExpiring =
-          this.deploymentManager.hasExpiringLease(deploymentName);
-        if (!toolingChanged && !leaseExpiring) return;
+          const toolingChanged =
+            toolingFingerprint != null &&
+            this.deploymentManager.hasToolingChanged(
+              deploymentName,
+              toolingFingerprint
+            );
+          const leaseExpiring =
+            this.deploymentManager.hasExpiringLease(deploymentName);
+          if (!toolingChanged && !leaseExpiring) return "unchanged";
 
-        // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may still
-        // be running on the worker: message 1 starts a long turn, message 2
-        // arrives and would SIGTERM it before enqueueing, costing the user
-        // message 1's reply. The durable turn marker is the authority here —
-        // Postgres-backed, so it sees a turn started by another replica too.
-        // The same advisory lock is taken by the transaction that arms a turn
-        // marker, so a concurrent turn either lands first and is seen here, or
-        // waits until teardown has completed before it can enqueue.
-        if (await this.hasLiveTurn(deploymentName)) {
-          // This turn runs against the stale worker. That is the deliberate
-          // trade: interrupting a live turn loses a reply outright, whereas one
-          // turn on a slightly-stale credential is recoverable. The deferral is
-          // not lost either — the trigger is recomputed STATE, not an event, so
-          // the next turn after the worker goes quiet recycles.
+          // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may
+          // still be running on the worker: message 1 starts a long turn,
+          // message 2 arrives and would SIGTERM it before enqueueing, costing
+          // the user message 1's reply. The durable turn marker is the
+          // authority here — Postgres-backed, so it sees a turn started by
+          // another replica too. The same advisory lock is taken by the
+          // transaction that arms a turn marker, so a concurrent turn either
+          // lands first and is seen here, or waits until teardown has completed
+          // before it can enqueue.
+          if (!force && (await this.hasLiveTurn(deploymentName))) {
+            // Interrupting a live turn loses a reply outright, so the previous
+            // turn is allowed to finish. What the CALLER must not do is take
+            // that as permission to run this turn on the worker anyway — see
+            // the `deferred` branch in handleMessage.
+            logger.info(
+              { traceId, deploymentName, tooling_changed: toolingChanged },
+              "Deferring deployment recycle: a turn is still in flight"
+            );
+            return "deferred";
+          }
+
           logger.info(
             { traceId, deploymentName, tooling_changed: toolingChanged },
-            "Deferring deployment recycle: a turn is still in flight"
+            toolingChanged
+              ? "Connector tooling changed — recycling deployment to pick it up"
+              : "Connector lease expiring — recycling deployment to re-mint"
           );
-          return;
+          // deleteWorkerDeployment, not the low-level deleteDeployment: it also
+          // clears the secret placeholder mappings and the backing
+          // `deployments/{name}/` secret entries. A recycle can fire once per
+          // credential lifetime per conversation, so leaking those would
+          // accumulate (and AWS Secrets Manager entries would leak permanently).
+          await this.deploymentManager.deleteWorkerDeployment(deploymentName);
+          return "recycled";
         }
-
-        logger.info(
-          { traceId, deploymentName, tooling_changed: toolingChanged },
-          toolingChanged
-            ? "Connector tooling changed — recycling deployment to pick it up"
-            : "Connector lease expiring — recycling deployment to re-mint"
-        );
-        // deleteWorkerDeployment, not the low-level deleteDeployment: it also
-        // clears the secret placeholder mappings and the backing
-        // `deployments/{name}/` secret entries. A recycle can fire once per
-        // credential lifetime per conversation, so leaking those would
-        // accumulate (and AWS Secrets Manager entries would leak permanently).
-        await this.deploymentManager.deleteWorkerDeployment(deploymentName);
-      });
+      );
     } catch (error) {
       logger.warn(
         { traceId, deploymentName, error: getErrorMessage(error) },
         "Failed to recycle a stale deployment; continuing with the existing worker"
       );
+      return "unchanged";
     } finally {
       this.releaseDeploymentLock(deploymentName);
     }
+  }
+
+  /**
+   * Hold a message back because its worker must be recycled before it can serve
+   * another turn, and a previous turn is still running on it.
+   *
+   * Re-queues the message rather than failing the run: the turn is owed a reply
+   * and nothing has gone wrong — the worker is simply not fit to take it yet.
+   * Nothing was armed and nothing was enqueued, so this deployment gains no new
+   * liveness from the hold. That is what makes the wait terminate: however fast
+   * messages arrive, the turns already in flight are the only ones keeping the
+   * worker busy, and each of them terminalizes (reply, crash, or the liveness
+   * deadline sweep).
+   */
+  private async holdMessageForRecycle(
+    asDelivered: MessagePayload,
+    deploymentName: string,
+    deferrals: number,
+    traceId: string
+  ): Promise<void> {
+    const attempt = deferrals + 1;
+    await this.queue.send(
+      "messages",
+      {
+        ...asDelivered,
+        platformMetadata: {
+          ...asDelivered.platformMetadata,
+          [RECYCLE_DEFERRAL_KEY]: attempt,
+        },
+      },
+      {
+        delayMs: MessageConsumer.RECYCLE_DEFER_DELAY_MS,
+        retryLimit: this.config.queues.retryLimit,
+        retryDelay: this.config.queues.retryDelay,
+        expireInSeconds: this.config.queues.expireInSeconds,
+        // A key per hold, NOT the producer's original: that one belongs to the
+        // run being completed right now, so reusing it would ON CONFLICT into a
+        // no-op and drop the user's message outright. Including the attempt
+        // number also makes concurrent holds of the same message at the same
+        // count collapse to one row instead of fanning out. Colons are stripped
+        // for the same reason the producer strips them — platform ids embed
+        // them and the key must stay a single opaque segment.
+        singletonKey:
+          `recycle-hold-${attempt}-${deploymentName}-${asDelivered.messageId}`.replace(
+            /:/g,
+            "-"
+          ),
+      }
+    );
+    logger.warn(
+      {
+        traceId,
+        deploymentName,
+        messageId: asDelivered.messageId,
+        attempt,
+        maxAttempts: MessageConsumer.MAX_RECYCLE_DEFERRALS,
+      },
+      "Held a message back: its worker holds a stale connector credential and a previous turn is still running"
+    );
   }
 
   /**

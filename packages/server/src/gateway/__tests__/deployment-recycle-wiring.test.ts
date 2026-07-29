@@ -83,17 +83,19 @@ class RecordingManager extends DeploymentManager {
 class TestConsumer extends MessageConsumer {
   recycle(
     deploymentName: string,
-    fingerprint: string | null
-  ): Promise<void> {
+    fingerprint: string | null,
+    force = false
+  ): Promise<string> {
     return (
       this as unknown as {
         recycleStaleDeployment(
           d: string,
           f: string | null,
-          t: string
-        ): Promise<void>;
+          t: string,
+          force: boolean
+        ): Promise<string>;
       }
-    ).recycleStaleDeployment(deploymentName, fingerprint, "trace-1");
+    ).recycleStaleDeployment(deploymentName, fingerprint, "trace-1", force);
   }
 }
 
@@ -167,6 +169,54 @@ describe("stale-deployment recycling", () => {
 
     await consumer.recycle(DEPLOYMENT, "fp-unchanged");
 
+    expect(manager.deleted).toEqual([]);
+  });
+
+  test("a live turn reports `deferred`, not a silent no-op", async () => {
+    // The outcome is load-bearing: `handleMessage` holds the arriving message
+    // back on `deferred`, and dispatches on anything else. Collapsing this to
+    // the same value a healthy worker returns puts the new turn straight onto
+    // the stale worker — the bug this branch exists to prevent.
+    const { manager, consumer } = build({ liveTurn: true });
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    expect(await consumer.recycle(DEPLOYMENT, "fp-unchanged")).toBe("deferred");
+    expect(manager.deleted).toEqual([]);
+
+    // The three non-deferring outcomes are distinguishable from it.
+    const healthy = build();
+    expect(await healthy.consumer.recycle(DEPLOYMENT, "fp-unchanged")).toBe(
+      "unchanged"
+    );
+    const quiet = build();
+    quiet.manager.expiringLeaseFor = DEPLOYMENT;
+    expect(await quiet.consumer.recycle(DEPLOYMENT, "fp-unchanged")).toBe(
+      "recycled"
+    );
+  });
+
+  test("forcing overrides the liveness deferral", async () => {
+    // The caller's hold budget is what sets `force`. Without it a single turn
+    // that runs longer than the credential has left wedges the conversation:
+    // every arrival is held, and the hold never resolves.
+    const { manager, consumer } = build({ liveTurn: true });
+    manager.expiringLeaseFor = DEPLOYMENT;
+
+    expect(await consumer.recycle(DEPLOYMENT, "fp-unchanged", true)).toBe(
+      "recycled"
+    );
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("forcing still leaves a HEALTHY worker alone", async () => {
+    // `force` waives the liveness deferral only. A worker with a good
+    // credential must never be torn down mid-turn just because some message
+    // exhausted its budget.
+    const { manager, consumer } = build({ liveTurn: true });
+
+    expect(await consumer.recycle(DEPLOYMENT, "fp-unchanged", true)).toBe(
+      "unchanged"
+    );
     expect(manager.deleted).toEqual([]);
   });
 
@@ -275,9 +325,11 @@ describe("stale-deployment recycling", () => {
     };
 
     // A stale credential beats a failed turn: the idle reaper clears it later.
+    // And it must NOT read as `deferred` — that would hold the user's message
+    // behind a teardown that is never going to succeed.
     await expect(
       consumer.recycle(DEPLOYMENT, "fp-unchanged")
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("unchanged");
   });
 });
 
@@ -292,6 +344,12 @@ describe("multi-replica backstop (reconcile loop)", () => {
   class ReconcilingManager extends RecordingManager {
     liveTurn = false;
     staleTooling = false;
+    /**
+     * Simulates another owner rebuilding this worker while the reconcile was
+     * waiting for the shared turn lock — the deployment is classified as stale,
+     * then found healthy on the re-check inside the lock.
+     */
+    rebuiltUnderLock = false;
     protected async isServingLiveTurn(): Promise<boolean> {
       return this.liveTurn;
     }
@@ -302,6 +360,10 @@ describe("multi-replica backstop (reconcile loop)", () => {
       _deploymentName: string,
       action: () => Promise<T>
     ): Promise<T> {
+      if (this.rebuiltUnderLock) {
+        this.expiringLeaseFor = null;
+        this.staleTooling = false;
+      }
       return action();
     }
     // The reconcile classifies on these; keep the worker "in use" so it is
@@ -392,6 +454,70 @@ describe("multi-replica backstop (reconcile loop)", () => {
 
     expect(manager.deleted).toEqual([]);
   });
+
+  test("REGRESSION: an unbroken run of live turns cannot defer the reap forever", async () => {
+    // This is the N>1 shape of the starvation the message path guards against,
+    // and the reconcile cannot borrow that guard: with several replicas most
+    // messages are claimed by a pod that does not own this worker, so it arms a
+    // marker and enqueues without ever evaluating a recycle. The owner then
+    // sees a permanently busy deployment. Unbounded, it serves every one of
+    // those turns on the expiring credential.
+    const manager = new ReconcilingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    manager.liveTurn = true;
+
+    let cycles = 0;
+    while (manager.deleted.length === 0 && cycles < 50) {
+      cycles += 1;
+      await manager.reconcileDeployments();
+    }
+
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+    // Bounded, and it did wait several cycles first rather than SIGTERMing the
+    // very first live turn it saw.
+    expect(cycles).toBeGreaterThan(1);
+    expect(cycles).toBeLessThan(50);
+  });
+
+  test("a rebuilt deployment gets the whole deferral budget again", async () => {
+    // Otherwise a deployment that burned its budget, was rebuilt with a fresh
+    // credential by another owner, and went stale again later is reaped mid-turn
+    // on its very first stale cycle — carrying a spent budget it never earned.
+    //
+    // Measured against the budget rather than a hard-coded number, so the
+    // constant can move without silently making this assertion vacuous.
+    const probe = new ReconcilingManager(CONFIG);
+    probe.expiringLeaseFor = DEPLOYMENT;
+    probe.liveTurn = true;
+    let budget = 0;
+    while (probe.deleted.length === 0 && budget < 50) {
+      budget += 1;
+      await probe.reconcileDeployments();
+    }
+    expect(budget).toBeGreaterThan(1);
+
+    const manager = new ReconcilingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    manager.liveTurn = true;
+    // One cycle short of forcing.
+    for (let i = 0; i < budget - 1; i += 1) {
+      await manager.reconcileDeployments();
+    }
+    expect(manager.deleted).toEqual([]);
+
+    // Another owner rebuilds it while this cycle waits for the turn lock.
+    manager.rebuiltUnderLock = true;
+    await manager.reconcileDeployments();
+    manager.rebuiltUnderLock = false;
+
+    // Stale again, and entitled to the WHOLE budget again — so the same number
+    // of cycles that just fell one short must still fall one short.
+    manager.expiringLeaseFor = DEPLOYMENT;
+    for (let i = 0; i < budget - 1; i += 1) {
+      await manager.reconcileDeployments();
+    }
+    expect(manager.deleted).toEqual([]);
+  });
 });
 
 describe("recorded lease state is dropped with the worker", () => {
@@ -407,11 +533,13 @@ describe("recorded lease state is dropped with the worker", () => {
           leaseMintedAtByDeployment: Map<string, Date>;
           toolingFingerprintByDeployment: Map<string, string>;
           organizationByDeployment: Map<string, string>;
+          recycleDeferralsByDeployment: Map<string, number>;
         };
         self.leaseExpiryByDeployment.set(name, new Date(Date.now() + 60_000));
         self.leaseMintedAtByDeployment.set(name, new Date(Date.now() - 60_000));
         self.toolingFingerprintByDeployment.set(name, "fp-old");
         self.organizationByDeployment.set(name, "org-old");
+        self.recycleDeferralsByDeployment.set(name, 3);
       }
       forget(name: string) {
         (
@@ -425,18 +553,21 @@ describe("recorded lease state is dropped with the worker", () => {
           self.leaseMintedAtByDeployment.size,
           self.toolingFingerprintByDeployment.size,
           self.organizationByDeployment.size,
+          self.recycleDeferralsByDeployment.size,
         ];
       }
     }
 
     const manager = new Manager(CONFIG);
     manager.seed(DEPLOYMENT);
-    expect(manager.mapSizes()).toEqual([1, 1, 1, 1]);
+    expect(manager.mapSizes()).toEqual([1, 1, 1, 1, 1]);
 
     manager.forget(DEPLOYMENT);
 
-    // Every map, not just the one whose bug prompted the cleanup.
-    expect(manager.mapSizes()).toEqual([0, 0, 0, 0]);
+    // Every map, not just the one whose bug prompted the cleanup. A leftover
+    // deferral count in particular would hand the NEXT deployment under this
+    // name a spent budget and reap it mid-turn on its first stale cycle.
+    expect(manager.mapSizes()).toEqual([0, 0, 0, 0, 0]);
     expect(manager.hasExpiringLease(DEPLOYMENT)).toBe(false);
     expect(manager.hasToolingChanged(DEPLOYMENT, "fp-new")).toBe(false);
   });

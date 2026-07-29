@@ -143,6 +143,12 @@ async function ensureDeviceConnectorWired(
       WHERE c.organization_id = ${organizationId}
         AND c.connector_key = ${connectorKey}
         AND c.deleted_at IS NULL
+        -- The device-connector identity every other query in this pass uses.
+        -- Auto-wire owns auth-free rows only; an auth-backed connection is
+        -- user-created, and unpinning one would hand it to any capable device
+        -- while the poll withholds credentials from unpinned connections —
+        -- breaking a connection this pass never created.
+        AND c.auth_profile_id IS NULL
         AND c.device_worker_id IS NOT NULL
         AND NOT (c.device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
         AND NOT EXISTS (

@@ -183,6 +183,38 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(lapsedConn)).toBeNull();
   });
 
+  it('never touches an auth-backed connection, even on a dead device', async () => {
+    // Auto-wire owns auth-FREE rows only — every other query in the wire pass
+    // filters `auth_profile_id IS NULL`. An auth-backed connection is
+    // user-created; unpinning it would hand it to any capable device while the
+    // poll withholds credentials from unpinned connections, breaking a
+    // connection this pass never created.
+    const dead = await seedWorker(userId, orgId, false);
+    const fresh = await seedWorker(userId, orgId, true);
+    const authBacked = await seedConn(orgId, userId, dead);
+    await sql`
+      INSERT INTO auth_profiles (
+        organization_id, slug, display_name, connector_key, profile_kind, created_by
+      ) VALUES (
+        ${orgId}, ${`prof-${Math.random().toString(36).slice(2, 8)}`}, 'Test Profile',
+        ${CONNECTOR}, 'env', ${userId}
+      )
+    `;
+    const [prof] = (await sql`
+      SELECT id FROM auth_profiles WHERE organization_id = ${orgId} ORDER BY id DESC LIMIT 1
+    `) as unknown as Array<{ id: number }>;
+    await sql`
+      UPDATE connections SET auth_profile_id = ${prof.id} WHERE id = ${authBacked}
+    `;
+    const autoWired = await seedConn(orgId, userId, fresh);
+
+    await reconcileDeviceCapabilities(userId);
+
+    // Stale pin, but not ours to clear.
+    expect(await pinOf(authBacked)).toBe(dead);
+    expect(await pinOf(autoWired)).toBe(fresh);
+  });
+
   it('still repairs a lone stale pin to the sole fresh device', async () => {
     const staleDevice = await seedWorker(userId, orgId, false);
     const freshDevice = await seedWorker(userId, orgId, true);

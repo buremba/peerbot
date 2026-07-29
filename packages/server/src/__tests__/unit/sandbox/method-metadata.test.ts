@@ -360,10 +360,10 @@ describe("method-metadata", () => {
 		);
 	});
 
-	it("exposes authProfiles.get at read tier (it returns sanitized data only)", () => {
-		// The handler serializes via serializeAuthProfile — no raw credentials or
-		// auth_data — so hiding it from query_sdk was an access-tier mismatch.
-		expect(METHOD_METADATA["authProfiles.get"].access).toBe("read");
+	it("advertises authProfiles.get at the tier manage_auth_profiles enforces (admin)", () => {
+		// Sanitized serialization does not change the access boundary:
+		// get_auth_profile remains in OWNER_ADMIN_ACTIONS.
+		expect(METHOD_METADATA["authProfiles.get"].access).toBe("admin");
 		// Credential-bearing siblings stay gated.
 		expect(METHOD_METADATA["authProfiles.create"].access).toBe("write");
 		expect(METHOD_METADATA["authProfiles.update"].access).toBe("write");

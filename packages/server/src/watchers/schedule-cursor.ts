@@ -13,35 +13,60 @@ import logger from "../utils/logger";
  *
  * Pass either the singleton `sql` client or a transaction handle from
  * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
- * watchers (manual-only) are no-ops. Database and cron errors propagate so a
- * caller can roll back any related durable state transition.
+ * watchers (manual-only) are no-ops.
+ *
+ * Errors are split by whether a retry could ever succeed, because the callers
+ * are terminal state transitions inside a transaction:
+ *
+ * - **Database errors propagate.** They are transient, so the caller SHOULD roll
+ *   back its run-failure/completion and let the next tick retry.
+ * - **An unparseable cron/timezone does NOT propagate.** It is permanent, so
+ *   throwing would roll the caller back forever. Worse, `dispatchWatcherRun`
+ *   calls `failWatcherRun` from inside its own `catch`, and
+ *   `dispatchPendingWatcherRuns` has no per-run guard — a throw there escapes
+ *   both and aborts the dispatch tick for EVERY org, permanently, since the
+ *   rolled-back run is re-claimed next tick. Park the Behavior instead: NULL
+ *   drops out of the `next_run_at <= now()` due predicate, so it stops
+ *   re-selecting until someone fixes the schedule.
  */
 export async function advanceWatcherSchedule(
 	sql: DbClient,
 	watcherId: number | null | undefined
 ): Promise<void> {
 	if (watcherId == null) return;
+	const rows = await sql`
+    SELECT schedule, timezone
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `;
+	const schedule = (rows[0]?.schedule as string | null) ?? null;
+	const timezone = (rows[0]?.timezone as string | null) ?? null;
+	if (!schedule) return;
+
+	// `nextRunAt` returns an ISO string, not a Date.
+	let nextTick: string;
 	try {
-		const rows = await sql`
-      SELECT schedule, timezone
-      FROM watchers
-      WHERE id = ${watcherId}
-      LIMIT 1
-    `;
-		const schedule = (rows[0]?.schedule as string | null) ?? null;
-		const timezone = (rows[0]?.timezone as string | null) ?? null;
-		if (!schedule) return;
+		nextTick = nextRunAt(schedule, new Date(), timezone);
+	} catch (error) {
+		logger.error(
+			{ error, watcherId, schedule, timezone },
+			"[watchers] Behavior schedule is unparseable — parking it (next_run_at = NULL). " +
+				"It will not run again until the schedule or timezone is corrected."
+		);
 		await sql`
       UPDATE watchers
-      SET next_run_at = ${nextRunAt(schedule, new Date(), timezone)}::timestamptz,
+      SET next_run_at = NULL,
           updated_at = NOW()
       WHERE id = ${watcherId}
     `;
-	} catch (error) {
-		logger.error(
-			{ error, watcherId },
-			"[watchers] Failed to advance Behavior schedule"
-		);
-		throw error;
+		return;
 	}
+
+	await sql`
+    UPDATE watchers
+    SET next_run_at = ${nextTick}::timestamptz,
+        updated_at = NOW()
+    WHERE id = ${watcherId}
+  `;
 }

@@ -834,13 +834,17 @@ export async function materializeDueWatcherRuns(
 			);
 			// Don't leave next_run_at in the past — that would re-select this watcher
 			// on every 60s tick. Push it forward per the watcher's cron schedule.
-			// This hook is outside materializeDueItems' per-item catch, so contain a
-			// corrupt schedule here rather than aborting the rest of the tick.
+			// An unparseable schedule parks itself and does not throw; this catch
+			// exists for DATABASE errors, which would otherwise escape a hook that
+			// materializeDueItems does not guard and abort the tick for every org.
 			try {
 				await advanceWatcherSchedule(sql, watcher.id);
-			} catch {
-				// advanceWatcherSchedule logged the error; leaving the cursor due
-				// retries this watcher on the next tick.
+			} catch (advanceError) {
+				logger.error(
+					{ error: advanceError, watcherId: watcher.id },
+					"[watcher-automation] Failed to advance Behavior schedule after materialization error"
+				);
+				// Leaving the cursor due lets a later tick retry.
 			}
 		},
 	});

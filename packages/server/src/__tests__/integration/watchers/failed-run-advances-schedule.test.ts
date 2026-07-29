@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { materializeDueWatcherRuns } from "../../../watchers/automation";
 import { resolveWatcherRunsByMessageIds } from "../../../watchers/run-completion";
+import { advanceWatcherSchedule } from "../../../watchers/schedule-cursor";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestEntity } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -178,6 +179,13 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
 
     try {
       await expect(materializeDueWatcherRuns()).resolves.toBeDefined();
+
+      // Asserting the PARK is what makes this bite: without it the tick still
+      // resolves (materializeDueItems catches per item), so a bare
+      // "resolves" assertion would pass even with the guard removed.
+      const [watcher] =
+        await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      expect(watcher.next_run_at).toBeNull();
     } finally {
       await sql`
         UPDATE watchers
@@ -187,12 +195,17 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     }
   });
 
-  it("rolls back the failure transition when the cursor cannot advance", async () => {
-    const { sql, watcherId, runId } =
-      await createDueWatcherWithDispatchedRun({
-        slug: "rollback-on-cursor-error",
-        messageId: "msg-invalid-schedule",
-      });
+  it("parks a Behavior whose cron is unparseable instead of throwing", async () => {
+    // An unparseable cron is PERMANENT — retrying can never fix it. Throwing
+    // would roll the run-failure back forever, and because
+    // `dispatchWatcherRun` calls `failWatcherRun` from inside its own `catch`
+    // (and `dispatchPendingWatcherRuns` has no per-run guard) the throw would
+    // escape both and abort the dispatch tick for every org. So the run must
+    // still reach `failed`, and the Behavior must be parked.
+    const { sql, watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-on-unparseable-cron",
+      messageId: "msg-invalid-schedule",
+    });
     await sql`
       UPDATE watchers SET schedule = 'not-a-cron'
       WHERE id = ${watcherId}
@@ -204,21 +217,44 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
           ok: false,
           error: "provider exploded",
         })
-      ).rejects.toThrow();
+      ).resolves.toBeDefined();
 
       const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
-      expect(run.status).toBe("running");
+      expect(run.status).toBe("failed");
+
+      // NULL drops out of the `next_run_at <= now()` due predicate, so the
+      // broken Behavior stops re-selecting every tick.
+      const [watcher] =
+        await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      expect(watcher.next_run_at).toBeNull();
     } finally {
       await sql`
         UPDATE watchers
         SET schedule = '0 * * * *', next_run_at = NOW() + INTERVAL '1 hour'
         WHERE id = ${watcherId}
       `;
-      await sql`
-        UPDATE runs
-        SET status = 'failed', completed_at = NOW()
-        WHERE id = ${runId} AND status = 'running'
-      `;
     }
   });
+
+  // The transactional failure path is only meaningful if TRANSIENT errors still
+  // surface. Parking must not swallow a dead connection — at EITHER query, so
+  // covering only the UPDATE would let a swallowed SELECT through.
+  for (const failAtQuery of [1, 2]) {
+    const label = failAtQuery === 1 ? "the schedule SELECT" : "the cursor UPDATE";
+    it(`propagates a database error from ${label} so the caller can roll back`, async () => {
+      let queries = 0;
+      const failingSql = (async () => {
+        queries++;
+        if (queries === failAtQuery) {
+          throw new Error("connection terminated unexpectedly");
+        }
+        return [{ schedule: "0 * * * *", timezone: null }];
+      }) as unknown as Parameters<typeof advanceWatcherSchedule>[0];
+
+      await expect(advanceWatcherSchedule(failingSql, 1)).rejects.toThrow(
+        /connection terminated/
+      );
+      expect(queries).toBe(failAtQuery);
+    });
+  }
 });

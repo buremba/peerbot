@@ -60,6 +60,8 @@ describe('fetchAtlassianAccessibleResources', () => {
         headers: expect.objectContaining({
           Authorization: 'Bearer tok',
         }),
+        // Bounded: this runs inline on the OAuth callback.
+        signal: expect.any(AbortSignal),
       })
     );
   });

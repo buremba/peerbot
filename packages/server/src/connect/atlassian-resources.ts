@@ -32,9 +32,17 @@ const ACCESSIBLE_RESOURCES_URL =
   'https://api.atlassian.com/oauth/token/accessible-resources';
 
 /**
- * Fetch sites the 3LO token can reach. Returns [] on network/API failure so
- * OAuth completion never hard-fails on a discovery hiccup — the connector can
- * still lazy-resolve at first use.
+ * Discovery runs inline on the user-facing OAuth callback, before the connection
+ * transaction, so a hanging Atlassian response would stall OAuth completion for
+ * a step that is only best-effort. Abort instead and let the connector
+ * lazy-resolve at first use.
+ */
+const DISCOVERY_TIMEOUT_MS = 5_000;
+
+/**
+ * Fetch sites the 3LO token can reach. Returns [] on network/API failure or a
+ * discovery timeout so OAuth completion never hard-fails on a discovery hiccup;
+ * the connector can still lazy-resolve at first use.
  */
 export async function fetchAtlassianAccessibleResources(
   accessToken: string,
@@ -47,6 +55,7 @@ export async function fetchAtlassianAccessibleResources(
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
       },
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
     });
     if (!response.ok) {
       const body = await response.text().catch(() => '');

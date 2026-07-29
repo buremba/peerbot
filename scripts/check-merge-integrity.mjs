@@ -36,6 +36,29 @@ export const STACKED_PR_LABEL = "stacked-pr";
 export const CANONICAL_BASE = "main";
 
 /**
+ * Label that retires a known-lost PR from the daily sweep. A lost merge commit
+ * never becomes reachable, so without this the sweep is red forever and stops
+ * being read. Applying it is a deliberate human act and stays visible on the PR.
+ */
+export const ACKNOWLEDGED_LABEL = "merge-lost-acknowledged";
+
+/**
+ * Split PRs into those the sweep should still judge and those a human has
+ * explicitly retired.
+ *
+ * @param {Array<{number:number,labels?:Array<{name:string}>}>} prs
+ */
+export function partitionAcknowledged(prs) {
+  const kept = [];
+  const acknowledged = [];
+  for (const pr of prs) {
+    const names = (pr.labels ?? []).map((label) => label?.name);
+    (names.includes(ACKNOWLEDGED_LABEL) ? acknowledged : kept).push(pr);
+  }
+  return { kept, acknowledged };
+}
+
+/**
  * Decide whether a PR's base branch is acceptable.
  *
  * @param {string} baseRef branch the PR merges INTO
@@ -101,25 +124,48 @@ function gh(args) {
   });
 }
 
-/** git merge-base --is-ancestor exits 1 for "not an ancestor" — not an error. */
+/**
+ * `rev-parse --verify --quiet` exits 1 only when the commit cannot be resolved.
+ * Other failures stay loud instead of being mislabeled as a lost merge.
+ */
+function commitExists(sha) {
+  try {
+    execFileSync(
+      "git",
+      ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`],
+      { stdio: "ignore" }
+    );
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "status" in error &&
+      error.status === 1
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/** git merge-base exits 1 for "not an ancestor" and may exit 128 for an unknown SHA. */
 function makeIsAncestor(ref) {
   return (sha) => {
     try {
       execFileSync("git", ["merge-base", "--is-ancestor", sha, ref], {
         stdio: "ignore",
       });
-      return true;
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "status" in error &&
-        error.status === 1
-      ) {
-        return false;
-      }
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? error.status
+          : undefined;
+      if (status === 1) return false;
+      if (status === 128 && !commitExists(sha)) return false;
       throw error;
     }
+    return true;
   };
 }
 
@@ -206,10 +252,24 @@ function runReach(argv) {
         "--limit",
         limit,
         "--json",
-        "number,title,baseRefName,mergeCommit",
+        "number,title,baseRefName,mergeCommit,labels",
       ])
     );
   }
+
+  // A lost merge commit can never become reachable — #2273's commits are gone
+  // for good, and its fix has to be re-landed as a new PR. Without a way to
+  // retire a known one, the daily sweep goes red forever and a permanently red
+  // alarm is one nobody reads. Retiring costs a deliberate human label.
+  const { kept, acknowledged } = partitionAcknowledged(prs);
+  if (acknowledged.length > 0) {
+    // Never a silent cap: say exactly what was skipped and why it still counts.
+    console.log(
+      `Skipping ${acknowledged.length} PR(s) labelled '${ACKNOWLEDGED_LABEL}': ` +
+        acknowledged.map((pr) => `#${pr.number}`).join(", ")
+    );
+  }
+  prs = kept;
 
   const { lost, ok, unknown, passed } = classifyMergedPrs(prs, isAncestor);
   console.log(

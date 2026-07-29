@@ -21,13 +21,10 @@ mock.module('@lobu/connector-sdk', () => connectorSdkMock());
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let JiraConnector: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let buildJiraJql: any;
 
 beforeAll(async () => {
   const mod = await import('../jira');
   JiraConnector = mod.default;
-  buildJiraJql = mod.buildJiraJql;
 });
 
 // --- fixtures ------------------------------------------------------------
@@ -63,7 +60,22 @@ const ISSUES: FakeIssue[] = [
     labels: ['auth', 'p1'],
     created: '2026-07-01T10:00:00.000Z',
     updated: '2026-07-02T10:00:00.000Z',
-    description: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Users stuck' }] }] },
+    description: {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'Users ' },
+            { type: 'text', text: 'stuck' },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: 'Please retry' }],
+        },
+      ],
+    },
     self: 'https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/issue/10001',
   },
   {
@@ -180,56 +192,9 @@ function connectorWith(
 
 const BASE_CTX = {
   credentials: { accessToken: 'tok' },
-  config: { cloud_id: 'cloud-1' },
+  config: { cloud_id: 'cloud-1', site_url: 'https://support.atlassian.net' },
   sessionState: null,
 };
-
-describe('buildJiraJql', () => {
-  test('uses base query and appends default ORDER BY when missing', () => {
-    expect(buildJiraJql({ baseQuery: 'project = SUPP' })).toBe(
-      'project = SUPP ORDER BY updated DESC',
-    );
-  });
-
-  test('AND-composes text ~ terms', () => {
-    expect(
-      buildJiraJql({ baseQuery: 'project = SUPP', terms: ['auth', 'timeout'] }),
-    ).toBe('(project = SUPP) AND (text ~ "auth" AND text ~ "timeout") ORDER BY updated DESC');
-  });
-
-  test('escapes quotes inside terms', () => {
-    expect(buildJiraJql({ baseQuery: '', terms: ['say "hi"'] })).toBe(
-      '(updated >= -90d) AND (text ~ "say \\"hi\\"") ORDER BY updated DESC',
-    );
-  });
-
-  test('peels ORDER BY before AND-composing terms', () => {
-    expect(
-      buildJiraJql({
-        baseQuery: 'updated >= -90d ORDER BY updated DESC',
-        terms: ['verification'],
-      }),
-    ).toBe('(updated >= -90d) AND (text ~ "verification") ORDER BY updated DESC');
-  });
-
-  test('rejects sort when ORDER BY already present', () => {
-    expect(() =>
-      buildJiraJql({
-        baseQuery: 'project = X ORDER BY key ASC',
-        sort: { column: 'updated', order: 'desc' },
-      }),
-    ).toThrow(/already contains ORDER BY/);
-  });
-
-  test('applies supported sort columns', () => {
-    expect(
-      buildJiraJql({
-        baseQuery: 'project = SUPP',
-        sort: { column: 'created_at', order: 'asc' },
-      }),
-    ).toBe('project = SUPP ORDER BY created ASC');
-  });
-});
 
 describe('Jira virtual-feed pushdown', () => {
   test('query() builds JQL from ctx.query and returns stable row shape', async () => {
@@ -269,7 +234,8 @@ describe('Jira virtual-feed pushdown', () => {
       priority: 'High',
       project_key: 'SUPP',
       labels: 'auth, p1',
-      description: 'Users stuck',
+      description: 'Users stuck\nPlease retry',
+      url: 'https://support.atlassian.net/browse/SUPP-1',
     });
     expect(res.total).toBeUndefined();
   });
@@ -292,13 +258,38 @@ describe('Jira virtual-feed pushdown', () => {
     const c = connectorWith(cap);
     await c.search({
       ...BASE_CTX,
-      query: 'project = SUPP',
+      query: 'project = SUPP ORDER BY updated DESC',
       terms: ['auth', 'timeout'],
       limit: 5,
     });
     expect(cap.jqls[0]).toBe(
       '(project = SUPP) AND (text ~ "auth" AND text ~ "timeout") ORDER BY updated DESC',
     );
+  });
+
+  test('search() escapes quoted terms', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap);
+    await c.search({
+      ...BASE_CTX,
+      query: '',
+      terms: ['say "hi"'],
+      limit: 5,
+    });
+    expect(cap.jqls[0]).toBe(
+      '(updated >= -90d) AND (text ~ "say \\"hi\\"") ORDER BY updated DESC',
+    );
+  });
+
+  test('does not treat ORDER BY text inside a quoted value as a sort clause', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap);
+    await c.query({
+      ...BASE_CTX,
+      query: 'text ~ "order by updated"',
+      limit: 5,
+    });
+    expect(cap.jqls[0]).toBe('text ~ "order by updated" ORDER BY updated DESC');
   });
 
   test('clamps limit and pages with nextPageToken for offset', async () => {
@@ -316,6 +307,38 @@ describe('Jira virtual-feed pushdown', () => {
     expect(cap.maxResults[0]).toBe(2);
   });
 
+  test('pages beyond Jira per-request limits to honor the caller limit', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const corpus = Array.from({ length: 150 }, (_, index) => ({
+      id: String(20_000 + index),
+      key: `BIG-${index + 1}`,
+      summary: `Issue ${index + 1}`,
+      status: 'Open',
+    }));
+    const c = connectorWith(cap, corpus);
+    const res = await c.query({
+      ...BASE_CTX,
+      query: 'project = BIG',
+      limit: 150,
+    });
+    expect(res.rows).toHaveLength(150);
+    expect(cap.maxResults).toEqual([100, 50]);
+    expect(cap.tokens).toEqual([null, '100']);
+  });
+
+  test('uses max_results as an optional feed cap', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap);
+    const res = await c.query({
+      ...BASE_CTX,
+      config: { ...BASE_CTX.config, max_results: 2 },
+      query: 'project = SUPP',
+      limit: 50,
+    });
+    expect(res.rows).toHaveLength(2);
+    expect(cap.maxResults).toEqual([2]);
+  });
+
   test('rejects unsupported sort columns', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);
@@ -327,6 +350,30 @@ describe('Jira virtual-feed pushdown', () => {
         limit: 5,
       }),
     ).rejects.toThrow(/unsupported/);
+  });
+
+  test('rejects caller sort when the JQL already contains ORDER BY', async () => {
+    const c = connectorWith({ jqls: [], maxResults: [], tokens: [], urls: [] });
+    await expect(
+      c.query({
+        ...BASE_CTX,
+        query: 'project = SUPP ORDER BY key ASC',
+        sort: { column: 'updated_at', order: 'desc' },
+        limit: 5,
+      }),
+    ).rejects.toThrow(/already contains ORDER BY/);
+  });
+
+  test('applies supported sort columns', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap);
+    await c.query({
+      ...BASE_CTX,
+      query: 'project = SUPP',
+      sort: { column: 'created_at', order: 'asc' },
+      limit: 5,
+    });
+    expect(cap.jqls[0]).toBe('project = SUPP ORDER BY created ASC');
   });
 
   test('throws without credentials', async () => {
@@ -343,7 +390,6 @@ describe('Jira virtual-feed pushdown', () => {
   test('feed definition defaults issues to virtual', () => {
     const c = new JiraConnector();
     expect(c.definition.feeds?.issues?.virtual).toBe(true);
-    expect(c.definition.feeds?.issues?.webhook?.mode).toBe('store');
     expect(c.definition.version).toBe('1.1.2');
   });
 
@@ -372,6 +418,58 @@ describe('Jira virtual-feed pushdown', () => {
     expect(cap.jqls[0]).toContain('project = SUPP');
   });
 
+  test('deduplicates accessible resources that describe the same cloud site', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap, undefined, {
+      accessibleResources: [
+        {
+          id: 'shared-cloud',
+          url: 'https://shared.atlassian.net',
+          scopes: ['read:jira-work'],
+        },
+        {
+          id: 'shared-cloud',
+          url: 'https://shared.atlassian.net',
+          scopes: ['read:confluence-content.summary'],
+        },
+      ],
+    });
+    const config: Record<string, unknown> = {};
+    const res = await c.query({
+      credentials: { accessToken: 'tok' },
+      config,
+      sessionState: null,
+      query: 'project = SUPP',
+      limit: 5,
+    });
+    expect(res.rows).toHaveLength(3);
+    expect(config.cloud_id).toBe('shared-cloud');
+  });
+
+  test('clears stale site metadata when discovery does not return it', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap, undefined, {
+      accessibleResources: [
+        {
+          id: 'lazy-cloud',
+          scopes: ['read:jira-work'],
+        },
+      ],
+    });
+    const config: Record<string, unknown> = {
+      site_url: 'https://stale.atlassian.net',
+      site_name: 'Stale',
+    };
+    await c.query({
+      credentials: { accessToken: 'tok' },
+      config,
+      sessionState: null,
+      query: 'project = SUPP',
+      limit: 5,
+    });
+    expect(config).toEqual({ cloud_id: 'lazy-cloud' });
+  });
+
   test('throws when cloud_id missing and accessible-resources is empty', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap, undefined, { accessibleResources: [] });
@@ -384,5 +482,46 @@ describe('Jira virtual-feed pushdown', () => {
         limit: 5,
       }),
     ).rejects.toThrow(/no accessible Atlassian Cloud sites/);
+  });
+
+  test('requires an explicit cloud_id for a multi-site token', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap, undefined, {
+      accessibleResources: [
+        { id: 'cloud-a', scopes: ['read:jira-work'] },
+        { id: 'cloud-b', scopes: ['read:jira-work'] },
+      ],
+    });
+    await expect(
+      c.query({
+        credentials: { accessToken: 'tok' },
+        config: {},
+        sessionState: null,
+        query: 'project = X',
+        limit: 5,
+      }),
+    ).rejects.toThrow(/multiple Cloud sites/);
+  });
+
+  test('registerWebhook does not reuse search-only JQL as a dynamic-webhook filter', async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const c = new JiraConnector();
+    c.client = () => ({
+      json: async (_url: string, init: RequestInit) => {
+        requestBody = JSON.parse(String(init.body));
+        return { webhookRegistrationResult: [{ createdWebhookId: 42 }] };
+      },
+    });
+
+    await c.registerWebhook({
+      credentials: { accessToken: 'tok' },
+      config: { cloud_id: 'cloud-1', query: 'updated >= -30d' },
+      sessionState: null,
+      callbackUrl: 'https://example.test/webhook',
+    });
+
+    expect(
+      (requestBody?.webhooks as Array<{ jqlFilter: string }>)[0]?.jqlFilter,
+    ).toBe('');
   });
 });

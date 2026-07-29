@@ -95,7 +95,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
     key: 'google.gmail',
     name: 'Gmail',
     description:
-      'Live-reads and syncs Gmail threads; supports sending, drafts, and replies. Virtual threads feeds use query()/search() pushdown (connection.config merged by the platform).',
+      'Syncs Gmail threads, live-reads matching messages, and supports sending, drafts, and replies.',
     version: '1.0.3',
     faviconDomain: 'mail.google.com',
     authSchema: {
@@ -129,7 +129,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
         name: 'Threads',
         requiredScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         description:
-          'Gmail threads. Create with virtual:true for live query()/search(); collected sync still powers contact promotion (replied attributions).',
+          'Collected feeds sync Gmail threads; virtual feeds return live matching messages. Collected sync powers contact promotion (replied attributions).',
         // Collected remains the default: contact promotion + Behaviors need
         // durable events. Virtual is fully supported when the caller sets
         // virtual:true (query() / search() already implemented).

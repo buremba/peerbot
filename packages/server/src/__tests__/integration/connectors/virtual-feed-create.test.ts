@@ -58,7 +58,14 @@ describe("manage_feeds create_feed (virtual)", () => {
 					key: "issues",
 					name: "Issues",
 					virtual: true,
-					configSchema: { type: "object", properties: {} },
+					configSchema: {
+						type: "object",
+						properties: {
+							query: { type: "string" },
+							jql: { type: "string" },
+							max_results: { type: "integer", minimum: 1, maximum: 100 },
+						},
+					},
 				},
 			},
 		});
@@ -175,6 +182,19 @@ describe("manage_feeds create_feed (virtual)", () => {
 		expect(result.feed?.kind).toBe("collected");
 		expect(result.feed?.virtual).toBe(false);
 		expect(result.feed?.schedule).toBe("0 * * * *");
+	});
+
+	it("validates config for a schema-default virtual feed", async () => {
+		const error = await owner.feeds
+			.create({
+				connection_id: jiraConnectionId,
+				feed_key: "issues",
+				config: { max_results: "many" },
+			})
+			.catch((reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect(String(error)).toContain("max_results");
 	});
 
 	it("materializeDueFeeds never creates a sync run for the virtual feed", async () => {

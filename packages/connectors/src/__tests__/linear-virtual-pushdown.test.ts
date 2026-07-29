@@ -9,13 +9,10 @@ mock.module('@lobu/connector-sdk', () => connectorSdkMock());
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let LinearConnector: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let buildLinearIssueFilter: any;
 
 beforeAll(async () => {
   const mod = await import('../linear');
   LinearConnector = mod.default;
-  buildLinearIssueFilter = mod.buildLinearIssueFilter;
 });
 
 interface Capture {
@@ -26,38 +23,22 @@ function connectorWith(capture: Capture, nodes: Array<Record<string, unknown>>) 
   const c = new LinearConnector();
   c.graphql = async (_creds: unknown, query: string) => {
     capture.queries.push(query);
+    const first = Number(query.match(/issues\(first: (\d+)/)?.[1] ?? nodes.length);
+    const start = Number(query.match(/after: "(\d+)"/)?.[1] ?? 0);
+    const pageNodes = nodes.slice(start, start + first);
+    const next = start + pageNodes.length;
     return {
       issues: {
-        pageInfo: { hasNextPage: false, endCursor: null },
-        nodes,
+        pageInfo: {
+          hasNextPage: next < nodes.length,
+          endCursor: next < nodes.length ? String(next) : null,
+        },
+        nodes: pageNodes,
       },
     };
   };
   return c;
 }
-
-describe('buildLinearIssueFilter', () => {
-  test('empty when no constraints', () => {
-    expect(buildLinearIssueFilter({})).toBe('');
-  });
-
-  test('team key alone', () => {
-    expect(buildLinearIssueFilter({ teamKey: 'ENG' })).toContain('team: { key: { eq: "ENG" } }');
-  });
-
-  test('AND-composes team + updated + text terms', () => {
-    const f = buildLinearIssueFilter({
-      teamKey: 'ENG',
-      updatedAfterIso: '2026-01-01T00:00:00.000Z',
-      textTerms: ['auth', 'timeout'],
-    });
-    expect(f).toContain('filter: { and:');
-    expect(f).toContain('ENG');
-    expect(f).toContain('2026-01-01');
-    expect(f).toContain('auth');
-    expect(f).toContain('timeout');
-  });
-});
 
 describe('Linear virtual-feed pushdown', () => {
   test('query() returns stable row shape', async () => {
@@ -92,7 +73,9 @@ describe('Linear virtual-feed pushdown', () => {
     });
     expect(res.columns.map((col: { name: string }) => col.name)).toContain('identifier');
     expect(cap.queries[0]).toContain('issues(first:');
+    expect(cap.queries[0]).toContain('filter: { and:');
     expect(cap.queries[0]).toContain('ENG');
+    expect(cap.queries[0]).toContain('updatedAt: { gte:');
     expect(cap.queries[0]).toContain('auth');
   });
 
@@ -110,6 +93,51 @@ describe('Linear virtual-feed pushdown', () => {
     expect(cap.queries[0]).toContain('containsIgnoreCase');
   });
 
+  test('pages beyond Linear per-request limits to honor the caller limit', async () => {
+    const cap: Capture = { queries: [] };
+    const nodes = Array.from({ length: 120 }, (_, index) => ({
+      id: `iss-${index + 1}`,
+      identifier: `ENG-${index + 1}`,
+      title: `Issue ${index + 1}`,
+      state: { name: 'Todo', type: 'unstarted' },
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    }));
+    const c = connectorWith(cap, nodes);
+    const res = await c.query({
+      credentials: { accessToken: 'tok' },
+      config: {},
+      sessionState: null,
+      query: '',
+      limit: 120,
+    });
+    expect(res.rows).toHaveLength(120);
+    expect(cap.queries).toHaveLength(3);
+    expect(cap.queries[0]).toContain('issues(first: 50');
+    expect(cap.queries[1]).toContain('issues(first: 50, after: "50"');
+    expect(cap.queries[2]).toContain('issues(first: 20, after: "100"');
+  });
+
+  test('uses max_results as an optional feed cap', async () => {
+    const cap: Capture = { queries: [] };
+    const nodes = Array.from({ length: 5 }, (_, index) => ({
+      id: `iss-${index + 1}`,
+      identifier: `ENG-${index + 1}`,
+      title: `Issue ${index + 1}`,
+    }));
+    const c = connectorWith(cap, nodes);
+    const res = await c.query({
+      credentials: { accessToken: 'tok' },
+      config: { max_results: 2 },
+      sessionState: null,
+      query: '',
+      limit: 50,
+    });
+    expect(res.rows).toHaveLength(2);
+    expect(cap.queries).toHaveLength(1);
+    expect(cap.queries[0]).toContain('issues(first: 2');
+  });
+
   test('throws without credentials', async () => {
     const c = new LinearConnector();
     await expect(
@@ -119,6 +147,19 @@ describe('Linear virtual-feed pushdown', () => {
         sessionState: null,
       }),
     ).rejects.toThrow(/OAuth credentials/);
+  });
+
+  test('rejects caller-defined sort instead of silently returning updated order', async () => {
+    const c = connectorWith({ queries: [] }, []);
+    await expect(
+      c.query({
+        credentials: { accessToken: 'tok' },
+        config: {},
+        sessionState: null,
+        query: '',
+        sort: { column: 'created_at', order: 'asc' },
+      }),
+    ).rejects.toThrow(/does not support caller-defined sort/);
   });
 
   test('feed definition defaults issues to virtual', () => {

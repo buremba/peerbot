@@ -36,7 +36,7 @@ interface LinearConfig {
    */
   query?: string;
   lookback_days?: number;
-  /** Max issues per live virtual-feed page (clamped). Default 50. */
+  /** Optional cap on issues returned by one live virtual-feed read. */
   max_results?: number;
 }
 
@@ -107,7 +107,7 @@ function asString(value: unknown): string | undefined {
  * Build a Linear GraphQL `IssueFilter` as a serialized object literal.
  * Bounds live reads to a lookback window so we never scan the full workspace.
  */
-export function buildLinearIssueFilter(args: {
+function buildLinearIssueFilter(args: {
   teamKey?: string;
   textTerms?: string[];
   updatedAfterIso?: string;
@@ -178,7 +178,7 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
         key: 'issues',
         name: 'Issues',
         description:
-          'Live Linear issues via GraphQL (virtual by default). Webhooks carry create/update/comment signals; optional collected sync still uses the same filters.',
+          'Live Linear issues via GraphQL (virtual by default); collected sync remains available when explicitly requested.',
         virtual: true,
         configSchema: {
           type: 'object',
@@ -197,21 +197,16 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
               minimum: 1,
               maximum: 730,
               default: 90,
-              description:
-                'Live-read / collected-sync lookback window (updatedAt). Default 90 for virtual bounds.',
+              description: 'Live-read lookback window (updatedAt). Default 90 days.',
             },
             max_results: {
               type: 'integer',
               minimum: 1,
               maximum: 100,
-              default: 50,
-              description: 'Maximum issues to return per virtual-feed read page.',
+              description:
+                'Optional cap on issues returned per virtual-feed read. The uncapped default request size is 50.',
             },
           },
-        },
-        webhook: {
-          events: ['Issue', 'Comment'],
-          mode: 'store',
         },
         eventKinds: {
           issue: {
@@ -263,6 +258,11 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
     if (!ctx.credentials?.accessToken) {
       throw new Error('Linear virtual-feed reads require Linear OAuth credentials.');
     }
+    if (ctx.sort) {
+      throw new Error(
+        'Linear virtual feed does not support caller-defined sort; issues are ordered by updatedAt.',
+      );
+    }
 
     const textTerms = [
       asString(ctx.query) ?? asString(ctx.config.query) ?? '',
@@ -278,10 +278,12 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
       updatedAfterIso: updatedAfter,
     });
 
-    const limit = Math.min(
-      Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 50), 1),
-      100,
-    );
+    const requestedLimit = Math.min(Math.max(Math.trunc(ctx.limit ?? 50), 1), 500);
+    const configuredMax =
+      ctx.config.max_results == null
+        ? 500
+        : Math.min(Math.max(Math.trunc(ctx.config.max_results), 1), 100);
+    const limit = Math.min(requestedLimit, configuredMax);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
     const want = offset + limit;
 
@@ -291,9 +293,9 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
 
     while (collected.length < want && pages < this.MAX_PAGES) {
       pages += 1;
-      const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
+      const after: string = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
       const pageSize = Math.min(this.PAGE_SIZE, want - collected.length);
-      const gql = `
+      const gql: string = `
         query {
           issues(first: ${pageSize}${after}, orderBy: updatedAt${filter}) {
             pageInfo { hasNextPage endCursor }
@@ -301,16 +303,17 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
           }
         }
       `;
-      const response = await this.graphql<{
+      const response: {
         issues?: {
           pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
           nodes?: LinearIssueNode[];
         };
-      }>(ctx.credentials, gql);
+      } = await this.graphql(ctx.credentials, gql);
 
       const nodes = response.issues?.nodes ?? [];
       collected.push(...nodes);
-      const pageInfo = response.issues?.pageInfo;
+      const pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined =
+        response.issues?.pageInfo;
       if (!pageInfo?.hasNextPage || !pageInfo.endCursor || nodes.length === 0) break;
       cursor = pageInfo.endCursor;
     }

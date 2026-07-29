@@ -8,7 +8,7 @@
 
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectRoutes } from '../../../connect/routes';
 import { createConnectToken } from '../../../utils/connect-tokens';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
@@ -48,7 +48,12 @@ describe('Jira OAuth callback stamps cloud_id (e2e)', () => {
 
   afterAll(() => {
     providerServer?.close?.();
+  });
+
+  afterEach(() => {
     globalThis.fetch = originalFetch;
+    delete process.env.JIRA_CLIENT_ID;
+    delete process.env.JIRA_CLIENT_SECRET;
   });
 
   beforeEach(async () => {
@@ -171,15 +176,5 @@ describe('Jira OAuth callback stamps cloud_id (e2e)', () => {
       site_url: 'https://rakam1.atlassian.net',
       site_name: 'rakam1',
     });
-    expect(after.config?.accessible_sites).toEqual([
-      {
-        id: '49140293-40ce-45b6-8cdc-ec4e1356a7c8',
-        url: 'https://rakam1.atlassian.net',
-        name: 'rakam1',
-      },
-    ]);
-
-    delete process.env.JIRA_CLIENT_ID;
-    delete process.env.JIRA_CLIENT_SECRET;
   });
 });

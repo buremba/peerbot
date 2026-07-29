@@ -726,15 +726,12 @@ async function handleOAuthCallback(
   }
 
   // Jira 3LO tokens are site-agnostic — REST needs cloud_id. Discover the
-  // primary accessible site once here so connection.config + external_tenant_id
+  // unique accessible site once here so connection.config + external_tenant_id
   // are ready before the first virtual feed read / webhook register. Best-effort:
-  // discovery failure does not fail OAuth (connector can lazy-resolve later).
+  // discovery failure or a multi-site grant does not fail OAuth; an ambiguous
+  // connection must set config.cloud_id before its first Jira read.
   let jiraSite: JiraCloudSite | null = null;
-  if (
-    tokenRow.connector_key === 'jira' ||
-    authConfig.provider === 'jira' ||
-    authConfig.provider === 'atlassian'
-  ) {
+  if (tokenRow.connector_key === 'jira') {
     jiraSite = await resolveJiraCloudSite(tokens.accessToken);
     if (jiraSite) {
       logger.info(
@@ -742,14 +739,14 @@ async function handleOAuthCallback(
           connector_key: tokenRow.connector_key,
           cloud_id: jiraSite.cloudId,
           site_url: jiraSite.siteUrl,
-          site_count: jiraSite.accessibleResources.length,
+          site_count: jiraSite.resourceCount,
         },
         'Resolved Jira Cloud site after OAuth'
       );
     } else {
       logger.warn(
         { connector_key: tokenRow.connector_key },
-        'Jira OAuth succeeded but no accessible Atlassian sites were returned'
+        'Jira OAuth succeeded but did not resolve to one accessible Jira site'
       );
     }
   }

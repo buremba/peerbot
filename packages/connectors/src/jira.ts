@@ -3,9 +3,8 @@
  *
  * Live-reads Jira Cloud issues via JQL (`query()` / `search()` for virtual feeds)
  * and optionally syncs them into events (`sync()` for collected feeds). Real-time
- * issue/comment deliveries arrive via Jira dynamic webhooks (registered at connect
- * time); raw deliveries land downstream (extract-load) as the reactive signal spine
- * for Behaviors — virtual feeds never poll.
+ * issue/comment deliveries can arrive through the app-level webhook path; raw
+ * deliveries land downstream (extract-load). Virtual feeds never poll.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -34,11 +33,11 @@ interface JiraConfig {
    * Atlassian Cloud id for the target site. REST base is
    * `https://api.atlassian.com/ex/jira/{cloudId}/…`.
    *
-   * Auto-stamped onto **connection.config** after OAuth from
-   * `/oauth/token/accessible-resources`. Virtual reads merge connection.config
-   * (same as sync/poll), so feeds usually need no cloud_id. Fallbacks, in order:
+   * Auto-stamped onto **connection.config** after OAuth when the grant resolves
+   * to one Jira site. Virtual reads merge connection.config (same as sync/poll),
+   * so single-site feeds usually need no cloud_id. Fallbacks, in order:
    * `config.cloud_id` → `sessionState.cloud_id` → live accessible-resources lookup
-   * with the OAuth access token (first site with a jira scope, else first site).
+   * with the OAuth access token when it identifies one Jira site.
    */
   cloud_id?: string;
   /** Site URL from OAuth discovery (informational; not required for REST). */
@@ -47,8 +46,7 @@ interface JiraConfig {
   site_name?: string;
   /**
    * Base JQL scope for virtual-feed reads (platform `config.query` contract).
-   * Empty defaults to `updated >= -90d` — Atlassian rejects unbounded JQL on
-   * `/search/jql`.
+   * Empty defaults to `updated >= -90d` to keep omitted scopes bounded.
    */
   query?: string;
   /**
@@ -57,7 +55,7 @@ interface JiraConfig {
    */
   jql?: string;
   lookback_days?: number;
-  /** Max issues per live virtual-feed page (clamped). Default 50. */
+  /** Optional cap on issues returned by one live virtual-feed read. */
   max_results?: number;
 }
 
@@ -130,6 +128,21 @@ const SORT_COLUMNS: Record<string, string> = {
   status: 'status',
 };
 
+const ADF_BLOCK_TYPES = new Set([
+  'blockquote',
+  'bulletList',
+  'codeBlock',
+  'heading',
+  'listItem',
+  'orderedList',
+  'paragraph',
+  'rule',
+  'table',
+  'tableCell',
+  'tableHeader',
+  'tableRow',
+]);
+
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
@@ -149,10 +162,16 @@ function adfToText(value: unknown): string {
   const node = value as { type?: string; text?: string; content?: unknown[] };
   if (typeof node.text === 'string') return node.text;
   if (Array.isArray(node.content)) {
-    const parts = node.content.map((child) => adfToText(child));
-    // Block-level nodes (paragraph, heading, listItem) get a newline separator.
-    const sep = node.type && node.type !== 'text' ? '\n' : '';
-    return parts.join(sep).trim();
+    let out = '';
+    for (const child of node.content) {
+      const text = adfToText(child);
+      if (!text) continue;
+      const childType =
+        child && typeof child === 'object' ? (child as { type?: string }).type : undefined;
+      if (out && childType && ADF_BLOCK_TYPES.has(childType)) out += '\n';
+      out += text;
+    }
+    return out.trim();
   }
   return '';
 }
@@ -163,31 +182,57 @@ function escapeJqlString(value: string): string {
 }
 
 /**
- * Build the JQL sent to `/search/jql`.
- * - Base: `ctx.query` (platform virtual contract) → `config.jql` → optional default.
- * - Recall terms: each becomes `text ~ "term"` AND-ed onto the base (Jira text search).
- * - Sort: only applied when the base has no ORDER BY and a supported sort is given.
- */
-/**
  * Peel a trailing `ORDER BY …` so terms can be AND-composed without wrapping
  * the sort clause (Jira rejects `(… ORDER BY …) AND (text ~ "x")`).
  */
 function splitTrailingOrderBy(jql: string): { body: string; orderBy: string | null } {
-  const m = jql.match(/^(.*?)\s+(\border\s+by\b[\s\S]+)$/i);
-  if (!m) return { body: jql.trim(), orderBy: null };
-  return { body: m[1].trim(), orderBy: m[2].trim() };
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let depth = 0;
+  for (let i = 0; i < jql.length; i += 1) {
+    const char = jql[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '(') {
+      depth += 1;
+      continue;
+    }
+    if (char === ')') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (
+      depth === 0 &&
+      (i === 0 || /\s/.test(jql[i - 1])) &&
+      /^order\s+by\b/i.test(jql.slice(i))
+    ) {
+      return { body: jql.slice(0, i).trim(), orderBy: jql.slice(i).trim() };
+    }
+  }
+  return { body: jql.trim(), orderBy: null };
 }
 
-export function buildJiraJql(args: {
+function buildJiraJql(args: {
   baseQuery: string;
   terms?: string[];
   sort?: { column: string; order: 'asc' | 'desc' };
   defaultWhenEmpty?: string;
 }): string {
   const trimmed = args.baseQuery.trim();
-  // Prefer an explicit default restriction over bare ORDER BY — Atlassian
-  // rejects unbounded JQL on /search/jql.
-  let jql = trimmed.length > 0 ? trimmed : (args.defaultWhenEmpty ?? 'updated >= -90d');
+  // Keep an omitted scope bounded instead of scanning the whole site.
+  const jql = trimmed.length > 0 ? trimmed : (args.defaultWhenEmpty ?? 'updated >= -90d');
 
   // If the base is only ORDER BY, treat the restriction as empty and keep sort.
   let { body, orderBy } = splitTrailingOrderBy(jql);
@@ -238,7 +283,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     version: '1.1.2',
     faviconDomain: 'atlassian.com',
     webhook: {
-      // Jira dynamic webhooks HMAC-sign the raw body with the registration
+      // Jira Connect app webhooks HMAC-sign the raw body with the installation
       // secret and send `x-hub-signature: sha256=<hex>`. Jira does not send a
       // stable delivery id header, so dedupe falls back to a body hash
       // (no `dedupeHeader`).
@@ -289,7 +334,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
         key: 'issues',
         name: 'Issues',
         description:
-          'Live Jira issues via JQL (virtual by default). Webhooks carry create/update/comment signals; optional collected sync still uses the same JQL.',
+          'Live Jira issues via JQL (virtual by default); collected sync remains available when explicitly requested.',
         // Default new feeds to virtual — live JQL at read time, no event copy.
         // Callers can still create collected feeds with virtual: false.
         virtual: true,
@@ -322,17 +367,10 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
               type: 'integer',
               minimum: 1,
               maximum: 100,
-              default: 50,
-              description: 'Maximum issues to return per virtual-feed read page.',
+              description:
+                'Optional cap on issues returned per virtual-feed read. The uncapped default request size is 50.',
             },
           },
-        },
-        // Webhook events for this feed: store-mode is preferred for virtual
-        // (never polled). App-installation extract-load still lands raw
-        // deliveries; feed routing uses these event names when present.
-        webhook: {
-          events: ['jira:issue_created', 'jira:issue_updated', 'comment_created'],
-          mode: 'store',
         },
         eventKinds: {
           issue: {
@@ -402,10 +440,12 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       sort: ctx.sort,
     });
 
-    const limit = Math.min(
-      Math.max(Math.trunc(ctx.limit ?? ctx.config.max_results ?? 50), 1),
-      100,
-    );
+    const requestedLimit = Math.min(Math.max(Math.trunc(ctx.limit ?? 50), 1), 500);
+    const configuredMax =
+      ctx.config.max_results == null
+        ? 500
+        : Math.min(Math.max(Math.trunc(ctx.config.max_results), 1), 100);
+    const limit = Math.min(requestedLimit, configuredMax);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
     const want = offset + limit;
 
@@ -438,7 +478,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     }
 
     const page = collected.slice(offset, offset + limit);
-    const rows = page.map((issue) => this.issueRow(issue)).filter((r) => r !== null);
+    const rows = page.map((issue) => this.issueRow(issue, ctx.config)).filter((r) => r !== null);
 
     // No reliable total from /search/jql — omit rather than lie with page length.
     return { rows, columns: [...JIRA_ISSUE_COLUMNS] };
@@ -481,7 +521,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
 
     for await (const issues of pages) {
       for (const issue of issues) {
-        const event = this.issueEvent(issue);
+        const event = this.issueEvent(issue, ctx.config);
         if (event) events.push(event);
       }
       // Preserve the original early-exit on an empty page even when a token is
@@ -506,11 +546,6 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     const base = await this.restBase(ctx.config, ctx.sessionState, ctx.credentials);
     const http = this.client(ctx.credentials);
     const secret = randomBytes(32).toString('hex');
-    // Bound the filter — unbounded JQL can fail webhook create the same way
-    // /search/jql rejects empty windows.
-    const jql =
-      asString(ctx.config.query) ?? asString(ctx.config.jql) ?? 'updated >= -90d';
-
     const response = await http.json<{
       webhookRegistrationResult?: Array<{ createdWebhookId?: number; errors?: string[] }>;
     }>(`${base}/webhook`, {
@@ -520,7 +555,10 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
         url: ctx.callbackUrl,
         webhooks: [
           {
-            jqlFilter: jql,
+            // Dynamic webhooks accept only a strict subset of search JQL.
+            // Empty is the documented all-issues filter; reusing query/jql here
+            // breaks registration for valid search clauses such as `updated`.
+            jqlFilter: '',
             events: ['jira:issue_created', 'jira:issue_updated', 'comment_created'],
           },
         ],
@@ -557,7 +595,10 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
   // Mapping helpers
   // -------------------------------------------------------------------------
 
-  private issueRow(issue: JiraIssue | undefined): Record<string, unknown> | null {
+  private issueRow(
+    issue: JiraIssue | undefined,
+    config: JiraConfig,
+  ): Record<string, unknown> | null {
     if (!issue?.id) return null;
     const fields = issue.fields ?? {};
     const labels = Array.isArray(fields.labels) ? fields.labels.join(', ') : null;
@@ -575,11 +616,11 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       created_at: fields.created ?? null,
       updated_at: fields.updated ?? null,
       description: adfToText(fields.description) || null,
-      url: this.issueUrl(issue) ?? null,
+      url: this.issueUrl(issue, config) ?? null,
     };
   }
 
-  private issueEvent(issue: JiraIssue | undefined): EventEnvelope | null {
+  private issueEvent(issue: JiraIssue | undefined, config: JiraConfig): EventEnvelope | null {
     if (!issue?.id) return null;
     const fields = issue.fields ?? {};
     const createdAt = new Date(fields.created ?? fields.updated ?? Date.now());
@@ -590,7 +631,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       title: fields.summary ?? issue.key ?? undefined,
       payload_text: adfToText(fields.description),
       author_name: actorName(fields.reporter ?? fields.assignee),
-      source_url: this.issueUrl(issue),
+      source_url: this.issueUrl(issue, config),
       occurred_at: createdAt,
       origin_type: 'issue',
       metadata: {
@@ -603,7 +644,12 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     };
   }
 
-  private issueUrl(issue: JiraIssue | undefined): string | undefined {
+  private issueUrl(issue: JiraIssue | undefined, config?: JiraConfig): string | undefined {
+    const siteUrl = asString(config?.site_url);
+    const key = asString(issue?.key);
+    if (siteUrl && key) {
+      return `${siteUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}`;
+    }
     return issue?.self ?? undefined;
   }
 
@@ -654,16 +700,38 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       );
     }
 
-    const jiraScoped =
-      resources.find(
-        (r) =>
-          typeof r.id === 'string' &&
-          Array.isArray(r.scopes) &&
-          r.scopes.some((s) => typeof s === 'string' && s.includes('jira')),
-      ) ?? resources.find((r) => typeof r.id === 'string' && r.id.trim().length > 0);
+    const usable = resources.filter(
+      (r): r is typeof r & { id: string } =>
+        typeof r.id === 'string' && r.id.trim().length > 0,
+    );
+    const distinctUsable = [
+      ...new Map(usable.map((resource) => [resource.id.trim(), resource])).values(),
+    ];
+    const jiraScoped = [
+      ...new Map(
+        usable
+          .filter(
+            (r) =>
+              Array.isArray(r.scopes) &&
+              r.scopes.some((s) => typeof s === 'string' && s.includes('jira')),
+          )
+          .map((resource) => [resource.id.trim(), resource]),
+      ).values(),
+    ];
+    const site =
+      jiraScoped.length === 1
+        ? jiraScoped[0]
+        : jiraScoped.length === 0 && distinctUsable.length === 1
+          ? distinctUsable[0]
+          : null;
 
-    const id = asString(jiraScoped?.id);
+    const id = asString(site?.id);
     if (!id) {
+      if (jiraScoped.length > 1 || distinctUsable.length > 1) {
+        throw new Error(
+          'Jira OAuth token can access multiple Cloud sites; set config.cloud_id to the intended site.',
+        );
+      }
       throw new Error(
         'Jira accessible-resources returned no usable cloud id. Reconnect the Jira connection.',
       );
@@ -671,8 +739,12 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
 
     // Cache on this job's config so subsequent calls in the same run skip the hop.
     config.cloud_id = id;
-    if (asString(jiraScoped?.url)) config.site_url = asString(jiraScoped?.url);
-    if (asString(jiraScoped?.name)) config.site_name = asString(jiraScoped?.name);
+    const siteUrl = asString(site?.url);
+    const siteName = asString(site?.name);
+    if (siteUrl) config.site_url = siteUrl;
+    else delete config.site_url;
+    if (siteName) config.site_name = siteName;
+    else delete config.site_name;
     return id;
   }
 

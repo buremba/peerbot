@@ -3,8 +3,9 @@
  *
  * Jira (and other Atlassian Cloud products) OAuth tokens are site-agnostic.
  * REST calls need the Cloud id: `https://api.atlassian.com/ex/jira/{cloudId}/…`.
- * After code exchange we call accessible-resources once and stamp the primary
- * site onto the connection (`config.cloud_id` + `external_tenant_id`).
+ * After code exchange we call accessible-resources once and, when the grant
+ * resolves to one Jira site, stamp it onto the connection
+ * (`config.cloud_id` + `external_tenant_id`).
  *
  * No other Lobu OAuth connector needs this: Gmail/Calendar/YouTube/Outlook/Reddit
  * are user-scoped fixed hosts; GitHub/Slack/Linear tenant identity arrives via
@@ -24,8 +25,7 @@ export interface JiraCloudSite {
   cloudId: string;
   siteUrl: string | null;
   siteName: string | null;
-  /** Full list returned by accessible-resources (for multi-site future UI). */
-  accessibleResources: AtlassianAccessibleResource[];
+  resourceCount: number;
 }
 
 const ACCESSIBLE_RESOURCES_URL =
@@ -81,32 +81,49 @@ export async function fetchAtlassianAccessibleResources(
 }
 
 /**
- * Prefer a resource that already carries a Jira scope; otherwise first site.
- * Returns null when the token has no accessible Cloud sites.
+ * Resolve a grant only when it identifies one Jira site. Account-level grants
+ * can expose several sites; choosing the first would silently bind the
+ * connection to an arbitrary tenant. When scopes are absent, a sole resource
+ * is still usable.
  */
-export function pickPrimaryJiraSite(
+export function pickUniqueJiraSite(
   resources: AtlassianAccessibleResource[]
 ): JiraCloudSite | null {
   if (resources.length === 0) return null;
-  const jiraScoped =
-    resources.find((r) => r.scopes.some((s) => s.includes('jira'))) ?? resources[0];
+  const distinctResources = [
+    ...new Map(resources.map((resource) => [resource.id, resource])).values(),
+  ];
+  const jiraScoped = [
+    ...new Map(
+      resources
+        .filter((resource) => resource.scopes.some((scope) => scope.includes('jira')))
+        .map((resource) => [resource.id, resource])
+    ).values(),
+  ];
+  const site =
+    jiraScoped.length === 1
+      ? jiraScoped[0]
+      : jiraScoped.length === 0 && distinctResources.length === 1
+        ? distinctResources[0]
+        : null;
+  if (!site) return null;
   return {
-    cloudId: jiraScoped.id,
-    siteUrl: jiraScoped.url,
-    siteName: jiraScoped.name,
-    accessibleResources: resources,
+    cloudId: site.id,
+    siteUrl: site.url,
+    siteName: site.name,
+    resourceCount: distinctResources.length,
   };
 }
 
 /**
- * Resolve the primary Jira Cloud site for a freshly issued 3LO access token.
+ * Resolve a unique Jira Cloud site for a freshly issued 3LO access token.
  */
 export async function resolveJiraCloudSite(
   accessToken: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<JiraCloudSite | null> {
   const resources = await fetchAtlassianAccessibleResources(accessToken, fetchImpl);
-  return pickPrimaryJiraSite(resources);
+  return pickUniqueJiraSite(resources);
 }
 
 /**
@@ -120,12 +137,8 @@ export function mergeJiraSiteIntoConnectionConfig(
   const next: Record<string, unknown> = { ...(existing ?? {}) };
   next.cloud_id = site.cloudId;
   if (site.siteUrl) next.site_url = site.siteUrl;
+  else delete next.site_url;
   if (site.siteName) next.site_name = site.siteName;
-  // Compact list for multi-site UI later — strip scopes (can be long).
-  next.accessible_sites = site.accessibleResources.map((r) => ({
-    id: r.id,
-    url: r.url,
-    name: r.name,
-  }));
+  else delete next.site_name;
   return next;
 }

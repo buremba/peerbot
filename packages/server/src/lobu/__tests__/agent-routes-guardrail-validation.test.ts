@@ -187,4 +187,3 @@ describe("validateGuardrailsInline", () => {
     ).toMatch(/model must be a string/);
   });
 });
-

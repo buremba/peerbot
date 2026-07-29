@@ -46,8 +46,9 @@ interface ResolvedAgentGuardrails {
   /**
    * Names per stage in resolution order — useful for logging and for any
    * caller that wants to pass `enabled` to `runGuardrails(registry, …)` via
-   * the registry. The ad-hoc inline guardrails are NOT registered globally on the shared registry — the aggregator returns
-   * them already-resolved so the gateway can run them directly.
+   * the registry. Ad-hoc inline guardrails are NOT registered globally on the
+   * shared registry — the aggregator returns them already-resolved so the
+   * gateway can run them directly.
    */
   names: Record<GuardrailStage, string[]>;
 }
@@ -71,9 +72,9 @@ function emptyNames(): Record<GuardrailStage, string[]> {
  *
  * Dedup is name-keyed within a stage: a name that resolves twice runs once.
  *
- * Inline judges are NOT registered on the
- * shared registry — the aggregator constructs them in-place and returns
- * them so the runner can include them alongside registry-resolved entries.
+ * Inline judges are NOT registered on the shared registry — the aggregator
+ * constructs them in-place and returns them so the runner can include them
+ * alongside registry-resolved entries.
  *
  * Unknown built-in names are logged and skipped — same posture as
  * `GuardrailRegistry.resolve()`.
@@ -183,4 +184,3 @@ export function resolveAgentGuardrails(
 
   return { byStage, names };
 }
-

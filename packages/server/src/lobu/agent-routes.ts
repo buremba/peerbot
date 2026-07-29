@@ -1699,7 +1699,6 @@ export function validateGuardrailsInline(value: unknown): string | null {
 	return null;
 }
 
-
 routes.patch("/:agentId/config", async (c) => {
 	const denied = requireSessionOrAdminPat(c);
 	if (denied) return denied;
@@ -1722,7 +1721,6 @@ routes.patch("/:agentId/config", async (c) => {
 			400
 		);
 	}
-
 
 	// Judge-kind custom guardrails need a model. With no gateway default
 	// (`EGRESS_JUDGE_MODEL` unset), every judge entry must carry its own

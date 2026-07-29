@@ -363,10 +363,4 @@ describe('GET /agents/:agentId/guardrail-trips', () => {
     expect(((await garbage.json()) as { trips: unknown[] }).trips).toHaveLength(3);
   });
 
-  // These drive the real PATCH route, not the exported validator: the plausible
-  // way this ships broken is the helper existing but never being called.
-
-
-
-
 });

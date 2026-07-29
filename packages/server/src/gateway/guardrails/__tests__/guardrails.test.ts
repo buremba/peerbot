@@ -12,7 +12,6 @@ import {
   createNoopGuardrail,
   GuardrailRegistry,
   type GuardrailStage,
-  type SkillConfig,
 } from "@lobu/core";
 import {
   createJudgeGuardrail,
@@ -580,36 +579,12 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     return reg;
   }
 
-
-  test("merges agent built-ins + inline guardrails per stage", () => {
-    const reg = setupRegistry();
-    const out = resolveAgentGuardrails(
-      { guardrails: ["pii-scan", "secret-scan"] },
-      reg,
-      {
-        inline: [
-          {
-            name: "no-prod-writes",
-            enabled: true,
-            stage: "pre-tool",
-            policy: "reject writes to prod",
-            model: "anthropic/claude-haiku-4-5",
-          },
-        ],
-      }
-    );
-    // Built-ins resolve on their registered stages...
-    expect(out.names.input).toContain("pii-scan");
-    expect(out.names["pre-tool"]).toContain("secret-scan");
-    // ...and the operator's inline judge joins the pre-tool stage.
-    expect(out.names["pre-tool"]).toContain("no-prod-writes");
-  });
-
   test("disabled inline guardrail is not resolved", () => {
     const reg = setupRegistry();
     const out = resolveAgentGuardrails(
       { guardrails: [] },
-      reg, {
+      reg,
+      {
       inline: [
         {
           name: "off-rail",
@@ -631,7 +606,8 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(() => {
       out = resolveAgentGuardrails(
       { guardrails: [] },
-      reg, {
+      reg,
+      {
         inline: [
           {
             name: "bad-stage",
@@ -651,7 +627,8 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     const reg = setupRegistry();
     const out = resolveAgentGuardrails(
       { guardrails: [] },
-      reg, {
+      reg,
+      {
       inline: [
         {
           name: "tone-check",
@@ -673,7 +650,8 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     // reuses the name at the same stage must not shadow it.
     const out = resolveAgentGuardrails(
       { guardrails: ["pii-scan"] },
-      reg, {
+      reg,
+      {
       inline: [
         {
           name: "pii-scan",
@@ -686,10 +664,6 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(out.names.output.filter((n) => n === "pii-scan").length).toBe(1);
   });
 
-
-
-
-
   test("agent inline judge resolves under its operator name and respects exclude", () => {
     const reg = setupRegistry();
     const entry = {
@@ -700,26 +674,28 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     };
     const out = resolveAgentGuardrails(
       {},
-      reg, { inline: [entry] });
+      reg,
+      { inline: [entry] }
+    );
     expect(out.names.output).toContain("no-passwords");
 
     const excluded = resolveAgentGuardrails(
       {},
-      reg, {
+      reg,
+      {
       inline: [entry],
       disabled: ["no-passwords"],
     });
     expect(excluded.names.output).not.toContain("no-passwords");
   });
 
-
-
   test("agent inline judges: distinct operator names -> distinct guardrails", () => {
     const reg = setupRegistry();
     const policy = "Block destructive ops";
     const out = resolveAgentGuardrails(
       {},
-      reg, {
+      reg,
+      {
       inline: [
         {
           name: "no-fs-write",

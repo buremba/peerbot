@@ -450,6 +450,25 @@ describe("enforceBashCommandPolicy", () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  test("option scanning stays linear on adversarial input (#2259)", () => {
+    // The command string is agent-controlled, so an ambiguous pattern here is a
+    // worker CPU denial of service, not just a slow path. An earlier spelling
+    // offered `-[a-z]*\s+` and `-[a-z]*\s+\S+\s+` as alternatives; because
+    // `\S+` also matches an option, inputs like `sh - - - …` had exponentially
+    // many parses. Measured before the fix: 34 repeated options took 1.9s,
+    // growing ~7x per four more (CodeQL alert 481).
+    for (const cmd of [
+      `bash ${"-e ".repeat(2000)}nope`,
+      `sh ${"- ".repeat(60)}nope`,
+      `bash ${"-o x ".repeat(1000)}-c 'nix run x'`,
+      `bash -c '${"a;".repeat(3000)}'`,
+    ]) {
+      const started = performance.now();
+      isDirectPackageInstallCommand(cmd);
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
+  });
+
   test("an interpreter named as an argument is still not a command (#2259)", () => {
     // The option-cluster widening must not start matching argument text.
     for (const cmd of [

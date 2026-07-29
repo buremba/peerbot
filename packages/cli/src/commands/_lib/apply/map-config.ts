@@ -532,10 +532,10 @@ export const MAX_BEHAVIOR_SKILLS = 5;
  * (manual runs) — runs on its compiled instructions alone and must reference
  * at least one skill.
  *
- * This CLI preflight exists because apply pushes triggers (`update`) and
- * compiled instructions (`create_version`) as two non-atomic calls; the server
- * enforces the same rule on the stored instruction text (it cannot see
- * `skills[]`, a declarative-only concept).
+ * This CLI preflight mirrors the server rule on the stored instruction text
+ * (the server cannot see `skills[]`, a declarative-only concept). When both
+ * triggers and compiled instructions change, apply sends them together through
+ * create_version so the final pair is validated atomically.
  */
 function assertBehaviorSkills(watcher: DesiredWatcher): void {
   const skills = watcher.skills ?? [];

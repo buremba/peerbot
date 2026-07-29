@@ -172,15 +172,26 @@ export async function handleCreateVersion(
     );
   }
 
-  // Final-state instruction rule: inherited prompt + requested/current
-  // triggers. When set_as_current, the new pair becomes live; when not, only
-  // the version row is written and triggers stay on previousTriggers, so
-  // validate the draft prompt against the live trigger shape.
+  // Final-state instruction rule. The prompt version is group-shared
+  // (cascades to every assignment), while triggers are per-assignment — so
+  // when set_as_current, validate the new prompt against every sibling's
+  // final trigger set (the targeted row uses triggerWrite.triggers).
   const setAsCurrent = args.set_as_current !== false;
-  assertBehaviorInstructions(
-    setAsCurrent ? triggerWrite.triggers : previousTriggers,
-    prompt
-  );
+  if (setAsCurrent) {
+    const siblingRows = await sql`
+      SELECT id, triggers FROM watchers WHERE watcher_group_id = ${groupId}
+    `;
+    for (const sibling of siblingRows) {
+      const siblingTriggers =
+        Number(sibling.id) === Number(args.behavior_id)
+          ? triggerWrite.triggers
+          : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
+      assertBehaviorInstructions(siblingTriggers, prompt);
+    }
+  } else {
+    // Draft version only — triggers on the live row do not change.
+    assertBehaviorInstructions(previousTriggers, prompt);
+  }
 
   const createdBy = ctx.userId ?? 'system';
   let versionId = 0;

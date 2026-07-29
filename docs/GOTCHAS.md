@@ -86,11 +86,11 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 
 ## CI triage
 
-**Fetch a failing job's log exactly once, to a file:** `gh run view --job <id> --log > /tmp/ci-<id>.log`, then grep the file. Refetching is the single most repeated waste in CI triage — 21 sessions have re-pulled the same log 170 times, one of them hitting the same job 9 times in 105 seconds.
+**Fetch a failing job's log exactly once, to a file:** `gh run view --job <id> --log | sed 's/^[^Z]*Z //' > /tmp/ci-<id>.log`, then search the file with `grep -a '<pattern>' /tmp/ci-<id>.log`. Refetching is the single most repeated waste in CI triage — 21 sessions have re-pulled the same log 170 times, one of them hitting the same job 9 times in 105 seconds.
 
 **Use `--log`, not `--log-failed`.** `--log-failed` is empty for any failure that is not a failed test step — `check-drift` and `publish-packages` both print nothing — and that empty result is what forces the second fetch.
 
-**`grep` needs `-a`, and the lines are prefixed.** Job logs are timestamped and ANSI-coloured, so grep treats them as binary and the prefix defeats anchored patterns. Strip it once when you save the file: `sed 's/^[^Z]*Z //'`.
+**`grep` needs `-a`, and the lines are prefixed.** Job logs are timestamped and ANSI-coloured, so grep treats them as binary and the prefix defeats anchored patterns. The `sed 's/^[^Z]*Z //'` in the fetch above strips the prefix once, at save time; `-a` is still needed for the ANSI bytes that remain.
 
 ## Shell & CLI
 

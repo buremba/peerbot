@@ -269,79 +269,45 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     expect(deliveredJobs()).toHaveLength(1);
   });
 
-  test("REGRESSION: an explicit cancel reaches a stale worker mid-turn — deferring would break /cancel", async () => {
-    // The worker is the ONLY thing that can abort a running turn
-    // (`currentWorker.cancel`). Deferring a cancel because the deployment is
-    // stale means the user's /cancel silently does nothing until the turn ends
-    // on its own — a worse outcome than delivering to stale tooling, since the
-    // turn is already running on exactly those credentials.
+  test("scenario (c): stale + a live turn → delivered unrecycled, whatever the message is", async () => {
+    // The gate does not inspect the payload here, and must not: whether this
+    // message steers the live turn, cancels it, or starts new work depends on
+    // preconditions only the worker holds (its current worker handle, whether
+    // the batcher is still processing, whether the posting user owns the live
+    // turn). Deferring would silently break steering and `/cancel`; exempting
+    // only "steerable-looking" payloads promises a protection the gate cannot
+    // keep, because the worker can still fall through to new work. So: deliver,
+    // and never tear down a running turn.
     recycler.bornFingerprint = "fp-old";
     liveTurn = true;
 
-    await attemptOnce(
-      makePayload({ messageId: "m-cancel", messageText: "/cancel" })
-    );
+    for (const payload of [
+      makePayload({ messageId: "m-followup" }),
+      makePayload({ messageId: "m-cancel", messageText: "/cancel" }),
+      makePayload({
+        messageId: "m-automation",
+        platformMetadata: { source: "scheduled-job" },
+      }),
+    ]) {
+      await attemptOnce(payload);
+    }
 
-    expect(deliveredJobs()).toHaveLength(1);
-    expect(recycler.recycled).toHaveLength(0); // still no mid-turn teardown
+    expect(deliveredJobs()).toHaveLength(3);
+    expect(recycler.recycled).toHaveLength(0); // no mid-turn teardown, ever
   });
 
-  test("REGRESSION: a steerable follow-up reaches a stale worker mid-turn", async () => {
-    // `currentWorker.steer()` splices a follow-up into the live turn. Deferring
-    // degrades steering into queueing without telling anyone.
+  test("scenario (c2): the recycle is deferred, not lost — it happens on the first quiet claim", async () => {
     recycler.bornFingerprint = "fp-old";
     liveTurn = true;
-
-    await attemptOnce(makePayload({ messageId: "m-steer" }));
-
+    await attemptOnce(makePayload({ messageId: "m-during" }));
     expect(deliveredJobs()).toHaveLength(1);
     expect(recycler.recycled).toHaveLength(0);
-  });
 
-  test("a NON-steerable message still defers while a prior turn is live", async () => {
-    // The exemption must be narrow: an automation-sourced message would start a
-    // NEW turn on stale tooling, which is exactly what the gate exists to stop.
-    // This is the control that proves the exemption is not "deliver everything".
-    recycler.bornFingerprint = "fp-old";
-    liveTurn = true;
-
-    await expect(
-      queue.addJob(QUEUE, {
-        id: "run-100",
-        data: makePayload({
-          messageId: "m-automation",
-          platformMetadata: { source: "scheduled-job" },
-        }),
-      })
-    ).rejects.toBeInstanceOf(StaleWorkerError);
-    expect(deliveredJobs()).toHaveLength(0);
-  });
-
-  test("scenario (c): stale + prior turn live → deferred (no delivery, no teardown), delivered after it terminalizes", async () => {
-    recycler.bornFingerprint = "fp-old";
-    liveTurn = true;
-    // NEW work, not a steer/cancel: an automation-sourced message would start a
-    // fresh turn on stale tooling, so this is the payload the deferral is for.
-    // A plain human follow-up is exempt (it steers the running turn) and is
-    // covered by the steer/cancel regressions above.
-    const newWork = makePayload({
-      platformMetadata: { source: "scheduled-job" },
-    });
-
-    // Attempt 1: the queue's native retry is the deferral — the handler
-    // throws, nothing is delivered, and crucially the worker is NOT torn down
-    // mid-turn.
-    await expect(
-      queue.addJob(QUEUE, { id: "run-100", data: newWork })
-    ).rejects.toBeInstanceOf(StaleWorkerError);
-    expect(deliveredJobs()).toHaveLength(0);
-    expect(recycler.recycled).toHaveLength(0);
-
-    // Prior turn terminalizes → the next claim recycles and the one after
-    // delivers to the fresh worker.
+    // Turn ends → the next claim finds the worker quiet and rebuilds it before
+    // delivering anything else.
     liveTurn = false;
     await expect(
-      queue.addJob(QUEUE, { id: "run-100", data: newWork })
+      queue.addJob(QUEUE, { id: "run-100", data: makePayload() })
     ).rejects.toBeInstanceOf(StaleWorkerError);
     expect(recycler.recycled).toHaveLength(1);
 
@@ -354,6 +320,8 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
       IDENTITY.agentId,
       res as never
     );
+    // `deliveredJobs()` reads the CURRENT SSE response, so this counts only
+    // what the rebuilt worker received.
     await attemptOnce(makePayload());
     expect(deliveredJobs()).toHaveLength(1);
   });
@@ -473,7 +441,7 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     expect(fenceError).toBeInstanceOf(StaleWorkerError);
     expect((fenceError as StaleWorkerError).reason).toBe("older-turn-pending");
     // Every StaleWorkerError is a queue deferral: retried WITHOUT consuming
-    // an attempt, so waiting out a long prior turn can never exhaust the
+    // an attempt, so waiting for head-of-line to clear can never exhaust the
     // budget and strand the follower as a failed, never-delivered row.
     expect((fenceError as StaleWorkerError).deferral).toBe(true);
     expect(deliveredJobs()).toHaveLength(0);

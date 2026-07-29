@@ -21,6 +21,15 @@
  * undelivered, and it is the ONLY deferral mechanism used here: no custom
  * requeue, no singleton keys, no holds.
  *
+ * WHAT THIS GATE PROMISES, precisely: a stale worker is rebuilt before it
+ * serves a message that finds it QUIET. It does not promise that no message ever
+ * reaches stale credentials — a message arriving while a turn is running is
+ * delivered as-is (see step 4), because deciding otherwise needs worker-local
+ * knowledge the gateway does not have. That case is left at its pre-gate
+ * behaviour rather than guarded by a guess; eliminating it needs
+ * worker-confirmed delivery disposition, which belongs to the turn-lifecycle
+ * consolidation, not here.
+ *
  * FAIL CLOSED: nothing in this module catches-and-delivers. Any error on the
  * staleness path propagates, the job is not delivered to the stale worker, and
  * the queue retries until it either delivers to a fresh worker or fails
@@ -46,7 +55,6 @@ import {
   createLogger,
   getErrorMessage,
   type MessagePayload,
-  targetsActiveTurn,
 } from "@lobu/core";
 import { generateDeploymentName } from "../orchestration/deployment-manager.js";
 import {
@@ -85,26 +93,21 @@ export interface DispatchRecycler {
 }
 
 /**
- * Thrown to make the queue retry a claimed job without delivering it. Both
- * cases are expected states, not faults — the error type exists so tests and
+ * Thrown to make the queue retry a claimed job without delivering it. Every
+ * reason is an expected state, not a fault — the error type exists so tests and
  * log triage can tell a deliberate deferral from a genuine failure.
  */
 export class StaleWorkerError extends Error {
   /** Queue deferral contract (`isDeferralError`): reschedule WITHOUT consuming
    *  an attempt. Every reason here is a wait with an external termination
-   *  bound — a prior turn's marker sweep, head-of-line progress, or a one-shot
-   *  recycle — not a failure, and burning the attempt budget on it would let a
-   *  legitimately hour-long prior turn strand the follower turn as a failed,
-   *  never-delivered row. */
+   *  bound — head-of-line progress, a one-shot recycle, or another replica's
+   *  rebuild — not a failure, and burning the attempt budget on it would
+   *  strand a legitimate turn as a failed, never-delivered row. */
   readonly deferral = true;
 
   constructor(
     message: string,
-    readonly reason:
-      | "prior-turn-live"
-      | "recycled"
-      | "older-turn-pending"
-      | "ownership-handoff"
+    readonly reason: "recycled" | "older-turn-pending" | "ownership-handoff"
   ) {
     super(message);
     this.name = "StaleWorkerError";
@@ -140,16 +143,14 @@ export type DispatchDecision = "deliver" | "drop";
  *    was built with — and the lease is not expiring) → deliver. The DB-truth
  *    re-read replaces any runs.id chronology: message claims process out of
  *    id order across replicas, so a lower runId can carry a newer observation.
- * 4. Stale + a PRIOR turn is live on the worker → throw; the queue retries and
- *    the gate re-evaluates on the next claim. The probe counts only DELIVERED
- *    turns (completed `thread_message` row = delivery receipt), so armed-but-
- *    undelivered turns — including THIS one — never block: counting them would
- *    let two queued turns defer each other forever. EXCEPTION: a message that
- *    acts on the running turn (steer or explicit cancel, per
- *    `targetsActiveTurn`) is delivered anyway — the turn is already executing on
- *    these stale credentials and the worker is the only thing that can steer or
- *    abort it, so deferring would silently drop the user's follow-up or make
- *    `/cancel` do nothing.
+ * 4. Stale + a turn is live on the worker → DELIVER, unrecycled. The gate never
+ *    interrupts or withholds from a running turn: it cannot know whether the
+ *    worker will steer this message into that turn, cancel it, or queue it as
+ *    new work, because those preconditions are worker-local. Delivering leaves
+ *    exactly the pre-gate behaviour for this case; withholding would silently
+ *    break steering and `/cancel`. The probe counts only DELIVERED turns
+ *    (completed `thread_message` row = delivery receipt), so armed-but-
+ *    undelivered turns — including THIS one — never count as live.
  * 5. Stale + quiet → tear down and rebuild under the same name, then throw:
  *    the fresh worker has not SSE-attached inside this handler invocation, so
  *    delivery happens on the retry (the queue is paused until the new worker
@@ -220,30 +221,37 @@ export async function gateDispatchOnStaleness(args: {
     stampMismatch && (await recycler.hasToolingDrifted(deploymentName, payload));
   if (!toolingChanged && !leaseExpiring) return "deliver";
 
-  // Stale. Never interrupt a turn the worker is already running — a SIGTERM
-  // there costs the user a reply. Undelivered queued turns (this job included)
-  // are excluded: they are protected by this same gate, not by the worker.
+  // Stale, but the worker is mid-turn. The gate gets out of the way and
+  // delivers: recycling would SIGTERM a running turn and cost the user a reply,
+  // and withholding the message is not a safe alternative either, because the
+  // gateway cannot know what the worker will DO with it. The worker steers a
+  // follow-up into the live turn and aborts on an explicit cancel — both act on
+  // the turn already executing, and both need preconditions only the worker
+  // holds (its current worker handle, whether the batcher is still processing,
+  // and whether the posting user owns the live turn; a shared channel thread is
+  // served by ONE worker, so a second participant's message routinely fails that
+  // last check). Deciding from the payload alone therefore either withholds a
+  // steer the worker was waiting for or promises a protection it cannot keep.
+  //
+  // What this costs: a message that arrives mid-turn may start its own turn on
+  // credentials inside the recycle margin. That is exactly the pre-gate
+  // behaviour — no regression, just an unfixed case — and the recycle is not
+  // lost, it happens on the first claim that finds the worker quiet. A
+  // conversation that is NEVER quiet at claim time is never recycled; closing
+  // that needs worker-confirmed disposition, which is the consolidation's job.
+  // Undelivered queued turns (this job included) never count as live: they are
+  // protected by this same gate, not by the worker.
   if (await probeLiveTurn(deploymentName)) {
-    // A message that acts on the RUNNING turn — a steer or an explicit cancel —
-    // must still be delivered. Withholding it protects nothing: the turn is
-    // already executing with these stale credentials, and the worker is the only
-    // thing that can steer or abort it. Deferring instead means the user's
-    // follow-up silently does nothing, and `/cancel` silently fails to cancel,
-    // until the turn ends on its own. The recycle is not lost — it happens on
-    // the next claim that finds the worker quiet.
-    if (targetsActiveTurn(payload)) {
-      logger.info(
-        { deploymentName, messageId: payload.messageId },
-        "Delivering a steer/cancel to a stale worker — it acts on the turn already running"
-      );
-      return "deliver";
-    }
-    throw new StaleWorkerError(
-      `Deployment ${deploymentName} is stale (${
-        toolingChanged ? "tooling changed" : "lease expiring"
-      }) but a prior turn is still running — deferring delivery`,
-      "prior-turn-live"
+    logger.info(
+      {
+        deploymentName,
+        messageId: payload.messageId,
+        tooling_changed: toolingChanged,
+        lease_expiring: leaseExpiring,
+      },
+      "Worker is stale but mid-turn — delivering without recycling; the worker owns what happens to a live turn"
     );
+    return "deliver";
   }
 
   logger.info(

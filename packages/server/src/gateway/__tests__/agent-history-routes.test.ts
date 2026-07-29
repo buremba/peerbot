@@ -765,6 +765,60 @@ describe("agent history routes", () => {
 		expect(body.messages.map((m) => m.id)).toEqual(["u-shared"]);
 	});
 
+	test("reads an OWNED conversation by its stored id, and denies a non-owner", async () => {
+		// The gap this closes: an owned conversation was listed under its stored id
+		// but no handler accepted that id — the read path re-derived one from the
+		// caller's own userId, so the id the listing returned resolved to nothing.
+		const sql = getDb();
+		const conversationId = `agent-1_${USER_ID}_${ORG_ID}_thread-owned-1`;
+		const jsonl =
+			`{"type":"session","version":3,"id":"s-owned","timestamp":"2026-07-23T10:00:00Z","cwd":"/w"}\n` +
+			`{"type":"message","id":"u-owned","parentId":null,"timestamp":"2026-07-23T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Private note"}]}}\n`;
+		const runId = await insertRun({
+			organizationId: ORG_ID,
+			agentId: "agent-1",
+			conversationId,
+		});
+		await sql`
+			INSERT INTO public.agent_transcript_snapshot
+				(organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status)
+			VALUES
+				(${ORG_ID}, 'agent-1', ${conversationId}, ${runId}, ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
+		`;
+		await sql`
+			INSERT INTO public.conversations
+				(organization_id, agent_id, platform, conversation_id, thread_id, kind, user_id, title)
+			VALUES
+				(${ORG_ID}, 'agent-1', 'web', ${conversationId}, 'thread-owned-1', 'owned', ${USER_ID}, 'Private note')
+			ON CONFLICT DO NOTHING
+		`;
+
+		const read = (userId: string) => {
+			setAuthProvider(() => ({
+				userId,
+				platform: "external",
+				agentId: "agent-1",
+				exp: Date.now() + 60_000,
+			}));
+			return orgContext.run({ organizationId: ORG_ID }, () =>
+				createApp().request(
+					`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+					{ method: "GET", headers: { host: "localhost" } },
+				),
+			);
+		};
+
+		const owner = await read(USER_ID);
+		expect(owner.status).toBe(200);
+		const body = (await owner.json()) as { messages: Array<{ id: string }> };
+		expect(body.messages.map((m) => m.id)).toEqual(["u-owned"]);
+
+		// Another member of the SAME org must not read it. 404, not 403, so an
+		// unauthorized id is indistinguishable from one that does not exist.
+		const stranger = await read("user-history-stranger");
+		expect(stranger.status).toBe(404);
+	});
+
 	test("requires an enforced channel ACL for a non-owner org member", async () => {
 		const { channelMember, conversationId } =
 			await seedPlatformConversationAcl({ buildAcl: false });

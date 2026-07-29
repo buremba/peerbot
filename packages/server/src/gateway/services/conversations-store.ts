@@ -120,11 +120,59 @@ export interface ConversationListRow {
 	createdAt: Date;
 }
 
+/** Audience a conversation listing is built for. See {@link listConversations}. */
+type ConversationListScope = "user" | "shared" | "admin";
+
 /**
- * Read one conversation row by its full PK. Returns null when the row does not
- * exist (or is soft-deleted). The single get source, mirroring
- * {@link listConversations}'s read of the materialized entity.
+ * Look up a conversation by its STORED id, without knowing its platform.
+ *
+ * The read path addresses a conversation by the id the listing handed out, and
+ * that id alone does not say which platform it belongs to — only the row does.
+ * Callers use the returned `kind`/`userId` to apply the right fence: an owned
+ * conversation is its owner's, a platform one is gated on channel visibility.
+ * Deriving those facts by parsing the id string is what made owned
+ * conversations unreadable in the first place.
  */
+export async function findConversationById(args: {
+	organizationId: string;
+	agentId: string;
+	conversationId: string;
+}): Promise<ConversationListRow | null> {
+	const { organizationId, agentId, conversationId } = args;
+	const sql = getDb();
+	const rows = await sql<{
+		platform: string;
+		conversation_id: string;
+		thread_id: string | null;
+		kind: ConversationKind;
+		user_id: string | null;
+		title: string | null;
+		last_activity_at: Date | null;
+		created_at: Date;
+	}>`
+    SELECT platform, conversation_id, thread_id, kind, user_id, title,
+           last_activity_at, created_at
+    FROM public.conversations
+    WHERE organization_id = ${organizationId}
+      AND agent_id = ${agentId}
+      AND conversation_id = ${conversationId}
+      AND archived_at IS NULL
+    LIMIT 1
+  `;
+	const r = rows[0];
+	if (!r) return null;
+	return {
+		platform: r.platform,
+		conversationId: r.conversation_id,
+		threadId: r.thread_id,
+		kind: r.kind,
+		userId: r.user_id,
+		title: r.title,
+		lastActivityAt: r.last_activity_at ?? r.created_at,
+		createdAt: r.created_at,
+	};
+}
+
 export async function getConversation(args: {
 	organizationId: string;
 	agentId: string;
@@ -238,8 +286,19 @@ export async function readConversationReply(args: {
 export async function listConversations(args: {
 	organizationId: string;
 	agentId: string;
-	/** "user": only this user's owned conversations. "all": every conversation. */
-	scope: "user" | "all";
+	/**
+	 * Who the listing is for — NOT merely which kinds to include:
+	 * - `"user"`: only this user's owned conversations.
+	 * - `"shared"`: this user's owned conversations plus platform ones. Widening
+	 *   to a channel is not widening to another person's private thread.
+	 * - `"admin"`: every conversation in the org, including other users' owned
+	 *   ones. Only for a caller whose admin/owner role has ALREADY been checked.
+	 *
+	 * `"shared"` and `"admin"` return the same platform rows and differ only on
+	 * other users' owned rows, so the two must stay separate names: one label
+	 * covering both is what let an authorization decision be made by a default.
+	 */
+	scope: ConversationListScope;
 	userId: string;
 }): Promise<ConversationListRow[]> {
 	const { organizationId, agentId, scope, userId } = args;
@@ -263,7 +322,16 @@ export async function listConversations(args: {
       ${
 				scope === "user"
 					? sql`AND kind = 'owned' AND user_id = ${userId}`
-					: sql``
+					: scope === "shared"
+						? // `shared` widens to platform conversations, NOT to other users'
+							// private ones. An owned conversation belongs to whoever started
+							// it; its title is message text, and the read path now addresses
+							// a conversation by its stored id, so listing someone else's here
+							// would hand out an id that is readable.
+							sql`AND (kind <> 'owned' OR user_id = ${userId})`
+						: // `admin`: no owner predicate at all. Reaching here means the
+							// caller's admin/owner role was checked upstream.
+							sql``
 			}
     ORDER BY last_activity_at DESC NULLS LAST, created_at DESC
   `;

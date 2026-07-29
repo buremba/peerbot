@@ -144,7 +144,8 @@ const INTERPRETER_DASH_C =
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:
- * the contents of quoted spans, and anything after an unquoted `#` comment.
+ * the contents of quoted spans, anything after an unquoted `#` comment, and a
+ * backslash escape together with the character it makes literal.
  * A word boundary inside either then cannot open a command position, so
  * `git commit -m 'document nix shell support'` and `echo done # nix run x`
  * no longer match while the surrounding real command is scanned normally.
@@ -175,6 +176,17 @@ function blankQuotedSpans(text: string): string {
         continue;
       }
       out += ch === "\n" ? "\n" : " ";
+      continue;
+    }
+    // Outside quotes a backslash escapes the next character, so the pair is
+    // argument DATA: `echo foo\; nix run x` is ONE echo command, not two, and
+    // `echo it\'s fine; npm install` never enters a quoted span. Blank both
+    // characters so the escaped one cannot open a command position, a quoted
+    // span, or a comment. An escaped newline is a line continuation, and
+    // blanking it likewise keeps the command on one line.
+    if (ch === "\\" && i + 1 < text.length) {
+      out += "  ";
+      i++;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -216,8 +228,9 @@ function blankQuotedSpans(text: string): string {
  */
 /**
  * Printer and lookup commands: they display or resolve their operands, so what
- * follows is data. These only narrow in COMMAND POSITION (the first word of a
- * command) — as any later word they are an operand of whatever runs them, and
+ * follows is data. These only narrow in COMMAND POSITION (the word being run:
+ * the first that is not a `VAR=value` assignment prefix) — as any later word
+ * they are an operand of whatever runs them, and
  * dropping the tail there loses a real install: in `sudo -u ls npm install`,
  * `ls` is a USERNAME and npm still runs.
  */
@@ -268,12 +281,18 @@ function matchesBeforeArgumentData(
 ): boolean {
   for (const command of text.split(/[;|&()\n]/)) {
     const words = command.split(/\s+/).filter(Boolean);
+    // Leading `VAR=value` words assign to the command's environment, they are
+    // not the command: `foo=bar echo npm install` runs echo. The first word
+    // that is not one holds command position.
+    const commandAt = words.findIndex(
+      (word) => !/^[a-z_][a-z0-9_]*=/.test(word)
+    );
     // A printer/lookup name only consumes data when it is the word being RUN.
     // An option consumes data wherever it appears.
     const dataAt = words.findIndex(
       (word, index) =>
         ARGUMENT_DATA_OPTIONS.has(word) ||
-        (index === 0 && ARGUMENT_DATA_COMMANDS.has(word))
+        (index === commandAt && ARGUMENT_DATA_COMMANDS.has(word))
     );
     const head = (dataAt === -1 ? words : words.slice(0, dataAt)).join(" ");
     if (head && matches(head)) {

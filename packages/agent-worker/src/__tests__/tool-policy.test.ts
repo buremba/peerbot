@@ -600,6 +600,46 @@ describe("enforceBashCommandPolicy", () => {
     }
   });
 
+  test("an escaped separator does not open a command position (#2279)", () => {
+    const bs = String.fromCharCode(92);
+    // `\;` and `\|` are literal data, so each of these is ONE echo command with
+    // the manager as its operand. Splitting on the escaped operator would hand
+    // the half after it a command position it does not have.
+    expect(isDirectPackageInstallCommand(`echo foo${bs}; nix run x`)).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand(`echo foo${bs}| npm install x`)).toBe(
+      false
+    );
+    // An escaped quote is not a quote either, so the real command after it is
+    // still scanned instead of being blanked as the body of a quoted span.
+    expect(
+      isDirectPackageInstallCommand(`echo it${bs}'s fine; npm install lodash`)
+    ).toBe(true);
+    // An UNescaped separator still opens a command position.
+    expect(isDirectPackageInstallCommand("echo foo; nix run x")).toBe(true);
+  });
+
+  test("an assignment prefix does not hide the command word (#2279)", () => {
+    // `FOO=bar echo …` RUNS echo, so the data word holds command position even
+    // though it is not the first word of the command.
+    expect(isDirectPackageInstallCommand("FOO=bar echo npm install")).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand("FOO=bar BAZ=qux man nix run")).toBe(
+      false
+    );
+    // …while an assignment in front of the manager itself still flags, and a
+    // first word that is not an assignment keeps command position for itself —
+    // `ls` there is a username, not a printer.
+    expect(isDirectPackageInstallCommand("FOO=bar npm install lodash")).toBe(
+      true
+    );
+    expect(isDirectPackageInstallCommand("sudo -u ls npm install evil")).toBe(
+      true
+    );
+  });
+
   test("an interpreter body gets the same narrowing (#2279)", () => {
     // The `-c` body is scanned separately, so it needs its own coverage: a
     // manager merely echoed inside the body is not an install…

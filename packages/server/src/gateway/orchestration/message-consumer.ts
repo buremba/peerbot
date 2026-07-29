@@ -953,19 +953,17 @@ export class MessageConsumer {
 
       // Send message to thread-specific queue.
       //
-      // The retry budget doubles as the dispatch gate's deferral clock: a job
-      // claimed while its worker is stale AND mid-turn is thrown back
-      // undelivered and re-claimed every `retryDelay` seconds until the prior
-      // turn terminalizes (see worker-dispatch-recycle). The budget must
-      // therefore outlast a long prior turn, not merely a transient SSE
-      // hiccup — the old limit of 3 would fail any follow-up sent while a
-      // stale worker ran a turn longer than ~4s. A large limit costs nothing
-      // in the failure modes the old one bounded: a DISCONNECTED worker pauses
-      // its queue (no claim churn at all), and the user-visible failure is
-      // always the turn-liveness marker, never this row's terminal status.
+      // The retry budget bounds GENUINE failures only. Dispatch-gate deferrals
+      // (stale worker mid-turn, FIFO fence, recycle) throw `StaleWorkerError`,
+      // which carries the queue's deferral contract (`isDeferralError`) and is
+      // rescheduled every `retryDelay` seconds WITHOUT consuming an attempt —
+      // so a follow-up can wait out an arbitrarily long prior turn on this
+      // small budget, while a genuinely undeliverable job still fails fast
+      // instead of surviving long enough to zombie-deliver after its
+      // turn-liveness marker has been swept.
       const jobId = await this.queue.send(threadQueueName, data, {
         expireInSeconds: this.config.queues.expireInSeconds,
-        retryLimit: Math.max(this.config.queues.retryLimit, 1800),
+        retryLimit: this.config.queues.retryLimit,
         retryDelay: 2, // 2 seconds — fast retry for stale connection recovery
         priority: 10, // Thread messages have high priority
       });

@@ -162,9 +162,10 @@ describe("WorkerJobRouter", () => {
         "thread_message_worker-1",
         replayed,
         {
-          // Deferral-aware retry budget — must match the consumer's
-          // thread-queue send (see sendToWorkerQueue).
-          retryLimit: 1800,
+          // Genuine-failure budget only — gate deferrals are rescheduled
+          // without consuming attempts (isDeferralError), so waiting out a
+          // long prior turn never needs a large limit.
+          retryLimit: 3,
           retryDelay: 2,
           priority: 10,
         },

@@ -94,11 +94,11 @@ export class WorkerJobRouter {
     for (const input of pendingInputs) {
       const payload = attachFreshRunJobToken(input);
       await this.queue.send(queueName, payload, {
-        // Same deferral-aware budget as the consumer's thread-queue send: a
-        // replayed input can also be claimed while the (reconnected) worker is
-        // stale and mid-turn, and the dispatch gate defers it by throwing —
-        // see sendToWorkerQueue in message-consumer.ts for the full rationale.
-        retryLimit: 1800,
+        // Genuine-failure budget only: a replayed input claimed while the
+        // reconnected worker is stale/mid-turn is deferred by the dispatch
+        // gate via `StaleWorkerError`, which the queue reschedules WITHOUT
+        // consuming an attempt (isDeferralError) — waiting never burns this.
+        retryLimit: 3,
         retryDelay: 2,
         priority: 10,
       });

@@ -247,7 +247,16 @@ async function ensureDeviceConnectorWired(
           }
         });
       } else {
-        await reconcilePin(sql, readyConnectionId);
+        // Same advisory lock as the `source` branch above: reconcilePin's owner
+        // check is read-then-write, so two replicas polling concurrently could
+        // both observe "nobody owns this device" and race into the unique index.
+        // (No bundled device connectors ship today, so this branch is currently
+        // unreachable — keep it serialized anyway rather than leave the race
+        // armed for the first one that does.)
+        await sql.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+          await reconcilePin(tx, readyConnectionId);
+        });
       }
       return;
     }

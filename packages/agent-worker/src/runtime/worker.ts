@@ -51,7 +51,6 @@ export {
   buildRunContextBlock,
   estimatePromptTokenCost,
   LOBU_DEFAULT_IDENTITY,
-  replaceBasePromptIdentity,
   resolveAgentIdentity,
   resolveMemoryFlushConfig,
 } from "./session-runner";

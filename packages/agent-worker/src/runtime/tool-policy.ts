@@ -144,7 +144,8 @@ const INTERPRETER_DASH_C =
 
 /**
  * Replace non-command text with spaces, preserving offsets and delimiters:
- * the contents of quoted spans, and anything after an unquoted `#` comment.
+ * the contents of quoted spans, anything after an unquoted `#` comment, and a
+ * backslash escape together with the character it makes literal.
  * A word boundary inside either then cannot open a command position, so
  * `git commit -m 'document nix shell support'` and `echo done # nix run x`
  * no longer match while the surrounding real command is scanned normally.
@@ -177,6 +178,17 @@ function blankQuotedSpans(text: string): string {
       out += ch === "\n" ? "\n" : " ";
       continue;
     }
+    // Outside quotes a backslash escapes the next character, so the pair is
+    // argument DATA: `echo foo\; nix run x` is ONE echo command, not two, and
+    // `echo it\'s fine; npm install` never enters a quoted span. Blank both
+    // characters so the escaped one cannot open a command position, a quoted
+    // span, or a comment. An escaped newline is a line continuation, and
+    // blanking it likewise keeps the command on one line.
+    if (ch === "\\" && i + 1 < text.length) {
+      out += "  ";
+      i++;
+      continue;
+    }
     if (ch === "'" || ch === '"') {
       quote = ch;
       out += ch;
@@ -203,6 +215,108 @@ function blankQuotedSpans(text: string): string {
 }
 
 /**
+ * Printer and lookup commands: they display or resolve their operands, so what
+ * follows is data. These only narrow in COMMAND POSITION (the word being run:
+ * the first that is not a `VAR=value` assignment prefix) — as any later word
+ * they are an operand of whatever runs them, and
+ * dropping the tail there loses a real install: in `sudo -u ls npm install`,
+ * `ls` is a USERNAME and npm still runs.
+ */
+const ARGUMENT_DATA_COMMANDS = new Set([
+  "echo",
+  "printf",
+  "man",
+  "whatis",
+  "apropos",
+  "which",
+  "whereis",
+  "type",
+  "ls",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+]);
+
+/**
+ * Long PATTERN options, whose operand is a regex — but ONLY when the command
+ * running them is one that owns the spelling. An option is not self-evidently
+ * an option: `env -u --grep npm install evil` passes `--grep` as the VARIABLE
+ * NAME to unset and then execs the rest, so honouring it anywhere hid a real
+ * install behind any exec wrapper that takes a value.
+ *
+ * Short options are absent entirely: a single letter means different things to
+ * different commands, and reading one without knowing its owner loses a real
+ * install — `-m` is git's message but `parallel`'s max-args, and
+ * `parallel -m npm install lodash ::: left-pad` RUNS npm.
+ */
+const ARGUMENT_DATA_OPTIONS = new Set(["--grep", "--regexp"]);
+
+/** Commands that own {@link ARGUMENT_DATA_OPTIONS}; anything else exec's. */
+const ARGUMENT_DATA_OPTION_OWNERS = new Set([
+  "git",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "ag",
+  "ack",
+]);
+
+/**
+ * Run `matches` over each command in `text`, dropping the tail that an
+ * {@link ARGUMENT_DATA_COMMANDS} or {@link ARGUMENT_DATA_OPTIONS} word
+ * consumes as data.
+ *
+ * Commands are split on the separators the install patterns already treat as
+ * opening a command position (`;`, `|`, `&`, parens, newline), so
+ * `echo uvx cowsay | npm install x` still flags the half that runs.
+ *
+ * This is the ONLY narrowing applied to the base detector and it is
+ * intentionally shallow: a command with no data word keeps its whole text, so
+ * anything this cannot prove to be an argument is still matched. Modelling
+ * wrapper signatures or line-continuation semantics here is the "reimplement
+ * bash" path the header warns about.
+ */
+function matchesBeforeArgumentData(
+  text: string,
+  matches: (candidate: string) => boolean
+): boolean {
+  for (const command of text.split(/[;|&()\n]/)) {
+    // Blanking a quoted span leaves its quotes behind around whitespace, so a
+    // quoted assignment value splits in two: `foo="bar"` arrives as `foo="`
+    // plus a lone `"`. Dropping the empty-quote residue keeps the assignment
+    // one word, so `foo="bar" echo npm install` still finds `echo` running.
+    const words = command
+      .split(/\s+/)
+      .filter((word) => word && !/^['"]+$/.test(word));
+    // Leading `VAR=value` words assign to the command's environment, they are
+    // not the command: `foo=bar echo npm install` runs echo. The first word
+    // that is not one holds command position.
+    const commandAt = words.findIndex(
+      (word) => !/^[a-z_][a-z0-9_]*=/.test(word)
+    );
+    // Both narrowings need the word to be doing its own job, not sitting in
+    // someone else's operand slot: a printer/lookup name only consumes data as
+    // the word being RUN, and a pattern option only when the command running it
+    // is the one that owns that spelling.
+    const runs = commandAt === -1 ? undefined : words[commandAt];
+    const ownsDataOptions =
+      runs !== undefined && ARGUMENT_DATA_OPTION_OWNERS.has(runs);
+    const dataAt = words.findIndex(
+      (word, index) =>
+        (ownsDataOptions && ARGUMENT_DATA_OPTIONS.has(word)) ||
+        (index === commandAt && ARGUMENT_DATA_COMMANDS.has(word))
+    );
+    const head = (dataAt === -1 ? words : words.slice(0, dataAt)).join(" ");
+    if (head && matches(head)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Advisory detector for an honestly-typed package-manager install/acquire
  * command, used to return a helpful "declare it in nixPackages instead" message
  * (see {@link enforceBashPreflight}).
@@ -212,8 +326,14 @@ function blankQuotedSpans(text: string): string {
  * name (`"nix" run`, `n\ix run`, `/usr/bin/nix run`), a manager behind an exec
  * wrapper (`env nix run`, `xargs npm install`), a name built at runtime, and
  * the body of an interpreter reached by path or long option (`/bin/bash -c`,
- * `bash --login -c`). It also over-denies a manager named as a plain argument
- * (`echo uvx cowsay`).
+ * `bash --login -c`). It also over-denies a manager named as an argument in a
+ * position the argument-data words do not cover (`for f in npm install`,
+ * `sudo grep nix run x`).
+ *
+ * That direction is chosen, not tolerated: over-denial is a confusing error on
+ * a harmless command, under-detection is a missing guard rail. So every
+ * uncertain case falls back to the base detector and flags, and only a word
+ * whose operand provably cannot be a command narrows it.
  *
  * Those misses are not holes on the local backend: the manager is never a
  * runnable command there. `UNSANDBOXED_INTERPRETERS` in
@@ -242,9 +362,10 @@ export function isDirectPackageInstallCommand(command: string): boolean {
       text.startsWith(prefix.toLowerCase())
     ) || DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(text));
 
-  // Scan the command with quoted DATA blanked out, so only real command
-  // positions can match.
-  if (matches(blankQuotedSpans(trimmed))) {
+  // Scan the command with quoted DATA blanked out and each data word's operands
+  // dropped, so a manager merely NAMED cannot match. Both scrubs are advisory
+  // and fail toward flagging: whatever they cannot prove to be data is matched.
+  if (matchesBeforeArgumentData(blankQuotedSpans(trimmed), matches)) {
     return true;
   }
 
@@ -252,7 +373,7 @@ export function isDirectPackageInstallCommand(command: string): boolean {
   INTERPRETER_DASH_C.lastIndex = 0;
   for (const m of trimmed.matchAll(INTERPRETER_DASH_C)) {
     const body = m[2]?.trim();
-    if (body && matches(blankQuotedSpans(body))) {
+    if (body && matchesBeforeArgumentData(blankQuotedSpans(body), matches)) {
       return true;
     }
   }

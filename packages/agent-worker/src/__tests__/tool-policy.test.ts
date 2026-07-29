@@ -502,4 +502,224 @@ describe("enforceBashCommandPolicy", () => {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }
   });
+
+  test("a manager consumed as data by a word before it is not an install (#2279)", () => {
+    // Plain whitespace precedes every ARGUMENT, so a command that merely NAMES
+    // a manager used to read as an install. #2259 only widened the manager
+    // list, which made the latent bug fire on the far commoner `nix`/`uvx`
+    // spellings — "nix shell" turns up in commit messages and grep patterns.
+    for (const cmd of [
+      // The four spellings reported on the issue. The first needs no data word
+      // at all — a quoted span is already blanked before matching (#2259).
+      "git commit -m 'document nix shell support'",
+      "echo uvx cowsay",
+      "git log --grep nix run",
+      "man nix run",
+      // …and the rest of the class, from the probes on #2273 / #2277.
+      "echo npm install",
+      "echo if npm install",
+      "echo x{ npm install",
+      "echo iffy nix run",
+      "which nix",
+      "printf %s pip install",
+      "ls -la nix run",
+      "git log --oneline --grep 'apt install'",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("an argument position this cannot prove still flags (#2279)", () => {
+    // The narrowing is one word deep on purpose. A wrapper's own options and
+    // operands are NOT modelled — how many words `timeout`/`flock`/`chroot`
+    // take before the command they run is per-wrapper knowledge this matcher
+    // refuses to encode — so a manager after them keeps firing. Same for a
+    // backslash line continuation, which is shell lexing this does not do.
+    const bs = String.fromCharCode(92);
+    for (const cmd of [
+      "timeout --signal KILL 5 npm install left-pad",
+      "flock -w 10 /tmp/lock npm install left-pad",
+      "chroot --userspec root /jail npm install left-pad",
+      `FOO=bar${bs}\nbaz npm install left-pad`,
+      `sudo -u ro${bs}\not npm install left-pad`,
+      // The full denied list from the issue, so narrowing the false positives
+      // cannot silently trade them for a missed install.
+      "npm install lodash",
+      "FOO=bar npm install lodash",
+      "time npm install lodash",
+      "true; npm install lodash",
+      "true && uvx cowsay",
+      "(nix shell nixpkgs#hello)",
+      "if nix run x; then :; fi",
+      "{ nix run x; }",
+      "! nix run x",
+      "for i in 1; do nix run x; done",
+      "bash -c 'nix run x'",
+      "bash -euo pipefail -c 'uvx x'",
+      // A data word swallows its OWN command, not the rest of the pipeline…
+      "echo uvx cowsay | npm install left-pad",
+      // …and only what comes after it.
+      "npm install echo",
+      // A SHORT option is never a data word: one letter means different things
+      // to different commands, and `parallel -m` is max-args, not a message —
+      // it runs the very install a `-m` entry would have hidden.
+      "parallel -m npm install lodash ::: left-pad",
+      "parallel -m nix run ::: nixpkgs#hello",
+      "git commit -m nix shell support",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+  });
+
+  test("a data word is only data in command position (#2279)", () => {
+    // A printer/lookup name narrows ONLY as the word being run. Anywhere else
+    // it is an operand of whatever precedes it — a username, a path, a file —
+    // and dropping the tail there would silence a real install. Every case
+    // below has a data word (`ls`, `type`, `grep`) sitting in an operand slot.
+    for (const cmd of [
+      "sudo -u ls npm install evil",
+      "flock ls npm install evil",
+      "timeout --foreground -k ls 5 npm install evil",
+      "xargs -a ls npm install evil",
+      "git -C ls exec npm install evil",
+      "env -u type npm install evil",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // Not in this class: a payload living entirely inside quotes is dropped by
+    // the #2259 quote blanking before any narrowing runs, so it reads false on
+    // origin/main too. Pinned so it is not mistaken for a regression here.
+    expect(
+      isDirectPackageInstallCommand(
+        'docker run --entrypoint sh grep -c "npm install evil"'
+      )
+    ).toBe(false);
+    // …and in command position it still narrows, which is the whole point.
+    for (const cmd of ["ls npm install", "grep npm install file", "type npm"]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("an escaped separator does not open a command position (#2279)", () => {
+    const bs = String.fromCharCode(92);
+    // `\;` and `\|` are literal data, so each of these is ONE echo command with
+    // the manager as its operand. Splitting on the escaped operator would hand
+    // the half after it a command position it does not have.
+    expect(isDirectPackageInstallCommand(`echo foo${bs}; nix run x`)).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand(`echo foo${bs}| npm install x`)).toBe(
+      false
+    );
+    // An escaped quote is not a quote either, so the real command after it is
+    // still scanned instead of being blanked as the body of a quoted span.
+    expect(
+      isDirectPackageInstallCommand(`echo it${bs}'s fine; npm install lodash`)
+    ).toBe(true);
+    // An UNescaped separator still opens a command position.
+    expect(isDirectPackageInstallCommand("echo foo; nix run x")).toBe(true);
+  });
+
+  test("an assignment prefix does not hide the command word (#2279)", () => {
+    // `FOO=bar echo …` RUNS echo, so the data word holds command position even
+    // though it is not the first word of the command.
+    expect(isDirectPackageInstallCommand("FOO=bar echo npm install")).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand("FOO=bar BAZ=qux man nix run")).toBe(
+      false
+    );
+    // …while an assignment in front of the manager itself still flags, and a
+    // first word that is not an assignment keeps command position for itself —
+    // `ls` there is a username, not a printer.
+    expect(isDirectPackageInstallCommand("FOO=bar npm install lodash")).toBe(
+      true
+    );
+    expect(isDirectPackageInstallCommand("sudo -u ls npm install evil")).toBe(
+      true
+    );
+    // A QUOTED or escaped value must keep the assignment one word. Blanking the
+    // span leaves `foo="` plus a lone `"`, and treating that stray quote as the
+    // command word used to push `echo` out of command position.
+    const bs = String.fromCharCode(92);
+    expect(isDirectPackageInstallCommand('FOO="bar" echo npm install')).toBe(
+      false
+    );
+    expect(isDirectPackageInstallCommand("FOO='bar' man nix run")).toBe(false);
+    // An ESCAPED space inside the value is NOT covered: blanking the escape
+    // pair splits `FOO=ba\ r` into `FOO=ba` and `r`, so `r` takes command
+    // position and `echo` stops narrowing. Pinned as a known over-denial — the
+    // safe direction — rather than chased, since un-splitting it means lexing
+    // escapes properly, which is the bash-reimplementation this file refuses.
+    expect(
+      isDirectPackageInstallCommand(`FOO=ba${bs} r echo npm install`)
+    ).toBe(true);
+    // …and it must not swallow a real install hiding behind the same shape.
+    expect(isDirectPackageInstallCommand('FOO="bar" npm install lodash')).toBe(
+      true
+    );
+  });
+
+  test("a command substitution in the tail is not narrowed away (#2279)", () => {
+    // `$(...)` executes even as an argument, and it survives the narrowing for
+    // free: `(` and `)` are already command separators, so the substitution
+    // body is scanned as its own command before any tail is dropped.
+    for (const cmd of [
+      "echo $(npm install evil)",
+      "man $(nix run x)",
+      "git log --grep $(uvx cowsay)",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // BACKTICK substitution is a PRE-EXISTING gap, not one this change opened:
+    // every install pattern requires one of `[\s;|&()]` before the manager and
+    // a backtick is not in that class, so origin/main reads these false too
+    // (verified by running main's exported matcher against them). Pinned here
+    // so the limit is visible; widening 19 regexes is its own concern, not
+    // #2279's.
+    const bt = String.fromCharCode(96);
+    expect(
+      isDirectPackageInstallCommand(`echo ${bt}npm install evil${bt}`)
+    ).toBe(false);
+    // Plain inert data still narrows, so the fix itself is intact.
+    expect(isDirectPackageInstallCommand("echo uvx cowsay")).toBe(false);
+    expect(isDirectPackageInstallCommand("man nix run")).toBe(false);
+  });
+
+  test("a pattern option is only data for the command that owns it (#2279)", () => {
+    // An option is not self-evidently an option. `env -u NAME` takes a VARIABLE
+    // NAME and then execs the rest, so `--grep` there is an operand — honouring
+    // it anywhere hid a real install behind any exec wrapper taking a value.
+    for (const cmd of [
+      "env -u --grep npm install evil",
+      "env -u --regexp npm install evil",
+      "sudo -u --grep npm install evil",
+      "timeout --signal --grep 5 npm install evil",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(true);
+    }
+    // Owned by the command that spells it, so it still narrows.
+    for (const cmd of [
+      "git log --grep nix run",
+      "grep --regexp nix run file",
+      "rg --regexp uvx cowsay",
+    ]) {
+      expect(isDirectPackageInstallCommand(cmd)).toBe(false);
+    }
+  });
+
+  test("an interpreter body gets the same narrowing (#2279)", () => {
+    // The `-c` body is scanned separately, so it needs its own coverage: a
+    // manager merely echoed inside the body is not an install…
+    expect(isDirectPackageInstallCommand('bash -c "echo npm install"')).toBe(
+      false
+    );
+    // …while one actually run inside the body still is.
+    expect(isDirectPackageInstallCommand('bash -c "npm install evil"')).toBe(
+      true
+    );
+    expect(
+      isDirectPackageInstallCommand('sh -c "sudo -u ls npm install"')
+    ).toBe(true);
+  });
 });

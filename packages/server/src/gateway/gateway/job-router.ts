@@ -12,6 +12,7 @@ import {
   type DispatchRecycler,
   gateDispatchOnStaleness,
   type LiveTurnProbe,
+  type TurnTerminalizer,
 } from "./dispatch-recycle.js";
 
 const logger = createLogger("worker-job-router");
@@ -36,6 +37,7 @@ export class WorkerJobRouter {
    */
   private dispatchRecycler?: DispatchRecycler;
   private probeLiveTurn?: LiveTurnProbe;
+  private terminalizeTurn?: TurnTerminalizer;
 
   constructor(
     private queue: IMessageQueue,
@@ -52,10 +54,12 @@ export class WorkerJobRouter {
    */
   setDispatchRecycler(
     recycler: DispatchRecycler,
-    probeLiveTurn?: LiveTurnProbe
+    probeLiveTurn?: LiveTurnProbe,
+    terminalizeTurn?: TurnTerminalizer
   ): void {
     this.dispatchRecycler = recycler;
     this.probeLiveTurn = probeLiveTurn;
+    this.terminalizeTurn = terminalizeTurn;
   }
 
   /**
@@ -148,12 +152,16 @@ export class WorkerJobRouter {
     // closed). Delivering on error would hand the turn to a sandbox holding a
     // dead or wrong credential, which is the defect this gate exists to stop.
     if (this.dispatchRecycler) {
-      await gateDispatchOnStaleness({
+      const decision = await gateDispatchOnStaleness({
         deploymentName,
         jobData,
         recycler: this.dispatchRecycler,
         probeLiveTurn: this.probeLiveTurn,
+        terminalizeTurn: this.terminalizeTurn,
       });
+      // "drop": the gate terminalized the turn (recycle rebuild failed) —
+      // returning completes the held job so it cannot resurface as a zombie.
+      if (decision === "drop") return;
     }
 
     const connection = this.connectionManager.getConnection(deploymentName);

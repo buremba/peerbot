@@ -18,7 +18,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { MessagePayload } from "@lobu/core";
+import { AgentErrorCode, type MessagePayload } from "@lobu/core";
 import { WorkerConnectionManager } from "../gateway/connection-manager.js";
 import type { DispatchRecycler } from "../gateway/dispatch-recycle.js";
 import { StaleWorkerError } from "../gateway/dispatch-recycle.js";
@@ -118,6 +118,12 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
   let router: WorkerJobRouter;
   let recycler: FakeRecycler;
   let liveTurn: boolean;
+  let terminalized: Array<{
+    deploymentName: string;
+    messageId: string;
+    code: AgentErrorCode;
+  }>;
+  let terminalizeError: Error | null;
   let res: MockResponse;
 
   /** SSE `job` events written to the current connection's writer. */
@@ -151,10 +157,20 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
       connectionManager,
       async () => []
     );
-    router.setDispatchRecycler(recycler, async (deploymentName) => {
-      expect(deploymentName).toBe(DEPLOYMENT);
-      return liveTurn;
-    });
+    terminalized = [];
+    terminalizeError = null;
+    router.setDispatchRecycler(
+      recycler,
+      async (deploymentName) => {
+        expect(deploymentName).toBe(DEPLOYMENT);
+        return liveTurn;
+      },
+      async (deploymentName, messageId, code) => {
+        if (terminalizeError) throw terminalizeError;
+        terminalized.push({ deploymentName, messageId, code });
+        return true;
+      }
+    );
     res = new MockResponse();
     connectionManager.addConnection(
       DEPLOYMENT,
@@ -262,16 +278,41 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     expect(deliveredJobs()).toHaveLength(1);
   });
 
-  test("scenario (e) FAIL-CLOSED PIN: recycle path throws → the job is NOT delivered to the stale worker", async () => {
+  test("scenario (e): rebuild fails → the turn is terminalized and the held job completes (never delivered, never a zombie)", async () => {
+    // The teardown may have paused this queue's consumer (SSE disconnect), so
+    // a re-thrown job would sit unclaimable until the sweep deadline, then be
+    // delivered as a zombie after a later message rebuilds the worker. The
+    // gate must instead fail the turn through the marker election — the same
+    // outcome the enqueue path gives a create failure — and consume the job.
     recycler.bornFingerprint = "fp-old";
     recycler.recycleError = new Error("secret-store unavailable");
+
+    await queue.addJob(QUEUE, { id: "run-100", data: makePayload() });
+
+    expect(deliveredJobs()).toHaveLength(0);
+    expect(terminalized).toEqual([
+      {
+        deploymentName: DEPLOYMENT,
+        messageId: "m-1",
+        code: AgentErrorCode.WORKER_STARTUP_FAILED,
+      },
+    ]);
+  });
+
+  test("scenario (e) FAIL-CLOSED PIN: rebuild AND terminalize fail → the original error propagates, nothing delivered", async () => {
+    // If even the election is unreachable, the job must stay undelivered and
+    // retry — the sweep remains the backstop. What must never happen is a
+    // catch-and-deliver onto the stale worker, or a silent drop of a turn
+    // that was never terminalized.
+    recycler.bornFingerprint = "fp-old";
+    recycler.recycleError = new Error("secret-store unavailable");
+    terminalizeError = new Error("db unreachable");
 
     await expect(
       queue.addJob(QUEUE, { id: "run-100", data: makePayload() })
     ).rejects.toThrow("secret-store unavailable");
-    // The queue will retry (and eventually fail visibly); what must never
-    // happen is a catch-and-deliver onto the stale worker.
     expect(deliveredJobs()).toHaveLength(0);
+    expect(terminalized).toHaveLength(0);
   });
 
   test("stale job observed BEFORE the rebuild does not tear the fresh worker down again", async () => {

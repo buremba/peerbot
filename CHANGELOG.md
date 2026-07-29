@@ -1,5 +1,36 @@
 # Changelog
 
+## [14.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.6.0...lobu-v14.7.0) (2026-07-29)
+
+
+### Features
+
+* **owletto:** reach the cluster index on narrow viewports ([#2278](https://github.com/lobu-ai/lobu/issues/2278)) ([8db0ee2](https://github.com/lobu-ai/lobu/commit/8db0ee25fbad0b4572186d7d33c6e397e5f1310c))
+* **server:** provision connector-contributed nix packages on remote runtimes ([#2249](https://github.com/lobu-ai/lobu/issues/2249)) ([0ccfe6c](https://github.com/lobu-ai/lobu/commit/0ccfe6c754ee3d691b9eecd73beeceeab3830a74))
+
+
+### Bug Fixes
+
+* **agent-worker:** deny new-style nix CLI and ad-hoc package runners ([#2259](https://github.com/lobu-ai/lobu/issues/2259)) ([81c5eb5](https://github.com/lobu-ai/lobu/commit/81c5eb5935da44ffb1b0064e2cf583e1692e9b75))
+* **agent-worker:** stop counting a package manager consumed as argument data ([#2294](https://github.com/lobu-ai/lobu/issues/2294)) ([6d63e0f](https://github.com/lobu-ai/lobu/commit/6d63e0f93e41df80f2ab7ab29b2d8bb80183da7e))
+* **ci:** publish arm64 alongside amd64 on releases ([#2296](https://github.com/lobu-ai/lobu/issues/2296)) ([54676bc](https://github.com/lobu-ai/lobu/commit/54676bcc9c544968478e671897c652c673299385))
+* **ci:** stop the merge-integrity sweep crashing on an unresolvable commit ([#2303](https://github.com/lobu-ai/lobu/issues/2303)) ([e1a1594](https://github.com/lobu-ai/lobu/commit/e1a15948607bb1761d157111deedfd60baae22db))
+* **scripts:** restore every workspace manifest the bump test rewrites ([#2306](https://github.com/lobu-ai/lobu/issues/2306)) ([2595f23](https://github.com/lobu-ai/lobu/commit/2595f239a6656f905641b643fc5cf8c4dbe772c2))
+* **server:** clear every stale device pin, not just the selected row ([#2299](https://github.com/lobu-ai/lobu/issues/2299)) ([4a707ac](https://github.com/lobu-ai/lobu/commit/4a707ac7a4679057924c81c51e59972abafc85be))
+* **server:** close MCP recall, Behavior exposure, and connector-health gaps ([#2298](https://github.com/lobu-ai/lobu/issues/2298)) ([32ab462](https://github.com/lobu-ai/lobu/commit/32ab462af3d57ec0e3146274e0c0ba4dd58813b4))
+* **server:** let members read a single auth profile, matching list ([#2304](https://github.com/lobu-ai/lobu/issues/2304)) ([2df9eb5](https://github.com/lobu-ai/lobu/commit/2df9eb5fbc59f287e8151875cfd227308c96fc66))
+* **server:** make org scoping fail closed instead of dropping the filter ([#2292](https://github.com/lobu-ai/lobu/issues/2292)) ([f54cc39](https://github.com/lobu-ai/lobu/commit/f54cc39a83b60111c3984ac5d9d88a42fc08b0ea))
+* **server:** make the SDK access-tier drift guard fail closed ([#2283](https://github.com/lobu-ai/lobu/issues/2283)) ([87650ce](https://github.com/lobu-ai/lobu/commit/87650cee2767eeaa2f7ae427435433713ceb8bec))
+* **server:** name the provider in error bodies and unwrap the JSON envelope ([#2280](https://github.com/lobu-ai/lobu/issues/2280)) ([77c3e8a](https://github.com/lobu-ai/lobu/commit/77c3e8a81b2b1eb9f0ba13dab66ed85bbed87c8a))
+* **server:** never steal a device pin another live connection holds ([#2286](https://github.com/lobu-ai/lobu/issues/2286)) ([eeda0f3](https://github.com/lobu-ai/lobu/commit/eeda0f399316a452bd21adf492f4558904610e87))
+* **server:** pre-flight the device pin on connection update ([#2300](https://github.com/lobu-ai/lobu/issues/2300)) ([df4c976](https://github.com/lobu-ai/lobu/commit/df4c976589674ea9833344c156d71b50a33aa4c4))
+* **server:** prove the tenant before scoping org-less agent history ([#2284](https://github.com/lobu-ai/lobu/issues/2284)) ([7b38e5a](https://github.com/lobu-ai/lobu/commit/7b38e5a6e5ce1e2ac2b7c7c452a6ce470abd3f11))
+* **server:** read a conversation by its stored id, fenced on its row ([#2302](https://github.com/lobu-ai/lobu/issues/2302)) ([cc26933](https://github.com/lobu-ai/lobu/commit/cc269333e7470e602000fc50d52d1083fe310f5a))
+* **server:** scope org-less agent config reads to a proven tenant ([#2287](https://github.com/lobu-ai/lobu/issues/2287)) ([6fa34e0](https://github.com/lobu-ai/lobu/commit/6fa34e0e1cc4f306e9d44ec771a5b9b86481fbff))
+* **server:** stop a throttled sandbox from reading as a failed command ([#2281](https://github.com/lobu-ai/lobu/issues/2281)) ([aa91965](https://github.com/lobu-ai/lobu/commit/aa91965f132bffe95aa413c4f569417553b6a87f))
+* **server:** stop the Chat SDK history cache from dropping inbound messages ([#2305](https://github.com/lobu-ai/lobu/issues/2305)) ([63c7dd5](https://github.com/lobu-ai/lobu/commit/63c7dd519bccb4ec8d4792c8885fa9e8264a419b))
+* **server:** validate guardrails carried on skills at the write boundary ([#2285](https://github.com/lobu-ai/lobu/issues/2285)) ([a5869d8](https://github.com/lobu-ai/lobu/commit/a5869d88173697e30cba4f0fb0d910086bda4069))
+
 ## [14.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.5.0...lobu-v14.6.0) (2026-07-28)
 
 

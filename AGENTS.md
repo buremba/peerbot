@@ -33,7 +33,7 @@
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title, e.g. `fix(server): …`).
 8. `make review` **once** on the settled HEAD. It posts the `pi-review` status, which is a REQUIRED check.
 9. Merge squash once CI is green: `gh pr merge <n> --squash --admin`. Never `--admin` past a check that has not reported.
-10. Prod-visible surface? Verify it live after rollout. Set a self-rescheduling `ScheduleWakeup` (~1500s) carrying the rollout gate — poll the deployed SHA, then `git merge-base --is-ancestor` it against your commit — run the live check when it lands, and write the result back to memory. Four programs currently sit on "OWED prod verify" with no closure.
+10. Prod-visible surface? Verify it live after rollout. Set a self-rescheduling `ScheduleWakeup` (~1500s) carrying the rollout gate — poll the deployed SHA, then `git merge-base --is-ancestor <your-commit> <deployed-sha>` (your commit first — exit 0 means the deployment contains it; the reverse order accepts a stale deploy) — run the live check when it lands, and write the result back to memory. Four programs currently sit on "OWED prod verify" with no closure.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.

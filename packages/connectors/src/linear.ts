@@ -286,10 +286,19 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
     const limit = Math.min(requestedLimit, configuredMax);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
     const want = offset + limit;
+    // Cursor pagination has no random access — walk from the start. Cap depth so
+    // a huge offset never returns a silent empty page while more issues exist.
+    const maxReachable = this.PAGE_SIZE * this.MAX_PAGES;
+    if (want > maxReachable) {
+      throw new Error(
+        `Linear virtual feed: offset+limit (${want}) exceeds max reachable depth ${maxReachable}. Narrow the filter or lower offset.`,
+      );
+    }
 
     const collected: LinearIssueNode[] = [];
     let cursor: string | null = null;
     let pages = 0;
+    let sourceExhausted = false;
 
     while (collected.length < want && pages < this.MAX_PAGES) {
       pages += 1;
@@ -314,8 +323,17 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
       collected.push(...nodes);
       const pageInfo: { hasNextPage?: boolean; endCursor?: string | null } | undefined =
         response.issues?.pageInfo;
-      if (!pageInfo?.hasNextPage || !pageInfo.endCursor || nodes.length === 0) break;
+      if (!pageInfo?.hasNextPage || !pageInfo.endCursor || nodes.length === 0) {
+        sourceExhausted = true;
+        break;
+      }
       cursor = pageInfo.endCursor;
+    }
+
+    if (collected.length < want && !sourceExhausted && pages >= this.MAX_PAGES) {
+      throw new Error(
+        `Linear virtual feed: pagination depth cap (${this.MAX_PAGES} pages × ${this.PAGE_SIZE}) hit before offset+limit (${want}). Narrow the filter or lower offset.`,
+      );
     }
 
     const page = collected.slice(offset, offset + limit);

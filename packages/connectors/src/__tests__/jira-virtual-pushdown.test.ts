@@ -326,6 +326,21 @@ describe('Jira virtual-feed pushdown', () => {
     expect(cap.tokens).toEqual([null, '100']);
   });
 
+  test('rejects offset+limit beyond max reachable pagination depth', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap);
+    // PAGE_SIZE=100 × MAX_PAGES=50 → 5000 max. offset=5000 limit=1 ⇒ 5001.
+    await expect(
+      c.query({
+        ...BASE_CTX,
+        query: 'project = SUPP',
+        limit: 1,
+        offset: 5000,
+      }),
+    ).rejects.toThrow(/max reachable depth/);
+    expect(cap.jqls).toHaveLength(0);
+  });
+
   test('uses max_results as an optional feed cap', async () => {
     const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
     const c = connectorWith(cap);

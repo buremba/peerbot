@@ -46,7 +46,7 @@ import { createSyncRun } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
 import {
-  mergeJiraSiteIntoConnectionConfig,
+  jiraSiteConfigPatch,
   resolveJiraCloudSite,
   type JiraCloudSite,
 } from './atlassian-resources';
@@ -901,23 +901,11 @@ async function handleOAuthCallback(
         : undefined;
       const forcePrivate = isPersonalCredentialKind(attachedKind);
 
-      // Stamp Jira cloud_id onto connection.config + external_tenant_id so
-      // virtual reads / webhook register merge the site without per-feed config.
-      let nextConfigJson: ReturnType<typeof tx.json> | null = null;
-      let nextExternalTenantId: string | null = null;
+      // Stamp Jira cloud_id via atomic JSONB merge so a concurrent replica
+      // updating action_modes / webhook state is not clobbered by a full
+      // config rewrite. Drop prior site keys then || the patch.
       if (jiraSite) {
-        const existingRows = (await tx`
-          SELECT config FROM connections
-          WHERE id = ${tokenRow.connection_id}
-            AND organization_id = ${tokenRow.organization_id}
-          LIMIT 1
-        `) as Array<{ config: Record<string, unknown> | null }>;
-        const merged = mergeJiraSiteIntoConnectionConfig(existingRows[0]?.config, jiraSite);
-        nextConfigJson = tx.json(merged);
-        nextExternalTenantId = jiraSite.cloudId;
-      }
-
-      if (nextConfigJson) {
+        const sitePatch = jiraSiteConfigPatch(jiraSite);
         await tx`
           UPDATE connections
           SET account_id = ${resolvedAccountId},
@@ -925,8 +913,12 @@ async function handleOAuthCallback(
               status = 'active',
               visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
               display_name = COALESCE(display_name, ${displayNameOverride}),
-              config = ${nextConfigJson},
-              external_tenant_id = COALESCE(${nextExternalTenantId}, external_tenant_id),
+              config = (
+                (COALESCE(config, '{}'::jsonb)
+                  - 'cloud_id' - 'site_url' - 'site_name' - 'accessible_sites')
+                || ${tx.json(sitePatch)}::jsonb
+              ),
+              external_tenant_id = COALESCE(${jiraSite.cloudId}, external_tenant_id),
               updated_at = NOW()
           WHERE id = ${tokenRow.connection_id}
             AND organization_id = ${tokenRow.organization_id}

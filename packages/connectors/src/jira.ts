@@ -448,6 +448,15 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     const limit = Math.min(requestedLimit, configuredMax);
     const offset = Math.max(Math.trunc(ctx.offset ?? 0), 0);
     const want = offset + limit;
+    // Opaque nextPageToken has no random access — we must walk from the start.
+    // Cap depth so a huge offset never returns a silent empty page while more
+    // issues still exist beyond MAX_PAGES.
+    const maxReachable = this.PAGE_SIZE * this.MAX_PAGES;
+    if (want > maxReachable) {
+      throw new Error(
+        `Jira virtual feed: offset+limit (${want}) exceeds max reachable depth ${maxReachable}. Narrow the JQL or lower offset.`,
+      );
+    }
 
     const base = await this.restBase(ctx.config, ctx.sessionState, ctx.credentials);
     const http = this.client(ctx.credentials);
@@ -455,6 +464,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     const collected: JiraIssue[] = [];
     let nextPageToken: string | undefined;
     let pages = 0;
+    let sourceExhausted = false;
 
     while (collected.length < want && pages < this.MAX_PAGES) {
       pages += 1;
@@ -473,8 +483,17 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       const issues = data.issues ?? [];
       collected.push(...issues);
       // Empty page or no further cursor → done (same degenerate-cursor guard as sync).
-      if (issues.length === 0 || !data.nextPageToken) break;
+      if (issues.length === 0 || !data.nextPageToken) {
+        sourceExhausted = true;
+        break;
+      }
       nextPageToken = data.nextPageToken;
+    }
+
+    if (collected.length < want && !sourceExhausted && pages >= this.MAX_PAGES) {
+      throw new Error(
+        `Jira virtual feed: pagination depth cap (${this.MAX_PAGES} pages × ${this.PAGE_SIZE}) hit before offset+limit (${want}). Narrow the JQL or lower offset.`,
+      );
     }
 
     const page = collected.slice(offset, offset + limit);

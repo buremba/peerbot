@@ -127,18 +127,29 @@ export async function resolveJiraCloudSite(
 }
 
 /**
- * Merge discovered site fields into a connection.config blob without clobbering
- * unrelated keys (webhook state, action_modes, …).
+ * Build the JSONB patch for a discovered site. Callers apply it atomically with
+ * `config = (COALESCE(config,'{}') - site keys) || patch` so concurrent updates
+ * to unrelated connection.config keys are preserved.
+ */
+export function jiraSiteConfigPatch(site: JiraCloudSite): Record<string, unknown> {
+  const patch: Record<string, unknown> = { cloud_id: site.cloudId };
+  if (site.siteUrl) patch.site_url = site.siteUrl;
+  if (site.siteName) patch.site_name = site.siteName;
+  return patch;
+}
+
+/**
+ * Pure merge helper for unit tests / offline callers. Production OAuth path
+ * uses {@link jiraSiteConfigPatch} with an atomic SQL JSONB merge instead.
  */
 export function mergeJiraSiteIntoConnectionConfig(
   existing: Record<string, unknown> | null | undefined,
   site: JiraCloudSite
 ): Record<string, unknown> {
   const next: Record<string, unknown> = { ...(existing ?? {}) };
-  next.cloud_id = site.cloudId;
-  if (site.siteUrl) next.site_url = site.siteUrl;
-  else delete next.site_url;
-  if (site.siteName) next.site_name = site.siteName;
-  else delete next.site_name;
+  delete next.cloud_id;
+  delete next.site_url;
+  delete next.site_name;
+  Object.assign(next, jiraSiteConfigPatch(site));
   return next;
 }

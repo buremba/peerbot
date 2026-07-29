@@ -118,6 +118,23 @@ describe('Linear virtual-feed pushdown', () => {
     expect(cap.queries[2]).toContain('issues(first: 20, after: "100"');
   });
 
+  test('rejects offset+limit beyond max reachable pagination depth', async () => {
+    const cap: Capture = { queries: [] };
+    const c = connectorWith(cap, []);
+    // PAGE_SIZE=50 × MAX_PAGES=50 → 2500 max. offset=2500 limit=1 ⇒ 2501.
+    await expect(
+      c.query({
+        credentials: { accessToken: 'tok' },
+        config: {},
+        sessionState: null,
+        query: '',
+        limit: 1,
+        offset: 2500,
+      }),
+    ).rejects.toThrow(/max reachable depth/);
+    expect(cap.queries).toHaveLength(0);
+  });
+
   test('uses max_results as an optional feed cap', async () => {
     const cap: Capture = { queries: [] };
     const nodes = Array.from({ length: 5 }, (_, index) => ({

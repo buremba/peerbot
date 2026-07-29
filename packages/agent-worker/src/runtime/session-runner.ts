@@ -310,16 +310,26 @@ export function getLatestAssistantText(
 const PI_CODING_AGENT_OPENER_RE =
   /^You are an expert coding assistant operating inside pi, a coding agent harness\.[^\n]*/;
 
+const PI_DOCS_RE =
+  /\n\nPi documentation[\s\S]*?- Always read pi \.md files completely[^\n]*/;
+
 export function replaceBasePromptIdentity(
   basePrompt: string,
   identity: string
 ): string {
-  if (PI_CODING_AGENT_OPENER_RE.test(basePrompt)) {
-    return basePrompt.replace(PI_CODING_AGENT_OPENER_RE, identity);
+  let prompt = basePrompt;
+  if (PI_CODING_AGENT_OPENER_RE.test(prompt)) {
+    prompt = prompt.replace(PI_CODING_AGENT_OPENER_RE, identity);
+  } else {
+    // Upstream wording drifted — prepend identity with a framing note rather
+    // than silently letting the upstream opener win.
+    prompt = `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${prompt}`;
   }
-  // Upstream wording drifted — prepend identity with a framing note rather
-  // than silently letting the upstream opener win.
-  return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
+
+  // Strip pi documentation completely so it does not distract the model
+  prompt = prompt.replace(PI_DOCS_RE, "");
+
+  return prompt;
 }
 
 /**

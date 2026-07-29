@@ -91,11 +91,80 @@ async function seedConn(orgId: string, userId: string, device: string | null): P
   return Number(row.id);
 }
 
+async function seedAuthProfile(orgId: string, userId: string): Promise<number> {
+  const [row] = (await sql`
+    INSERT INTO auth_profiles (
+      organization_id, slug, display_name, connector_key, profile_kind, created_by
+    ) VALUES (
+      ${orgId}, ${`prof-${Math.random().toString(36).slice(2, 8)}`}, 'Test Profile',
+      ${CONNECTOR}, 'env', ${userId}
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+  return Number(row.id);
+}
+
 async function pinOf(id: number): Promise<string | null> {
   const [row] = (await sql`
     SELECT device_worker_id FROM connections WHERE id = ${id}
   `) as unknown as Array<{ device_worker_id: string | null }>;
   return row?.device_worker_id ?? null;
+}
+
+/** Live connections carrying the device-connector identity: auto-wire's own
+ * INSERT writes NULL to BOTH profile columns, so this is exactly the set the
+ * wire pass owns — and exactly what a credential-backed row must stay out of. */
+async function autoWiredConnections(
+  orgId: string
+): Promise<Array<{ id: number; device_worker_id: string | null }>> {
+  const rows = (await sql`
+    SELECT id, device_worker_id
+    FROM connections
+    WHERE organization_id = ${orgId}
+      AND connector_key = ${CONNECTOR}
+      AND auth_profile_id IS NULL
+      AND app_auth_profile_id IS NULL
+      AND deleted_at IS NULL
+    ORDER BY id ASC
+  `) as unknown as Array<{ id: number; device_worker_id: string | null }>;
+  return rows.map((r) => ({ id: Number(r.id), device_worker_id: r.device_worker_id }));
+}
+
+/** Only the SLOW path re-runs `upsertConnectorDefinitionRecords`, and that
+ * upsert always stamps `updated_at = NOW()`. So a definition whose stamp did not
+ * move is proof the fast path was taken — the one externally visible difference
+ * between the two branches. */
+async function definitionUpdatedAt(orgId: string): Promise<string> {
+  const [row] = (await sql`
+    SELECT updated_at FROM connector_definitions
+    WHERE organization_id = ${orgId} AND key = ${CONNECTOR} AND status = 'active'
+  `) as unknown as Array<{ updated_at: string | Date }>;
+  return new Date(row.updated_at).toISOString();
+}
+
+/**
+ * Block until `reconcileDeviceCapabilities` has parked on the per-(user,
+ * connector) autowire advisory lock. Two-int advisory locks surface in
+ * `pg_locks` as classid=key1, objid=key2, objsubid=2; `hashtext` is int4 so the
+ * keys are compared in their unsigned form. Throwing on timeout is deliberate —
+ * a test that silently proceeds without the interleave would prove nothing.
+ */
+async function waitForAutowireLockWaiter(lockKey: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const [row] = (await sql`
+      SELECT count(*)::int AS waiting
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND NOT granted
+        AND objsubid = 2
+        AND classid::text::bigint = (hashtext('lobu:autowire')::bigint & 4294967295)
+        AND objid::text::bigint = (hashtext(${lockKey})::bigint & 4294967295)
+    `) as unknown as Array<{ waiting: number }>;
+    if (Number(row.waiting) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`reconcile never blocked on the autowire advisory lock for ${lockKey}`);
 }
 
 describe('device pin stale sweep', () => {
@@ -173,6 +242,45 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(lapsedConn)).toBeNull();
   });
 
+  it('clears a pin whose device is in the snapshot but has lost the capability', async () => {
+    // `matchingDeviceIds` is captured before the advisory lock. A device present
+    // in it can drop the capability before the sweep runs — an app update or a
+    // revoked permission on another replica. Gating the sweep on that snapshot
+    // would let such a pin survive, because the snapshot still says "serving"
+    // and short-circuits the mutation-time check. Only the NOT EXISTS decides.
+    const serving = await seedWorker(userId, orgId, true);
+    const lapsing = await seedWorker(userId, orgId, true);
+    const servingConn = await seedConn(orgId, userId, serving);
+    const lapsingConn = await seedConn(orgId, userId, lapsing);
+
+    // The interleave has to happen INSIDE reconcile — between its fleet read
+    // and the sweep — or the snapshot never contains the stale-positive entry
+    // and the test proves nothing. Hold the per-(user, connector) autowire lock
+    // so reconcile snapshots BOTH devices as capable, then parks; drop the
+    // capability while it waits; release. Its snapshot is now wrong in exactly
+    // the way the blocker described.
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const holder = sql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${CONNECTOR}`}))`;
+      await held;
+    });
+
+    const reconciling = reconcileDeviceCapabilities(userId);
+    await waitForAutowireLockWaiter(`${userId}:${CONNECTOR}`);
+
+    await sql`
+      UPDATE device_workers SET capabilities = ${sql.json([])} WHERE id = ${lapsing}::uuid
+    `;
+    release();
+    await Promise.all([reconciling, holder]);
+
+    expect(await pinOf(servingConn)).toBe(serving);
+    expect(await pinOf(lapsingConn)).toBeNull();
+  });
+
   it('pauses only auth-free feeds when the fleet stops serving the capability', async () => {
     // When no fresh device advertises the capability, the connector routes to
     // `pauseStaleDeviceFeeds` instead of the wire pass. That statement carries
@@ -188,21 +296,13 @@ describe('device pin stale sweep', () => {
       UPDATE device_workers SET capabilities = ${sql.json([])} WHERE id = ${freshNoCap}::uuid
     `;
 
-    const [prof] = (await sql`
-      INSERT INTO auth_profiles (
-        organization_id, slug, display_name, connector_key, profile_kind, created_by
-      ) VALUES (
-        ${orgId}, ${`prof-${Math.random().toString(36).slice(2, 8)}`}, 'Test Profile',
-        ${CONNECTOR}, 'env', ${userId}
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
+    const profileId = await seedAuthProfile(orgId, userId);
 
     const autoWired = await seedConn(orgId, userId, dead);
     const authBacked = await seedConn(orgId, userId, null);
     const appAuthBacked = await seedConn(orgId, userId, null);
-    await sql`UPDATE connections SET auth_profile_id = ${prof.id} WHERE id = ${authBacked}`;
-    await sql`UPDATE connections SET app_auth_profile_id = ${prof.id} WHERE id = ${appAuthBacked}`;
+    await sql`UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${authBacked}`;
+    await sql`UPDATE connections SET app_auth_profile_id = ${profileId} WHERE id = ${appAuthBacked}`;
 
     const feedOf = async (connId: number) => {
       const [row] = (await sql`
@@ -239,19 +339,9 @@ describe('device pin stale sweep', () => {
     const dead = await seedWorker(userId, orgId, false);
     const fresh = await seedWorker(userId, orgId, true);
     const authBacked = await seedConn(orgId, userId, dead);
+    const profileId = await seedAuthProfile(orgId, userId);
     await sql`
-      INSERT INTO auth_profiles (
-        organization_id, slug, display_name, connector_key, profile_kind, created_by
-      ) VALUES (
-        ${orgId}, ${`prof-${Math.random().toString(36).slice(2, 8)}`}, 'Test Profile',
-        ${CONNECTOR}, 'env', ${userId}
-      )
-    `;
-    const [prof] = (await sql`
-      SELECT id FROM auth_profiles WHERE organization_id = ${orgId} ORDER BY id DESC LIMIT 1
-    `) as unknown as Array<{ id: number }>;
-    await sql`
-      UPDATE connections SET auth_profile_id = ${prof.id} WHERE id = ${authBacked}
+      UPDATE connections SET auth_profile_id = ${profileId} WHERE id = ${authBacked}
     `;
     // Same protection for an APP-auth-backed row: auto-wire's own INSERT writes
     // NULL to both profile columns, so either one being set means the row is
@@ -259,7 +349,7 @@ describe('device pin stale sweep', () => {
     const dead2 = await seedWorker(userId, orgId, false);
     const appAuthBacked = await seedConn(orgId, userId, null);
     await sql`
-      UPDATE connections SET app_auth_profile_id = ${prof.id}, device_worker_id = ${dead2}::uuid
+      UPDATE connections SET app_auth_profile_id = ${profileId}, device_worker_id = ${dead2}::uuid
       WHERE id = ${appAuthBacked}
     `;
     const autoWired = await seedConn(orgId, userId, fresh);
@@ -272,4 +362,87 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(autoWired)).toBe(fresh);
   });
 
+  it('fast path refuses to adopt an app-auth-backed connection', async () => {
+    // The FAST path, not the slow one. Every case above runs against the
+    // hand-seeded definition, which does not match the manifest source
+    // (`definitionMatchesSource` is false), so they all fall through to the slow
+    // path and never exercise the fast path's own credential filter.
+    const fresh = await seedWorker(userId, orgId, true);
+    const dead = await seedWorker(userId, orgId, false);
+
+    // Arm the fast path by letting reconciliation write the definition itself:
+    // its upsert stores exactly the metadata `definitionMatchesSource` compares
+    // against. Deriving the match from production rather than transcribing it
+    // into a fixture is what stops this test decaying into a no-op if the
+    // manifest→metadata mapping ever changes.
+    await reconcileDeviceCapabilities(userId);
+    const [wired] = await autoWiredConnections(orgId);
+    expect(wired).toBeDefined();
+
+    // Turn that row into the connection under test: credential-backed, and
+    // pinned to a device that has since dropped out. It is now the ONLY
+    // connection, so the fast path's `LIMIT 1` has a single candidate — the
+    // outcome is decided by the credential filter, not by scan order.
+    const profileId = await seedAuthProfile(orgId, userId);
+    const appAuthBacked = wired.id;
+    await sql`
+      UPDATE connections
+      SET app_auth_profile_id = ${profileId}, device_worker_id = ${dead}::uuid
+      WHERE id = ${appAuthBacked}
+    `;
+    // Read the stamp back rather than comparing against the literal: whether the
+    // column is tz-aware decides how it round-trips, and a comparison that never
+    // matches would pass this test for free.
+    await sql`
+      UPDATE connector_definitions SET updated_at = '2000-01-01T00:00:00Z'
+      WHERE organization_id = ${orgId} AND key = ${CONNECTOR} AND status = 'active'
+    `;
+    const stamp = await definitionUpdatedAt(orgId);
+
+    await reconcileDeviceCapabilities(userId);
+
+    // The fast path found no connection it owns, so the wire pass fell through
+    // to the slow path — which re-upserts the definition (moving the stamp) and
+    // creates its OWN credential-free connection. Adopting the app-auth row
+    // instead would have fast-pathed out: stamp frozen, no connection made.
+    expect(await definitionUpdatedAt(orgId)).not.toBe(stamp);
+    const autoWired = await autoWiredConnections(orgId);
+    expect(autoWired).toHaveLength(1);
+    expect(autoWired[0].id).not.toBe(appAuthBacked);
+    expect(autoWired[0].device_worker_id).toBe(fresh);
+    // ...and never re-pinned the credential-backed row it does not own.
+    expect(await pinOf(appAuthBacked)).toBe(dead);
+  });
+
+  it('keeps a pin whose device came back between the fleet snapshot and the sweep', async () => {
+    // `matchingDeviceIds` is snapshotted BEFORE the advisory lock, so on another
+    // replica a device can heartbeat back into the fleet while this pass is
+    // still parked on the lock holding a snapshot that says it is gone. Sweeping
+    // from that snapshot would unpin a device that is live again; the sweep's
+    // NOT EXISTS re-checks `device_workers` at mutation time instead.
+    const fresh = await seedWorker(userId, orgId, true);
+    const revived = await seedWorker(userId, orgId, false);
+    // Lowest id — the row the wire pass resolves (`ORDER BY id ASC LIMIT 1`), so
+    // the single-row repair lands here and the revived row is decided purely by
+    // the sweep. Its pin is already correct, so that repair is a no-op.
+    const currentConn = await seedConn(orgId, userId, fresh);
+    const revivedConn = await seedConn(orgId, userId, revived);
+
+    const lockKey = `${userId}:${CONNECTOR}`;
+    let running!: Promise<void>;
+    await sql.begin(async (tx) => {
+      // Hold the wire pass's own lock, from a connection it does not own.
+      await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${lockKey}))`;
+      // Reads the fleet — `revived` is stale here — then parks on the lock.
+      running = reconcileDeviceCapabilities(userId);
+      await waitForAutowireLockWaiter(lockKey);
+      // The device comes back while the pass is parked, exactly the window the
+      // mutation-time re-check exists for.
+      await sql`UPDATE device_workers SET last_seen_at = now() WHERE id = ${revived}::uuid`;
+    });
+    await running;
+
+    expect(await pinOf(currentConn)).toBe(fresh);
+    expect(await pinOf(revivedConn)).toBe(revived);
+  });
 });

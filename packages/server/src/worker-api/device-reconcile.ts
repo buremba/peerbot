@@ -151,7 +151,12 @@ async function ensureDeviceConnectorWired(
         AND c.auth_profile_id IS NULL
         AND c.app_auth_profile_id IS NULL
         AND c.device_worker_id IS NOT NULL
-        AND NOT (c.device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[]))
+        -- Deliberately NOT gated on matchingDeviceIds: that snapshot is taken
+        -- before the advisory lock, so ANDing it in would let a device that has
+        -- since dropped the capability survive the sweep — the snapshot says
+        -- "still serving" and short-circuits the check below. The NOT EXISTS is
+        -- strictly more accurate, being evaluated at mutation time, so it is the
+        -- only condition that decides.
         AND NOT EXISTS (
           SELECT 1 FROM device_workers dw
           WHERE dw.id = c.device_worker_id

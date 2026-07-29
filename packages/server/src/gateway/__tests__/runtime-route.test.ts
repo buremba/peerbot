@@ -298,6 +298,10 @@ describe("createRuntimeRoutes — infrastructure failures", () => {
     expect(res.status).toBe(429);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    // Dispatch can reject after the command has already started, so this must
+    // never report "not_started" — that would invite an unsafe retry.
+    expect(body.outcome).toBe("unknown");
     expect(String(body.error)).toContain("run command");
   });
 });

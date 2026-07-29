@@ -19,8 +19,16 @@ import { authStash, installRouteTestMocks } from "./helpers/route-test-mocks";
 installRouteTestMocks();
 
 // The catalog is built from the registry alone, but GET / also lists rows.
-// Stub the store so the route runs without a database.
+// Stub the DB-touching store functions so the route runs without a database.
+// Spread the real module for the same reason as provider-secrets below:
+// `mock.module` is process-global, so a narrow stub follows this file into
+// every later file in the same `bun test` process (CI co-runs all of
+// src/lobu/__tests__). A stub that dropped `resolvePinnedSelection` broke
+// module LINKING for any later file whose graph reaches deployment-manager,
+// which imports it: the error surfaces in an unrelated suite, not in this one.
+const realSandboxStore = await import("../stores/sandbox-store.js");
 mock.module("../stores/sandbox-store", () => ({
+	...realSandboxStore,
 	listSandboxes: async () => [],
 	createSandbox: async () => undefined,
 	deleteSandbox: async () => undefined,

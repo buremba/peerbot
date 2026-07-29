@@ -995,7 +995,7 @@ jobs:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       # Build the worker image for amd64 only (no QEMU/arm64 — this is a smoke
       # gate, not a release) and load it into the local daemon instead of

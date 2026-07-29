@@ -165,9 +165,11 @@ function locateSystemdRun(): string | null {
 }
 
 /**
- * Detect once whether `nix-shell` is available. Agents and connectors declare
- * native deps via `nixConfig.packages`, which we normally provision by wrapping
- * the worker in `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
+ * Detect once whether `nix-shell` is available. Agents declare native deps via
+ * `nixConfig.packages`; connectors declare theirs via `agentTooling.nix.packages`,
+ * which we fold into `nixConfig.packages` when resolving the deployment. Either
+ * way we normally provision the resulting set by wrapping the worker in
+ * `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
  * image, which bakes Chromium in directly rather than via Nix) won't have it,
  * so we fall back to a plain spawn — mirroring `locateSystemdRun`'s graceful
  * degradation — instead of crashing the worker with `spawn nix-shell ENOENT`.

@@ -1774,6 +1774,29 @@ export async function handleUpdate(
     nextSlug = updateExplicitSlug;
   }
 
+	// Same pre-flight the create path runs (see the duplicate check above):
+	// `idx_connections_org_connector_device_live` is UNIQUE on
+	// (organization_id, connector_key, device_worker_id) for live rows, so
+	// re-pointing this connection at a device another live connection already
+	// holds hits the index as a raw 23505 instead of a readable error. Only
+	// the create path was guarded; the update path was not.
+	if (nextDeviceWorkerId) {
+		const pinDup = (await sql`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${existing.connector_key}
+          AND device_worker_id = ${nextDeviceWorkerId}
+          AND deleted_at IS NULL
+          AND id <> ${args.connection_id}
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+		if (pinDup.length > 0) {
+			return {
+				error: `A ${existing.connector_key} connection (id: ${pinDup[0].id}) is already assigned to that device in this org.`,
+			};
+		}
+	}
+
   // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
   let updated: any[];
   try {
@@ -1856,28 +1879,6 @@ export async function handleUpdate(
 		hasDeviceWorkerArg ||
 		(updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
 	) {
-		// Same pre-flight the create path runs (see the duplicate check above):
-		// `idx_connections_org_connector_device_live` is UNIQUE on
-		// (organization_id, connector_key, device_worker_id) for live rows, so
-		// re-pointing this connection at a device another live connection already
-		// holds hits the index as a raw 23505 instead of a readable error. Only
-		// the create path was guarded; the update path was not.
-		if (nextDeviceWorkerId) {
-			const pinDup = (await sql`
-        SELECT id FROM connections
-        WHERE organization_id = ${organizationId}
-          AND connector_key = ${existing.connector_key}
-          AND device_worker_id = ${nextDeviceWorkerId}
-          AND deleted_at IS NULL
-          AND id <> ${args.connection_id}
-        LIMIT 1
-      `) as unknown as Array<{ id: number }>;
-			if (pinDup.length > 0) {
-				return {
-					error: `A ${existing.connector_key} connection (id: ${pinDup[0].id}) is already assigned to that device in this org.`,
-				};
-			}
-		}
 		// Any change to the pin (set or clear) drops DELETE/move tombstones.
 		// Re-pinning a live device also un-pauses so the connection can run again.
 		const previousError = (updated[0] as Record<string, unknown>)

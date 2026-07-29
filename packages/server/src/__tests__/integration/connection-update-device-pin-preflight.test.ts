@@ -163,6 +163,38 @@ describe("connections.update device pin pre-flight", () => {
 		expect(await pinOf(loser)).toBeNull();
 	});
 
+	it("rejects a combined update atomically, persisting nothing", async () => {
+		// The guard must run BEFORE the general update commits. Rejecting after it
+		// would return an error while silently keeping the display_name change —
+		// a partial write the caller has no reason to expect, and no way to see.
+		const taken = await seedDevice("Taken");
+		await seedConnectionOnDevice(taken);
+		const mover = await seedConnectionOnDevice(null);
+
+		const [before] = (await sql`
+      SELECT display_name FROM connections WHERE id = ${mover}
+    `) as unknown as Array<{ display_name: string }>;
+
+		const result = (await manageConnections(
+			{
+				action: "update",
+				connection_id: mover,
+				display_name: "Renamed By A Rejected Update",
+				device_worker_id: taken,
+			},
+			{} as Env,
+			ctx,
+		)) as Record<string, unknown>;
+
+		expect(String(result.error)).toMatch(/already assigned to that device/i);
+
+		const [after] = (await sql`
+      SELECT display_name FROM connections WHERE id = ${mover}
+    `) as unknown as Array<{ display_name: string }>;
+		expect(after.display_name).toBe(before.display_name);
+		expect(await pinOf(mover)).toBeNull();
+	});
+
 	it("still allows re-pinning to a free device", async () => {
 		const inUse = await seedDevice("In Use");
 		const free = await seedDevice("Free");

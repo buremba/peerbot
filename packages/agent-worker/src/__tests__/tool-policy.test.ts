@@ -509,7 +509,8 @@ describe("enforceBashCommandPolicy", () => {
     // list, which made the latent bug fire on the far commoner `nix`/`uvx`
     // spellings — "nix shell" turns up in commit messages and grep patterns.
     for (const cmd of [
-      // The four spellings reported on the issue.
+      // The four spellings reported on the issue. The first needs no data word
+      // at all — a quoted span is already blanked before matching (#2259).
       "git commit -m 'document nix shell support'",
       "echo uvx cowsay",
       "git log --grep nix run",
@@ -559,6 +560,12 @@ describe("enforceBashCommandPolicy", () => {
       "echo uvx cowsay | npm install left-pad",
       // …and only what comes after it.
       "npm install echo",
+      // A SHORT option is never a data word: one letter means different things
+      // to different commands, and `parallel -m` is max-args, not a message —
+      // it runs the very install a `-m` entry would have hidden.
+      "parallel -m npm install lodash ::: left-pad",
+      "parallel -m nix run ::: nixpkgs#hello",
+      "git commit -m nix shell support",
     ]) {
       expect(isDirectPackageInstallCommand(cmd)).toBe(true);
     }

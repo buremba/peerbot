@@ -204,10 +204,9 @@ function blankQuotedSpans(text: string): string {
 
 /**
  * Words whose operands are DATA rather than a command to run: a printer or
- * lookup command (`echo uvx cowsay`, `man nix run`) and a pattern/message
- * option (`git log --grep nix run`, `git commit -m nix shell support`). What
- * follows one of these is dropped before the install patterns run, which is
- * what closes the #2279 false positives.
+ * lookup command (`echo uvx cowsay`, `man nix run`) and a pattern option
+ * (`git log --grep nix run`). What follows one of these is dropped before the
+ * install patterns run, which is what closes the #2279 false positives.
  *
  * Deliberately short, and holding nothing that can EXEC its arguments — `sudo`,
  * `env`, `time`, `timeout`, `flock`, `chroot`, `xargs` and friends stay out, so
@@ -216,6 +215,7 @@ function blankQuotedSpans(text: string): string {
  * {@link isDirectPackageInstallCommand}.
  */
 const ARGUMENT_DATA_WORDS = new Set([
+  // Printer and lookup commands: they display or resolve their operands.
   "echo",
   "printf",
   "man",
@@ -229,8 +229,11 @@ const ARGUMENT_DATA_WORDS = new Set([
   "egrep",
   "fgrep",
   "rg",
-  "-m",
-  "--message",
+  // Long PATTERN options, whose operand is a regex in every tool that spells
+  // them. Short options are deliberately absent: a single letter means
+  // different things to different commands, and reading one without knowing its
+  // owner loses a real install — `-m` is git's message but `parallel`'s
+  // max-args, and `parallel -m npm install lodash ::: left-pad` RUNS npm.
   "--grep",
   "--regexp",
 ]);

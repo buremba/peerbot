@@ -326,6 +326,10 @@ describe("entity resolution module", () => {
 			kind: "phone",
 			identifier: "447700900123",
 		});
+		expect(assessment.resolutionKeys).toEqual([
+			{ id: 1, keys: { phone: ["447700900123"] } },
+			{ id: 2, keys: { phone: ["447700900123"] } },
+		]);
 	});
 
 	it("reads a JID-shell's phone identity but does not match a corrupted metadata phone", () => {
@@ -474,6 +478,29 @@ describe("entity resolution module", () => {
 			kind: "email + phone",
 			identifier: "same@example.com · 447700900123",
 		});
+	});
+
+	it("records custom rule labels without colliding with object prototype keys", () => {
+		const assessment = assessEntityResolution({
+			metadataSchema: {
+				"x-lobu-resolution": {
+					rules: [
+						{
+							fields: ["constructor"],
+							normalizer: "exact",
+							onMatch: "review",
+						},
+					],
+				},
+			},
+			winner: { id: 1, metadata: { constructor: "shared" } },
+			losers: [{ id: 2, metadata: { constructor: "shared" } }],
+		});
+
+		expect(assessment.resolutionKeys).toEqual([
+			{ id: 1, keys: { constructor: ["shared"] } },
+			{ id: 2, keys: { constructor: ["shared"] } },
+		]);
 	});
 
 	it("rejects oversized decision batches before returning partial work", () => {

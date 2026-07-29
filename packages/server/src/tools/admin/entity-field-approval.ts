@@ -14,6 +14,7 @@ import {
 } from "@lobu/core/contracts/interaction-envelope";
 import { resolveEntityApprovalPolicy } from "../../authz/entity-policy";
 import { type DbClient, getDb, pgBigintArray } from "../../db/client";
+import type { ResolutionKeySet } from "../../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import {
@@ -328,6 +329,7 @@ async function loadEntitySnapshot(
 function toEntityReviewSnapshot(
 	urlContext: Awaited<ReturnType<typeof getOrgUrlContext>>,
 	entity: EntitySnapshot,
+	resolutionKeys: Record<string, string[]>,
 ) {
 	const { ownerSlug, baseUrl } = urlContext;
 	const href =
@@ -352,6 +354,11 @@ function toEntityReviewSnapshot(
 		parent_slug: entity.parent_slug,
 		parent_entity_type: entity.parent_entity_type,
 		...(href ? { href } : {}),
+		// Preserve the policy's normalized view even when a value came from entity
+		// metadata and therefore is absent from the identity rows below.
+		...(Object.keys(resolutionKeys).length > 0
+			? { resolution_keys: resolutionKeys }
+			: {}),
 		identities: entity.identities.map((identity) => ({
 			...identity,
 			...(ownerSlug && identity.connection_id && identity.connector_key
@@ -440,22 +447,38 @@ export async function proposeEntityMerge(
 	proposal: Omit<EntityMergeProposal, "operation" | "current" | "entity_id"> & {
 		entity_ids: number[];
 	},
+	resolutionKeys: readonly ResolutionKeySet[],
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const ids = [...new Set([...proposal.entity_ids, proposal.winner_entity_id])];
 	const snapshots = await loadEntitySnapshots(ctx, ids);
 	const byId = new Map(snapshots.map((entity) => [Number(entity.id), entity]));
+	const keysById = new Map(
+		resolutionKeys.map((entry) => [Number(entry.id), entry.keys]),
+	);
 	const requireSnapshot = (entityId: number) => {
 		const snapshot = byId.get(entityId);
 		if (!snapshot) throw new Error(`Entity ${entityId} not found`);
 		return snapshot;
 	};
+	const requireResolutionKeys = (entityId: number) => {
+		const keys = keysById.get(entityId);
+		if (!keys) {
+			throw new Error(`Resolution keys for entity ${entityId} not found`);
+		}
+		return keys;
+	};
 	const urlContext = await getOrgUrlContext(ctx);
 	const linkedDuplicates = proposal.entity_ids.map((entityId) =>
-		toEntityReviewSnapshot(urlContext, requireSnapshot(entityId)),
+		toEntityReviewSnapshot(
+			urlContext,
+			requireSnapshot(entityId),
+			requireResolutionKeys(entityId),
+		),
 	);
 	const linkedWinner = toEntityReviewSnapshot(
 		urlContext,
 		requireSnapshot(proposal.winner_entity_id),
+		requireResolutionKeys(proposal.winner_entity_id),
 	);
 	const [loser, ...rest] = linkedDuplicates;
 	if (!loser) throw new Error("At least one duplicate entity is required");

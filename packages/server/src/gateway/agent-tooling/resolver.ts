@@ -243,10 +243,11 @@ async function loadToolingConnections(
       -- connections.config is a jsonb blob written by the install path, not a
       -- typed column, so a malformed installation_ref is representable. A bare
       -- ::bigint cast can raise on non-digits OR an out-of-range digit string,
-      -- aborting this whole query; both callers then fail open to "no
-      -- contribution", stripping packages, domains and leases from every
-      -- connection in the org. Normalize leading zeroes and cast only a
-      -- positive safe integer; anything else joins to NULL like an absent ref.
+      -- aborting this whole query; resolution failures PROPAGATE to the
+      -- enqueue/build/dispatch callers (fail closed), so one malformed row
+      -- would fail every turn in the org. Normalize leading zeroes and cast
+      -- only a positive safe integer; anything else joins to NULL like an
+      -- absent ref.
       ON ai.id = (
            CASE
              WHEN (

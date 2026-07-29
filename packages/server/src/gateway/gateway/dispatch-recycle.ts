@@ -52,12 +52,18 @@ const logger = createLogger("dispatch-recycle");
  * single-pod (see module doc).
  */
 export interface DispatchRecycler {
-  /** Fingerprint mismatch vs. what the deployment was built with. */
-  hasToolingChanged(
+  /** Enqueue-time stamp differs from what the deployment was built with —
+   *  a pod-local SIGNAL only; confirmed by {@link hasToolingDrifted}. */
+  hasToolingStampMismatch(deploymentName: string, fingerprint: string): boolean;
+  /** DB-truth confirmation of a stamp mismatch: the org's CURRENT declaration
+   *  digest differs from the deployment's born fingerprint. Chronology proxies
+   *  (runs.id) cannot order observations — message claims process out of id
+   *  order across replicas — so the truth is re-read instead. Throws on
+   *  resolution failure (fail closed). */
+  hasToolingDrifted(
     deploymentName: string,
-    fingerprint: string,
-    observedAtRunId?: number
-  ): boolean;
+    payload: MessagePayload
+  ): Promise<boolean>;
   /** Lease expiry (with the recycle margin and min-age floor applied). */
   hasExpiringLease(deploymentName: string): boolean;
   /** Tear down and rebuild under the SAME name. Throws on failure. */
@@ -114,7 +120,11 @@ export type DispatchDecision = "deliver" | "drop";
  *    fresh worker reversed. The fence also means only the true head-of-line
  *    job ever consults staleness or triggers a recycle. The top-ranked job is
  *    never fenced, so the lane always makes progress.
- * 3. Fresh (fingerprint matches or unknown, lease not expiring) → deliver.
+ * 3. Fresh (no stamp mismatch or the mismatch is merely an outdated stamp —
+ *    the org's CURRENT declaration digest still matches what the deployment
+ *    was built with — and the lease is not expiring) → deliver. The DB-truth
+ *    re-read replaces any runs.id chronology: message claims process out of
+ *    id order across replicas, so a lower runId can carry a newer observation.
  * 4. Stale + a PRIOR turn is live on the worker → throw; the queue retries and
  *    the gate re-evaluates on the next claim. The probe counts only DELIVERED
  *    turns (completed `thread_message` row = delivery receipt), so armed-but-
@@ -174,14 +184,18 @@ export async function gateDispatchOnStaleness(args: {
     payload.toolingFingerprint.length > 0
       ? payload.toolingFingerprint
       : null;
-  const toolingChanged =
+  const stampMismatch =
     fingerprint != null &&
-    recycler.hasToolingChanged(
-      deploymentName,
-      fingerprint,
-      typeof payload.runId === "number" ? payload.runId : undefined
-    );
+    recycler.hasToolingStampMismatch(deploymentName, fingerprint);
   const leaseExpiring = recycler.hasExpiringLease(deploymentName);
+  if (!stampMismatch && !leaseExpiring) return "deliver";
+
+  // A mismatching stamp may simply predate the deployment's (re)build (an old
+  // queued job after a recycle). Confirm against DB truth before acting —
+  // current == born means outdated stamp, not staleness. Errors propagate
+  // (fail closed): the queue retries rather than delivering on unknown state.
+  const toolingChanged =
+    stampMismatch && (await recycler.hasToolingDrifted(deploymentName, payload));
   if (!toolingChanged && !leaseExpiring) return "deliver";
 
   // Stale. Never interrupt a turn the worker is already running — a SIGTERM

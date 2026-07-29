@@ -47,6 +47,7 @@ import {
   EMPTY_AGENT_TOOLING,
   isReservedAgentToolingEnvName,
   resolveAgentTooling,
+  resolveAgentToolingDeclaration,
   type ResolvedAgentTooling,
 } from "../agent-tooling/resolver.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
@@ -925,17 +926,6 @@ export class DeploymentManager {
   private leaseMintedAtByDeployment = new Map<string, Date>();
 
   /**
-   * The `runs.id` of the dispatch a deployment was (re)built for. `runs.id` is
-   * a monotonic bigint, so it orders a job's enqueue-time fingerprint stamp
-   * against the deployment's birth: a job stamped BEFORE the rebuild carries a
-   * fingerprint that legitimately differs from the reborn deployment's, and
-   * comparing it anyway would recycle the fresh worker once per queued job —
-   * or, if the tooling changed again mid-rebuild, once per retry, forever.
-   * See {@link hasToolingChanged}.
-   */
-  private toolingBornAtRunIdByDeployment = new Map<string, number>();
-
-  /**
    * True when a warm deployment holds a connector lease that has expired or is
    * about to. The caller tears the deployment down so the normal create path
    * re-mints — a worker reads its env once at process start, so refreshing the
@@ -971,9 +961,10 @@ export class DeploymentManager {
   }
 
   /**
-   * True when the org's connector tooling no longer matches what this
-   * deployment was built with — a connection was added, removed, or repointed
-   * at a different installation.
+   * True when a job's enqueue-time fingerprint stamp differs from the one this
+   * deployment was built with. A mismatch is a SIGNAL, not a verdict: the
+   * stamp may simply predate the deployment's (re)build, so the dispatch gate
+   * confirms via {@link hasToolingDrifted} before acting on it.
    *
    * Same root cause as {@link hasExpiringLease}: env is read once at process
    * start. Without this, connecting GitHub mid-conversation leaves the agent
@@ -983,31 +974,41 @@ export class DeploymentManager {
    * Unknown deployment → false. A deployment this pod did not build is not
    * evidence of a change, and recycling on every unknown name would tear down
    * healthy workers after a pod restart.
-   *
-   * `observedAtRunId` is the `runs.id` of the dispatch that STAMPED
-   * `fingerprint` (enqueue time). When it does not exceed the run the
-   * deployment was (re)built for, the observation predates the deployment —
-   * the worker already has newer tooling than the stamp describes — so a
-   * mismatch is delivered, not recycled. Without this ordering guard, every
-   * job stamped before a recycle would tear the replacement down again.
    */
-  hasToolingChanged(
-    deploymentName: string,
-    fingerprint: string,
-    observedAtRunId?: number
-  ): boolean {
+  hasToolingStampMismatch(deploymentName: string, fingerprint: string): boolean {
     const known = this.toolingFingerprintByDeployment.get(deploymentName);
     if (known === undefined) return false;
-    if (known === fingerprint) return false;
-    const bornAtRunId = this.toolingBornAtRunIdByDeployment.get(deploymentName);
-    if (
-      observedAtRunId != null &&
-      bornAtRunId != null &&
-      observedAtRunId <= bornAtRunId
-    ) {
-      return false;
-    }
-    return true;
+    return known !== fingerprint;
+  }
+
+  /**
+   * DB-truth confirmation for a stamp mismatch: has the org's tooling ACTUALLY
+   * drifted from what this deployment was built with?
+   *
+   * A mismatching stamp alone cannot be acted on, and no chronology proxy can
+   * rescue it: `runs.id` order is not processing order (message claims run
+   * concurrently across replicas), so a job with a LOWER runId can carry a
+   * NEWER observation. Instead of ordering observations, re-read the truth:
+   * resolve the org's current declaration digest — the same mint-free resolver
+   * the enqueue-side stamp uses — and compare it against the deployment's born
+   * fingerprint. current == born means the stamp is merely outdated (deliver);
+   * current != born means the worker is genuinely stale (recycle). The rebuild
+   * records the current digest as the new born value, so outdated stamps can
+   * never churn a fresh worker and a recycle loop cannot form.
+   *
+   * Resolution failures propagate (fail closed — an error is not evidence of
+   * freshness). Unknown deployment → false, mirroring the stamp check.
+   */
+  async hasToolingDrifted(
+    deploymentName: string,
+    payload: MessagePayload
+  ): Promise<boolean> {
+    const born = this.toolingFingerprintByDeployment.get(deploymentName);
+    if (born === undefined) return false;
+    const current = await resolveAgentToolingDeclaration({
+      organizationId: payload.organizationId,
+    });
+    return current.fingerprint !== born;
   }
 
   /** Drop connector-tooling state for a deployment that no longer exists. */
@@ -1015,7 +1016,6 @@ export class DeploymentManager {
     this.leaseExpiryByDeployment.delete(deploymentName);
     this.leaseMintedAtByDeployment.delete(deploymentName);
     this.toolingFingerprintByDeployment.delete(deploymentName);
-    this.toolingBornAtRunIdByDeployment.delete(deploymentName);
   }
 
   private trackConversationLockRelease(
@@ -1914,17 +1914,6 @@ export class DeploymentManager {
       deploymentName,
       agentTooling.fingerprint
     );
-    // Orders enqueue-time fingerprint stamps against this (re)build — see
-    // hasToolingChanged. Absent runId (legacy/test dispatches) records
-    // nothing; those payloads carry no fingerprint stamp either.
-    if (typeof validated.runId === "number") {
-      this.toolingBornAtRunIdByDeployment.set(
-        deploymentName,
-        validated.runId
-      );
-    } else {
-      this.toolingBornAtRunIdByDeployment.delete(deploymentName);
-    }
 
     // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {

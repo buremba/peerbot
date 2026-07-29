@@ -821,7 +821,9 @@ describe("deployment env assembly", () => {
     // Turn 1: no tooling connections at all.
     await manager.buildEnv(buildPayload());
     const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
-    expect(manager.hasToolingChanged("deploy-1", before.fingerprint)).toBe(false);
+    expect(manager.hasToolingStampMismatch("deploy-1", before.fingerprint)).toBe(
+      false
+    );
 
     // The user connects GitHub.
     const installId = await seedInstall();
@@ -832,24 +834,33 @@ describe("deployment env assembly", () => {
     });
     await seedConnection({ connectorKey: "github", installationRef: installId });
 
-    // Turn 2: the warm deployment must be recognized as stale.
+    // Turn 2: the warm deployment must be recognized as stale — the new stamp
+    // mismatches AND the DB-truth drift check confirms the org really changed.
     const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
     expect(after.fingerprint).not.toBe(before.fingerprint);
-    expect(manager.hasToolingChanged("deploy-1", after.fingerprint)).toBe(true);
+    expect(manager.hasToolingStampMismatch("deploy-1", after.fingerprint)).toBe(
+      true
+    );
+    expect(await manager.hasToolingDrifted("deploy-1", buildPayload())).toBe(
+      true
+    );
 
     // And after recycling, the rebuilt sandbox actually carries the credential.
     const rebuilt = await manager.buildEnv(buildPayload());
     expect(rebuilt.GH_TOKEN).toBe(MINTED_TOKEN);
-    expect(manager.hasToolingChanged("deploy-1", after.fingerprint)).toBe(false);
+    expect(manager.hasToolingStampMismatch("deploy-1", after.fingerprint)).toBe(
+      false
+    );
   });
 
-  test("REGRESSION: a fingerprint stamped BEFORE the rebuild is not a change (runId ordering)", async () => {
-    // A queued job carries the fingerprint resolved at ITS enqueue. When the
-    // deployment is rebuilt (dispatch-gate recycle) for a later run, jobs
-    // stamped before the rebuild legitimately mismatch the reborn
-    // fingerprint — recycling for them would tear the fresh worker down once
-    // per queued job, or forever if the tooling changed again mid-rebuild.
-    // `runs.id` is monotonic, so it orders stamp against birth.
+  test("REGRESSION: an outdated stamp does not recycle the rebuilt worker — DB truth decides", async () => {
+    // A queued job carries the fingerprint resolved at ITS enqueue, so after a
+    // rebuild it legitimately mismatches the reborn fingerprint. No chronology
+    // can order the stamp (`runs.id` is not processing order across replicas —
+    // review round 11 refuted the runId watermark), so `hasToolingDrifted`
+    // re-reads the org's CURRENT declaration digest instead: it matches the
+    // rebuilt deployment, so the stamp is merely outdated → deliver, never a
+    // churn loop.
     manager.setCredentialLeaseRegistry(buildLeaseRegistry());
 
     // Fingerprint of the org BEFORE GitHub existed — what a pre-change job
@@ -864,24 +875,20 @@ describe("deployment env assembly", () => {
     });
     await seedConnection({ connectorKey: "github", installationRef: installId });
 
-    // Deployment (re)built for run 100.
+    // Deployment (re)built against the post-change truth.
     await manager.buildEnv(buildPayload({ runId: 100 }));
 
-    // Observation predates the rebuild → deliver, don't recycle.
-    expect(manager.hasToolingChanged("deploy-1", before.fingerprint, 99)).toBe(
-      false
-    );
-    expect(manager.hasToolingChanged("deploy-1", before.fingerprint, 100)).toBe(
-      false
-    );
-    // Observation NEWER than the rebuild → genuine change.
-    expect(manager.hasToolingChanged("deploy-1", before.fingerprint, 101)).toBe(
+    // The old stamp mismatches, but the current digest equals the born one.
+    expect(manager.hasToolingStampMismatch("deploy-1", before.fingerprint)).toBe(
       true
     );
-    // No ordering info at all → conservative: a mismatch is a change.
-    expect(manager.hasToolingChanged("deploy-1", before.fingerprint)).toBe(
-      true
+    expect(await manager.hasToolingDrifted("deploy-1", buildPayload())).toBe(
+      false
     );
+    // A deployment this pod never built reports no drift either.
+    expect(
+      await manager.hasToolingDrifted("deploy-unknown", buildPayload())
+    ).toBe(false);
   });
 
   test("repointing a connection at a different installation is a change", async () => {
@@ -1144,11 +1151,13 @@ describe("deployment env assembly", () => {
     const again = await resolveAgentToolingDeclaration({ organizationId: ORG });
 
     // Recycling a healthy worker every turn would be worse than the bug.
-    expect(manager.hasToolingChanged("deploy-1", again.fingerprint)).toBe(false);
-    // A deployment this pod never built is not evidence of a change.
-    expect(manager.hasToolingChanged("deploy-unknown", again.fingerprint)).toBe(
+    expect(manager.hasToolingStampMismatch("deploy-1", again.fingerprint)).toBe(
       false
     );
+    // A deployment this pod never built is not evidence of a change.
+    expect(
+      manager.hasToolingStampMismatch("deploy-unknown", again.fingerprint)
+    ).toBe(false);
   });
 
   test("a lease env var survives secret-placeholder injection", async () => {

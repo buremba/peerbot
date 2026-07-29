@@ -60,36 +60,41 @@ function makePayload(overrides: Partial<MessagePayload> = {}): MessagePayload {
 
 /**
  * Recycler fake with the same observable surface the DeploymentManager
- * provides. `staleFingerprint`/`staleLease` model the deployment's recorded
- * state; `recycleWorkerDeployment` records the call and — like the real one —
- * leaves the rebuilt deployment fresh.
+ * provides. `bornFingerprint` is what the deployment was built with;
+ * `currentFingerprint` is the org's DB-truth declaration digest that
+ * `hasToolingDrifted` re-reads; `recycleWorkerDeployment` records the call
+ * and — like the real one — rebuilds against the CURRENT truth.
  */
 class FakeRecycler implements DispatchRecycler {
   /** Fingerprint the deployment was "born" with, or null = unknown. */
   bornFingerprint: string | null = "fp-current";
-  bornAtRunId: number | null = null;
+  /** The org's current declaration digest (what a rebuild would resolve). */
+  currentFingerprint = "fp-current";
+  /** Thrown by the drift check — models a resolution infrastructure failure. */
+  driftError: Error | null = null;
+  driftChecks = 0;
   leaseExpiring = false;
   recycled: Array<{ deploymentName: string; payload: MessagePayload }> = [];
   recycleError: Error | null = null;
-  toolingChecks: Array<{ fingerprint: string; observedAtRunId?: number }> = [];
 
-  hasToolingChanged(
+  hasToolingStampMismatch(
     deploymentName: string,
-    fingerprint: string,
-    observedAtRunId?: number
+    fingerprint: string
   ): boolean {
-    this.toolingChecks.push({ fingerprint, observedAtRunId });
     if (deploymentName !== DEPLOYMENT) return false;
     if (this.bornFingerprint === null) return false;
-    if (this.bornFingerprint === fingerprint) return false;
-    if (
-      observedAtRunId != null &&
-      this.bornAtRunId != null &&
-      observedAtRunId <= this.bornAtRunId
-    ) {
-      return false;
-    }
-    return true;
+    return this.bornFingerprint !== fingerprint;
+  }
+
+  async hasToolingDrifted(
+    deploymentName: string,
+    _payload: MessagePayload
+  ): Promise<boolean> {
+    this.driftChecks += 1;
+    if (this.driftError) throw this.driftError;
+    if (deploymentName !== DEPLOYMENT) return false;
+    if (this.bornFingerprint === null) return false;
+    return this.currentFingerprint !== this.bornFingerprint;
   }
 
   hasExpiringLease(_deploymentName: string): boolean {
@@ -106,8 +111,7 @@ class FakeRecycler implements DispatchRecycler {
     if (this.recycleError) throw this.recycleError;
     this.recycled.push({ deploymentName, payload });
     // Rebuild resolves the CURRENT tooling and mints a fresh lease.
-    this.bornFingerprint = payload.toolingFingerprint ?? null;
-    this.bornAtRunId = payload.runId ?? null;
+    this.bornFingerprint = this.currentFingerprint;
     this.leaseExpiring = false;
   }
 }
@@ -208,6 +212,8 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     await attemptOnce(makePayload());
     expect(deliveredJobs()).toHaveLength(1);
     expect(recycler.recycled).toHaveLength(0);
+    // The hot path (stamp matches born) never consults the DB drift check.
+    expect(recycler.driftChecks).toBe(0);
   });
 
   test("no fingerprint stamp + healthy lease: delivered (no evidence of change)", async () => {
@@ -402,20 +408,48 @@ describe("claim-side recycle gate at the dispatch chokepoint", () => {
     expect(order).toEqual(["m-A", "m-B"]);
   });
 
-  test("stale job observed BEFORE the rebuild does not tear the fresh worker down again", async () => {
-    // The deployment was rebuilt for run 100 (born fp-current). A job stamped
-    // fp-old at run 99 — enqueued before the rebuild — mismatches, but the
-    // observation predates the deployment, so recycling again would churn the
-    // replacement once per queued job (or forever, if tooling changed during
-    // the rebuild).
+  test("an outdated stamp does not churn the fresh worker — DB truth decides, not the stamp", async () => {
+    // The deployment was just rebuilt against the current declaration digest.
+    // A job stamped fp-old before the rebuild still mismatches, but no
+    // chronology can order the stamp (runs.id is not processing order across
+    // replicas) — the gate re-reads the truth instead: current == born means
+    // the stamp is merely outdated, so it delivers rather than recycling the
+    // replacement once per queued job.
     recycler.bornFingerprint = "fp-current";
-    recycler.bornAtRunId = 100;
-    await attemptOnce(
-      makePayload({ toolingFingerprint: "fp-old", runId: 99 })
-    );
+    recycler.currentFingerprint = "fp-current";
+    await attemptOnce(makePayload({ toolingFingerprint: "fp-old" }));
     expect(deliveredJobs()).toHaveLength(1);
     expect(recycler.recycled).toHaveLength(0);
-    expect(recycler.toolingChecks.at(-1)?.observedAtRunId).toBe(99);
+    expect(recycler.driftChecks).toBe(1);
+  });
+
+  test("REGRESSION: a newer observation with a LOWER runs.id still recycles", async () => {
+    // Round-11 defect: the old guard ordered observations by payload.runId,
+    // but message claims process out of id order across replicas — a
+    // deployment built from run 101 would suppress the genuinely newer
+    // fingerprint stamped by run 100 and deliver the turn onto stale tooling.
+    // With chronology deleted, the DB-truth drift check decides regardless of
+    // runId: current != born → recycle.
+    recycler.bornFingerprint = "fp-A";
+    recycler.currentFingerprint = "fp-B";
+    await expect(
+      queue.addJob(QUEUE, {
+        id: "run-100",
+        data: makePayload({ toolingFingerprint: "fp-B", runId: 100 }),
+      })
+    ).rejects.toBeInstanceOf(StaleWorkerError);
+    expect(recycler.recycled).toHaveLength(1);
+    expect(deliveredJobs()).toHaveLength(0);
+  });
+
+  test("a drift-check failure propagates — never delivered on unknown state", async () => {
+    recycler.bornFingerprint = "fp-old";
+    recycler.driftError = new Error("resolver db down");
+    await expect(
+      queue.addJob(QUEUE, { id: "run-100", data: makePayload() })
+    ).rejects.toThrow("resolver db down");
+    expect(deliveredJobs()).toHaveLength(0);
+    expect(recycler.recycled).toHaveLength(0);
   });
 
   test("a payload that does not derive this deployment's name is out of the gate's scope", async () => {

@@ -911,15 +911,15 @@ routes.post("/inference-providers", async (c) => {
 	const capErr = validateCapabilitiesMap(body.capabilities);
 	if (capErr) return c.json({ error: capErr }, 400);
 
-	// Gate: a provider is addable via a pasted API key only if its wire protocol
-	// is one we can route (present in SDK_COMPAT_PROTOCOLS). `kind` is the catalog
-	// slug the user picked; a known catalog entry whose sdkCompat isn't routable
-	// (e.g. a subscription-only OAuth provider) is rejected so an unroutable row
-	// can't be created. Unknown kinds (custom endpoints) pass — they're treated as
-	// OpenAI-compatible by the synthesize path.
+	// Known catalog kinds must use a routable wire protocol. Unknown kinds pass
+	// because custom endpoints are synthesized as OpenAI-compatible providers.
+	// Read the default from configs because the catalog contains only provider
+	// modules registered in this process.
+	let catalogDefaultModel: string | undefined;
 	try {
 		const registry = new ProviderRegistryService(resolveProviderRegistryPath());
-		const catalog = buildProviderCatalog(await registry.getProviderConfigs());
+		const configs = await registry.getProviderConfigs();
+		const catalog = buildProviderCatalog(configs);
 		const entry = catalog.find((e) => e.slug === kind);
 		if (entry && !isSdkCompat(entry.sdkCompat)) {
 			return c.json(
@@ -929,6 +929,7 @@ routes.post("/inference-providers", async (c) => {
 				400
 			);
 		}
+		catalogDefaultModel = configs[kind]?.defaultModel ?? undefined;
 	} catch (err) {
 		// Fail open on catalog-load errors: don't block creation on a metadata
 		// read. The synthesize path still gates routing downstream.
@@ -940,13 +941,60 @@ routes.post("/inference-providers", async (c) => {
 
 	const createdBy = c.get("user")?.id ?? null;
 
+	// Seed the curated model so each API caller need not duplicate catalog
+	// defaults — and so a row cannot be born unroutable.
+	//
+	// `resolveInferenceProviderConfig` selects `capabilities -> <modality>` and
+	// returns null when the block is absent, so `resolveUrlInvariant` answers
+	// `no-custom-upstream` and the row's own org key is NEVER read. With no
+	// deployment env key that resolves to no credential at all: the provider is
+	// dropped from routing and the model goes upstream with its slug prefix
+	// intact, surfacing as an opaque "400 invalid model ID".
+	//
+	// Merge into the caller's text block rather than replacing it — dropping a
+	// tenant `base_url` would silently re-point the org at the catalog URL.
+	//
+	// Seed ONLY a row that will actually route. A text model is also the
+	// predicate `promoteOldestRunnableProvider` uses to choose the org default,
+	// so seeding an unroutable row would promote it to default and break every
+	// allow-all agent in the org. `getModelPolicy` keys its module map by the
+	// row's SLUG, so the row resolves to a module only when either:
+	//   - slug === kind   → the catalog's own static module answers to it, or
+	//   - a text base_url → `synthesizeOrgProviderModule` can build one.
+	// An alias slug with no base_url (slug=my-gemini, kind=gemini) matches
+	// neither and is dropped by the policy — it must not look configured.
+	const requestedCapabilities =
+		(body.capabilities as InferenceCapabilities) ?? {};
+	const hasTextModel = !!requestedCapabilities.text?.model?.trim();
+	const wouldRoute =
+		slug === kind || !!requestedCapabilities.text?.base_url?.trim();
+	const capabilities =
+		hasTextModel || !catalogDefaultModel || !wouldRoute
+			? requestedCapabilities
+			: {
+					...requestedCapabilities,
+					text: {
+						...requestedCapabilities.text,
+						model: catalogDefaultModel,
+					},
+				};
+	if (!capabilities.text?.model) {
+		// Nothing seeded: unknown kind, no catalog default, or an alias slug with
+		// no upstream to route to. Say so at creation — otherwise the row's only
+		// symptom is a far-away 400 naming a different provider.
+		logger.warn(
+			{ slug, kind, wouldRoute },
+			"[inference-providers POST] created with no text model — this provider will not route until `capabilities.text.model` is set (an alias slug, where slug !== kind, also needs `capabilities.text.base_url`)"
+		);
+	}
+
 	const result = await createInferenceProvider({
 		organizationId: orgId,
 		slug,
 		kind,
 		displayName: typeof body.displayName === "string" ? body.displayName : null,
 		apiKey,
-		capabilities: (body.capabilities as InferenceCapabilities) ?? {},
+		capabilities,
 		createdBy,
 	});
 	if ("error" in result) {

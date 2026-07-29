@@ -986,6 +986,29 @@ export class WorkerGateway {
           break;
         }
       }
+      // The fallback silently re-points the turn at a provider the model does
+      // not belong to, so "<slug>/<model>" goes upstream verbatim and returns an
+      // opaque "400 invalid model ID" naming neither the requested provider nor
+      // the reason it was skipped. The provider is usually INSTALLED but not
+      // routable — commonly an `inference_providers` row with no
+      // `capabilities.<modality>` block, whose org key therefore never resolves.
+      // Without this line the only evidence is a slash surviving in the model id.
+      const requestedSlug = agentModel?.includes("/")
+        ? agentModel.slice(0, agentModel.indexOf("/"))
+        : undefined;
+      if (requestedSlug && requestedSlug !== primaryProvider?.providerId) {
+        logger.warn(
+          {
+            agentId,
+            organizationId,
+            agentModel,
+            requestedProvider: requestedSlug,
+            fallbackProvider: primaryProvider?.providerId ?? null,
+            installedProviders: effectiveProviders.map((p) => p.providerId),
+          },
+          "Requested model's provider is not routable (not installed, or no resolvable credential) — falling back to a credentialed provider; the model keeps its prefix"
+        );
+      }
     }
 
     // Build proxy base URL mappings for all installed providers

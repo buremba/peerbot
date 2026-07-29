@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizeDomainPattern } from "@lobu/core";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
-import { remoteCwd, shellQuote } from "../workspace.js";
+import { remoteCwd } from "../workspace.js";
 import {
   RuntimeInfrastructureError,
   type RuntimeExecutionOutcome,
@@ -349,9 +349,18 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     try {
       result = await sandbox.runCommand({
         cmd: "/bin/bash",
+        // The cwd and the command are POSITIONAL ARGUMENTS, never interpolated
+        // into the script. Textual prepending changed shell semantics: `&&`
+        // binds tighter than `&`, so `sleep 0 & pwd` backgrounded the cwd setup
+        // and ran `pwd` in the default directory, and a comment-only command
+        // turned the trailing `&&` into a syntax error. `eval "$2"` runs the
+        // submitted command as its own program, so its parse is unchanged.
         args: [
           "-lc",
-          `mkdir -p ${shellQuote(cwd)} && cd ${shellQuote(cwd)} && ${ctx.command}`,
+          'mkdir -p -- "$1" && cd -- "$1" && eval "$2"',
+          "lobu-exec",
+          cwd,
+          ctx.command,
         ],
         env: ctx.env,
         timeoutMs: ctx.timeoutMs,

@@ -28,7 +28,9 @@ const rmMock = mock(async (remotePath: string) => {
 const writeFilesMock = mock(async () => undefined);
 const readFileToBufferMock = mock(async () => null);
 const runCommandMock = mock(async (params: { args?: string[] }) => {
-  const command = params.args?.[1] ?? "";
+  // args = ["-lc", <wrapper script>, "lobu-exec", <cwd>, <command>] — the
+  // submitted command is the last positional, not the script at index 1.
+  const command = params.args?.[4] ?? "";
   let stdout = "command stdout\n";
   let exitCode = 0;
   if (command.includes("echo remote output > output.txt")) {
@@ -628,9 +630,14 @@ describe("createRuntimeRoutes", () => {
     // so it doubled the command-API rate and got the sandbox rate-limited.
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({
       cmd: "/bin/bash",
+      // cwd and command are positional args, never interpolated — textual
+      // prepending changed the submitted command's shell semantics.
       args: [
         "-lc",
-        "mkdir -p '/vercel/sandbox/nested' && cd '/vercel/sandbox/nested' && pwd",
+        'mkdir -p -- "$1" && cd -- "$1" && eval "$2"',
+        "lobu-exec",
+        "/vercel/sandbox/nested",
+        "pwd",
       ],
       timeoutMs: 1_000,
     });

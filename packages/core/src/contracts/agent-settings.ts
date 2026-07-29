@@ -116,17 +116,6 @@ const ThinkingLevelSchema = Type.Union([
 ]);
 export type ThinkingLevel = Static<typeof ThinkingLevelSchema>;
 
-export const SkillPreToolGuardrailSchema = Type.Union([
-  Type.Object({ kind: Type.Literal("builtin"), name: Type.String() }),
-  Type.Object({
-    kind: Type.Literal("judge"),
-    policy: Type.String(),
-    tools: Type.Optional(Type.Array(Type.String())),
-    model: Type.Optional(Type.String()),
-  }),
-]);
-export type SkillPreToolGuardrail = Static<typeof SkillPreToolGuardrailSchema>;
-
 export const SkillConfigSchema = Type.Object({
   repo: Type.String(),
   name: Type.String(),
@@ -135,16 +124,9 @@ export const SkillConfigSchema = Type.Object({
   enabled: Type.Boolean(),
   system: Type.Optional(Type.Boolean()),
   content: Type.Optional(Type.String()),
-  contentFetchedAt: Type.Optional(Type.Number()),
   nixPackages: Type.Optional(Type.Array(Type.String())),
-  providers: Type.Optional(Type.Array(Type.String())),
   modelPreference: Type.Optional(Type.String()),
   thinkingLevel: Type.Optional(ThinkingLevelSchema),
-  guardrails: Type.Optional(
-    Type.Object({
-      "pre-tool": Type.Optional(Type.Array(SkillPreToolGuardrailSchema)),
-    })
-  ),
 });
 export type SkillConfig = Static<typeof SkillConfigSchema>;
 

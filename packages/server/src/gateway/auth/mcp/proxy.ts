@@ -418,8 +418,8 @@ export class McpProxy {
 	}
 
 	/**
-	* Run the agent's resolved pre-tool guardrails (built-in names + skill-
-	* declared SKILL.md guardrails) for a `tools/call`. Returns true if a
+	* Run the agent's resolved pre-tool guardrails for a `tools/call`. Returns
+	* true if a
 	* guardrail tripped and the call must be blocked — the caller then returns a
 	* generic, platform-shaped "blocked by policy" response (the specific reason
 	* is never surfaced to the worker; that would be an evasion oracle).
@@ -454,7 +454,6 @@ export class McpProxy {
 			});
 			const resolved = resolveAgentGuardrails(
 				settings ?? { guardrails: [] },
-				(settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
 				this.guardrailRegistry,
 				{ inline: enabledInlineGuardrails(settings) },
 			);

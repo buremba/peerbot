@@ -580,58 +580,36 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     return reg;
   }
 
-  test("merges agent + skill + inline guardrails per stage", () => {
+
+  test("merges agent built-ins + inline guardrails per stage", () => {
     const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [
-          { kind: "builtin", name: "secret-scan" },
-          {
-            kind: "judge",
-            policy: "Only allow if branch matches sprint",
-            tools: ["github.delete_repo"],
-          },
-        ],
-      },
-    };
     const out = resolveAgentGuardrails(
-      { guardrails: ["pii-scan", "prompt-injection"] },
-      [skill],
+      { guardrails: ["pii-scan", "secret-scan"] },
       reg,
       {
         inline: [
           {
-            name: "no-competitors",
+            name: "no-prod-writes",
             enabled: true,
-            stage: "output",
-            policy: "Never mention competitors",
+            stage: "pre-tool",
+            policy: "reject writes to prod",
+            model: "anthropic/claude-haiku-4-5",
           },
         ],
       }
     );
-    // Agent built-in pii-scan registered for input/output/pre-tool; agent
-    // enabled list applied to all stages.
+    // Built-ins resolve on their registered stages...
     expect(out.names.input).toContain("pii-scan");
-    expect(out.names.input).toContain("prompt-injection");
-    expect(out.names.output).toContain("pii-scan");
-    // Skill pre-tool: built-in + inline judge
-    expect(out.names["pre-tool"]).toContain("pii-scan"); // from agent enabled
-    expect(out.names["pre-tool"]).toContain("secret-scan"); // from skill builtin
-    expect(
-      out.names["pre-tool"].some((n) =>
-        n.startsWith("skill:github:inline:pre-tool:")
-      )
-    ).toBe(true);
-    // Agent inline output judge resolves under its operator-given name.
-    expect(out.names.output).toContain("no-competitors");
+    expect(out.names["pre-tool"]).toContain("secret-scan");
+    // ...and the operator's inline judge joins the pre-tool stage.
+    expect(out.names["pre-tool"]).toContain("no-prod-writes");
   });
 
   test("disabled inline guardrail is not resolved", () => {
     const reg = setupRegistry();
-    const out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+    const out = resolveAgentGuardrails(
+      { guardrails: [] },
+      reg, {
       inline: [
         {
           name: "off-rail",
@@ -651,7 +629,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     // not crash the whole message handler by indexing `seen[badStage]`.
     let out!: ReturnType<typeof resolveAgentGuardrails>;
     expect(() => {
-      out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+      out = resolveAgentGuardrails(
+      { guardrails: [] },
+      reg, {
         inline: [
           {
             name: "bad-stage",
@@ -669,7 +649,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
 
   test("inline judge carries the operator name + stage onto the instance", () => {
     const reg = setupRegistry();
-    const out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+    const out = resolveAgentGuardrails(
+      { guardrails: [] },
+      reg, {
       inline: [
         {
           name: "tone-check",
@@ -689,7 +671,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     const reg = setupRegistry();
     // pii-scan is registered as an output built-in; an inline judge that
     // reuses the name at the same stage must not shadow it.
-    const out = resolveAgentGuardrails({ guardrails: ["pii-scan"] }, [], reg, {
+    const out = resolveAgentGuardrails(
+      { guardrails: ["pii-scan"] },
+      reg, {
       inline: [
         {
           name: "pii-scan",
@@ -702,70 +686,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(out.names.output.filter((n) => n === "pii-scan").length).toBe(1);
   });
 
-  test("dedup: agent + skill both name secret-scan -> one instance", () => {
-    const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
-      },
-    };
-    const out = resolveAgentGuardrails(
-      { guardrails: ["secret-scan"] },
-      [skill],
-      reg
-    );
-    const occurrences = out.names["pre-tool"].filter(
-      (n) => n === "secret-scan"
-    );
-    expect(occurrences.length).toBe(1);
-  });
 
-  test("guardrails_disabled removes a skill-attached builtin", () => {
-    const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
-      },
-    };
-    const out = resolveAgentGuardrails({}, [skill], reg, {
-      disabled: ["secret-scan"],
-    });
-    expect(out.names["pre-tool"]).not.toContain("secret-scan");
-  });
 
-  test("disabled skills are ignored entirely", () => {
-    const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: false,
-      guardrails: {
-        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
-      },
-    };
-    const out = resolveAgentGuardrails({}, [skill], reg);
-    expect(out.names["pre-tool"]).not.toContain("secret-scan");
-  });
 
-  test("unknown skill builtin is skipped (warn only)", () => {
-    const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [{ kind: "builtin", name: "nonexistent-builtin" }],
-      },
-    };
-    const out = resolveAgentGuardrails({}, [skill], reg);
-    expect(out.names["pre-tool"]).toEqual([]);
-  });
 
   test("agent inline judge resolves under its operator name and respects exclude", () => {
     const reg = setupRegistry();
@@ -775,69 +698,28 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       stage: "output" as const,
       policy: "Never say `password`",
     };
-    const out = resolveAgentGuardrails({}, [], reg, { inline: [entry] });
+    const out = resolveAgentGuardrails(
+      {},
+      reg, { inline: [entry] });
     expect(out.names.output).toContain("no-passwords");
 
-    const excluded = resolveAgentGuardrails({}, [], reg, {
+    const excluded = resolveAgentGuardrails(
+      {},
+      reg, {
       inline: [entry],
       disabled: ["no-passwords"],
     });
     expect(excluded.names.output).not.toContain("no-passwords");
   });
 
-  test("skill judge can pin its own model and still resolves", () => {
-    const reg = setupRegistry();
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [
-          {
-            kind: "judge",
-            policy: "No destructive ops",
-            model: "anthropic/claude-haiku-4-5",
-          },
-        ],
-      },
-    };
-    const out = resolveAgentGuardrails({}, [skill], reg);
-    expect(
-      out.names["pre-tool"].some((n) =>
-        n.startsWith("skill:github:inline:pre-tool:")
-      )
-    ).toBe(true);
-  });
 
-  test("skill inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
-    const reg = setupRegistry();
-    const policy = "Block destructive ops";
-    const skill: SkillConfig = {
-      repo: "x/y",
-      name: "github",
-      enabled: true,
-      guardrails: {
-        "pre-tool": [
-          { kind: "judge", policy, tools: ["fs.write"] },
-          { kind: "judge", policy, tools: ["fs.delete"] },
-        ],
-      },
-    };
-    const out = resolveAgentGuardrails({}, [skill], reg);
-    const skillInlineNames = out.names["pre-tool"].filter((n) =>
-      n.startsWith("skill:github:inline:pre-tool:")
-    );
-    // Hash must factor in `tools` — otherwise the aggregator's name-keyed
-    // dedup would collapse these into one entry and silently drop the
-    // second tool narrowing.
-    expect(skillInlineNames.length).toBe(2);
-    expect(new Set(skillInlineNames).size).toBe(2);
-  });
 
   test("agent inline judges: distinct operator names -> distinct guardrails", () => {
     const reg = setupRegistry();
     const policy = "Block destructive ops";
-    const out = resolveAgentGuardrails({}, [], reg, {
+    const out = resolveAgentGuardrails(
+      {},
+      reg, {
       inline: [
         {
           name: "no-fs-write",

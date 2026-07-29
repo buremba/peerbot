@@ -613,7 +613,6 @@ export class MessageConsumer {
           );
           const resolved = resolveAgentGuardrails(
             settings ?? { guardrails: [] },
-            (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
             this.guardrailRegistry,
             { inline: enabledInlineGuardrails(settings) }
           );

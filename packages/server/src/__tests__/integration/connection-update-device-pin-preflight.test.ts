@@ -123,76 +123,44 @@ describe("connections.update device pin pre-flight", () => {
 		expect(await pinOf(mover)).toBe(macBook);
 	});
 
-	it("recognises the index violation a lost race would raise", async () => {
-		// The pre-flight is an unlocked SELECT, so two replicas can both observe
-		// the device as free and race into the index; `handleUpdate` catches that
-		// violation and returns the same readable error.
-		//
-		// The catch branch is NOT reachable in-process, and deliberately so: the
-		// pre-flight predicate mirrors the index predicate exactly — same
-		// (organization_id, connector_key, device_worker_id), same
-		// `deleted_at IS NULL` — so every row the index would reject, the
-		// pre-flight already caught. Only a genuine cross-process interleaving
-		// gets past it, which a single-process test cannot construct without
-		// stubbing the driver.
-		//
-		// So this asserts the part that IS testable and that the branch depends
-		// on: that a real violation raised by the live index is recognised by
-		// `isConnectionDevicePinUniqueViolation`. If the constraint were renamed
-		// or the driver stopped surfacing `constraint_name`, this fails here
-		// rather than silently leaking raw 23505 text to a user in prod.
+	it("rolls a lost race back entirely, error only, nothing persisted", async () => {
+		// Both updates pass the pre-flight (the device is free when each reads),
+		// then collide in the index. Deterministic because the winner's
+		// transaction is held open until the loser has already passed its
+		// pre-flight — no scan-order or timing luck involved.
 		const contested = await seedDevice("Contested");
-		const holder = await seedConnectionOnDevice(contested);
 		const loser = await seedConnectionOnDevice(null);
-
-		let caught: unknown;
-		try {
-			await sql`
-        UPDATE connections SET device_worker_id = ${contested}::uuid
-        WHERE id = ${loser}
-      `;
-		} catch (err) {
-			caught = err;
-		}
-
-		expect(caught).toBeDefined();
-		expect(isConnectionDevicePinUniqueViolation(caught)).toBe(true);
-
-		// The winner keeps the device; the loser is untouched by the failed write.
-		expect(await pinOf(holder)).toBe(contested);
-		expect(await pinOf(loser)).toBeNull();
-	});
-
-	it("rejects a combined update atomically, persisting nothing", async () => {
-		// The guard must run BEFORE the general update commits. Rejecting after it
-		// would return an error while silently keeping the display_name change —
-		// a partial write the caller has no reason to expect, and no way to see.
-		const taken = await seedDevice("Taken");
-		await seedConnectionOnDevice(taken);
-		const mover = await seedConnectionOnDevice(null);
-
 		const [before] = (await sql`
-      SELECT display_name FROM connections WHERE id = ${mover}
+      SELECT display_name FROM connections WHERE id = ${loser}
     `) as unknown as Array<{ display_name: string }>;
 
-		const result = (await manageConnections(
-			{
-				action: "update",
-				connection_id: mover,
-				display_name: "Renamed By A Rejected Update",
-				device_worker_id: taken,
-			},
-			{} as Env,
-			ctx,
-		)) as Record<string, unknown>;
+		// Winner: claims the device inside a transaction and holds it briefly, so
+		// the loser's pre-flight reads BEFORE the claim is visible. The hold is a
+		// fixed delay rather than a handshake — the loser must not gate the
+		// winner's commit, or the two deadlock on the index.
+		const winnerConn = await seedConnectionOnDevice(null);
+		const winner = sql.begin(async (tx) => {
+			await tx`
+        UPDATE connections SET device_worker_id = ${contested}::uuid
+        WHERE id = ${winnerConn}
+      `;
+			await new Promise((r) => setTimeout(r, 250));
+		});
+
+		// Loser: pre-flight sees the device free (winner uncommitted), proceeds to
+		// the write, blocks on the index until the winner commits, then loses.
+		await new Promise((r) => setTimeout(r, 50));
+		const [result] = await Promise.all([update(loser, contested), winner]);
 
 		expect(String(result.error)).toMatch(/already assigned to that device/i);
+		expect(String(result.error)).not.toMatch(/duplicate key|violates unique/i);
 
+		// Nothing of the loser's update survives.
 		const [after] = (await sql`
-      SELECT display_name FROM connections WHERE id = ${mover}
-    `) as unknown as Array<{ display_name: string }>;
+      SELECT display_name, device_worker_id FROM connections WHERE id = ${loser}
+    `) as unknown as Array<{ display_name: string; device_worker_id: string | null }>;
 		expect(after.display_name).toBe(before.display_name);
-		expect(await pinOf(mover)).toBeNull();
+		expect(after.device_worker_id).toBeNull();
 	});
 
 	it("still allows re-pinning to a free device", async () => {

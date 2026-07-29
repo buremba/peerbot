@@ -1735,6 +1735,16 @@ export function validateSkillsConfigGuardrails(value: unknown): string | null {
 		if (typeof skill !== "object" || skill === null) {
 			return `skillsConfig.skills[${i}] must be an object`;
 		}
+		// `enabled` gates whether a skill's guardrails materialize at runtime, and
+		// the runtime tests it for TRUTHINESS (`s.enabled && …`). A non-boolean
+		// truthy value (`"yes"`, `1`) would therefore run while skipping the
+		// judge-model check below, which compares against `true`. Pin the type
+		// here so the write boundary and the runtime cannot disagree.
+		const enabled = (skill as { enabled?: unknown }).enabled;
+		if (enabled !== undefined && typeof enabled !== "boolean") {
+			return `skillsConfig.skills[${i}].enabled must be a boolean`;
+		}
+
 		const guardrails = (skill as { guardrails?: unknown }).guardrails;
 		if (guardrails === undefined) continue;
 		if (typeof guardrails !== "object" || guardrails === null) {
@@ -1771,8 +1781,17 @@ export function validateSkillsConfigGuardrails(value: unknown): string | null {
 			if (typeof g.policy !== "string" || g.policy.trim() === "") {
 				return `${path}.policy must be a non-empty string`;
 			}
-			if (g.model !== undefined && typeof g.model !== "string") {
-				return `${path}.model must be a string`;
+			// A present-but-empty model is worse than an absent one: the runner
+			// resolves `input.model ?? defaultModel`, so `""` is NOT replaced by
+			// the gateway default — it is passed through as the model. Omit the
+			// key to inherit the default.
+			if (g.model !== undefined) {
+				if (typeof g.model !== "string") {
+					return `${path}.model must be a string`;
+				}
+				if (g.model.trim() === "") {
+					return `${path}.model must be a non-empty string when present (omit it to use the gateway default)`;
+				}
 			}
 			if (
 				g.tools !== undefined &&

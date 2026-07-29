@@ -284,6 +284,43 @@ describe("validateSkillsConfigGuardrails", () => {
     ).toMatch(/tools must be an array of strings/);
   });
 
+  test("rejects a present-but-empty judge model", () => {
+    // judge-runner resolves `input.model ?? defaultModel`, so "" is passed
+    // through rather than falling back to EGRESS_JUDGE_MODEL. Omitting the key
+    // is the way to inherit the default.
+    for (const model of ["", "   "]) {
+      expect(
+        validateSkillsConfigGuardrails(
+          wrap({ "pre-tool": [{ kind: "judge", policy: "p", model }] })
+        )
+      ).toMatch(/model must be a non-empty string when present/);
+    }
+    // Absent is fine — that is the inherit-the-default path.
+    expect(
+      validateSkillsConfigGuardrails(
+        wrap({ "pre-tool": [{ kind: "judge", policy: "p" }] })
+      )
+    ).toBeNull();
+  });
+
+  test("rejects a non-boolean enabled", () => {
+    // The runtime tests `s.enabled &&` (truthiness), so a truthy non-boolean
+    // would materialize while skipping the route's judge-model check, which
+    // compares against `true`. Pinning the type keeps the two in agreement.
+    for (const enabled of ["yes", 1, {}]) {
+      expect(
+        validateSkillsConfigGuardrails({
+          skills: [{ repo: "f/x", name: "x", enabled }],
+        })
+      ).toMatch(/enabled must be a boolean/);
+    }
+    expect(
+      validateSkillsConfigGuardrails({
+        skills: [{ repo: "f/x", name: "x", enabled: false }],
+      })
+    ).toBeNull();
+  });
+
   test("rejects malformed containers", () => {
     expect(validateSkillsConfigGuardrails({ skills: "nope" })).toMatch(
       /skills must be an array/

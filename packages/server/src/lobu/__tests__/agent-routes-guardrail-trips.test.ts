@@ -439,6 +439,32 @@ describe('GET /agents/:agentId/guardrail-trips', () => {
     expect(res.status).toBe(200);
   });
 
+  test('a truthy non-boolean enabled cannot bypass the model requirement', async () => {
+    // The runtime enables on truthiness, so `enabled: "yes"` would run while
+    // skipping a `enabled === true` model check. Rejected at the boundary.
+    const app = await importAgentRoutes();
+    const res = await app.request(`/${AGENT}/config`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        skillsConfig: {
+          skills: [
+            {
+              repo: 'file/x',
+              name: 'sneaky',
+              enabled: 'yes',
+              guardrails: { 'pre-tool': [{ kind: 'judge', policy: 'deny' }] },
+            },
+          ],
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string; error_description?: string };
+    expect(body.error).toBe('invalid_guardrail');
+    expect(body.error_description).toMatch(/enabled must be a boolean/);
+  });
+
   test('a disabled skill is not subject to the judge-model requirement', async () => {
     // Matches the aggregator: a disabled skill never materializes, so rejecting
     // it would fail a payload that cannot run.

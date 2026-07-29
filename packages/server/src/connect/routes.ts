@@ -915,7 +915,7 @@ async function handleOAuthCallback(
               display_name = COALESCE(display_name, ${displayNameOverride}),
               config = (
                 (COALESCE(config, '{}'::jsonb)
-                  - 'cloud_id' - 'site_url' - 'site_name' - 'accessible_sites')
+                  - 'cloud_id' - 'site_cloud_id' - 'site_url' - 'site_name' - 'accessible_sites')
                 || ${tx.json(sitePatch)}::jsonb
               ),
               external_tenant_id = COALESCE(${jiraSite.cloudId}, external_tenant_id),

@@ -192,7 +192,11 @@ function connectorWith(
 
 const BASE_CTX = {
   credentials: { accessToken: 'tok' },
-  config: { cloud_id: 'cloud-1', site_url: 'https://support.atlassian.net' },
+  config: {
+    cloud_id: 'cloud-1',
+    site_cloud_id: 'cloud-1',
+    site_url: 'https://support.atlassian.net',
+  },
   sessionState: null,
 };
 
@@ -482,7 +486,38 @@ describe('Jira virtual-feed pushdown', () => {
       query: 'project = SUPP',
       limit: 5,
     });
-    expect(config).toEqual({ cloud_id: 'lazy-cloud' });
+    expect(config).toEqual({ cloud_id: 'lazy-cloud', site_cloud_id: 'lazy-cloud' });
+  });
+
+  test('does not use inherited site_url when feed overrides cloud_id', async () => {
+    const cap: Capture = { jqls: [], maxResults: [], tokens: [], urls: [] };
+    const c = connectorWith(cap, [
+      {
+        id: '20001',
+        key: 'B-1',
+        summary: 'Other site issue',
+        status: 'Open',
+        self: 'https://api.atlassian.com/ex/jira/cloud-b/rest/api/3/issue/20001',
+      },
+    ]);
+    const res = await c.query({
+      credentials: { accessToken: 'tok' },
+      // Connection had site A; feed overrides to cloud B without a matching site_url.
+      config: {
+        cloud_id: 'cloud-b',
+        site_cloud_id: 'cloud-a',
+        site_url: 'https://site-a.atlassian.net',
+      },
+      sessionState: null,
+      query: 'project = B',
+      limit: 5,
+    });
+    expect(res.rows).toHaveLength(1);
+    // Must not emit site-a browse links for cloud-b issues.
+    expect(res.rows[0].url).toBe(
+      'https://api.atlassian.com/ex/jira/cloud-b/rest/api/3/issue/20001',
+    );
+    expect(String(res.rows[0].url)).not.toContain('site-a.atlassian.net');
   });
 
   test('throws when cloud_id missing and accessible-resources is empty', async () => {

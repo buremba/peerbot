@@ -199,6 +199,7 @@ describe('mergeJiraSiteIntoConnectionConfig', () => {
       action_modes: { create_issue: 'approval' },
       webhook_external_id: '99',
       cloud_id: 'cloud-1',
+      site_cloud_id: 'cloud-1',
       site_url: 'https://a.atlassian.net',
       site_name: 'A',
     });
@@ -209,7 +210,10 @@ describe('mergeJiraSiteIntoConnectionConfig', () => {
       { id: 'c', url: null, name: null, scopes: [] },
     ]);
     if (!site) throw new Error('Expected a unique Jira site fixture');
-    expect(mergeJiraSiteIntoConnectionConfig(null, site)).toEqual({ cloud_id: 'c' });
+    expect(mergeJiraSiteIntoConnectionConfig(null, site)).toEqual({
+      cloud_id: 'c',
+      site_cloud_id: 'c',
+    });
   });
 
   it('clears stale optional metadata when the selected resource omits it', () => {
@@ -223,9 +227,10 @@ describe('mergeJiraSiteIntoConnectionConfig', () => {
           keep: true,
           site_url: 'https://stale.atlassian.net',
           site_name: 'Stale',
+          site_cloud_id: 'stale',
         },
         site
       )
-    ).toEqual({ keep: true, cloud_id: 'c' });
+    ).toEqual({ keep: true, cloud_id: 'c', site_cloud_id: 'c' });
   });
 });

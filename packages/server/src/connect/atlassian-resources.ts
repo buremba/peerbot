@@ -141,7 +141,10 @@ export async function resolveJiraCloudSite(
  * to unrelated connection.config keys are preserved.
  */
 export function jiraSiteConfigPatch(site: JiraCloudSite): Record<string, unknown> {
-  const patch: Record<string, unknown> = { cloud_id: site.cloudId };
+  const patch: Record<string, unknown> = {
+    cloud_id: site.cloudId,
+    site_cloud_id: site.cloudId,
+  };
   if (site.siteUrl) patch.site_url = site.siteUrl;
   if (site.siteName) patch.site_name = site.siteName;
   return patch;
@@ -157,6 +160,7 @@ export function mergeJiraSiteIntoConnectionConfig(
 ): Record<string, unknown> {
   const next: Record<string, unknown> = { ...(existing ?? {}) };
   delete next.cloud_id;
+  delete next.site_cloud_id;
   delete next.site_url;
   delete next.site_name;
   Object.assign(next, jiraSiteConfigPatch(site));

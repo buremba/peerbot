@@ -42,6 +42,12 @@ interface JiraConfig {
   cloud_id?: string;
   /** Site URL from OAuth discovery (informational; not required for REST). */
   site_url?: string;
+  /**
+   * Cloud id that `site_url` / `site_name` were discovered for. Browse links
+   * only use site_url when this matches the effective `cloud_id` (guards a
+   * feed-level cloud_id override inheriting the wrong site host).
+   */
+  site_cloud_id?: string;
   /** Site display name from OAuth discovery. */
   site_name?: string;
   /**
@@ -666,7 +672,11 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
   private issueUrl(issue: JiraIssue | undefined, config?: JiraConfig): string | undefined {
     const siteUrl = asString(config?.site_url);
     const key = asString(issue?.key);
-    if (siteUrl && key) {
+    const cloudId = asString(config?.cloud_id);
+    const siteCloudId = asString(config?.site_cloud_id);
+    // Only rewrite to /browse when site_url was discovered for THIS cloud_id.
+    // A feed-level cloud_id override must not inherit another site's host.
+    if (siteUrl && key && cloudId && siteCloudId && cloudId === siteCloudId) {
       return `${siteUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}`;
     }
     return issue?.self ?? undefined;
@@ -758,6 +768,7 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
 
     // Cache on this job's config so subsequent calls in the same run skip the hop.
     config.cloud_id = id;
+    config.site_cloud_id = id;
     const siteUrl = asString(site?.url);
     const siteName = asString(site?.name);
     if (siteUrl) config.site_url = siteUrl;

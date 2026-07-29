@@ -19,6 +19,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../index";
 import { manageConnections } from "../../tools/admin/manage_connections";
+import { isConnectionDevicePinUniqueViolation } from "../../utils/connections";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
@@ -120,6 +121,36 @@ describe("connections.update device pin pre-flight", () => {
 		// Neither row is mutated by a rejected update.
 		expect(await pinOf(occupant)).toBe(macMini);
 		expect(await pinOf(mover)).toBe(macBook);
+	});
+
+	it("translates a lost race (raw 23505) into the same readable error", async () => {
+		// The pre-flight is an unlocked SELECT, so two replicas can both observe
+		// the device as free and race into the index; the loser must not surface
+		// the driver's constraint text. A true cross-replica interleaving is not
+		// reachable from a single-process test — the pre-flight always sees the
+		// committed winner — so this drives the recovery path directly: perform
+		// the write the loser would perform, and assert the violation is
+		// recognised as this index's rather than propagating raw.
+		const contested = await seedDevice("Contested");
+		const holder = await seedConnectionOnDevice(contested);
+		const loser = await seedConnectionOnDevice(null);
+
+		let caught: unknown;
+		try {
+			await sql`
+        UPDATE connections SET device_worker_id = ${contested}::uuid
+        WHERE id = ${loser}
+      `;
+		} catch (err) {
+			caught = err;
+		}
+
+		expect(caught).toBeDefined();
+		expect(isConnectionDevicePinUniqueViolation(caught)).toBe(true);
+
+		// The winner keeps the device; the loser is untouched by the failed write.
+		expect(await pinOf(holder)).toBe(contested);
+		expect(await pinOf(loser)).toBeNull();
 	});
 
 	it("still allows re-pinning to a free device", async () => {

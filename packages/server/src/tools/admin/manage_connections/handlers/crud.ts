@@ -47,6 +47,7 @@ import {
   connectionSlugFormatError,
   connectionSlugTaken,
   insertConnectionWithSlug,
+  isConnectionDevicePinUniqueViolation,
   isConnectionSlugUniqueViolation,
   resolveNewConnectionSlug,
 } from "../../../../utils/connections";
@@ -1883,7 +1884,12 @@ export async function handleUpdate(
 			.error_message as string | null;
 		const pinningDevice = nextDeviceWorkerId != null;
 		clearedDeviceTombstone = isDevicePinTombstone(previousError);
-		await sql`
+		// The pre-flight above is an unlocked SELECT, so two replicas can both
+		// observe the device as free and race into the index — the loser would
+		// otherwise surface the raw 23505 this fix exists to prevent. The index is
+		// the real arbiter; translate its violation into the same readable error.
+		try {
+			await sql`
       UPDATE connections
       SET device_worker_id = ${nextDeviceWorkerId},
           error_message = CASE
@@ -1903,6 +1909,24 @@ export async function handleUpdate(
         AND organization_id = ${organizationId}
         AND deleted_at IS NULL
     `;
+		} catch (err) {
+			if (isConnectionDevicePinUniqueViolation(err)) {
+				const winner = (await sql`
+          SELECT id FROM connections
+          WHERE organization_id = ${organizationId}
+            AND connector_key = ${existing.connector_key}
+            AND device_worker_id = ${nextDeviceWorkerId}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `) as unknown as Array<{ id: number }>;
+				return {
+					error: winner[0]
+						? `A ${existing.connector_key} connection (id: ${winner[0].id}) is already assigned to that device in this org.`
+						: `That device is already assigned to another ${existing.connector_key} connection in this org.`,
+				};
+			}
+			throw err;
+		}
 		(updated[0] as Record<string, unknown>).device_worker_id =
 			nextDeviceWorkerId;
 		if (clearedDeviceTombstone) {

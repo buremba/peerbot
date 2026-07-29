@@ -32,6 +32,7 @@ export class ConnectionSlugConflictError extends Error {
 
 const PG_UNIQUE_VIOLATION = '23505';
 const CONNECTION_SLUG_CONSTRAINT = 'connections_org_slug_unique';
+const CONNECTION_DEVICE_PIN_CONSTRAINT = 'idx_connections_org_connector_device_live';
 
 /** True when a thrown DB error is the per-org connection-slug unique violation. */
 export function isConnectionSlugUniqueViolation(err: unknown): boolean {
@@ -41,6 +42,24 @@ export function isConnectionSlugUniqueViolation(err: unknown): boolean {
   if (typeof e.constraint_name === 'string') return e.constraint_name === CONNECTION_SLUG_CONSTRAINT;
   // Fallback when the driver doesn't surface the constraint name.
   return typeof e.message === 'string' && e.message.includes(CONNECTION_SLUG_CONSTRAINT);
+}
+
+/**
+ * True when a thrown DB error is the per-(org, connector, device) live-pin
+ * unique violation. A pre-flight SELECT cannot prevent this on its own: two
+ * replicas can both observe a free device and race into the index, so the
+ * loser must still be translated into the same readable error rather than
+ * leaking the driver's constraint text.
+ */
+export function isConnectionDevicePinUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; constraint_name?: unknown; message?: unknown };
+  if (e.code !== PG_UNIQUE_VIOLATION) return false;
+  if (typeof e.constraint_name === 'string')
+    return e.constraint_name === CONNECTION_DEVICE_PIN_CONSTRAINT;
+  return (
+    typeof e.message === 'string' && e.message.includes(CONNECTION_DEVICE_PIN_CONSTRAINT)
+  );
 }
 
 /**

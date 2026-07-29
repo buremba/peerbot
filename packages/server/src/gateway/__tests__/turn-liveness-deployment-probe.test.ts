@@ -9,6 +9,11 @@
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../db/client.js";
+import {
+  lockDeploymentTurnInTransaction,
+  withDeploymentTurnLock,
+} from "../infrastructure/deployment-turn-lock.js";
+import { RunsQueue } from "../infrastructure/queue/index.js";
 import { hasLiveTurnForDeployment } from "../orchestration/turn-liveness.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
@@ -108,5 +113,66 @@ describe("hasLiveTurnForDeployment", () => {
     await seedMarker({ runType: "chat_message" });
 
     expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(false);
+  });
+});
+
+describe("deployment turn lock", () => {
+  test("turn-marker transactions serialize with teardown", async () => {
+    const sql = getDb();
+
+    await withDeploymentTurnLock(DEPLOYMENT, async () => {
+      await expect(
+        sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+          await lockDeploymentTurnInTransaction(tx, DEPLOYMENT);
+        })
+      ).rejects.toMatchObject({ code: "55P03" });
+    });
+
+    await expect(
+      sql.begin((tx) => lockDeploymentTurnInTransaction(tx, DEPLOYMENT))
+    ).resolves.toBeUndefined();
+  });
+
+  test("REGRESSION: arming a marker blocks while a teardown holds the lock", async () => {
+    // The lock only closes the cross-replica check/delete race if BOTH halves
+    // take it. The test above pins the lock primitives against each other, and
+    // `seedMarker` inserts by raw SQL — so neither one executes `RunsQueue`'s
+    // arm path. Without this, deleting the `lockDeploymentTurnInTransaction`
+    // call from `RunsQueue.send` leaves every suite green while a marker armed
+    // on replica B can still land after replica A's liveness read and be
+    // SIGTERMed by A's teardown.
+    const queue = new RunsQueue();
+    await queue.start();
+    await queue.createQueue(TURN_TIMEOUT_QUEUE);
+
+    let armed = false;
+    let pending: Promise<unknown> = Promise.resolve();
+
+    try {
+      await withDeploymentTurnLock(DEPLOYMENT, async () => {
+        pending = queue
+          .send(
+            TURN_TIMEOUT_QUEUE,
+            { deploymentName: DEPLOYMENT, messageId: "m-lock" },
+            { delayMs: 60_000, singletonKey: `${DEPLOYMENT}:m-lock` }
+          )
+          .then(() => {
+            armed = true;
+          });
+
+        // Long enough that an unlocked insert would have committed many times
+        // over; the lock is held for the whole callback, so it must not.
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        expect(armed).toBe(false);
+      });
+
+      // Teardown released the lock — the marker may now land.
+      await pending;
+      expect(armed).toBe(true);
+      expect(await hasLiveTurnForDeployment(DEPLOYMENT)).toBe(true);
+    } finally {
+      await queue.stop();
+    }
   });
 });

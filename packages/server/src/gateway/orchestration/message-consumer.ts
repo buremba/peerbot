@@ -32,6 +32,7 @@ import {
   RunsQueue,
   TERMINAL_DELIVERY_SEND_OPTS,
 } from "../infrastructure/queue/index.js";
+import { withDeploymentTurnLock } from "../infrastructure/deployment-turn-lock.js";
 import {
   armTurnTimeout,
   failTurnIfPending,
@@ -301,6 +302,7 @@ export class MessageConsumer {
   private recordRunInput: typeof recordAgentRunInput;
   /** Test seam: durable "is a turn running on this deployment" probe. */
   private hasLiveTurn: typeof hasLiveTurnForDeployment;
+  private runWithDeploymentTurnLock: typeof withDeploymentTurnLock;
   constructor(
     config: OrchestratorConfig,
     deploymentManager: DeploymentManager,
@@ -309,12 +311,14 @@ export class MessageConsumer {
     queue: IMessageQueue = new RunsQueue(),
     recordRunInput: typeof recordAgentRunInput = recordAgentRunInput,
     hasLiveTurn: typeof hasLiveTurnForDeployment = hasLiveTurnForDeployment,
+    runWithDeploymentTurnLock: typeof withDeploymentTurnLock = withDeploymentTurnLock
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
     this.queue = queue;
     this.recordRunInput = recordRunInput;
     this.hasLiveTurn = hasLiveTurn;
+    this.runWithDeploymentTurnLock = runWithDeploymentTurnLock;
   }
 
   /**
@@ -1119,46 +1123,56 @@ export class MessageConsumer {
       const deployments = await this.deploymentManager.listDeployments();
       if (!deployments.some((d) => d.deploymentName === deploymentName)) return;
 
-      const toolingChanged =
-        toolingFingerprint != null &&
-        this.deploymentManager.hasToolingChanged(
-          deploymentName,
-          toolingFingerprint
-        );
-      const leaseExpiring =
-        this.deploymentManager.hasExpiringLease(deploymentName);
-      if (!toolingChanged && !leaseExpiring) return;
+      await this.runWithDeploymentTurnLock(deploymentName, async () => {
+        // Re-check after taking the cross-pod lock: another owner may have
+        // removed the worker while this caller waited.
+        const current = await this.deploymentManager.listDeployments();
+        if (!current.some((d) => d.deploymentName === deploymentName)) return;
 
-      // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may still
-      // be running on the worker: message 1 starts a long turn, message 2
-      // arrives and would SIGTERM it before enqueueing, costing the user
-      // message 1's reply. The durable turn marker is the authority here —
-      // Postgres-backed, so it sees a turn started by another replica too.
-      if (await this.hasLiveTurn(deploymentName)) {
-        // This turn runs against the stale worker. That is the deliberate
-        // trade: interrupting a live turn loses a reply outright, whereas one
-        // turn on a slightly-stale credential is recoverable. The deferral is
-        // not lost either — the trigger is recomputed STATE, not an event, so
-        // the next turn after the worker goes quiet recycles.
+        const toolingChanged =
+          toolingFingerprint != null &&
+          this.deploymentManager.hasToolingChanged(
+            deploymentName,
+            toolingFingerprint
+          );
+        const leaseExpiring =
+          this.deploymentManager.hasExpiringLease(deploymentName);
+        if (!toolingChanged && !leaseExpiring) return;
+
+        // Pre-enqueue ordering protects THIS turn, but a PREVIOUS one may still
+        // be running on the worker: message 1 starts a long turn, message 2
+        // arrives and would SIGTERM it before enqueueing, costing the user
+        // message 1's reply. The durable turn marker is the authority here —
+        // Postgres-backed, so it sees a turn started by another replica too.
+        // The same advisory lock is taken by the transaction that arms a turn
+        // marker, so a concurrent turn either lands first and is seen here, or
+        // waits until teardown has completed before it can enqueue.
+        if (await this.hasLiveTurn(deploymentName)) {
+          // This turn runs against the stale worker. That is the deliberate
+          // trade: interrupting a live turn loses a reply outright, whereas one
+          // turn on a slightly-stale credential is recoverable. The deferral is
+          // not lost either — the trigger is recomputed STATE, not an event, so
+          // the next turn after the worker goes quiet recycles.
+          logger.info(
+            { traceId, deploymentName, tooling_changed: toolingChanged },
+            "Deferring deployment recycle: a turn is still in flight"
+          );
+          return;
+        }
+
         logger.info(
           { traceId, deploymentName, tooling_changed: toolingChanged },
-          "Deferring deployment recycle: a turn is still in flight"
+          toolingChanged
+            ? "Connector tooling changed — recycling deployment to pick it up"
+            : "Connector lease expiring — recycling deployment to re-mint"
         );
-        return;
-      }
-
-      logger.info(
-        { traceId, deploymentName, tooling_changed: toolingChanged },
-        toolingChanged
-          ? "Connector tooling changed — recycling deployment to pick it up"
-          : "Connector lease expiring — recycling deployment to re-mint"
-      );
-      // deleteWorkerDeployment, not the low-level deleteDeployment: it also
-      // clears the secret placeholder mappings and the backing
-      // `deployments/{name}/` secret entries. A recycle can fire once per
-      // credential lifetime per conversation, so leaking those would
-      // accumulate (and AWS Secrets Manager entries would leak permanently).
-      await this.deploymentManager.deleteWorkerDeployment(deploymentName);
+        // deleteWorkerDeployment, not the low-level deleteDeployment: it also
+        // clears the secret placeholder mappings and the backing
+        // `deployments/{name}/` secret entries. A recycle can fire once per
+        // credential lifetime per conversation, so leaking those would
+        // accumulate (and AWS Secrets Manager entries would leak permanently).
+        await this.deploymentManager.deleteWorkerDeployment(deploymentName);
+      });
     } catch (error) {
       logger.warn(
         { traceId, deploymentName, error: getErrorMessage(error) },

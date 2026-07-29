@@ -238,6 +238,19 @@ describe("GitHubInstallationTokenProvider.mintToken", () => {
     });
   });
 
+  test("unparseable expires_at → exchange_failed", async () => {
+    const provider = new GitHubInstallationTokenProvider({
+      env,
+      fetchImpl: mockExchange({
+        token: "ghs_bad_expiry",
+        expires_at: "not-a-date",
+      }).impl,
+    });
+    await expect(provider.mintToken(makeInstall())).rejects.toMatchObject({
+      reason: "exchange_failed",
+    });
+  });
+
   test("honors per-method appIdKey/privateKeyKey from install metadata", async () => {
     const exchange = mockExchange({
       token: "ghs_custom_keys",

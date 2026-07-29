@@ -38,8 +38,8 @@ const logger = createLogger("agent-tooling-resolver");
 
 /**
  * Mirrors `DeploymentManager.LEASE_RECYCLE_MARGIN_MS`. A lease minted with less
- * life than this cannot be improved by recycling, so it is reported rather than
- * recorded as a recycle trigger.
+ * life than this is reported immediately. Its expiry is still recorded; the
+ * deployment age floor prevents a recycle loop while preserving later renewal.
  */
 const RECYCLE_MARGIN_MS = 5 * 60_000;
 
@@ -127,6 +127,9 @@ interface ToolingConnectionRow {
   auth_schema: unknown;
   /** Install state, fingerprint-only — see the query comment. */
   installation_status: string | null;
+  installation_provider: string | null;
+  installation_provider_instance: string | null;
+  installation_app_id: string | null;
   installation_tenant: string | null;
 }
 
@@ -216,9 +219,12 @@ async function loadToolingConnections(
            cd.auth_schema,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
-           -- is still holding a token minted under it. Neither field changes
-           -- what is contributed, so nothing else reads them.
+           -- is still holding a token minted under it. These fields do not
+           -- change the declared packages/domains, so nothing else reads them.
            ai.status AS installation_status,
+           ai.provider AS installation_provider,
+           ai.provider_instance AS installation_provider_instance,
+           ai.provider_app_id AS installation_app_id,
            ai.external_tenant_id AS installation_tenant
     FROM connections c
     JOIN connector_definitions cd
@@ -258,14 +264,25 @@ function toolingIdentityEntry(
   tooling: ConnectorAgentTooling | null
 ): string {
   const installationRef = parseJsonObject(row.config).installation_ref;
+  const method = getAppInstallationAuthMethods(
+    normalizeConnectorAuthSchema(row.auth_schema)
+  )[0];
   return JSON.stringify([
     String(row.connection_id),
     row.connector_key,
     installationRef == null ? null : String(installationRef),
-    // Suspending an install, or transferring it to another GitHub org, leaves
-    // the connection row untouched — so without these a warm worker keeps
-    // using a token minted under authority it no longer has.
+    method
+      ? [
+          method.provider,
+          method.providerInstance ?? null,
+          method.appIdKey ?? null,
+          method.privateKeyKey ?? null,
+        ]
+      : null,
     row.installation_status,
+    row.installation_provider,
+    row.installation_provider_instance,
+    row.installation_app_id,
     row.installation_tenant,
     tooling,
   ]);

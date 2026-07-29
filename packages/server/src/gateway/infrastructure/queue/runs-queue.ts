@@ -27,6 +27,7 @@ import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
 import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
+import { lockDeploymentTurnInTransaction } from "../deployment-turn-lock.js";
 import type {
   IMessageQueue,
   JobHandler,
@@ -318,6 +319,14 @@ export class RunsQueue implements IMessageQueue {
     // downstream reader using `action_input ->> 'field'`, including the
     // snapshot-route ownership verifier in transcript-routes.ts.
     const actionInput = sql.json(data ?? {});
+    const deploymentName =
+      queueName === "internal:turn_timeout" &&
+      typeof (data as { deploymentName?: unknown })?.deploymentName === "string"
+        ? (data as { deploymentName: string }).deploymentName
+        : null;
+    if (queueName === "internal:turn_timeout" && !deploymentName) {
+      throw new Error("Turn-timeout marker requires deploymentName");
+    }
 
     // Populate runs.organization_id from the payload. This column is
     // preexisting (NOT from PR #870's denormalization — that one removed
@@ -346,6 +355,9 @@ export class RunsQueue implements IMessageQueue {
     // because postgres-js can't parameterize an `interval` argument that is
     // itself a JS number-of-ms — we just compose the SQL.
     const id = await sql.begin(async (tx: DbClient) => {
+      if (deploymentName) {
+        await lockDeploymentTurnInTransaction(tx, deploymentName);
+      }
       // ON CONFLICT must match the index predicate exactly. The
       // `runs_idempotency_key_uniq` index is partial:
       //   WHERE idempotency_key IS NOT NULL

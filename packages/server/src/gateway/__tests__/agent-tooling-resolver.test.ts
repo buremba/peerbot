@@ -850,6 +850,38 @@ describe("deployment env assembly", () => {
     expect(after.fingerprint).not.toBe(before.fingerprint);
   });
 
+  test("changing the lease auth method invalidates a warm worker", async () => {
+    const installId = await seedInstall();
+    await seedConnectorDef({
+      key: "github",
+      agentTooling: GITHUB_AGENT_TOOLING,
+      authSchema: GITHUB_AUTH_SCHEMA,
+    });
+    await seedConnection({ connectorKey: "github", installationRef: installId });
+    const before = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    await getDb()`
+      UPDATE connector_definitions
+         SET auth_schema = ${getDb().json({
+           methods: [
+             {
+               ...GITHUB_AUTH_SCHEMA.methods[0],
+               appIdKey: "OTHER_GH_APP_ID",
+             },
+           ],
+         })}
+       WHERE organization_id = ${ORG}
+         AND key = 'github'
+    `;
+    const after = await resolveAgentToolingDeclaration({ organizationId: ORG });
+
+    // Packages and domains did not change, but the gateway would mint under a
+    // different App identity after rebuild.
+    expect(after.packages).toEqual(before.packages);
+    expect(after.domains).toEqual(before.domains);
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
   test("REGRESSION: suspending an installation invalidates a warm worker", async () => {
     // Revoking the App install at GitHub leaves connections/connector_definitions
     // untouched, so a fingerprint over those alone would not change and the warm

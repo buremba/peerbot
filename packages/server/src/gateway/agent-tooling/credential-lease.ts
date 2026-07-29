@@ -260,11 +260,9 @@ export class GitHubCredentialLeaseProvider implements CredentialLeaseProvider {
       "Minted agent-tooling credential lease"
     );
 
-    // An unparseable provider expiry must normalize to null, not to an Invalid
-    // Date: every downstream comparison (the earliest-expiry fold, the recycle
-    // margin) would evaluate NaN and be false, so the deployment would never
-    // recycle and would keep serving a dead credential. "No expiry known" is
-    // the safe reading — the deployment falls back to its age-based recycle.
+    // Provider implementations should reject malformed expiries. Keep this
+    // boundary defensive so a future provider cannot leak an Invalid Date into
+    // the earliest-expiry fold.
     const expiresAtMs = Date.parse(minted.expiresAt ?? "");
     return {
       token: minted.token,

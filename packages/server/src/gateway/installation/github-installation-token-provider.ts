@@ -242,6 +242,12 @@ export class GitHubInstallationTokenProvider
         "GitHub installation-token exchange body missing token/expires_at"
       );
     }
+    if (!Number.isFinite(Date.parse(body.expires_at))) {
+      throw new InstallationTokenError(
+        "exchange_failed",
+        "GitHub installation-token exchange body has an invalid expires_at"
+      );
+    }
 
     const minted: MintedInstallationToken = {
       token: body.token,

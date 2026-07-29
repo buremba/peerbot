@@ -40,9 +40,12 @@ import {
   buildDeploymentInfoSummary,
   runInBatches,
 } from "./deployment-utils.js";
-import { failTurnsForDeployment } from "./turn-liveness.js";
+import {
+  failTurnsForDeployment,
+  hasLiveTurnForDeployment,
+} from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import { hasLiveTurnForDeployment } from "./turn-liveness.js";
+import { withDeploymentTurnLock } from "../infrastructure/deployment-turn-lock.js";
 import { CredentialLeaseRegistry } from "../agent-tooling/credential-lease.js";
 import {
   isReservedAgentToolingEnvName,
@@ -984,13 +987,26 @@ export class DeploymentManager {
     return known !== fingerprint;
   }
 
-  /** Drop recorded lease state for a deployment that no longer exists. */
-  protected forgetLeaseExpiry(deploymentName: string): void {
+  /** Drop connector-tooling state for a deployment that no longer exists. */
+  protected forgetDeploymentTooling(deploymentName: string): void {
     this.leaseExpiryByDeployment.delete(deploymentName);
     this.leaseMintedAtByDeployment.delete(deploymentName);
     this.toolingFingerprintByDeployment.delete(deploymentName);
     this.organizationByDeployment.delete(deploymentName);
   }
+
+  private trackConversationLockRelease(
+    deploymentName: string,
+    release: Promise<void>
+  ): void {
+    this.conversationLockReleases.set(deploymentName, release);
+    void release.finally(() => {
+      if (this.conversationLockReleases.get(deploymentName) === release) {
+        this.conversationLockReleases.delete(deploymentName);
+      }
+    });
+  }
+
   /**
    * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
    * concurrent calls within a single gateway process so the orchestrator-
@@ -1002,6 +1018,8 @@ export class DeploymentManager {
   private inFlightCreates = new Map<string, Promise<void>>();
 
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
+  /** Conversation-lock releases started by child exit handlers. */
+  private conversationLockReleases = new Map<string, Promise<void>>();
   /** Deployments currently being torn down deliberately (scale-to-0, idle
    *  reap, delete) via {@link killWorker}. The exit handler consumes the entry
    *  so a deliberate stop is NOT surfaced to the user as a worker crash; any
@@ -2113,9 +2131,6 @@ export class DeploymentManager {
   }
 
   /**
-   * Reconcile deployments: unified method for cleanup and resource management.
-   */
-  /**
    * Whether the org's connector tooling has changed since `deploymentName` was
    * built — a connection added, removed, or repointed at a different
    * installation, or an installation revoked or transferred.
@@ -2167,6 +2182,16 @@ export class DeploymentManager {
     }
   }
 
+  protected runWithDeploymentTurnLock<T>(
+    deploymentName: string,
+    action: () => Promise<T>
+  ): Promise<T> {
+    return withDeploymentTurnLock(deploymentName, action);
+  }
+
+  /**
+   * Reconcile deployments: unified method for cleanup and resource management.
+   */
   async reconcileDeployments(): Promise<void> {
     try {
       const maxDeployments = this.config.worker.maxDeployments;
@@ -2191,6 +2216,7 @@ export class DeploymentManager {
       // Collect actions to perform
       const toDelete: string[] = [];
       const toScaleDown: string[] = [];
+      const toRecycle: string[] = [];
 
       for (const analysis of sortedDeployments) {
         const { deploymentName, replicas, isIdle, isVeryOld } = analysis;
@@ -2200,22 +2226,10 @@ export class DeploymentManager {
         } else if (isIdle && replicas > 0) {
           toScaleDown.push(deploymentName);
         } else if (
-          (this.hasExpiringLease(deploymentName) ||
-            (await this.hasStaleTooling(deploymentName))) &&
-          !(await this.isServingLiveTurn(deploymentName))
+          this.hasExpiringLease(deploymentName) ||
+          (await this.hasStaleTooling(deploymentName))
         ) {
-          // Multi-replica backstop. The message path only recycles when the
-          // pod handling the message also OWNS the worker; with N replicas a
-          // conversation pinned to pod A can have every message claimed by
-          // other pods, so A would keep serving turns on a dead credential.
-          // This loop runs on each pod over its OWN deployments, so the owner
-          // always re-evaluates on its own schedule — no cross-pod state.
-          //
-          logger.info(
-            { deploymentName },
-            "Reaping a deployment whose connector tooling or lease is stale"
-          );
-          toDelete.push(deploymentName);
+          toRecycle.push(deploymentName);
         }
       }
 
@@ -2227,7 +2241,10 @@ export class DeploymentManager {
         const excessCount = remainingDeployments.length - maxDeployments;
         const deploymentsToDelete = remainingDeployments.slice(0, excessCount);
         for (const { deploymentName } of deploymentsToDelete) {
-          if (!toDelete.includes(deploymentName)) {
+          if (
+            !toDelete.includes(deploymentName) &&
+            !toRecycle.includes(deploymentName)
+          ) {
             toDelete.push(deploymentName);
           }
         }
@@ -2242,6 +2259,36 @@ export class DeploymentManager {
           logger.error(`❌ Failed to delete deployment ${name}:`, reason);
         }
       );
+
+      let recycledCount = 0;
+      await runInBatches(
+        toRecycle,
+        BATCH_SIZE,
+        async (name) => {
+          await this.runWithDeploymentTurnLock(name, async () => {
+            // Turn-marker inserts take this same advisory lock. A concurrent
+            // turn either lands first and blocks this teardown, or waits until
+            // the old worker is gone and then causes a replacement to spawn.
+            if (
+              !this.hasExpiringLease(name) &&
+              !(await this.hasStaleTooling(name))
+            ) {
+              return;
+            }
+            if (await this.isServingLiveTurn(name)) return;
+            logger.info(
+              { deploymentName: name },
+              "Reaping a deployment whose connector tooling or lease is stale"
+            );
+            await this.deleteWorkerDeployment(name);
+            recycledCount += 1;
+          });
+        },
+        (name, reason) => {
+          logger.error(`❌ Failed to recycle deployment ${name}:`, reason);
+        }
+      );
+      processedCount += recycledCount;
 
       // Process scale-downs in parallel batches
       processedCount += await runInBatches(
@@ -2415,13 +2462,10 @@ export class DeploymentManager {
     // underlying reserved pg connection) to avoid leaking a per-conversation
     // lock until the gateway recycles. Codex P1#2 on PR #865. Defined before
     // the try so the catch and the spawn handlers share one idempotent release.
-    let lockReleased = false;
-    const releaseLockOnce = async (): Promise<void> => {
-      if (lockReleased) return;
-      lockReleased = true;
-      if (convLock) {
-        await convLock.release();
-      }
+    let lockReleasePromise: Promise<void> | null = null;
+    const releaseLockOnce = (): Promise<void> => {
+      lockReleasePromise ??= convLock?.release() ?? Promise.resolve();
+      return lockReleasePromise;
     };
 
     let commonEnvVars: Record<string, string>;
@@ -2518,7 +2562,8 @@ export class DeploymentManager {
       // Pre-spawn throw (generateEnvironmentVariables, nix package validation,
       // getWorkerEntryPoint, the cloud sandbox gate, or a synchronous spawn()
       // failure). No child exists yet, so no exit handler will fire to release
-      // the lock — release it here before re-throwing.
+      // the lock or clear the tooling state recorded during env assembly.
+      this.forgetDeploymentTooling(deploymentName);
       await releaseLockOnce();
       throw err;
     }
@@ -2672,8 +2717,9 @@ export class DeploymentManager {
       // The worker never existed, so its recorded lease/fingerprint state is
       // stale the moment the entry goes. Leaving it would let the next create
       // for this name see a "known" fingerprint it was never built with.
-      this.forgetLeaseExpiry(deploymentName);
-      void releaseLockOnce();
+      this.forgetDeploymentTooling(deploymentName);
+      const lockRelease = releaseLockOnce();
+      this.trackConversationLockRelease(deploymentName, lockRelease);
       // A spawn error is never a deliberate stop. Fail any in-flight turn(s)
       // for this deployment so the client gets a terminal error instead of a
       // hang. No-op if nothing is in flight (markers already discharged).
@@ -2752,8 +2798,9 @@ export class DeploymentManager {
       // do not, and a stale expiry would arm a recycle for a worker that no
       // longer exists. Safe against a rebuild: killWorker awaits the child's
       // exit, and this runs synchronously after workers.delete().
-      this.forgetLeaseExpiry(deploymentName);
-      void releaseLockOnce();
+      this.forgetDeploymentTooling(deploymentName);
+      const lockRelease = releaseLockOnce();
+      this.trackConversationLockRelease(deploymentName, lockRelease);
       if (signal) {
         logger.info(
           `Embedded worker ${deploymentName} exited with signal ${signal}`
@@ -2821,10 +2868,11 @@ export class DeploymentManager {
   }
 
   async deleteDeployment(deploymentName: string): Promise<void> {
-    this.forgetLeaseExpiry(deploymentName);
+    this.forgetDeploymentTooling(deploymentName);
     const entry = this.workers.get(deploymentName);
     if (entry) {
       await this.killWorker(entry, deploymentName);
+      await this.conversationLockReleases.get(deploymentName);
       logger.info(`Stopped embedded worker: ${deploymentName}`);
     }
   }

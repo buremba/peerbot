@@ -99,6 +99,10 @@ class TestConsumer extends MessageConsumer {
 
 /** The recycle step touches neither the queue nor the input journal. */
 const NOOP_QUEUE = {} as unknown as IMessageQueue;
+const NOOP_TURN_LOCK = <T>(
+  _deploymentName: string,
+  action: () => Promise<T>
+): Promise<T> => action();
 
 function build(options?: { liveTurn?: boolean }): {
   manager: RecordingManager;
@@ -110,7 +114,8 @@ function build(options?: { liveTurn?: boolean }): {
     manager,
     NOOP_QUEUE,
     async () => {},
-    async () => options?.liveTurn === true
+    async () => options?.liveTurn === true,
+    NOOP_TURN_LOCK
   );
   return { manager, consumer };
 }
@@ -189,6 +194,39 @@ describe("stale-deployment recycling", () => {
     expect(manager.deleted).toEqual([DEPLOYMENT]);
   });
 
+  test("holds the cross-pod turn lock across liveness check and teardown", async () => {
+    const manager = new RecordingManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
+    let lockHeld = false;
+    manager.deleteWorkerDeployment = async (name: string) => {
+      expect(lockHeld).toBe(true);
+      manager.deleted.push(name);
+    };
+    const consumer = new TestConsumer(
+      CONFIG,
+      manager,
+      NOOP_QUEUE,
+      async () => {},
+      async () => {
+        expect(lockHeld).toBe(true);
+        return false;
+      },
+      async (_name, action) => {
+        lockHeld = true;
+        try {
+          return await action();
+        } finally {
+          lockHeld = false;
+        }
+      }
+    );
+
+    await consumer.recycle(DEPLOYMENT, "fp-unchanged");
+
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+    expect(lockHeld).toBe(false);
+  });
+
   test("INVARIANT: the recycle runs BEFORE the turn is enqueued", async () => {
     // Order is the whole safety property. After enqueue, a warm worker can
     // claim the turn at any moment and no idleness check closes the window —
@@ -260,6 +298,12 @@ describe("multi-replica backstop (reconcile loop)", () => {
     protected async hasStaleTooling(): Promise<boolean> {
       return this.staleTooling;
     }
+    protected runWithDeploymentTurnLock<T>(
+      _deploymentName: string,
+      action: () => Promise<T>
+    ): Promise<T> {
+      return action();
+    }
     // The reconcile classifies on these; keep the worker "in use" so it is
     // neither idle-scaled nor age-reaped, isolating the lease path.
     async listDeployments(): Promise<DeploymentInfo[]> {
@@ -288,6 +332,27 @@ describe("multi-replica backstop (reconcile loop)", () => {
 
   test("a healthy worker is not reaped", async () => {
     const manager = new ReconcilingManager(CONFIG);
+
+    await manager.reconcileDeployments();
+
+    expect(manager.deleted).toEqual([]);
+  });
+
+  test("does not reap a fresh replacement after waiting for the turn lock", async () => {
+    class ReplacementManager extends ReconcilingManager {
+      protected runWithDeploymentTurnLock<T>(
+        _deploymentName: string,
+        action: () => Promise<T>
+      ): Promise<T> {
+        // Another replica recycled and rebuilt this deployment before the
+        // reconcile acquired the shared lock.
+        this.expiringLeaseFor = null;
+        this.staleTooling = false;
+        return action();
+      }
+    }
+    const manager = new ReplacementManager(CONFIG);
+    manager.expiringLeaseFor = DEPLOYMENT;
 
     await manager.reconcileDeployments();
 
@@ -349,8 +414,9 @@ describe("recorded lease state is dropped with the worker", () => {
         self.organizationByDeployment.set(name, "org-old");
       }
       forget(name: string) {
-        (this as unknown as { forgetLeaseExpiry(n: string): void })
-          .forgetLeaseExpiry(name);
+        (
+          this as unknown as { forgetDeploymentTooling(n: string): void }
+        ).forgetDeploymentTooling(name);
       }
       mapSizes(): number[] {
         const self = this as unknown as Record<string, Map<string, unknown>>;
@@ -399,7 +465,8 @@ describe("concurrent recycles are serialized", () => {
       manager,
       NOOP_QUEUE,
       async () => {},
-      async () => false
+      async () => false,
+      NOOP_TURN_LOCK
     );
 
     await Promise.all([
@@ -437,7 +504,8 @@ describe("deferral is retried, not lost", () => {
       manager,
       NOOP_QUEUE,
       async () => {},
-      async () => live
+      async () => live,
+      NOOP_TURN_LOCK
     );
     manager.expiringLeaseFor = DEPLOYMENT;
 

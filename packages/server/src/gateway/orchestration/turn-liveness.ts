@@ -118,6 +118,10 @@ function turnMarkerKey(deploymentName: string, messageId: string): string {
  * exists to prevent. The caller arms before enqueueing to the worker, so a
  * throw aborts dispatch and the `messages` run retries the whole turn (the arm
  * is idempotent), rather than dispatching an unprotected turn.
+ *
+ * `RunsQueue.send` takes the deployment-turn transaction lock before inserting
+ * this queue's marker. Recycle paths hold the matching session lock across
+ * their liveness read and teardown, closing the cross-replica check/delete race.
  */
 export async function armTurnTimeout(
   queue: IMessageQueue,

@@ -28,7 +28,9 @@
  * `agentDir` is pinned to a fixed empty directory rather than left to default
  * (`~/.pi/agent`): otherwise whatever happens to be installed in the image's or
  * developer's home leaks into every agent's prompt, which makes the prompt a
- * function of the host rather than of the agent's configuration.
+ * function of the host rather than of the agent's configuration. `HOME` is
+ * itself pinned to the workspace volume for the worker, so the default would
+ * resolve inside the tree this module exists to keep out of resolution.
  *
  * This configures pi's own loader rather than substituting a stub implementing
  * `ResourceLoader`, because `extensionFactories` (in-process extension
@@ -37,8 +39,6 @@
  * package root. `noExtensions` filters DISCOVERED extension paths only, so
  * in-process factories still load alongside these flags.
  */
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   DefaultResourceLoader,
@@ -49,15 +49,24 @@ import {
  * Fixed, Lobu-owned pi agent directory. Deliberately neither the agent's
  * workspace nor the host default, so resource resolution can never depend on
  * either.
+ *
+ * It is a path that does not exist, and is never created. With every discovery
+ * flag off, pi only ever `existsSync`-probes `<agentDir>/{extensions,skills,
+ * prompts,themes}` and `<agentDir>/AGENTS.md`, so a missing directory is the
+ * strongest available form of "empty" and needs no writable location.
+ *
+ * `os.tmpdir()` is deliberately NOT the base: it is env-derived
+ * (TMPDIR/TMP/TEMP), and the gateway pins the worker's `TMPDIR` to
+ * `/workspace/.tmp` — inside the very volume this module keeps out of resource
+ * resolution, and a path that cannot be created at all when the worker runs
+ * embedded on a developer or CI host (`EACCES: mkdir '/workspace'`).
  */
-const LOBU_PI_AGENT_DIR = path.join(os.tmpdir(), "lobu-pi-agent");
+const LOBU_PI_AGENT_DIR = path.join(path.sep, "nonexistent", "lobu-pi-agent");
 
 export async function createLobuResourceLoader(options: {
   cwd: string;
   settingsManager: SettingsManager;
 }): Promise<DefaultResourceLoader> {
-  await fs.mkdir(LOBU_PI_AGENT_DIR, { recursive: true });
-
   const loader = new DefaultResourceLoader({
     cwd: options.cwd,
     agentDir: LOBU_PI_AGENT_DIR,

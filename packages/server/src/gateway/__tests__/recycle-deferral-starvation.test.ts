@@ -189,7 +189,17 @@ class TestConsumer extends MessageConsumer {
   }
 }
 
-function build(): {
+type TurnLock = <T>(
+  deploymentName: string,
+  action: () => Promise<T>
+) => Promise<T>;
+
+// The cross-pod lock is exercised for real by
+// turn-liveness-deployment-probe.test.ts; here it is a pass-through so the
+// suite stays about the dispatch decision.
+const PASSTHROUGH_TURN_LOCK: TurnLock = (_deploymentName, action) => action();
+
+function build(turnLock: TurnLock = PASSTHROUGH_TURN_LOCK): {
   queue: RecordingQueue;
   manager: StaleWorkerManager;
   consumer: TestConsumer;
@@ -203,12 +213,54 @@ function build(): {
     async () => {},
     async (deploymentName: string) =>
       deploymentName === DEPLOYMENT && queue.liveMarkers.size > 0,
-    // The cross-pod lock is exercised for real by
-    // turn-liveness-deployment-probe.test.ts; here it is a pass-through so the
-    // suite stays about the dispatch decision.
-    async (_deploymentName, action) => action()
+    turnLock
   );
   return { queue, manager, consumer };
+}
+
+/**
+ * A cross-pod turn lock the test can park a handler inside of.
+ *
+ * Parking there is what makes the interleaving deterministic: the parked
+ * handler is holding the POD-LOCAL recycle lock (taken before the cross-pod
+ * one) for as long as the test wants, which is the window every
+ * lock-contention regression below needs.
+ */
+function parkedTurnLock(): {
+  lock: TurnLock;
+  entered: Promise<void>;
+  release: () => void;
+} {
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    entered,
+    release,
+    lock: async (_deploymentName, action) => {
+      markEntered();
+      await parked;
+      return await action();
+    },
+  };
+}
+
+/** Resolves to false if `work` has not settled within `ms`. */
+async function settlesWithin(work: Promise<unknown>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([work.then(() => true), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** The payload the consumer put back on `messages`, if it held one back. */
@@ -349,5 +401,160 @@ describe("a stale worker never serves an overlapping turn", () => {
     expect(manager.deleted).toEqual([DEPLOYMENT]);
     expect(queue.requeued).toEqual([]);
     expect(queue.dispatched).toHaveLength(1);
+  });
+});
+
+describe("a worker another handler is tearing down never serves a turn", () => {
+  // The liveness deferral is not the only way a recycle can fail to run. A
+  // second handler in the same process can be mid-teardown of this exact
+  // worker, and the pod-local recycle lock is how that is detected. Reporting
+  // that contention as "nothing to do" is the same defect reached through the
+  // other door: the loser arms its marker and enqueues onto the expiring or
+  // revoked worker the winner is replacing.
+  //
+  // `deployment-recycle-wiring.test.ts` pins the OUTCOME of the recycle step
+  // under contention. It cannot see this, because the hazard is what the
+  // caller does with that outcome — so every test here drives the real
+  // `handleMessage` and asserts on what reached the queue.
+
+  test("REGRESSION: the handler that loses the local recycle lock arms nothing and dispatches nothing", async () => {
+    const park = parkedTurnLock();
+    const { queue, manager, consumer } = build(park.lock);
+
+    // Handler A takes the pod-local lock and parks acquiring the cross-pod one.
+    const first = consumer.deliver(101, payload({ messageId: "m-1" }));
+    await park.entered;
+
+    // Handler B arrives for the same worker while A is mid-teardown.
+    await consumer.deliver(102, payload({ messageId: "m-2" }));
+
+    // Not dispatched: A has already decided this worker's credential is unfit
+    // to serve another turn, and B cannot see that decision any other way.
+    expect(queue.dispatched).toEqual([]);
+    // And NOT armed. A marker armed here outlives the teardown and makes the
+    // next arrival defer on liveness too, so arming is not a lesser failure.
+    expect(queue.armed).toEqual([]);
+    // Held, not dropped.
+    expect(queue.requeued).toHaveLength(1);
+    expect(heldBack(queue)?.messageId).toBe("m-2");
+    // Nothing torn down yet: A is still parked.
+    expect(manager.deleted).toEqual([]);
+
+    park.release();
+    await first;
+
+    // Exactly one teardown, and only A's turn went out.
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+    expect(queue.dispatched).toHaveLength(1);
+    expect((queue.dispatched[0].data as MessagePayload).messageId).toBe("m-1");
+  });
+
+  test("REGRESSION: arrivals during a contended recycle cannot extend it", async () => {
+    // Termination, part one — the structural half. Held messages arm nothing
+    // and enqueue nothing, so they add no work to the critical section they
+    // are waiting on. However fast messages arrive, the winner's teardown is
+    // exactly as long as its own teardown, and the trigger is gone with the
+    // worker once it lands.
+    const park = parkedTurnLock();
+    const { queue, manager, consumer } = build(park.lock);
+    const first = consumer.deliver(101, payload({ messageId: "m-1" }));
+    await park.entered;
+
+    let held: MessagePayload = payload({ messageId: "m-2" });
+    for (let i = 0; i < 5; i += 1) {
+      await consumer.deliver(200 + i, held);
+      expect(queue.requeued).toHaveLength(i + 1);
+      held = heldBack(queue) as MessagePayload;
+    }
+    expect(queue.armed).toEqual([]);
+    expect(queue.dispatched).toEqual([]);
+
+    park.release();
+    await first;
+
+    // One teardown, no matter how many arrivals piled up behind it.
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+
+    // And the held message now goes straight out against the fresh worker.
+    await consumer.deliver(300, held);
+    expect(queue.dispatched).toHaveLength(2);
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+  });
+
+  test("REGRESSION: continuous arrivals under lock contention cannot defer forever", async () => {
+    // Termination, part two — the budget half, and the reason contention
+    // cannot be a second unbounded axis alongside the liveness deferral. The
+    // winner here is wedged for the whole run, so nothing about the worker
+    // improves; the hold counter is the only thing that changes. Once it is
+    // spent the handler must stop holding and wait the teardown out instead.
+    const park = parkedTurnLock();
+    const { queue, manager, consumer } = build(park.lock);
+    const first = consumer.deliver(101, payload({ messageId: "m-1" }));
+    await park.entered;
+
+    let next: MessagePayload = payload({ messageId: "m-2" });
+    let waiting: Promise<void> | null = null;
+    let rounds = 0;
+    // Generous ceiling: the assertion is that the holding STOPS, and the exact
+    // budget is an implementation detail free to move.
+    while (rounds < 200) {
+      rounds += 1;
+      const delivery = consumer.deliver(200 + rounds, next);
+      // A delivery that does not settle is one waiting out the in-flight
+      // teardown rather than holding the message again.
+      if (!(await settlesWithin(delivery, 500))) {
+        waiting = delivery;
+        break;
+      }
+      expect(queue.requeued).toHaveLength(rounds);
+      next = heldBack(queue) as MessagePayload;
+    }
+
+    expect(rounds).toBeLessThan(200);
+    expect(waiting).not.toBeNull();
+    // It broke out because it stopped holding, not because a round was slow.
+    expect(queue.requeued).toHaveLength(rounds - 1);
+    // Nothing was served on the stale worker on the way there.
+    expect(queue.dispatched).toEqual([]);
+    expect(queue.armed).toEqual([]);
+
+    park.release();
+    await first;
+    await waiting;
+
+    // The waiting turn re-evaluated against the rebuilt worker and went out,
+    // instead of being held one more time.
+    expect(manager.deleted).toEqual([DEPLOYMENT]);
+    expect(queue.dispatched).toHaveLength(2);
+    expect(queue.requeued).toHaveLength(rounds - 1);
+  });
+
+  test("REGRESSION: a teardown that throws still frees the next turn", async () => {
+    // Termination, part three. Contention has to clear on the failure path
+    // too: a local lock leaked by a teardown that threw would hold every
+    // subsequent turn on this conversation for the life of the process.
+    const park = parkedTurnLock();
+    const { queue, manager, consumer } = build(park.lock);
+    manager.deleteWorkerDeployment = async () => {
+      throw new Error("k8s delete failed");
+    };
+
+    const first = consumer.deliver(101, payload({ messageId: "m-1" }));
+    await park.entered;
+    park.release();
+    await first;
+
+    // A stale credential beats a failed turn, so A dispatched anyway.
+    expect(manager.deleted).toEqual([]);
+    expect(queue.dispatched).toHaveLength(1);
+
+    // A's turn replies, so only the lock is left to hold the next one back.
+    queue.liveMarkers.clear();
+
+    // The next turn is evaluated on its own merits, not held behind a lock the
+    // failed teardown never gave back.
+    await consumer.deliver(102, payload({ messageId: "m-2" }));
+    expect(queue.requeued).toEqual([]);
+    expect(queue.dispatched).toHaveLength(2);
   });
 });

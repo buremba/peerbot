@@ -344,6 +344,26 @@ export class MessageConsumer {
    */
   private static readonly MAX_RECYCLE_DEFERRALS = 16;
 
+  /**
+   * How many times a handler whose hold budget is already spent may wait out an
+   * in-flight recycle before it goes back to holding.
+   *
+   * Losing the pod-local lock is the one deferral cause the budget above cannot
+   * bound on its own: unlike a live turn, it is not cleared by anything the
+   * message itself waits for, so a handler that keeps converting contention
+   * into another hold has no terminating condition at all. Past the budget it
+   * therefore stops holding and awaits the winner instead — bounded, because
+   * the winner is inside `withDeploymentTurnLock`, whose `lock_timeout` caps
+   * the cross-pod acquisition, and releases the local lock in a `finally` on
+   * both the success and the throw path.
+   *
+   * Small on purpose: each wait outlives a COMPLETE teardown, and a successful
+   * one removes the deployment, so the re-evaluation after the first wait
+   * almost always terminates. The cap only stops a pathological hand-off
+   * between handlers from spinning here.
+   */
+  private static readonly MAX_RECYCLE_LOCK_WAITS = 2;
+
   private queue: IMessageQueue;
   private deploymentManager: DeploymentManager;
   private config: OrchestratorConfig;
@@ -356,6 +376,15 @@ export class MessageConsumer {
    * advisory lock in DeploymentManager — this Set is pod-local only.
    */
   private deploymentLocks = new Set<string>();
+  /**
+   * The recycle currently running under `deploymentLocks`, by deployment, so a
+   * handler that loses that lock can wait the winner out instead of holding its
+   * message again. Pod-local by construction: it tracks a pod-local lock, and
+   * the cross-pod half of the same guard is the Postgres advisory lock in
+   * {@link withDeploymentTurnLock}. Entries are removed before the lock is
+   * released, so a waiter never sees a promise for a lock it could have taken.
+   */
+  private recycleInFlight = new Map<string, Promise<void>>();
   private agentSettingsStore?: AgentSettingsStore;
   private guardrailRegistry?: GuardrailRegistry;
   private recordRunInput: typeof recordAgentRunInput;
@@ -1192,12 +1221,16 @@ export class MessageConsumer {
    * - A PREVIOUS turn may still be running, which ordering alone cannot rule
    *   out, so the durable turn marker is consulted before any teardown.
    *
-   * Returns `deferred` when a recycle is needed but a previous turn is live.
-   * The caller must then hold its message rather than dispatch it — see
-   * {@link holdMessageForRecycle}.
+   * Returns `deferred` when a recycle is needed but could not be performed —
+   * either a previous turn is still live, or another handler in this process is
+   * already tearing this exact worker down. Both mean the same thing to the
+   * caller: this worker must not serve the turn, so hold the message rather
+   * than dispatch it — see {@link holdMessageForRecycle}.
    *
-   * `force` skips the liveness deferral. Only the caller's deferral budget sets
-   * it, so a single long-running turn cannot wedge the conversation forever.
+   * `force` waives both deferrals: it skips the liveness check, and past the
+   * budget it waits an in-flight recycle out rather than holding again. Only
+   * the caller's deferral budget sets it, so neither a long-running turn nor a
+   * slow teardown can wedge the conversation forever.
    *
    * Never throws: a stale credential beats a failed turn, and the idle reaper
    * clears the deployment eventually either way.
@@ -1209,52 +1242,86 @@ export class MessageConsumer {
     force: boolean
   ): Promise<RecycleOutcome> {
     try {
-      // Establish there IS a warm deployment before reading any lease state.
-      // On a cold start nothing has been minted yet, so those reads are
-      // guaranteed-unused work — and a DeploymentManager that implements only
-      // the cold path (as the owned-elsewhere suite's fake deliberately does)
-      // would throw on them.
-      const deployments = await this.deploymentManager.listDeployments();
-      if (!deployments.some((d) => d.deploymentName === deploymentName)) {
-        return "unchanged";
-      }
+      for (let waits = 0; ; waits += 1) {
+        // Establish there IS a warm deployment before reading any lease state.
+        // On a cold start nothing has been minted yet, so those reads are
+        // guaranteed-unused work — and a DeploymentManager that implements only
+        // the cold path (as the owned-elsewhere suite's fake deliberately does)
+        // would throw on them.
+        const deployments = await this.deploymentManager.listDeployments();
+        if (!deployments.some((d) => d.deploymentName === deploymentName)) {
+          return "unchanged";
+        }
 
-      // Read staleness BEFORE contending for the per-deployment lock. Both
-      // reads are pod-local and cheap, and the answer decides what losing the
-      // lock MEANS: for a healthy worker it means nothing, but for a stale one
-      // it means a teardown is already under way and this turn must not be
-      // dispatched onto the worker that is about to disappear.
-      if (!this.isRecycleNeeded(deploymentName, toolingFingerprint)) {
-        return "unchanged";
-      }
+        // Read staleness BEFORE contending for the per-deployment lock. Both
+        // reads are pod-local and cheap, and the answer decides what losing the
+        // lock MEANS: for a healthy worker it means nothing, but for a stale one
+        // it means a teardown is already under way and this turn must not be
+        // dispatched onto the worker that is about to disappear.
+        if (!this.isRecycleNeeded(deploymentName, toolingFingerprint)) {
+          return "unchanged";
+        }
 
-      // The same per-deployment lock the create path uses, so teardown and
-      // create are mutually exclusive. Without it two handlers can both pass
-      // the liveness check, both tear down, and the SECOND delete lands on the
-      // REPLACEMENT worker — killing a turn that was already enqueued to it.
-      //
-      // Losing it means another handler in this process is already recycling
-      // this deployment. Reporting that as `unchanged` is the same defect the
-      // liveness deferral has: the loser would arm its marker and enqueue onto
-      // the expiring or revoked worker the winner is mid-way through replacing.
-      // Hold instead — the winner finishes, and the retry re-evaluates against
-      // recomputed state.
-      if (!this.acquireDeploymentLock(deploymentName)) {
+        // The same per-deployment lock the create path uses, so teardown and
+        // create are mutually exclusive. Without it two handlers can both pass
+        // the liveness check, both tear down, and the SECOND delete lands on
+        // the REPLACEMENT worker — killing a turn that was already enqueued to
+        // it.
+        if (this.acquireDeploymentLock(deploymentName)) {
+          const running = this.recycleUnderTurnLock(
+            deploymentName,
+            toolingFingerprint,
+            traceId,
+            force
+          );
+          // Published for the losers to wait on, already-handled: their `await`
+          // must not turn this handler's failure into an unhandled rejection,
+          // and they re-read state afterwards rather than trusting an outcome.
+          this.recycleInFlight.set(
+            deploymentName,
+            running.then(
+              () => undefined,
+              () => undefined
+            )
+          );
+          try {
+            return await running;
+          } finally {
+            this.recycleInFlight.delete(deploymentName);
+            this.releaseDeploymentLock(deploymentName);
+          }
+        }
+
+        // Losing the lock means another handler in this process is already
+        // recycling this deployment. Reporting that as `unchanged` is the same
+        // defect the liveness deferral has: the loser would arm its marker and
+        // enqueue onto the expiring or revoked worker the winner is mid-way
+        // through replacing.
+        //
+        // So hold — but holding is only bounded while the hold counter is
+        // climbing towards the budget. Once that is spent, wait the winner out
+        // and re-evaluate instead, or contention becomes an unbounded second
+        // deferral axis that the budget never reaches. Nothing to wait on means
+        // the create path holds the lock, not a recycle; that resolves on its
+        // own and a hold is the safe answer.
+        const inFlight = this.recycleInFlight.get(deploymentName);
+        if (
+          force &&
+          inFlight &&
+          waits < MessageConsumer.MAX_RECYCLE_LOCK_WAITS
+        ) {
+          logger.info(
+            { traceId, deploymentName },
+            "Hold budget spent — waiting out the in-flight recycle instead of holding again"
+          );
+          await inFlight;
+          continue;
+        }
         logger.info(
           { traceId, deploymentName },
           "Holding this turn: another handler is already recycling this deployment"
         );
         return "deferred";
-      }
-      try {
-        return await this.recycleUnderTurnLock(
-          deploymentName,
-          toolingFingerprint,
-          traceId,
-          force
-        );
-      } finally {
-        this.releaseDeploymentLock(deploymentName);
       }
     } catch (error) {
       logger.warn(

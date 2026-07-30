@@ -79,20 +79,38 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				)
 			`;
 
+			// Match on slug alone, NOT `status = 'active'`: idx_watchers_org_slug is
+			// UNIQUE on (organization_id, slug) WHERE slug IS NOT NULL and is not
+			// scoped by status, so an archived/deactivated helper still reserves the
+			// slug. Filtering by status here would fall through to the INSERT, hit
+			// the unique constraint, and lose args.connectorKey inside the
+			// "install failed (non-fatal)" catch.
 			const existing = (await tx`
-				SELECT id, triggers
+				SELECT id, triggers, status
 				FROM watchers
 				WHERE organization_id = ${args.organizationId}
 				  AND slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
-				  AND status = 'active'
 				LIMIT 1
 				FOR UPDATE
-			`) as Array<{ id: number; triggers: unknown }>;
+			`) as Array<{ id: number; triggers: unknown; status: string }>;
 
 			if (existing.length > 0) {
 				const triggers = Array.isArray(existing[0].triggers)
 					? (existing[0].triggers as BehaviorEventTrigger[])
 					: [];
+				if (existing[0].status !== "active") {
+					// Record coverage but never resurrect a Behavior the org turned
+					// off — that is a deliberate user state, not drift.
+					logger.info(
+						{
+							organization_id: args.organizationId,
+							behavior_id: Number(existing[0].id),
+							status: existing[0].status,
+							connector_key: args.connectorKey,
+						},
+						"[feed-auto-pause] existing Behavior is not active — leaving status as-is",
+					);
+				}
 				if (hasConnectorTrigger(triggers, args.connectorKey)) {
 					return { created: false, behaviorId: Number(existing[0].id) };
 				}
@@ -120,7 +138,21 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				return { created: false, behaviorId: null };
 			}
 
-			const createdBy = args.createdBy ?? agentId;
+			// watchers.created_by is NOT NULL with an FK to "user", so the org's
+			// system agent id is NOT a usable fallback — inserting it raises a
+			// constraint error that the outer catch would swallow as
+			// "install failed (non-fatal)". Skip honestly instead.
+			const createdBy = args.createdBy;
+			if (!createdBy) {
+				logger.debug(
+					{
+						organization_id: args.organizationId,
+						connector_key: args.connectorKey,
+					},
+					"[feed-auto-pause] no attributable user — skip Behavior install",
+				);
+				return { created: false, behaviorId: null };
+			}
 			const watcherId = await getNextNumericId(tx, "watchers");
 			const versionId = await getNextNumericId(tx, "watcher_versions");
 
@@ -192,5 +224,37 @@ export async function ensureFeedAutoPauseBehavior(args: {
 			"[feed-auto-pause] install failed (non-fatal)",
 		);
 		return { created: false, behaviorId: null };
+	}
+}
+
+/**
+ * Backfill coverage for connections that already exist.
+ *
+ * `ensureFeedAutoPauseBehavior` no-ops when the org has no system agent yet, so
+ * a connector connected before `organization.system_agent_id` was populated
+ * would never get a trigger — later connects only add their own connector_key.
+ * Call this once the pointer is set so those earlier connectors are covered.
+ */
+export async function reconcileFeedAutoPauseBehavior(args: {
+	organizationId: string;
+	createdBy?: string | null;
+	db?: DbClient;
+}): Promise<void> {
+	const sql = args.db ?? getDb();
+	const rows = (await sql`
+		SELECT DISTINCT connector_key
+		FROM connections
+		WHERE organization_id = ${args.organizationId}
+		  AND deleted_at IS NULL
+	`) as Array<{ connector_key: string }>;
+
+	for (const row of rows) {
+		if (!row.connector_key) continue;
+		await ensureFeedAutoPauseBehavior({
+			organizationId: args.organizationId,
+			connectorKey: row.connector_key,
+			createdBy: args.createdBy,
+			db: args.db,
+		});
 	}
 }

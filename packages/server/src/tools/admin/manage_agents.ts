@@ -40,6 +40,7 @@ import {
   type ActingPrincipal,
 } from '../../authz/entity-policy';
 import { resolveNewAgentProvisioningDefaults } from '../../auth/system-provider-resolution';
+import { reconcileFeedAutoPauseBehavior } from '../../behaviors/ensure-feed-auto-pause-behavior';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import {
@@ -580,6 +581,22 @@ async function handleSetSystemAgent(
     SET system_agent_id = ${args.agent_id}
     WHERE id = ${ctx.organizationId}
   `;
+  // Connections created before the org had a system agent got no
+  // feed-auto-pause coverage (the installer no-ops without one). Backfill now
+  // that the pointer exists. Fire-and-forget: set_system_agent must not fail on
+  // a Behavior install race.
+  // created_by is FK'd to "user", so attribute to the calling user — never to
+  // args.agent_id.
+  void reconcileFeedAutoPauseBehavior({
+    organizationId: ctx.organizationId,
+    createdBy: ctx.userId,
+    db: sql,
+  }).catch((err) =>
+    logger.warn(
+      { err, organization_id: ctx.organizationId },
+      'reconcileFeedAutoPauseBehavior failed after set_system_agent'
+    )
+  );
   return { action: 'set_system_agent', system_agent_id: args.agent_id };
 }
 

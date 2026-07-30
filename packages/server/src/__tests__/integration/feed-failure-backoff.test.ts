@@ -278,7 +278,9 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       status: string;
       approved_input: Record<string, unknown> | null;
     }>;
-    expect(behaviorRuns.length).toBeGreaterThanOrEqual(1);
+    // One matching Behavior, one threshold crossing — exactly one run, so a
+    // duplicate dispatch cannot pass this gate.
+    expect(behaviorRuns).toHaveLength(1);
     expect(behaviorRuns[0]?.approved_input).toMatchObject({
       dispatch_source: 'event',
       trigger_execution: 'turn',

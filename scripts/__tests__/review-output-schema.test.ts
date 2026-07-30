@@ -35,10 +35,12 @@ const REPO_ROOT = resolve(import.meta.dir, "..", "..");
 const SCHEMA_FILE = join(REPO_ROOT, "prompts/review-output-schema.json");
 
 /**
- * Keys that make `claude --json-schema` refuse the file outright. A dialect
- * declaration is optional metadata for both CLIs — neither infers anything
- * from it — so removing it costs nothing and dropping it from the whitelist
- * is the whole fix.
+ * `$schema` and `$id` point the loader at a document it will not fetch —
+ * claude refuses the file outright with "no schema with key or ref …". Local
+ * `$defs`/`$ref` DO load in the claude CLI (verified: a `#/$defs/…` schema
+ * round-trips), but they are reference machinery a flat verdict schema does
+ * not need, so the guard keeps the file reference-free instead of tracking
+ * which CLI tolerates which indirection.
  */
 function unsupportedKeys(schema: Record<string, unknown>): string[] {
   return ["$schema", "$id", "$ref", "$defs"].filter((key) => key in schema);
@@ -61,7 +63,7 @@ describe("review output schema stays loadable by both reviewer CLIs", () => {
   const raw = readFileSync(SCHEMA_FILE, "utf8");
   const schema = JSON.parse(raw) as Record<string, any>;
 
-  it("declares no meta-schema reference claude cannot resolve", () => {
+  it("stays reference-free so both reviewer CLIs load it", () => {
     expect(unsupportedKeys(schema)).toEqual([]);
   });
 

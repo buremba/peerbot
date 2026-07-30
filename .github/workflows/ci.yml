@@ -596,6 +596,16 @@ jobs:
         # Three other sections say the opposite; this pins the one direction.
         run: bun test scripts/__tests__/review-prompt-env-blockers.test.ts
 
+      - name: Review output schema dialect
+        # prompts/review-output-schema.json is handed to BOTH reviewer CLIs —
+        # `claude --json-schema` and `codex exec --output-schema` — and the
+        # review gate fails closed on a schema either one rejects. A stray
+        # draft-2020-12 `$schema` meta-ref made claude refuse the file outright
+        # ("no schema with key or ref …"), which surfaced only under a codex
+        # quota outage and read as a dead reviewer, not a bad key. Pins the
+        # schema to the reference-free shape both CLIs load.
+        run: bun test scripts/__tests__/review-output-schema.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal

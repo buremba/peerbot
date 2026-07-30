@@ -42,7 +42,7 @@ import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
 import {
-  isReservedInternalUserId,
+  parseBehaviorRunConversationId,
   verifyBehaviorRunIntent,
 } from "../../permissions/behavior-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
@@ -867,15 +867,16 @@ export function createAgentApi(config: AgentApiConfig): Hono {
 
     // A `behavior_run` intent decides this session's userId/thread, and hence
     // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
-    // read a Behavior's identity out of. Verify it against server-authored
-    // dispatch state HERE — the one place it enters the system — so nothing
-    // downstream has to re-derive provenance from a caller-supplied string.
+    // read a Behavior's identity out of. Verify both the dispatcher claim and
+    // its short-lived internal token HERE — the one place the intent enters
+    // the system — so downstream code can trust the packed correlation.
     const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
     if (
       behaviorIntent &&
       !(await verifyBehaviorRunIntent({
         intent: behaviorIntent,
         organizationId: tokenOrganizationId,
+        accessToken: tokenFromHeader(c),
       }))
     ) {
       logger.warn(
@@ -889,20 +890,6 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       return c.json(
         { success: false, error: "Unknown or undispatched Behavior run" },
         403,
-      );
-    }
-    // The reserved `watcher_<id>` userId is how the route itself names a
-    // verified Behavior turn. Accepting one from a request body would let a
-    // caller assemble the same conversation suffix with no intent at all,
-    // routing around the check above.
-    if (isReservedInternalUserId(requestedUserId)) {
-      logger.warn(
-        { requestedUserId, organizationId: tokenOrganizationId },
-        "Rejected a session using the reserved internal Behavior userId prefix",
-      );
-      return c.json(
-        { success: false, error: "Reserved userId prefix" },
-        400,
       );
     }
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
@@ -959,6 +946,23 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       organizationId: behaviorIntent ? undefined : tokenOrganizationId,
       threadId: effectiveThread || undefined,
     });
+    // Validate the packed id, not individual request fields: a caller can place
+    // `_watcher_<id>_run_<id>` across userId/thread boundaries or entirely
+    // inside either field. Only the verified internal intent may create the
+    // suffix consumed by the unattended-tool policy.
+    if (
+      !behaviorIntent &&
+      parseBehaviorRunConversationId(conversationId) !== null
+    ) {
+      logger.warn(
+        { conversationId, organizationId: tokenOrganizationId },
+        "Rejected a session using the reserved Behavior conversation suffix",
+      );
+      return c.json(
+        { success: false, error: "Reserved Behavior conversation suffix" },
+        400,
+      );
+    }
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 

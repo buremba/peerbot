@@ -2,35 +2,20 @@
  * Server-side verification of a `behavior_run` session intent.
  *
  * `POST /api/v1/agents` accepts `intent: {kind:"behavior_run", runId, behaviorId}`
- * from the request body, and the route turns it into
- * `userId = watcher_<behaviorId>` / `thread = run_<runId>`, hence a
- * `conversationId` ending `_watcher_<behaviorId>_run_<runId>`. That suffix is
- * the correlation the worker token carries, and downstream consumers — the MCP
- * tool-approval gate among them — read a Behavior's identity out of it.
+ * from the request body and turns it into `userId = watcher_<behaviorId>` /
+ * `thread = run_<runId>`, hence a conversationId ending
+ * `_watcher_<behaviorId>_run_<runId>`. Downstream consumers — the MCP
+ * tool-approval gate among them — read a Behavior's identity out of that
+ * suffix.
  *
- * Without this check the whole chain is caller-authored: the token is
+ * Without this check the whole chain is caller-authored. The worker token is
  * encrypted, so its claims cannot be tampered with AFTER minting, but the
- * gateway minted them from the request body, so the signature attests
- * transport integrity, not provenance. Verifying here — the one place the
- * intent enters the system — is what makes every downstream reading of that
- * suffix sound. Do not re-derive provenance further down; derive it once, here.
- *
- * The verification leans on state only the server can author. Behavior dispatch
- * (`dispatchWatcherRun`) claims the run through `claimPendingWatcherRun` —
- * stamping `status='claimed'` and `claimed_by='lobu-dispatcher'` — BEFORE it
- * calls this route, and flips it to `running` immediately after. No API caller
- * can put a run into that state.
- *
- * Residual, stated plainly: while a legitimate run of Behavior B is in flight,
- * a member of the same org operating the same agent could name it and inherit
- * B's session shape for that window. Closing that needs a distinguishable
- * service principal at this route (the internal dispatcher token currently
- * authenticates as an ordinary org owner/admin, and the middleware surfaces
- * only `userId`/`organizationId`), which is a bigger change than this gate
- * warrants. What is closed is the unbounded case: naming any Behavior at any
- * time, including one that has never run.
+ * gateway mints them from the request body: the signature attests transport
+ * integrity, not provenance. Verify once, here, where the intent enters the
+ * system; never re-derive provenance from the string further down.
  */
 
+import { hashToken } from "../../auth/oauth/utils.js";
 import { type DbClient, getDb } from "../../db/client.js";
 import logger from "../../utils/logger.js";
 
@@ -40,18 +25,8 @@ import logger from "../../utils/logger.js";
  * do not take this route.
  */
 const SERVER_DISPATCHER = "lobu-dispatcher";
-
-/**
- * Reserved internal `userId` shape. The route builds `watcher_<behaviorId>`
- * itself for a verified intent, so a request body may never supply one: that
- * would let a caller assemble the Behavior conversation suffix WITHOUT an
- * intent and bypass the verification below entirely.
- */
-const RESERVED_INTERNAL_USER_ID = /^watcher_\d+$/;
-
-export function isReservedInternalUserId(userId: string | undefined): boolean {
-	return typeof userId === "string" && RESERVED_INTERNAL_USER_ID.test(userId);
-}
+const INTERNAL_SERVICE_CLIENT = "lobu-internal";
+const BEHAVIOR_CONVERSATION_SUFFIX = /_watcher_(\d+)_run_(\d+)$/;
 
 export interface BehaviorRunIntent {
 	runId: number;
@@ -59,38 +34,73 @@ export interface BehaviorRunIntent {
 }
 
 /**
- * True when `intent` names a real Behavior run that the server itself has
- * dispatched, in the caller's own organization.
- *
- * Fails CLOSED: an unreadable database, a missing run, a run belonging to
- * another Behavior or another tenant, and a run in any state the dispatcher did
- * not put it in all return false.
+ * Parse the internal correlation suffix consumed by the MCP approval policy.
+ * Callers without a verified `behavior_run` intent must never be allowed to
+ * construct this shape through arbitrary user/thread fields.
+ */
+export function parseBehaviorRunConversationId(
+	conversationId: string,
+): BehaviorRunIntent | null {
+	const match = BEHAVIOR_CONVERSATION_SUFFIX.exec(conversationId);
+	if (!match) return null;
+	const behaviorId = Number(match[1]);
+	const runId = Number(match[2]);
+	if (
+		!Number.isSafeInteger(behaviorId) ||
+		behaviorId < 1 ||
+		!Number.isSafeInteger(runId) ||
+		runId < 1
+	) {
+		return null;
+	}
+	return { behaviorId, runId };
+}
+
+/**
+ * Verify both halves of a server-authored Behavior dispatch: the run was
+ * claimed by the dispatcher, and the request bears the short-lived internal
+ * OAuth token minted by that dispatcher. Run state alone is not a capability:
+ * an ordinary same-org agent owner can observe or guess an in-flight run id.
  */
 export async function verifyBehaviorRunIntent(
 	args: {
 		intent: BehaviorRunIntent;
 		organizationId: string | undefined;
+		accessToken: string | null;
 	},
 	db?: DbClient,
 ): Promise<boolean> {
-	if (!args.organizationId) return false;
+	if (!args.organizationId || !args.accessToken) return false;
 	const { runId, behaviorId } = args.intent;
-	if (!Number.isSafeInteger(runId) || !Number.isSafeInteger(behaviorId)) {
+	if (
+		!Number.isSafeInteger(runId) ||
+		runId < 1 ||
+		!Number.isSafeInteger(behaviorId) ||
+		behaviorId < 1
+	) {
 		return false;
 	}
 	try {
 		const sql = db ?? getDb();
+		const tokenHash = hashToken(args.accessToken);
 		const rows = await sql`
-      SELECT 1
-      FROM runs
-      WHERE id = ${runId}
-        AND run_type = 'behavior'
-        AND watcher_id = ${behaviorId}
-        AND organization_id = ${args.organizationId}
-        AND claimed_by = ${SERVER_DISPATCHER}
-        AND status IN ('claimed', 'running')
-      LIMIT 1
-    `;
+	      SELECT 1
+	      FROM runs behavior_run
+	      JOIN oauth_tokens service_token
+	        ON service_token.token_hash = ${tokenHash}
+	      WHERE behavior_run.id = ${runId}
+	        AND behavior_run.run_type = 'behavior'
+	        AND behavior_run.watcher_id = ${behaviorId}
+	        AND behavior_run.organization_id = ${args.organizationId}
+	        AND behavior_run.claimed_by = ${SERVER_DISPATCHER}
+	        AND behavior_run.status = 'claimed'
+	        AND service_token.token_type = 'access'
+	        AND service_token.client_id = ${INTERNAL_SERVICE_CLIENT}
+	        AND service_token.organization_id = ${args.organizationId}
+	        AND service_token.revoked_at IS NULL
+	        AND service_token.expires_at > NOW()
+	      LIMIT 1
+	    `;
 		return rows.length > 0;
 	} catch (error) {
 		logger.warn(

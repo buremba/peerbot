@@ -13,7 +13,9 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
+import { hashToken } from "../../auth/oauth/utils.js";
 import { getDb } from "../../db/client.js";
+import { parseBehaviorRunConversationId } from "../permissions/behavior-run-intent.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import {
@@ -454,14 +456,9 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
   const OTHER_ORG = "org-watcher-other";
   const AGENT = "watcher-agent";
   const SEED_USER = "intent-seed-user";
+  const INTERNAL_SERVICE_TOKEN = "intent-internal-service-token";
+  const ORDINARY_ACCESS_TOKEN = "intent-ordinary-access-token";
 
-  /**
-   * The `_watcher_<id>_run_<id>` conversation suffix is what downstream gates
-   * (the MCP tool-approval policy) read a Behavior's identity out of. The
-   * request body is caller-authored, so the route must verify the intent
-   * against state only the server can write: `dispatchWatcherRun` claims the
-   * run as `lobu-dispatcher` BEFORE calling this route.
-   */
   /**
    * Seed one Behavior plus a run in the state the server dispatcher leaves it
    * in. Returns both ids so a test can name a real Behavior and a real run
@@ -525,6 +522,14 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
       sseManager: {} as never,
       publicGatewayUrl: "http://localhost:8787",
       artifactStore: {} as never,
+      externalAuthClient: {
+        async fetchUserInfo() {
+          return {
+            sub: SEED_USER,
+            organizationId: ORG_ID,
+          };
+        },
+      } as never,
       agentMetadataStore: {
         async getMetadata(id: string) {
           // Non-empty org metadata → tokenOrganizationId resolves, so the
@@ -532,7 +537,7 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
           // is what keeps it out.
           return id === AGENT
             ? {
-                owner: { platform: "api", userId: AGENT },
+                owner: { platform: "external", userId: SEED_USER },
                 organizationId: ORG_ID,
               }
             : null;
@@ -541,20 +546,14 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     });
   }
 
-  /** Worker token scoped to the Behavior's agent + org. */
-  function watcherToken(): string {
-    return generateWorkerToken(AGENT, "conv-w", "deploy-w", {
-      channelId: "api_test",
-      agentId: AGENT,
-      organizationId: ORG_ID,
-    });
-  }
-
-  async function post(body: Record<string, unknown>): Promise<Response> {
+  async function post(
+    body: Record<string, unknown>,
+    accessToken = INTERNAL_SERVICE_TOKEN,
+  ): Promise<Response> {
     return makeWatcherApp().request("/api/v1/agents", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${watcherToken()}`,
+        Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -573,6 +572,36 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     await resetTestDatabase();
     process.env.ENCRYPTION_KEY = TEST_KEY;
     setAuthProvider(null);
+    await seedAgentRow(AGENT, { organizationId: ORG_ID });
+    const sql = getDb();
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${SEED_USER}, ${SEED_USER}, ${`${SEED_USER}@example.com`},
+              false, now(), now())
+    `;
+    await sql`
+      INSERT INTO oauth_clients (
+        id, redirect_uris, client_name, token_endpoint_auth_method
+      ) VALUES
+        ('lobu-internal', '{}'::text[], 'Lobu Internal Service', 'none'),
+        ('ordinary-client', '{}'::text[], 'Ordinary Client', 'none')
+    `;
+    await sql`
+      INSERT INTO oauth_tokens (
+        id, token_type, token_hash, client_id, user_id, organization_id,
+        scope, expires_at
+      ) VALUES
+        (
+          'intent-service-token', 'access', ${hashToken(INTERNAL_SERVICE_TOKEN)},
+          'lobu-internal', ${SEED_USER}, ${ORG_ID}, 'profile:read',
+          NOW() + INTERVAL '1 hour'
+        ),
+        (
+          'intent-ordinary-token', 'access', ${hashToken(ORDINARY_ACCESS_TOKEN)},
+          'ordinary-client', ${SEED_USER}, ${ORG_ID}, 'profile:read',
+          NOW() + INTERVAL '1 hour'
+        )
+    `;
   });
 
   test("a dispatched run keeps the watcher_<id>_run_<id> shape, no org suffix", async () => {
@@ -586,11 +615,16 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     expect(body.agentId).not.toContain(ORG_ID);
   });
 
-  test("a run the dispatcher has already started is still accepted", async () => {
-    // The dispatcher flips 'claimed' → 'running' right after this call; a
-    // crash-recovery re-dispatch must not be refused.
-    const { behaviorId, runId } = await seedDispatchedRun({ status: "running" });
-    expect((await post(intentBody(runId, behaviorId))).status).toBe(201);
+  test("an ordinary same-org token cannot borrow an in-flight Behavior run", async () => {
+    const { behaviorId, runId } = await seedDispatchedRun();
+    expect(
+      (
+        await post(
+          intentBody(runId, behaviorId),
+          ORDINARY_ACCESS_TOKEN,
+        )
+      ).status,
+    ).toBe(403);
   });
 
   test("an intent naming a run that does not exist is refused", async () => {
@@ -639,19 +673,57 @@ describe("POST /api/v1/agents — behavior_run intent verification", () => {
     expect((await post(intentBody(runId, behaviorId))).status).toBe(403);
   });
 
-  test("the reserved watcher_<id> userId cannot be supplied by a caller", async () => {
-    // Without this, the conversation suffix is assemblable with no intent at
-    // all — routing around every check above.
+  /**
+   * The invariant is not "these inputs 400" — it is that NO session without a
+   * verified intent ever carries the `_watcher_<id>_run_<id>` correlation the
+   * unattended-tool policy reads. Two mechanisms deliver that, and which one
+   * fires depends on whether an org resolves: `buildApiConversationId`
+   * interleaves the org id between userId and thread (breaking the shape), and
+   * the explicit guard rejects whatever still lands on it. Asserting the
+   * property covers both, and keeps passing if either mechanism changes.
+   */
+  for (const [name, userId, thread] of [
+    ["exact fields", "watcher_5", "run_1"],
+    ["split suffix", "caller_watcher_5", "run_1"],
+    ["suffix packed into userId", "caller_watcher_5_run_1", undefined],
+    ["suffix packed into thread", "caller", "topic_watcher_5_run_1"],
+  ] as const) {
+    test(`an unverified session never carries the Behavior suffix — ${name}`, async () => {
+      const res = await post({
+        agentId: AGENT,
+        userId,
+        ...(thread ? { thread } : {}),
+        forceNew: true,
+      });
+
+      if (res.status === 400) {
+        expect((await res.json()) as { error?: string }).toEqual({
+          success: false,
+          error: "Reserved Behavior conversation suffix",
+        });
+        return;
+      }
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { agentId?: string };
+      expect(parseBehaviorRunConversationId(body.agentId ?? "")).toBeNull();
+    });
+  }
+
+  test("the guard itself rejects a crafted suffix that survives id assembly", async () => {
+    // `buildApiConversationId` appends the thread last, so a suffix planted
+    // there reaches the end of the conversation id intact — this is the input
+    // the explicit guard exists for, and it must not be quietly weakened to a
+    // no-op by a future change to id assembly.
     const res = await post({
       agentId: AGENT,
-      userId: "watcher_5",
-      thread: `run_1`,
+      userId: "caller",
+      thread: "topic_watcher_5_run_1",
       forceNew: true,
     });
     expect(res.status).toBe(400);
     expect((await res.json()) as { error?: string }).toEqual({
       success: false,
-      error: "Reserved userId prefix",
+      error: "Reserved Behavior conversation suffix",
     });
   });
 });

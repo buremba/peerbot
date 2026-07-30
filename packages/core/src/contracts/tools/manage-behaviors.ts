@@ -143,7 +143,7 @@ export const BehaviorExecutionConfigSchema = Type.Object(
         ],
         {
           description:
-            "How this Behavior's runs answer tool-approval prompts. 'bypassPermissions' and 'dontAsk' let a run use write-capable tools without a human approving each call — required for a scheduled Behavior, which has nobody to answer the card. Owner/admin only. Every other value keeps the approval prompt.",
+            "How this Behavior's runs answer tool-approval prompts. 'bypassPermissions' and 'dontAsk' allow write-capable tools without a per-call approval card; owner/admin only. Every other value keeps the approval prompt.",
         }
       )
     ),

@@ -4,6 +4,7 @@
  */
 
 import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
+import { feedBackoff } from "../connectors/feed-backoff";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import logger from "../utils/logger";
@@ -209,4 +210,56 @@ export async function maybeEmitFeedAutoPausedAfterFailure(args: {
 		runId: args.runId,
 		db: args.db,
 	});
+}
+
+/**
+ * Recover feed.auto_paused deliveries that were lost after a hard pause
+ * (activation threw, process died, no Behavior installed yet).
+ *
+ * Scans hard-paused feeds at/above the pause threshold and re-invokes emit.
+ * delivery_id is stable per failure episode (first_failure_at), so already-
+ * delivered signals are no-ops via the runs idempotency key.
+ *
+ * Call from a single-claimant scheduled job — never from request path.
+ */
+export async function retryPendingFeedAutoPausedSignals(args?: {
+	pauseThreshold?: number;
+	limit?: number;
+	db?: DbClient;
+}): Promise<{ scanned: number; attempted: number; errors: number }> {
+	const sql = args?.db ?? getDb();
+	const threshold = args?.pauseThreshold ?? feedBackoff.pauseThreshold;
+	const limit = Math.min(Math.max(args?.limit ?? 50, 1), 200);
+
+	const rows = (await sql`
+		SELECT f.id, f.consecutive_failures
+		FROM feeds f
+		WHERE f.status = 'paused'
+		  AND f.deleted_at IS NULL
+		  AND f.consecutive_failures >= ${threshold}
+		  AND f.connection_id IS NOT NULL
+		ORDER BY f.updated_at DESC
+		LIMIT ${limit}
+	`) as Array<{ id: number; consecutive_failures: number }>;
+
+	let attempted = 0;
+	let errors = 0;
+	for (const row of rows) {
+		attempted++;
+		try {
+			await maybeEmitFeedAutoPausedAfterFailure({
+				feedId: Number(row.id),
+				consecutiveFailures: Number(row.consecutive_failures),
+				pauseThreshold: threshold,
+				db: sql,
+			});
+		} catch (err) {
+			errors++;
+			logger.error(
+				{ feed_id: row.id, error: String(err) },
+				"[platform-events] retryPendingFeedAutoPausedSignals failed for feed",
+			);
+		}
+	}
+	return { scanned: rows.length, attempted, errors };
 }

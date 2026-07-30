@@ -258,3 +258,50 @@ export async function reconcileFeedAutoPauseBehavior(args: {
 		});
 	}
 }
+
+/**
+ * Rollout backfill: for every org that has a system agent and at least one
+ * live connection, ensure the feed-auto-pause Behavior covers those connectors.
+ * Bounded + single-claimant job only — not request path.
+ */
+export async function backfillFeedAutoPauseBehaviors(args?: {
+	limitOrgs?: number;
+	db?: DbClient;
+}): Promise<{ orgs: number; errors: number }> {
+	const sql = args?.db ?? getDb();
+	const limitOrgs = Math.min(Math.max(args?.limitOrgs ?? 50, 1), 200);
+
+	const orgs = (await sql`
+		SELECT o.id AS organization_id, o.system_agent_id
+		FROM organization o
+		WHERE o.system_agent_id IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1 FROM connections c
+		    WHERE c.organization_id = o.id
+		      AND c.deleted_at IS NULL
+		  )
+		ORDER BY o.id
+		LIMIT ${limitOrgs}
+	`) as Array<{ organization_id: string; system_agent_id: string }>;
+
+	let errors = 0;
+	for (const org of orgs) {
+		try {
+			await reconcileFeedAutoPauseBehavior({
+				organizationId: String(org.organization_id),
+				createdBy: org.system_agent_id,
+				db: sql,
+			});
+		} catch (err) {
+			errors++;
+			logger.warn(
+				{
+					organization_id: org.organization_id,
+					error: String(err),
+				},
+				"[feed-auto-pause] backfill org failed",
+			);
+		}
+	}
+	return { orgs: orgs.length, errors };
+}

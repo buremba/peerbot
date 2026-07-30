@@ -30,21 +30,12 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 		name: "Feed auto-pause helper",
 		version: "1.0.0",
 		description:
-			"When Lobu hard-pauses a feed after consecutive sync failures, notify admins with the last error and next steps (re-auth, device online, config).",
+			"When Lobu hard-pauses a feed after consecutive sync failures, notify admins with the last error and next steps (re-auth, device online, config). Preferred install path: connecting a connector auto-installs this Behavior with the right connector_key. If applying from catalog, add an event trigger for each connector: kind=event, event_types=[feed.auto_paused], connector_key=<that connector>.",
 		detail: {
 			slug: "feed-auto-pause",
-			// Install-time code merges per-connector event triggers. The catalog
-			// prefill shows the platform event type; set connector_key when applying.
-			triggers: [
-				{
-					kind: "event",
-					connector_key: "chrome",
-					event_types: ["feed.auto_paused"],
-					execution: "turn",
-					active_run: "coalesce",
-					output: "silent",
-				},
-			],
+			// No hardcoded connector_key — connect-time ensureFeedAutoPauseBehavior
+			// merges per-connector triggers. Catalog install must set connector_key.
+			triggers: [],
 			prompt:
 				"A connector feed was auto-paused after too many consecutive sync failures.\n\nRead the trigger signal (label + input_text + attributes) for feed id, connector, connection, consecutive failure count, and last error.\n\nDecide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nKeep it short. Prefer client.notifications.send to admins; do not unpause automatically.\n",
 			notification_channel: "notification",

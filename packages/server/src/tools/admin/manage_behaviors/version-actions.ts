@@ -214,6 +214,9 @@ export async function handleCreateVersion(
   }
   // Both branches above write the SAME resolved prompt+skills pair, so the
   // chip/pin agreement is checked once here rather than inside either arm.
+  // Unconditional, unlike the caller-supplied-only gates above: those consult
+  // the live library (which drifts), while this reads only the pair being
+  // written — a pair that passed at its own write time passes again on inherit.
   assertPromptSkillTokensPinned(prompt, skills);
 
   const createdBy = ctx.userId ?? 'system';

@@ -2,7 +2,7 @@
  * A prompt `@[skill:…]` chip must have a matching entry in `skills[]`.
  *
  * Ref tokens are never stripped — nothing in the instruction path rewrites them
- * (grep `PROMPT_REF_TOKEN`: the only consumer is source derivation) — so an
+ * (grep `PROMPT_REF_TOKEN`: every consumer only reads the prompt) — so an
  * unpinned chip does not fail loudly, it degrades: the agent reads the literal
  * `@[skill:deploy-runbook:Deploy runbook](/…)` as if it were guidance, with no
  * `.skills/` file behind it. Silent wrong instructions are worse than a 422.

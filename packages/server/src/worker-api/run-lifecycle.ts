@@ -51,6 +51,11 @@ import {
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
+import {
+	bumpDeviceFinalizeNudge,
+	markWatcherRunCompleted,
+	resolveFinalizeNudgeBudget,
+} from "../watchers/run-completion";
 import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
@@ -710,23 +715,23 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
  * POST /api/workers/me/runs/:runId/complete-behavior
  *
  * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
- * (Claude Code, etc.) on the user's machine. The Owletto Mac app's
+ * (Claude Code, agy, etc.) on the user's machine. The Owletto Mac app's
  * `WatcherDispatcher` posts here once the subprocess exits.
  *
- * The CLI agent completes the run itself, over MCP, exactly like a
- * server-side watcher agent: `query_sdk` (`client.knowledge.read`) →
- * window_token → `run_sdk` (`client.behaviors.completeWindow`). The
- * dispatcher wires the gateway MCP server into the spawned CLI
- * (--mcp-config) and the prompt carries the completion instructions. This
- * endpoint therefore only records process exit metadata:
+ * The agent is expected to complete window Behaviors itself — via Lobu MCP
+ * tools (`query_sdk` / `run_sdk` → `completeWindow`) and/or the local
+ * `lobu` CLI (`lobu memory exec` with the same ClientSDK calls). This
+ * endpoint records process exit metadata and enforces the finalize contract:
  *
  * - body.error set → the subprocess crashed/timed out → run failed.
  * - clean exit + run already completed (by complete_window) → ack; stamp
  *   exit metadata and the window's wall-clock.
- * - clean exit + run still running → the agent never called
- *   complete_window → run FAILED. Same rule as the server-side dispatch
- *   guard (automation.ts): complete_window is the only signal that real
- *   work happened; absence of it is a failure, not a pass.
+ * - clean exit + event-turn Behavior still running → complete without a
+ *   window (turn path has no completeWindow step).
+ * - clean exit + window Behavior still running + finalize budget left →
+ *   status `resume` (run stays claimed/running; Mac re-spawns with nudge).
+ * - clean exit + window Behavior still running + budget exhausted →
+ *   failed with reason_code `missing_complete_window`.
  *
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
@@ -1063,19 +1068,124 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
-	// Clean exit but the run is still `running`: the agent never called
-	// run_sdk (client.behaviors.completeWindow). Fail closed — completeWindow is
-	// the only signal that real work happened (the same rule the server-side
-	// dispatch guard enforces in automation.ts). The stdout tail lands in
-	// runs.output_tail for diagnosis.
+	// Clean exit but the run is still `running`.
+	// Event turns complete on agent reply — no completeWindow.
+	if (approved.trigger_execution === "turn") {
+		const agentKind =
+			typeof approved.agent_kind === "string" &&
+			(approved.agent_kind as string).trim()
+				? (approved.agent_kind as string).trim()
+				: null;
+		await markWatcherRunCompleted(
+			sql,
+			runId,
+			null,
+			agentKind ? `device-cli:${agentKind}` : "device-cli"
+		);
+		await sql`
+      UPDATE runs
+      SET exit_code = ${body.exit_code ?? null},
+          exit_signal = ${body.exit_signal ?? null},
+          exit_reason = ${body.exit_reason ?? "ok"},
+          output_tail = ${output ? output.slice(-2000) : null},
+          run_metadata = CASE
+            WHEN ${durationMs}::bigint IS NULL THEN COALESCE(run_metadata, '{}'::jsonb)
+            ELSE jsonb_set(
+              COALESCE(run_metadata, '{}'::jsonb),
+              '{execution_time_ms}',
+              to_jsonb(${durationMs}::bigint)
+            )
+          END
+      WHERE id = ${runId}
+    `;
+		await sql`
+      UPDATE watchers
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+		emitCompletionEvent("completed");
+		return c.json({
+			ok: true,
+			status: "completed",
+			reason_code: "event_turn",
+			window_id: null,
+		});
+	}
+
+	// Window Behavior: agent never called completeWindow. Bounded device-held
+	// resume (same finalize_nudges budget as cloud) so the Mac can re-spawn.
+	const watcherRows = (await sql`
+    SELECT execution_config
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `) as unknown as Array<{
+		execution_config: Record<string, unknown> | null;
+	}>;
+	const budget = resolveFinalizeNudgeBudget(
+		watcherRows[0]?.execution_config ?? null
+	);
+	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
+	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;
+	// attemptsSoFar is how many resumes already granted; next spawn is attempt+1.
+	// Budget N means N extra spawns after the first (same as cloud).
+	if (attemptsSoFar < budget) {
+		const nextAttempt = attemptsSoFar + 1;
+		const bumped = await bumpDeviceFinalizeNudge(
+			sql,
+			runId,
+			nextAttempt,
+			output ? output.slice(-2000) : null
+		);
+		if (!bumped) {
+			const finalRows = (await sql`
+        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+      `) as unknown as Array<{ status: string }>;
+			return c.json({
+				ok: true,
+				status: finalRows[0]?.status ?? "failed",
+				idempotent: true,
+			});
+		}
+		const nudge =
+			"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+			"finalize via the lobu skill + CLI (preferred): " +
+			"`lobu memory exec` with client.knowledge.read({ watcher_id }) then " +
+			"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+			"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
+		logger.info(
+			{ run_id: runId, attempt: nextAttempt, max: budget },
+			"[completeBehaviorRun] missing completeWindow — device resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: nextAttempt,
+			max_attempts: budget,
+			// Total spawns allowed = first + budget resumes.
+			// attempt is the resume index (1..budget); Mac should re-spawn now.
+			nudge,
+			error: nudge,
+		});
+	}
+
 	const reason =
-		"Device CLI exited without calling run_sdk (client.behaviors.completeWindow). " +
-		"The Behavior prompt instructs the agent to complete via the lobu MCP server — check that " +
-		"the dispatcher passed --mcp-config with query_sdk/run_sdk allowed, the gateway is reachable " +
-		"from the device, and the device token has mcp:write scope.";
+		"Device CLI exited without calling completeWindow " +
+		(budget > 0 ? `after ${budget + 1} attempt(s)` : "(finalize nudges disabled)") +
+		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
+		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
+		"and that the device token has mcp:write if using MCP.";
 	await failRun(reason);
 	emitCompletionEvent("failed", reason);
-	return c.json({ ok: true, status: "failed", error: reason });
+	return c.json({
+		ok: true,
+		status: "failed",
+		reason_code: "missing_complete_window",
+		attempt: attemptsSoFar,
+		max_attempts: budget,
+		error: reason,
+	});
 }
 
 /**

@@ -34,8 +34,11 @@ const MAX_FINALIZE_NUDGES: number = (() => {
  * Finalize-nudge budget for a run: the watcher's per-watcher override
  * (execution_config.finalize_nudges, 0-5) when set, else the global default.
  * Clamped defensively in case a raw DB value sits outside the schema's range.
+ *
+ * Shared by the cloud dispatch path and the device `complete-behavior` exit
+ * report so both honor the same per-Behavior / global budget.
  */
-function resolveFinalizeNudgeBudget(
+export function resolveFinalizeNudgeBudget(
 	executionConfig: Record<string, unknown> | null | undefined
 ): number {
 	const override = executionConfig?.finalize_nudges;
@@ -43,6 +46,36 @@ function resolveFinalizeNudgeBudget(
 		return Math.min(5, Math.max(0, Math.floor(override)));
 	}
 	return MAX_FINALIZE_NUDGES;
+}
+
+/**
+ * Device-held finalize retry: keep the run `running` under the same claim and
+ * bump `approved_input.finalize_nudge_count` so the Mac app can re-spawn the
+ * local CLI with a nudge. Unlike {@link requeueWatcherRunForFinalizeNudge}
+ * (cloud: release claim → pending), this does not clear `claimed_by`.
+ *
+ * Returns false when the row is no longer `running` (another path won).
+ */
+export async function bumpDeviceFinalizeNudge(
+	sql: DbClient,
+	runId: number,
+	nextNudgeCount: number,
+	outputTail: string | null
+): Promise<boolean> {
+	const rows = (await sql`
+    UPDATE runs
+    SET approved_input = jsonb_set(
+          COALESCE(approved_input, '{}'::jsonb),
+          '{finalize_nudge_count}',
+          to_jsonb(${nextNudgeCount}::int)
+        ),
+        output_tail = ${outputTail},
+        error_message = ${`Device CLI attempt ${nextNudgeCount}: completeWindow not called — resume allowed`}
+    WHERE id = ${runId}
+      AND status = 'running'
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+	return rows.length > 0;
 }
 
 export async function findWindowIdForRun(

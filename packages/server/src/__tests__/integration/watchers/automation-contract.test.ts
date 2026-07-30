@@ -946,9 +946,51 @@ describe("watcher automation contract", () => {
 				ok: boolean;
 				status: string;
 				error?: string;
+				nudge?: string;
+				reason_code?: string;
+				attempt?: number;
+				max_attempts?: number;
 			};
-			expect(json.status).toBe("failed");
-			expect(String(json.error)).toMatch(/completeWindow/);
+			// Default finalize_nudges budget is 1 → first miss is a device-held resume
+			// (run stays running/claimed so the Mac can re-spawn).
+			expect(json.status).toBe("resume");
+			expect(json.reason_code).toBe("missing_complete_window");
+			expect(json.attempt).toBe(1);
+			expect(String(json.nudge ?? json.error ?? "")).toMatch(/completeWindow/i);
+
+			const [runAfterResume] = await sql`
+        SELECT status, error_message, window_id, output_tail,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(runAfterResume.status)).toBe("running");
+			expect(Number(runAfterResume.finalize_nudge_count)).toBe(1);
+			expect(runAfterResume.window_id).toBeNull();
+			expect(String(runAfterResume.output_tail)).toContain("nothing to report");
+
+			// Second clean exit with no window exhausts the budget → terminal fail.
+			const response2 = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "still nothing",
+						duration_ms: 10,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(response2.status).toBe(200);
+			const json2 = (await response2.json()) as {
+				ok: boolean;
+				status: string;
+				error?: string;
+				reason_code?: string;
+			};
+			expect(json2.status).toBe("failed");
+			expect(json2.reason_code).toBe("missing_complete_window");
+			expect(String(json2.error)).toMatch(/completeWindow/);
 
 			const [run] = await sql`
         SELECT status, error_message, window_id, output_tail FROM runs WHERE id = ${queued.runId}
@@ -956,8 +998,6 @@ describe("watcher automation contract", () => {
 			expect(String(run.status)).toBe("failed");
 			expect(String(run.error_message)).toMatch(/completeWindow/);
 			expect(run.window_id).toBeNull();
-			// The stdout tail is stashed for diagnosis.
-			expect(String(run.output_tail)).toContain("nothing to report");
 
 			const windows = await sql`
         SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'

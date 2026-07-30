@@ -63,8 +63,8 @@ export async function handleCompleteWindow(
 }> {
   const sql = getDb();
   const provenanceClientId = args.client_id ?? ctx.clientId ?? null;
-  const provenanceModel =
-    typeof args.model === 'string' && args.model.trim() ? args.model : 'external-client';
+  const explicitProvenanceModel =
+    typeof args.model === 'string' && args.model.trim() ? args.model : null;
   const provenanceMetadata: Record<string, unknown> =
     args.run_metadata && typeof args.run_metadata === 'object' && !Array.isArray(args.run_metadata)
       ? { ...(args.run_metadata as Record<string, unknown>) }
@@ -616,7 +616,14 @@ export async function handleCompleteWindow(
         UPDATE runs
         SET status = 'completed',
             window_id = ${windowId},
-            model_used = ${provenanceModel},
+            model_used = COALESCE(
+              ${explicitProvenanceModel},
+              NULLIF(model_used, 'external-client'),
+              CASE
+                WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
+                ELSE 'external-client'
+              END
+            ),
             run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)},
             completed_at = current_timestamp,
             error_message = NULL
@@ -637,7 +644,14 @@ export async function handleCompleteWindow(
         await tx`
           UPDATE runs
           SET window_id = ${windowId},
-              model_used = COALESCE(${provenanceModel}, model_used),
+              model_used = COALESCE(
+                ${explicitProvenanceModel},
+                NULLIF(model_used, 'external-client'),
+                CASE
+                  WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
+                  ELSE 'external-client'
+                END
+              ),
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}

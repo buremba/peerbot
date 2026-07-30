@@ -84,7 +84,7 @@ Implications, by design:
 Skills are executable, security-sensitive input:
 
 - Use curated skill lists by default.
-- Skill-level `nixPackages` are ignored. Review the agent's `nixPackages`: each binary on the allowlist is a capability, treat them as such.
+- Packages come from the agent's `nixPackages` (a skill cannot declare any). Review that list: each binary on the allowlist is a capability, treat them as such.
 - Network policy is declared on the agent (`network.allowed` / `network.denied` → `settings.networkConfig`), not on skills; gateway egress controls apply on top.
 - Destructive MCP tool calls require in-thread approval unless pre-approved via `defineAgent({ tools: { preApproved } })` in `lobu.config.ts`.
 

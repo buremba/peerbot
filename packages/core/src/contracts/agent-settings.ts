@@ -124,11 +124,11 @@ export const SkillConfigSchema = Type.Object({
   enabled: Type.Boolean(),
   system: Type.Optional(Type.Boolean()),
   content: Type.Optional(Type.String()),
-  // Legacy compatibility only: runtime package resolution and the CLI ignore
-  // this field. Keep accepting it so existing `skills_config` rows validate
-  // and round-trip through the pinned Owletto editor. Remove it with the
-  // submodule change that deletes the editor field.
-  nixPackages: Type.Optional(Type.Array(Type.String())),
+  // No `nixPackages`: a skill is instruction text, and generic tooling lives on
+  // the agent's `nixConfig` (issue #2320). Stored rows written before the field
+  // was dropped still validate — `Type.Object` admits unknown keys — and every
+  // reader has ignored the value since #2324, so a legacy entry simply stops
+  // round-tripping through the editor the first time an agent's skills are saved.
   modelPreference: Type.Optional(Type.String()),
   thinkingLevel: Type.Optional(ThinkingLevelSchema),
 });

@@ -45,8 +45,9 @@ describe("resolveAgentOptions nix union", () => {
     expect(resolved?.packages).toEqual(["request-pkg"]);
   });
 
-  // Stored legacy rows can still carry `nixPackages`; they must validate but
-  // contribute nothing to provisioning.
+  // `SkillConfigSchema` no longer declares `nixPackages`, but rows written
+  // before it was dropped still carry one. They must keep loading, and keep
+  // contributing nothing to provisioning.
   test("a legacy enabled skill's nixPackages entry is ignored", async () => {
     const resolved = await resolveNixConfig({
       nixConfig: { packages: ["ripgrep"] },

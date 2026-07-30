@@ -18,6 +18,7 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
+import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
 import {
   finalizeTurnSuggestions,
   readCurrentSuggestion,
@@ -74,7 +75,7 @@ interface ChatInteractionEnvelope {
  * autonomous-only restrictions.
  */
 const HEADLESS_SOURCES = new Set([
-  "watcher-run",
+  BEHAVIOR_RUN_SOURCE,
   "connector-repair",
   "scheduled-job",
   "internal",

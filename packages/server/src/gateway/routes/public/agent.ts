@@ -25,6 +25,7 @@ import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
+import { BEHAVIOR_RUN_SOURCE } from "../../behavior-run-session.js";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -1615,7 +1616,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           // Echoed back on every response row so output-guardrail audit events
           // remain scoped to the authoritative organization.
           organizationId: messageOrganizationId,
-          source: session.intent?.kind === "behavior_run" ? "watcher-run" : "direct-api",
+          source:
+            session.intent?.kind === "behavior_run"
+              ? BEHAVIOR_RUN_SOURCE
+              : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,
           intent: session.intent,

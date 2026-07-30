@@ -712,6 +712,18 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 }
 
 /**
+ * Prompt appended to the re-spawned CLI when a device Behavior exited without
+ * calling completeWindow. Module-level so a granted resume and its idempotent
+ * replay hand the device byte-identical instructions.
+ */
+const MISSING_COMPLETE_WINDOW_NUDGE =
+	"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+	"finalize via the lobu skill + CLI (preferred): " +
+	"`lobu memory exec` with client.knowledge.read({ watcher_id }) then " +
+	"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
+
+/**
  * POST /api/workers/me/runs/:runId/complete-behavior
  *
  * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
@@ -732,6 +744,9 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
  *   status `resume` (run stays claimed/running; Mac re-spawns with nudge).
  * - clean exit + window Behavior still running + budget exhausted →
  *   failed with reason_code `missing_complete_window`.
+ * - a replay of a report already answered with a resume (body
+ *   `finalize_attempt` behind the stored count, i.e. the device never saw the
+ *   response) → the same `resume` again, consuming no further attempt.
  *
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
@@ -754,6 +769,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		exit_code?: number | null;
 		exit_signal?: string | null;
 		exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
+		/**
+		 * Which finalize attempt this report covers: the run's
+		 * `finalize_nudge_count` at the time the reporting spawn started. 0 for
+		 * the first spawn. Makes the report replayable — see the replay guard
+		 * below.
+		 */
+		finalize_attempt?: number;
 	}>(c, "Invalid or missing JSON body");
 	if (body instanceof Response) return body;
 
@@ -1140,6 +1162,41 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	);
 	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
 	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;
+
+	// Replay guard. `finalize_attempt` is the finalize_nudge_count the reporting
+	// spawn ran under (0 = first spawn, N = the spawn a resume #N granted). When
+	// the stored count is already past it, this exact exit report was answered
+	// with a resume the device never saw — its POST committed and the response
+	// was lost. That is an ambiguous delivery outcome, not a fresh attempt, so
+	// re-serve the same grant. Consuming another attempt here would fail the run
+	// one spawn early, reinterpreting a lost response as work that happened.
+	//
+	// A device that omits the field (a build older than this endpoint's resume
+	// contract) reads as "reporting the attempt the server has", i.e. the
+	// pre-existing behavior — the field is what makes a retry safe, so the Mac
+	// retry loop and this guard ship together.
+	const reportedAttempt =
+		typeof body.finalize_attempt === "number" &&
+		Number.isFinite(body.finalize_attempt)
+			? Math.max(0, Math.trunc(body.finalize_attempt))
+			: attemptsSoFar;
+	if (reportedAttempt < attemptsSoFar) {
+		logger.info(
+			{ run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
+			"[completeBehaviorRun] replayed exit report — re-serving the granted resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: attemptsSoFar,
+			max_attempts: budget,
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
+			idempotent: true,
+		});
+	}
+
 	// attemptsSoFar is how many resumes already granted; next spawn is attempt+1.
 	// Budget N means N extra spawns after the first (same as cloud).
 	if (attemptsSoFar < budget) {
@@ -1160,12 +1217,6 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 				idempotent: true,
 			});
 		}
-		const nudge =
-			"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
-			"finalize via the lobu skill + CLI (preferred): " +
-			"`lobu memory exec` with client.knowledge.read({ watcher_id }) then " +
-			"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
-			"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
 		logger.info(
 			{ run_id: runId, attempt: nextAttempt, max: budget },
 			"[completeBehaviorRun] missing completeWindow — device resume"
@@ -1177,9 +1228,10 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			attempt: nextAttempt,
 			max_attempts: budget,
 			// Total spawns allowed = first + budget resumes.
-			// attempt is the resume index (1..budget); Mac should re-spawn now.
-			nudge,
-			error: nudge,
+			// attempt is the resume index (1..budget); Mac should re-spawn now
+			// and report back with finalize_attempt = attempt.
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
 		});
 	}
 

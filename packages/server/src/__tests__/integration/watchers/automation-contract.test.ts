@@ -1014,6 +1014,196 @@ describe("watcher automation contract", () => {
 			expect(afterMs).toBeGreaterThan(beforeMs);
 		});
 
+		// Ambiguous delivery: the resume commits server-side but the device never
+		// sees the response, so it retries the SAME exit report. Replaying it must
+		// re-serve the grant it already earned — inferring a fresh attempt from the
+		// stored count instead would burn the budget and fail the run one spawn
+		// early, which is the delivery error being reinterpreted as work.
+		it("replays the granted resume instead of consuming a second finalize attempt", async () => {
+			const { sql, dbClient, workspace, watcherId, agent } =
+				await createAutomatedWatcher();
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
+			const { windowStart, windowEnd } = await computePendingWindow(
+				dbClient,
+				watcherId,
+				granularity
+			);
+			const queued = await createWatcherRun({
+				organizationId: workspace.org.id,
+				watcherId,
+				agentId: agent.agentId,
+				windowStart: windowStart.toISOString(),
+				windowEnd: windowEnd.toISOString(),
+				dispatchSource: "scheduled",
+				deviceWorkerId: "66666666-6666-6666-6666-666666666666",
+				agentKind: "claude-code",
+			});
+			const workerId = "mac-device-replay-test";
+			await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+			const report = {
+				worker_id: workerId,
+				output: "exited without finalizing",
+				duration_ms: 25,
+				exit_code: 0,
+				exit_reason: "ok",
+				// First spawn runs under finalize_nudge_count = 0.
+				finalize_attempt: 0,
+			};
+
+			const granted = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: report }
+			);
+			expect(granted.status).toBe(200);
+			const grantedJson = (await granted.json()) as {
+				status: string;
+				attempt?: number;
+				nudge?: string;
+			};
+			expect(grantedJson.status).toBe("resume");
+			expect(grantedJson.attempt).toBe(1);
+
+			// Byte-identical replay of the same report — the device's retry after a
+			// lost response.
+			const replay = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: report }
+			);
+			expect(replay.status).toBe(200);
+			const replayJson = (await replay.json()) as {
+				status: string;
+				attempt?: number;
+				reason_code?: string;
+				idempotent?: boolean;
+				nudge?: string;
+			};
+			expect(replayJson.status).toBe("resume");
+			expect(replayJson.reason_code).toBe("missing_complete_window");
+			expect(replayJson.attempt).toBe(1);
+			expect(replayJson.idempotent).toBe(true);
+			// The re-served nudge has to be usable, not just a status echo — the
+			// device feeds it straight into the re-spawned prompt.
+			expect(replayJson.nudge).toBe(grantedJson.nudge);
+
+			const [afterReplay] = await sql`
+        SELECT status,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(afterReplay.status)).toBe("running");
+			// The replay consumed nothing: still exactly one granted resume.
+			expect(Number(afterReplay.finalize_nudge_count)).toBe(1);
+
+			// The genuinely-new spawn reports attempt 1 and exhausts the budget.
+			const terminal = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: { ...report, finalize_attempt: 1 } }
+			);
+			expect(terminal.status).toBe(200);
+			expect(((await terminal.json()) as { status: string }).status).toBe(
+				"failed"
+			);
+		});
+
+		// Event turns have no completeWindow step — the agent's reply IS the work.
+		// A clean device exit therefore completes the run rather than failing it,
+		// and must not mint a window.
+		it("completes an event-turn Behavior on a clean device exit", async () => {
+			const { sql, dbClient, workspace, watcherId, agent } =
+				await createAutomatedWatcher();
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
+			const { windowStart, windowEnd } = await computePendingWindow(
+				dbClient,
+				watcherId,
+				granularity
+			);
+			const queued = await createWatcherRun({
+				organizationId: workspace.org.id,
+				watcherId,
+				agentId: agent.agentId,
+				windowStart: windowStart.toISOString(),
+				windowEnd: windowEnd.toISOString(),
+				dispatchSource: "scheduled",
+				deviceWorkerId: "77777777-7777-7777-7777-777777777777",
+				agentKind: "claude-code",
+			});
+			const workerId = "mac-device-turn-test";
+			await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId},
+            approved_input = jsonb_set(
+              COALESCE(approved_input, '{}'::jsonb),
+              '{trigger_execution}', '"turn"'::jsonb
+            )
+        WHERE id = ${queued.runId}
+      `;
+
+			const response = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "replied in the thread",
+						duration_ms: 40,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as {
+				status: string;
+				reason_code?: string;
+				window_id?: number | null;
+			};
+			expect(json.status).toBe("completed");
+			expect(json.reason_code).toBe("event_turn");
+			expect(json.window_id).toBeNull();
+
+			const [run] = await sql`
+        SELECT status, window_id, exit_reason, model_used,
+               run_metadata->>'execution_time_ms' AS execution_time_ms
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(run.status)).toBe("completed");
+			expect(run.window_id).toBeNull();
+			expect(String(run.exit_reason)).toBe("ok");
+			expect(String(run.model_used)).toBe("device-cli:claude-code");
+			expect(Number(run.execution_time_ms)).toBe(40);
+
+			// No completeWindow happened, so no canvas may be minted.
+			const windows = await sql`
+        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
+      `;
+			expect(windows).toHaveLength(0);
+
+			// A duplicate report is a no-op ack, not a second completion.
+			const dupe = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "replied in the thread",
+						duration_ms: 40,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(dupe.status).toBe(200);
+			const dupeJson = (await dupe.json()) as {
+				status: string;
+				idempotent?: boolean;
+			};
+			expect(dupeJson.status).toBe("completed");
+			expect(dupeJson.idempotent).toBe(true);
+		});
+
 		it("complete-behavior endpoint marks the run failed when error is supplied", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();

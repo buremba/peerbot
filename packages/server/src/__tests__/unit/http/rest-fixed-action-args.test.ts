@@ -49,6 +49,24 @@ describe("fixed-action REST route registrations", () => {
 		const bareProxyCalls = indexSrc.match(/restToolProxy\(/g) ?? [];
 		expect(bareProxyCalls).toHaveLength(1);
 
-		expect(indexSrc.match(/restToolAction\(/g)).toHaveLength(7);
+		expect(indexSrc.match(/restToolAction\(/g)).toHaveLength(4);
+	});
+
+	it("registers read-only proxy GETs from the declaration table", () => {
+		expect(indexSrc).toContain("for (const route of REST_TOOL_GET_ROUTES)");
+	});
+
+	it("declares no GET proxy inline, so the public-read check cannot drift", () => {
+		// A GET registered with a literal tool name is invisible to
+		// `canAccessPublicOrgRestRoute`, which resolves routes through
+		// `REST_TOOL_GET_ROUTES`. Such a route would silently keep the old
+		// "200 via the tool door, 401 via REST" split.
+		const inlineGetProxies = indexSrc
+			.split(/\bapp\.get\(/)
+			.slice(1)
+			.map((chunk) => chunk.split(/\bapp\.(get|post|put|patch|delete|route)\(/)[0])
+			.filter((chunk) => /restToolAction\(\s*c,\s*["']/.test(chunk));
+
+		expect(inlineGetProxies).toEqual([]);
 	});
 });

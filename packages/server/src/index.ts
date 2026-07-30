@@ -63,6 +63,7 @@ import {
 	getMaxReservedLocks,
 	getReservedLockCount,
 } from "./gateway/orchestration/deployment-manager";
+import { REST_TOOL_GET_ROUTES } from "./http/rest-tool-routes";
 import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
@@ -1226,18 +1227,19 @@ app.get(
 // V1 Integration Platform REST Routes
 // ============================================
 
+// Read-only proxies (connections list/get, runs, available actions) are
+// registered from `REST_TOOL_GET_ROUTES` so the `(tool, action)` the public-org
+// middleware checks is the one the handler actually runs.
+for (const route of REST_TOOL_GET_ROUTES) {
+	app.get(route.routePath, mcpAuth, async (c) =>
+		restToolAction(c, route.tool, route.action, route.args(c))
+	);
+}
+
 // Connections
-app.get("/api/:orgSlug/connections", mcpAuth, async (c) => {
-	return restToolAction(c, "manage_connections", "list", c.req.query());
-});
 app.post("/api/:orgSlug/connections", mcpAuth, async (c) => {
 	const body = await c.req.json();
 	return restToolAction(c, "manage_connections", "create", body);
-});
-app.get("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
-	return restToolAction(c, "manage_connections", "get", {
-		connection_id: Number(c.req.param("id")),
-	});
 });
 app.delete("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
 	return restToolAction(c, "manage_connections", "delete", {
@@ -1245,20 +1247,7 @@ app.delete("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
 	});
 });
 
-// Runs
-app.get("/api/:orgSlug/runs", mcpAuth, async (c) => {
-	return restToolAction(c, "manage_operations", "list_runs", c.req.query());
-});
-
 // Actions
-app.get("/api/:orgSlug/actions/available", mcpAuth, async (c) => {
-	return restToolAction(
-		c,
-		"manage_operations",
-		"list_available",
-		c.req.query()
-	);
-});
 app.post("/api/:orgSlug/actions/execute", mcpAuth, async (c) => {
 	const body = await c.req.json();
 	return restToolAction(c, "manage_operations", "execute", body);

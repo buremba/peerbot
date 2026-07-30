@@ -6,6 +6,7 @@ import type { AuthInfo } from '../auth/oauth/types';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { isPublicReadable } from '../auth/tool-access';
 import { getDb } from '../db/client';
+import { resolveRestToolGetRoute } from '../http/rest-tool-routes';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
@@ -177,9 +178,18 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
     }
 
+    /** Apply the existing public-read policy to a declared fixed-action GET. */
+    function canAccessPublicOrgRestRoute(): boolean {
+      if (c.req.method.toUpperCase() !== 'GET') return false;
+      const declared = resolveRestToolGetRoute(c);
+      if (!declared) return false;
+      return isPublicReadable(declared.tool, { action: declared.action });
+    }
+
     async function canAccessPublicOrgRequest(): Promise<boolean> {
-      if (!requestedToolName) return false;
       if (isMcpRoute) return false;
+      if (canAccessPublicOrgRestRoute()) return true;
+      if (!requestedToolName) return false;
       if (!['POST', 'PUT', 'PATCH'].includes(c.req.method.toUpperCase())) return false;
 
       const contentType = c.req.header('content-type') || '';

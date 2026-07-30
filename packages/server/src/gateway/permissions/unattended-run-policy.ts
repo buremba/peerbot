@@ -70,6 +70,13 @@ export async function runAllowsUnattendedToolUse(
 
 	try {
 		const sql = db ?? getDb();
+		// The two `organization_id` predicates are redundant BY DESIGN, and the
+		// redundancy is load-bearing rather than sloppy: a Behavior and its run
+		// always share an org today, so either one alone holds the tenant
+		// boundary (mutation-tested — dropping either keeps the suite green,
+		// dropping both turns it red). Requiring both means a future write path
+		// that lets those two diverge cannot silently open a cross-tenant read
+		// here. Do not "simplify" one away.
 		const rows = await sql`
       SELECT w.execution_config->>'permission_mode' AS permission_mode
       FROM watchers w

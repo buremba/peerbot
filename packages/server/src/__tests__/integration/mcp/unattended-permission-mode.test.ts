@@ -70,8 +70,14 @@ let counter = 0;
  */
 async function scenario(
 	permissionMode: string | null,
-	reuse?: { workspace: TestWorkspace; agentId: string },
+	opts?: {
+		/** Reuse an existing workspace + agent (sibling-Behavior case). */
+		reuse?: { workspace: TestWorkspace; agentId: string };
+		/** Force the agent slug, so two orgs can share one (tenant case). */
+		agentSlug?: string;
+	},
 ): Promise<Scenario> {
+	const reuse = opts?.reuse;
 	const sql = getTestDb();
 	const slug = `unattended-${++counter}`;
 	const workspace =
@@ -90,7 +96,7 @@ async function scenario(
 			await createTestAgent({
 				organizationId: workspace.org.id,
 				ownerUserId: workspace.users.owner.id,
-				agentId: `unattended-agent-${slug}`,
+				agentId: opts?.agentSlug ?? `unattended-agent-${slug}`,
 				name: "Unattended Agent",
 			})
 		).agentId;
@@ -224,8 +230,7 @@ describe("permission_mode governs the MCP tool-approval gate", () => {
 		const elevated = await scenario("dontAsk");
 		// Same org AND same agent — only the Behavior differs.
 		const plain = await scenario("default", {
-			workspace: elevated.workspace,
-			agentId: elevated.agentId,
+			reuse: { workspace: elevated.workspace, agentId: elevated.agentId },
 		});
 
 		expect((await callTool(plain)).blocked).toBe(true);
@@ -235,10 +240,18 @@ describe("permission_mode governs the MCP tool-approval gate", () => {
 	});
 
 	it("does not let another org's turn claim an elevated Behavior", async () => {
-		const elevated = await scenario("dontAsk");
-		const outsider = await scenario("default");
+		// Agent ids are org-scoped, so two tenants can hold the SAME agent slug.
+		// That is the dangerous shape: with a matching slug, only the org
+		// predicates stand between org B's turn and org A's elevated Behavior.
+		// A different-slug outsider would be stopped by the agent check instead
+		// and would leave the tenant boundary itself untested.
+		const sharedSlug = `shared-agent-${++counter}`;
+		const elevated = await scenario("dontAsk", { agentSlug: sharedSlug });
+		const outsider = await scenario("default", { agentSlug: sharedSlug });
 
-		// Outsider's own org/agent, but naming the elevated Behavior's conversation.
+		expect(elevated.agentId).toBe(outsider.agentId);
+		expect(elevated.organizationId).not.toBe(outsider.organizationId);
+
 		const { blocked } = await callTool({
 			organizationId: outsider.organizationId,
 			agentId: outsider.agentId,

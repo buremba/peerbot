@@ -957,6 +957,8 @@ describe("watcher automation contract", () => {
 			expect(json.reason_code).toBe("missing_complete_window");
 			expect(json.attempt).toBe(1);
 			expect(String(json.nudge ?? json.error ?? "")).toMatch(/completeWindow/i);
+			expect(String(json.nudge ?? json.error ?? "")).toContain("behavior_id");
+			expect(String(json.nudge ?? json.error ?? "")).not.toContain("watcher_id");
 
 			const [runAfterResume] = await sql`
         SELECT status, error_message, window_id, output_tail,
@@ -1142,6 +1144,33 @@ describe("watcher automation contract", () => {
             )
         WHERE id = ${queued.runId}
       `;
+
+			// Token-auth workers are trusted at the HTTP authorization layer, so the
+			// terminal SQL transition itself must still enforce the run claim.
+			const wrongWorker = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: "different-device",
+						output: "late reply from a worker that lost the claim",
+						duration_ms: 30,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(wrongWorker.status).toBe(200);
+			expect(
+				(await wrongWorker.json()) as {
+					status: string;
+					idempotent?: boolean;
+				}
+			).toMatchObject({ status: "running", idempotent: true });
+			const [afterWrongWorker] = await sql`
+        SELECT status, claimed_by FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(afterWrongWorker.status)).toBe("running");
+			expect(String(afterWrongWorker.claimed_by)).toBe(workerId);
 
 			const response = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,

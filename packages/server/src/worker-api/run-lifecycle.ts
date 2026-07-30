@@ -53,7 +53,6 @@ import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
 import {
 	bumpDeviceFinalizeNudge,
-	markWatcherRunCompleted,
 	resolveFinalizeNudgeBudget,
 } from "../watchers/run-completion";
 import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
@@ -719,7 +718,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 const MISSING_COMPLETE_WINDOW_NUDGE =
 	"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
 	"finalize via the lobu skill + CLI (preferred): " +
-	"`lobu memory exec` with client.knowledge.read({ watcher_id }) then " +
+	"`lobu memory exec` with client.knowledge.read({ behavior_id }) then " +
 	"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
 	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
 
@@ -789,11 +788,11 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 
 	const sql = getDb();
 	// Reload the row now that authorization has cleared. Status drives the
-	// exit-report decision; the authoritative guard against double-writes is
-	// failRun's status-filtered UPDATE, so a stale read can't double-fail —
-	// at worst it reports `idempotent: true` with the loser's view.
+	// exit-report decision; the status-and-claim predicates on the writes below
+	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status, window_id
+    SELECT id, organization_id, watcher_id, approved_input, run_type,
+           claimed_at, claimed_by, status, window_id
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -804,6 +803,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		approved_input: Record<string, unknown> | null;
 		run_type: string;
 		claimed_at: string | Date | null;
+		claimed_by: string | null;
 		status: string;
 		window_id: number | null;
 	}>;
@@ -814,6 +814,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	}
 	if (run.watcher_id == null) {
 		return c.json({ error: "Behavior run missing watcher_id" }, 500);
+	}
+	if (run.claimed_by !== body.worker_id) {
+		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
 	const watcherId = Number(run.watcher_id);
@@ -950,6 +953,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
             exit_reason = ${body.exit_reason ?? "error_message"}
         WHERE id = ${runId}
           AND status = 'running'
+          AND claimed_by = ${body.worker_id}
         RETURNING id
       `) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
@@ -1098,16 +1102,32 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			(approved.agent_kind as string).trim()
 				? (approved.agent_kind as string).trim()
 				: null;
-		// First-report-only: a duplicate/concurrent report finds the row already
-		// out of an active status, so it acks instead of re-stamping exit metadata
-		// and re-emitting the completion event.
-		const marked = await markWatcherRunCompleted(
-			sql,
+		const completedRows = await finalizeRun(sql, {
 			runId,
-			null,
-			agentKind ? `device-cli:${agentKind}` : "device-cli"
-		);
-		if (!marked) {
+			workerId: body.worker_id,
+			status: "completed",
+			extraSet: sql`,
+        window_id = NULL,
+        error_message = NULL,
+        model_used = COALESCE(
+          NULLIF(model_used, 'external-client'),
+          ${agentKind ? `device-cli:${agentKind}` : "device-cli"},
+          model_used
+        ),
+        exit_code = ${body.exit_code ?? null},
+        exit_signal = ${body.exit_signal ?? null},
+        exit_reason = ${body.exit_reason ?? "ok"},
+        output_tail = ${output ? output.slice(-2000) : null},
+        run_metadata = CASE
+          WHEN ${durationMs}::bigint IS NULL THEN COALESCE(run_metadata, '{}'::jsonb)
+          ELSE jsonb_set(
+            COALESCE(run_metadata, '{}'::jsonb),
+            '{execution_time_ms}',
+            to_jsonb(${durationMs}::bigint)
+          )
+        END`,
+		});
+		if (completedRows.length === 0) {
 			const finalRows = (await sql`
         SELECT status FROM runs WHERE id = ${runId} LIMIT 1
       `) as unknown as Array<{ status: string }>;
@@ -1117,22 +1137,6 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 				idempotent: true,
 			});
 		}
-		await sql`
-      UPDATE runs
-      SET exit_code = ${body.exit_code ?? null},
-          exit_signal = ${body.exit_signal ?? null},
-          exit_reason = ${body.exit_reason ?? "ok"},
-          output_tail = ${output ? output.slice(-2000) : null},
-          run_metadata = CASE
-            WHEN ${durationMs}::bigint IS NULL THEN COALESCE(run_metadata, '{}'::jsonb)
-            ELSE jsonb_set(
-              COALESCE(run_metadata, '{}'::jsonb),
-              '{execution_time_ms}',
-              to_jsonb(${durationMs}::bigint)
-            )
-          END
-      WHERE id = ${runId}
-    `;
 		await sql`
       UPDATE watchers
       SET last_fired_at = NOW(), updated_at = NOW()
@@ -1204,16 +1208,49 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		const bumped = await bumpDeviceFinalizeNudge(
 			sql,
 			runId,
+			body.worker_id,
 			nextAttempt,
 			output ? output.slice(-2000) : null
 		);
 		if (!bumped) {
 			const finalRows = (await sql`
-        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
-      `) as unknown as Array<{ status: string }>;
+        SELECT status,
+               claimed_by,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs
+        WHERE id = ${runId}
+        LIMIT 1
+      `) as unknown as Array<{
+				status: string;
+				claimed_by: string | null;
+				finalize_nudge_count: string | null;
+			}>;
+			const final = finalRows[0];
+			const grantedAttempt = Number(final?.finalize_nudge_count);
+			// The CAS can lose to an identical concurrent report after both
+			// requests read the same count. Reconcile that committed grant into
+			// the same replayable response; returning plain `running` would make
+			// the device stop without ever receiving its nudge.
+			if (
+				final?.status === "running" &&
+				final.claimed_by === body.worker_id &&
+				Number.isFinite(grantedAttempt) &&
+				grantedAttempt > attemptsSoFar
+			) {
+				return c.json({
+					ok: true,
+					status: "resume",
+					reason_code: "missing_complete_window",
+					attempt: grantedAttempt,
+					max_attempts: budget,
+					nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+					error: MISSING_COMPLETE_WINDOW_NUDGE,
+					idempotent: true,
+				});
+			}
 			return c.json({
 				ok: true,
-				status: finalRows[0]?.status ?? "failed",
+				status: final?.status ?? "failed",
 				idempotent: true,
 			});
 		}

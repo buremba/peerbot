@@ -47,44 +47,33 @@ function auditOriginId(feedId: number, pauseGeneration: string | number): string
 	return `feed_auto_paused:${feedId}:${pauseGeneration}`;
 }
 
-async function alreadyDeliveredBehaviorSignal(
-	sql: DbClient,
-	organizationId: string,
-	deliveryId: string,
-): Promise<boolean> {
-	const rows = (await sql`
-		SELECT 1
-		FROM runs
-		WHERE organization_id = ${organizationId}
-		  AND run_type = 'behavior'
-		  AND approved_input->'delivery_ids' ? ${deliveryId}
-		LIMIT 1
-	`) as Array<{ "?column?": number }>;
-	return rows.length > 0;
-}
-
-async function alreadyWroteAuditEvent(
-	sql: DbClient,
-	organizationId: string,
-	originId: string,
-): Promise<boolean> {
-	const rows = (await sql`
-		SELECT 1
-		FROM events
-		WHERE organization_id = ${organizationId}
-		  AND origin_id = ${originId}
-		LIMIT 1
-	`) as Array<{ "?column?": number }>;
-	return rows.length > 0;
+/**
+ * Stable pause-episode generation used for delivery_id and audit origin_id.
+ * Prefer first_failure_at ms so retries within the same failure episode share
+ * one idempotency key.
+ */
+export function pauseGenerationForFeed(row: {
+	first_failure_at: Date | string | null;
+	consecutive_failures: number | string;
+}): number {
+	const firstFailMs = row.first_failure_at
+		? new Date(row.first_failure_at).getTime()
+		: Number(row.consecutive_failures);
+	return Number.isFinite(firstFailMs)
+		? firstFailMs
+		: Number(row.consecutive_failures);
 }
 
 /**
  * Emit a connector-neutral Behavior signal when a feed hard-pauses after
- * consecutive failures. Idempotent per (feedId, pauseGeneration) via the run
- * queue's delivery_id unique key.
+ * consecutive failures. Idempotent per (feedId, pauseGeneration) via
+ * createBehaviorEventRun's per-Behavior delivery_id dedupe — always call
+ * activate so a partial multi-Behavior fan-out can finish on retry.
  *
  * Also writes a lifecycle change event (`semantic_type='change'`) with a
- * deterministic origin_id so retries never append duplicate audit rows.
+ * deterministic origin_id. The audit row is the durable emission marker for
+ * redelivery; insert uses onConflictUpdate so concurrent emitters cannot
+ * append duplicate current audit events.
  */
 export async function emitFeedAutoPaused(
 	input: FeedAutoPausedInput,
@@ -98,7 +87,6 @@ export async function emitFeedAutoPaused(
 		return;
 	}
 
-	const sql = input.db ?? getDb();
 	const feedLabel =
 		input.displayName?.trim() ||
 		input.feedKey ||
@@ -137,44 +125,36 @@ export async function emitFeedAutoPaused(
 		},
 	};
 
-	const signalDone = await alreadyDeliveredBehaviorSignal(
-		sql,
-		input.organizationId,
-		deliveryId,
+	// Always activate: createBehaviorEventRun dedupes independently per
+	// Behavior, so partial fan-out retries finish remaining targets.
+	const results = await activateBehaviorSignal({
+		organizationId: input.organizationId,
+		signal,
+		db: input.db,
+	});
+	await dispatchBehaviorRunsBestEffort(results);
+	logger.info(
+		{
+			feed_id: input.feedId,
+			delivery_id: deliveryId,
+			activations: results.length,
+		},
+		"[platform-events] feed.auto_paused signal dispatched",
 	);
-	if (!signalDone) {
-		const results = await activateBehaviorSignal({
-			organizationId: input.organizationId,
-			signal,
-			db: input.db,
-		});
-		await dispatchBehaviorRunsBestEffort(results);
-		logger.info(
-			{
-				feed_id: input.feedId,
-				delivery_id: deliveryId,
-				activations: results.length,
-			},
-			"[platform-events] feed.auto_paused signal dispatched",
-		);
-	} else {
-		logger.debug(
-			{ feed_id: input.feedId, delivery_id: deliveryId },
-			"[platform-events] feed.auto_paused already delivered — skip activate",
-		);
-	}
 
-	const auditDone = await alreadyWroteAuditEvent(
-		sql,
-		input.organizationId,
-		originId,
-	);
-	if (!auditDone) {
-		await insertEvent({
+	// Audit after activate so a mid-activate throw leaves no "done" marker and
+	// redelivery will retry. onConflictUpdate + origin_id is the race-safe
+	// idempotency path (advisory lock inside insertEvent).
+	await insertEvent(
+		{
 			entityIds: [],
 			organizationId: input.organizationId,
 			connectionId,
 			originId,
+			connectorKey: input.connectorKey,
+			feedKey: input.feedKey,
+			feedId: input.feedId,
+			runId: input.runId ?? null,
 			title: `Feed auto-paused after ${input.consecutiveFailures} consecutive failures: ${feedLabel}`,
 			semanticType: "change",
 			originType: "feed_updated",
@@ -195,8 +175,9 @@ export async function emitFeedAutoPaused(
 					delivery_id: deliveryId,
 				},
 			},
-		});
-	}
+		},
+		{ onConflictUpdate: true, sql: input.db },
+	);
 }
 
 /**
@@ -247,12 +228,7 @@ export async function maybeEmitFeedAutoPausedAfterFailure(args: {
 		return;
 	}
 
-	const firstFailMs = row.first_failure_at
-		? new Date(row.first_failure_at).getTime()
-		: Number(row.consecutive_failures);
-	const pauseGeneration = Number.isFinite(firstFailMs)
-		? firstFailMs
-		: Number(row.consecutive_failures);
+	const pauseGeneration = pauseGenerationForFeed(row);
 
 	await emitFeedAutoPaused({
 		organizationId: String(row.organization_id),
@@ -271,9 +247,13 @@ export async function maybeEmitFeedAutoPausedAfterFailure(args: {
 }
 
 /**
- * Recover feed.auto_paused deliveries that were lost after a hard pause.
- * Only selects episodes with no Behavior run yet for that delivery_id so
- * retries do not reprocess already-delivered feeds forever.
+ * Recover feed.auto_paused emissions that never wrote their durable audit
+ * event (crash between hard-pause and emit, or failed activate before audit).
+ *
+ * The audit row is the completion marker: feeds with no matching Behaviors
+ * still complete once audited, so they cannot starve the redelivery scan.
+ * Behavior fan-out is always re-attempted on emit; per-Behavior delivery_id
+ * dedupe in createBehaviorEventRun makes that safe.
  */
 export async function retryPendingFeedAutoPausedSignals(args?: {
 	pauseThreshold?: number;
@@ -284,7 +264,10 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 	const threshold = args?.pauseThreshold ?? feedBackoff.pauseThreshold;
 	const limit = Math.min(Math.max(args?.limit ?? 50, 1), 200);
 
-	// Candidate hard-paused feeds; JS builds delivery_id and filters delivered.
+	// Filter missing audit origins in SQL so completed / no-subscriber feeds
+	// never occupy the scan window. origin_id matches auditOriginId():
+	//   feed_auto_paused:<feedId>:<pauseGeneration>
+	// pauseGeneration is floor(epoch_ms of first_failure_at) or consecutive_failures.
 	const rows = (await sql`
 		SELECT f.id, f.organization_id, f.consecutive_failures, f.first_failure_at
 		FROM feeds f
@@ -292,8 +275,21 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 		  AND f.deleted_at IS NULL
 		  AND f.consecutive_failures >= ${threshold}
 		  AND f.connection_id IS NOT NULL
-		ORDER BY f.updated_at ASC
-		LIMIT ${limit * 3}
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM events e
+		    WHERE e.organization_id = f.organization_id
+		      AND e.origin_id = (
+		        'feed_auto_paused:' || f.id::text || ':' ||
+		        CASE
+		          WHEN f.first_failure_at IS NOT NULL THEN
+		            (FLOOR(EXTRACT(EPOCH FROM f.first_failure_at) * 1000))::bigint::text
+		          ELSE f.consecutive_failures::text
+		        END
+		      )
+		  )
+		ORDER BY f.updated_at ASC, f.id ASC
+		LIMIT ${limit}
 	`) as Array<{
 		id: number;
 		organization_id: string;
@@ -303,32 +299,8 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 
 	let attempted = 0;
 	let errors = 0;
-	let scanned = 0;
+	const scanned = rows.length;
 	for (const row of rows) {
-		if (attempted >= limit) break;
-		scanned++;
-		const firstFailMs = row.first_failure_at
-			? new Date(row.first_failure_at).getTime()
-			: Number(row.consecutive_failures);
-		const pauseGeneration = Number.isFinite(firstFailMs)
-			? firstFailMs
-			: Number(row.consecutive_failures);
-		const deliveryId = `feed-auto-paused:${row.id}:${pauseGeneration}`;
-		const originId = auditOriginId(Number(row.id), pauseGeneration);
-
-		const delivered = await alreadyDeliveredBehaviorSignal(
-			sql,
-			String(row.organization_id),
-			deliveryId,
-		);
-		const audited = await alreadyWroteAuditEvent(
-			sql,
-			String(row.organization_id),
-			originId,
-		);
-		// Need retry if either Behavior delivery or audit is missing.
-		if (delivered && audited) continue;
-
 		attempted++;
 		try {
 			await maybeEmitFeedAutoPausedAfterFailure({

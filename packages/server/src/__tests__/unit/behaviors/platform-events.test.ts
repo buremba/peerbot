@@ -3,6 +3,7 @@ import {
 	PLATFORM_EVENT_FEED_AUTO_PAUSED,
 	withPlatformBehaviorEvents,
 } from "../../../behaviors/platform-event-catalog";
+import { pauseGenerationForFeed } from "../../../behaviors/platform-events";
 
 describe("platform behavior events", () => {
 	it("injects feed.auto_paused into an empty connector catalog", () => {
@@ -22,5 +23,26 @@ describe("platform behavior events", () => {
 			PLATFORM_EVENT_FEED_AUTO_PAUSED,
 			"message.created",
 		]);
+	});
+});
+
+describe("pauseGenerationForFeed", () => {
+	it("uses first_failure_at epoch ms when present", () => {
+		const at = new Date("2024-06-15T12:00:00.000Z");
+		expect(
+			pauseGenerationForFeed({
+				first_failure_at: at,
+				consecutive_failures: 9,
+			}),
+		).toBe(at.getTime());
+	});
+
+	it("falls back to consecutive_failures when first_failure_at is null", () => {
+		expect(
+			pauseGenerationForFeed({
+				first_failure_at: null,
+				consecutive_failures: 7,
+			}),
+		).toBe(7);
 	});
 });

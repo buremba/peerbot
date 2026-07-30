@@ -136,6 +136,12 @@ function fullOrgRoutes(): Record<
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",
+          skills: [
+            {
+              name: "account-brief",
+              content: "Summarize the account.",
+            },
+          ],
           schedule: "0 */12 * * *",
           triggers: [
             {
@@ -383,12 +389,13 @@ describe("lobu init --from-org", () => {
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
-    // The stored instruction text round-trips as the author-facing `prompt`,
-    // verbatim. It is NOT rehomed into a generated skill: doing that would make
-    // the first `lobu apply` after a bootstrap rewrite every Behavior it had
-    // just described. This Behavior pins no skills, so none are emitted.
+    // The task statement and matching pinned skill both round-trip without
+    // rehoming either one into the other.
     expect(w?.prompt).toBe("Poll CRM data.");
-    expect(w?.skills).toBeUndefined();
+    expect(w?.skills).toEqual(["account-brief"]);
+    expect(w?.skillSnapshots).toEqual([
+      { name: "account-brief", content: "Summarize the account." },
+    ]);
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",
       connector_key: "github",

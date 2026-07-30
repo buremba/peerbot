@@ -4,6 +4,7 @@
  */
 
 import { getDb, parsePgNumberArray } from '../../../db/client';
+import { ToolUserError } from '../../../utils/errors';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
@@ -101,10 +102,10 @@ export async function handleCreateVersion(
   //   2. `sources` omitted → INHERIT the assignment's stored sources, so a
   //      prompt- or metadata-only bump preserves them.
   //
-  // The instruction text is not a third input. In particular, `lobu apply`
-  // supplies compiled skill bodies as the prompt; chip-shaped prose there must
-  // not add or remove the assignment's sources. Interactive authoring clients
-  // send an explicit replacement when their source-chip set changes.
+  // The prompt is not a third input. In particular, chip-shaped prose in an
+  // inherited task statement must not add or remove the assignment's sources.
+  // Interactive authoring clients send an explicit replacement when their
+  // source-chip set changes.
   const storedSources = normalizeStoredJsonField(
     watcherRows[0].sources,
     [] as Array<{ name: string; query: string }>
@@ -158,9 +159,20 @@ export async function handleCreateVersion(
     // name-only bump must not start failing because a skill was since renamed or
     // disabled in the library. The stored text still runs either way.
     const versionAgentId = watcherRows[0].agent_id as string | null;
-    if (args.skills !== undefined && versionAgentId) {
+    if (args.skills !== undefined && skills.length > 0) {
+      if (!versionAgentId) {
+        throw new ToolUserError(
+          'This Behavior has no owning agent, so pinned skills cannot be resolved.',
+          422
+        );
+      }
       await assertBehaviorSkillsResolve(sql, versionOrganizationId, versionAgentId, skills);
     }
+  } else if (args.skills !== undefined && skills.length > 0) {
+    throw new ToolUserError(
+      'This Behavior has no organization, so pinned skills cannot be resolved.',
+      422
+    );
   }
 
   const triggerWrite = resolveBehaviorTriggerWrite({

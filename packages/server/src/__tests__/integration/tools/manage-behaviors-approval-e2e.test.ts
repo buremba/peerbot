@@ -114,6 +114,21 @@ describe("manage_behaviors — builder gate e2e", () => {
 			ownerUserId: owner.id,
 		});
 		otherAgentId = other.agentId;
+		const sql = getTestDb();
+		await sql`
+			UPDATE agents
+			SET skills_config = ${sql.json({
+				skills: [
+					{
+						repo: "file/approval-runbook",
+						name: "approval-runbook",
+						enabled: true,
+						content: "Run the approved workflow.",
+					},
+				],
+			})}
+			WHERE id = ${agentId} AND organization_id = ${orgId}
+		`;
 
 		// Same owner identity, but acting as the builder agent — principal the
 		// agent_config write-gate holds for approval.
@@ -212,6 +227,30 @@ describe("manage_behaviors — builder gate e2e", () => {
 		});
 
 		expect(await watcherExists(orgId, "agent-proposed-watcher")).toBe(false);
+	});
+
+	it("agent can propose a skills-only Behavior without failing approval preflight", async () => {
+		const res = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "agent-proposed-skills-only",
+				name: "Agent Proposed Skills Only",
+				agent_id: agentId,
+				skills: [
+					{
+						name: "approval-runbook",
+						content: "Run the approved workflow.",
+					},
+				],
+			},
+			TEST_ENV,
+			agentCtx
+		)) as PendingApproval;
+
+		expect(res.status).toBe("pending_approval");
+		expect(res.proposal?.args?.slug).toBe("agent-proposed-skills-only");
+		expect(await watcherExists(orgId, "agent-proposed-skills-only")).toBe(false);
 	});
 
 	it("approve applies the held create: watcher exists, run completed, event superseded", async () => {

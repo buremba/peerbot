@@ -493,12 +493,13 @@ function emitRelationshipType(
 }
 
 /**
- * Skills-presence rule, mirrored from `lobu apply` validation: only an
- * event-turn-only Behavior may run without skills (the built-in default
- * applies); schedule triggers, window execution, and no triggers (manual)
- * need compiled instructions.
+ * Instruction-presence rule, mirrored from `lobu apply` validation: only an
+ * event-turn-only Behavior may omit both prompt and skills (the built-in
+ * default applies).
  */
-function behaviorRequiresSkills(triggers: RemoteBehavior["triggers"]): boolean {
+function behaviorRequiresInstructions(
+  triggers: RemoteBehavior["triggers"]
+): boolean {
   const list = triggers ?? [];
   if (list.length === 0) return true;
   return list.some(
@@ -537,9 +538,10 @@ function emitBehavior(
     });
     fields.push(`triggers: ${emitValue(triggers, 1)}`);
   }
-  // Emit the instruction text as the author-facing `prompt` and the pinned
-  // skills as a plain name list, both verbatim — a bootstrap immediately
-  // followed by `lobu apply` must diff to nothing.
+  // Emit the author-facing prompt verbatim and preserve the pinned skill names.
+  // The generated agent library carries its CURRENT bodies; generateProject
+  // warns when those differ from this version's snapshots because the next
+  // apply will then publish an explicit skill upgrade.
   if (w.prompt?.trim()) fields.push(`prompt: ${str(w.prompt)}`);
   if (w.skills?.length) {
     fields.push(`skills: [${w.skills.map((s) => str(s.name)).join(", ")}]`);
@@ -945,23 +947,51 @@ function generateProject(
   const files: Array<{ relPath: string; body: string }> = [];
   const warnings: string[] = [];
 
-  // A Behavior's stored instruction text is emitted as `defineBehavior({ prompt })`
-  // verbatim, and its pinned skills as a `skills: [...]` name list. Both round-trip
-  // exactly, so a bootstrap followed immediately by `lobu apply` is a no-op.
-  //
-  // This used to synthesize a generated skill per Behavior, because
-  // `defineBehavior` had no prompt field and the instruction text had nowhere
-  // else to go. It has one now, and keeping the synthesis would be worse than
-  // redundant: it would move every Behavior's text out of `prompt` and into a
-  // skill, so the first apply after a bootstrap would rewrite every Behavior it
-  // had just faithfully described.
+  // Prompt text round-trips directly. Skill references resolve through the
+  // generated agent library, whose bodies are the library's current state, not
+  // necessarily the older snapshots pinned on each Behavior version. Surface
+  // that drift honestly: the generated config is an upgrade when bodies differ.
+  const agentsById = new Map(
+    state.agents.map(({ agent, settings }) => [agent.agentId, settings])
+  );
   for (const { watcher } of state.watchers) {
-    if (watcher.prompt?.trim()) continue;
-    if (watcher.skills?.length) continue;
-    if (behaviorRequiresSkills(watcher.triggers)) {
+    if (
+      !watcher.prompt?.trim() &&
+      !watcher.skills?.length &&
+      behaviorRequiresInstructions(watcher.triggers)
+    ) {
       warnings.push(
         `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
       );
+    }
+    const library =
+      agentsById.get(watcher.agent_id ?? "")?.skillsConfig?.skills ?? [];
+    for (const snapshot of watcher.skills ?? []) {
+      const current = library.find(
+        (skill) => !skill.system && skill.name === snapshot.name
+      );
+      if (!current) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${watcher.agent_id ?? ""}"'s current library — restore it or remove the Behavior reference before \`lobu apply\`.`
+        );
+        continue;
+      }
+      if (!current.content?.trim()) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Behavior reference before \`lobu apply\`.`
+        );
+        continue;
+      }
+      if (current.enabled === false) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
+        );
+      }
+      if (current.content.trim() !== snapshot.content.trim()) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
+        );
+      }
     }
   }
 

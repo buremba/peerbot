@@ -882,13 +882,14 @@ export async function executePlan(
         const scalarChanges = [...changed].filter(
           (f) => !versionBound.has(f) && f !== "reaction_script"
         );
-        // When triggers and compiled instructions both change, send them
-        // together through create_version so the server validates the final
-        // pair atomically. A separate update(triggers) would reject
-        // event-turn → schedule mid-apply (empty current prompt + new shape).
-        const triggersWithPrompt =
-          scalarChanges.includes("triggers") && versionBound.has("prompt");
-        const scalarForUpdate = triggersWithPrompt
+        // When triggers and either versioned instruction source change, send
+        // them together through create_version so the server validates the
+        // final set atomically. A separate update(triggers) would reject an
+        // event-turn → schedule transition before the new prompt/skills land.
+        const triggersWithInstructions =
+          scalarChanges.includes("triggers") &&
+          (versionBound.has("prompt") || versionBound.has("skills"));
+        const scalarForUpdate = triggersWithInstructions
           ? scalarChanges.filter((f) => f !== "triggers")
           : scalarChanges;
         // a) Scalar fields → manage_behaviors update
@@ -932,7 +933,7 @@ export async function executePlan(
         //    send the desired-side values for the changed keys).
         if (
           (row.versionBoundFields && row.versionBoundFields.length > 0) ||
-          triggersWithPrompt
+          triggersWithInstructions
         ) {
           await ctx.client.createBehaviorVersion({
             behavior_id: watcherId,
@@ -954,7 +955,7 @@ export async function executePlan(
             ...(versionBound.has("classifiers") && w.classifiers !== undefined
               ? { classifiers: w.classifiers }
               : {}),
-            ...(triggersWithPrompt ? { triggers: w.triggers ?? [] } : {}),
+            ...(triggersWithInstructions ? { triggers: w.triggers ?? [] } : {}),
           });
         }
       }

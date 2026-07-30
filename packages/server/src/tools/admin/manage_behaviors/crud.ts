@@ -105,6 +105,11 @@ export async function handleCreate(
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
+  if (!args.agent_id) {
+    throw new ToolUserError(
+      'agent_id is required to create a Behavior (the agent that executes it).'
+    );
+  }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
   // validate the caller may target this device (own it, or org owner/admin
@@ -124,8 +129,8 @@ export async function handleCreate(
   //   2. explicit `args.sources` (API callers / legacy).
   // If neither yields anything, fall back to a default all-events source.
   // `create_version` deliberately does NOT derive (see version-actions.ts):
-  // on a bump the prompt is compiled skill text, and a skill's prose must not
-  // author the Behavior's sources.
+  // an existing prompt's prose must not silently re-author the Behavior's
+  // source set during an otherwise unrelated version bump.
   const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);
@@ -221,11 +226,7 @@ export async function handleCreate(
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
   const skills = args.skills ?? [];
   assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
-  // `args.agent_id` is proven non-null a few lines below, but the skill library
-  // belongs to that agent, so the reference check has to wait for it.
-  if (args.agent_id) {
-    await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
-  }
+  await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`

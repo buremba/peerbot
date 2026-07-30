@@ -433,16 +433,14 @@ async function resolveSkill(
   });
 }
 
-/** Byte cap on a Behavior's compiled instruction text (issue #2320). */
+/** Byte cap on the skill snapshots pinned to one Behavior version (issue #2320). */
 const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
 
 /**
- * Compile a Behavior's ordered `skills[]` into its frozen instruction text:
- * the referenced skill bodies joined in order with a blank line. Fails loud on
- * a name the owning agent's skill library doesn't declare, an empty body, or
- * a compiled text over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}. Returns "" for
- * a Behavior with no skills (event-turn only — the mapper already rejected
- * every other trigger shape without skills).
+ * Resolve a Behavior's ordered `skills[]` into frozen `{name, content}`
+ * snapshots. Fails loud on a name the owning agent's library does not declare,
+ * a name the worker cannot materialize safely, an empty body, or a total payload
+ * over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}.
  */
 function resolveBehaviorSkills(
   watcher: DesiredWatcher,
@@ -452,6 +450,11 @@ function resolveBehaviorSkills(
   if (names.length === 0) return [];
   const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
   const resolved = names.map((name) => {
+    if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
+      );
+    }
     const skill = byName.get(name);
     if (!skill) {
       throw new ValidationError(

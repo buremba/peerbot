@@ -457,9 +457,9 @@ function buildWatcherProposal(
   }
   if (args.action === 'create') {
     if (!args.slug) throw new ToolUserError('slug is required for create action');
-    // Instruction text is required only for trigger shapes that run on it
-    // alone — event-turn Behaviors may omit prompt (built-in default).
-    assertBehaviorInstructions(args.triggers ?? [], args.prompt);
+    // An event-turn Behavior may omit both instruction sources (built-in
+    // default); every other shape needs a prompt, pinned skills, or both.
+    assertBehaviorInstructions(args.triggers ?? [], args.prompt, args.skills);
     if (!args.agent_id) {
       throw new ToolUserError(
         'agent_id is required to create a Behavior (the agent that executes it).'

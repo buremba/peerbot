@@ -268,6 +268,35 @@ export async function assertBehaviorSkillsResolve(
   skills: Array<{ name: string; content: string }>
 ): Promise<void> {
   if (skills.length === 0) return;
+  if (skills.length > 5) {
+    throw new ToolUserError('A Behavior may pin at most 5 skills.', 422);
+  }
+  const invalidName = skills.find(
+    (skill) => !/^[a-zA-Z0-9._-]+$/.test(skill.name)
+  );
+  if (invalidName) {
+    throw new ToolUserError(
+      `Skill "${invalidName.name}" cannot be pinned: names may contain only letters, numbers, ".", "_", and "-".`,
+      422
+    );
+  }
+  const empty = skills.find((skill) => !skill.content.trim());
+  if (empty) {
+    throw new ToolUserError(
+      `Skill "${empty.name}" cannot be pinned because its body is empty.`,
+      422
+    );
+  }
+  const totalBytes = skills.reduce(
+    (sum, skill) => sum + Buffer.byteLength(skill.content, 'utf8'),
+    0
+  );
+  if (totalBytes > 32 * 1024) {
+    throw new ToolUserError(
+      `Pinned Behavior skills contain ${totalBytes} bytes of text; the maximum is 32768 bytes (32KB).`,
+      422
+    );
+  }
 
   const rows = await sql`
     SELECT skills_config

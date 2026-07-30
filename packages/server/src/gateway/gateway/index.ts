@@ -15,7 +15,12 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
-import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
+import {
+  BEHAVIOR_RUN_SOURCE,
+  type BehaviorRunSkillResolver,
+  formatBehaviorRunSkillInstructions,
+  resolveBehaviorRunSkills,
+} from "../behavior-run-session.js";
 import { toPublicWebOrigin } from "../../utils/url-builder.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
@@ -71,6 +76,7 @@ export class WorkerGateway {
   private mcpProxy?: McpProxy;
   private providerCatalogService?: ProviderCatalogService;
   private agentSettingsStore?: AgentSettingsStore;
+  private behaviorRunSkillResolver: BehaviorRunSkillResolver;
   private deploymentActivityTracker?: DeploymentActivityTracker;
 
   constructor(
@@ -80,7 +86,8 @@ export class WorkerGateway {
     instructionService: InstructionService,
     mcpProxy?: McpProxy,
     providerCatalogService?: ProviderCatalogService,
-    agentSettingsStore?: AgentSettingsStore
+    agentSettingsStore?: AgentSettingsStore,
+    behaviorRunSkillResolver: BehaviorRunSkillResolver = resolveBehaviorRunSkills
   ) {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
@@ -91,6 +98,7 @@ export class WorkerGateway {
     this.mcpProxy = mcpProxy;
     this.providerCatalogService = providerCatalogService;
     this.agentSettingsStore = agentSettingsStore;
+    this.behaviorRunSkillResolver = behaviorRunSkillResolver;
 
     // Setup Hono app
     this.app = new Hono();
@@ -729,12 +737,19 @@ export class WorkerGateway {
       // this removes the duplicate id-only read that ignored the org guard.
       //
       // A Behavior run uses version-pinned instructions, so the live library
-      // must not re-enter the turn. Drop both surfaces: the catalog points the
-      // model at `.skills/`, and `skillsConfig` is what the worker syncs there.
+      // must not re-enter the turn. Replace both live surfaces with the pinned
+      // snapshot: `skillsConfig` syncs the frozen files, and the compact catalog
+      // tells the agent which of those files this version requires.
       const behaviorRun = auth.tokenData.source === BEHAVIOR_RUN_SOURCE;
       let skillsConfig: Array<{ name: string; content: string }> = [];
       const mcpContext: Record<string, string> = {};
-      if (agentSettings && !behaviorRun) {
+      if (behaviorRun) {
+        skillsConfig = await this.behaviorRunSkillResolver({
+          conversationId,
+          organizationId: tokenOrgId,
+          agentId,
+        });
+      } else if (agentSettings) {
         const skills = agentSettings.skillsConfig?.skills || [];
         skillsConfig = skills
           .filter((s) => s.enabled && s.content)
@@ -742,11 +757,11 @@ export class WorkerGateway {
       }
 
       const mergedSkillsInstructions = behaviorRun
-        ? ""
+        ? formatBehaviorRunSkillInstructions(skillsConfig)
         : contextData.skillsInstructions || "";
 
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${behaviorRun ? " (Behavior run — live skill library suppressed)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${behaviorRun ? " (Behavior run — pinned snapshot)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({

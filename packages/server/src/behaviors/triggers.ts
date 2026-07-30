@@ -228,11 +228,10 @@ export function behaviorRequiresInstructions(
  *
  * Either source satisfies the requirement on its own. They are no longer the
  * same field: skills used to be concatenated into `prompt` at save time, so one
- * check covered both, but a pinned skill is now delivered as its own
- * `.skills/<name>/SKILL.md` and never enters the prompt text. Requiring both
- * would be stricter than the behaviour this replaced — a Behavior whose whole
- * job is "run this skill" has nothing to put in a task statement, and one that
- * spells its task out inline needs no skill.
+ * check covered both, but pinned skills now remain separate from the stored
+ * prompt. Requiring both would be stricter than the behaviour this replaced —
+ * a Behavior whose whole job is "run this skill" has nothing to put in a task
+ * statement, and one that spells its task out inline needs no skill.
  */
 export function assertBehaviorInstructions(
 	triggers: BehaviorTrigger[],

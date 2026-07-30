@@ -421,9 +421,8 @@ export interface Behavior {
    * ({@link Agent.skills}). `lobu apply` resolves each name to its body and
    * pins the pair onto the Behavior's version, so a run gets the text as it
    * stood at apply time. Editing the library later does not reach an existing
-   * Behavior until the next `lobu apply` — which is the declarative equivalent
-   * of the web editor's "upgrade" action, and why config projects never see an
-   * update prompt: re-applying is the upgrade.
+   * Behavior until the next `lobu apply`; re-applying is the explicit upgrade
+   * action for a declarative project.
    *
    * Supply {@link Behavior.prompt}, `skills`, or both. One of the two is
    * required for schedule triggers, event triggers with execution `"window"`,

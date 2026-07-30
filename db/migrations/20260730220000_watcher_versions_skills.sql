@@ -8,10 +8,9 @@
 -- same content while preserving which skill each part came from, which is what
 -- makes three things possible that the blob could not:
 --
---   1. Diff + upgrade. The editor can compare a pinned snapshot against the
---      agent's current skill body and offer to take the change. With only the
---      concatenated text there is nothing to diff against, so a skill edit was
---      silently invisible to every Behavior already using it.
+--   1. Diff + upgrade. A client can compare a pinned snapshot against the
+--      agent's current skill body and publish the newer text explicitly. With
+--      only the concatenated text there is nothing reliable to compare by name.
 --   2. Device dispatch. `worker-api/poll.ts` ships instructions to a device CLI
 --      that has no channel back to the skill library, so it needs self-contained
 --      content. A name-only reference would strand it.
@@ -20,11 +19,9 @@
 --
 -- Why NULL rather than a `'[]'` default: NULL means "written before this column
 -- existed", i.e. a version whose instructions live wholly in `prompt`. An empty
--- array means "authored with skills, and there are none" — a real, different
--- state once the composer starts writing this column. Collapsing the two would
--- lose the ability to tell a legacy row from a deliberately skill-less one, and
--- the read paths need that distinction to decide whether `prompt` is the whole
--- instruction or just the task statement.
+-- array means "authored after snapshot support, with no pinned skills." Keeping
+-- the provenance costs nothing and avoids rewriting every historical version;
+-- both shapes remain executable because legacy instructions stay in `prompt`.
 --
 -- Nullable add with no default and no backfill: rewrite-free, so it takes only
 -- a brief ACCESS EXCLUSIVE lock to update the catalog.

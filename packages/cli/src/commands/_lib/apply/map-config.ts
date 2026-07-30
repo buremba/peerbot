@@ -521,7 +521,7 @@ function normalizeKeyingConfig(
   return out;
 }
 
-/** Max skills a Behavior may reference (ordered compile; issue #2320 cap). */
+/** Max skills a Behavior may pin on one version (issue #2320 cap). */
 const MAX_BEHAVIOR_SKILLS = 5;
 
 /**
@@ -529,8 +529,7 @@ const MAX_BEHAVIOR_SKILLS = 5;
  * content (the incoming message/event), so it may run with zero skills on the
  * built-in default instruction. Everything else — schedule triggers, event
  * triggers with execution "window", and Behaviors with no triggers at all
- * (manual runs) — runs on its compiled instructions alone and must reference
- * at least one skill.
+ * (manual runs) — needs a prompt, at least one skill, or both.
  *
  * This CLI preflight mirrors the server rule, catching the error against the
  * config file (naming the slug) rather than as a 422 mid-apply. When both

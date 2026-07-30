@@ -197,20 +197,22 @@ export const SourceSchema = Type.Object({
  *
  * The `content` is a SNAPSHOT taken when the version was saved, not a live
  * reference. Editing the agent's skill library afterwards does not reach an
- * existing version — the editor surfaces the difference and offers to publish a
- * new version, and `lobu apply` re-resolves every reference on each run. Storing
- * the body (rather than the name alone) is also what lets a device-pinned
- * Behavior dispatch: `worker-api/poll.ts` ships instructions to a CLI with no
- * channel back to the skill library.
+ * existing version; a caller must publish a new version, and `lobu apply`
+ * re-resolves every reference on each run. Storing the body (rather than the
+ * name alone) also lets a device-pinned Behavior dispatch the frozen text to a
+ * CLI with no channel back to the skill library.
  */
 export const BehaviorSkillSchema = Type.Object({
   name: Type.String({
+    minLength: 1,
+    pattern: "^[a-zA-Z0-9._-]+$",
     description:
       "Skill name, matching an entry in the owning agent's skill library. Identifies the skill for diffing a pinned snapshot against the library's current body.",
   }),
   content: Type.String({
+    minLength: 1,
     description:
-      "The skill body, frozen as of this version. Delivered to the agent as `.skills/<name>/SKILL.md`.",
+      "The skill body, frozen as of this version. Server-side agents receive it as `.skills/<name>/SKILL.md`; device executors receive the same frozen text in their per-run task.",
   }),
 });
 
@@ -359,14 +361,15 @@ export const ManageBehaviorsSchema = Type.Object(
     ),
     skills: Type.Optional(
       Type.Array(BehaviorSkillSchema, {
+        maxItems: 5,
         description:
-          "[create/create_version] Ordered agent skills pinned into this version as {name, content} snapshots, delivered to the agent as `.skills/<name>/SKILL.md` files it reads on demand. Snapshots, not live references: editing the agent's library later does not change an existing version until a new one is published (`lobu apply` re-resolves on every run; the web editor shows a diff and an upgrade action). FULL REPLACEMENT on create_version — passing it (even []) makes it the complete set, and OMITTING it keeps the stored snapshots unchanged. Every name must exist and be enabled in the owning agent's library, or the call is rejected rather than silently running under-instructed.",
+          "[create/create_version] Up to 5 ordered agent skills pinned into this version as {name, content} snapshots. Server-side agents receive `.skills/<name>/SKILL.md` files; device executors receive the same frozen text in their per-run task. Snapshots, not live references: editing the agent's library later does not change an existing version until a caller publishes a new one (`lobu apply` re-resolves on every run). FULL REPLACEMENT on create_version — passing it (even []) makes it the complete set, and OMITTING it keeps the stored snapshots unchanged. Every name must exist and be enabled in the owning agent's library, or the call is rejected rather than silently running under-instructed.",
       })
     ),
     sources: Type.Optional(
       Type.Array(SourceSchema, {
         description:
-          "[create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input — a Behavior's prompt is usually compiled skill bodies, so @-mention chips inside it neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.",
+          "[create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.",
       })
     ),
     keying_config: Type.Optional(

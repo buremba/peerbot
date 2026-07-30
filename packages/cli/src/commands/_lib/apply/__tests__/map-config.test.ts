@@ -901,7 +901,7 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({ agents: [crm], behaviors: [listen, packs] })
     );
-    // The mapper cannot read skill files — prompt is compiled by the loader.
+    // The mapper cannot read skill files — the loader resolves their snapshots.
     expect(state.watchers[0]?.prompt).toBe("");
     expect(state.watchers[0]?.skills).toBeUndefined();
     expect(state.watchers[1]?.skills).toEqual(["triage", "sql-style"]);

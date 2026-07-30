@@ -545,9 +545,16 @@ describe("loadDesiredStateFromConfig", () => {
     await expect(
       write(`defineSkill({ name: "empty", content: "  " })`, `"empty"`)
     ).rejects.toThrow(/body is empty/);
+    rmSync(dir, { recursive: true, force: true });
+    await expect(
+      write(
+        `defineSkill({ name: "unsafe/name", content: "x" })`,
+        `"unsafe/name"`
+      )
+    ).rejects.toThrow(/names may contain only/);
   });
 
-  test("rejects compiled instructions over the 32KB cap", async () => {
+  test("rejects pinned skill text over the 32KB cap", async () => {
     dir = mkdtempSync(join(import.meta.dir, "cap-"));
     writeFileSync(
       join(dir, "lobu.config.ts"),

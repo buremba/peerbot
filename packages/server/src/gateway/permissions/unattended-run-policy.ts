@@ -1,56 +1,92 @@
 /**
- * Does THIS run authorize unattended (uncarded) write-tool use?
+ * Does this agent turn belong to a Behavior its operator declared unattended?
  *
  * A scheduled Behavior has no human in the loop, so the MCP approval card the
  * gate emits can never be answered — the run just burns its turn and fails.
- * `execution_config.permission_mode` is the operator's declaration that a
- * Behavior is meant to run that way. Until this module existed the field was
- * validated, role-gated, persisted, and read by nobody, so the only way to
- * unblock a Behavior was a standing `mcp_tool` grant covering every call the
- * agent makes anywhere — much broader than the Behavior the operator actually
- * meant to trust.
+ * `execution_config.permission_mode` is the operator's Behavior-scoped
+ * declaration that the turn may proceed without one. Until this module existed
+ * the field was validated, role-gated, persisted, shipped to the worker, and
+ * read by nobody, so the only way to unblock a Behavior was a standing
+ * `mcp_tool` grant covering every call that agent makes anywhere — far broader
+ * than the one Behavior the operator meant to trust.
+ *
+ * WHY conversationId AND NOT `tokenData.runId`: the token's `runId` is the
+ * `chat_message` QUEUE row that dispatched the turn, not the parent `behavior`
+ * row — `buildRunJobToken` stamps `data.runId` from the queue payload. Joining
+ * `runs.watcher_id` on it therefore matches nothing in production. The Behavior
+ * identity travels in the signed `conversationId` instead, whose suffix the
+ * gateway builds as `_watcher_<watcherId>_run_<behaviorRunId>`. That is the
+ * same correlation `listPendingToolsForRun` uses; keep the two in step.
  */
 
 import { type DbClient, getDb } from "../../db/client.js";
 import { UNATTENDED_PERMISSION_MODES } from "../../tools/admin/behavior-execution-config.js";
 import logger from "../../utils/logger.js";
 
+/** Trailing `_watcher_<watcherId>_run_<behaviorRunId>` of a Behavior turn. */
+const BEHAVIOR_CONVERSATION_SUFFIX = /_watcher_(\d+)_run_(\d+)$/;
+
+export interface UnattendedRunScope {
+	/** Signed conversation id from the worker token. */
+	conversationId: string | undefined;
+	/** Signed owning org from the worker token. */
+	organizationId: string | undefined;
+	/** Signed agent id from the worker token. */
+	agentId: string | undefined;
+}
+
 /**
- * True when `runId` belongs to a Behavior run whose Behavior is configured for
+ * True when this turn is a Behavior run whose Behavior is configured for
  * unattended execution.
  *
- * Scoping falls out of the query rather than a separate guard, which is why
- * there is no "is this headless?" check to keep in sync:
- * - no `runId` (an interactive browser/chat turn) → no row → false. A human is
- *   present to answer the card, so the bypass must not apply.
- * - a run with no `watcher_id` (chat, sync, task) → the join drops it → false.
- * - a Behavior run → the bypass is read from THAT Behavior only, so an elevated
- *   Behavior cannot lend its bypass to a sibling run of the same agent.
+ * Every identifier here comes from the signed token, and the query re-checks
+ * ownership rather than trusting the parse: the Behavior named by the
+ * conversation must live in the token's org AND belong to the token's agent,
+ * and the named run must belong to that Behavior. So a turn cannot borrow the
+ * elevated mode of another org's, another agent's, or a sibling Behavior — the
+ * three ways this could otherwise become a privilege escalation.
  *
- * Fails CLOSED. Any error returns false, which means "ask for approval" — the
- * same outcome as before this policy existed. An unreadable config must never
- * widen access.
+ * An interactive browser/chat turn has no `_watcher_…_run_…` conversation, so
+ * it never matches and always gets the card. That is the scoping, and it needs
+ * no separate "is this headless?" flag to stay in sync.
+ *
+ * Fails CLOSED. Any error returns false — "ask for approval", the same outcome
+ * as before this policy existed. An unreadable config must never widen access.
  */
 export async function runAllowsUnattendedToolUse(
-	runId: number | null | undefined,
+	scope: UnattendedRunScope,
 	db?: DbClient,
 ): Promise<boolean> {
-	if (runId == null) return false;
+	if (!scope.conversationId || !scope.organizationId || !scope.agentId) {
+		return false;
+	}
+	const match = BEHAVIOR_CONVERSATION_SUFFIX.exec(scope.conversationId);
+	if (!match) return false;
+	const watcherId = Number(match[1]);
+	const behaviorRunId = Number(match[2]);
+	if (!Number.isSafeInteger(watcherId) || !Number.isSafeInteger(behaviorRunId)) {
+		return false;
+	}
 
 	try {
 		const sql = db ?? getDb();
 		const rows = await sql`
       SELECT w.execution_config->>'permission_mode' AS permission_mode
-      FROM runs r
-      JOIN watchers w ON w.id = r.watcher_id
-      WHERE r.id = ${runId}
+      FROM watchers w
+      JOIN runs behavior_run ON behavior_run.watcher_id = w.id
+      WHERE w.id = ${watcherId}
+        AND w.organization_id = ${scope.organizationId}
+        AND w.agent_id = ${scope.agentId}
+        AND behavior_run.id = ${behaviorRunId}
+        AND behavior_run.run_type = 'behavior'
+        AND behavior_run.organization_id = ${scope.organizationId}
       LIMIT 1
     `;
 		const mode = rows[0]?.permission_mode as string | null | undefined;
 		return mode != null && UNATTENDED_PERMISSION_MODES.has(mode);
 	} catch (error) {
 		logger.warn(
-			{ error, run_id: runId },
+			{ error, conversation_id: scope.conversationId },
 			"[mcp] Could not read a Behavior's permission_mode — requiring tool approval",
 		);
 		return false;

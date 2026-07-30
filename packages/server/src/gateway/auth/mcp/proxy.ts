@@ -561,9 +561,21 @@ export class McpProxy {
 		// operator declared it unattended runs without a card. Placed after the
 		// grant check so the common allow paths stay query-free, and before the
 		// block so the card is never written for a run that cannot answer it.
-		if (await runAllowsUnattendedToolUse(tokenData.runId)) {
+		if (
+			await runAllowsUnattendedToolUse({
+				organizationId: tokenData.organizationId,
+				agentId,
+				conversationId: tokenData.conversationId,
+			})
+		) {
 			logger.info(
-				{ agentId, mcpId, toolName, pattern, runId: tokenData.runId },
+				{
+					agentId,
+					mcpId,
+					toolName,
+					pattern,
+					conversationId: tokenData.conversationId,
+				},
 				"Tool call allowed without approval: Behavior is configured for unattended execution",
 			);
 			return "allow";

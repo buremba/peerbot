@@ -54,7 +54,15 @@ export function resolveFinalizeNudgeBudget(
  * local CLI with a nudge. Unlike {@link requeueWatcherRunForFinalizeNudge}
  * (cloud: release claim → pending), this does not clear `claimed_by`.
  *
- * Returns false when the row is no longer `running` (another path won).
+ * Returns false when the row is no longer `running` (another path won) or when
+ * the stored count already moved past the caller's read. The count predicate is
+ * a compare-and-swap: two duplicate exit reports (a Mac retry after a timed-out
+ * response) both read the same `finalize_nudge_count` and both pass the caller's
+ * `attemptsSoFar < budget` check, so without it both would be granted a resume
+ * and the run would get one more spawn than the budget allows. Callers derive
+ * `nextNudgeCount` as read + 1, so `nextNudgeCount - 1` is the expected prior
+ * value. The count is only ever written with `to_jsonb(int)`, so the cast is
+ * safe.
  */
 export async function bumpDeviceFinalizeNudge(
 	sql: DbClient,
@@ -73,6 +81,8 @@ export async function bumpDeviceFinalizeNudge(
         error_message = ${`Device CLI attempt ${nextNudgeCount}: completeWindow not called — resume allowed`}
     WHERE id = ${runId}
       AND status = 'running'
+      AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0)
+          = ${nextNudgeCount - 1}
     RETURNING id
   `) as unknown as Array<{ id: number }>;
 	return rows.length > 0;
@@ -127,8 +137,8 @@ export async function markWatcherRunCompleted(
 	runId: number,
 	windowId: number | null,
 	fallbackModel?: string
-): Promise<void> {
-	await sql`
+): Promise<boolean> {
+	const rows = (await sql`
     UPDATE runs
     SET status = 'completed',
         window_id = ${windowId},
@@ -141,7 +151,12 @@ export async function markWatcherRunCompleted(
         )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-  `;
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+	// False means the row was no longer active — a concurrent path won the
+	// transition. Callers that fire side effects off this completion must check
+	// it before doing so; the ones that only need the write may ignore it.
+	return rows.length > 0;
 }
 
 async function markWatcherRunFailed(

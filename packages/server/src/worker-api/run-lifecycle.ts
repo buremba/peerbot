@@ -1076,12 +1076,25 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			(approved.agent_kind as string).trim()
 				? (approved.agent_kind as string).trim()
 				: null;
-		await markWatcherRunCompleted(
+		// First-report-only: a duplicate/concurrent report finds the row already
+		// out of an active status, so it acks instead of re-stamping exit metadata
+		// and re-emitting the completion event.
+		const marked = await markWatcherRunCompleted(
 			sql,
 			runId,
 			null,
 			agentKind ? `device-cli:${agentKind}` : "device-cli"
 		);
+		if (!marked) {
+			const finalRows = (await sql`
+        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+      `) as unknown as Array<{ status: string }>;
+			return c.json({
+				ok: true,
+				status: finalRows[0]?.status ?? "failed",
+				idempotent: true,
+			});
+		}
 		await sql`
       UPDATE runs
       SET exit_code = ${body.exit_code ?? null},
@@ -1176,7 +1189,17 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
 		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
 		"and that the device token has mcp:write if using MCP.";
-	await failRun(reason);
+	const transitioned = await failRun(reason);
+	if (!transitioned) {
+		const finalRows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+		return c.json({
+			ok: true,
+			status: finalRows[0]?.status ?? "failed",
+			idempotent: true,
+		});
+	}
 	emitCompletionEvent("failed", reason);
 	return c.json({
 		ok: true,

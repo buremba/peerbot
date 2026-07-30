@@ -26,6 +26,45 @@ function scheduleTrigger(cron: string): Record<string, unknown> {
 
 export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
+		// Platform remediation for hard-paused feeds. Lobu writes lifecycle
+		// events (semantic_type=change, metadata.extra.reason=feed.auto_paused).
+		// This template schedules hourly and SQL-sources those events so one
+		// Behavior covers every connector without per-connector event triggers.
+		// Install via "From catalog" / manage_behaviors — not auto-created.
+		id: "feed-auto-pause",
+		name: "Feed auto-pause helper",
+		version: "1.1.0",
+		description:
+			"Hourly check for feeds Lobu hard-paused after consecutive sync failures. Sources recent feed.auto_paused lifecycle events (all connectors) and notifies admins with re-auth / device / config next steps.",
+		detail: {
+			slug: "feed-auto-pause",
+			triggers: [scheduleTrigger("0 * * * *")],
+			// Explicit SQL: default Behavior sources exclude semantic_type=change.
+			// Bounded by recency (last 25h, one hour of overlap with the hourly
+			// schedule) so long-paused feeds stop being re-notified forever, with
+			// no hard row LIMIT — a burst larger than a cap would otherwise stay
+			// invisible once the window advances. This template is advisory
+			// notification, not the delivery guarantee: the durable path is the
+			// per-episode audit event plus retryPendingFeedAutoPausedSignals.
+			// Name must be `content`: behavior-mode only cursor-paginates that
+			// source name; any other name is truncated at the page size with no
+			// next_cursor, which would permanently omit pause episodes in a
+			// burst larger than one page.
+			sources: [
+				{
+					name: "content",
+					query:
+						"SELECT id, title, origin_id, connection_id, feed_id, connector_key, feed_key, metadata, occurred_at, created_at FROM events WHERE semantic_type = 'change' AND metadata->'extra'->>'reason' = 'feed.auto_paused' AND created_at >= NOW() - interval '25 hours' ORDER BY occurred_at DESC",
+				},
+			],
+			prompt:
+				"Review sources.content — each row is a feed Lobu hard-paused after consecutive failures. metadata.extra has last_error, consecutive_failures, connection_id, connector_key.\n\nFor each distinct feed that still needs attention (dedupe by feed_id / origin_id), decide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nIf sources.content is empty, do nothing (no notification).\nKeep it short. Prefer client.notifications.send to admins; do not unpause feeds automatically.\n",
+			notification_channel: "notification",
+			notification_priority: "high",
+			tags: ["platform", "feed-health"],
+		},
+	},
+	{
 		id: "daily-summary",
 		name: "Daily summary",
 		version: "1.0.0",

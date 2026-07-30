@@ -1,14 +1,13 @@
 /**
  * Connector-health alerter.
  *
- * The per-feed repair-agent (`repair-agent.ts`) only fires when a worker
- * actually RUNS and fails — it cannot catch a connector that has silently
- * stopped scheduling runs, an active connection that collects nothing, a whole
- * connection whose every feed is dead, or a connection where most feeds have
- * been auto-paused by repeated failure while one survivor masks them. Those
- * failure modes currently surface to nobody and have gone unnoticed for weeks
- * in prod (expired Revolut sessions, "Authentication failed — cookies may be
- * expired", LinkedIn connection 412 dark for 11 days, etc.).
+ * Per-feed hard auto-pause + `feed.auto_paused` covers feeds that keep failing
+ * on run. It cannot catch a connector that has silently stopped scheduling
+ * runs, an active connection that collects nothing, a whole connection whose
+ * every feed is dead, or a connection where most feeds have been auto-paused
+ * while one survivor masks them. Those failure modes used to surface to nobody
+ * for weeks in prod (expired Revolut sessions, LinkedIn connection 412 dark
+ * for 11 days, etc.).
  *
  * This module is a periodic, read-only scan over `connections` + `feeds` that
  * classifies each active connection as healthy or unhealthy by clear rules and
@@ -44,7 +43,7 @@ export function isBrowserAuthExpiredError(lastError: string | null | undefined):
 
 /**
  * A feed is "failing" if its most recent sync failed OR it has accumulated at
- * least this many consecutive failures. Matches the repair-agent default.
+ * least this many consecutive failures.
  */
 const FAILURE_THRESHOLD = 3;
 

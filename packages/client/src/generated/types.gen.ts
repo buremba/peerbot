@@ -2146,20 +2146,6 @@ export type ManageConnectionsData = {
       }
     | {
         /**
-         * Set/clear the default repair agent for feeds of a connector.
-         */
-        action: "update_connector_default_repair_agent";
-        /**
-         * Connector key
-         */
-        connector_key: string;
-        /**
-         * Default repair agent ID for feeds of this connector. Null clears the default.
-         */
-        default_repair_agent_id: string | null;
-      }
-    | {
-        /**
          * Set manual business-entity links for a chat channel (UI / operator edits).
          */
         action: "set_channel_about";
@@ -2438,12 +2424,6 @@ export type ManageConnectionsResponses = {
         action: "update_connector_default_config";
         success: true;
         connector_key: string;
-      }
-    | {
-        action: "update_connector_default_repair_agent";
-        success: true;
-        connector_key: string;
-        default_repair_agent_id: string | null;
       }
     | {
         action: "set_channel_about";
@@ -2832,7 +2812,7 @@ export type ManageFeedsData = {
       }
     | {
         /**
-         * Patch a feed (status, config, schedule, repair agent).
+         * Patch a feed (status, config, schedule).
          */
         action: "update_feed";
         /**
@@ -2860,10 +2840,6 @@ export type ManageFeedsData = {
          * IANA timezone the schedule is evaluated in. Null clears it (server time / UTC).
          */
         timezone?: string | null;
-        /**
-         * Per-feed repair agent override. Null clears the override and falls back to the connector default.
-         */
-        repair_agent_id?: string | null;
       }
     | {
         /**

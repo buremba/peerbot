@@ -25,10 +25,7 @@ import {
 } from "../behaviors/activation";
 import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
 import { feedBackoff } from "../connectors/feed-backoff";
-import {
-	maybeCloseRepairThread,
-	maybeOpenOrAppendRepairThread,
-} from "../connectors/repair-agent";
+import { maybeEmitFeedAutoPausedAfterFailure } from "../behaviors/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
 import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
@@ -524,14 +521,15 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			//    from the NEW consecutive_failures count (post-increment) directly in
 			//    SQL so it stays correct under concurrent completions across replicas.
 			//  - Hard auto-pause: once the NEW count crosses the pause threshold, the
-			//    feed is paused (status='paused'; the DB trigger nulls next_run_at)
-			//    independent of any repair agent. Manual feeds (no schedule) can't
-			//    exponentially back off (nextRun is NULL) but still hard-pause.
+			//    feed is paused (status='paused'; the DB trigger nulls next_run_at).
+			//    Crossing the threshold emits feed.auto_paused so Behaviors can react.
+			//    Manual feeds (no schedule) can't exponentially back off (nextRun is
+			//    NULL) but still hard-pause.
 			const backoffBaseMs = feedBackoff.baseMs;
 			const backoffMaxMs = feedBackoff.maxMs;
 			const pauseThreshold = feedBackoff.pauseThreshold;
 
-			await sql`
+			const feedUpdate = (await sql`
         UPDATE feeds
         SET last_sync_at = current_timestamp,
             last_sync_status = ${req.status},
@@ -562,28 +560,30 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 						},
             updated_at = current_timestamp
         WHERE id = ${feedId}
-      `;
+        RETURNING consecutive_failures, status
+      `) as Array<{ consecutive_failures: number; status: string }>;
 
-			// Repair-agent trigger: open / append / close threads based on the
-			// updated streak state. Fire-and-forget — all errors are swallowed
-			// inside the helper, the inner UPDATEs use atomic claims so concurrent
-			// invocations are safe, and the worker-completion ACK should not wait on
-			// repair-thread bookkeeping. (If the process dies mid-check the next
-			// failure re-triggers it.)
-			if (isSuccess) {
-				void maybeCloseRepairThread(feedId, req.run_id).catch((err) => {
-					logger.warn(
+			if (!isSuccess) {
+				const after = feedUpdate[0];
+				const consec = Number(after?.consecutive_failures ?? 0);
+				// Emit when paused at/above threshold. delivery_id is stable per
+				// failure episode (first_failure_at), so retries after a failed
+				// activation are idempotent and do not double-queue Behaviors.
+				try {
+					await maybeEmitFeedAutoPausedAfterFailure({
+						feedId,
+						consecutiveFailures: consec,
+						pauseThreshold,
+						runId: req.run_id,
+					});
+				} catch (err) {
+					// Feed is already paused; log hard so we notice lost activation,
+					// but do not fail the worker complete ACK (run is terminal).
+					logger.error(
 						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeCloseRepairThread threw"
+						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw",
 					);
-				});
-			} else {
-				void maybeOpenOrAppendRepairThread(feedId, req.run_id).catch((err) => {
-					logger.warn(
-						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeOpenOrAppendRepairThread threw"
-					);
-				});
+				}
 			}
 		}
 

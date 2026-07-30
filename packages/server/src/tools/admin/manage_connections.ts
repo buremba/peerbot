@@ -39,7 +39,6 @@ import {
 	handleUninstallConnector,
 	handleUpdateConnectorAuth,
 	handleUpdateConnectorDefaultConfig,
-	handleUpdateConnectorDefaultRepairAgent,
 	handleUpdateConnectorSource,
 	handleValidateConnectorSource,
 } from "./manage_connections/handlers/connector-management";
@@ -71,7 +70,6 @@ import {
 	UpdateAction,
 	UpdateConnectorAuthAction,
 	UpdateConnectorDefaultConfigAction,
-	UpdateConnectorDefaultRepairAgentAction,
 	UpdateConnectorSourceAction,
 	ValidateConnectorSourceAction,
 } from "./manage_connections/schemas";
@@ -129,10 +127,6 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	update_connector_default_config: action(
 		UpdateConnectorDefaultConfigAction,
 		handleUpdateConnectorDefaultConfig,
-	),
-	update_connector_default_repair_agent: action(
-		UpdateConnectorDefaultRepairAgentAction,
-		handleUpdateConnectorDefaultRepairAgent,
 	),
 	set_channel_about: action(SetChannelAboutAction, handleSetChannelAbout),
 });

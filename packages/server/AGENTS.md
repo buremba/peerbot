@@ -39,10 +39,10 @@ Read before editing. Full list in `docs/GOTCHAS.md`; these bite most often here:
 - Streaming deltas/status are best-effort across pods today. Do not build correctness on cross-pod in-memory delivery.
 - Exclusive transports such as Telegram polling run on exactly one replica via `connection_claims`; webhook transports must run on any replica.
 
-## Connector operations and repair
+## Connector operations and feed health
 - Built-in connector definitions/catalog install in server; connector implementation details belong in `packages/connectors/AGENTS.md`.
-- Connector health/repair scans `connections` + `feeds`; chat connections are not collector connections and should not trip zero-feed collector health rules.
-- Repair agents may use manage/query tools, but fixes must stay org-scoped and data-driven.
+- Connector health scans `connections` + `feeds`; chat connections are not collector connections and should not trip zero-feed collector health rules.
+- Feed hard auto-pause emits `feed.auto_paused` (Behavior signal + lifecycle event). Prefer a normal Behavior over new special-case agent subsystems.
 
 ## Guardrails, network, and runtime
 - Guardrails live under `packages/core/src/guardrails/`; server built-ins/aggregation live under gateway guardrail code. Guardrail infra errors fail open; each trip writes a `guardrail-trip` event.

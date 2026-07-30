@@ -3,8 +3,7 @@
  * install_connector, uninstall_connector, get_connector_source,
  * validate_connector_source, update_connector_source,
  * rollback_connector_version, toggle_connector_login,
- * update_connector_auth, update_connector_default_config,
- * update_connector_default_repair_agent,
+ * update_connector_auth, update_connector_default_config.
  */
 
 import { getErrorMessage } from "@lobu/core";
@@ -451,44 +450,4 @@ export async function handleUpdateConnectorDefaultConfig(
 	};
 }
 
-// ============================================
-// handleUpdateConnectorDefaultRepairAgent
-// ============================================
 
-export async function handleUpdateConnectorDefaultRepairAgent(
-	args: Extract<
-		ConnectionsArgs,
-		{ action: "update_connector_default_repair_agent" }
-	>,
-	ctx: ToolContext,
-): Promise<ManageConnectionsResult> {
-	const updated = await updateActiveConnectorDefinitionField(
-		args.connector_key,
-		ctx.organizationId,
-		(sql) =>
-			sql`default_repair_agent_id = ${args.default_repair_agent_id}::text`,
-	);
-
-	if (!updated) {
-		return { error: `Connector '${args.connector_key}' not found` };
-	}
-
-	recordToolConfigChange(ctx, {
-		resourceKind: "connector-definition",
-		resourceId: args.connector_key,
-		op: "updated",
-		summary: `Connector '${args.connector_key}' default repair agent updated`,
-		state: {
-			connector_key: args.connector_key,
-			default_repair_agent_id: args.default_repair_agent_id,
-		},
-		changedFields: ["default_repair_agent_id"],
-	});
-
-	return {
-		action: "update_connector_default_repair_agent",
-		success: true,
-		connector_key: args.connector_key,
-		default_repair_agent_id: args.default_repair_agent_id,
-	};
-}

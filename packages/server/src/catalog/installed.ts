@@ -1,4 +1,5 @@
 import type { GuardrailStage } from "@lobu/core";
+import { withPlatformBehaviorEvents } from "../behaviors/platform-event-catalog";
 import { getModelProviderModules } from "../gateway/modules/module-system";
 import type { Env } from "../index";
 import { getLobuCoreServices } from "../lobu/gateway";
@@ -22,6 +23,20 @@ import type {
 	InstalledListResponse,
 	OrgInstalledKind,
 } from "./types";
+
+/** Installed UI metadata: merge platform Behavior events into each connector. */
+function behaviorEventsForUi(
+	raw: Array<Record<string, unknown>> | null | undefined,
+): Array<Record<string, unknown>> | undefined {
+	const declared = Array.isArray(raw)
+		? raw.filter(
+				(event): event is Record<string, unknown> & { key: string } =>
+					typeof event?.key === "string" && event.key.length > 0,
+			)
+		: [];
+	const merged = withPlatformBehaviorEvents(declared);
+	return merged.length > 0 ? (merged as Array<Record<string, unknown>>) : undefined;
+}
 
 const configStore = createPostgresAgentConfigStore();
 
@@ -62,13 +77,12 @@ export async function listOrgInstalled(
 					auth_schema: row.auth_schema,
 					feeds_schema: row.feeds_schema,
 					actions_schema: row.actions_schema,
-					behavior_events: row.behavior_events ?? undefined,
+					behavior_events: behaviorEventsForUi(row.behavior_events),
 					options_schema: row.options_schema,
 					favicon_domain: row.favicon_domain,
 					required_capability: row.required_capability,
 					runtime: row.runtime,
 					default_connection_config: row.default_connection_config,
-					default_repair_agent_id: row.default_repair_agent_id,
 					source_uri: connectorSourcePathToUri(row.source_path),
 					operations_summary: operationsSummary,
 					has_operations: operationsSummary.total > 0,

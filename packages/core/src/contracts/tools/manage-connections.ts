@@ -531,17 +531,6 @@ export const UpdateConnectorDefaultConfigAction = Type.Object({
   }),
 });
 
-export const UpdateConnectorDefaultRepairAgentAction = Type.Object({
-  action: Type.Literal("update_connector_default_repair_agent", {
-    description: "Set/clear the default repair agent for feeds of a connector.",
-  }),
-  connector_key: Type.String({ description: "Connector key" }),
-  default_repair_agent_id: Type.Union([Type.String(), Type.Null()], {
-    description:
-      "Default repair agent ID for feeds of this connector. Null clears the default.",
-  }),
-});
-
 const CHANNEL_ID_DESC =
   "Platform channel id (may be platform-prefixed, e.g. 'slack:C…').";
 
@@ -868,13 +857,6 @@ export const ManageConnectionsResultSchema = Type.Union([
     success: Type.Literal(true),
     connector_key: Type.String(),
   }),
-  // ConnectorActionOk<"update_connector_default_repair_agent", { default_repair_agent_id: string | null }>
-  Type.Object({
-    action: Type.Literal("update_connector_default_repair_agent"),
-    success: Type.Literal(true),
-    connector_key: Type.String(),
-    default_repair_agent_id: Type.Union([Type.String(), Type.Null()]),
-  }),
   Type.Object({
     action: Type.Literal("set_channel_about"),
     success: Type.Literal(true),
@@ -939,5 +921,4 @@ export type ConnectionsArgs =
   | Static<typeof ToggleConnectorLoginAction>
   | Static<typeof UpdateConnectorAuthAction>
   | Static<typeof UpdateConnectorDefaultConfigAction>
-  | Static<typeof UpdateConnectorDefaultRepairAgentAction>
   | Static<typeof SetChannelAboutAction>;

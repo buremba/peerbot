@@ -242,6 +242,32 @@ export function extractSourcesFromPromptTokens(prompt: string): WatcherSource[] 
 }
 
 /**
+ * Skill names referenced by `@[skill:<name>:<label>](…)` tokens in a prompt.
+ *
+ * Deliberately NOT part of `PROMPT_KIND_TO_MODE` — a skill is not a source, and
+ * this does not derive anything the caller did not send. The caller supplies
+ * `skills[{name, content}]` and the pinned body comes from THAT; resolving the
+ * body here would re-read the live library at save time and silently upgrade a
+ * pin, which is the one thing the snapshot model exists to prevent.
+ *
+ * De-duped, order preserved. Malformed tokens are skipped, matching
+ * `extractSourcesFromPromptTokens`.
+ */
+export function extractSkillNamesFromPromptTokens(prompt: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const m of prompt.matchAll(PROMPT_REF_TOKEN)) {
+    const [, kind, id] = m;
+    if (kind !== 'skill') continue;
+    const name = (id ?? '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+/**
  * Merge prompt-derived sources into an explicit sources list, de-duping by
  * query and keeping output-field names unique. Explicit sources win (they keep
  * their names/order); prompt sources fill in the rest.

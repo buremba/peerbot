@@ -32,6 +32,7 @@ import {
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
+  assertPromptSkillTokensPinned,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
@@ -226,6 +227,7 @@ export async function handleCreate(
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
   const skills = args.skills ?? [];
   assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
+  assertPromptSkillTokensPinned(args.prompt, skills);
   await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
 
   // Check slug uniqueness within org

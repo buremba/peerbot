@@ -461,7 +461,12 @@ export const QUERYABLE_SCHEMA = {
         // Dispatch-time cursor for the min_cooldown_seconds debounce. Distinct
         // from last_fired_at, which is stamped when a run reaches a terminal
         // state.
-        'last_event_activation_at'
+        'last_event_activation_at',
+        // Materialized ordering stamp: the completion time of this Behavior's
+        // most recent `completed` run, written by a trigger on `runs`. Plain
+        // timestamptz, no secret, and it is what the listing orders by — so
+        // SQL must expose it or the ordering can't be audited from query_sql.
+        'last_run_completed_at'
       ),
     },
     // event_classifications

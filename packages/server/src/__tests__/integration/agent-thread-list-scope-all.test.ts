@@ -4,8 +4,8 @@
  * Verifies that scope=all surfaces, for one agent in one org:
  *   - the requesting user's own WEB threads (platform "web"),
  *   - PLATFORM conversations (e.g. `slack:…`) tagged with the derived platform,
- *   - one WATCHER entry per watcher (platform "watcher", carrying watcherId),
- * sorted newest-first — and that a watcher's per-run snapshot never leaks in as
+ *   - one Behavior entry per Behavior (platform "behavior", carrying behaviorId),
+ * sorted newest-first — and that a Behavior's per-run snapshot never leaks in as
  * its own platform row. Also drives the two read endpoints the feed links to:
  * readConversationMessages (platform, by raw id) and readWatcherRunThreads.
  */
@@ -36,6 +36,7 @@ const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection ownin
 const TELEGRAM_DM_CONV = "telegram:6570514069"; // an unbound DM, gated on org role
 const TELEGRAM_LEGACY_CONV = "telegram:111222333"; // platform row with is_direct NULL (unknown)
 const WATCHER_ID = 990001;
+const ARCHIVED_WATCHER_ID = 990003; // completed a run, then archived
 const OTHER_AGENT = "thread-list-other-agent";
 const OTHER_WATCHER_ID = 990002;
 
@@ -80,12 +81,9 @@ describe("listAgentThreads scope=all", () => {
 		});
 		const sql = getTestDb();
 
-		// A transcript snapshot backs the read endpoints (readConversationMessages,
-		// readWatcherRunThreads) and the watcher derivation. The sidebar LISTING,
-		// however, now reads the `conversations` entity — so a conversation only
-		// appears in listAgentThreads if it ALSO has a conversations row (which the
-		// gateway dual-writes on every turn). insertSnapshot writes both by default;
-		// pass listed=false for the watcher run (stays derived, no entity row).
+		// A transcript snapshot backs the read endpoints (readConversationMessages
+		// and readWatcherRunThreads). Ordinary conversation listing reads the
+		// `conversations` entity, so one appears only when it also has that row.
 		const insertSnapshot = async (
 			conversationId: string,
 			text: string,
@@ -251,6 +249,39 @@ describe("listAgentThreads scope=all", () => {
 			   ${watcherRun.id}, ${watcherJsonl}, ${Buffer.byteLength(watcherJsonl)},
 			   'completed', '2026-06-28T00:30:00Z')
 		`;
+
+		// The completed run above stamps the Behavior at the database boundary.
+		// Its sidebar entry is read from that column, not re-derived from the
+		// snapshot on every request.
+
+		// An ARCHIVED Behavior that completed a run is stamped like any other. Its
+		// snapshot rows are permanent — archiving cannot unmake them — which is why
+		// the old query kept it listed. The listing now filters on live `status`, so
+		// it drops out with no lifecycle sync anywhere.
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${ARCHIVED_WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Watcher', 'archived', 'notification', 'normal', 0, now(), now())`;
+		const [archivedRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, approval_status,
+			   run_metadata, created_at, completed_at)
+			VALUES
+			  ('behavior', 'completed', ${org}, ${ARCHIVED_WATCHER_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Archived watcher task" })},
+			   '2026-06-28T00:40:00Z', '2026-06-28T00:41:00Z')
+			RETURNING id`;
+		const archivedJsonl = sessionJsonl("archived watcher run output");
+		await sql`
+			INSERT INTO agent_transcript_snapshot
+			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
+			   byte_size, terminal_status, created_at)
+			VALUES
+			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${ARCHIVED_WATCHER_ID}_run_${archivedRun.id}`},
+			   ${archivedRun.id}, ${archivedJsonl}, ${Buffer.byteLength(archivedJsonl)},
+			   'completed', '2026-06-28T00:41:00Z')
+		`;
+
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
 			  (run_type, status, organization_id, watcher_id, window_id,
@@ -351,6 +382,7 @@ describe("listAgentThreads scope=all", () => {
 		const behavior = byPlatform.get("behavior");
 		expect(behavior?.behaviorId).toBe(WATCHER_ID);
 		expect(behavior?.title).toBe("Test Watcher");
+		expect(behavior?.createdAt).toBe(behavior?.updatedAt);
 
 		// Newest VISIBLE is the bound Slack channel at 02:00 — the unbound channel
 		// at 03:00 is fenced out, so it must not take the top slot (or any slot).
@@ -359,6 +391,43 @@ describe("listAgentThreads scope=all", () => {
 
 		// A watcher's per-run snapshot must NOT surface as its own platform row.
 		expect(threads.some((t) => t.id.includes("_watcher_"))).toBe(false);
+	});
+
+	it("drops an archived Behavior even though its completed runs remain", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+
+		// The archived Behavior's transcript snapshot is still in the table and
+		// still terminal_status='completed' — permanent history. The old query
+		// ignored the current Behavior status and listed it.
+		expect(
+			threads.some((t) => t.behaviorId === ARCHIVED_WATCHER_ID),
+		).toBe(false);
+		expect(threads.some((t) => t.title === "Archived Watcher")).toBe(false);
+
+		// The live Behavior beside it is untouched — this is a lifecycle filter,
+		// not a blanket exclusion of Behaviors.
+		expect(threads.some((t) => t.behaviorId === WATCHER_ID)).toBe(true);
+	});
+
+	it("orders a Behavior by its stored last-run stamp, not by run history", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+		const behavior = threads.find((t) => t.behaviorId === WATCHER_ID);
+
+		expect(behavior?.id).toBe(`watcher_${WATCHER_ID}`);
+		// The stamped value, not max(created_at) over the snapshots.
+		expect(behavior?.updatedAt).toBe(
+			new Date("2026-06-28T00:30:00Z").getTime(),
+		);
 	});
 
 	it("fences out platform conversations on channels the agent isn't bound to", async () => {

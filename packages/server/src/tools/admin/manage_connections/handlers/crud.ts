@@ -32,6 +32,7 @@ import {
   getOperationsSummary,
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
+import { projectConnectionForReader } from "../public-projection";
 import {
   getAuthProfileById,
   getAuthProfileBySlug,
@@ -432,7 +433,9 @@ export async function handleList(
 
   return {
 		action: "list",
-    connections,
+    connections: connections.map((row) =>
+      projectConnectionForReader(row, ctx)
+    ),
     total: connections.length,
     limit,
     offset,
@@ -554,7 +557,7 @@ export async function handleGet(
 
   return {
 		action: "get",
-    connection: {
+    connection: projectConnectionForReader({
       ...resolved,
 			error_message: effectiveConnectionErrorMessage({
 				error_message: getRow.error_message as string | null,
@@ -588,7 +591,7 @@ export async function handleGet(
         appAuthProfileId: getRow.app_auth_profile_id,
         authProfileId: getRow.auth_profile_id,
       }),
-    },
+    }, ctx),
     view_url: viewUrl,
   };
 }

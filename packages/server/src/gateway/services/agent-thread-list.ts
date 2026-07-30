@@ -267,42 +267,39 @@ export async function listAgentThreads(args: {
 		}
 	}
 
-	// Watcher activity stays DERIVED from transcript snapshots — one entry per
-	// WATCHER (not per run), its latest run time + name, so the activity panel
-	// can route to the watcher's page. Watcher runs deliberately get no
-	// `conversations` row (their id is globally unique and downstream correlation
-	// relies on the raw `..._watcher_<id>_run_<id>` shape).
+	// Behavior activity comes from bounded `watchers` config rather than
+	// aggregating append-only transcript history. A Behavior is not a conversation,
+	// so it keeps the existing `watcher_<id>` route key without a `conversations`
+	// row. Reading status and name live also drops archived rows immediately.
 	if (scope === "all") {
 		const sql = getDb();
-		const watcherRows = await sql<{
-			watcher_id: number;
+		const behaviorRows = await sql<{
+			id: number;
 			name: string | null;
-			last_at: Date;
+			last_run_completed_at: Date;
 		}>`
-      SELECT w.id AS watcher_id, w.name, mx.last_at
-      FROM (
-        SELECT (regexp_match(conversation_id, '_watcher_([0-9]+)_run_'))[1]::int AS watcher_id,
-               max(created_at) AS last_at
-        FROM public.agent_transcript_snapshot
-        WHERE organization_id = ${organizationId}
-          AND agent_id = ${agentId}
-          AND terminal_status = 'completed'
-          AND conversation_id LIKE '%\\_watcher\\_%\\_run\\_%'
-        GROUP BY 1
-      ) mx
-      JOIN public.watchers w ON w.id = mx.watcher_id
+      SELECT id, name, last_run_completed_at
+      FROM public.watchers
+      WHERE organization_id = ${organizationId}
+        AND agent_id = ${agentId}
+        AND status = 'active'
+        AND last_run_completed_at IS NOT NULL
+      ORDER BY last_run_completed_at DESC
     `;
-		for (const row of watcherRows) {
-			const key = `watcher_${row.watcher_id}`;
-			const at = row.last_at.getTime();
+		for (const row of behaviorRows) {
+			// `watcher_<id>` is the key the panel has always rendered and routed on.
+			const key = `watcher_${row.id}`;
+			const at = row.last_run_completed_at.getTime();
 			byKey.set(key, {
 				id: key,
-				title: row.name ?? `Behavior ${row.watcher_id}`,
+				title: row.name ?? `Behavior ${row.id}`,
+				// Preserves the derived contract: a Behavior entry represents latest
+				// activity, so both timestamps track the last completed run.
 				createdAt: at,
 				updatedAt: at,
 				platform: "behavior",
 				conversationId: key,
-				behaviorId: row.watcher_id,
+				behaviorId: row.id,
 			});
 		}
 	}

@@ -16,6 +16,7 @@ import { getScopedConnectorDefinition } from "./catalog/connector-definitions";
 import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
+import { fixedActionArgs } from "./http/rest-tool-action";
 import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
@@ -263,6 +264,16 @@ export async function restHealth(c: Context<{ Bindings: Env }>) {
 		timestamp: new Date().toISOString(),
 		...getRuntimeInfo(c.env),
 	});
+}
+
+/** Proxy a fixed-action REST route without letting request params retarget it. */
+export async function restToolAction(
+	c: Context<{ Bindings: Env }>,
+	toolName: string,
+	action: string,
+	callerArgs?: Record<string, unknown>
+) {
+	return restToolProxy(c, toolName, fixedActionArgs(action, callerArgs));
 }
 
 /**

@@ -171,6 +171,24 @@ describe("ClientSDK object signature contract", () => {
 		]);
 	});
 
+	it("pins both entity-schema discriminators against caller input", async () => {
+		const entitySchema = builders.entitySchema(ctx, env);
+
+		await entitySchema.listTypes({
+			action: "delete",
+			schema_type: "relationship_type",
+		} as never);
+		await entitySchema.listRelTypes({
+			action: "delete",
+			schema_type: "entity_type",
+		} as never);
+
+		expect(calls).toEqual([
+			{ action: "list", input: { schema_type: "entity_type" } },
+			{ action: "list", input: { schema_type: "relationship_type" } },
+		]);
+	});
+
 	it("rewrites documented field aliases to the canonical runtime fields", async () => {
 		const entities = builders.entities(ctx, env);
 		const feeds = builders.feeds(ctx, env);

@@ -220,6 +220,8 @@ describe("validateSkillsConfig", () => {
             instructions: "i",
             content: "c",
             system: true,
+            // Dropped from the schema with the Skills UI (#2320) — a stored
+            // row that still carries it must not fail the write boundary.
             nixPackages: ["ripgrep"],
             modelPreference: "anthropic/claude-haiku-4-5",
             thinkingLevel: "low",

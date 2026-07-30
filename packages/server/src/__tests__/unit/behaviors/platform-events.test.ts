@@ -27,14 +27,14 @@ describe("platform behavior events", () => {
 });
 
 describe("pauseGenerationForFeed", () => {
-	it("uses first_failure_at epoch ms when present", () => {
-		const at = new Date("2024-06-15T12:00:00.000Z");
+	it("uses first_failure_at epoch seconds when present", () => {
+		const at = new Date("2024-06-15T12:00:00.500Z");
 		expect(
 			pauseGenerationForFeed({
 				first_failure_at: at,
 				consecutive_failures: 9,
 			}),
-		).toBe(at.getTime());
+		).toBe(Math.floor(at.getTime() / 1000));
 	});
 
 	it("falls back to consecutive_failures when first_failure_at is null", () => {

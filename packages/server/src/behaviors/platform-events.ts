@@ -49,19 +49,19 @@ function auditOriginId(feedId: number, pauseGeneration: string | number): string
 
 /**
  * Stable pause-episode generation used for delivery_id and audit origin_id.
- * Prefer first_failure_at ms so retries within the same failure episode share
- * one idempotency key.
+ * Prefer first_failure_at as integer Unix seconds so JS and the redelivery
+ * SQL filter (EXTRACT(EPOCH …)::bigint) share one exact key — millisecond
+ * floats diverge between runtimes and would leave rows permanently pending.
  */
 export function pauseGenerationForFeed(row: {
 	first_failure_at: Date | string | null;
 	consecutive_failures: number | string;
 }): number {
-	const firstFailMs = row.first_failure_at
-		? new Date(row.first_failure_at).getTime()
-		: Number(row.consecutive_failures);
-	return Number.isFinite(firstFailMs)
-		? firstFailMs
-		: Number(row.consecutive_failures);
+	if (row.first_failure_at) {
+		const ms = new Date(row.first_failure_at).getTime();
+		if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+	}
+	return Number(row.consecutive_failures);
 }
 
 /**
@@ -267,7 +267,7 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 	// Filter missing audit origins in SQL so completed / no-subscriber feeds
 	// never occupy the scan window. origin_id matches auditOriginId():
 	//   feed_auto_paused:<feedId>:<pauseGeneration>
-	// pauseGeneration is floor(epoch_ms of first_failure_at) or consecutive_failures.
+	// pauseGeneration is floor(epoch seconds of first_failure_at) or consecutive_failures.
 	const rows = (await sql`
 		SELECT f.id, f.organization_id, f.consecutive_failures, f.first_failure_at
 		FROM feeds f
@@ -279,11 +279,12 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 		    SELECT 1
 		    FROM events e
 		    WHERE e.organization_id = f.organization_id
+		      AND e.superseded_by IS NULL
 		      AND e.origin_id = (
 		        'feed_auto_paused:' || f.id::text || ':' ||
 		        CASE
 		          WHEN f.first_failure_at IS NOT NULL THEN
-		            (FLOOR(EXTRACT(EPOCH FROM f.first_failure_at) * 1000))::bigint::text
+		            FLOOR(EXTRACT(EPOCH FROM f.first_failure_at))::bigint::text
 		          ELSE f.consecutive_failures::text
 		        END
 		      )

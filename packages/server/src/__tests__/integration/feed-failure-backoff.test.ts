@@ -442,7 +442,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       RETURNING id, first_failure_at
     `) as Array<{ id: number; first_failure_at: Date | string }>;
     const feedId = Number(rows[0].id);
-    const gen = new Date(rows[0].first_failure_at).getTime();
+    const gen = Math.floor(new Date(rows[0].first_failure_at).getTime() / 1000);
     const originId = `feed_auto_paused:${feedId}:${gen}`;
 
     const before = await retryPendingFeedAutoPausedSignals({
@@ -456,6 +456,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       FROM events
       WHERE organization_id = ${org.id}
         AND origin_id = ${originId}
+        AND superseded_by IS NULL
     `) as Array<{
       id: number;
       origin_id: string;
@@ -466,21 +467,23 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     expect(audits[0]?.connector_key).toBe('chrome');
     expect(Number(audits[0]?.feed_id)).toBe(feedId);
 
-    // Second redelivery pass finds nothing for this origin (audit is the marker).
+    // Second redelivery pass must not re-select this feed (audit is the marker).
     const after = await retryPendingFeedAutoPausedSignals({
       pauseThreshold: PAUSE_THRESHOLD,
       limit: 50,
     });
-    // This feed must not be attempted again; other orgs may still appear.
+    expect(after.errors).toBe(0);
     const reAudits = (await sql`
       SELECT count(*)::int AS n FROM events
-      WHERE organization_id = ${org.id} AND origin_id = ${originId}
+      WHERE organization_id = ${org.id}
+        AND origin_id = ${originId}
+        AND superseded_by IS NULL
     `) as Array<{ n: number }>;
     expect(Number(reAudits[0]?.n)).toBe(1);
-    expect(after.errors).toBe(0);
 
-    // Concurrent-safe: re-emitting the same episode does not append a second
-    // current audit row (onConflictUpdate).
+    // Concurrent-safe: re-emitting the same episode keeps one current audit
+    // (onConflictUpdate). Use the same title/error as the first emit so the
+    // semantic equality path is hit rather than a supersede.
     await emitFeedAutoPaused({
       organizationId: org.id,
       feedId,
@@ -489,12 +492,14 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       feedKey: 'chrome-feed',
       displayName: null,
       consecutiveFailures: PAUSE_THRESHOLD,
-      lastError: 'still broken',
+      lastError: null,
       pauseGeneration: gen,
     });
     const stillOne = (await sql`
       SELECT count(*)::int AS n FROM events
-      WHERE organization_id = ${org.id} AND origin_id = ${originId}
+      WHERE organization_id = ${org.id}
+        AND origin_id = ${originId}
+        AND superseded_by IS NULL
     `) as Array<{ n: number }>;
     expect(Number(stillOne[0]?.n)).toBe(1);
   });

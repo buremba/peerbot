@@ -18,8 +18,13 @@
 
 import type { Context } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  emitFeedAutoPaused,
+  retryPendingFeedAutoPausedSignals,
+} from '../../behaviors/platform-events';
 import type { Env } from '../../index';
 import { manageBehaviors } from '../../tools/admin/manage_behaviors';
+import { manageFeeds } from '../../tools/admin/manage_feeds';
 import { completeWorkerJob } from '../../worker-api';
 import { initWorkspaceProvider } from '../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
@@ -306,6 +311,192 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       SELECT count(*)::int AS n FROM runs WHERE watcher_id = ${behaviorId}
     `) as Array<{ n: number }>;
     expect(Number(runsAfter[0]?.n)).toBe(behaviorRuns.length);
+  });
+
+  it('5b-resume: unpausing resets the failure episode so a later pause gets a new delivery_id', async () => {
+    const { org, user, ctx: toolCtx } = await seedOwnerContext();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+    });
+    const connId = await insertConnection(org.id, 'chrome-resume-test');
+    const created = await manageBehaviors(
+      {
+        action: 'create',
+        slug: 'feed-auto-pause-resume-test',
+        name: 'Feed auto-pause resume test',
+        prompt: 'Notify about the paused feed.',
+        agent_id: agent.agentId,
+        triggers: [
+          {
+            kind: 'event',
+            connector_key: 'chrome',
+            event_types: ['feed.auto_paused'],
+            execution: 'turn',
+            active_run: 'coalesce',
+            output: 'silent',
+          },
+        ],
+      },
+      {} as Env,
+      toolCtx,
+    );
+    if (created.action !== 'create' || !('behavior_id' in created)) {
+      throw new Error(`Behavior create failed: ${JSON.stringify(created)}`);
+    }
+    const behaviorId = Number(created.behavior_id);
+
+    const feedId = await insertFeed(org.id, connId, PAUSE_THRESHOLD - 1);
+    const runId = await insertRunningRun(org.id, connId, feedId);
+    await completeWorkerJob(
+      mockWorkerCtx({
+        run_id: runId,
+        worker_id: WORKER_ID,
+        status: 'failed',
+        error_message: 'episode 1',
+      }).ctx,
+    );
+
+    const sql = getTestDb();
+    const firstRuns = (await sql`
+      SELECT approved_input FROM runs
+      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      ORDER BY id ASC
+    `) as Array<{ approved_input: Record<string, unknown> | null }>;
+    expect(firstRuns).toHaveLength(1);
+    const firstDelivery = (
+      firstRuns[0]?.approved_input?.delivery_ids as string[] | undefined
+    )?.[0];
+    expect(firstDelivery).toMatch(new RegExp(`^feed-auto-paused:${feedId}:`));
+
+    // Resume via manage_feeds — clears consecutive_failures / first_failure_at
+    // and re-anchors next_run_at for the scheduled feed.
+    const resumed = await manageFeeds(
+      { action: 'update_feed', feed_id: feedId, status: 'active' },
+      {} as Env,
+      toolCtx,
+    );
+    expect(resumed).toMatchObject({ action: 'update_feed' });
+    const afterResume = (await sql`
+      SELECT status, consecutive_failures, first_failure_at, next_run_at
+      FROM feeds WHERE id = ${feedId}
+    `) as Array<{
+      status: string;
+      consecutive_failures: number;
+      first_failure_at: Date | string | null;
+      next_run_at: Date | string | null;
+    }>;
+    expect(afterResume[0]?.status).toBe('active');
+    expect(Number(afterResume[0]?.consecutive_failures)).toBe(0);
+    expect(afterResume[0]?.first_failure_at).toBeNull();
+    expect(afterResume[0]?.next_run_at).not.toBeNull();
+
+    // Fail up to threshold again — must create a second Behavior run with a
+    // distinct delivery_id for the new failure episode.
+    for (let i = 0; i < PAUSE_THRESHOLD; i++) {
+      const rid = await insertRunningRun(org.id, connId, feedId);
+      await completeWorkerJob(
+        mockWorkerCtx({
+          run_id: rid,
+          worker_id: WORKER_ID,
+          status: 'failed',
+          error_message: `episode 2 fail ${i + 1}`,
+        }).ctx,
+      );
+    }
+    const secondRuns = (await sql`
+      SELECT approved_input FROM runs
+      WHERE watcher_id = ${behaviorId} AND run_type = 'behavior'
+      ORDER BY id ASC
+    `) as Array<{ approved_input: Record<string, unknown> | null }>;
+    expect(secondRuns).toHaveLength(2);
+    const secondDelivery = (
+      secondRuns[1]?.approved_input?.delivery_ids as string[] | undefined
+    )?.[0];
+    expect(secondDelivery).toMatch(new RegExp(`^feed-auto-paused:${feedId}:`));
+    expect(secondDelivery).not.toBe(firstDelivery);
+
+    const finalFeed = (await sql`
+      SELECT status, consecutive_failures FROM feeds WHERE id = ${feedId}
+    `) as Array<{ status: string; consecutive_failures: number }>;
+    expect(finalFeed[0]?.status).toBe('paused');
+    expect(Number(finalFeed[0]?.consecutive_failures)).toBe(PAUSE_THRESHOLD);
+  });
+
+  it('5b-redelivery: retryPending only targets feeds missing the audit origin', async () => {
+    const org = await createTestOrganization();
+    const connId = await insertConnection(org.id, 'chrome-redeliver-test');
+    const sql = getTestDb();
+
+    // Hard-paused feed with first_failure_at set, but no audit event yet —
+    // simulates crash between pause and emit.
+    const rows = (await sql`
+      INSERT INTO feeds
+        (organization_id, connection_id, feed_key, status, schedule,
+         consecutive_failures, first_failure_at, items_collected,
+         last_sync_status, created_at, updated_at)
+      VALUES
+        (${org.id}, ${connId}, 'chrome-feed', 'paused', '* * * * *',
+         ${PAUSE_THRESHOLD}, NOW() - interval '1 hour', 0,
+         'failed', NOW(), NOW())
+      RETURNING id, first_failure_at
+    `) as Array<{ id: number; first_failure_at: Date | string }>;
+    const feedId = Number(rows[0].id);
+    const gen = new Date(rows[0].first_failure_at).getTime();
+    const originId = `feed_auto_paused:${feedId}:${gen}`;
+
+    const before = await retryPendingFeedAutoPausedSignals({
+      pauseThreshold: PAUSE_THRESHOLD,
+      limit: 50,
+    });
+    expect(before.attempted).toBeGreaterThanOrEqual(1);
+
+    const audits = (await sql`
+      SELECT id, origin_id, connector_key, feed_id
+      FROM events
+      WHERE organization_id = ${org.id}
+        AND origin_id = ${originId}
+    `) as Array<{
+      id: number;
+      origin_id: string;
+      connector_key: string | null;
+      feed_id: number | null;
+    }>;
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.connector_key).toBe('chrome');
+    expect(Number(audits[0]?.feed_id)).toBe(feedId);
+
+    // Second redelivery pass finds nothing for this origin (audit is the marker).
+    const after = await retryPendingFeedAutoPausedSignals({
+      pauseThreshold: PAUSE_THRESHOLD,
+      limit: 50,
+    });
+    // This feed must not be attempted again; other orgs may still appear.
+    const reAudits = (await sql`
+      SELECT count(*)::int AS n FROM events
+      WHERE organization_id = ${org.id} AND origin_id = ${originId}
+    `) as Array<{ n: number }>;
+    expect(Number(reAudits[0]?.n)).toBe(1);
+    expect(after.errors).toBe(0);
+
+    // Concurrent-safe: re-emitting the same episode does not append a second
+    // current audit row (onConflictUpdate).
+    await emitFeedAutoPaused({
+      organizationId: org.id,
+      feedId,
+      connectionId: connId,
+      connectorKey: 'chrome',
+      feedKey: 'chrome-feed',
+      displayName: null,
+      consecutiveFailures: PAUSE_THRESHOLD,
+      lastError: 'still broken',
+      pauseGeneration: gen,
+    });
+    const stillOne = (await sql`
+      SELECT count(*)::int AS n FROM events
+      WHERE organization_id = ${org.id} AND origin_id = ${originId}
+    `) as Array<{ n: number }>;
+    expect(Number(stillOne[0]?.n)).toBe(1);
   });
 
   it('5a: a success resets consecutive_failures and resumes the plain cadence', async () => {

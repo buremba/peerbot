@@ -174,10 +174,23 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'api_config',
       'openapi_config',
       'default_connection_config',
+      // Retired with the connector repair-agent subsystem. Schema exposure is
+      // removed ahead of the two-phase column drop, so the physical column
+      // outlives its QUERYABLE_SCHEMA entry until the phase-2 migration.
+      'default_repair_agent_id',
     ]),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
     oauth_tokens: new Set(['token_hash']),
-    feeds: new Set(['checkpoint']),
+    // repair_*/last_repair_*: same retired repair-agent subsystem, awaiting the
+    // phase-2 DROP COLUMN migration.
+    feeds: new Set([
+      'checkpoint',
+      'repair_agent_id',
+      'repair_thread_id',
+      'repair_attempt_count',
+      'last_repair_at',
+      'last_repair_post_hash',
+    ]),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
 

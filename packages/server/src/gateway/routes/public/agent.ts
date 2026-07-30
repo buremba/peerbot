@@ -259,6 +259,9 @@ const createAgentRoute: RouteSpec = {
     ...errorResponses(ErrorResponseSchema, {
       400: "Invalid request",
       401: "Unauthorized",
+      // Unverified `behavior_run` intent, and the cross-tenant session-resume
+      // refusal further down.
+      403: "Forbidden",
     }),
   },
 };

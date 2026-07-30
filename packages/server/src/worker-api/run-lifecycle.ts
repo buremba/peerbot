@@ -51,6 +51,10 @@ import {
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
+import {
+	bumpDeviceFinalizeNudge,
+	resolveFinalizeNudgeBudget,
+} from "../watchers/run-completion";
 import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
@@ -707,26 +711,41 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 }
 
 /**
+ * Prompt appended to the re-spawned CLI when a device Behavior exited without
+ * calling completeWindow. Module-level so a granted resume and its idempotent
+ * replay hand the device byte-identical instructions.
+ */
+const MISSING_COMPLETE_WINDOW_NUDGE =
+	"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+	"finalize via the lobu skill + CLI (preferred): " +
+	"`lobu memory exec` with client.knowledge.read({ behavior_id }) then " +
+	"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
+
+/**
  * POST /api/workers/me/runs/:runId/complete-behavior
  *
  * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
- * (Claude Code, etc.) on the user's machine. The Owletto Mac app's
+ * (Claude Code, agy, etc.) on the user's machine. The Owletto Mac app's
  * `WatcherDispatcher` posts here once the subprocess exits.
  *
- * The CLI agent completes the run itself, over MCP, exactly like a
- * server-side watcher agent: `query_sdk` (`client.knowledge.read`) →
- * window_token → `run_sdk` (`client.behaviors.completeWindow`). The
- * dispatcher wires the gateway MCP server into the spawned CLI
- * (--mcp-config) and the prompt carries the completion instructions. This
- * endpoint therefore only records process exit metadata:
+ * The agent is expected to complete window Behaviors itself — via Lobu MCP
+ * tools (`query_sdk` / `run_sdk` → `completeWindow`) and/or the local
+ * `lobu` CLI (`lobu memory exec` with the same ClientSDK calls). This
+ * endpoint records process exit metadata and enforces the finalize contract:
  *
  * - body.error set → the subprocess crashed/timed out → run failed.
  * - clean exit + run already completed (by complete_window) → ack; stamp
  *   exit metadata and the window's wall-clock.
- * - clean exit + run still running → the agent never called
- *   complete_window → run FAILED. Same rule as the server-side dispatch
- *   guard (automation.ts): complete_window is the only signal that real
- *   work happened; absence of it is a failure, not a pass.
+ * - clean exit + event-turn Behavior still running → complete without a
+ *   window (turn path has no completeWindow step).
+ * - clean exit + window Behavior still running + finalize budget left →
+ *   status `resume` (run stays claimed/running; Mac re-spawns with nudge).
+ * - clean exit + window Behavior still running + budget exhausted →
+ *   failed with reason_code `missing_complete_window`.
+ * - a replay of a report already answered with a resume (body
+ *   `finalize_attempt` behind the stored count, i.e. the device never saw the
+ *   response) → the same `resume` again, consuming no further attempt.
  *
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
@@ -749,6 +768,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		exit_code?: number | null;
 		exit_signal?: string | null;
 		exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
+		/**
+		 * Which finalize attempt this report covers: the run's
+		 * `finalize_nudge_count` at the time the reporting spawn started. 0 for
+		 * the first spawn. Makes the report replayable — see the replay guard
+		 * below.
+		 */
+		finalize_attempt?: number;
 	}>(c, "Invalid or missing JSON body");
 	if (body instanceof Response) return body;
 
@@ -762,11 +788,11 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 
 	const sql = getDb();
 	// Reload the row now that authorization has cleared. Status drives the
-	// exit-report decision; the authoritative guard against double-writes is
-	// failRun's status-filtered UPDATE, so a stale read can't double-fail —
-	// at worst it reports `idempotent: true` with the loser's view.
+	// exit-report decision; the status-and-claim predicates on the writes below
+	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status, window_id
+    SELECT id, organization_id, watcher_id, approved_input, run_type,
+           claimed_at, claimed_by, status, window_id
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -777,6 +803,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		approved_input: Record<string, unknown> | null;
 		run_type: string;
 		claimed_at: string | Date | null;
+		claimed_by: string | null;
 		status: string;
 		window_id: number | null;
 	}>;
@@ -787,6 +814,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	}
 	if (run.watcher_id == null) {
 		return c.json({ error: "Behavior run missing watcher_id" }, 500);
+	}
+	if (run.claimed_by !== body.worker_id) {
+		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
 	const watcherId = Number(run.watcher_id);
@@ -923,6 +953,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
             exit_reason = ${body.exit_reason ?? "error_message"}
         WHERE id = ${runId}
           AND status = 'running'
+          AND claimed_by = ${body.worker_id}
         RETURNING id
       `) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
@@ -1063,19 +1094,210 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
-	// Clean exit but the run is still `running`: the agent never called
-	// run_sdk (client.behaviors.completeWindow). Fail closed — completeWindow is
-	// the only signal that real work happened (the same rule the server-side
-	// dispatch guard enforces in automation.ts). The stdout tail lands in
-	// runs.output_tail for diagnosis.
+	// Clean exit but the run is still `running`.
+	// Event turns complete on agent reply — no completeWindow.
+	if (approved.trigger_execution === "turn") {
+		const agentKind =
+			typeof approved.agent_kind === "string" &&
+			(approved.agent_kind as string).trim()
+				? (approved.agent_kind as string).trim()
+				: null;
+		const completedRows = await finalizeRun(sql, {
+			runId,
+			workerId: body.worker_id,
+			status: "completed",
+			extraSet: sql`,
+        window_id = NULL,
+        error_message = NULL,
+        model_used = COALESCE(
+          NULLIF(model_used, 'external-client'),
+          ${agentKind ? `device-cli:${agentKind}` : "device-cli"},
+          model_used
+        ),
+        exit_code = ${body.exit_code ?? null},
+        exit_signal = ${body.exit_signal ?? null},
+        exit_reason = ${body.exit_reason ?? "ok"},
+        output_tail = ${output ? output.slice(-2000) : null},
+        run_metadata = CASE
+          WHEN ${durationMs}::bigint IS NULL THEN COALESCE(run_metadata, '{}'::jsonb)
+          ELSE jsonb_set(
+            COALESCE(run_metadata, '{}'::jsonb),
+            '{execution_time_ms}',
+            to_jsonb(${durationMs}::bigint)
+          )
+        END`,
+		});
+		if (completedRows.length === 0) {
+			const finalRows = (await sql`
+        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+      `) as unknown as Array<{ status: string }>;
+			return c.json({
+				ok: true,
+				status: finalRows[0]?.status ?? "failed",
+				idempotent: true,
+			});
+		}
+		await sql`
+      UPDATE watchers
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+		emitCompletionEvent("completed");
+		return c.json({
+			ok: true,
+			status: "completed",
+			reason_code: "event_turn",
+			window_id: null,
+		});
+	}
+
+	// Window Behavior: agent never called completeWindow. Bounded device-held
+	// resume (same finalize_nudges budget as cloud) so the Mac can re-spawn.
+	const watcherRows = (await sql`
+    SELECT execution_config
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `) as unknown as Array<{
+		execution_config: Record<string, unknown> | null;
+	}>;
+	const budget = resolveFinalizeNudgeBudget(
+		watcherRows[0]?.execution_config ?? null
+	);
+	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
+	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;
+
+	// Replay guard. `finalize_attempt` is the finalize_nudge_count the reporting
+	// spawn ran under (0 = first spawn, N = the spawn a resume #N granted). When
+	// the stored count is already past it, this exact exit report was answered
+	// with a resume the device never saw — its POST committed and the response
+	// was lost. That is an ambiguous delivery outcome, not a fresh attempt, so
+	// re-serve the same grant. Consuming another attempt here would fail the run
+	// one spawn early, reinterpreting a lost response as work that happened.
+	//
+	// A device that omits the field (a build older than this endpoint's resume
+	// contract) reads as "reporting the attempt the server has", i.e. the
+	// pre-existing behavior — the field is what makes a retry safe, so the Mac
+	// retry loop and this guard ship together.
+	const reportedAttempt =
+		typeof body.finalize_attempt === "number" &&
+		Number.isFinite(body.finalize_attempt)
+			? Math.max(0, Math.trunc(body.finalize_attempt))
+			: attemptsSoFar;
+	if (reportedAttempt < attemptsSoFar) {
+		logger.info(
+			{ run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
+			"[completeBehaviorRun] replayed exit report — re-serving the granted resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: attemptsSoFar,
+			max_attempts: budget,
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
+			idempotent: true,
+		});
+	}
+
+	// attemptsSoFar is how many resumes already granted; next spawn is attempt+1.
+	// Budget N means N extra spawns after the first (same as cloud).
+	if (attemptsSoFar < budget) {
+		const nextAttempt = attemptsSoFar + 1;
+		const bumped = await bumpDeviceFinalizeNudge(
+			sql,
+			runId,
+			body.worker_id,
+			nextAttempt,
+			output ? output.slice(-2000) : null
+		);
+		if (!bumped) {
+			const finalRows = (await sql`
+        SELECT status,
+               claimed_by,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs
+        WHERE id = ${runId}
+        LIMIT 1
+      `) as unknown as Array<{
+				status: string;
+				claimed_by: string | null;
+				finalize_nudge_count: string | null;
+			}>;
+			const final = finalRows[0];
+			const grantedAttempt = Number(final?.finalize_nudge_count);
+			// The CAS can lose to an identical concurrent report after both
+			// requests read the same count. Reconcile that committed grant into
+			// the same replayable response; returning plain `running` would make
+			// the device stop without ever receiving its nudge.
+			if (
+				final?.status === "running" &&
+				final.claimed_by === body.worker_id &&
+				Number.isFinite(grantedAttempt) &&
+				grantedAttempt > attemptsSoFar
+			) {
+				return c.json({
+					ok: true,
+					status: "resume",
+					reason_code: "missing_complete_window",
+					attempt: grantedAttempt,
+					max_attempts: budget,
+					nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+					error: MISSING_COMPLETE_WINDOW_NUDGE,
+					idempotent: true,
+				});
+			}
+			return c.json({
+				ok: true,
+				status: final?.status ?? "failed",
+				idempotent: true,
+			});
+		}
+		logger.info(
+			{ run_id: runId, attempt: nextAttempt, max: budget },
+			"[completeBehaviorRun] missing completeWindow — device resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: nextAttempt,
+			max_attempts: budget,
+			// Total spawns allowed = first + budget resumes.
+			// attempt is the resume index (1..budget); Mac should re-spawn now
+			// and report back with finalize_attempt = attempt.
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
+		});
+	}
+
 	const reason =
-		"Device CLI exited without calling run_sdk (client.behaviors.completeWindow). " +
-		"The Behavior prompt instructs the agent to complete via the lobu MCP server — check that " +
-		"the dispatcher passed --mcp-config with query_sdk/run_sdk allowed, the gateway is reachable " +
-		"from the device, and the device token has mcp:write scope.";
-	await failRun(reason);
+		"Device CLI exited without calling completeWindow " +
+		(budget > 0 ? `after ${budget + 1} attempt(s)` : "(finalize nudges disabled)") +
+		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
+		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
+		"and that the device token has mcp:write if using MCP.";
+	const transitioned = await failRun(reason);
+	if (!transitioned) {
+		const finalRows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+		return c.json({
+			ok: true,
+			status: finalRows[0]?.status ?? "failed",
+			idempotent: true,
+		});
+	}
 	emitCompletionEvent("failed", reason);
-	return c.json({ ok: true, status: "failed", error: reason });
+	return c.json({
+		ok: true,
+		status: "failed",
+		reason_code: "missing_complete_window",
+		attempt: attemptsSoFar,
+		max_attempts: budget,
+		error: reason,
+	});
 }
 
 /**

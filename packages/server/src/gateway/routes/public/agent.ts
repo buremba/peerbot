@@ -41,6 +41,10 @@ import {
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
+import {
+  isReservedInternalUserId,
+  verifyBehaviorRunIntent,
+} from "../../permissions/behavior-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
@@ -861,7 +865,46 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const tokenOrganizationId =
       ownership.organizationId ?? metadataOrgId ?? callerOrgId;
 
+    // A `behavior_run` intent decides this session's userId/thread, and hence
+    // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
+    // read a Behavior's identity out of. Verify it against server-authored
+    // dispatch state HERE — the one place it enters the system — so nothing
+    // downstream has to re-derive provenance from a caller-supplied string.
     const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
+    if (
+      behaviorIntent &&
+      !(await verifyBehaviorRunIntent({
+        intent: behaviorIntent,
+        organizationId: tokenOrganizationId,
+      }))
+    ) {
+      logger.warn(
+        {
+          runId: behaviorIntent.runId,
+          behaviorId: behaviorIntent.behaviorId,
+          organizationId: tokenOrganizationId,
+        },
+        "Rejected a Behavior-run session: intent does not name a dispatched run",
+      );
+      return c.json(
+        { success: false, error: "Unknown or undispatched Behavior run" },
+        403,
+      );
+    }
+    // The reserved `watcher_<id>` userId is how the route itself names a
+    // verified Behavior turn. Accepting one from a request body would let a
+    // caller assemble the same conversation suffix with no intent at all,
+    // routing around the check above.
+    if (isReservedInternalUserId(requestedUserId)) {
+      logger.warn(
+        { requestedUserId, organizationId: tokenOrganizationId },
+        "Rejected a session using the reserved internal Behavior userId prefix",
+      );
+      return c.json(
+        { success: false, error: "Reserved userId prefix" },
+        400,
+      );
+    }
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
     // is the session-store key. For pinned agents the agentId is per-org so
     // collisions are bounded to a single tenant. For the default-agent path

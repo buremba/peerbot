@@ -17,6 +17,14 @@
  * identity travels in the signed `conversationId` instead, whose suffix the
  * gateway builds as `_watcher_<watcherId>_run_<behaviorRunId>`. That is the
  * same correlation `listPendingToolsForRun` uses; keep the two in step.
+ *
+ * WHAT MAKES THAT SUFFIX TRUSTWORTHY, and it is not the signature: the token is
+ * encrypted, so claims cannot be tampered with AFTER minting, but the gateway
+ * mints them from the request body. The suffix is sound because
+ * `POST /api/v1/agents` verifies a `behavior_run` intent against server-authored
+ * dispatch state and reserves the internal `watcher_<id>` userId prefix — see
+ * `./behavior-run-intent.ts`, which owns that invariant and states its residual.
+ * If that check is ever weakened, this policy is caller-controlled again.
  */
 
 import { type DbClient, getDb } from "../../db/client.js";

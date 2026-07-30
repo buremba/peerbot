@@ -13,9 +13,14 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
+import { getDb } from "../../db/client.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
-import { ensureDbForGatewayTests } from "./helpers/db-setup.js";
+import {
+  ensureDbForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
 
 const TEST_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -444,19 +449,75 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
  * watcher gate went red on exactly this). Tenant isolation for watchers rides
  * `session.organizationId` (still set) + the route guard, not the id string.
  */
-describe("POST /api/v1/agents — watcher session id shape", () => {
+describe("POST /api/v1/agents — behavior_run intent verification", () => {
   const ORG_ID = "org-watcher";
+  const OTHER_ORG = "org-watcher-other";
+  const AGENT = "watcher-agent";
+  const SEED_USER = "intent-seed-user";
 
-  test("watcher conversationId keeps watcher_<id>_run_<id> and omits the org suffix", async () => {
+  /**
+   * The `_watcher_<id>_run_<id>` conversation suffix is what downstream gates
+   * (the MCP tool-approval policy) read a Behavior's identity out of. The
+   * request body is caller-authored, so the route must verify the intent
+   * against state only the server can write: `dispatchWatcherRun` claims the
+   * run as `lobu-dispatcher` BEFORE calling this route.
+   */
+  /**
+   * Seed one Behavior plus a run in the state the server dispatcher leaves it
+   * in. Returns both ids so a test can name a real Behavior and a real run
+   * without hardcoding sequence values.
+   */
+  async function seedDispatchedRun(
+    opts: {
+      organizationId?: string;
+      status?: string;
+      claimedBy?: string | null;
+    } = {},
+  ): Promise<{ behaviorId: number; runId: number }> {
+    const sql = getDb();
+    const orgId = opts.organizationId ?? ORG_ID;
+    await seedAgentRow(AGENT, { organizationId: orgId });
+    // watchers.created_by is FK-constrained to `user`.
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${SEED_USER}, ${SEED_USER}, ${`${SEED_USER}@example.com`},
+              false, now(), now())
+      ON CONFLICT (id) DO NOTHING
+    `;
+    const [behavior] = (await sql`
+      WITH next_id AS (SELECT nextval('watchers_id_seq')::integer AS id)
+      INSERT INTO watchers (
+        id, watcher_group_id, organization_id, agent_id, created_by, name, slug
+      )
+      SELECT id, id, ${orgId}, ${AGENT}, ${SEED_USER},
+             'Intent fixture', 'intent-fixture-' || id
+      FROM next_id
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const behaviorId = Number(behavior.id);
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, watcher_id, status, claimed_by, created_at
+      ) VALUES (
+        ${orgId}, 'behavior', ${behaviorId},
+        ${opts.status ?? "claimed"}, ${opts.claimedBy ?? "lobu-dispatcher"},
+        now()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    return { behaviorId, runId: Number(run.id) };
+  }
+
+  function makeWatcherApp() {
     const sessions = new Map<string, { conversationId: string }>();
-    const app = createAgentApi({
+    return createAgentApi({
       queueProducer: {} as never,
       sessionManager: {
         async getSession(id: string) {
           return sessions.get(id) ?? null;
         },
-        async setSession(s: { conversationId: string }) {
-          sessions.set(s.conversationId, s);
+        async setSession(session: { conversationId: string }) {
+          sessions.set(session.conversationId, session);
         },
         async touchSession() {},
         async deleteSession() {},
@@ -469,43 +530,128 @@ describe("POST /api/v1/agents — watcher session id shape", () => {
           // Non-empty org metadata → tokenOrganizationId resolves, so the
           // suffix WOULD be added on a non-watcher path. The watcher exemption
           // is what keeps it out.
-          return id === "watcher-agent"
+          return id === AGENT
             ? {
-                owner: { platform: "api", userId: "watcher-agent" },
+                owner: { platform: "api", userId: AGENT },
                 organizationId: ORG_ID,
               }
             : null;
         },
       } as never,
     });
+  }
 
-    // Worker token scoped to the watcher's agent + org (mirrors the internal
-    // service token the watcher dispatcher mints).
-    const token = generateWorkerToken("watcher-agent", "conv-w", "deploy-w", {
+  /** Worker token scoped to the Behavior's agent + org. */
+  function watcherToken(): string {
+    return generateWorkerToken(AGENT, "conv-w", "deploy-w", {
       channelId: "api_test",
-      agentId: "watcher-agent",
+      agentId: AGENT,
       organizationId: ORG_ID,
     });
+  }
 
-    const res = await app.request("/api/v1/agents", {
+  async function post(body: Record<string, unknown>): Promise<Response> {
+    return makeWatcherApp().request("/api/v1/agents", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${watcherToken()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        agentId: "watcher-agent",
-        userId: "watcher-5",
-        thread: "watcher-5",
-        forceNew: true,
-        intent: { kind: "behavior_run", runId: 27, behaviorId: 5 },
-      }),
+      body: JSON.stringify(body),
     });
+  }
+
+  function intentBody(runId: number, behaviorId: number) {
+    return {
+      agentId: AGENT,
+      forceNew: true,
+      intent: { kind: "behavior_run", runId, behaviorId },
+    };
+  }
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    process.env.ENCRYPTION_KEY = TEST_KEY;
+    setAuthProvider(null);
+  });
+
+  test("a dispatched run keeps the watcher_<id>_run_<id> shape, no org suffix", async () => {
+    const { behaviorId, runId } = await seedDispatchedRun();
+    const res = await post(intentBody(runId, behaviorId));
 
     expect(res.status).toBe(201);
     const body = (await res.json()) as { agentId?: string };
     // Exact prod-proven shape: `<agentId>_watcher_<watcherId>_run_<runId>`.
-    expect(body.agentId).toBe("watcher-agent_watcher_5_run_27");
+    expect(body.agentId).toBe(`${AGENT}_watcher_${behaviorId}_run_${runId}`);
     expect(body.agentId).not.toContain(ORG_ID);
+  });
+
+  test("a run the dispatcher has already started is still accepted", async () => {
+    // The dispatcher flips 'claimed' → 'running' right after this call; a
+    // crash-recovery re-dispatch must not be refused.
+    const { behaviorId, runId } = await seedDispatchedRun({ status: "running" });
+    expect((await post(intentBody(runId, behaviorId))).status).toBe(201);
+  });
+
+  test("an intent naming a run that does not exist is refused", async () => {
+    const { behaviorId } = await seedDispatchedRun();
+    const res = await post(intentBody(999_999, behaviorId));
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { error?: string }).toEqual({
+      success: false,
+      error: "Unknown or undispatched Behavior run",
+    });
+  });
+
+  test("an intent naming another Behavior's run is refused", async () => {
+    // The escalation this closes: borrowing a sibling Behavior's session shape
+    // (and so its execution_config) by naming a run that is not its own.
+    const mine = await seedDispatchedRun();
+    const sibling = await seedDispatchedRun();
+    // Name MY Behavior but the sibling's run.
+    expect((await post(intentBody(sibling.runId, mine.behaviorId))).status).toBe(
+      403,
+    );
+  });
+
+  test("an intent naming another tenant's run is refused", async () => {
+    const other = await seedDispatchedRun({ organizationId: OTHER_ORG });
+    expect(
+      (await post(intentBody(other.runId, other.behaviorId))).status,
+    ).toBe(403);
+  });
+
+  test("a run the server never dispatched is refused", async () => {
+    // A pending run exists the moment an event activates a Behavior, long
+    // before dispatch. Accepting one would make the check trivially satisfiable
+    // by anyone who can trigger the Behavior.
+    const { behaviorId, runId } = await seedDispatchedRun({
+      status: "pending",
+      claimedBy: null,
+    });
+    expect((await post(intentBody(runId, behaviorId))).status).toBe(403);
+  });
+
+  test("a run claimed by something other than the dispatcher is refused", async () => {
+    const { behaviorId, runId } = await seedDispatchedRun({
+      claimedBy: "device-worker-1",
+    });
+    expect((await post(intentBody(runId, behaviorId))).status).toBe(403);
+  });
+
+  test("the reserved watcher_<id> userId cannot be supplied by a caller", async () => {
+    // Without this, the conversation suffix is assemblable with no intent at
+    // all — routing around every check above.
+    const res = await post({
+      agentId: AGENT,
+      userId: "watcher_5",
+      thread: `run_1`,
+      forceNew: true,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error?: string }).toEqual({
+      success: false,
+      error: "Reserved userId prefix",
+    });
   });
 });

@@ -766,7 +766,6 @@ const learning = defineEntityType({
   },
 });
 
-
 // Human mirror of agent IDENTITY/SOUL: durable per-channel profiles for how
 // Burak writes (mode=voice) and what he engages with (mode=taste). Not stored
 // on $member metadata — that type is reserved/system-provisioned and role-gated.
@@ -1044,7 +1043,6 @@ const duplicateEntityResolution = defineBehavior({
   skills: ["duplicate-entity-resolution-real-v3-final"],
 });
 
-
 // Synthesizes voice_profile rows from engagement evidence. Weekly — voice
 // moves slowly. Separate from social-interest-radar (which only consumes).
 const voiceProfileSynth = defineBehavior({
@@ -1225,7 +1223,12 @@ export default defineConfig({
     voiceProfile,
   ],
   relationships: [worksAt, memberOf, mentions],
-  behaviors: [hourlyTaskCollaborator, duplicateEntityResolution, voiceProfileSynth, socialInterestRadar],
+  behaviors: [
+    hourlyTaskCollaborator,
+    duplicateEntityResolution,
+    voiceProfileSynth,
+    socialInterestRadar,
+  ],
   connections: [
     midasConnection,
     revolutConnection,

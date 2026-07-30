@@ -4,7 +4,17 @@
 # BEFORE `make review` posts a pi-review status. Posts nothing; commits
 # nothing. The driving agent inspects the edits (shown at the end), commits,
 # then runs `make review` once on the settled HEAD.
+#
+# Reviewer selection matches review.sh — REVIEWER_CLI=auto|codex|claude. This
+# step is mandated by AGENTS.md but is not a gate: unlike review.sh it posts no
+# status, so a reviewer outage here silently skips the fixer instead of failing
+# a check. Being hard-wired to one CLI therefore costs a whole quality pass
+# whenever that CLI is unavailable, with nothing to signal it happened.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/review-reviewer.sh
+. "$SCRIPT_DIR/lib/review-reviewer.sh"
 
 cd "$(dirname "$0")/.."
 
@@ -43,20 +53,45 @@ if git diff --quiet "$BASE_BRANCH...HEAD" 2>/dev/null && git diff --quiet && git
   exit 0
 fi
 
-command -v codex >/dev/null 2>&1 || { echo ">> codex not found on PATH" >&2; exit 1; }
+FIXER_CLI="$(review_select_reviewer "${REVIEWER_CLI:-auto}")"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
+CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
+if [ "$FIXER_CLI" = "claude" ]; then
+  review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
+fi
+command -v "$FIXER_CLI" >/dev/null 2>&1 || { echo ">> $FIXER_CLI not found on PATH" >&2; exit 1; }
 
 LAST_MSG_FILE="$(mktemp /tmp/lobu-review-fix.XXXXXX)"
 trap 'rm -f "$LAST_MSG_FILE"' EXIT
 
-echo ">> pre-review fixer (codex, base $BASE_BRANCH) — edits the working tree, posts nothing"
-CODEX_ARGS=(codex exec --sandbox workspace-write --output-last-message "$LAST_MSG_FILE" --ephemeral)
-if [ -n "${CODEX_REVIEW_MODEL:-}" ]; then
-  CODEX_ARGS+=(--model "$CODEX_REVIEW_MODEL")
-fi
+echo ">> pre-review fixer ($FIXER_CLI, base $BASE_BRANCH) — edits the working tree, posts nothing"
 
 set +e
-env BASE_BRANCH="$BASE_BRANCH" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > /dev/null
-FIXER_EXIT=$?
+case "$FIXER_CLI" in
+  codex)
+    CODEX_ARGS=(codex exec --sandbox workspace-write --output-last-message "$LAST_MSG_FILE" --ephemeral)
+    if [ -n "${CODEX_REVIEW_MODEL:-}" ]; then
+      CODEX_ARGS+=(--model "$CODEX_REVIEW_MODEL")
+    fi
+    env BASE_BRANCH="$BASE_BRANCH" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > /dev/null
+    FIXER_EXIT=$?
+    ;;
+  claude)
+    # `--output-last-message` has no claude equivalent; its stdout IS the
+    # summary, so capture that instead of discarding it as the codex arm does.
+    # Edit/Write are the point of this pass — without them it is a review that
+    # cannot fix anything.
+    env BASE_BRANCH="$BASE_BRANCH" \
+      claude -p "$(cat "$PROMPT_FILE")" \
+        --model "$CLAUDE_REVIEW_MODEL" \
+        --effort "$CLAUDE_REVIEW_EFFORT" \
+        --output-format text \
+        --no-session-persistence \
+        --tools Bash,Read,Grep,LS,Edit,Write \
+        --permission-mode bypassPermissions < /dev/null > "$LAST_MSG_FILE"
+    FIXER_EXIT=$?
+    ;;
+esac
 set -e
 
 echo

@@ -94,6 +94,30 @@ if grep -Eiq 'herdr|CLAUDE_REVIEW_HERDR' "$review_script"; then
   fail "review.sh must not reference Herdr (inline-only reviewer)"
 fi
 
+# review-fix.sh is the selector's other consumer (step 5 of "Ship a change").
+# Unlike review.sh it posts no status, so when it was hard-wired to codex
+# (`command -v codex || exit 1`) a codex outage silently skipped the whole
+# fixer pass, with nothing anywhere to record that a quality pass never ran.
+# Pin the structure that regressed: the shared selector, an invocation arm per
+# CLI, the model allowlist, and the write tools that make the claude arm a
+# fixer rather than a review whose findings go nowhere.
+review_fix_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review-fix.sh"
+grep -Fq '. "$SCRIPT_DIR/lib/review-reviewer.sh"' "$review_fix_script" ||
+  fail "review-fix.sh must source the shared reviewer lib"
+grep -Fq 'FIXER_CLI="$(review_select_reviewer' "$review_fix_script" ||
+  fail "review-fix.sh must pick its CLI through review_select_reviewer"
+grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_fix_script" ||
+  fail "review-fix.sh must fail closed on disallowed Claude fixer models"
+grep -Fq 'codex exec' "$review_fix_script" ||
+  fail "review-fix.sh must keep its codex invocation arm"
+grep -Fq 'claude -p' "$review_fix_script" ||
+  fail "review-fix.sh must keep its claude invocation arm"
+grep -Eq -- '--tools [^[:space:]]*Edit[^[:space:]]*Write' "$review_fix_script" ||
+  fail "review-fix.sh claude arm must carry the Edit/Write tools that make it a fixer"
+if grep -Fq 'command -v codex >/dev/null' "$review_fix_script"; then
+  fail "review-fix.sh must not gate every run on codex being installed"
+fi
+
 echo "review reviewer selection tests passed"
 
 # --- pi-review gate matrix -------------------------------------------------

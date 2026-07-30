@@ -351,6 +351,10 @@ fi
 # --- agent review -----------------------------------------------------------
 
 PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
+# Shared by both reviewer CLIs below, which do NOT accept the same dialect:
+# `claude --json-schema` refuses a `$schema` meta-reference outright ("no
+# schema with key or ref …") while codex ignores it. The schema therefore
+# declares no dialect — see scripts/__tests__/review-output-schema.test.ts.
 SCHEMA_FILE="$(pwd)/prompts/review-output-schema.json"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
 [ -f "$SCHEMA_FILE" ] || { echo "schema not found: $SCHEMA_FILE" >&2; exit 2; }

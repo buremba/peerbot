@@ -16,7 +16,7 @@ import { getScopedConnectorDefinition } from "./catalog/connector-definitions";
 import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
-import { fixedActionArgs } from "./http/rest-tool-action";
+import { fixedActionArgs } from "./http/rest-tool-routes";
 import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";

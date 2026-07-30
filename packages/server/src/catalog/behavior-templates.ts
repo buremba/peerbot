@@ -40,11 +40,19 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 			slug: "feed-auto-pause",
 			triggers: [scheduleTrigger("0 * * * *")],
 			// Explicit SQL: default Behavior sources exclude semantic_type=change.
+			// Bounded by RECENCY, not by a bare row cap: an hourly run reads the
+			// last 25 hours (one hour of overlap) so a burst larger than the cap
+			// is not permanently invisible the way a global newest-N snapshot
+			// would be, and a long-paused feed stops being re-notified forever.
+			// The row cap is only a runaway guard. This template is advisory
+			// notification, not the delivery guarantee: the durable path is the
+			// per-episode audit event plus retryPendingFeedAutoPausedSignals,
+			// which is uncapped and idempotent.
 			sources: [
 				{
 					name: "auto_paused",
 					query:
-						"SELECT id, title, origin_id, connection_id, feed_id, connector_key, feed_key, metadata, occurred_at, created_at FROM events WHERE semantic_type = 'change' AND metadata->'extra'->>'reason' = 'feed.auto_paused' ORDER BY occurred_at DESC LIMIT 50",
+						"SELECT id, title, origin_id, connection_id, feed_id, connector_key, feed_key, metadata, occurred_at, created_at FROM events WHERE semantic_type = 'change' AND metadata->'extra'->>'reason' = 'feed.auto_paused' AND created_at >= NOW() - interval '25 hours' ORDER BY occurred_at DESC LIMIT 500",
 				},
 			],
 			prompt:

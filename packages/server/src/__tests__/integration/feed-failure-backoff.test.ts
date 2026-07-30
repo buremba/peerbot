@@ -506,6 +506,75 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     expect(Number(stillOne[0]?.n)).toBe(1);
   });
 
+  it('5b-scan-window: an audited feed cannot occupy the redelivery scan window', async () => {
+    const org = await createTestOrganization();
+    const connId = await insertConnection(org.id, 'chrome-scan-window-test');
+    const sql = getTestDb();
+
+    const insertPausedFeed = async (
+      feedKey: string,
+      firstFailureAgo: string,
+    ): Promise<{ id: number; originId: string }> => {
+      const rows = (await sql`
+        INSERT INTO feeds
+          (organization_id, connection_id, feed_key, status, schedule,
+           consecutive_failures, first_failure_at, items_collected,
+           last_sync_status, created_at, updated_at)
+        VALUES
+          (${org.id}, ${connId}, ${feedKey}, 'paused', '* * * * *',
+           ${PAUSE_THRESHOLD}, NOW() - ${firstFailureAgo}::interval, 0,
+           'failed', NOW(), NOW())
+        RETURNING id, first_failure_at
+      `) as Array<{ id: number; first_failure_at: Date | string }>;
+      const id = Number(rows[0].id);
+      return {
+        id,
+        originId: `feed_auto_paused:${id}:${new Date(
+          rows[0].first_failure_at,
+        ).getTime()}`,
+      };
+    };
+
+    const auditedCount = async (originId: string): Promise<number> => {
+      const rows = (await sql`
+        SELECT count(*)::int AS n FROM events
+        WHERE organization_id = ${org.id} AND origin_id = ${originId}
+      `) as Array<{ n: number }>;
+      return Number(rows[0]?.n ?? 0);
+    };
+
+    // Audited feed: emit once so it carries its durable marker.
+    const audited = await insertPausedFeed('chrome-audited', '2 hours');
+    await retryPendingFeedAutoPausedSignals({
+      pauseThreshold: PAUSE_THRESHOLD,
+      limit: 50,
+    });
+    expect(await auditedCount(audited.originId)).toBe(1);
+
+    // Pending feed: paused at threshold, never emitted.
+    const pending = await insertPausedFeed('chrome-pending', '1 hour');
+    expect(await auditedCount(pending.originId)).toBe(0);
+
+    // Make the audited feed sort FIRST (scan is ORDER BY updated_at ASC), so a
+    // scan that failed to exclude it would spend the single slot on it and
+    // leave the pending feed unemitted.
+    await sql`
+      UPDATE feeds SET updated_at = NOW() - interval '10 days' WHERE id = ${audited.id}
+    `;
+    await sql`
+      UPDATE feeds SET updated_at = NOW() - interval '9 days' WHERE id = ${pending.id}
+    `;
+
+    const scan = await retryPendingFeedAutoPausedSignals({
+      pauseThreshold: PAUSE_THRESHOLD,
+      limit: 1,
+    });
+    expect(scan.errors).toBe(0);
+    expect(scan.scanned).toBe(1);
+    expect(await auditedCount(pending.originId)).toBe(1);
+    expect(await auditedCount(audited.originId)).toBe(1);
+  });
+
   it('5a: a success resets consecutive_failures and resumes the plain cadence', async () => {
     const org = await createTestOrganization();
     const connId = await insertConnection(org.id);

@@ -122,6 +122,9 @@ export async function handleCreate(
   //      — the backend derives them so the UI sends only the raw prompt.
   //   2. explicit `args.sources` (API callers / legacy).
   // If neither yields anything, fall back to a default all-events source.
+  // `create_version` deliberately does NOT derive (see version-actions.ts):
+  // on a bump the prompt is compiled skill text, and a skill's prose must not
+  // author the Behavior's sources.
   const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);

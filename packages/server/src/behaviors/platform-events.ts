@@ -303,11 +303,15 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 	for (const row of rows) {
 		attempted++;
 		try {
+			// Do not forward the scan pool client as `db`. activateBehaviorSignal
+			// and insertEvent(onConflictUpdate) treat a supplied client as
+			// transaction-bound and skip their own advisory-lock transactions;
+			// letting each writer own its tx keeps multi-replica redelivery
+			// race-safe against concurrent worker completion.
 			await maybeEmitFeedAutoPausedAfterFailure({
 				feedId: Number(row.id),
 				consecutiveFailures: Number(row.consecutive_failures),
 				pauseThreshold: threshold,
-				db: sql,
 			});
 		} catch (err) {
 			errors++;

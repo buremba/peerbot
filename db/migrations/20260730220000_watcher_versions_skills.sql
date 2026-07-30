@@ -25,8 +25,13 @@
 --
 -- Nullable add with no default and no backfill: rewrite-free, so it takes only
 -- a brief ACCESS EXCLUSIVE lock to update the catalog.
+-- migrate:up
 ALTER TABLE watcher_versions
   ADD COLUMN IF NOT EXISTS skills jsonb;
 
 COMMENT ON COLUMN watcher_versions.skills IS
   'Pinned agent-skill snapshots for this version: [{name, content}], ordered. NULL = pre-column version whose instructions live entirely in prompt; [] = authored with skills and none selected.';
+
+-- migrate:down
+ALTER TABLE watcher_versions
+  DROP COLUMN IF EXISTS skills;

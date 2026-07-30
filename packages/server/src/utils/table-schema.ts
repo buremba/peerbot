@@ -501,6 +501,7 @@ export const QUERYABLE_SCHEMA = {
         'name',
         'description',
         'prompt',
+        'skills',
         'keying_config',
         'classifiers',
         'reactions_guidance',

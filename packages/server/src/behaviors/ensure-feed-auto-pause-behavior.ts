@@ -1,10 +1,14 @@
 /**
  * Ensure the org has the out-of-the-box "feed auto-pause" Behavior so
- * feed.auto_paused signals have something to activate without requiring
- * a repair-agent subsystem.
+ * feed.auto_paused signals have something to activate without a repair-agent
+ * subsystem.
  *
  * Idempotent: keyed by slug `feed-auto-pause`. Uses the org system agent
  * when present; otherwise no-ops (connect still succeeds).
+ *
+ * Multi-replica: takes a transaction-scoped advisory lock per org before
+ * read-modify-write on the Behavior row so concurrent connects cannot clobber
+ * each other's connector_key triggers.
  */
 
 import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
@@ -28,6 +32,30 @@ Decide the most useful next step for an org admin:
 
 Keep the response short. Prefer client.notifications.send to org admins when available; do not unpause the feed automatically.`;
 
+function buildEventTrigger(connectorKey: string): BehaviorEventTrigger {
+	return {
+		kind: "event",
+		connector_key: connectorKey,
+		event_types: [PLATFORM_EVENT_FEED_AUTO_PAUSED],
+		execution: "turn",
+		active_run: "coalesce",
+		output: "silent",
+	};
+}
+
+function hasConnectorTrigger(
+	triggers: BehaviorEventTrigger[],
+	connectorKey: string,
+): boolean {
+	return triggers.some(
+		(t) =>
+			t.kind === "event" &&
+			t.connector_key === connectorKey &&
+			Array.isArray(t.event_types) &&
+			t.event_types.includes(PLATFORM_EVENT_FEED_AUTO_PAUSED),
+	);
+}
+
 /**
  * Install (or no-op if present) the feed-auto-pause Behavior, adding the
  * given connector_key to its event triggers. Call after a connection is
@@ -40,65 +68,59 @@ export async function ensureFeedAutoPauseBehavior(args: {
 	db?: DbClient;
 }): Promise<{ created: boolean; behaviorId: number | null }> {
 	const sql = args.db ?? getDb();
-
-	const eventTrigger: BehaviorEventTrigger = {
-		kind: "event",
-		connector_key: args.connectorKey,
-		event_types: [PLATFORM_EVENT_FEED_AUTO_PAUSED],
-		execution: "turn",
-		active_run: "coalesce",
-		output: "silent",
-	};
-
-	const existing = (await sql`
-		SELECT id, triggers
-		FROM watchers
-		WHERE organization_id = ${args.organizationId}
-		  AND slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
-		  AND status = 'active'
-		LIMIT 1
-	`) as Array<{ id: number; triggers: unknown }>;
-
-	if (existing.length > 0) {
-		const triggers = Array.isArray(existing[0].triggers)
-			? (existing[0].triggers as BehaviorEventTrigger[])
-			: [];
-		const hasConnector = triggers.some(
-			(t) =>
-				t.kind === "event" &&
-				t.connector_key === args.connectorKey &&
-				Array.isArray(t.event_types) &&
-				t.event_types.includes(PLATFORM_EVENT_FEED_AUTO_PAUSED),
-		);
-		if (hasConnector) {
-			return { created: false, behaviorId: Number(existing[0].id) };
-		}
-		const nextTriggers = [...triggers, eventTrigger];
-		await sql`
-			UPDATE watchers
-			SET triggers = ${sql.json(nextTriggers)},
-			    updated_at = current_timestamp
-			WHERE id = ${existing[0].id}
-		`;
-		return { created: false, behaviorId: Number(existing[0].id) };
-	}
-
-	const orgRows = (await sql`
-		SELECT system_agent_id FROM organization WHERE id = ${args.organizationId} LIMIT 1
-	`) as Array<{ system_agent_id: string | null }>;
-	const agentId = orgRows[0]?.system_agent_id;
-	if (!agentId) {
-		logger.debug(
-			{ organization_id: args.organizationId },
-			"[feed-auto-pause] no system agent — skip Behavior install",
-		);
-		return { created: false, behaviorId: null };
-	}
-
-	const createdBy = args.createdBy ?? agentId;
+	const eventTrigger = buildEventTrigger(args.connectorKey);
 
 	try {
-		const behaviorId = await sql.begin(async (tx) => {
+		return await sql.begin(async (tx) => {
+			// Serialize provisioning per org (hashtext is stable; lock is tx-scoped).
+			await tx`
+				SELECT pg_advisory_xact_lock(
+					hashtext(${`feed-auto-pause:${args.organizationId}`})
+				)
+			`;
+
+			const existing = (await tx`
+				SELECT id, triggers
+				FROM watchers
+				WHERE organization_id = ${args.organizationId}
+				  AND slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+				  AND status = 'active'
+				LIMIT 1
+				FOR UPDATE
+			`) as Array<{ id: number; triggers: unknown }>;
+
+			if (existing.length > 0) {
+				const triggers = Array.isArray(existing[0].triggers)
+					? (existing[0].triggers as BehaviorEventTrigger[])
+					: [];
+				if (hasConnectorTrigger(triggers, args.connectorKey)) {
+					return { created: false, behaviorId: Number(existing[0].id) };
+				}
+				const nextTriggers = [...triggers, eventTrigger];
+				await tx`
+					UPDATE watchers
+					SET triggers = ${tx.json(nextTriggers)},
+					    updated_at = current_timestamp
+					WHERE id = ${existing[0].id}
+				`;
+				return { created: false, behaviorId: Number(existing[0].id) };
+			}
+
+			const orgRows = (await tx`
+				SELECT system_agent_id FROM organization
+				WHERE id = ${args.organizationId}
+				LIMIT 1
+			`) as Array<{ system_agent_id: string | null }>;
+			const agentId = orgRows[0]?.system_agent_id;
+			if (!agentId) {
+				logger.debug(
+					{ organization_id: args.organizationId },
+					"[feed-auto-pause] no system agent — skip Behavior install",
+				);
+				return { created: false, behaviorId: null };
+			}
+
+			const createdBy = args.createdBy ?? agentId;
 			const watcherId = await getNextNumericId(tx, "watchers");
 			const versionId = await getNextNumericId(tx, "watcher_versions");
 
@@ -150,20 +172,17 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				WHERE id = ${watcherId}
 			`;
 
-			return watcherId;
+			logger.info(
+				{
+					organization_id: args.organizationId,
+					behavior_id: watcherId,
+					connector_key: args.connectorKey,
+				},
+				"[feed-auto-pause] installed default Behavior",
+			);
+			return { created: true, behaviorId: watcherId };
 		});
-
-		logger.info(
-			{
-				organization_id: args.organizationId,
-				behavior_id: behaviorId,
-				connector_key: args.connectorKey,
-			},
-			"[feed-auto-pause] installed default Behavior",
-		);
-		return { created: true, behaviorId };
 	} catch (error) {
-		// Concurrent connect on another replica may race the unique slug.
 		logger.warn(
 			{
 				organization_id: args.organizationId,

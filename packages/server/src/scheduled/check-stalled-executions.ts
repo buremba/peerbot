@@ -267,9 +267,8 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           feedId: Number(paused.id),
           consecutiveFailures: Number(paused.consecutive_failures),
           pauseThreshold,
-          crossedThreshold: true,
         }).catch((err) => {
-          logger.warn(
+          logger.error(
             { feed_id: paused.id, error: String(err) },
             '[reaper] maybeEmitFeedAutoPausedAfterFailure threw',
           );

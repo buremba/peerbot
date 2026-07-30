@@ -566,19 +566,20 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			if (!isSuccess) {
 				const after = feedUpdate[0];
 				const consec = Number(after?.consecutive_failures ?? 0);
-				// Fire only on the threshold-crossing failure, not every subsequent
-				// fail while already paused (delivery_id is also generation-keyed).
-				const crossedThreshold = consec === pauseThreshold;
+				// Emit when paused at/above threshold. delivery_id is stable per
+				// failure episode (first_failure_at), so retries after a failed
+				// activation are idempotent and do not double-queue Behaviors.
 				try {
 					await maybeEmitFeedAutoPausedAfterFailure({
 						feedId,
 						consecutiveFailures: consec,
 						pauseThreshold,
-						crossedThreshold,
 						runId: req.run_id,
 					});
 				} catch (err) {
-					logger.warn(
+					// Feed is already paused; log hard so we notice lost activation,
+					// but do not fail the worker complete ACK (run is terminal).
+					logger.error(
 						{ feed_id: feedId, error: errorMessage(err) },
 						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw",
 					);

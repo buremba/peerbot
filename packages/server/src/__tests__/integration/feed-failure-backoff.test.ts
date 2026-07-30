@@ -290,8 +290,8 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       new RegExp(`^feed-auto-paused:${feedId}:`),
     );
 
-    // A second failure while already paused must not re-emit (consec becomes 4,
-    // which is not the exact threshold crossing).
+    // A second failure while already paused reuses the same delivery_id
+    // (first_failure_at episode) so activation is idempotent — no extra runs.
     const runId2 = await insertRunningRun(org.id, connId, feedId);
     const b = mockWorkerCtx({
       run_id: runId2,

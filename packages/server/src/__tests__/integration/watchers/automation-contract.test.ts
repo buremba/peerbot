@@ -1112,8 +1112,8 @@ describe("watcher automation contract", () => {
 
 		// Pi review #1: schedule must advance on every terminal exit report or
 		// the scheduler re-fires the watcher every tick forever. This run never
-		// calls complete_window, so the report fails it — next_run_at must
-		// still move.
+		// calls complete_window, so once the finalize_nudges budget is spent the
+		// report fails it — next_run_at must still move.
 		it("advances watchers.next_run_at on a terminal exit report", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
@@ -1146,6 +1146,28 @@ describe("watcher automation contract", () => {
         SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
         WHERE id = ${queued.runId}
       `;
+
+			// Default finalize_nudges budget is 1, so the first missing-window report
+			// is a device-held resume — non-terminal, and it must NOT advance the
+			// cursor. Only the budget-exhausted report below is terminal.
+			const resume = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "agent exited without completing",
+						duration_ms: 5,
+					},
+				}
+			);
+			expect(resume.status).toBe(200);
+			expect(((await resume.json()) as { status: string }).status).toBe("resume");
+			const [afterResume] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+			expect(new Date(afterResume.next_run_at as string).getTime()).toBe(
+				beforeNextRun ? new Date(beforeNextRun).getTime() : 0
+			);
 
 			const response = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
@@ -1207,7 +1229,18 @@ describe("watcher automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
-			// First report fails the run (no complete_window happened).
+			// Drain the finalize_nudges budget (default 1) so the next report is
+			// terminal: the first missing-window exit is a device-held resume.
+			const resume = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: { worker_id: workerId, output: "resume exit", duration_ms: 10 },
+				}
+			);
+			expect(resume.status).toBe(200);
+			expect(((await resume.json()) as { status: string }).status).toBe("resume");
+
+			// First report past the budget fails the run (no complete_window happened).
 			const first = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{

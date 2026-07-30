@@ -718,7 +718,7 @@ async function handleUpdateFeed(
   // config into a shape that only fails at sync time.
   const txResult = await sql.begin(async (tx) => {
     const existing = await tx`
-      SELECT f.id, f.schedule, f.timezone, f.feed_key, f.kind, f.config, c.auth_profile_id, cd.feeds_schema
+      SELECT f.id, f.status, f.schedule, f.timezone, f.feed_key, f.kind, f.config, c.auth_profile_id, cd.feeds_schema
       FROM feeds f
       JOIN connections c ON c.id = f.connection_id
       LEFT JOIN LATERAL (
@@ -765,18 +765,27 @@ async function handleUpdateFeed(
       if (configError) return { error: configError } as const;
     }
 
+    // Resume starts a fresh failure episode so the next hard-pause emits a new
+    // feed.auto_paused delivery_id (keyed on first_failure_at) instead of
+    // silently reusing the prior pause episode's Behavior run.
+    const resuming =
+      args.status === 'active' && String(feedRow.status) !== 'active';
+
     // Recompute next_run_at when the cadence OR its zone changes; the effective
     // pair mixes the incoming args with the stored row for whichever side was
     // omitted, so a timezone-only update re-anchors the pending sync. Clearing
     // schedule (null) clears next_run_at — manual feeds do not auto-poll.
+    // Also re-anchor on resume: hard-pause nulls next_run_at, so unpausing
+    // without a schedule edit would otherwise leave the feed never scheduled.
     const effectiveSchedule = hasScheduleArg
       ? (nextSchedule ?? null)
       : (feedRow.schedule as string | null);
     const effectiveTimezone = hasTimezoneArg
       ? (args.timezone ?? null)
       : (feedRow.timezone as string | null);
+    const recomputeNextRun = touchesCadence || resuming;
     const nextRunAtVal =
-      touchesCadence && effectiveSchedule
+      recomputeNextRun && effectiveSchedule
         ? nextRunAt(effectiveSchedule, new Date(), effectiveTimezone)
         : null;
 
@@ -788,7 +797,9 @@ async function handleUpdateFeed(
           config = CASE WHEN ${hasConfigArg} THEN ${tx.json(effectiveConfig ?? {})}::jsonb ELSE config END,
           schedule = CASE WHEN ${hasScheduleArg} THEN ${nextSchedule ?? null} ELSE schedule END,
           timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
-          next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+          next_run_at = CASE WHEN ${recomputeNextRun} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+          consecutive_failures = CASE WHEN ${resuming} THEN 0 ELSE consecutive_failures END,
+          first_failure_at = CASE WHEN ${resuming} THEN NULL ELSE first_failure_at END,
           updated_at = NOW()
       WHERE id = ${args.feed_id} AND organization_id = ${organizationId}
       RETURNING *

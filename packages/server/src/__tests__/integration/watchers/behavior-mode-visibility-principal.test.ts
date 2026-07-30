@@ -79,6 +79,16 @@ describe('Behavior private-connection visibility', () => {
       content: 'Owner private content',
       occurred_at: occurredAt,
     });
+    // Fingerprint before the admin's private event exists, so the baseline can
+    // only come from the Behavior author's own private connection.
+    const fingerprint = await fingerprintWatcherSources({
+      sql: dbClient,
+      watcherId: behaviorId,
+      windowStart: '2026-07-30T00:00:00.000Z',
+      windowEnd: '2026-07-31T00:00:00.000Z',
+    });
+    expect(fingerprint.empty).toBe(false);
+
     const adminPrivate = await createTestEvent({
       entity_id: entity.id,
       organization_id: workspace.org.id,
@@ -87,14 +97,16 @@ describe('Behavior private-connection visibility', () => {
       content: 'Admin private content',
       occurred_at: occurredAt,
     });
-
-    const fingerprint = await fingerprintWatcherSources({
-      sql: dbClient,
-      watcherId: behaviorId,
-      windowStart: '2026-07-30T00:00:00.000Z',
-      windowEnd: '2026-07-31T00:00:00.000Z',
-    });
-    expect(fingerprint.empty).toBe(false);
+    // An admin-private event must be invisible to the author-principal
+    // fingerprint, so the digest has to stay byte-identical.
+    expect(
+      await fingerprintWatcherSources({
+        sql: dbClient,
+        watcherId: behaviorId,
+        windowStart: '2026-07-30T00:00:00.000Z',
+        windowEnd: '2026-07-31T00:00:00.000Z',
+      })
+    ).toEqual(fingerprint);
 
     const orgConnection = await createTestConnection({
       organization_id: workspace.org.id,

@@ -33,6 +33,8 @@ const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
 const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection owning CSECRET, initially no chat-link
+const TELEGRAM_DM_CONV = "telegram:6570514069"; // an unbound DM, gated on org role
+const TELEGRAM_LEGACY_CONV = "telegram:111222333"; // platform row with is_direct NULL (unknown)
 const WATCHER_ID = 990001;
 const OTHER_AGENT = "thread-list-other-agent";
 const OTHER_WATCHER_ID = 990002;
@@ -92,6 +94,7 @@ describe("listAgentThreads scope=all", () => {
 				platform: string;
 				kind: "owned" | "platform";
 				userId: string | null;
+				isDirect?: boolean | null;
 			},
 		) => {
 			const [run] = await sql<{ id: number }[]>`
@@ -107,10 +110,10 @@ describe("listAgentThreads scope=all", () => {
 				await sql`
           INSERT INTO conversations
             (organization_id, agent_id, platform, conversation_id,
-             kind, user_id, title, last_activity_at, created_at)
+             kind, user_id, title, is_direct, last_activity_at, created_at)
           VALUES (${org}, ${AGENT}, ${entity.platform},
                   ${conversationId}, ${entity.kind}, ${entity.userId}, ${text},
-                  ${at}, ${at})`;
+                  ${entity.isDirect ?? null}, ${at}, ${at})`;
 			}
 		};
 
@@ -182,6 +185,34 @@ describe("listAgentThreads scope=all", () => {
 				userId: null,
 			},
 		);
+		// A Telegram DM with no chat-link Behavior. The channel fence can only fail
+		// closed on it, so it is listable on the DM rule (owner/admin) or not at
+		// all.
+		await insertSnapshot(
+			TELEGRAM_DM_CONV,
+			"hello from telegram dm",
+			"2026-06-28T04:00:00Z",
+			{
+				platform: "telegram",
+				kind: "platform",
+				userId: "6570514069",
+				isDirect: true,
+			},
+		);
+		// A platform row predating the column: is_direct unknown. Must keep the
+		// old fail-closed behaviour rather than riding in on the DM rule.
+		await insertSnapshot(
+			TELEGRAM_LEGACY_CONV,
+			"legacy row with unknown surface",
+			"2026-06-28T04:30:00Z",
+			{
+				platform: "telegram",
+				kind: "platform",
+				userId: "999",
+				isDirect: null,
+			},
+		);
+
 		// A watcher + one of its run snapshots.
 		await sql`
       INSERT INTO watchers
@@ -250,6 +281,56 @@ describe("listAgentThreads scope=all", () => {
 
 	afterAll(async () => {
 		await cleanupTestDatabase();
+	});
+
+	it("lists an unbound DM for an owner/admin", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		const dm = threads.find((t) => t.id === TELEGRAM_DM_CONV);
+		expect(dm).toBeDefined();
+		expect(dm?.platform).toBe("telegram");
+	});
+
+	it("hides a DM from a plain member, and hides unknown-surface rows from everyone", async () => {
+		const asMember = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: false,
+		});
+		expect(asMember.map((t) => t.id)).not.toContain(TELEGRAM_DM_CONV);
+
+		// is_direct NULL must not ride in on the DM rule — it keeps the channel
+		// fence, which fails closed for an unbound channel.
+		const asAdmin = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		expect(asAdmin.map((t) => t.id)).not.toContain(TELEGRAM_LEGACY_CONV);
+		expect(asMember.map((t) => t.id)).not.toContain(TELEGRAM_LEGACY_CONV);
+	});
+
+	it("keeps the group-channel fence unchanged for an admin", async () => {
+		// Admin is the DM rule only — it must not become a blanket bypass of the
+		// channel-membership fence for group channels.
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		expect(threads.map((t) => t.id)).not.toContain(SLACK_UNBOUND_CONV);
+		expect(threads.map((t) => t.id)).toContain(SLACK_CONV);
 	});
 
 	it("returns web + platform + watcher entries with correct platforms, newest-first", async () => {
@@ -608,5 +689,71 @@ describe("listAgentThreads scope=all", () => {
 				status: "pending",
 			}),
 		]);
+	});
+});
+
+/**
+ * An EXPLICITLY bound DM (Slack Preview `/link`, claim onboarding) is the case
+ * that makes the owner/admin rule a BYPASS rather than a replacement: it is a DM
+ * (`is_direct = true`) but it does have a chat-link Behavior, so the ordinary
+ * channel fence already admits it and a plain member must keep that access.
+ *
+ * It gets its own org/agent because the shared fixture above asserts a single
+ * slack conversation and newest-first ordering; a second visible slack row there
+ * would decide those assertions instead of testing this one.
+ */
+describe("listAgentThreads scope=all — an explicitly bound DM", () => {
+	const BOUND_DM_AGENT = "thread-list-bound-dm-agent";
+	const BOUND_DM_CONV = "slack:D123:";
+	let org: string;
+	let userId: string;
+
+	beforeAll(async () => {
+		org = (await createTestOrganization()).id;
+		userId = (await createTestUser()).id;
+		await createTestAgent({
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			ownerUserId: userId,
+		});
+		const sql = getTestDb();
+		const connId = "conn_bound_dm";
+		await insertChatConnectionRow({
+			id: connId,
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			platform: "slack",
+			status: "active",
+		});
+		await createTestBehaviorSubscription({
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			connectionSlug: `agentconn-${connId}`,
+			platform: "slack",
+			channelId: "slack:D123",
+			teamId: "T1",
+		});
+		await sql`
+      INSERT INTO conversations
+        (organization_id, agent_id, platform, conversation_id,
+         kind, user_id, title, is_direct, last_activity_at, created_at)
+      VALUES (${org}, ${BOUND_DM_AGENT}, 'slack', ${BOUND_DM_CONV},
+              'platform', 'U123', 'hello from a bound slack dm',
+              true, '2026-06-28T02:00:00Z', '2026-06-28T02:00:00Z')`;
+	});
+
+	afterAll(async () => {
+		await cleanupTestDatabase();
+	});
+
+	it("stays visible to a plain member via the channel fence, without admin", async () => {
+		const threads = await listAgentThreads({
+			agentId: BOUND_DM_AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: false,
+		});
+		expect(threads.map((t) => t.id)).toContain(BOUND_DM_CONV);
 	});
 });

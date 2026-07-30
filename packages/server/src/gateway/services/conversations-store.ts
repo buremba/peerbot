@@ -51,6 +51,13 @@ export interface ConversationUpsert {
 	kind: ConversationKind;
 	userId?: string | null;
 	title?: string | null;
+	/**
+	 * Platform rows only: true for a 1:1 DM with the bot, false for a group
+	 * channel. Null = unknown (the inbound carried no hint, or the row predates
+	 * the column) and stays fail-closed in the read gate. Never derived from the
+	 * conversation id — no platform encodes DM-ness portably.
+	 */
+	isDirect?: boolean | null;
 	lastActivityAt: Date;
 }
 
@@ -75,11 +82,12 @@ export async function upsertConversation(
 		await sql`
       INSERT INTO public.conversations (
         organization_id, agent_id, platform, conversation_id, thread_id,
-        kind, user_id, title, last_activity_at
+        kind, user_id, title, is_direct, last_activity_at
       ) VALUES (
         ${row.organizationId}, ${row.agentId}, ${row.platform},
         ${row.conversationId}, ${row.threadId}, ${row.kind},
-        ${row.userId ?? null}, ${row.title ?? null}, ${row.lastActivityAt}
+        ${row.userId ?? null}, ${row.title ?? null}, ${row.isDirect ?? null},
+        ${row.lastActivityAt}
       )
       ON CONFLICT (organization_id, agent_id, platform, conversation_id)
       DO UPDATE SET
@@ -90,6 +98,10 @@ export async function upsertConversation(
         title = COALESCE(public.conversations.title, EXCLUDED.title),
         user_id = COALESCE(public.conversations.user_id, EXCLUDED.user_id),
         thread_id = COALESCE(public.conversations.thread_id, EXCLUDED.thread_id),
+        -- Same rule: a conversation does not change between DM and group, so the
+        -- first turn that knows wins. This is what backfills rows written before
+        -- the column existed — they fill in on their next inbound message.
+        is_direct = COALESCE(public.conversations.is_direct, EXCLUDED.is_direct),
         updated_at = now()
     `;
 	} catch (err) {
@@ -116,6 +128,12 @@ export interface ConversationListRow {
 	kind: ConversationKind;
 	userId: string | null;
 	title: string | null;
+	/**
+	 * Platform rows: true = 1:1 DM with the bot, false = group channel, null =
+	 * unknown. A known DM may use the owner/admin bypass; otherwise the read path
+	 * retains its channel-membership fence. Unknown stays fail-closed.
+	 */
+	isDirect: boolean | null;
 	lastActivityAt: Date;
 	createdAt: Date;
 }
@@ -147,11 +165,12 @@ export async function findConversationById(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title,
-           last_activity_at, created_at
+           is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -168,6 +187,7 @@ export async function findConversationById(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
 	};
@@ -188,11 +208,12 @@ export async function getConversation(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title,
-           last_activity_at, created_at
+           is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -210,6 +231,7 @@ export async function getConversation(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
 	};
@@ -310,11 +332,12 @@ export async function listConversations(args: {
 		kind: ConversationKind;
 		user_id: string | null;
 		title: string | null;
+		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title,
-           last_activity_at, created_at
+           is_direct, last_activity_at, created_at
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -342,6 +365,7 @@ export async function listConversations(args: {
 		kind: r.kind,
 		userId: r.user_id,
 		title: r.title,
+		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
 	}));

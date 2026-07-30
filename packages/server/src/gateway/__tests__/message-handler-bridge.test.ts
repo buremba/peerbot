@@ -761,6 +761,29 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
     ).toBe(true);
   });
 
+  test("stamps authoritative directness on messages but not interaction clicks", async () => {
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      linkedBehavior: { agentId: "linked-agent" },
+    });
+    const thread = makeThread(undefined);
+
+    // A reply inside a DM thread has conversationId !== channelId. Directness
+    // comes from the inbound event type, not that threading relationship.
+    await bridge.handleMessage(thread, makeMessage(), "dm");
+    const dmPayload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(dmPayload.platformMetadata.isDirect).toBe(true);
+
+    await bridge.ingestClick({
+      userId: "U_USER",
+      channelId: CHANNEL_ID,
+      conversationId: THREAD_ID,
+      value: "Continue",
+      thread,
+    });
+    const clickPayload = enqueueMessage.mock.calls[1]?.[0] as any;
+    expect(clickPayload.platformMetadata.isDirect).toBeUndefined();
+  });
+
   test("matching reply Behaviors fan out as independent turns with one history entry", async () => {
     const trigger = {
       kind: "event" as const,

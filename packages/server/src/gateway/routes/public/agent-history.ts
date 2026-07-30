@@ -30,6 +30,8 @@ import {
 	readThreadMessages,
 	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
+import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
+import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { findConversationById } from "../../services/conversations-store.js";
 import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
@@ -421,6 +423,7 @@ export function createAgentHistoryRoutes(deps: {
 		agentId: string;
 		organizationId: string | undefined;
 		userId: string;
+		isAdmin: boolean;
 	} | null> {
 		const session = await verifySettingsSession(c);
 		if (!session) return null;
@@ -437,6 +440,7 @@ export function createAgentHistoryRoutes(deps: {
 				agentId,
 				organizationId: ambientOrgId,
 				userId,
+				isAdmin: true,
 			};
 		}
 		if (session.agentId && session.agentId !== agentId) return null;
@@ -455,7 +459,12 @@ export function createAgentHistoryRoutes(deps: {
 			const authorized =
 				ownsHere || (await canUseSystemAgent(agentId, ambientOrgId, userId));
 			if (authorized) {
-				return { agentId, organizationId: ambientOrgId, userId };
+				return {
+					agentId,
+					organizationId: ambientOrgId,
+					userId,
+					isAdmin: false,
+				};
 			}
 			return null;
 		}
@@ -476,6 +485,7 @@ export function createAgentHistoryRoutes(deps: {
 			agentId,
 			organizationId: ownerOrganizations[0],
 			userId,
+			isAdmin: false,
 		};
 	}
 
@@ -637,11 +647,22 @@ export function createAgentHistoryRoutes(deps: {
 		// `?scope=all` widens the list to every conversation for the agent across
 		// platforms (Slack, Telegram, …), not just the requesting user's threads.
 		const listScope = c.req.query("scope") === "all" ? "all" : "user";
+		// DM conversations gate on explicit admin access, not channel membership.
+		// Resolve the org-role half only for the widened list; the existing
+		// platform-admin bypass is already carried on the authorized scope.
+		const isAdmin =
+			listScope === "all" && scope.organizationId
+				? scope.isAdmin ||
+					isAdminOrOwnerRole(
+						await getCachedMembershipRole(scope.organizationId, scope.userId),
+					)
+				: false;
 		const threads = await listAgentThreads({
 			agentId: scope.agentId,
 			organizationId: scope.organizationId,
 			userId: scope.userId,
 			scope: listScope,
+			isAdmin,
 		});
 		return c.json({ threads });
 	});
@@ -832,18 +853,31 @@ export function createAgentHistoryRoutes(deps: {
 				return errorResponse(c, "Conversation not found", 404);
 			}
 		} else {
-			// Platform conversations stay behind the per-agent fence ∩ per-user
-			// channel gate. The channel segment is still parsed out of the id: the
-			// `conversations` row carries no channel column, so there is nothing
-			// else to read it from.
-			const channelVis = await resolveChannelVisibility(getDb(), {
-				organizationId: scope.organizationId,
-				agentId: scope.agentId,
-				userId: scope.userId,
-				allowNotGraphed: scope.allowNotGraphed,
-			});
-			if (!isConversationVisible(conversationId, channelVis)) {
-				return errorResponse(c, "Conversation not found", 404);
+			let bypassChannelFence = false;
+			if (row?.isDirect === true) {
+				// Same DM rule the listing applies: explicit admin access can open
+				// an unbound DM. A non-admin still takes the normal channel fence so
+				// explicitly bound DMs (for example Preview `/link`) remain readable.
+				bypassChannelFence =
+					scope.isAdmin ||
+					isAdminOrOwnerRole(
+						await getCachedMembershipRole(scope.organizationId, scope.userId),
+					);
+			}
+			if (!bypassChannelFence) {
+				// Platform conversations stay behind the per-agent fence ∩ per-user
+				// channel gate. The channel segment is still parsed out of the id: the
+				// `conversations` row carries no channel column, so there is nothing
+				// else to read it from.
+				const channelVis = await resolveChannelVisibility(getDb(), {
+					organizationId: scope.organizationId,
+					agentId: scope.agentId,
+					userId: scope.userId,
+					allowNotGraphed: scope.allowNotGraphed,
+				});
+				if (!isConversationVisible(conversationId, channelVis)) {
+					return errorResponse(c, "Conversation not found", 404);
+				}
 			}
 		}
 

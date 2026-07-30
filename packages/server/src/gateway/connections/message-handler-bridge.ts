@@ -1247,6 +1247,7 @@ export class MessageHandlerBridge {
             : messageId,
         messageText,
         isGroup,
+        isDirect: !isGroup,
         thread,
         teamId,
         payloadTeamId: isGroup ? channelId : platform,
@@ -1303,6 +1304,12 @@ export class MessageHandlerBridge {
     messageId: string;
     messageText: string;
     isGroup: boolean;
+    /**
+     * Authoritative inbound surface classification. Interaction clicks omit
+     * this: their conversationId/channelId relationship identifies threading,
+     * not whether the original surface was a DM or group channel.
+     */
+    isDirect?: boolean;
     thread: any;
     /**
      * Platform-native team/workspace id (Slack: team_id) carried on
@@ -1340,6 +1347,7 @@ export class MessageHandlerBridge {
       messageId,
       messageText,
       isGroup,
+      isDirect,
       thread,
       teamId,
       payloadTeamId,
@@ -1502,6 +1510,7 @@ export class MessageHandlerBridge {
           conversationHistory:
             conversationHistory.length > 0 ? conversationHistory : undefined,
           ...extraMetadata,
+          ...(typeof isDirect === "boolean" ? { isDirect } : {}),
         },
         agentOptions,
       });

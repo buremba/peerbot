@@ -900,7 +900,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -916,8 +916,9 @@ jobs:
   # compose.
   #
   # Runner cost is bounded by the filter job above — the macOS runner is
-  # only allocated when the submodule pointer, the release workflow, the
-  # submodule setup action, or `.gitmodules` changes.
+  # only allocated when the submodule pointer, the release workflow, this
+  # workflow, the submodule setup action, or `.gitmodules` changes. This
+  # workflow is in the filter so a PR editing this job can't skip it.
   mac-build-smoke:
     needs: mac-build-smoke-filter
     if: needs.mac-build-smoke-filter.outputs.run == 'true'

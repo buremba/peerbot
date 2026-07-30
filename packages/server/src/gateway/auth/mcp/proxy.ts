@@ -15,7 +15,6 @@ import {
 import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
-import { runAllowsUnattendedToolUse } from "../../permissions/unattended-run-policy.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
 import { storePendingTool } from "./pending-tool-store.js";
 import { handleProxyRequest } from "./proxy-forward.js";
@@ -556,31 +555,6 @@ export class McpProxy {
 
 		const pattern = `/mcp/${mcpId}/tools/${toolName}`;
 		if (await this.grantStore.hasGrant(agentId, pattern)) return "allow";
-
-		// Last, because it is the only check that costs a query: a Behavior whose
-		// operator declared it unattended runs without a card. Placed after the
-		// grant check so the common allow paths stay query-free, and before the
-		// block so the card is never written for a run that cannot answer it.
-		if (
-			await runAllowsUnattendedToolUse({
-				organizationId: tokenData.organizationId,
-				agentId,
-				conversationId: tokenData.conversationId,
-				messageId: tokenData.messageId,
-			})
-		) {
-			logger.info(
-				{
-					agentId,
-					mcpId,
-					toolName,
-					pattern,
-					conversationId: tokenData.conversationId,
-				},
-				"Tool call allowed without approval: Behavior is configured for unattended execution",
-			);
-			return "allow";
-		}
 
 		logger.info("Tool call blocked: requires approval", {
 			agentId,

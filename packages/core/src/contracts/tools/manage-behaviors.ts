@@ -142,8 +142,7 @@ export const BehaviorExecutionConfigSchema = Type.Object(
           Type.Literal("plan"),
         ],
         {
-          description:
-            "How this Behavior's runs answer tool-approval prompts. 'bypassPermissions' and 'dontAsk' allow write-capable tools without a per-call approval card; owner/admin only. Every other value keeps the approval prompt.",
+          description: "Tool permission mode (claude only: --permission-mode).",
         }
       )
     ),

@@ -27,23 +27,11 @@ export function stripServerOnlyExecutionConfig(
   return Object.keys(out).length > 0 ? out : null;
 }
 
-/**
- * Permission modes that let the spawned agent act unattended without prompting.
- * Restricted to org owner/admin: a member-write actor can pin a watcher to
- * another user's device, so allowing them to set these would be a privilege
- * escalation (unattended privileged execution on the device owner's machine).
- *
- * This one set is BOTH halves of the policy and must stay that way:
- * `assertValidExecutionConfig` below decides who may store these values, and
- * `runAllowsUnattendedToolUse` (gateway/permissions/unattended-run-policy)
- * reads the stored value to decide whether a headless Behavior run may skip
- * the MCP approval card. Duplicating the list would let the two drift, and a
- * drift in the widening direction is a silent authorization hole.
- */
-export const UNATTENDED_PERMISSION_MODES: ReadonlySet<string> = new Set([
-  'bypassPermissions',
-  'dontAsk',
-]);
+// Permission modes that let the spawned agent act unattended without prompting.
+// Restricted to org owner/admin: a member-write actor can pin a watcher to
+// another user's device, so allowing them to set these would be a privilege
+// escalation (unattended privileged execution on the device owner's machine).
+const ELEVATED_PERMISSION_MODES = new Set(['bypassPermissions', 'dontAsk']);
 
 /** Minimal caller identity needed to authorize elevated permission modes. */
 export interface ExecutionConfigCaller {
@@ -65,7 +53,7 @@ export function assertValidExecutionConfig(value: unknown, caller: ExecutionConf
   // memberRole and already bypass action-access enforcement; don't block them.
   const isSystem = caller.isAuthenticated && caller.userId === null && caller.memberRole === null;
   const isOwnerOrAdmin = isAdminOrOwnerRole(caller.memberRole);
-  if (mode && UNATTENDED_PERMISSION_MODES.has(mode) && !isSystem && !isOwnerOrAdmin) {
+  if (mode && ELEVATED_PERMISSION_MODES.has(mode) && !isSystem && !isOwnerOrAdmin) {
     throw new ToolUserError(
       `execution_config.permission_mode '${mode}' requires an owner or admin role; members may use: default, plan, auto, acceptEdits.`
     );

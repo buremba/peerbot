@@ -550,16 +550,22 @@ async function handleCreateFeed(
   // A virtual feed is read LIVE at request time and never synced, so it has no
   // schedule. config.query is an optional scope fence; agents can compose further
   // filters at read time (query_sql feed_query) or pass recall terms.
-  const isVirtual = args.virtual === true;
+  // Default from the connector feed definition (`feeds_schema[key].virtual`) when
+  // the caller omits `virtual`. Explicit `args.virtual` always wins (true or false).
+  const schemaDefaultVirtual = feedsSchema?.[args.feed_key]?.virtual === true;
+  const isVirtual =
+    args.virtual === true || (args.virtual !== false && schemaDefaultVirtual);
 
   // Validate config against the connector's declared feed configSchema up
-  // front so a mis-shaped config fails HERE, not at sync time. Virtual feeds
-  // are exempt: never synced, their config (query scope fence) is not the
-  // sync-config contract.
-  if (!isVirtual) {
-    const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {});
-    if (configError) return { error: configError };
-  }
+  // front so a mis-shaped config fails here instead of at sync or live-read
+  // time. The schema describes both collected and virtual feed configuration,
+  // but its `required` fields are the sync contract only, and a virtual feed is
+  // never synced, so a missing one must not gate creation (rss `articles`
+  // requires feed_urls; a virtual read of it needs only the query fence).
+  const configError = validateFeedConfig(feedsSchema, args.feed_key, args.config ?? {}, {
+    ignoreRequired: isVirtual,
+  });
+  if (configError) return { error: configError };
 
   // Omit / empty schedule = manual only (no automatic poll). Virtual feeds
   // always persist schedule = NULL. Do not invent a default cron.
@@ -752,13 +758,14 @@ async function handleUpdateFeed(
         ? (restoredConfig as Record<string, unknown>)
         : { ...parseJsonObject(feedRow.config), ...restoredConfig }
       : null;
-    // Only collected feeds sync — virtual/streaming configs are not the
-    // sync-config contract.
-    if (effectiveConfig && feedRow.kind === 'collected') {
+    if (effectiveConfig) {
+      // Same split as create_feed: shape always, `required` only for feeds that
+      // actually sync (virtual/streaming configs are not the sync contract).
       const configError = validateFeedConfig(
         feedRow.feeds_schema as Record<string, FeedDefinition> | null,
         String(feedRow.feed_key),
-        effectiveConfig
+        effectiveConfig,
+        { ignoreRequired: feedRow.kind !== 'collected' }
       );
       if (configError) return { error: configError } as const;
     }

@@ -17,6 +17,7 @@ import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createTestConnection,
+	createTestConnectorDefinition,
 	createTestOrganization,
 	createTestUser,
 } from "../../setup/test-fixtures";
@@ -26,6 +27,7 @@ describe("manage_feeds create_feed (virtual)", () => {
 	let owner: TestApiClient;
 	let orgId: string;
 	let connectionId: number;
+	let jiraConnectionId: number;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -44,6 +46,36 @@ describe("manage_feeds create_feed (virtual)", () => {
 			createDefaultFeed: false,
 		});
 		connectionId = Number(conn.id);
+
+		// Jira-shaped definition: issues feed declares virtual:true so create_feed
+		// without an explicit virtual flag still creates a live feed (schema default).
+		await createTestConnectorDefinition({
+			key: "jira",
+			name: "Jira",
+			organization_id: orgId,
+			feeds_schema: {
+				issues: {
+					key: "issues",
+					name: "Issues",
+					virtual: true,
+					configSchema: {
+						type: "object",
+						properties: {
+							query: { type: "string" },
+							jql: { type: "string" },
+							max_results: { type: "integer", minimum: 1, maximum: 100 },
+						},
+					},
+				},
+			},
+		});
+		const jiraConn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: "jira",
+			created_by: user.id,
+			createDefaultFeed: false,
+		});
+		jiraConnectionId = Number(jiraConn.id);
 	});
 
 	it("creates a virtual feed with schedule/next_run_at NULL and kind=virtual", async () => {
@@ -112,6 +144,57 @@ describe("manage_feeds create_feed (virtual)", () => {
 			.catch((reason: unknown) => reason);
 
 		expect(error).toBeInstanceOf(ClientSdkActionError);
+	});
+
+	it("defaults virtual from feeds_schema when the caller omits virtual (Jira issues)", async () => {
+		const result = (await owner.feeds.create({
+			connection_id: jiraConnectionId,
+			feed_key: "issues",
+			config: { query: "project = SUPP ORDER BY updated DESC" },
+		})) as {
+			error?: string;
+			feed?: {
+				kind: string;
+				virtual: boolean;
+				schedule: string | null;
+			};
+		};
+
+		expect(result.error).toBeUndefined();
+		expect(result.feed?.kind).toBe("virtual");
+		expect(result.feed?.virtual).toBe(true);
+		expect(result.feed?.schedule).toBeNull();
+	});
+
+	it("allows explicit virtual:false to override a schema-default-virtual feed", async () => {
+		const result = (await owner.feeds.create({
+			connection_id: jiraConnectionId,
+			feed_key: "issues",
+			virtual: false,
+			schedule: "0 * * * *",
+			config: { jql: "project = SUPP" },
+		})) as {
+			error?: string;
+			feed?: { kind: string; virtual: boolean; schedule: string | null };
+		};
+
+		expect(result.error).toBeUndefined();
+		expect(result.feed?.kind).toBe("collected");
+		expect(result.feed?.virtual).toBe(false);
+		expect(result.feed?.schedule).toBe("0 * * * *");
+	});
+
+	it("validates config for a schema-default virtual feed", async () => {
+		const error = await owner.feeds
+			.create({
+				connection_id: jiraConnectionId,
+				feed_key: "issues",
+				config: { max_results: "many" },
+			})
+			.catch((reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect(String(error)).toContain("max_results");
 	});
 
 	it("materializeDueFeeds never creates a sync run for the virtual feed", async () => {

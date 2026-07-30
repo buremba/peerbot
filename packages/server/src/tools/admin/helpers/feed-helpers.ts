@@ -22,11 +22,19 @@ export interface FeedDefinition {
  * Without this check a mis-shaped config (e.g. `url` instead of rss's required
  * `feed_urls`) is persisted "successfully" and only fails at sync time, giving
  * an MCP caller zero upfront signal.
+ *
+ * `ignoreRequired` drops the schema's top-level `required` list. That list is
+ * the SYNC-config contract (rss `articles` cannot sync without `feed_urls`), and
+ * a virtual/streaming feed is never synced; its config is a read-time scope
+ * fence, so a missing sync field must not gate it. Everything else still
+ * applies, so a wrong type or an unknown property in what the caller DID pass is
+ * still rejected upfront.
  */
 export function validateFeedConfig(
   feedsSchema: Record<string, FeedDefinition> | null,
   feedKey: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  options?: { ignoreRequired?: boolean }
 ): string | null {
   // Direct key lookup plus the `key` field fallback — deliberately NOT the
   // single-entry fallback getFeedDefinition uses for display names: guessing a
@@ -45,10 +53,27 @@ export function validateFeedConfig(
     return `Invalid config for feed '${feedKey}': config exceeds size/nesting limits`;
   }
 
-  const validate = getAjv().compile(configSchema);
+  // Strip the keyword rather than filtering `required` out of validate.errors
+  // afterwards: the shared AJV runs with `allErrors: false`, so a config that
+  // trips `required` first would report only that error and a real type error
+  // behind it would slip through the filter.
+  const effectiveSchema =
+    options?.ignoreRequired && 'required' in configSchema
+      ? withoutRequired(configSchema)
+      : configSchema;
+
+  const validate = getAjv().compile(effectiveSchema);
   if (validate(config)) return null;
   const detail = (validate.errors ?? []).map(formatAjvError).join('; ') || 'validation failed';
   return `Invalid config for feed '${feedKey}': ${detail}`;
+}
+
+/** Top-level `required` only; a nested object's own required keys stay a shape check. */
+function withoutRequired(
+  configSchema: NonNullable<FeedDefinition['configSchema']>
+): NonNullable<FeedDefinition['configSchema']> {
+  const { required: _required, ...rest } = configSchema;
+  return rest;
 }
 
 function getFeedDefinition(

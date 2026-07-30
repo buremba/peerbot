@@ -330,8 +330,9 @@ export default class PostgresConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'postgres',
     name: 'PostgreSQL',
-    description: 'Bring your own PostgreSQL database in as memory via a read-only SQL query.',
-    version: '1.0.0',
+    description:
+      'Bring your own PostgreSQL database as memory (collected sync) or live virtual reads via query()/search(). Connection DATABASE_URL is merged into virtual reads with feed config.',
+    version: '1.0.1',
     faviconDomain: 'postgresql.org',
     authSchema: {
       methods: [
@@ -355,9 +356,12 @@ export default class PostgresConnector extends ConnectorRuntime {
       query: {
         key: 'query',
         name: 'SQL Query',
-        description: 'Ingest rows from a read-only SELECT as memory, incrementally by a cursor column.',
+        description:
+          'Read-only SELECT — collected sync ingests as memory; set virtual:true for live query()/search() with no event copy. Connection.config (DATABASE_URL) is merged by the platform.',
         // Every instance carries a required user-authored query, so it cannot be auto-wired.
         userManaged: true,
+        // Not virtual-by-default: the primary product path is memory ingestion.
+        // Callers opt into live reads with virtual:true (query/search already implemented).
         configSchema,
         displayNameTemplate: '{name}',
         eventKinds: {

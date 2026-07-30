@@ -103,6 +103,11 @@ describe("manage_connections and manage_feeds list filters", () => {
 					visibility: "org",
 					status: "pending_auth",
 					config: { region: "eu-west-2" },
+					// The fixture stamps the connection status onto its default
+					// feed, and `feeds_status_check` only admits
+					// active/paused/error — a pending_auth connection has no feed
+					// yet anyway (manage_feeds creates one on auth completion).
+					createDefaultFeed: false,
 				})
 			).id,
 		);

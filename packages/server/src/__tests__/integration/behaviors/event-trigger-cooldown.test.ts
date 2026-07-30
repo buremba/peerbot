@@ -202,10 +202,16 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 
 	it("scopes the cooldown to one Behavior, not the whole connection", async () => {
 		const cooling = await behaviorWithCooldown(1800);
-		const sibling = await behaviorWithCooldown(0, cooling.workspace);
+		// The sibling must ALSO have a non-zero cooldown, or it short-circuits on
+		// `min_cooldown_seconds = 0` and never reaches the scoping predicate —
+		// which would let a cooldown that ignores `watcher_id` pass unnoticed
+		// (caught by mutation testing: a zero-cooldown sibling misses it).
+		const sibling = await behaviorWithCooldown(1800, cooling.workspace);
 		await priorRun(cooling, 60);
 
-		// Same signal reaches both Behaviors; only the cooling one is suppressed.
+		// One signal reaches both Behaviors. Only `cooling` has fired recently, so
+		// exactly one match proves both halves: the sibling is not suppressed by
+		// another Behavior's run, and `cooling` genuinely is suppressed by its own.
 		expect(await matches(sibling)).toBe(1);
 	});
 });

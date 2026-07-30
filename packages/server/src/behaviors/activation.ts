@@ -111,6 +111,10 @@ export async function findMatchingBehaviorActivations(
 		  -- min_cooldown_seconds debounce. The column is NOT NULL DEFAULT 0, so
 		  -- the guard costs nothing for the overwhelming majority of Behaviors:
 		  -- at 0 the outer test short-circuits and the subquery never runs.
+		  -- That short-circuit is an optimisation, NOT a correctness guard, and
+		  -- mutation testing says so: removing it keeps the suite green, because
+		  -- a zero-second window can never match a row created in the past.
+		  -- Keep it for the query plan.
 		  -- Counts ANY firing, not just finished ones — a burst that starts a run
 		  -- and immediately re-fires must be debounced by the run it just
 		  -- started, or the cooldown would only take effect after the first run

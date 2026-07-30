@@ -444,7 +444,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
       RETURNING id, first_failure_at
     `) as Array<{ id: number; first_failure_at: Date | string }>;
     const feedId = Number(rows[0].id);
-    const gen = Math.floor(new Date(rows[0].first_failure_at).getTime() / 1000);
+    const gen = new Date(rows[0].first_failure_at).getTime();
     const originId = `feed_auto_paused:${feedId}:${gen}`;
 
     const before = await retryPendingFeedAutoPausedSignals({

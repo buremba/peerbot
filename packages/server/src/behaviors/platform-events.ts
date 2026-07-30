@@ -49,9 +49,19 @@ function auditOriginId(feedId: number, pauseGeneration: string | number): string
 
 /**
  * Stable pause-episode generation used for delivery_id and audit origin_id.
- * Prefer first_failure_at as integer Unix seconds so JS and the redelivery
- * SQL filter (EXTRACT(EPOCH …)::bigint) share one exact key — millisecond
- * floats diverge between runtimes and would leave rows permanently pending.
+ * Prefer first_failure_at as integer Unix milliseconds.
+ *
+ * Millisecond resolution is required, not cosmetic: a resume followed by a new
+ * failure episode can land in the same wall-clock second, and a second-grained
+ * key would collide with the previous episode's delivery_id and silently drop
+ * the new signal.
+ *
+ * JS and the redelivery SQL filter still agree exactly at ms precision:
+ * `first_failure_at` is `timestamptz` (absolute, no local-zone reinterpretation),
+ * `EXTRACT(EPOCH FROM …)` returns exact `numeric` (PG 14+) so
+ * `FLOOR(epoch * 1000)` is exact integer ms, and the JS Date parser truncates
+ * sub-millisecond digits rather than rounding them. Keep both sides on
+ * floor-to-ms; do not "align" them by dropping to seconds.
  */
 export function pauseGenerationForFeed(row: {
 	first_failure_at: Date | string | null;
@@ -59,7 +69,7 @@ export function pauseGenerationForFeed(row: {
 }): number {
 	if (row.first_failure_at) {
 		const ms = new Date(row.first_failure_at).getTime();
-		if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+		if (Number.isFinite(ms)) return ms;
 	}
 	return Number(row.consecutive_failures);
 }
@@ -267,7 +277,8 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 	// Filter missing audit origins in SQL so completed / no-subscriber feeds
 	// never occupy the scan window. origin_id matches auditOriginId():
 	//   feed_auto_paused:<feedId>:<pauseGeneration>
-	// pauseGeneration is floor(epoch seconds of first_failure_at) or consecutive_failures.
+	// pauseGeneration is floor(epoch ms of first_failure_at) or consecutive_failures;
+	// EXTRACT(EPOCH …) is exact numeric, so this matches pauseGenerationForFeed().
 	const rows = (await sql`
 		SELECT f.id, f.organization_id, f.consecutive_failures, f.first_failure_at
 		FROM feeds f
@@ -284,7 +295,7 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 		        'feed_auto_paused:' || f.id::text || ':' ||
 		        CASE
 		          WHEN f.first_failure_at IS NOT NULL THEN
-		            FLOOR(EXTRACT(EPOCH FROM f.first_failure_at))::bigint::text
+		            FLOOR(EXTRACT(EPOCH FROM f.first_failure_at) * 1000)::bigint::text
 		          ELSE f.consecutive_failures::text
 		        END
 		      )

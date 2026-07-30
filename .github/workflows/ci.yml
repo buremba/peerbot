@@ -900,23 +900,25 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
           fi
 
-  # Cheap end-to-end Xcode build for the Mac app. `mac-release.yml` is
-  # workflow_dispatch only, so a rename or path move inside the owletto
-  # submodule (Mac source lives at `packages/owletto/apps/mac/`) can silently
-  # break the release pipeline and only surface the next time someone
-  # triggers a release. Build-only (no archive, no signing, no notarize)
-  # is enough to prove the Xcode project + submodule layout still compose.
+  # Standalone Swift tests + a cheap end-to-end Xcode build for the Mac app.
+  # `mac-release.yml` runs only for manual dispatches and published releases,
+  # so a rename or path move inside the owletto submodule (Mac source lives at
+  # `packages/owletto/apps/mac/`) can silently break the release pipeline and
+  # surface only during a release. Build-only (no archive, no signing, no
+  # notarize) is enough to prove the Xcode project + submodule layout still
+  # compose.
   #
   # Runner cost is bounded by the filter job above — the macOS runner is
-  # only allocated when the submodule pointer, the release workflow, the
-  # submodule setup action, or `.gitmodules` changes.
+  # only allocated when the submodule pointer, the release workflow, this
+  # workflow, the submodule setup action, or `.gitmodules` changes. This
+  # workflow is in the filter so a PR editing this job can't skip it.
   mac-build-smoke:
     needs: mac-build-smoke-filter
     if: needs.mac-build-smoke-filter.outputs.run == 'true'
@@ -944,6 +946,15 @@ jobs:
       - name: Skip on fork PRs without submodule access
         if: steps.submodule.outputs.stubbed == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: echo "::notice::Submodule stubbed on fork PR — skipping Mac smoke build."
+
+      # The Mac app has no XCTest target, so xcodebuild does not discover the
+      # standalone @main tests under apps/mac/Tests — before this step they ran
+      # only when someone pasted a swiftc line out of a file header, which is
+      # how WatcherDecodingTests stopped compiling on 2026-07-05 and stayed
+      # broken. Runs before the app build so a failure names the assertion.
+      - name: Run standalone Swift tests
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: packages/owletto/apps/mac/Tests/run-tests.sh
 
       - name: Build (unsigned, no archive)
         if: steps.submodule.outputs.stubbed != 'true'

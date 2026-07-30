@@ -333,7 +333,9 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
             connector_key: 'chrome',
             event_types: ['feed.auto_paused'],
             execution: 'turn',
-            active_run: 'coalesce',
+            // queue (not coalesce): a still-pending first-episode run must not
+            // swallow the second-episode delivery into the same run row.
+            active_run: 'queue',
             output: 'silent',
           },
         ],

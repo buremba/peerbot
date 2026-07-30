@@ -15,6 +15,7 @@ import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import {
   validateWatcherSourceRef,
   resolveWatcherSourcesForSave,
+  extractSkillNamesFromPromptTokens,
 } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behaviors';
@@ -340,6 +341,37 @@ export async function assertBehaviorSkillsResolve(
       422
     );
   }
+}
+
+/**
+ * Every `@[skill:…]` chip in the prompt must have a pinned entry in `skills[]`.
+ *
+ * Ref tokens survive into the instructions verbatim — nothing strips them (see
+ * `extractSourcesFromPromptTokens`) — so an unpinned chip does not fail, it
+ * degrades: the agent reads the literal `@[skill:deploy-runbook:…](…)` as if it
+ * were guidance, with no `.skills/` file behind it. The web composer always
+ * sends both halves; a CLI or MCP caller writing the token by hand can send the
+ * prompt alone, and that is the case this catches.
+ *
+ * Names only — the pinned BODY still comes from the caller, never from a
+ * save-time read of the live library.
+ */
+export function assertPromptSkillTokensPinned(
+  prompt: string | null | undefined,
+  skills: ReadonlyArray<{ name: string }> | null | undefined
+): void {
+  const referenced = extractSkillNamesFromPromptTokens(prompt ?? '');
+  if (referenced.length === 0) return;
+  const pinned = new Set((skills ?? []).map((skill) => skill.name));
+  const missing = referenced.filter((name) => !pinned.has(name));
+  if (missing.length === 0) return;
+  throw new ToolUserError(
+    `The prompt references skill${missing.length > 1 ? 's' : ''} ` +
+      `${missing.map((n) => `"${n}"`).join(', ')} that ${missing.length > 1 ? 'are' : 'is'} not ` +
+      `pinned on this Behavior. Pass ${missing.length > 1 ? 'them' : 'it'} in "skills" so the body is ` +
+      `frozen with this version, or remove the reference from the prompt.`,
+    422
+  );
 }
 
 /**

@@ -49,6 +49,7 @@ describe("manage_connections and manage_feeds list filters", () => {
 	let memberPrivateConnectionId: number;
 	let adminPrivateConnectionId: number;
 	let slackChatConnectionId: number;
+	let publicPendingConnectionId: number;
 	let orgFeedId: number;
 	let memberPrivateFeedId: number;
 
@@ -92,8 +93,32 @@ describe("manage_connections and manage_feeds list filters", () => {
 				})
 			).id,
 		);
+		publicPendingConnectionId = Number(
+			(
+				await createTestConnection({
+					organization_id: workspace.org.id,
+					connector_key: "public-projection",
+					display_name: "Public pending connection",
+					created_by: workspace.users.owner.id,
+					visibility: "org",
+					status: "pending_auth",
+					config: { region: "eu-west-2" },
+				})
+			).id,
+		);
 
 		const sql = getTestDb();
+		await sql`
+			INSERT INTO connect_tokens (
+				token, connection_id, organization_id, connector_key, auth_type,
+				status, created_by, expires_at
+			)
+			VALUES (
+				'ct_public_projection', ${publicPendingConnectionId},
+				${workspace.org.id}, 'public-projection', 'oauth', 'pending',
+				${workspace.users.owner.id}, NOW() + interval '1 hour'
+			)
+		`;
 
 		// A managed Slack chat connection: an ACL source (audience) + a live bot
 		// adapter (chat). The chat facet is declared by the CONNECTOR, via the
@@ -255,5 +280,58 @@ describe("manage_connections and manage_feeds list filters", () => {
 		await expect(
 			workspace.member.connections.get(memberPrivateConnectionId),
 		).resolves.toMatchObject({ action: "get" });
+	});
+
+	it("projects connection rows for public readers without narrowing trusted callers", async () => {
+		const anonymousList = (await workspace.asAnonymous().connections.list({
+			connection_ids: [publicPendingConnectionId],
+		})) as { connections?: Array<Record<string, unknown>> };
+		const anonymousGet = (await workspace
+			.asAnonymous()
+			.connections.get(publicPendingConnectionId)) as {
+			connection?: Record<string, unknown>;
+		};
+		const outsiderGet = (await workspace
+			.withAuth({
+				userId: "signed-in-outsider",
+				memberRole: null,
+				tokenType: "oauth",
+			})
+			.connections.get(publicPendingConnectionId)) as {
+			connection?: Record<string, unknown>;
+		};
+
+		for (const row of [
+			anonymousList.connections?.[0],
+			anonymousGet.connection,
+			outsiderGet.connection,
+		]) {
+			expect(row).toMatchObject({
+				id: publicPendingConnectionId,
+				connector_key: "public-projection",
+				status: "pending_auth",
+			});
+			for (const field of [
+				"connect_token",
+				"config",
+				"created_by",
+				"created_by_username",
+				"organization_id",
+				"auth_profile_id",
+				"device_worker_id",
+				"error_message",
+			]) {
+				expect(row).not.toHaveProperty(field);
+			}
+		}
+
+		const ownerGet = (await workspace.owner.connections.get(
+			publicPendingConnectionId,
+		)) as { connection?: Record<string, unknown> };
+		expect(ownerGet.connection).toMatchObject({
+			connect_token: "ct_public_projection",
+			config: { region: "eu-west-2" },
+			created_by: workspace.users.owner.id,
+		});
 	});
 });

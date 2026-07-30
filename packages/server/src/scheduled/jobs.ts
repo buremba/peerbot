@@ -15,7 +15,6 @@ import logger from '../utils/logger';
 import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
-import { backfillFeedAutoPauseBehaviors } from '../behaviors/ensure-feed-auto-pause-behavior';
 import { retryPendingFeedAutoPausedSignals } from '../behaviors/platform-events';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
@@ -205,11 +204,11 @@ function registerMaintenanceTasks(
   // (it only fires when a worker actually runs). Single-claimant per tick;
   // alerts fire on the transition into unhealthy via a Postgres-mediated marker
   // (connections.unhealthy_alerted_at), and ride the existing pino→Sentry→Slack
-  // path — no new alerting infra. Read-only over connections/feeds otherwise.
+  // path — no new alerting infra.
   //
-  // Also rolls out feed.auto_paused remediation for existing orgs (backfill
-  // default Behavior) and redelivers any hard-paused feed signals lost after
-  // pause (idempotent delivery_id).
+  // Also redelivers feed.auto_paused signals if activation was lost after a
+  // hard pause (idempotent delivery_id). Remediation Behaviors come from the
+  // Behavior catalog — not auto-created watchers.
   scheduler.register(
     'connector-health-alert',
     async () => {
@@ -224,18 +223,6 @@ function registerMaintenanceTasks(
           },
           '[task] connector-health-alert swept'
         );
-      }
-
-      try {
-        const backfill = await backfillFeedAutoPauseBehaviors({ limitOrgs: 50 });
-        if (backfill.orgs > 0 || backfill.errors > 0) {
-          logger.info(
-            { orgs: backfill.orgs, errors: backfill.errors },
-            '[task] feed-auto-pause backfill tick'
-          );
-        }
-      } catch (err) {
-        logger.warn({ err }, '[task] feed-auto-pause backfill failed');
       }
 
       try {

@@ -62,7 +62,6 @@ import {
 	type ConnectionSetupNextAction,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
-import { reconcileFeedAutoPauseBehavior } from "../../../../behaviors/ensure-feed-auto-pause-behavior";
 
 export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
@@ -543,19 +542,6 @@ export async function handleConnect(
     },
 		"Connection created via connect flow",
   );
-
-	// Out-of-the-box Behavior for feed.auto_paused (replaces the old repair-agent
-	// subsystem). Reconcile all existing connectors for this org so pre-existing
-	// connections get triggers too, not only this connector_key. Fire-and-forget.
-	void reconcileFeedAutoPauseBehavior({
-		organizationId,
-		createdBy: userId,
-	}).catch((err) =>
-		logger.warn(
-			{ err, connection_id: connection.id },
-			"reconcileFeedAutoPauseBehavior failed",
-		),
-	);
 
   recordLifecycleEvent({
     organizationId,

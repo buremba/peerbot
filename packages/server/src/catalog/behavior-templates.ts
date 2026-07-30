@@ -26,18 +26,18 @@ function scheduleTrigger(cron: string): Record<string, unknown> {
 
 export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
-		// Platform template: ensureFeedAutoPauseBehavior materializes this entry
-		// (name/prompt/tags/notification_*) and only adds per-connector event
-		// triggers for feed.auto_paused. Keep id/slug stable.
+		// Platform remediation template for feed.auto_paused (emitted when Lobu
+		// hard-pauses a feed). Install via "From catalog" / manage_behaviors —
+		// set event triggers with connector_key(s) you care about and
+		// event_types: ["feed.auto_paused"]. The platform does not auto-create
+		// this Behavior.
 		id: "feed-auto-pause",
 		name: "Feed auto-pause helper",
 		version: "1.0.0",
 		description:
-			"When Lobu hard-pauses a feed after consecutive sync failures, notify admins with the last error and next steps (re-auth, device online, config). Auto-installed from this catalog entry when a connector is connected; event triggers are filled in per connector_key.",
+			"When Lobu hard-pauses a feed after consecutive sync failures, notify admins with the last error and next steps (re-auth, device online, config). Add event triggers: kind=event, event_types=[feed.auto_paused], connector_key=<each connector to cover>.",
 		detail: {
 			slug: "feed-auto-pause",
-			// Triggers are connector-specific — left empty here; the ensure path
-			// merges { kind: event, event_types: [feed.auto_paused], connector_key }.
 			triggers: [],
 			prompt:
 				"A connector feed was auto-paused after too many consecutive sync failures.\n\nRead the trigger signal (label + input_text + attributes) for feed id, connector, connection, consecutive failure count, and last error.\n\nDecide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nKeep it short. Prefer client.notifications.send to admins; do not unpause automatically.\n",

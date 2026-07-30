@@ -39,6 +39,7 @@
 
 import type { ApprovalAttribution } from "@lobu/core/contracts/interaction-envelope";
 import type { DbClient } from "../db/client";
+import type { ResolutionIdentity } from "../entity-resolution/policy";
 import type { Env } from "../index";
 import type { ToolContext } from "../tools/registry";
 import type { EntityData } from "../utils/entity-management";
@@ -102,6 +103,8 @@ export interface CreateMutationRequest extends EntityMutationBase {
 	action: "create";
 	entityTypeSlug: string;
 	entityData: EntityData;
+	identityClaims?: ResolutionIdentity[];
+	identitySourceConnector?: string;
 	/** Snapshot payload shown on the approval card. */
 	proposal: Record<string, unknown>;
 }
@@ -210,6 +213,8 @@ export function deferEntityFieldChange(args: {
 /** Package a policy-held create as a POST-COMMIT deferred mutation. */
 export function deferEntityCreate(args: {
 	entityData: EntityData;
+	identityClaims?: ResolutionIdentity[];
+	identitySourceConnector?: string;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;

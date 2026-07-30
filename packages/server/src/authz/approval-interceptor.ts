@@ -23,6 +23,7 @@ import {
 	proposeEntityDelete,
 	proposeEntityFieldChange,
 } from "../tools/admin/entity-field-approval";
+import type { ResolutionIdentity } from "../entity-resolution/policy";
 import type { EntityData } from "../utils/entity-management";
 import type {
 	DeferredMutation,
@@ -57,6 +58,8 @@ function fieldChangeReason(
 
 export function buildCreateDeferral(args: {
 	entityData: EntityData;
+	identityClaims?: ResolutionIdentity[];
+	identitySourceConnector?: string;
 	proposal: Record<string, unknown>;
 	attribution: MutationAttribution;
 	watcherId?: number | null;
@@ -73,6 +76,8 @@ export function buildCreateDeferral(args: {
 		queue: (ctx) =>
 			proposeEntityCreate(ctx, {
 				entity_data: args.entityData,
+				identity_claims: args.identityClaims,
+				identity_source_connector: args.identitySourceConnector,
 				proposal: args.proposal,
 				watcher_id: args.watcherId ?? null,
 				window_id: args.windowId ?? null,
@@ -187,6 +192,8 @@ async function evaluate(
 			outcome: "defer",
 			deferred: buildCreateDeferral({
 				entityData: req.entityData,
+				identityClaims: req.identityClaims,
+				identitySourceConnector: req.identitySourceConnector,
 				proposal: req.proposal,
 				attribution: req.attribution,
 				watcherId: req.watcherId,

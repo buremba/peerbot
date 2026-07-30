@@ -27,6 +27,12 @@ import {
 import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
 import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
+import {
+  attachEntityIdentities,
+  contestedAgainst,
+  findEntitiesByIdentity,
+  identityKey,
+} from '../entity-resolution/identity-lookup';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
@@ -336,35 +342,29 @@ async function lookupMatches(
     identities: ExtractedLink['identities'][];
   }
 ): Promise<Map<string, number>> {
-  const keys = new Set<string>();
+  const wanted = new Map<string, { namespace: string; identifier: string }>();
   for (const arr of params.identities) {
-    for (const id of arr) keys.add(`${id.namespace}\u0000${id.identifier}`);
+    for (const id of arr) {
+      wanted.set(`${id.namespace}\u0000${id.identifier}`, {
+        namespace: id.namespace,
+        identifier: id.identifier,
+      });
+    }
   }
-  if (keys.size === 0) return new Map();
+  if (wanted.size === 0) return new Map();
 
-  const namespaces: string[] = [];
-  const identifiers: string[] = [];
-  for (const key of keys) {
-    const [ns, ident] = key.split('\u0000');
-    namespaces.push(ns);
-    identifiers.push(ident);
-  }
+  // One lookup shared with the tool create path, so the two cannot drift on
+  // which claims count as owned (see entity-resolution/identity-lookup).
+  const owners = await findEntitiesByIdentity(sql, {
+    organizationId: params.orgId,
+    identities: [...wanted.values()],
+  });
 
-  const rows = await sql<{ entity_id: number | string; namespace: string; identifier: string }>`
-    SELECT ei.entity_id, ei.namespace, ei.identifier
-    FROM entity_identities ei
-    JOIN entities e ON e.id = ei.entity_id
-    WHERE ei.organization_id = ${params.orgId}
-      AND ei.deleted_at IS NULL
-      AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier) IN (
-        SELECT ns, ident FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS u(ns, ident)
-      )
-  `;
-
+  // Re-key to this module's own convention, which its callers index by.
   const out = new Map<string, number>();
-  for (const row of rows) {
-    out.set(`${row.namespace}\u0000${row.identifier}`, Number(row.entity_id));
+  for (const [key, identity] of wanted) {
+    const owner = owners.get(identityKey(identity));
+    if (owner !== undefined) out.set(key, owner);
   }
   return out;
 }
@@ -470,13 +470,38 @@ async function createEntityWithIdentities(
   }
   if (entityId === null) return null;
 
-  const attached = await insertIdentities(sql, {
-    orgId: params.orgId,
-    entityId,
-    connectorKey: params.connectorKey,
-    connectionId: params.connectionId,
-    identities: persisted,
-  });
+  let attached: Array<{ namespace: string; identifier: string }>;
+  try {
+    attached = await insertIdentities(sql, {
+      orgId: params.orgId,
+      entityId,
+      connectorKey: params.connectorKey,
+      connectionId: params.connectionId,
+      identities: persisted,
+    });
+  } catch (err) {
+    // The entity was created only to own these claims and nothing references it
+    // yet, so a hard delete is right: leaving it would strand a person with no
+    // identities, and the next message would create another. A transaction is
+    // not an option here — the slug-retry loop above depends on surviving a
+    // failed INSERT, which an aborted transaction would not allow.
+    //
+    // Best-effort: if the identity write failed AFTER writing some rows, the FK
+    // holds this delete back. The original error still propagates, so ingestion
+    // fails closed either way.
+    try {
+      await sql`
+        DELETE FROM entities
+        WHERE id = ${entityId} AND organization_id = ${params.orgId}
+      `;
+    } catch (cleanupErr) {
+      logger.error(
+        { cleanupErr, entityId, orgId: params.orgId },
+        'entity cleanup failed after identity write error'
+      );
+    }
+    throw err;
+  }
   // Seed metadata.aliases from the identifiers that actually attached, so the
   // metric compiler (which resolves event fields against metadata->'aliases')
   // can attribute this contact's events from the moment it's created.
@@ -505,28 +530,18 @@ async function insertIdentities(
   }
 ): Promise<Array<{ namespace: string; identifier: string }>> {
   if (params.identities.length === 0) return [];
-  const namespaces = params.identities.map((i) => i.namespace);
-  const identifiers = params.identities.map((i) => i.identifier);
-  try {
-    const attached = await sql<{ namespace: string; identifier: string }>`
-      INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector, connection_id
-      )
-      SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
-             ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null}
-      FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS v(ns, ident)
-      ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
-      DO UPDATE SET connection_id = EXCLUDED.connection_id
-      WHERE entity_identities.entity_id = EXCLUDED.entity_id
-        AND entity_identities.connection_id IS NULL
-        AND EXCLUDED.connection_id IS NOT NULL
-      RETURNING namespace, identifier
-    `;
-    return attached.map((r) => ({ namespace: r.namespace, identifier: r.identifier }));
-  } catch (err) {
-    logger.warn({ err, entityId: params.entityId }, 'entity_identities insert failed');
-    return [];
-  }
+  // Errors propagate: a failed identity write must not read as "no identities",
+  // which is what lets the next writer mint a duplicate.
+  return attachEntityIdentities(sql, {
+    organizationId: params.orgId,
+    entityId: params.entityId,
+    identities: params.identities.map((i) => ({
+      namespace: i.namespace,
+      identifier: i.identifier,
+    })),
+    sourceConnector: `connector:${params.connectorKey}`,
+    connectionId: params.connectionId,
+  });
 }
 
 async function applyTraits(
@@ -798,6 +813,30 @@ async function resolveLinksByKind(
           identities: link.identities.filter((i) => !i.matchOnly),
         });
         attached = [...fresh];
+        // A claim held by a DIFFERENT entity stays with its owner — but it is a
+        // real "these two may be the same" signal, and it used to vanish
+        // silently. Derived from `matches`, already fetched above: no query.
+        // Namespaces only; an identifier here is someone's phone or email.
+        const contested = contestedAgainst(
+          matches,
+          entityId,
+          link.identities.map((i) => ({
+            namespace: i.namespace,
+            identifier: i.identifier,
+          }))
+        );
+        if (contested.length > 0) {
+          logger.warn(
+            {
+              orgId: params.orgId,
+              entityId,
+              connectorKey: params.connectorKey,
+              namespaces: [...new Set(contested.map((i) => i.namespace))],
+              contestedCount: contested.length,
+            },
+            'entityLink: identifier already claimed by another entity — left with its owner'
+          );
+        }
         // Mirror this link's non-matchOnly identifiers into metadata.aliases for
         // metric resolution. Passing the full set (not just `fresh`) repairs a
         // legacy entity whose identities predate aliases-on-create; ensureAliases'

@@ -38,7 +38,9 @@ import {
 	resolveActingPrincipal,
 } from "../../authz/entity-policy";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
+import { createEntityWithIdentityClaims } from "../../entity-resolution/identity-create";
 import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
+import { normalizeRequestedIdentities } from "../../entity-resolution/identity-lookup";
 import {
 	assessEntityResolution,
 	RESOLUTION_FINGERPRINT_VERSION,
@@ -48,7 +50,7 @@ import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
 import {
 	batchLoadRelationships,
-	createEntity,
+	type CreatedEntity,
 	deleteEntity,
 	type EntityData,
 	getEntity,
@@ -309,11 +311,15 @@ async function handleCreate(
 		entityData.content = args.content;
 	}
 
+	const requestedIdentities = normalizeRequestedIdentities(args.identities);
 	const proposal = {
 		entity_type: entityData.entity_type,
 		name: entityData.name,
 		parent_id: entityData.parent_id ?? null,
 		metadata: entityData.metadata ?? {},
+		...(requestedIdentities.length > 0
+			? { identities: requestedIdentities }
+			: {}),
 	};
 	const actor = await actingPrincipalFor(args, ctx);
 	const attribution = attributionFor(actor);
@@ -334,6 +340,8 @@ async function handleCreate(
 		ownerResolved: actor.ownerResolved,
 		entityTypeSlug: args.entity_type,
 		entityData,
+		identityClaims: requestedIdentities,
+		identitySourceConnector: identityWriterTag(ctx),
 		proposal,
 	});
 	if (createDecision.outcome === "deny") {
@@ -356,19 +364,61 @@ async function handleCreate(
 		} as unknown as ManageEntityResult;
 	}
 
-	const entity = await createEntity(entityData, {
-		hookContext: {
-			organizationId: ctx.organizationId,
-			userId: ctx.userId,
-			env,
-		},
+	const created = await createEntityWithIdentityClaims({
+		data: entityData,
+		identities: requestedIdentities,
+		env,
+		ctx,
+		sourceConnector: identityWriterTag(ctx),
+		canResolveExisting: (entityTypeSlug) =>
+			callerMayReadEntityType(entityTypeSlug, ctx),
 	});
+	return buildCreateResult(
+		created.entity,
+		env,
+		ctx,
+		created.attachedToExisting,
+	);
+}
 
+/**
+ * Whether `ctx` may read entities of this type — the type-level half of the
+ * gates `handleGet` applies. Used to decide whether an identity claim may
+ * resolve to an existing entity. A policy denial returns false; anything else
+ * (a DB or pool error) propagates, because treating an infrastructure failure
+ * as "denied" would silently downgrade to creating duplicates.
+ */
+async function callerMayReadEntityType(
+	entityTypeSlug: string,
+	ctx: ToolContext,
+): Promise<boolean> {
+	try {
+		await assertEntityReadAllowed(undefined, ctx, entityTypeSlug);
+	} catch (error) {
+		if (error instanceof ToolUserError) return false;
+		throw error;
+	}
+	return entityTypeSlug !== MEMBER_ENTITY_TYPE_SLUG || canSeeMemberList(ctx);
+}
+
+/** Provenance for a claim written through the tool rather than a connector. */
+function identityWriterTag(ctx: ToolContext): string {
+	return ctx.agentId ? `agent:${ctx.agentId}` : "tool:manage_entity";
+}
+
+async function buildCreateResult(
+	entity: CreatedEntity,
+	env: Env,
+	ctx: ToolContext,
+	attachedToExisting: boolean,
+): Promise<ManageEntityResult> {
 	const entityTypeLabel = capitalize(entity.entity_type);
 
 	// Build next steps
 	const nextSteps: string[] = [
-		`${entityTypeLabel} "${entity.name}" created successfully with ID ${entity.id}.`,
+		attachedToExisting
+			? `${entityTypeLabel} "${entity.name}" (ID ${entity.id}) already existed under one of these identifiers, so it was used instead of creating a second one.`
+			: `${entityTypeLabel} "${entity.name}" created successfully with ID ${entity.id}.`,
 	];
 
 	if (!entity.parent_id) {
@@ -391,6 +441,7 @@ async function handleCreate(
 
 	return {
 		action: "create",
+		attached_to_existing: attachedToExisting,
 		entity: {
 			id: entityDetails.id,
 			entity_type: entityDetails.entity_type,

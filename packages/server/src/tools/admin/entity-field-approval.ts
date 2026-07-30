@@ -18,8 +18,10 @@ import {
 	type EntityResolutionAssessment,
 	RESOLUTION_FINGERPRINT_VERSION,
 	type ResolutionEvidence,
+	type ResolutionIdentity,
 	type ResolutionKeySet,
 } from "../../entity-resolution/policy";
+import { createEntityWithIdentityClaims } from "../../entity-resolution/identity-create";
 import {
 	droppedEvidence,
 	gainedEvidence,
@@ -116,6 +118,8 @@ export interface EntityDeleteProposal {
 export interface EntityCreateProposal {
 	operation: "create";
 	entity_data: EntityData;
+	identity_claims?: ResolutionIdentity[];
+	identity_source_connector?: string;
 	proposal: Record<string, unknown>;
 	watcher_id?: number | null;
 	/** See EntityFieldChangeProposal.window_id — batches proposals by run window. */
@@ -284,7 +288,10 @@ function entityChangeIdempotencyKey(
 			};
 			break;
 		case "create":
-			change = { entityData: asCreateProposal(proposal).entity_data };
+			change = {
+				entityData: asCreateProposal(proposal).entity_data,
+				identityClaims: asCreateProposal(proposal).identity_claims ?? [],
+			};
 			break;
 		case "merge": {
 			const merge = asMergeProposal(proposal);
@@ -706,7 +713,10 @@ export async function proposeEntityChange(
           )
           AND (
             ${operation !== "create"}
-            OR r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
+            OR (
+              r.action_input->'entity_data' = ${sql.json(createProposal?.entity_data ?? {})}::jsonb
+              AND COALESCE(r.action_input->'identity_claims', '[]'::jsonb) = ${sql.json(createProposal?.identity_claims ?? [])}::jsonb
+            )
           )
           AND (
             ${operation !== "merge"}
@@ -1231,25 +1241,40 @@ export async function applyEntityChangeProposal(
 	}
 	if (operation === "create") {
 		const createProposal = asCreateProposal(proposal);
-		return createEntity(
-			{
-				...createProposal.entity_data,
-				organization_id: ctx.organizationId,
-				// The watcher that PROPOSED the create is not a real user row, so
-				// entities.created_by (NOT NULL, FK → user) must attribute the create to
-				// the human who APPROVED it. Approval is human-gated (requireHuman-
-				// ApprovalContext), so ctx.userId is a verified user here — using it
-				// avoids the "system" fallback that fails the FK.
-				created_by: ctx.userId ?? createProposal.entity_data.created_by,
-			},
-			{
+		const data = {
+			...createProposal.entity_data,
+			organization_id: ctx.organizationId,
+			// The watcher that PROPOSED the create is not a real user row, so
+			// entities.created_by (NOT NULL, FK → user) must attribute the create to
+			// the human who APPROVED it. Approval is human-gated (requireHuman-
+			// ApprovalContext), so ctx.userId is a verified user here — using it
+			// avoids the "system" fallback that fails the FK.
+			created_by: ctx.userId ?? createProposal.entity_data.created_by,
+		};
+		if (!createProposal.identity_claims?.length) {
+			return createEntity(data, {
 				hookContext: {
 					organizationId: ctx.organizationId,
 					userId: ctx.userId,
 					env,
 				},
-			},
-		);
+			});
+		}
+		const result = await createEntityWithIdentityClaims({
+			data,
+			identities: createProposal.identity_claims,
+			env,
+			ctx,
+			sourceConnector:
+				createProposal.identity_source_connector ?? "tool:manage_entity",
+			// Unlike the agent-facing tool path, this runs only under
+			// requireHumanApprovalContext — a verified human who reviewed the
+			// proposal card. manage_operations refuses agents outright, so the
+			// create-but-cannot-read oracle that gate exists to close cannot
+			// arise here.
+			canResolveExisting: async () => true,
+		});
+		return result.entity;
 	}
 	if (operation === "merge") {
 		const mergeProposal = asMergeProposal(proposal);

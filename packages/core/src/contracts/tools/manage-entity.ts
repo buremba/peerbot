@@ -82,6 +82,29 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
+  identities: Type.Optional(
+    Type.Array(
+      Type.Object({
+        namespace: Type.String({
+          minLength: 1,
+          maxLength: 64,
+          description:
+            "Identifier kind. Only 'phone' and 'email' may be supplied here; every other namespace is server-owned (sign-in and connector identities) and is ignored.",
+        }),
+        identifier: Type.String({
+          minLength: 1,
+          maxLength: 512,
+          description: "The value, e.g. '+90 532 235 65 86'.",
+        }),
+      }),
+      {
+        maxItems: 25,
+        description:
+          "[create] Identifiers that uniquely IDENTIFY this thing, as opposed to metadata describing it. Supplying them makes create resolve first: if a live entity already claims one, that entity is used and `attached_to_existing` comes back true instead of a duplicate being made. Values that do not parse are ignored rather than stored as claims, as are namespaces other than phone and email. Two different existing entities claiming different identifiers in one call is refused — merge them first.",
+      }
+    )
+  ),
+
   merge_evidence: Type.Optional(
     Type.Array(
       Type.Object({
@@ -395,6 +418,11 @@ export const ManageEntityResultSchema = Type.Union([
   Type.Object({
     action: Type.Literal("create"),
     entity: Type.Optional(ManageEntityItemSchema),
+    /**
+     * True when a supplied identifier already belonged to a live entity, so
+     * `entity` is that pre-existing one rather than something newly made.
+     */
+    attached_to_existing: Type.Optional(Type.Boolean()),
     warnings: Type.Optional(Type.Array(Type.String())),
     next_steps: Type.Optional(Type.Array(Type.String())),
     approval_queued: Type.Optional(Type.Boolean()),

@@ -46,15 +46,19 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 			// invisible once the window advances. This template is advisory
 			// notification, not the delivery guarantee: the durable path is the
 			// per-episode audit event plus retryPendingFeedAutoPausedSignals.
+			// Name must be `content`: behavior-mode only cursor-paginates that
+			// source name; any other name is truncated at the page size with no
+			// next_cursor, which would permanently omit pause episodes in a
+			// burst larger than one page.
 			sources: [
 				{
-					name: "auto_paused",
+					name: "content",
 					query:
 						"SELECT id, title, origin_id, connection_id, feed_id, connector_key, feed_key, metadata, occurred_at, created_at FROM events WHERE semantic_type = 'change' AND metadata->'extra'->>'reason' = 'feed.auto_paused' AND created_at >= NOW() - interval '25 hours' ORDER BY occurred_at DESC",
 				},
 			],
 			prompt:
-				"Review sources.auto_paused — each row is a feed Lobu hard-paused after consecutive failures. metadata.extra has last_error, consecutive_failures, connection_id, connector_key.\n\nFor each distinct feed that still needs attention (dedupe by feed_id / origin_id), decide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nIf sources.auto_paused is empty, do nothing (no notification).\nKeep it short. Prefer client.notifications.send to admins; do not unpause feeds automatically.\n",
+				"Review sources.content — each row is a feed Lobu hard-paused after consecutive failures. metadata.extra has last_error, consecutive_failures, connection_id, connector_key.\n\nFor each distinct feed that still needs attention (dedupe by feed_id / origin_id), decide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nIf sources.content is empty, do nothing (no notification).\nKeep it short. Prefer client.notifications.send to admins; do not unpause feeds automatically.\n",
 			notification_channel: "notification",
 			notification_priority: "high",
 			tags: ["platform", "feed-health"],

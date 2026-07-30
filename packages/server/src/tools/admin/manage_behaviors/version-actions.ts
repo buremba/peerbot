@@ -8,7 +8,6 @@ import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
 import { getNextNumericId } from '../helpers/db-helpers';
-import { extractSourcesFromPromptTokens, mergePromptSources } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
@@ -94,35 +93,22 @@ export async function handleCreateVersion(
   // distinguishing "the caller omitted sources" (inherit) from "the caller
   // explicitly set them" (replace, even to empty). This closes #2048: passing
   // `sources: []` used to be conflated with "omitted" and silently re-inherited
-  // the stored sources. The three authoring intents, in precedence order:
+  // the stored sources.
   //
-  //   1. Source-token prompt edited → derive fresh from the new prompt's
-  //      `@`-chips (unioned with any explicit sources). The prompt is
-  //      authoritative: a deleted chip's source must NOT linger, an edited SQL
-  //      chip must not keep its OLD query under the same name (union-merge is
-  //      monotonic, add-only), so we derive fresh rather than union with stored.
-  //   2. `sources` passed without a source-token edit → EXPLICIT replacement.
-  //      The given list is authoritative even when empty (`[]` clears).
-  //   3. Neither a source-token edit nor sources supplied → INHERIT the stored
-  //      sources, so a metadata-only bump (schedule/name) preserves them.
-  const promptSources = extractSourcesFromPromptTokens(prompt);
-  const sourcesProvided = args.sources !== undefined;
-  const explicitSources = args.sources ?? [];
+  //   1. `sources` passed → EXPLICIT replacement. The given list is
+  //      authoritative even when empty (`[]` clears).
+  //   2. `sources` omitted → INHERIT the assignment's stored sources, so a
+  //      prompt- or metadata-only bump preserves them.
+  //
+  // The instruction text is not a third input. In particular, `lobu apply`
+  // supplies compiled skill bodies as the prompt; chip-shaped prose there must
+  // not add or remove the assignment's sources. Interactive authoring clients
+  // send an explicit replacement when their source-chip set changes.
   const storedSources = normalizeStoredJsonField(
     watcherRows[0].sources,
     [] as Array<{ name: string; query: string }>
   );
-  // Include the previous prompt so removing its last token clears its source.
-  const previousPromptHadSourceTokens =
-    promptEdited && extractSourcesFromPromptTokens((prev.prompt as string) ?? '').length > 0;
-  const shouldDerivePromptSources =
-    promptEdited && (promptSources.length > 0 || previousPromptHadSourceTokens);
-  const sources =
-    shouldDerivePromptSources
-      ? mergePromptSources(explicitSources, promptSources)
-      : sourcesProvided
-        ? explicitSources
-        : storedSources;
+  const sources = args.sources !== undefined ? args.sources : storedSources;
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
@@ -432,6 +418,17 @@ export async function handleGetVersionDetails(
     throw new Error('behavior_id is required for get_version_details action');
   }
 
+  // Version rows live on the group root while sources live on the assignment.
+  // Resolve both so assignment ids behave consistently with get_versions.
+  const watcherRows = await sql`
+    SELECT id, watcher_group_id, sources
+    FROM watchers WHERE id = ${args.behavior_id}
+  `;
+  if (watcherRows.length === 0) {
+    throw new Error(`Behavior ${args.behavior_id} not found`);
+  }
+  const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
+
   let rows;
   if (args.version !== undefined) {
     rows = await sql`
@@ -441,7 +438,7 @@ export async function handleGetVersionDetails(
         keying_config, classifiers,
         reactions_guidance
       FROM watcher_versions
-      WHERE watcher_id = ${args.behavior_id} AND version = ${args.version}
+      WHERE watcher_id = ${groupId} AND version = ${args.version}
       LIMIT 1
     `;
   } else {
@@ -466,6 +463,14 @@ export async function handleGetVersionDetails(
 
   const v = rows[0] as Record<string, unknown>;
 
+  // create_version leaves version_sources NULL because sources are
+  // per-assignment. Fall through to the assignment's live list, matching
+  // get_content while retaining sources stored on older version rows.
+  const versionSources = normalizeStoredJsonField(
+    v.version_sources,
+    [] as Array<{ name: string; query: string }>
+  );
+
   return {
     action: 'get_version_details',
     behavior_id: args.behavior_id,
@@ -474,10 +479,13 @@ export async function handleGetVersionDetails(
     name: v.name as string | undefined,
     description: v.description as string | undefined,
     prompt: v.prompt as string,
-    sources: normalizeStoredJsonField(
-      v.version_sources,
-      [] as Array<{ name: string; query: string }>
-    ),
+    sources:
+      versionSources.length > 0
+        ? versionSources
+        : normalizeStoredJsonField(
+            watcherRows[0].sources,
+            [] as Array<{ name: string; query: string }>
+          ),
     keying_config: normalizeStoredJsonField(v.keying_config, undefined as unknown),
     classifiers: normalizeStoredJsonField(v.classifiers, undefined as unknown[] | undefined),
     reactions_guidance: v.reactions_guidance as string | undefined,

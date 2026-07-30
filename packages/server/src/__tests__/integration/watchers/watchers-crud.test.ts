@@ -618,11 +618,9 @@ describe('watcher CRUD', () => {
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
-  it('re-derives sources on a version bump — an edited SQL chip replaces (not strands) the old query', async () => {
-    // Regression: create_version used to UNION prompt-derived sources with the
-    // stored ones, so editing a SQL chip left the OLD query running under the
-    // original name and added the new one under a suffixed name. The prompt must
-    // be the single source of truth: the new prompt's tokens are authoritative.
+  it('a version bump does not re-derive sources from the prompt — the caller sends them', async () => {
+    // The prompt is compiled skill text since #2331, so its `@`-tokens are the
+    // skill's prose, not an authoring surface. Changing a source is explicit.
     const enc = (q: string) =>
       `#sql=${encodeURIComponent(q).replace(
         /[()'!*~]/g,
@@ -639,56 +637,72 @@ describe('watcher CRUD', () => {
       agent_id: agentId,
     })) as { behavior_id: string };
 
-    // Edit the SQL chip: same label/name, new query — a new prompt version.
+    const readSources = async () => {
+      const got = (await owner.behaviors.get({
+        behavior_id: created.behavior_id,
+      })) as {
+        behavior?: { sources?: Array<{ name: string; query: string }> | null };
+      };
+      return got.behavior?.sources ?? [];
+    };
+
+    // A new prompt naming a different query leaves the stored source alone.
     await owner.behaviors.createVersion({
       behavior_id: created.behavior_id,
       prompt: `Watch @[sql:recent:Recent](${enc(newQuery)}).`,
       change_notes: 'edit sql',
     });
+    expect(await readSources()).toEqual([{ name: 'recent', query: oldQuery }]);
 
-    const got = (await owner.behaviors.get({
+    // Sending `sources` replaces wholesale — no stranded old query, no
+    // suffixed `recent_2`.
+    await owner.behaviors.createVersion({
       behavior_id: created.behavior_id,
-    })) as {
-      behavior?: { sources?: Array<{ name: string; query: string }> | null };
-    };
-    // Exactly one source, carrying the NEW query — the old one is gone, not
-    // stranded under `recent`, and there is no `recent_2`.
-    expect(got.behavior?.sources).toEqual([{ name: 'recent', query: newQuery }]);
+      sources: [{ name: 'recent', query: newQuery }],
+      change_notes: 'repoint source',
+    });
+    expect(await readSources()).toEqual([{ name: 'recent', query: newQuery }]);
 
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
-  it('clears sources when an edited prompt removes every @-mention chip', async () => {
-    // Regression: an edited prompt (args.prompt provided) with NO source tokens
-    // must yield an empty sources[] — removing all chips clears sources. It must
-    // NOT fall back to the stored sources (that fallback is only for a bump that
-    // did not touch the prompt, e.g. a schedule-only change).
+  it('removing every @-mention chip does not clear sources — `sources: []` does', async () => {
     const enc = (q: string) =>
       `#sql=${encodeURIComponent(q).replace(
         /[()'!*~]/g,
         (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
       )}`;
+    const query = 'SELECT id FROM events';
     const created = (await owner.behaviors.create({
       entity_id: entityId,
       slug: 'clear-sources-on-edit-watcher',
       name: 'Clear Sources On Edit Watcher',
-      prompt: `Watch @[sql:recent:Recent](${enc('SELECT id FROM events')}).`,
+      prompt: `Watch @[sql:recent:Recent](${enc(query)}).`,
       agent_id: agentId,
     })) as { behavior_id: string };
 
-    // New prompt with the chip removed → sources must become empty.
+    const readSources = async () => {
+      const got = (await owner.behaviors.get({
+        behavior_id: created.behavior_id,
+      })) as {
+        behavior?: { sources?: Array<{ name: string; query: string }> | null };
+      };
+      return got.behavior?.sources ?? [];
+    };
+
     await owner.behaviors.createVersion({
       behavior_id: created.behavior_id,
       prompt: 'Just watch everything, no specific source.',
       change_notes: 'remove chip',
     });
+    expect(await readSources()).toEqual([{ name: 'recent', query }]);
 
-    const got = (await owner.behaviors.get({
+    await owner.behaviors.createVersion({
       behavior_id: created.behavior_id,
-    })) as {
-      behavior?: { sources?: Array<{ name: string; query: string }> | null };
-    };
-    expect(got.behavior?.sources ?? []).toEqual([]);
+      sources: [],
+      change_notes: 'clear sources',
+    });
+    expect(await readSources()).toEqual([]);
 
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });

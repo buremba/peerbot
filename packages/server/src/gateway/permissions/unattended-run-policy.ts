@@ -26,6 +26,13 @@ export interface UnattendedRunScope {
 	organizationId: string | undefined;
 	/** Signed agent id from the worker token. */
 	agentId: string | undefined;
+	/**
+	 * Per-turn message id from the worker token, minted by the runs-queue
+	 * dispatcher for THIS turn. The Behavior run records the one it dispatched
+	 * in `runs.dispatched_message_id`, so this is what distinguishes the
+	 * dispatcher's own turn from any other turn on the same conversation.
+	 */
+	messageId: string | undefined;
 }
 
 /**
@@ -33,14 +40,29 @@ export interface UnattendedRunScope {
  * unattended execution.
  *
  * The query re-checks the signed token's org and agent against both the
- * Behavior and run. Interactive conversations do not carry the suffix.
+ * Behavior and run, and binds the TURN to the Behavior run's own dispatch.
  * Any parse or database failure keeps the approval requirement.
+ *
+ * The conversation suffix alone is NOT sufficient and never was: a session
+ * carrying it outlives the dispatch that created it, so a direct/API turn on
+ * the same conversation — or a second message an ordinary org member posts
+ * into it — would otherwise inherit `bypassPermissions`. `/agent` verifying
+ * intent at session creation does not cover that, because the escalation is
+ * per-TURN, not per-session. `dispatched_message_id` is the server-authored
+ * fact identifying the one turn the dispatcher started for this run:
+ * `dispatchWatcherRun` writes it in the same statement that marks the run
+ * `running`, BEFORE posting the message the token is minted from.
  */
 export async function runAllowsUnattendedToolUse(
 	scope: UnattendedRunScope,
 	db?: DbClient,
 ): Promise<boolean> {
-	if (!scope.conversationId || !scope.organizationId || !scope.agentId) {
+	if (
+		!scope.conversationId ||
+		!scope.organizationId ||
+		!scope.agentId ||
+		!scope.messageId
+	) {
 		return false;
 	}
 	const correlation = parseBehaviorRunConversationId(scope.conversationId);
@@ -65,6 +87,13 @@ export async function runAllowsUnattendedToolUse(
         AND w.agent_id = ${scope.agentId}
         AND behavior_run.id = ${behaviorRunId}
         AND behavior_run.run_type = 'behavior'
+        -- Bind this TURN to the Behavior run's own dispatch. A turn the
+        -- dispatcher did not start carries a different messageId, so it gets
+        -- the approval card even on a conversation whose suffix matches.
+        AND behavior_run.dispatched_message_id = ${scope.messageId}
+        -- And only while that dispatch is still live: a finished run must not
+        -- keep handing out unattended tool use to a resumed session.
+        AND behavior_run.status = 'running'
         AND behavior_run.organization_id = ${scope.organizationId}
       LIMIT 1
     `;

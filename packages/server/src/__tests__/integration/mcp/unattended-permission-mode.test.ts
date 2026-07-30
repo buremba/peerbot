@@ -131,10 +131,18 @@ async function scenario(
     `;
 	}
 
+	// Production shape: `dispatchWatcherRun` stamps `dispatched_message_id` in
+	// the SAME statement that marks the run 'running', before posting the
+	// message the per-turn worker token is minted from. The gate binds to it, so
+	// a fixture that omits it would pass against a gate that ignores the turn.
+	const dispatchedMessageId = `msg-${slug}`;
 	const [behaviorRun] = await sql`
-    INSERT INTO runs (organization_id, run_type, watcher_id, status, approved_input)
+    INSERT INTO runs (
+      organization_id, run_type, watcher_id, status, dispatched_message_id,
+      approved_input
+    )
     VALUES (${workspace.org.id}, 'behavior', ${watcherId}, 'running',
-            ${sql.json({ dispatch_source: "scheduled" })})
+            ${dispatchedMessageId}, ${sql.json({ dispatch_source: "scheduled" })})
     RETURNING id
   `;
 	const behaviorRunId = Number(behaviorRun.id);
@@ -152,6 +160,7 @@ async function scenario(
 		agentId,
 		watcherId,
 		behaviorRunId,
+		dispatchedMessageId,
 		queueRunId: Number(queueRun.id),
 		conversationId: `${agentId}_watcher_${watcherId}_run_${behaviorRunId}`,
 	};
@@ -163,6 +172,10 @@ async function callTool(opts: {
 	agentId: string;
 	conversationId: string;
 	queueRunId: number;
+	dispatchedMessageId: string;
+	/** Override to model a turn the dispatcher did not start. */
+	messageId?: string;
+	source?: string;
 }): Promise<{ blocked: boolean; reachedForwardPath: boolean }> {
 	const proxy = new McpProxy(fakeConfigService as never, {
 		grantStore: new GrantStore(),
@@ -172,9 +185,10 @@ async function callTool(opts: {
 		channelId: "c1",
 		agentId: opts.agentId,
 		organizationId: opts.organizationId,
-		source: "watcher-run",
+		source: opts.source ?? "watcher-run",
 		// Production shape: the queue row, never the Behavior run.
 		runId: opts.queueRunId,
+		messageId: opts.messageId ?? opts.dispatchedMessageId,
 	});
 
 	const response = await orgContext.run(
@@ -294,5 +308,68 @@ describe("permission_mode governs the MCP tool-approval gate", () => {
 		});
 
 		expect(blocked).toBe(true);
+	});
+
+	describe("the conversation suffix alone never grants unattended tool use", () => {
+		// The escalation is per-TURN, not per-session: a Behavior conversation
+		// outlives the dispatch that created it, so verifying `intent` at session
+		// creation does not stop a later turn on the same conversation from
+		// inheriting bypassPermissions. Each case below shares the Behavior's
+		// exact conversationId and differs only in what the SERVER recorded.
+
+		it("blocks a direct-API turn on the very same conversation", async () => {
+			const fixture = await scenario("bypassPermissions");
+
+			const { blocked } = await callTool({
+				...fixture,
+				source: "direct-api",
+				// An ordinary caller's turn carries its own message id.
+				messageId: "msg-attacker-direct-api",
+			});
+
+			expect(blocked).toBe(true);
+		});
+
+		it("blocks a second turn posted into a live Behavior session", async () => {
+			// An org member posting another message to the dispatcher's session
+			// gets a new per-turn message id, so it is not the dispatched turn.
+			const fixture = await scenario("bypassPermissions");
+
+			const { blocked } = await callTool({
+				...fixture,
+				messageId: `${fixture.dispatchedMessageId}-second-turn`,
+			});
+
+			expect(blocked).toBe(true);
+		});
+
+		it("blocks a turn whose token carries no message id at all", async () => {
+			const fixture = await scenario("bypassPermissions");
+
+			const { blocked } = await callTool({ ...fixture, messageId: "" });
+
+			expect(blocked).toBe(true);
+		});
+
+		it("blocks a resumed session once the Behavior run has finished", async () => {
+			const fixture = await scenario("bypassPermissions");
+			await getTestDb()`
+        UPDATE runs SET status = 'completed' WHERE id = ${fixture.behaviorRunId}
+      `;
+
+			const { blocked } = await callTool(fixture);
+
+			expect(blocked).toBe(true);
+		});
+
+		it("still allows the dispatcher's own turn, so the guard is not a blanket deny", async () => {
+			// Pairs with the four cases above: without this, deleting the whole
+			// unattended branch would keep them all green.
+			const fixture = await scenario("bypassPermissions");
+
+			const { blocked } = await callTool(fixture);
+
+			expect(blocked).toBe(false);
+		});
 	});
 });

@@ -566,6 +566,7 @@ export class McpProxy {
 				organizationId: tokenData.organizationId,
 				agentId,
 				conversationId: tokenData.conversationId,
+				messageId: tokenData.messageId,
 			})
 		) {
 			logger.info(

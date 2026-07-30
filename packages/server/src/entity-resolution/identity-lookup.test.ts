@@ -46,7 +46,6 @@ describe("normalizeRequestedIdentities", () => {
 			]),
 		).toEqual([]);
 	});
-});
 
 	it("refuses server-owned namespaces so a caller cannot squat them", () => {
 		// auth_user_id is how authz/member-claim-predicate resolves a signed-in
@@ -75,6 +74,7 @@ describe("normalizeRequestedIdentities", () => {
 			{ namespace: "email", identifier: "a@b.com" },
 		]);
 	});
+});
 
 describe("identityKey", () => {
 	it("does not let a separator in one part impersonate another claim", () => {

@@ -29,7 +29,6 @@ import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import {
   attachEntityIdentities,
-  contestedAgainst,
   findEntitiesByIdentity,
   identityKey,
 } from '../entity-resolution/identity-lookup';
@@ -817,14 +816,13 @@ async function resolveLinksByKind(
         // real "these two may be the same" signal, and it used to vanish
         // silently. Derived from `matches`, already fetched above: no query.
         // Namespaces only; an identifier here is someone's phone or email.
-        const contested = contestedAgainst(
-          matches,
-          entityId,
-          link.identities.map((i) => ({
-            namespace: i.namespace,
-            identifier: i.identifier,
-          }))
-        );
+        // `matches` is keyed by this module's `namespace\u0000identifier`
+        // convention, not `identityKey`, so this reuses `hitFor` rather than the
+        // shared `contestedAgainst` helper, whose lookups would never hit.
+        const contested = link.identities.filter((id) => {
+          const owner = hitFor(id);
+          return owner !== undefined && owner !== entityId;
+        });
         if (contested.length > 0) {
           logger.warn(
             {

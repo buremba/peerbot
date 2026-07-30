@@ -22,6 +22,7 @@ import {
 	type ResolutionKeySet,
 } from "../../entity-resolution/policy";
 import { createEntityWithIdentityClaims } from "../../entity-resolution/identity-create";
+import { identityKey } from "../../entity-resolution/identity-lookup";
 import {
 	droppedEvidence,
 	gainedEvidence,
@@ -267,6 +268,22 @@ export function mergeReviewEventMetadata(proposal: EntityMergeProposal) {
 	};
 }
 
+/**
+ * Claim order is the caller's, not part of the ask: `[phone, email]` and
+ * `[email, phone]` are the same proposal. Both the sha256 idempotency digest
+ * and the JSONB `=` reuse predicate compare arrays positionally, so the claims
+ * are sorted once (before the digest, the predicate, and the persisted
+ * `action_input` are derived) instead of stacking a second approval card for an
+ * identical ask.
+ */
+function canonicalIdentityClaims(
+	claims: ResolutionIdentity[],
+): ResolutionIdentity[] {
+	return [...claims].sort((left, right) =>
+		identityKey(left).localeCompare(identityKey(right)),
+	);
+}
+
 function entityChangeIdempotencyKey(
 	organizationId: string,
 	windowId: number | null,
@@ -288,6 +305,8 @@ function entityChangeIdempotencyKey(
 			};
 			break;
 		case "create":
+			// Claims arrive canonically ordered (see canonicalIdentityClaims at the
+			// proposeEntityChange entry), so this positional hash is order-stable.
 			change = {
 				entityData: asCreateProposal(proposal).entity_data,
 				identityClaims: asCreateProposal(proposal).identity_claims ?? [],
@@ -629,10 +648,22 @@ export async function refreshMergeProposalFingerprint(
 
 export async function proposeEntityChange(
 	ctx: ToolContext,
-	proposal: EntityChangeProposal,
+	requested: EntityChangeProposal,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const sql = getDb();
-	const operation = operationOf(proposal);
+	const operation = operationOf(requested);
+	// The digest, the reuse predicate, and action_input all derive from
+	// `proposal`, so canonicalizing the claim order once here keeps all three
+	// order-independent and in agreement with what is stored.
+	const proposal: EntityChangeProposal =
+		operation === "create" && asCreateProposal(requested).identity_claims
+			? {
+					...asCreateProposal(requested),
+					identity_claims: canonicalIdentityClaims(
+						asCreateProposal(requested).identity_claims ?? [],
+					),
+				}
+			: requested;
 	// window_id groups a run's proposals into one batch card. It rides the column,
 	// not action_input, and is part of the canonical idempotency key below.
 	const { window_id: windowId, ...proposalWithoutWindow } = proposal;

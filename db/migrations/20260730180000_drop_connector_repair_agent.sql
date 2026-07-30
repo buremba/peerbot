@@ -3,6 +3,8 @@
 -- (+ optional out-of-the-box Behavior). Columns are unused after QUERYABLE_SCHEMA
 -- and application code stopped reading them.
 
+-- migrate:up
+
 -- squawk-ignore ban-drop-column
 ALTER TABLE public.feeds
   DROP COLUMN IF EXISTS repair_agent_id,

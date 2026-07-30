@@ -827,8 +827,34 @@ function createOAuthHttpClient(accessToken: string): HttpClient {
 	});
 }
 
+/**
+ * Resolve how many scroll/page iterations this run should perform.
+ *
+ * - `max_scrolls` (default 10): upper bound (also the fixed value when min is omitted).
+ * - `min_scrolls` (optional): when set and &lt; max, pick uniformly in [min, max]
+ *   each run so depth varies (e.g. min 8 / max 12 ≈ ~80–120 home tweets).
+ */
+function readScrollBudget(
+	config: Record<string, unknown>,
+	opts: { defaultMax?: number; cap?: number } = {},
+): number {
+	const defaultMax = opts.defaultMax ?? 10;
+	const cap = opts.cap ?? 50;
+	const max = Math.max(
+		1,
+		Math.min(cap, Number(config.max_scrolls ?? defaultMax) || defaultMax),
+	);
+	const minRaw = config.min_scrolls;
+	if (minRaw === undefined || minRaw === null || minRaw === "") {
+		return max;
+	}
+	const min = Math.max(1, Math.min(max, Number(minRaw) || 1));
+	if (min >= max) return max;
+	return min + Math.floor(Math.random() * (max - min + 1));
+}
+
 function readMaxPages(config: Record<string, unknown>, cap = 50): number {
-	return Math.max(1, Math.min(cap, Number(config.max_scrolls ?? 10) || 10));
+	return readScrollBudget(config, { defaultMax: 10, cap });
 }
 
 type XSyncBackend = "oauth_api" | "extension";
@@ -1653,10 +1679,7 @@ async function syncHomeFeedViaDomScrape(
 	config: Record<string, unknown>,
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
-	const maxScrolls = Math.max(
-		1,
-		Math.min(30, Number(config.max_scrolls ?? 10) || 10),
-	);
+	const maxScrolls = readScrollBudget(config, { defaultMax: 10, cap: 30 });
 	const { items: rows, loggedIn } = await extensionDomScrape<HomeFeedRow>({
 		dispatcher: requireExtensionDispatcher(ctx),
 		url: "https://x.com/home",
@@ -1678,6 +1701,7 @@ async function syncHomeFeedViaDomScrape(
 	return finalizeSyncResult(tweets, checkpoint, {
 		backend: "extension-cs-scrape",
 		items_scraped: rows.length,
+		scrolls_this_run: maxScrolls,
 		timeline: "home",
 	});
 }
@@ -1696,6 +1720,24 @@ const backendPreferenceProperties = {
 		default: false,
 		description:
 			"Force the X API even when scopes are missing (will fail unless re-authorized).",
+	},
+} as const;
+
+const scrollBudgetProperties = {
+	max_scrolls: {
+		type: "integer",
+		minimum: 1,
+		maximum: 50,
+		default: 10,
+		description:
+			"Maximum scroll/page iterations this feed may perform (default: 10). With min_scrolls, this is the upper end of a per-run random range.",
+	},
+	min_scrolls: {
+		type: "integer",
+		minimum: 1,
+		maximum: 50,
+		description:
+			"Optional lower bound. When set below max_scrolls, each sync picks a uniform random scroll count in [min_scrolls, max_scrolls] (e.g. 8–12 ≈ ~80–120 home tweets).",
 	},
 } as const;
 
@@ -1722,14 +1764,7 @@ const searchConfigSchema = {
 			description:
 				'Search tab: "live" for Latest (chronological), "top" for Top (popular/algorithmic)',
 		},
-		max_scrolls: {
-			type: "integer",
-			minimum: 1,
-			maximum: 50,
-			default: 10,
-			description:
-				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
-		},
+		...scrollBudgetProperties,
 		...backendPreferenceProperties,
 	},
 };
@@ -1743,7 +1778,14 @@ const homeFeedConfigSchema = {
 			maximum: 30,
 			default: 10,
 			description:
-				"Maximum scroll iterations for the home timeline (default: 10)",
+				"Maximum scroll iterations for the home timeline (default: 10). Upper end of the range when min_scrolls is set.",
+		},
+		min_scrolls: {
+			type: "integer",
+			minimum: 1,
+			maximum: 30,
+			description:
+				"Optional lower bound. When set below max_scrolls, each sync picks a uniform random scroll count in [min_scrolls, max_scrolls].",
 		},
 	},
 };
@@ -1757,14 +1799,7 @@ const accountTimelineConfigSchema = {
 			description:
 				'Optional X handle (e.g. "buremba"). Defaults to the authenticated account when OAuth is available.',
 		},
-		max_scrolls: {
-			type: "integer",
-			minimum: 1,
-			maximum: 50,
-			default: 10,
-			description:
-				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
-		},
+		...scrollBudgetProperties,
 		...backendPreferenceProperties,
 	},
 };
@@ -1784,14 +1819,7 @@ const bookmarksConfigSchema = {
 			description:
 				"Optional numeric X user id for DM from_me / counterparty resolution on the extension path.",
 		},
-		max_scrolls: {
-			type: "integer",
-			minimum: 1,
-			maximum: 50,
-			default: 10,
-			description:
-				"Maximum pagination iterations (default: 10, API pages or browser scrolls)",
-		},
+		...scrollBudgetProperties,
 		...backendPreferenceProperties,
 	},
 };
@@ -1836,7 +1864,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.3.2",
+		version: "3.4.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

@@ -26,21 +26,29 @@ function scheduleTrigger(cron: string): Record<string, unknown> {
 
 export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
-		// Platform remediation template for feed.auto_paused (emitted when Lobu
-		// hard-pauses a feed). Install via "From catalog" / manage_behaviors —
-		// set event triggers with connector_key(s) you care about and
-		// event_types: ["feed.auto_paused"]. The platform does not auto-create
-		// this Behavior.
+		// Platform remediation for hard-paused feeds. Lobu writes lifecycle
+		// events (semantic_type=change, metadata.extra.reason=feed.auto_paused).
+		// This template schedules hourly and SQL-sources those events so one
+		// Behavior covers every connector without per-connector event triggers.
+		// Install via "From catalog" / manage_behaviors — not auto-created.
 		id: "feed-auto-pause",
 		name: "Feed auto-pause helper",
-		version: "1.0.0",
+		version: "1.1.0",
 		description:
-			"When Lobu hard-pauses a feed after consecutive sync failures, notify admins with the last error and next steps (re-auth, device online, config). Add event triggers: kind=event, event_types=[feed.auto_paused], connector_key=<each connector to cover>.",
+			"Hourly check for feeds Lobu hard-paused after consecutive sync failures. Sources recent feed.auto_paused lifecycle events (all connectors) and notifies admins with re-auth / device / config next steps.",
 		detail: {
 			slug: "feed-auto-pause",
-			triggers: [],
+			triggers: [scheduleTrigger("0 * * * *")],
+			// Explicit SQL: default Behavior sources exclude semantic_type=change.
+			sources: [
+				{
+					name: "auto_paused",
+					query:
+						"SELECT id, title, origin_id, connection_id, feed_id, connector_key, feed_key, metadata, occurred_at, created_at FROM events WHERE semantic_type = 'change' AND metadata->'extra'->>'reason' = 'feed.auto_paused' ORDER BY occurred_at DESC LIMIT 50",
+				},
+			],
 			prompt:
-				"A connector feed was auto-paused after too many consecutive sync failures.\n\nRead the trigger signal (label + input_text + attributes) for feed id, connector, connection, consecutive failure count, and last error.\n\nDecide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nKeep it short. Prefer client.notifications.send to admins; do not unpause automatically.\n",
+				"Review sources.auto_paused — each row is a feed Lobu hard-paused after consecutive failures. metadata.extra has last_error, consecutive_failures, connection_id, connector_key.\n\nFor each distinct feed that still needs attention (dedupe by feed_id / origin_id), decide the most useful next step for an org admin:\n1. Auth/session/scopes expired — re-authenticate the connection.\n2. worker_claim_timeout / device offline — open the paired device / Owletto.\n3. Config/missing path — explain what to fix; leave the feed paused until then.\n4. Otherwise summarize and point at Connections.\n\nIf sources.auto_paused is empty, do nothing (no notification).\nKeep it short. Prefer client.notifications.send to admins; do not unpause feeds automatically.\n",
 			notification_channel: "notification",
 			notification_priority: "high",
 			tags: ["platform", "feed-health"],

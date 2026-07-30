@@ -247,6 +247,73 @@ export function assertWatcherVersionConfigValid(parsed: {
 }
 
 /**
+ * Resolve every pinned skill name against the owning agent's library at save
+ * time, and reject the write if any is missing or disabled.
+ *
+ * Fail closed rather than dropping the unknown entry: a Behavior that silently
+ * loses one of its skills still runs, unattended, with part of its instructions
+ * gone — the failure surfaces as quietly wrong output hours later, on a run
+ * nobody is watching. A 422 at save is the only point where the author is
+ * present to see it.
+ *
+ * The name is validated but the CALLER's `content` is what gets stored: the
+ * snapshot is the author's, taken at save time, and re-reading the body here
+ * would silently upgrade a pin the author never agreed to. This checks that the
+ * reference is real, not that the text still matches.
+ */
+export async function assertBehaviorSkillsResolve(
+  sql: DbClient,
+  organizationId: string,
+  agentId: string,
+  skills: Array<{ name: string; content: string }>
+): Promise<void> {
+  if (skills.length === 0) return;
+
+  const rows = await sql`
+    SELECT skills_config
+    FROM agents
+    WHERE id = ${agentId}
+      AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(
+      `Agent ${agentId} was not found in this organization, so its skills cannot be resolved.`,
+      422
+    );
+  }
+
+  const library = Array.isArray(rows[0]?.skills_config?.skills)
+    ? (rows[0].skills_config.skills as Array<Record<string, unknown>>)
+    : [];
+  const enabled = new Set(
+    library
+      .filter((entry) => entry.enabled !== false && typeof entry.name === 'string')
+      .map((entry) => entry.name as string)
+  );
+
+  const unknown = skills.map((skill) => skill.name).filter((name) => !enabled.has(name));
+  if (unknown.length > 0) {
+    throw new ToolUserError(
+      `Skill${unknown.length > 1 ? 's' : ''} ${unknown.map((n) => `"${n}"`).join(', ')} ` +
+        `${unknown.length > 1 ? 'are' : 'is'} not enabled in agent ${agentId}'s skill library. ` +
+        `Enable ${unknown.length > 1 ? 'them' : 'it'} on the agent, or remove ${unknown.length > 1 ? 'them' : 'it'} from this Behavior.`,
+      422
+    );
+  }
+
+  const duplicates = skills
+    .map((skill) => skill.name)
+    .filter((name, index, all) => all.indexOf(name) !== index);
+  if (duplicates.length > 0) {
+    throw new ToolUserError(
+      `Skill "${duplicates[0]}" is listed more than once. Each skill may be pinned once per Behavior.`,
+      422
+    );
+  }
+}
+
+/**
  * Resolve every @ref source against the org at save time so a typo fails here
  * (loud 422) rather than silently producing empty context at read_knowledge.
  * Custom-SQL sources are skipped (id projection is already enforced by

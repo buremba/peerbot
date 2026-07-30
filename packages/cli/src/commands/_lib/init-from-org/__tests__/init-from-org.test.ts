@@ -383,11 +383,12 @@ describe("lobu init --from-org", () => {
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
-    // Skills-first round trip: the stored instruction text was emitted as a
-    // generated skill named after the Behavior slug, and compiling it back
-    // reproduces the exact frozen text (no version churn on re-apply).
-    expect(w?.skills).toEqual(["account-health"]);
+    // The stored instruction text round-trips as the author-facing `prompt`,
+    // verbatim. It is NOT rehomed into a generated skill: doing that would make
+    // the first `lobu apply` after a bootstrap rewrite every Behavior it had
+    // just described. This Behavior pins no skills, so none are emitted.
     expect(w?.prompt).toBe("Poll CRM data.");
+    expect(w?.skills).toBeUndefined();
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",
       connector_key: "github",

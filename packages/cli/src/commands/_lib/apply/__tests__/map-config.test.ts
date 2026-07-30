@@ -819,7 +819,7 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/more than one schedule trigger/i);
   });
 
-  test("requires >=1 skill for schedule, window-event, and manual Behaviors", () => {
+  test("requires prompt OR >=1 skill for schedule, window-event, and manual Behaviors", () => {
     const crm = defineAgent({ id: "crm" });
     const map = (behavior: ReturnType<typeof defineBehavior>) => () =>
       mapProjectToDesiredState(
@@ -834,7 +834,7 @@ describe("mapProjectToDesiredState", () => {
           triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
         })
       )
-    ).toThrow(/needs at least one skill/i);
+    ).toThrow(/needs instructions/i);
     // Event trigger with execution "window", no skills → rejected.
     expect(
       map(
@@ -851,11 +851,24 @@ describe("mapProjectToDesiredState", () => {
           ],
         })
       )
-    ).toThrow(/needs at least one skill/i);
+    ).toThrow(/needs instructions/i);
     // No triggers (manual-only), no skills → rejected.
     expect(map(defineBehavior({ agent: crm, slug: "manual" }))).toThrow(
-      /needs at least one skill/i
+      /needs instructions/i
     );
+    // EITHER source satisfies the rule on its own: a prompt with no skills is a
+    // valid schedule Behavior, and demanding both would reject configs the
+    // server accepts.
+    expect(
+      map(
+        defineBehavior({
+          agent: crm,
+          slug: "prompt-only",
+          prompt: "Summarise yesterday's signups.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+        })
+      )
+    ).not.toThrow();
   });
 
   test("event-turn Behaviors may omit skills; mapper carries skills + empty prompt", () => {

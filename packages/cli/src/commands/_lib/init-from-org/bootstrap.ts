@@ -283,8 +283,7 @@ function emitAgent(
   settings: AgentSettings | null,
   imports: ImportTracker,
   secrets: SecretCollector,
-  minter: IdentMinter,
-  behaviorSkills: Array<{ name: string; content: string }> = []
+  minter: IdentMinter
 ): EmittedAgent {
   imports.use("defineAgent");
   const fields: string[] = [`id: ${str(agent.agentId)}`];
@@ -407,21 +406,6 @@ function emitAgent(
     });
     skillRefs.push(`skillFromFile(${str(`./${dir}/skills/${skill.name}`)})`);
   }
-  // Behavior-derived skills: each stored Behavior's frozen instruction text
-  // round-trips as a skill on its owning agent (skills-first authoring — the
-  // Behavior references it by name; there is no author-facing prompt).
-  for (const skill of behaviorSkills) {
-    files.push({
-      relPath: `${dir}/skills/${skill.name}/SKILL.md`,
-      body: emitSkillFile({
-        repo: `file/${skill.name}`,
-        name: skill.name,
-        content: skill.content,
-        enabled: true,
-      }),
-    });
-    skillRefs.push(`skillFromFile(${str(`./${dir}/skills/${skill.name}`)})`);
-  }
   if (skillRefs.length > 0) {
     imports.use("skillFromFile");
     fields.push(`skills: [\n    ${skillRefs.join(",\n    ")},\n  ]`);
@@ -530,8 +514,7 @@ function emitBehavior(
   agentHandles: Map<string, string>,
   connectionHandlesById: ReadonlyMap<number, string>,
   imports: ImportTracker,
-  minter: IdentMinter,
-  skillName: string | undefined
+  minter: IdentMinter
 ): { handle: Handle; reactionFile?: { relPath: string; body: string } } {
   imports.use("defineBehavior");
   const agentRef = w.agent_id ? agentHandles.get(w.agent_id) : undefined;
@@ -554,11 +537,13 @@ function emitBehavior(
     });
     fields.push(`triggers: ${emitValue(triggers, 1)}`);
   }
-  // Skills-first: the stored instruction text was emitted as a skill on the
-  // owning agent (see generateProject); the Behavior references it by name.
-  // An event-turn Behavior with no stored instructions emits no skills — the
-  // built-in default applies.
-  if (skillName) fields.push(`skills: [${str(skillName)}]`);
+  // Emit the instruction text as the author-facing `prompt` and the pinned
+  // skills as a plain name list, both verbatim — a bootstrap immediately
+  // followed by `lobu apply` must diff to nothing.
+  if (w.prompt?.trim()) fields.push(`prompt: ${str(w.prompt)}`);
+  if (w.skills?.length) {
+    fields.push(`skills: [${w.skills.map((s) => str(s.name)).join(", ")}]`);
+  }
   // A watcher's output schema is owned by its entity type (keying_config.entityType)
   // or falls back to the worker's free-form `{ summary }` — never inline. Emit
   // `keyingConfig` (the entity connection) only.
@@ -960,48 +945,23 @@ function generateProject(
   const files: Array<{ relPath: string; body: string }> = [];
   const warnings: string[] = [];
 
-  // Skills-first Behaviors: each stored Behavior's frozen instruction text
-  // round-trips as a generated skill on its owning agent, referenced by name
-  // from the Behavior's `skills` list (there is no author-facing prompt).
-  // Names default to the Behavior slug, suffixed on collision with an
-  // existing agent skill.
-  const behaviorSkillsByAgent = new Map<
-    string,
-    Array<{ name: string; content: string }>
-  >();
-  const behaviorSkillNames = new Map<string, string>();
-  {
-    const usedNamesByAgent = new Map<string, Set<string>>();
-    for (const { agent, settings } of state.agents) {
-      usedNamesByAgent.set(
-        agent.agentId,
-        new Set(
-          (settings?.skillsConfig?.skills ?? [])
-            .filter((s) => !s.system)
-            .map((s) => s.name)
-        )
+  // A Behavior's stored instruction text is emitted as `defineBehavior({ prompt })`
+  // verbatim, and its pinned skills as a `skills: [...]` name list. Both round-trip
+  // exactly, so a bootstrap followed immediately by `lobu apply` is a no-op.
+  //
+  // This used to synthesize a generated skill per Behavior, because
+  // `defineBehavior` had no prompt field and the instruction text had nowhere
+  // else to go. It has one now, and keeping the synthesis would be worse than
+  // redundant: it would move every Behavior's text out of `prompt` and into a
+  // skill, so the first apply after a bootstrap would rewrite every Behavior it
+  // had just faithfully described.
+  for (const { watcher } of state.watchers) {
+    if (watcher.prompt?.trim()) continue;
+    if (watcher.skills?.length) continue;
+    if (behaviorRequiresSkills(watcher.triggers)) {
+      warnings.push(
+        `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
       );
-    }
-    for (const { watcher } of state.watchers) {
-      const instructions = watcher.prompt?.trim();
-      const agentId = watcher.agent_id ?? "";
-      if (!instructions) {
-        if (behaviorRequiresSkills(watcher.triggers)) {
-          warnings.push(
-            `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — attach at least one skill before the next \`lobu apply\`.`
-          );
-        }
-        continue;
-      }
-      const used = usedNamesByAgent.get(agentId) ?? new Set<string>();
-      usedNamesByAgent.set(agentId, used);
-      let name = watcher.slug;
-      for (let n = 2; used.has(name); n++) name = `${watcher.slug}-${n}`;
-      used.add(name);
-      behaviorSkillNames.set(watcher.slug, name);
-      const list = behaviorSkillsByAgent.get(agentId) ?? [];
-      list.push({ name, content: instructions });
-      behaviorSkillsByAgent.set(agentId, list);
     }
   }
 
@@ -1009,14 +969,7 @@ function generateProject(
   const agentHandles = new Map<string, string>();
   const agentDecls: string[] = [];
   for (const { agent, settings } of state.agents) {
-    const emitted = emitAgent(
-      agent,
-      settings,
-      imports,
-      secrets,
-      minter,
-      behaviorSkillsByAgent.get(agent.agentId) ?? []
-    );
+    const emitted = emitAgent(agent, settings, imports, secrets, minter);
     agentHandles.set(agent.agentId, emitted.handle.name);
     agentDecls.push(emitted.handle.decl);
     files.push(...emitted.files);
@@ -1111,8 +1064,7 @@ function generateProject(
       agentHandles,
       connectionHandlesById,
       imports,
-      minter,
-      behaviorSkillNames.get(watcher.slug)
+      minter
     );
     watcherDecls.push(handle.decl);
     watcherHandles.push(handle.name);

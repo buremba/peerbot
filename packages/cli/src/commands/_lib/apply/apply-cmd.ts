@@ -854,6 +854,7 @@ export async function executePlan(
           name: w.name,
           description: w.description,
           prompt: w.prompt,
+          ...(w.skillSnapshots?.length ? { skills: w.skillSnapshots } : {}),
           triggers: w.triggers,
           sources: w.sources,
           reactions_guidance: w.reactionsGuidance,
@@ -936,6 +937,9 @@ export async function executePlan(
           await ctx.client.createBehaviorVersion({
             behavior_id: watcherId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
+            ...(versionBound.has("skills")
+              ? { skills: w.skillSnapshots ?? [] }
+              : {}),
             ...(versionBound.has("sources") && w.sources !== undefined
               ? { sources: w.sources }
               : {}),

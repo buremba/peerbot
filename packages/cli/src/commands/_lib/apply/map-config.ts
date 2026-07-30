@@ -532,9 +532,9 @@ const MAX_BEHAVIOR_SKILLS = 5;
  * (manual runs) — runs on its compiled instructions alone and must reference
  * at least one skill.
  *
- * This CLI preflight mirrors the server rule on the stored instruction text
- * (the server cannot see `skills[]`, a declarative-only concept). When both
- * triggers and compiled instructions change, apply sends them together through
+ * This CLI preflight mirrors the server rule, catching the error against the
+ * config file (naming the slug) rather than as a 422 mid-apply. When both
+ * triggers and instructions change, apply sends them together through
  * create_version so the final pair is validated atomically.
  */
 function assertBehaviorSkills(watcher: DesiredWatcher): void {
@@ -556,9 +556,13 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
     triggers.some(
       (trigger) => trigger.kind === "schedule" || trigger.execution === "window"
     );
-  if (requiresSkills && skills.length === 0) {
+  // Either instruction source satisfies the rule. A Behavior whose whole job is
+  // "run this skill" has no task statement to write, and one that spells its
+  // task out inline needs no skill — demanding both would be stricter than the
+  // server and would reject configs the API accepts.
+  if (requiresSkills && skills.length === 0 && !watcher.prompt.trim()) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" needs at least one skill: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on their compiled skill instructions alone. Only event triggers with execution "turn" may omit skills.`
+      `Behavior "${watcher.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
     );
   }
 }
@@ -633,11 +637,12 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
   return {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
-    // Compiled at load time from the referenced skill bodies (see
-    // `compileBehaviorInstructions` in desired-state.ts). The mapper stays pure
-    // — it cannot read skill files — so the placeholder holds until the loader
-    // overwrites it. Event-turn Behaviors with no skills legitimately keep "".
-    prompt: "",
+    // The author's task statement, carried straight through. Skill BODIES are
+    // no longer folded in here — the loader resolves them into `skillSnapshots`
+    // (see `resolveBehaviorSkills` in desired-state.ts), because the mapper is
+    // pure and cannot read skill files. "" is legitimate for a Behavior whose
+    // whole job is its skills, and for event-turn Behaviors with neither.
+    prompt: watcher.prompt ?? "",
     ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
     ...(watcher.keyingConfig
       ? { keyingConfig: normalizeKeyingConfig(watcher.keyingConfig) }

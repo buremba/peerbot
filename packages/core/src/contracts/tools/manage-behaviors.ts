@@ -193,6 +193,30 @@ export const SourceSchema = Type.Object({
 });
 
 /**
+ * One agent skill pinned into a Behavior version.
+ *
+ * The `content` is a SNAPSHOT taken when the version was saved, not a live
+ * reference. Editing the agent's skill library afterwards does not reach an
+ * existing version — the editor surfaces the difference and offers to publish a
+ * new version, and `lobu apply` re-resolves every reference on each run. Storing
+ * the body (rather than the name alone) is also what lets a device-pinned
+ * Behavior dispatch: `worker-api/poll.ts` ships instructions to a CLI with no
+ * channel back to the skill library.
+ */
+export const BehaviorSkillSchema = Type.Object({
+  name: Type.String({
+    description:
+      "Skill name, matching an entry in the owning agent's skill library. Identifies the skill for diffing a pinned snapshot against the library's current body.",
+  }),
+  content: Type.String({
+    description:
+      "The skill body, frozen as of this version. Delivered to the agent as `.skills/<name>/SKILL.md`.",
+  }),
+});
+
+export type BehaviorSkill = Static<typeof BehaviorSkillSchema>;
+
+/**
  * A single classifier definition embedded in a Behavior version. The key
  * invariant for #2033 item 4 is `attribute_values`: it MUST be an object-MAP
  * keyed by value string, never an array. An array read back through
@@ -231,7 +255,7 @@ export const ManageBehaviorsSchema = Type.Object(
       [
         Type.Literal("create", {
           description:
-            "Create a Behavior. Author instructions as agent skills where possible; prompt is the compiled instruction text and may be omitted for event triggers with execution 'turn'.",
+            "Create a Behavior. Put the task statement in `prompt` and reusable know-how in `skills`; either satisfies the instruction requirement, and an event trigger with execution 'turn' may omit both.",
         }),
         Type.Literal("list", { description: "List Behaviors." }),
         Type.Literal("update", { description: "Patch Behavior config." }),
@@ -330,7 +354,13 @@ export const ManageBehaviorsSchema = Type.Object(
     prompt: Type.Optional(
       Type.String({
         description:
-          "[create/create_version] Literal LLM instruction text for the Behavior, frozen into the version. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Prefer authoring instructions as skills on the owning agent and compiling them here (declarative configs join the referenced skill bodies in order). Required for schedule triggers, event triggers with execution 'window', and Behaviors with no triggers; omit it for event triggers with execution 'turn' to use the built-in default.",
+          "[create/create_version] Literal LLM instruction text for the Behavior — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and a Behavior with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.",
+      })
+    ),
+    skills: Type.Optional(
+      Type.Array(BehaviorSkillSchema, {
+        description:
+          "[create/create_version] Ordered agent skills pinned into this version as {name, content} snapshots, delivered to the agent as `.skills/<name>/SKILL.md` files it reads on demand. Snapshots, not live references: editing the agent's library later does not change an existing version until a new one is published (`lobu apply` re-resolves on every run; the web editor shows a diff and an upgrade action). FULL REPLACEMENT on create_version — passing it (even []) makes it the complete set, and OMITTING it keeps the stored snapshots unchanged. Every name must exist and be enabled in the owning agent's library, or the call is rejected rather than silently running under-instructed.",
       })
     ),
     sources: Type.Optional(

@@ -97,18 +97,24 @@ export interface DesiredWatcher {
   description?: string;
   triggers?: DesiredBehaviorTrigger[];
   /**
-   * Compiled instructions — the join of the referenced skill bodies in order,
-   * produced by `compileBehaviorInstructions` at load time. This is what the
-   * server stores as the version's frozen instruction text (the internal
-   * `prompt` column); it is not author-facing. Empty only for event-turn
-   * Behaviors with no skills (the server-side default applies at run time).
+   * The Behavior's task statement, authored via `defineBehavior({ prompt })`.
+   * Stored as the version's frozen instruction text (the internal `prompt`
+   * column). Empty when the Behavior's whole job is its skills, or when an
+   * event-turn Behavior relies on the server-side default at run time.
    */
   prompt: string;
   /**
-   * Ordered skill names (declarative apply input only — resolved against the
-   * owning agent's skill library at load time, never sent to the server).
+   * Ordered skill names as written in config — the authoring input, resolved
+   * into {@link DesiredWatcher.skillSnapshots} at load time.
    */
   skills?: string[];
+  /**
+   * The resolved `{name, content}` pairs actually sent to the server and pinned
+   * onto the version. Separate from `skills` because the diff must compare
+   * BODIES, not names: editing a skill's text changes nothing about the name
+   * list, and a name-only diff would let a re-apply silently skip the update.
+   */
+  skillSnapshots?: Array<{ name: string; content: string }>;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: BehaviorSource[];
   /**
@@ -438,14 +444,14 @@ const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
  * a Behavior with no skills (event-turn only — the mapper already rejected
  * every other trigger shape without skills).
  */
-function compileBehaviorInstructions(
+function resolveBehaviorSkills(
   watcher: DesiredWatcher,
   agentSkills: SkillConfigEntry[]
-): string {
+): Array<{ name: string; content: string }> {
   const names = watcher.skills ?? [];
-  if (names.length === 0) return "";
+  if (names.length === 0) return [];
   const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
-  const bodies = names.map((name) => {
+  const resolved = names.map((name) => {
     const skill = byName.get(name);
     if (!skill) {
       throw new ValidationError(
@@ -455,19 +461,24 @@ function compileBehaviorInstructions(
     const body = skill.content?.trim();
     if (!body) {
       throw new ValidationError(
-        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — compiled Behavior instructions need text`
+        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
       );
     }
-    return body;
+    return { name, content: body };
   });
-  const compiled = bodies.join("\n\n");
-  const bytes = Buffer.byteLength(compiled, "utf8");
+  // The cap is on total pinned text, not on any one skill: the whole set is
+  // written into the worker's `.skills/` tree and, for a device-pinned Behavior,
+  // shipped in the dispatch payload.
+  const bytes = resolved.reduce(
+    (total, skill) => total + Buffer.byteLength(skill.content, "utf8"),
+    0
+  );
   if (bytes > MAX_COMPILED_INSTRUCTIONS_BYTES) {
     throw new ValidationError(
-      `Behavior "${watcher.slug}" compiles to ${bytes} bytes of instructions — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
+      `Behavior "${watcher.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
     );
   }
-  return compiled;
+  return resolved;
 }
 
 /**
@@ -1076,12 +1087,15 @@ export async function loadDesiredStateFromConfig(
     })
   );
 
-  // Compile each Behavior's `skills[]` into its frozen instruction text — the
-  // join of the referenced skill bodies in order. This happens BEFORE the diff
-  // reads `prompt`, so compiled-text equality (content only — descriptions
-  // don't compile) is what drives version churn.
+  // Resolve each Behavior's `skills[]` to {name, content} snapshots against the
+  // owning agent's library. This happens BEFORE the diff reads them, so a change
+  // to a referenced skill's BODY still drives version churn — re-applying is how
+  // a config project takes a skill update, and the diff is what notices.
+  //
+  // The bodies are no longer folded into `prompt`: the prompt is the author's
+  // task statement (or empty), and skills ride alongside as pinned files.
   for (const watcher of state.watchers) {
-    watcher.prompt = compileBehaviorInstructions(
+    watcher.skillSnapshots = resolveBehaviorSkills(
       watcher,
       skillsByAgentId.get(watcher.agent) ?? []
     );

@@ -223,16 +223,26 @@ export function behaviorRequiresInstructions(
 /**
  * Enforce the instruction-presence rule on a complete trigger + instruction
  * pair before either side is stored. Callers must pass the *final* resolved
- * pair (inherited prompt when omitted, resolved triggers after write-merge).
+ * values (inherited prompt/skills when omitted, resolved triggers after
+ * write-merge).
+ *
+ * Either source satisfies the requirement on its own. They are no longer the
+ * same field: skills used to be concatenated into `prompt` at save time, so one
+ * check covered both, but pinned skills now remain separate from the stored
+ * prompt. Requiring both would be stricter than the behaviour this replaced —
+ * a Behavior whose whole job is "run this skill" has nothing to put in a task
+ * statement, and one that spells its task out inline needs no skill.
  */
 export function assertBehaviorInstructions(
 	triggers: BehaviorTrigger[],
-	instructions: string | null | undefined
+	instructions: string | null | undefined,
+	skills?: ReadonlyArray<{ name: string; content: string }> | null
 ): void {
 	if (!behaviorRequiresInstructions(triggers)) return;
 	if (instructions?.trim()) return;
+	if (skills?.some((skill) => skill.content.trim())) return;
 	throw new ToolUserError(
-		"This Behavior runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill (their bodies compile into the stored instructions) or provide instruction text. Only event triggers with execution 'turn' may omit instructions."
+		"This Behavior runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill or provide instruction text. Only event triggers with execution 'turn' may omit both."
 	);
 }
 

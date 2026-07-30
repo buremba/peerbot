@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "description": "Lobu merge-review verdict. Judge the diff against the requested base and report concrete changed-path defects only.",
   "additionalProperties": false,

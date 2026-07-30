@@ -31,6 +31,7 @@ import {
   assertKeyingConfigEntityTypeExists,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
+  assertBehaviorSkillsResolve,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
@@ -104,6 +105,11 @@ export async function handleCreate(
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
+  if (!args.agent_id) {
+    throw new ToolUserError(
+      'agent_id is required to create a Behavior (the agent that executes it).'
+    );
+  }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
   // validate the caller may target this device (own it, or org owner/admin
@@ -123,8 +129,8 @@ export async function handleCreate(
   //   2. explicit `args.sources` (API callers / legacy).
   // If neither yields anything, fall back to a default all-events source.
   // `create_version` deliberately does NOT derive (see version-actions.ts):
-  // on a bump the prompt is compiled skill text, and a skill's prose must not
-  // author the Behavior's sources.
+  // an existing prompt's prose must not silently re-author the Behavior's
+  // source set during an otherwise unrelated version bump.
   const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);
@@ -218,7 +224,9 @@ export async function handleCreate(
     triggers: args.triggers,
   });
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
-  assertBehaviorInstructions(triggerWrite.triggers, args.prompt);
+  const skills = args.skills ?? [];
+  assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
+  await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -300,12 +308,12 @@ export async function handleCreate(
       await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, version_sources,
+        prompt, version_sources, skills,
         keying_config, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
-        ${args.prompt ?? ''}, ${toJsonParam(tx, sources)},
+        ${args.prompt ?? ''}, ${toJsonParam(tx, sources)}, ${tx.json(skills)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
@@ -446,7 +454,7 @@ export async function handleUpdate(
   await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
-           cv.prompt AS current_prompt
+           cv.prompt AS current_prompt, cv.skills AS current_skills
     FROM watchers w
     LEFT JOIN watcher_versions cv ON cv.id = w.current_version_id
     WHERE w.id = ${args.behavior_id}
@@ -459,6 +467,7 @@ export async function handleUpdate(
     timezone: string | null;
     triggers: ManageBehaviorsArgs['triggers'];
     current_prompt: string | null;
+    current_skills: Array<{ name: string; content: string }> | null;
   };
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
@@ -473,7 +482,11 @@ export async function handleUpdate(
     // with an empty current prompt must fail). Callers that need to change both
     // triggers and instructions atomically must use create_version with both
     // fields — lobu apply does that path.
-    assertBehaviorInstructions(triggerWrite.triggers, currentRow.current_prompt);
+    assertBehaviorInstructions(
+      triggerWrite.triggers,
+      currentRow.current_prompt,
+      currentRow.current_skills
+    );
   }
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
@@ -835,9 +848,13 @@ export async function handleCreateFromVersion(
         // After stripping, the residual trigger shape must still satisfy the
         // instruction rule (chat-link-only sources become manual/empty triggers
         // and require a non-empty prompt).
+        // The clone SHARES the source's watcher_versions row, so its pinned
+        // skills come along with it — they satisfy the rule here exactly as they
+        // will at dispatch.
         assertBehaviorInstructions(
           (Array.isArray(cloneTriggers) ? cloneTriggers : []) as BehaviorTrigger[],
-          version.prompt as string | null | undefined
+          version.prompt as string | null | undefined,
+          version.skills as Array<{ name: string; content: string }> | null
         );
         // `tags` is a text[] column read under fetch_types:false, so postgres.js
         // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),

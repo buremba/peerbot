@@ -193,6 +193,32 @@ export const SourceSchema = Type.Object({
 });
 
 /**
+ * One agent skill pinned into a Behavior version.
+ *
+ * The `content` is a SNAPSHOT taken when the version was saved, not a live
+ * reference. Editing the agent's skill library afterwards does not reach an
+ * existing version; a caller must publish a new version, and `lobu apply`
+ * re-resolves every reference on each run. Storing the body (rather than the
+ * name alone) also lets a device-pinned Behavior dispatch the frozen text to a
+ * CLI with no channel back to the skill library.
+ */
+export const BehaviorSkillSchema = Type.Object({
+  name: Type.String({
+    minLength: 1,
+    pattern: "^[a-zA-Z0-9._-]+$",
+    description:
+      "Skill name, matching an entry in the owning agent's skill library. Identifies the skill for diffing a pinned snapshot against the library's current body.",
+  }),
+  content: Type.String({
+    minLength: 1,
+    description:
+      "The skill body, frozen as of this version. Server-side agents receive it as `.skills/<name>/SKILL.md`; device executors receive the same frozen text in their per-run task.",
+  }),
+});
+
+export type BehaviorSkill = Static<typeof BehaviorSkillSchema>;
+
+/**
  * A single classifier definition embedded in a Behavior version. The key
  * invariant for #2033 item 4 is `attribute_values`: it MUST be an object-MAP
  * keyed by value string, never an array. An array read back through
@@ -231,7 +257,7 @@ export const ManageBehaviorsSchema = Type.Object(
       [
         Type.Literal("create", {
           description:
-            "Create a Behavior. Author instructions as agent skills where possible; prompt is the compiled instruction text and may be omitted for event triggers with execution 'turn'.",
+            "Create a Behavior. Put the task statement in `prompt` and reusable know-how in `skills`; either satisfies the instruction requirement, and an event trigger with execution 'turn' may omit both.",
         }),
         Type.Literal("list", { description: "List Behaviors." }),
         Type.Literal("update", { description: "Patch Behavior config." }),
@@ -330,13 +356,20 @@ export const ManageBehaviorsSchema = Type.Object(
     prompt: Type.Optional(
       Type.String({
         description:
-          "[create/create_version] Literal LLM instruction text for the Behavior, frozen into the version. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Prefer authoring instructions as skills on the owning agent and compiling them here (declarative configs join the referenced skill bodies in order). Required for schedule triggers, event triggers with execution 'window', and Behaviors with no triggers; omit it for event triggers with execution 'turn' to use the built-in default.",
+          "[create/create_version] Literal LLM instruction text for the Behavior — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and a Behavior with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.",
+      })
+    ),
+    skills: Type.Optional(
+      Type.Array(BehaviorSkillSchema, {
+        maxItems: 5,
+        description:
+          "[create/create_version] Up to 5 ordered agent skills pinned into this version as {name, content} snapshots. Server-side agents receive `.skills/<name>/SKILL.md` files; device executors receive the same frozen text in their per-run task. Snapshots, not live references: editing the agent's library later does not change an existing version until a caller publishes a new one (`lobu apply` re-resolves on every run). FULL REPLACEMENT on create_version — passing it (even []) makes it the complete set, and OMITTING it keeps the stored snapshots unchanged. Every name must exist and be enabled in the owning agent's library, or the call is rejected rather than silently running under-instructed.",
       })
     ),
     sources: Type.Optional(
       Type.Array(SourceSchema, {
         description:
-          "[create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input — a Behavior's prompt is usually compiled skill bodies, so @-mention chips inside it neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.",
+          "[create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.",
       })
     ),
     keying_config: Type.Optional(

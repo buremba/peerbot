@@ -1,12 +1,10 @@
 /**
  * manage_behaviors — instruction-presence rule (issue #2320, thin Behaviors).
  *
- * A Behavior's instruction text (`prompt`, internally the compiled skill
- * bodies) is required only for trigger shapes that run on it alone: schedule
- * triggers, event triggers with execution "window", and no triggers (manual).
- * An event trigger with execution "turn" carries its own content (the incoming
- * message) and may be created with NO prompt — previously `create` hard-failed
- * with "prompt is required for create action".
+ * A Behavior needs at least one instruction source (`prompt` or pinned skills)
+ * only for trigger shapes that run on it alone: schedule triggers, event
+ * triggers with execution "window", and no triggers (manual). An event trigger
+ * with execution "turn" carries its own content and may omit both.
  *
  * create_version enforces the same rule when it writes instruction text.
  */
@@ -76,6 +74,21 @@ describe("manage_behaviors — instruction-presence rule", () => {
 			ownerUserId: owner.id,
 		});
 		agentId = agent.agentId;
+		const sql = getTestDb();
+		await sql`
+			UPDATE agents
+			SET skills_config = ${sql.json({
+				skills: [
+					{
+						repo: "file/ir-runbook",
+						name: "ir-runbook",
+						enabled: true,
+						content: "Run the instruction-rule workflow.",
+					},
+				],
+			})}
+			WHERE id = ${agentId} AND organization_id = ${orgId}
+		`;
 	});
 
 	it("creates an event-turn Behavior with NO prompt (built-in default applies)", async () => {
@@ -118,6 +131,64 @@ describe("manage_behaviors — instruction-presence rule", () => {
 				ownerCtx
 			)
 		).rejects.toThrow(/needs instructions/i);
+	});
+
+	it("creates and versions a schedule Behavior from pinned skills without a prompt", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "ir-skills-only",
+				agent_id: agentId,
+				skills: [
+					{
+						name: "ir-runbook",
+						content: "Run the instruction-rule workflow.",
+					},
+				],
+				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { behavior_id?: string };
+		expect(created.behavior_id).toBeTruthy();
+
+		const sql = getTestDb();
+		const [v1] = await sql`
+			SELECT version.prompt, version.skills
+			FROM watchers behavior
+			JOIN watcher_versions version ON version.id = behavior.current_version_id
+			WHERE behavior.id = ${Number(created.behavior_id)}
+		`;
+		expect(v1.prompt).toBe("");
+		expect(v1.skills).toEqual([
+			{
+				name: "ir-runbook",
+				content: "Run the instruction-rule workflow.",
+			},
+		]);
+
+		const versioned = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: created.behavior_id!,
+				name: "Skills-only renamed",
+				set_as_current: true,
+			},
+			TEST_ENV,
+			ownerCtx
+		)) as { version?: number };
+		expect(versioned.version).toBeGreaterThan(1);
+
+		const [v2] = await sql`
+			SELECT version.prompt, version.skills
+			FROM watchers behavior
+			JOIN watcher_versions version ON version.id = behavior.current_version_id
+			WHERE behavior.id = ${Number(created.behavior_id)}
+		`;
+		expect(v2.prompt).toBe("");
+		expect(v2.skills).toEqual(v1.skills);
 	});
 
 	it("create_version rejects blanking instructions on a schedule Behavior, accepts real text", async () => {

@@ -2038,10 +2038,7 @@ function readHomeScrollBudget(config: {
   max_scrolls?: number;
   min_scrolls?: number;
 }): number {
-  const max = Math.max(
-    1,
-    Math.min(30, Number(config.max_scrolls ?? 8) || 8),
-  );
+  const max = Math.max(1, Math.min(30, Number(config.max_scrolls ?? 8) || 8));
   if (config.min_scrolls === undefined || config.min_scrolls === null) {
     return max;
   }

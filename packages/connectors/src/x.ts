@@ -831,8 +831,8 @@ function createOAuthHttpClient(accessToken: string): HttpClient {
  * Resolve how many scroll/page iterations this run should perform.
  *
  * - `max_scrolls` (default 10): upper bound (also the fixed value when min is omitted).
- * - `min_scrolls` (optional): when set and &lt; max, pick uniformly in [min, max]
- *   each run so depth varies (e.g. min 8 / max 12 ≈ ~80–120 home tweets).
+ * - `min_scrolls` (optional): when set below max, pick uniformly in [min, max]
+ *   each run so depth varies.
  */
 function readScrollBudget(
 	config: Record<string, unknown>,
@@ -1737,7 +1737,7 @@ const scrollBudgetProperties = {
 		minimum: 1,
 		maximum: 50,
 		description:
-			"Optional lower bound. When set below max_scrolls, each sync picks a uniform random scroll count in [min_scrolls, max_scrolls] (e.g. 8–12 ≈ ~80–120 home tweets).",
+			"Optional lower bound. When set below max_scrolls, each sync picks a uniform random scroll count in [min_scrolls, max_scrolls].",
 	},
 } as const;
 

@@ -99,6 +99,7 @@ interface LinkedInCheckpoint {
 interface LinkedInConfig extends LocalTakeoutConfig {
   company_url?: string;
   max_scrolls?: number;
+  min_scrolls?: number;
 }
 
 interface LinkedInPost {

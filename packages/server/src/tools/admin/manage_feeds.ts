@@ -681,7 +681,7 @@ async function handleUpdateFeed(
       : null;
 
   // `schedule` is tri-state: undefined = leave alone, null/"" = clear (manual),
-  // string = set cron. Mirror timezone / repair_agent_id.
+  // string = set cron. Mirror timezone.
   const hasScheduleArg = Object.hasOwn(args, 'schedule');
   let nextSchedule: string | null | undefined;
   if (hasScheduleArg) {
@@ -703,11 +703,6 @@ async function handleUpdateFeed(
   }
   const hasTimezoneArg = args.timezone !== undefined;
   const touchesCadence = hasScheduleArg || hasTimezoneArg;
-
-  // `repair_agent_id` is tri-state: undefined = leave alone, null = clear, string = set.
-  // Use Object.hasOwn so an explicit null overwrites instead of being skipped.
-  const hasRepairAgentArg = Object.hasOwn(args, 'repair_agent_id');
-  const repairAgentValue = hasRepairAgentArg ? (args.repair_agent_id ?? null) : null;
 
   // Declarative `lobu apply` passes `replace_config: true` so removed manifest
   // keys disappear remotely; default (merge) is preserved for the web UI.
@@ -794,7 +789,6 @@ async function handleUpdateFeed(
           schedule = CASE WHEN ${hasScheduleArg} THEN ${nextSchedule ?? null} ELSE schedule END,
           timezone = CASE WHEN ${hasTimezoneArg} THEN ${args.timezone ?? null} ELSE timezone END,
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
-          repair_agent_id = CASE WHEN ${hasRepairAgentArg} THEN ${repairAgentValue}::text ELSE repair_agent_id END,
           updated_at = NOW()
       WHERE id = ${args.feed_id} AND organization_id = ${organizationId}
       RETURNING *
@@ -830,7 +824,6 @@ async function handleUpdateFeed(
     ...(args.config !== undefined ? ['config'] : []),
     ...(args.schedule !== undefined ? ['schedule'] : []),
     ...(hasTimezoneArg ? ['timezone'] : []),
-    ...(hasRepairAgentArg ? ['repair_agent_id'] : []),
   ];
   recordToolConfigChange(ctx, {
     resourceKind: 'feed',

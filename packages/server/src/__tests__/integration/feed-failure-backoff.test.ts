@@ -1,10 +1,6 @@
 /**
- * Feed failure backoff + hard auto-pause (item 5a/5b, #2033).
- *
- * Before: completeWorkerJob rescheduled a FAILED feed with a plain cron
- * next_run_at regardless of consecutive_failures, so a persistently-failing
- * feed re-enqueued every cadence forever, and only the OPTIONAL repair agent
- * ever paused it. A feed with no repair agent looped indefinitely.
+ * Feed failure backoff + hard auto-pause (item 5a/5b, #2033) and
+ * feed.auto_paused Behavior activation (replaces the deleted repair-agent).
  *
  * After:
  *  - 5a: a failed completion sets next_run_at = max(cron_next, now + backoff)
@@ -13,8 +9,8 @@
  *    A subsequent SUCCESS resets consecutive_failures to 0 and returns to the
  *    plain cron cadence.
  *  - 5b: once consecutive_failures crosses the hard threshold the feed is
- *    paused (status='paused', next_run_at=NULL via the feeds trigger),
- *    independent of any repair agent (no repair agent configured here).
+ *    paused (status='paused', next_run_at=NULL via the feeds trigger) and a
+ *    feed.auto_paused signal activates matching Behaviors once.
  *
  * Drives the REAL completeWorkerJob handler against the embedded DB, same shape
  * as complete-worker-job-status-guard.test.ts.
@@ -23,9 +19,15 @@
 import type { Context } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
+import { manageBehaviors } from '../../tools/admin/manage_behaviors';
 import { completeWorkerJob } from '../../worker-api';
+import { initWorkspaceProvider } from '../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { createTestOrganization } from '../setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestOrganization,
+  seedOwnerContext,
+} from '../setup/test-fixtures';
 
 const WORKER_ID = 'worker-backoff';
 // Tight, deterministic backoff for the test: base 1000ms, cap 60000ms, pause
@@ -116,6 +118,10 @@ async function insertRunningRun(
 }
 
 describe('feed failure backoff + auto-pause (#2033)', () => {
+  beforeAll(async () => {
+    await initWorkspaceProvider();
+  });
+
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
@@ -200,9 +206,40 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     }
   });
 
-  it('5b: crossing the failure threshold hard-pauses the feed (next_run_at NULL, no repair agent)', async () => {
-    const org = await createTestOrganization();
+  it('5b: crossing the failure threshold hard-pauses the feed and activates feed.auto_paused Behaviors', async () => {
+    const { org, user, ctx: toolCtx } = await seedOwnerContext();
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+    });
     const connId = await insertConnection(org.id);
+    // Connector-wide event trigger (platform event injected into every catalog).
+    const created = await manageBehaviors(
+      {
+        action: 'create',
+        slug: 'feed-auto-pause-test',
+        name: 'Feed auto-pause test',
+        prompt: 'Notify about the paused feed.',
+        agent_id: agent.agentId,
+        triggers: [
+          {
+            kind: 'event',
+            connector_key: 'chrome',
+            event_types: ['feed.auto_paused'],
+            execution: 'turn',
+            active_run: 'coalesce',
+            output: 'silent',
+          },
+        ],
+      },
+      {} as Env,
+      toolCtx,
+    );
+    if (created.action !== 'create' || !('behavior_id' in created)) {
+      throw new Error(`Behavior create failed: ${JSON.stringify(created)}`);
+    }
+    const behaviorId = Number(created.behavior_id);
+
     // 2 prior failures → this failure makes 3 = PAUSE_THRESHOLD → pause.
     const feedId = await insertFeed(org.id, connId, PAUSE_THRESHOLD - 1);
     const runId = await insertRunningRun(org.id, connId, feedId);
@@ -229,6 +266,44 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     expect(after[0].status).toBe('paused');
     expect(Number(after[0].consecutive_failures)).toBe(PAUSE_THRESHOLD);
     expect(after[0].next_run_at).toBeNull();
+
+    const behaviorRuns = (await sql`
+      SELECT id, status, approved_input
+      FROM runs
+      WHERE watcher_id = ${behaviorId}
+        AND run_type = 'behavior'
+      ORDER BY id ASC
+    `) as Array<{
+      id: number;
+      status: string;
+      approved_input: Record<string, unknown> | null;
+    }>;
+    expect(behaviorRuns.length).toBeGreaterThanOrEqual(1);
+    expect(behaviorRuns[0]?.approved_input).toMatchObject({
+      dispatch_source: 'event',
+      trigger_execution: 'turn',
+    });
+    const deliveryIds = behaviorRuns[0]?.approved_input?.delivery_ids as
+      | string[]
+      | undefined;
+    expect(deliveryIds?.[0]).toMatch(
+      new RegExp(`^feed-auto-paused:${feedId}:`),
+    );
+
+    // A second failure while already paused must not re-emit (consec becomes 4,
+    // which is not the exact threshold crossing).
+    const runId2 = await insertRunningRun(org.id, connId, feedId);
+    const b = mockWorkerCtx({
+      run_id: runId2,
+      worker_id: WORKER_ID,
+      status: 'failed',
+      error_message: 'still broken again',
+    });
+    await completeWorkerJob(b.ctx);
+    const runsAfter = (await sql`
+      SELECT count(*)::int AS n FROM runs WHERE watcher_id = ${behaviorId}
+    `) as Array<{ n: number }>;
+    expect(Number(runsAfter[0]?.n)).toBe(behaviorRuns.length);
   });
 
   it('5a: a success resets consecutive_failures and resumes the plain cadence', async () => {

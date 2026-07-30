@@ -199,7 +199,7 @@ function registerMaintenanceTasks(
 
   // Connector health alerter — surfaces connectors that have silently died
   // (every feed failing, an active connection collecting nothing, or a feed
-  // that stopped syncing for days) which the per-feed repair-agent can't catch
+  // that stopped syncing for days) which per-feed auto-pause alone can't catch
   // (it only fires when a worker actually runs). Single-claimant per tick;
   // alerts fire on the transition into unhealthy via a Postgres-mediated marker
   // (connections.unhealthy_alerted_at), and ride the existing pino→Sentry→Slack

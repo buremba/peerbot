@@ -8,6 +8,7 @@ import type { DbClient } from "../db/client";
 import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
+import { withPlatformBehaviorEvents } from "./platform-event-catalog";
 
 export interface BehaviorTriggerProjection {
 	triggers: BehaviorTrigger[];
@@ -58,7 +59,9 @@ async function getConnectorBehaviorEventCatalog(
 	if (Array.isArray(row?.behavior_events)) {
 		return {
 			name: row.name,
-			events: parseBehaviorEventDefinitions(row.behavior_events),
+			events: withPlatformBehaviorEvents(
+				parseBehaviorEventDefinitions(row.behavior_events),
+			) as BehaviorEventDefinition[],
 		};
 	}
 
@@ -70,7 +73,9 @@ async function getConnectorBehaviorEventCatalog(
 	);
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
-		events: parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+		events: withPlatformBehaviorEvents(
+			parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+		) as BehaviorEventDefinition[],
 	};
 }
 

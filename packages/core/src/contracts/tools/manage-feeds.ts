@@ -144,7 +144,7 @@ export const CreateFeedAction = Type.Object({
 
 export const UpdateFeedAction = Type.Object({
   action: Type.Literal("update_feed", {
-    description: "Patch a feed (status, config, schedule, repair agent).",
+    description: "Patch a feed (status, config, schedule).",
   }),
   feed_id: Type.Number({ description: "Feed ID" }),
   status: Type.Optional(
@@ -172,12 +172,6 @@ export const UpdateFeedAction = Type.Object({
     Type.Union([Type.String({ minLength: 1, maxLength: 64 }), Type.Null()], {
       description:
         "IANA timezone the schedule is evaluated in. Null clears it (server time / UTC).",
-    })
-  ),
-  repair_agent_id: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        "Per-feed repair agent override. Null clears the override and falls back to the connector default.",
     })
   ),
 });

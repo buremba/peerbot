@@ -786,10 +786,6 @@ export default async (_ctx, client) => {
 		summary: "Update a connector definition's default connection config.",
 		access: "admin",
 	},
-	"connections.updateConnectorDefaultRepairAgent": {
-		summary: "Set or clear the connector's default repair agent.",
-		access: "admin",
-	},
 
 	// operations
 	"operations.manage": {

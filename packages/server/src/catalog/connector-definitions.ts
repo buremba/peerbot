@@ -55,7 +55,6 @@ export type ScopedConnectorDefinitionRow = {
 	favicon_domain?: string | null;
 	source_path?: string | null;
 	default_connection_config?: Record<string, unknown> | null;
-	default_repair_agent_id?: string | null;
 	status: string;
 	login_enabled?: boolean | null;
 	required_capability?: string | null;
@@ -112,7 +111,6 @@ export async function listScopedConnectorDefinitions(params: {
       d.openapi_config,
       d.favicon_domain,
       d.default_connection_config,
-      d.default_repair_agent_id,
       d.status,
       d.login_enabled,
       d.required_capability,

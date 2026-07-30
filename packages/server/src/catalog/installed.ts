@@ -68,7 +68,6 @@ export async function listOrgInstalled(
 					required_capability: row.required_capability,
 					runtime: row.runtime,
 					default_connection_config: row.default_connection_config,
-					default_repair_agent_id: row.default_repair_agent_id,
 					source_uri: connectorSourcePathToUri(row.source_path),
 					operations_summary: operationsSummary,
 					has_operations: operationsSummary.total > 0,

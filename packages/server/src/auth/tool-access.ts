@@ -92,7 +92,7 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"toggle_connector_login",
 		"update_connector_auth",
 		"update_connector_default_config",
-		"update_connector_default_repair_agent",
+
 		"apply_chat_connection",
 		"set_channel_about",
 	]),

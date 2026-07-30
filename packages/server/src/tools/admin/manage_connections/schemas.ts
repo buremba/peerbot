@@ -18,7 +18,6 @@ export {
 	UpdateAction,
 	UpdateConnectorAuthAction,
 	UpdateConnectorDefaultConfigAction,
-	UpdateConnectorDefaultRepairAgentAction,
 	UpdateConnectorSourceAction,
 	ValidateConnectorSourceAction,
 } from "@lobu/core/contracts/tools/manage-connections";

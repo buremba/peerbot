@@ -62,6 +62,7 @@ import {
 	type ConnectionSetupNextAction,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
+import { ensureFeedAutoPauseBehavior } from "../../../../behaviors/ensure-feed-auto-pause-behavior";
 
 export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
@@ -542,6 +543,20 @@ export async function handleConnect(
     },
 		"Connection created via connect flow",
   );
+
+	// Out-of-the-box Behavior for feed.auto_paused (replaces the old repair-agent
+	// subsystem). Fire-and-forget — connect must not fail if install races or the
+	// org has no system agent yet.
+	void ensureFeedAutoPauseBehavior({
+		organizationId,
+		connectorKey: args.connector_key,
+		createdBy: userId,
+	}).catch((err) =>
+		logger.warn(
+			{ err, connection_id: connection.id },
+			"ensureFeedAutoPauseBehavior failed",
+		),
+	);
 
   recordLifecycleEvent({
     organizationId,

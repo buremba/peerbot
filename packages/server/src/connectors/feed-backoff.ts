@@ -6,19 +6,16 @@
  * claim-timeout reaper both stamped `next_run_at = nextRunAtFromCron(...)`
  * regardless of `consecutive_failures`. On a 5-minute feed that is a failing
  * run every 5 minutes, forever — hammering the connector, the worker lane, and
- * (for GitHub etc.) the upstream API rate limit. The optional repair agent was
- * the ONLY thing that ever paused such a feed, so a feed without a repair agent
- * looped indefinitely (repair-agent.ts returns early without pausing when no
- * agent resolves).
+ * (for GitHub etc.) the upstream API rate limit.
  *
- * This module centralises two conservative, repair-agent-independent policies
- * so the reschedule path (run-lifecycle.ts) and the claim-timeout reaper
- * (check-stalled-executions.ts) apply the SAME math:
+ * This module centralises two policies so the reschedule path (run-lifecycle.ts)
+ * and the claim-timeout reaper (check-stalled-executions.ts) apply the SAME math:
  *
  *  1. Exponential backoff on `next_run_at` after a failure, so a failing feed
  *     retries progressively less often instead of every cadence.
- *  2. A hard consecutive-failure threshold that pauses the feed outright,
- *     independent of any repair agent.
+ *  2. A hard consecutive-failure threshold that pauses the feed outright and
+ *     emits a `feed.auto_paused` Behavior signal so orgs can react with a
+ *     normal Behavior (see behaviors/platform-events.ts).
  *
  * All timings are env-overridable for tests/operators via lazy getters (same
  * convention as config/intervals.ts).
@@ -46,7 +43,7 @@ export const feedBackoff = {
   },
 
   /** Consecutive-failure count at which a feed is hard-paused
-   *  (`status='paused'`, `next_run_at=NULL`) regardless of any repair agent.
+   *  (`status='paused'`, `next_run_at=NULL`) and `feed.auto_paused` is emitted.
    *  20 failures is deliberately conservative: at the capped 6h backoff that is
    *  several days of a feed being down before we stop scheduling it entirely,
    *  so a feed is never paused for a transient outage. Operators can lower it
@@ -75,7 +72,7 @@ export function feedBackoffDelayMs(consecutiveFailures: number): number {
 /**
  * Whether a feed with `consecutiveFailures` failures has crossed the hard
  * auto-pause threshold and should be paused (`status='paused'`,
- * `next_run_at=NULL`) independent of any repair agent.
+ * `next_run_at=NULL`).
  */
 export function shouldHardPauseFeed(consecutiveFailures: number): boolean {
   return consecutiveFailures >= feedBackoff.pauseThreshold;

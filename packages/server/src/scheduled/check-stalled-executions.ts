@@ -39,6 +39,7 @@
  */
 
 import type { ReservedSql } from 'postgres';
+import { maybeEmitFeedAutoPausedAfterFailure } from '../behaviors/platform-events';
 import { intervals } from '../config/intervals';
 import { feedBackoff } from '../connectors/feed-backoff';
 import { getDb } from '../db/client';
@@ -214,7 +215,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           WHERE t.run_type = 'sync'
             AND t.stale_status = 'pending'
             AND t.feed_id = f.id
-          RETURNING f.id
+          RETURNING f.id, f.consecutive_failures, f.status
         )
         SELECT
           (SELECT count(*)::int FROM timed_out) AS reaped,
@@ -222,11 +223,23 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           (SELECT count(*)::int FROM timed_out
             WHERE run_type = 'sync'
               AND stale_status IN ('claimed', 'running')
-              AND feed_id IS NOT NULL) AS sync_eligible
+              AND feed_id IS NOT NULL) AS sync_eligible,
+          (SELECT coalesce(
+             json_agg(json_build_object(
+               'id', id,
+               'consecutive_failures', consecutive_failures
+             )),
+             '[]'::json
+           )
+           FROM finalized_pending_feeds
+           WHERE status = 'paused'
+             AND consecutive_failures = ${pauseThreshold}
+          ) AS auto_paused_feeds
       `) as unknown as Array<{
         reaped: number;
         retries_created: number;
         sync_eligible: number;
+        auto_paused_feeds: unknown;
       }>;
 
       const reapedRow = reaped[0];
@@ -236,6 +249,31 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
       if (reapedCount === 0) {
         return { acquired: true, reaped: 0, retriesCreated: 0 };
+      }
+
+      // Threshold-crossing hard pauses from the never-claimed path → Behavior signal.
+      const autoPausedRaw = reapedRow?.auto_paused_feeds;
+      const autoPausedList: Array<{ id: number; consecutive_failures: number }> =
+        Array.isArray(autoPausedRaw)
+          ? (autoPausedRaw as Array<{ id: number; consecutive_failures: number }>)
+          : typeof autoPausedRaw === 'string'
+            ? (JSON.parse(autoPausedRaw) as Array<{
+                id: number;
+                consecutive_failures: number;
+              }>)
+            : [];
+      for (const paused of autoPausedList) {
+        void maybeEmitFeedAutoPausedAfterFailure({
+          feedId: Number(paused.id),
+          consecutiveFailures: Number(paused.consecutive_failures),
+          pauseThreshold,
+          crossedThreshold: true,
+        }).catch((err) => {
+          logger.warn(
+            { feed_id: paused.id, error: String(err) },
+            '[reaper] maybeEmitFeedAutoPausedAfterFailure threw',
+          );
+        });
       }
 
       logger.warn(

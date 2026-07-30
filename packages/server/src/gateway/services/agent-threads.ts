@@ -61,8 +61,7 @@ const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
  * Mint a new thread session for an agent.
  *
  * Returns the threadId (== conversationId) without enqueueing any message.
- * Callers wire follow-up state (e.g. `feeds.repair_thread_id = $threadId`)
- * and then call {@link enqueueAgentMessage} to post the first message.
+ * Callers then call {@link enqueueAgentMessage} to post the first message.
  */
 export async function createThreadForAgent(
   deps: { sessionManager: ISessionManager },

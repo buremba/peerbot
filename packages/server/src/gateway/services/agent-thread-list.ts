@@ -163,8 +163,20 @@ export async function listAgentThreads(args: {
 	/** "user" (default): only the requesting user's app threads. "all": every
 	 *  conversation for the agent across platforms (Slack, Telegram, …). */
 	scope?: "user" | "all";
+	/**
+	 * Does the requester have admin access to this agent/org? Only consulted for
+	 * DM conversations that the normal channel-membership path cannot admit.
+	 * Defaults to false so a caller that forgets to pass it fails closed.
+	 */
+	isAdmin?: boolean;
 }): Promise<AgentThreadSummary[]> {
-	const { agentId, organizationId, userId, scope = "user" } = args;
+	const {
+		agentId,
+		organizationId,
+		userId,
+		scope = "user",
+		isAdmin = false,
+	} = args;
 	// No org → no tenant scope → nothing to list from the (org-keyed) entity.
 	if (!organizationId) return [];
 
@@ -229,7 +241,16 @@ export async function listAgentThreads(args: {
 			// is safe; the same-channel-across-two-workspaces (Grid) case is likewise
 			// handled by isConversationVisible failing closed on team ambiguity.
 			if (byKey.has(row.conversationId)) continue;
-			if (channelVis && !isConversationVisible(row.conversationId, channelVis)) {
+			// Some DMs are explicitly bound (for example Preview `/link`) and must
+			// keep the existing channel-fence path. Admin access is the safe bypass
+			// for an unbound DM, whose correspondent cannot be mapped portably to a
+			// Lobu user. `isDirect` null (unknown) also keeps the channel fence and
+			// stays fail-closed.
+			if (
+				!(row.isDirect === true && isAdmin) &&
+				channelVis &&
+				!isConversationVisible(row.conversationId, channelVis)
+			) {
 				continue;
 			}
 			byKey.set(row.conversationId, {

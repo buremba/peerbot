@@ -24,6 +24,7 @@ import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { insertEvent } from "../../utils/insert-event.js";
+import { invalidateMembershipRoleCache } from "../../workspace/multi-tenant.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -107,6 +108,7 @@ describe("agent history routes", () => {
 
 	afterEach(() => {
 		setAuthProvider(null);
+		invalidateMembershipRoleCache(ORG_ID, USER_ID);
 	});
 
 	function createApp() {
@@ -665,6 +667,104 @@ describe("agent history routes", () => {
 				],
 			}),
 		]);
+	});
+
+	test("lists and reads an unbound DM for an org owner but not a member", async () => {
+		const sql = getDb();
+		await sql`
+			INSERT INTO "user" (
+				id, email, name, username, "emailVerified", "createdAt", "updatedAt"
+			) VALUES (
+				${USER_ID}, 'history-owner@test.example.com', 'History Owner',
+				'history-owner', true, NOW(), NOW()
+			)
+			ON CONFLICT (id) DO NOTHING
+		`;
+		await addUserToOrganization(USER_ID, ORG_ID, "owner");
+		invalidateMembershipRoleCache(ORG_ID, USER_ID);
+
+		const member = await createTestUser({ name: "DM-hidden member" });
+		await addUserToOrganization(member.id, ORG_ID, "member");
+		invalidateMembershipRoleCache(ORG_ID, member.id);
+
+		const conversationId = "telegram:6570514069";
+		const jsonl =
+			`{"type":"session","version":3,"id":"s-dm","timestamp":"2026-07-30T10:00:00Z","cwd":"/w"}\n` +
+			`{"type":"message","id":"u-dm","parentId":null,"timestamp":"2026-07-30T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Private DM"}]}}\n`;
+		const runId = await insertRun({
+			organizationId: ORG_ID,
+			agentId: "agent-1",
+			conversationId,
+		});
+		await sql`
+			INSERT INTO public.agent_transcript_snapshot
+				(organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status)
+			VALUES
+				(${ORG_ID}, 'agent-1', ${conversationId}, ${runId}, ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
+		`;
+		await sql`
+			INSERT INTO public.conversations
+				(organization_id, agent_id, platform, conversation_id, kind, user_id, title, is_direct, last_activity_at)
+			VALUES
+				(${ORG_ID}, 'agent-1', 'telegram', ${conversationId}, 'platform', '6570514069', 'Private DM', true, now())
+		`;
+
+		const requestAs = (
+			userId: string,
+			path: string,
+			opts?: { isAdmin?: boolean },
+		) => {
+			setAuthProvider(() => ({
+				userId,
+				platform: "external",
+				agentId: "agent-1",
+				...(opts?.isAdmin ? { isAdmin: true } : {}),
+				exp: Date.now() + 60_000,
+			}));
+			return orgContext.run({ organizationId: ORG_ID }, () =>
+				createApp().request(path, {
+					method: "GET",
+					headers: { host: "localhost" },
+				}),
+			);
+		};
+
+		const list = await requestAs(
+			USER_ID,
+			"/api/v1/agents/agent-1/history/threads?scope=all",
+		);
+		expect(list.status).toBe(200);
+		const listBody = (await list.json()) as {
+			threads: Array<{ conversationId: string }>;
+		};
+		expect(listBody.threads.map((thread) => thread.conversationId)).toContain(
+			conversationId,
+		);
+
+		const ownerRead = await requestAs(
+			USER_ID,
+			`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+		);
+		expect(ownerRead.status).toBe(200);
+
+		const memberRead = await requestAs(
+			member.id,
+			`/api/v1/agents/agent-1/history/conversations/${encodeURIComponent(conversationId)}/messages`,
+		);
+		expect(memberRead.status).toBe(404);
+
+		const platformAdminList = await requestAs(
+			member.id,
+			"/api/v1/agents/agent-1/history/threads?scope=all",
+			{ isAdmin: true },
+		);
+		expect(platformAdminList.status).toBe(200);
+		const platformAdminBody = (await platformAdminList.json()) as {
+			threads: Array<{ conversationId: string }>;
+		};
+		expect(
+			platformAdminBody.threads.map((thread) => thread.conversationId),
+		).toContain(conversationId);
 	});
 
 	test("reads a per-org system agent's platform conversation in the ambient org, not the ownership-first org", async () => {

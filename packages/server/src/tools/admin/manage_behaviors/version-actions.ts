@@ -4,6 +4,7 @@
  */
 
 import { getDb, parsePgNumberArray } from '../../../db/client';
+import { ToolUserError } from '../../../utils/errors';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import { nextRunAt } from '../../../utils/cron';
 import { resolveUsernames } from '../../../utils/resolve-usernames';
@@ -14,6 +15,7 @@ import {
   assertKeyingConfigEntityTypeExists,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
+  assertBehaviorSkillsResolve,
   parseJsonInput,
   normalizeStoredJsonField,
   toJsonParam,
@@ -57,7 +59,7 @@ export async function handleCreateVersion(
   // schedule, scheduler_client_id) to that specific row.
   const watcherRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.watcher_group_id, i.sources, i.organization_id,
-           i.entity_ids, i.schedule, i.timezone, i.triggers
+           i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id
     FROM watchers i WHERE i.id = ${args.behavior_id}
   `;
   if (watcherRows.length === 0) {
@@ -72,7 +74,7 @@ export async function handleCreateVersion(
   // the caller didn't specify.
   const prevRows = await sql`
     SELECT
-      name, description, prompt, version_sources,
+      name, description, prompt, version_sources, skills,
       keying_config, classifiers,
       reactions_guidance
     FROM watcher_versions
@@ -100,15 +102,27 @@ export async function handleCreateVersion(
   //   2. `sources` omitted → INHERIT the assignment's stored sources, so a
   //      prompt- or metadata-only bump preserves them.
   //
-  // The instruction text is not a third input. In particular, `lobu apply`
-  // supplies compiled skill bodies as the prompt; chip-shaped prose there must
-  // not add or remove the assignment's sources. Interactive authoring clients
-  // send an explicit replacement when their source-chip set changes.
+  // The prompt is not a third input. In particular, chip-shaped prose in an
+  // inherited task statement must not add or remove the assignment's sources.
+  // Interactive authoring clients send an explicit replacement when their
+  // source-chip set changes.
   const storedSources = normalizeStoredJsonField(
     watcherRows[0].sources,
     [] as Array<{ name: string; query: string }>
   );
   const sources = args.sources !== undefined ? args.sources : storedSources;
+  // Pinned skills follow the same passed-vs-omitted intent split as sources: an
+  // explicit array replaces (`[]` clears), omission inherits the previous
+  // version's snapshots so a prompt- or metadata-only bump keeps them. Inherited
+  // snapshots are carried VERBATIM and never re-read from the agent's library —
+  // a bump that only renames the Behavior must not quietly upgrade its skill
+  // text to whatever the library holds today. Taking a newer body is an explicit
+  // act: the caller sends the new snapshots.
+  const storedSkills = normalizeStoredJsonField(
+    prev.skills,
+    [] as Array<{ name: string; content: string }>
+  );
+  const skills = args.skills !== undefined ? args.skills : storedSkills;
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
@@ -139,6 +153,25 @@ export async function handleCreateVersion(
       versionOrganizationId,
       sources,
       parsePgNumberArray(watcherRows[0].entity_ids),
+    );
+    // Only check a CALLER-SUPPLIED skill set, for the same reason keying_config
+    // is gated above: inherited snapshots were already valid when pinned, and a
+    // name-only bump must not start failing because a skill was since renamed or
+    // disabled in the library. The stored text still runs either way.
+    const versionAgentId = watcherRows[0].agent_id as string | null;
+    if (args.skills !== undefined && skills.length > 0) {
+      if (!versionAgentId) {
+        throw new ToolUserError(
+          'This Behavior has no owning agent, so pinned skills cannot be resolved.',
+          422
+        );
+      }
+      await assertBehaviorSkillsResolve(sql, versionOrganizationId, versionAgentId, skills);
+    }
+  } else if (args.skills !== undefined && skills.length > 0) {
+    throw new ToolUserError(
+      'This Behavior has no organization, so pinned skills cannot be resolved.',
+      422
     );
   }
 
@@ -172,11 +205,11 @@ export async function handleCreateVersion(
         Number(sibling.id) === Number(args.behavior_id)
           ? triggerWrite.triggers
           : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
-      assertBehaviorInstructions(siblingTriggers, prompt);
+      assertBehaviorInstructions(siblingTriggers, prompt, skills);
     }
   } else {
     // Draft version only — triggers on the live row do not change.
-    assertBehaviorInstructions(previousTriggers, prompt);
+    assertBehaviorInstructions(previousTriggers, prompt, skills);
   }
 
   const createdBy = ctx.userId ?? 'system';
@@ -211,14 +244,14 @@ export async function handleCreateVersion(
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, version_sources,
+        prompt, version_sources, skills,
         keying_config, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${groupId}, ${lockedNextVersion},
         ${args.name ?? (prev.name as string) ?? 'Behavior'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
-        ${prompt}, NULL,
+        ${prompt}, NULL, ${tx.json(skills)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},
         ${args.change_notes ?? null}, ${createdBy}, NOW()
@@ -434,7 +467,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         id, version, name, description, prompt,
-        version_sources,
+        version_sources, skills,
         keying_config, classifiers,
         reactions_guidance
       FROM watcher_versions
@@ -445,7 +478,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         v.id, v.version, v.name, v.description, v.prompt,
-        v.version_sources,
+        v.version_sources, v.skills,
         v.keying_config, v.classifiers,
         v.reactions_guidance
       FROM watcher_versions v
@@ -479,6 +512,10 @@ export async function handleGetVersionDetails(
     name: v.name as string | undefined,
     description: v.description as string | undefined,
     prompt: v.prompt as string,
+    skills: normalizeStoredJsonField(
+      v.skills,
+      [] as Array<{ name: string; content: string }>
+    ),
     sources:
       versionSources.length > 0
         ? versionSources

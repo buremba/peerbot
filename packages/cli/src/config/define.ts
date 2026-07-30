@@ -406,15 +406,29 @@ export interface Behavior {
   /** Connector events and/or cadence that activate this Behavior. */
   triggers?: BehaviorTriggerConfig[];
   /**
-   * Ordered skill names from the owning agent's skill library
-   * ({@link Agent.skills}). `lobu apply` compiles the referenced skill bodies —
-   * joined in this order — into the Behavior's frozen instructions; editing the
-   * library later does not change existing Behaviors until re-apply.
+   * The task this Behavior performs, in plain text — *what to do when it fires*,
+   * as distinct from the reusable know-how in {@link Behavior.skills}.
    *
-   * Optional for event triggers with execution `"turn"` (chat/webhook listen —
-   * the incoming event is the content and a built-in default applies).
-   * Required (≥1) for schedule triggers, event triggers with execution
-   * `"window"`, and Behaviors with no triggers (manual runs).
+   * Delivered to the agent verbatim, with no template expansion; the window's
+   * data arrives separately in the knowledge-read payload. Skills are NOT
+   * concatenated into it — they ship as files the agent reads on demand — so a
+   * prompt saying "draft the brief using deal-brief" works without pasting the
+   * skill body here.
+   */
+  prompt?: string;
+  /**
+   * Ordered skill names from the owning agent's skill library
+   * ({@link Agent.skills}). `lobu apply` resolves each name to its body and
+   * pins the pair onto the Behavior's version, so a run gets the text as it
+   * stood at apply time. Editing the library later does not reach an existing
+   * Behavior until the next `lobu apply`; re-applying is the explicit upgrade
+   * action for a declarative project.
+   *
+   * Supply {@link Behavior.prompt}, `skills`, or both. One of the two is
+   * required for schedule triggers, event triggers with execution `"window"`,
+   * and Behaviors with no triggers (manual runs); an event trigger with
+   * execution `"turn"` may omit both, since the incoming event is the content
+   * and a built-in default applies.
    */
   skills?: string[];
   /**

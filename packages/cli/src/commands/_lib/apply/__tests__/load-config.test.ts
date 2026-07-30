@@ -471,7 +471,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("compiles Behavior skills[] into prompt: ordered join, content-only", async () => {
+  test("pins Behavior skills[] as ordered {name, content} snapshots, leaving prompt alone", async () => {
     dir = mkdtempSync(join(import.meta.dir, "compile-"));
     writeFileSync(
       join(dir, "lobu.config.ts"),
@@ -482,15 +482,44 @@ describe("loadDesiredStateFromConfig", () => {
         `  defineSkill({ name: "style", description: "d2", content: "Style rules." }),`,
         `] });`,
         `export default defineConfig({ agents: [a], behaviors: [`,
-        `  defineBehavior({ agent: a, slug: "w", skills: ["style", "triage"] }),`,
+        `  defineBehavior({ agent: a, slug: "w", prompt: "Do the thing.", skills: ["style", "triage"] }),`,
         `] });`,
         ``,
       ].join("\n")
     );
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    // Join follows the Behavior's order, not the library's; descriptions do
-    // not compile (a description-only skill edit must not churn versions).
-    expect(state.watchers[0]?.prompt).toBe("Style rules.\n\nTriage rules.");
+    // Order follows the Behavior's list, not the library's. Descriptions are
+    // not part of the snapshot, so a description-only skill edit must not churn
+    // versions.
+    expect(state.watchers[0]?.skillSnapshots).toEqual([
+      { name: "style", content: "Style rules." },
+      { name: "triage", content: "Triage rules." },
+    ]);
+    // The task statement is the author's and is NOT overwritten by the skill
+    // bodies — that conflation is what #2320's follow-up removed.
+    expect(state.watchers[0]?.prompt).toBe("Do the thing.");
+  });
+
+  test("a skills-only Behavior keeps an empty prompt rather than inheriting skill text", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "skillsonly-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineBehavior, defineSkill } from "@lobu/cli/config";`,
+        `const a = defineAgent({ id: "a", skills: [`,
+        `  defineSkill({ name: "triage", content: "Triage rules." }),`,
+        `] });`,
+        `export default defineConfig({ agents: [a], behaviors: [`,
+        `  defineBehavior({ agent: a, slug: "w", skills: ["triage"] }),`,
+        `] });`,
+        ``,
+      ].join("\n")
+    );
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    expect(state.watchers[0]?.prompt).toBe("");
+    expect(state.watchers[0]?.skillSnapshots).toEqual([
+      { name: "triage", content: "Triage rules." },
+    ]);
   });
 
   test("rejects a Behavior skill that is missing or has an empty body", async () => {
@@ -516,9 +545,16 @@ describe("loadDesiredStateFromConfig", () => {
     await expect(
       write(`defineSkill({ name: "empty", content: "  " })`, `"empty"`)
     ).rejects.toThrow(/body is empty/);
+    rmSync(dir, { recursive: true, force: true });
+    await expect(
+      write(
+        `defineSkill({ name: "unsafe/name", content: "x" })`,
+        `"unsafe/name"`
+      )
+    ).rejects.toThrow(/names may contain only/);
   });
 
-  test("rejects compiled instructions over the 32KB cap", async () => {
+  test("rejects pinned skill text over the 32KB cap", async () => {
     dir = mkdtempSync(join(import.meta.dir, "cap-"));
     writeFileSync(
       join(dir, "lobu.config.ts"),

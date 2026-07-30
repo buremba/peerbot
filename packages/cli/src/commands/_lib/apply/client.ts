@@ -127,6 +127,12 @@ export interface RemoteBehavior {
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
+  /**
+   * Pinned skill snapshots on the current version. NULL/absent on Behaviors
+   * created before the column existed, which the diff treats as "no skills" —
+   * so the first re-apply of a config that references skills pins them.
+   */
+  skills?: Array<{ name: string; content: string }> | null;
   classifiers?: unknown[] | null;
   keying_config?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
@@ -894,6 +900,7 @@ export class ApplyClient {
     name?: string;
     description?: string;
     prompt: string;
+    skills?: Array<{ name: string; content: string }>;
     triggers?: import("@lobu/core/contracts/tools/manage-behaviors").BehaviorTrigger[];
     sources?: BehaviorSource[];
     reactions_guidance?: string;
@@ -917,6 +924,7 @@ export class ApplyClient {
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
+        ...(payload.skills?.length ? { skills: payload.skills } : {}),
         ...(payload.triggers !== undefined
           ? { triggers: payload.triggers }
           : {}),
@@ -1010,6 +1018,7 @@ export class ApplyClient {
   async createBehaviorVersion(payload: {
     behavior_id: string;
     prompt?: string;
+    skills?: Array<{ name: string; content: string }>;
     sources?: BehaviorSource[];
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
@@ -1026,6 +1035,7 @@ export class ApplyClient {
         behavior_id: payload.behavior_id,
         set_as_current: true,
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
+        ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
         ...(payload.keying_config !== undefined
           ? { keying_config: payload.keying_config }

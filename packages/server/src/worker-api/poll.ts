@@ -14,6 +14,7 @@ import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schem
 import { withDbRetry } from '../db/with-retry';
 import type { Env } from '../index';
 import { claimPendingWatcherRun } from '../runs/queue-service';
+import { parseBehaviorSkillSnapshots } from '../behaviors/skill-snapshots';
 import { materializeDueFeeds } from '../scheduled/check-due-feeds';
 import {
   DEFAULT_AGENT_ID,
@@ -58,6 +59,29 @@ function parseClaimJson(raw: unknown): Record<string, unknown> | null {
     }
   }
   return null;
+}
+
+/**
+ * Device executors do not use the server-side worker filesystem, so compose the
+ * same frozen snapshots into their per-run task at dispatch time. This does not
+ * mutate or conflate the stored fields: `prompt` remains the author's task
+ * statement and `skills` remain individually diffable on the version.
+ */
+function formatDeviceBehaviorInstructions(
+  prompt: string | null,
+  rawSkills: unknown
+): string | null {
+  const skills = parseBehaviorSkillSnapshots(rawSkills);
+  if (skills.length === 0) return prompt;
+  const skillSections = skills.map(
+    (skill) => `### ${skill.name}\n\n${skill.content}`
+  );
+  return [
+    ...(prompt?.trim() ? [prompt] : []),
+    '## Pinned Behavior skills',
+    'These frozen skills are part of this Behavior version. Follow every one when performing the task.',
+    ...skillSections,
+  ].join('\n\n');
 }
 
 /**
@@ -607,6 +631,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.notification_priority AS watcher_notification_priority,
         w.execution_config AS watcher_execution_config,
         wv.prompt AS watcher_prompt,
+        wv.skills AS watcher_skills,
         wv.keying_config AS watcher_keying_config
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
@@ -697,6 +722,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_notification_priority: string | null;
     watcher_execution_config: Record<string, unknown> | null;
     watcher_prompt: string | null;
+    watcher_skills: unknown;
     watcher_keying_config: Record<string, unknown> | string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
@@ -734,6 +760,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       parseClaimJson(row.watcher_keying_config) as KeyingConfig | null,
       row.watcher_id
     );
+    let watcherInstructions: string | null;
+    try {
+      watcherInstructions = formatDeviceBehaviorInstructions(
+        row.watcher_prompt,
+        row.watcher_skills
+      );
+    } catch (err) {
+      const message = errorMessage(err);
+      await sql`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${message}
+        WHERE id = ${row.run_id}
+      `;
+      logger.error(
+        { run_id: row.run_id, err },
+        'Failed to resolve pinned Behavior skills for device dispatch'
+      );
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: message,
+      });
+    }
     return c.json({
       run_id: row.run_id,
       run_type: row.run_type,
@@ -749,7 +800,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // Strip server-only keys (e.g. finalize_nudges) so the device-worker's
           // strict payload decode never sees a field it doesn't know.
           execution_config: stripServerOnlyExecutionConfig(row.watcher_execution_config),
-          // The prompt of the version this run was pinned to at creation
+          // The instructions of the version this run was pinned to at creation:
+          // the author's prompt plus its frozen skill snapshots. Device-local
+          // executors do not receive the server-side worker's `.skills/` tree,
+          // so dispatch composes the two at this boundary without changing the
+          // separately stored/diffable version fields.
+          //
           // (run's snapshotted approved_input.version_id, else the watcher's
           // current_version_id) — same source complete_window validates
           // against, so a watcher edited after the run was queued doesn't swap
@@ -758,7 +814,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // id/name/slug), so a scheduled watcher's local CLI got a bare
           // "process this" and improvised; shipping it lets the device run the
           // real prompt. Null only if the watcher has no version row.
-          prompt: row.watcher_prompt ?? null,
+          prompt: watcherInstructions,
           // The derived extraction contract (entity-typed → derived from that
           // entity type's metadata_schema; untyped → null). The dispatcher embeds
           // it in the prompt as the output contract: the CLI must finish with a

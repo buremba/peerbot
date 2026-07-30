@@ -136,6 +136,12 @@ function fullOrgRoutes(): Record<
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",
+          skills: [
+            {
+              name: "account-brief",
+              content: "Summarize the account.",
+            },
+          ],
           schedule: "0 */12 * * *",
           triggers: [
             {
@@ -383,11 +389,13 @@ describe("lobu init --from-org", () => {
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
-    // Skills-first round trip: the stored instruction text was emitted as a
-    // generated skill named after the Behavior slug, and compiling it back
-    // reproduces the exact frozen text (no version churn on re-apply).
-    expect(w?.skills).toEqual(["account-health"]);
+    // The task statement and matching pinned skill both round-trip without
+    // rehoming either one into the other.
     expect(w?.prompt).toBe("Poll CRM data.");
+    expect(w?.skills).toEqual(["account-brief"]);
+    expect(w?.skillSnapshots).toEqual([
+      { name: "account-brief", content: "Summarize the account." },
+    ]);
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",
       connector_key: "github",

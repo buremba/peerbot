@@ -184,6 +184,9 @@ async function getContentImpl(
     if (args.behavior_id) {
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
+        // Required for private connection visibility (oauth_account X, etc.).
+        // Without this, Behavior sources silently return org-visible events only.
+        userId: ctx.userId,
       });
     }
 

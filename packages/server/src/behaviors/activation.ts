@@ -21,10 +21,9 @@ export interface MatchingBehaviorActivation {
   instructions: string;
   /**
    * The Behavior's `min_cooldown_seconds`. Carried on the match so a caller can
-   * skip the cooldown claim entirely for the overwhelming majority of
-   * Behaviors, which leave it at the 0 default. This is a feature-enabled hint,
-   * NOT the decision: the window is re-read and consumed authoritatively under
-   * the per-Behavior lock in `claimBehaviorCooldown`.
+   * skip the cooldown claim for Behaviors observed at the 0 default. Positive
+   * values are re-read and consumed authoritatively under the per-Behavior lock
+   * in `claimBehaviorCooldown`.
    */
   minCooldownSeconds: number;
   trigger: BehaviorEventTrigger;

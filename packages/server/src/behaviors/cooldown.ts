@@ -41,9 +41,9 @@ export async function lockBehaviorForActivation(
  * may proceed. Callers MUST already hold `lockBehaviorForActivation` on the
  * same transaction — the read and the write below are only atomic together.
  *
- * A Behavior with `min_cooldown_seconds = 0` (the NOT NULL default, and the
- * overwhelming majority) is always allowed and never writes the cursor, so the
- * common path costs one indexed read and no row contention.
+ * A Behavior with `min_cooldown_seconds = 0` (the NOT NULL default) is always
+ * allowed and never writes the cursor, so the common path costs one indexed
+ * read and no row contention.
  *
  * Returns false for a Behavior that no longer exists: a deleted Behavior has
  * nothing to activate.
@@ -57,7 +57,7 @@ export async function claimBehaviorCooldown(
       min_cooldown_seconds,
       last_event_activation_at IS NOT NULL
         AND last_event_activation_at >
-            now() - make_interval(secs => min_cooldown_seconds)
+            clock_timestamp() - make_interval(secs => min_cooldown_seconds)
         AS within_cooldown
     FROM watchers
     WHERE id = ${watcherId}
@@ -82,7 +82,7 @@ export async function claimBehaviorCooldown(
   }
   await tx`
     UPDATE watchers
-    SET last_event_activation_at = now()
+    SET last_event_activation_at = clock_timestamp()
     WHERE id = ${watcherId}
   `;
   return true;
@@ -97,6 +97,8 @@ export async function claimBehaviorCooldown(
  * delivered: a caller that throws after claiming burns one window. That is the
  * right trade for a debounce (at worst one event is dropped) and the opposite
  * choice — claiming after delivery — would let a concurrent burst through.
+ * Database failures propagate to the caller; they must never be reported as an
+ * ordinary cooldown suppression.
  */
 export async function claimBehaviorCooldownStandalone(
   watcherId: number,
@@ -109,11 +111,10 @@ export async function claimBehaviorCooldownStandalone(
       return await claimBehaviorCooldown(tx, watcherId);
     });
   } catch (error) {
-    // Fail closed: an unreadable cooldown must not silently become "fire".
     logger.error(
       { error, watcherId },
-      "[cooldown] Could not claim a Behavior cooldown window — suppressing this activation",
+      "[cooldown] Could not claim a Behavior cooldown window — activation failed",
     );
-    return false;
+    throw error;
   }
 }

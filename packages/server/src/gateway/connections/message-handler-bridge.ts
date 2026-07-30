@@ -1177,8 +1177,9 @@ export class MessageHandlerBridge {
     for (const candidate of replyBehaviors) {
       // `minCooldownSeconds` is a feature-enabled hint carried on the match, so
       // an ordinary chat Behavior (the 0 default) costs no extra round-trip and
-      // cannot be dropped by a cooldown claim that fails closed. Behaviors that
-      // opted in re-read and consume the window under the per-Behavior lock.
+      // cannot be dropped by a cooldown claim. Behaviors that opted in re-read
+      // and consume the window under the per-Behavior lock; claim failures
+      // propagate out of this handler.
       if (
         candidate.minCooldownSeconds > 0 &&
         !(await claimBehaviorCooldownStandalone(candidate.behaviorId))

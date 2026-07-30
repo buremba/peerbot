@@ -13,13 +13,11 @@
  * that; it fails against a cooldown evaluated during the match.
  *
  * WHY ONLY THE EVENT PATH: a schedule already spaces its own firings — cron IS
- * the operator's cadence control — so a cooldown there is redundant. Worse, the
- * scheduled path would have to skip materializing a run, and `next_run_at` only
- * advances when a run reaches a terminal state (see `advanceWatcherSchedule`).
- * A suppressed scheduled firing would leave the cursor in the past and the
- * Behavior would re-select on every tick forever — exactly the hot loop #2326
- * fixed. Event activations have no cursor to strand: suppressing one simply
- * means that event does not fire this Behavior.
+ * the operator's cadence control — so a cooldown there is redundant. Applying
+ * this debounce in the event activation path to a scheduled firing would also
+ * bypass the scheduler's `next_run_at` advancement and leave the cursor due.
+ * Event activations have no cursor to strand: suppressing one simply means that
+ * event does not fire this Behavior.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -27,7 +25,12 @@ import {
 	findMatchingBehaviorActivations,
 	queueBehaviorActivations,
 } from "../../../behaviors/activation";
-import { claimBehaviorCooldownStandalone } from "../../../behaviors/cooldown";
+import {
+	claimBehaviorCooldown,
+	claimBehaviorCooldownStandalone,
+	lockBehaviorForActivation,
+} from "../../../behaviors/cooldown";
+import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { createBehaviorEventRun } from "../../../runs/queue-service";
 import { manageBehaviors } from "../../../tools/admin/manage_behaviors";
@@ -143,7 +146,6 @@ async function behaviorWithCooldown(
 	};
 }
 
-/** A prior event activation of this Behavior, `secondsAgo` in the past. */
 async function priorActivation(
 	fixture: Fixture,
 	secondsAgo: number,
@@ -168,7 +170,6 @@ async function match(fixture: Fixture) {
 	return activation;
 }
 
-/** Drive one delivery all the way through the durable activation path. */
 async function activate(fixture: Fixture): Promise<"queued" | "suppressed"> {
 	const activation = await match(fixture);
 	const results = await queueBehaviorActivations({
@@ -244,11 +245,10 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 	});
 
 	it("debounces two concurrent deliveries, not just sequential ones", async () => {
-		// THE regression test for the blocker that drafted #2341: with the check
-		// in `findMatchingBehaviorActivations` both deliveries pass the unlocked
-		// SELECT before either run exists, and two runs are created. The claim
-		// only holds when it happens under the advisory lock that already
-		// serializes `createBehaviorEventRun`.
+		// With the check in `findMatchingBehaviorActivations` both deliveries pass
+		// the unlocked SELECT before either run exists, and two runs are created.
+		// The claim only holds when it happens under the advisory lock that
+		// already serializes `createBehaviorEventRun`.
 		// `active_run: "queue"`, not the fixture default: a coalescing trigger
 		// folds the second signal into the pending run and correctly never
 		// reaches the cooldown, which would mask the race this test exists for.
@@ -308,8 +308,37 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			});
 
 		expect((await queue("event:coalesce:1")).disposition).toBe("queued");
+		const [claimed] = await getTestDb()`
+			SELECT last_event_activation_at
+			FROM watchers
+			WHERE id = ${fixture.behaviorId}
+		`;
 		expect((await queue("event:coalesce:2")).disposition).toBe("coalesced");
 		expect(await behaviorRunCount(fixture)).toBe(1);
+		const [afterCoalesce] = await getTestDb()`
+			SELECT last_event_activation_at
+			FROM watchers
+			WHERE id = ${fixture.behaviorId}
+		`;
+		expect(afterCoalesce.last_event_activation_at).toEqual(
+			claimed.last_event_activation_at,
+		);
+	});
+
+	it("measures the cooldown at claim time, not transaction start", async () => {
+		const fixture = await behaviorWithCooldown(1);
+		const sql = getTestDb();
+
+		await sql.begin(async (tx) => {
+			await lockBehaviorForActivation(tx, fixture.behaviorId);
+			await tx`
+				UPDATE watchers
+				SET last_event_activation_at = now()
+				WHERE id = ${fixture.behaviorId}
+			`;
+			await tx`SELECT pg_sleep(1.1)`;
+			expect(await claimBehaviorCooldown(tx, fixture.behaviorId)).toBe(true);
+		});
 	});
 
 	describe("the cursor the reply_to_source path shares", () => {
@@ -328,12 +357,10 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			);
 		});
 
-		it("is never claimed at the 0 default, so ordinary chat is untouched", async () => {
+		it("does not consume the cursor at the 0 default", async () => {
 			const fixture = await behaviorWithCooldown(0);
 			const activation = await match(fixture);
 
-			// The bridge skips the claim entirely on this hint; assert it is the
-			// value the bridge branches on, so the two cannot drift apart.
 			expect(activation.minCooldownSeconds).toBe(0);
 			expect(await claimBehaviorCooldownStandalone(fixture.behaviorId)).toBe(
 				true,
@@ -341,6 +368,12 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 			expect(await claimBehaviorCooldownStandalone(fixture.behaviorId)).toBe(
 				true,
 			);
+			const [row] = await getTestDb()`
+				SELECT last_event_activation_at
+				FROM watchers
+				WHERE id = ${fixture.behaviorId}
+			`;
+			expect(row.last_event_activation_at).toBeNull();
 		});
 
 		it("suppresses a reply when a background activation just consumed the window", async () => {
@@ -364,5 +397,18 @@ describe("min_cooldown_seconds debounces event-triggered Behaviors", () => {
 		expect(await claimBehaviorCooldownStandalone(fixture.behaviorId)).toBe(
 			false,
 		);
+	});
+
+	it("propagates a cooldown claim failure instead of reporting suppression", async () => {
+		const error = new Error("cooldown database unavailable");
+		const unavailableDb = {
+			begin: async () => {
+				throw error;
+			},
+		} as unknown as DbClient;
+
+		await expect(
+			claimBehaviorCooldownStandalone(123, unavailableDb),
+		).rejects.toBe(error);
 	});
 });

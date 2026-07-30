@@ -11,14 +11,15 @@
 --     finish.
 --   * `runs.created_at` covers background Behaviors but not `reply_to_source`
 --     ones — reply targets are routed through the chat transport and never
---     write a `behavior` run row, so the cooldown would be a silent no-op on
---     exactly the Behaviors an operator is most likely to want debounced.
+--     write a `behavior` run row, so the cooldown would be a silent no-op for
+--     reply Behaviors.
 --
 -- One cursor, written by both activation paths under the existing
 -- per-Behavior advisory lock, keeps a single predicate for a single feature.
 -- Deliberately scoped to event activations: a schedule already spaces its own
--- firings (cron IS the operator's cadence control), and suppressing a
--- scheduled firing would strand `next_run_at` in the past and hot-loop.
+-- firings (cron IS the operator's cadence control). Applying this debounce in
+-- the event activation path to a scheduled firing would also bypass the
+-- scheduler's `next_run_at` advancement and leave the cursor due.
 --
 -- Nullable with no backfill: an existing Behavior has no recorded event
 -- activation, so its first activation after this deploy is allowed. That is

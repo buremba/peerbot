@@ -14,7 +14,6 @@ import {
   parsePreviewLinkCode,
 } from "../connections/message-handler-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
-
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 import {
   type ArtifactTestEnv,
@@ -838,9 +837,9 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
   });
 
   test("a reply Behavior inside its cooldown window is suppressed", async () => {
-    // The blocker that drafted #2341: `reply_to_source` targets are handed to
-    // the chat transport and never write a `behavior` run row, so a cooldown
-    // expressed over `runs` was a silent no-op for exactly these Behaviors.
+    // `reply_to_source` targets are handed to the chat transport and never
+    // write a `behavior` run row, so a cooldown expressed over `runs` was a
+    // silent no-op for these Behaviors.
     const trigger = {
       kind: "event" as const,
       connector_key: "slack",
@@ -927,8 +926,8 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       "mention",
     );
 
-    // Ordinary chat must not pay a round-trip per message, and must not be
-    // droppable by a claim that fails closed on a database blip.
+    // Ordinary chat must not pay a round-trip per message or encounter a
+    // cooldown-claim failure.
     expect(cooldownClaims).toEqual([]);
     expect(enqueueMessage).toHaveBeenCalledTimes(1);
   });
@@ -1040,7 +1039,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
           agentKind: null,
           model: null,
           instructions: "Handle support messages.",
-        minCooldownSeconds: 0,
+          minCooldownSeconds: 0,
           trigger,
         },
       ],

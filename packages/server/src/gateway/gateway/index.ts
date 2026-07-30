@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
+import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
 import { toPublicWebOrigin } from "../../utils/url-builder.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
@@ -726,19 +727,26 @@ export class WorkerGateway {
       // `agentSettings` fetched above — it is null for an orgless DB-backed agent
       // (the correct fail-closed value: NO skill content leaks cross-tenant), and
       // this removes the duplicate id-only read that ignored the org guard.
+      //
+      // A Behavior run uses version-pinned instructions, so the live library
+      // must not re-enter the turn. Drop both surfaces: the catalog points the
+      // model at `.skills/`, and `skillsConfig` is what the worker syncs there.
+      const behaviorRun = auth.tokenData.source === BEHAVIOR_RUN_SOURCE;
       let skillsConfig: Array<{ name: string; content: string }> = [];
       const mcpContext: Record<string, string> = {};
-      if (agentSettings) {
+      if (agentSettings && !behaviorRun) {
         const skills = agentSettings.skillsConfig?.skills || [];
         skillsConfig = skills
           .filter((s) => s.enabled && s.content)
           .map((s) => ({ name: s.name, content: s.content! }));
       }
 
-      const mergedSkillsInstructions = contextData.skillsInstructions || "";
+      const mergedSkillsInstructions = behaviorRun
+        ? ""
+        : contextData.skillsInstructions || "";
 
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${behaviorRun ? " (Behavior run — live skill library suppressed)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({

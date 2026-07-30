@@ -21,7 +21,7 @@ describe("WorkerGateway session context", () => {
     }
   });
 
-  test("syncs only agent-configured skills into skillsConfig (declared agent, orgless)", async () => {
+  test("syncs configured skills for chat but suppresses them for Behavior runs", async () => {
     // A DECLARED (SDK-embedded) agent has org-agnostic settings, so an orgless
     // token legitimately syncs its skills. (A DB-backed agent with an orgless
     // token would fail closed — covered by the cross-tenant test below.)
@@ -64,21 +64,7 @@ describe("WorkerGateway session context", () => {
       } as any
     );
 
-    const token = generateWorkerToken("user-1", "conv-1", "worker-a", {
-      channelId: "channel-1",
-      agentId: "agent-1",
-    });
-
-    const response = await gateway.getApp().request("/session-context", {
-      headers: {
-        authorization: `Bearer ${token}`,
-        host: "gateway.example.com",
-      },
-    });
-
-    expect(response.status).toBe(200);
-
-    const body = (await response.json()) as {
+    type SessionContextBody = {
       agentLayers: {
         identityMd: string;
         soulMd: string;
@@ -89,18 +75,44 @@ describe("WorkerGateway session context", () => {
       skillsInstructions: string;
     };
 
-    expect(body.agentLayers).toEqual({
+    const fetchContext = async (source?: string): Promise<SessionContextBody> => {
+      const token = generateWorkerToken("user-1", "conv-1", "worker-a", {
+        channelId: "channel-1",
+        agentId: "agent-1",
+        source,
+      });
+      const response = await gateway.getApp().request("/session-context", {
+        headers: {
+          authorization: `Bearer ${token}`,
+          host: "gateway.example.com",
+        },
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as SessionContextBody;
+    };
+
+    const chat = await fetchContext();
+    expect(chat.agentLayers).toEqual({
       identityMd: "I am Aria.",
       soulMd: "Be concise.",
       userMd: "Acme support.",
       unconfiguredNotice: "",
     });
-    expect(body.skillsConfig).toEqual([
+    expect(chat.skillsConfig).toEqual([
       { name: "custom-skill", content: "# Custom Skill\n" },
     ]);
-    expect(body.skillsInstructions).toContain("## Skills");
-    expect(body.skillsInstructions).toContain("owner/custom-skill");
-    expect(body.skillsInstructions).not.toContain("Built-in System Skills");
+    expect(chat.skillsInstructions).toContain("## Skills");
+    expect(chat.skillsInstructions).toContain("owner/custom-skill");
+    expect(chat.skillsInstructions).not.toContain("Built-in System Skills");
+
+    const behaviorRun = await fetchContext("watcher-run");
+    expect(behaviorRun.skillsConfig).toEqual([]);
+    expect(behaviorRun.skillsInstructions).toBe("");
+
+    // Other headless sources do not execute frozen Behavior instructions.
+    const connectorRepair = await fetchContext("connector-repair");
+    expect(connectorRepair.skillsConfig).toHaveLength(1);
+    expect(connectorRepair.skillsInstructions).toContain("## Skills");
   });
 
   test("ships the PUBLIC web origin, with the embedded /lobu mount stripped", async () => {

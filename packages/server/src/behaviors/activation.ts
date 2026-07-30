@@ -108,6 +108,24 @@ export async function findMatchingBehaviorActivations(
 		  AND w.agent_id IS NOT NULL
 		  AND ${triggerFilter}
 		  ${organizationFilter}
+		  -- min_cooldown_seconds debounce. The column is NOT NULL DEFAULT 0, so
+		  -- the guard costs nothing for the overwhelming majority of Behaviors:
+		  -- at 0 the outer test short-circuits and the subquery never runs.
+		  -- Counts ANY firing, not just finished ones — a burst that starts a run
+		  -- and immediately re-fires must be debounced by the run it just
+		  -- started, or the cooldown would only take effect after the first run
+		  -- happens to complete.
+		  AND (
+		    w.min_cooldown_seconds = 0
+		    OR NOT EXISTS (
+		      SELECT 1
+		      FROM runs recent
+		      WHERE recent.watcher_id = w.id
+		        AND recent.run_type = 'behavior'
+		        AND recent.created_at >
+		            now() - make_interval(secs => w.min_cooldown_seconds)
+		    )
+		  )
 		ORDER BY w.id ASC
 	`;
 

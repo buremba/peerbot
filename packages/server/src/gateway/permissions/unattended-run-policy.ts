@@ -98,7 +98,11 @@ export async function runAllowsUnattendedToolUse(
       LIMIT 1
     `;
 		const mode = rows[0]?.permission_mode as string | null | undefined;
-		return mode != null && UNATTENDED_PERMISSION_MODES.has(mode);
+		if (mode != null && UNATTENDED_PERMISSION_MODES.has(mode)) return true;
+		if (rows.length === 0) {
+			await logUnattendedBindMiss(sql, watcherId, behaviorRunId, scope);
+		}
+		return false;
 	} catch (error) {
 		logger.warn(
 			{ error, conversation_id: scope.conversationId },
@@ -106,4 +110,55 @@ export async function runAllowsUnattendedToolUse(
 		);
 		return false;
 	}
+}
+
+/**
+ * A Behavior turn asked for unattended tool use and did not get it. Say so.
+ *
+ * The gate is deliberately narrow, so there are legitimate misses (an
+ * interactive turn on a Behavior conversation). But one miss is a FALSE
+ * AFFORDANCE and must not be silent: a device-pinned Behavior is claimed by
+ * `worker-api/poll.ts`, which never writes `dispatched_message_id` — only the
+ * server dispatcher in `watchers/automation.ts` does. So an operator can set
+ * `permission_mode` on a device Behavior, have it accepted and persisted, and
+ * get no effect at all. That is the exact class of dead config this policy
+ * exists to remove, so it is logged rather than swallowed until the device
+ * poll records a per-turn correlation of its own.
+ *
+ * Costs a query only when the conversation really is a Behavior turn AND the
+ * bind already failed — never on an ordinary chat turn.
+ */
+async function logUnattendedBindMiss(
+	sql: DbClient,
+	watcherId: number,
+	behaviorRunId: number,
+	scope: UnattendedRunScope,
+): Promise<void> {
+	const diagnostic = await sql`
+    SELECT w.execution_config->>'permission_mode' AS permission_mode,
+           w.device_worker_id IS NOT NULL AS device_pinned,
+           behavior_run.status AS run_status,
+           behavior_run.dispatched_message_id IS NULL AS never_dispatched
+    FROM watchers w
+    LEFT JOIN runs behavior_run
+      ON behavior_run.id = ${behaviorRunId}
+     AND behavior_run.watcher_id = w.id
+    WHERE w.id = ${watcherId}
+      AND w.organization_id = ${scope.organizationId}
+    LIMIT 1
+  `;
+	const row = diagnostic[0];
+	const mode = row?.permission_mode as string | null | undefined;
+	if (mode == null || !UNATTENDED_PERMISSION_MODES.has(mode)) return;
+	logger.warn(
+		{
+			behavior_id: watcherId,
+			behavior_run_id: behaviorRunId,
+			permission_mode: mode,
+			device_pinned: row?.device_pinned === true,
+			run_status: row?.run_status ?? null,
+			never_dispatched_by_server: row?.never_dispatched !== false,
+		},
+		"[mcp] Behavior declares unattended execution but this turn is not its recorded server dispatch — requiring approval",
+	);
 }

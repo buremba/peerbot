@@ -130,12 +130,43 @@ describe('Behavior private-connection visibility', () => {
       {
         ...ownerToolContext(workspace.org.id, workspace.users.admin.id),
         agentId: agent.agentId,
-        sourceContext: { source: BEHAVIOR_RUN_SOURCE },
+        // Verified run identity must match the requested Behavior.
+        actingWatcherId: behaviorId,
+        sourceContext: {
+          source: BEHAVIOR_RUN_SOURCE,
+          conversationId: `${agent.agentId}_watcher_${behaviorId}_run_99`,
+        },
       }
     );
     expect(contentIds(behaviorRunRead)).toEqual(
       [ownerPrivate.id, orgVisible.id].sort((a, b) => a - b)
     );
+
+    const otherCreated = (await workspace.admin.behaviors.create({
+      entity_id: entity.id,
+      slug: 'behavior-visibility-other',
+      name: 'Other Behavior',
+      prompt: 'Other',
+      agent_id: agent.agentId,
+      sources: [{ name: 'content', query: 'SELECT * FROM events' }],
+    })) as { behavior_id: string };
+    const otherBehaviorId = Number(otherCreated.behavior_id);
+
+    await expect(
+      getContent(
+        { behavior_id: otherBehaviorId, since, until },
+        env,
+        {
+          ...ownerToolContext(workspace.org.id, workspace.users.admin.id),
+          agentId: agent.agentId,
+          actingWatcherId: behaviorId,
+          sourceContext: {
+            source: BEHAVIOR_RUN_SOURCE,
+            conversationId: `${agent.agentId}_watcher_${behaviorId}_run_99`,
+          },
+        }
+      )
+    ).rejects.toThrow(/own behavior_id/);
 
     const headlessRead = await handleBehaviorMode(
       { behavior_id: behaviorId, since, until },

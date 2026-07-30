@@ -1,36 +1,75 @@
 /**
- * Ensure the org has the out-of-the-box "feed auto-pause" Behavior so
- * feed.auto_paused signals have something to activate without a repair-agent
- * subsystem.
+ * Ensure the org has the catalog "feed-auto-pause" Behavior installed, with
+ * per-connector event triggers for feed.auto_paused.
  *
- * Idempotent: keyed by slug `feed-auto-pause`. Uses the org system agent
- * when present; otherwise no-ops (connect still succeeds).
+ * Source of truth for name / prompt / tags / notification defaults is
+ * BEHAVIOR_CATALOG_TEMPLATES (id `feed-auto-pause`). This module only:
+ *   1. materializes that catalog template once per org, and
+ *   2. merges connector_key-scoped event triggers as connections appear.
  *
- * Multi-replica: takes a transaction-scoped advisory lock per org before
- * read-modify-write on the Behavior row so concurrent connects cannot clobber
- * each other's connector_key triggers.
+ * Multi-replica: transaction-scoped advisory lock per org before RMW.
  */
 
 import type { BehaviorEventTrigger } from "@lobu/core/contracts/tools/manage-behaviors";
+import { BEHAVIOR_CATALOG_TEMPLATES } from "../catalog/behavior-templates";
 import type { DbClient } from "../db/client";
-import { getDb } from "../db/client";
+import { getDb, pgTextArray } from "../db/client";
 import { getNextNumericId } from "../tools/admin/helpers/db-helpers";
 import logger from "../utils/logger";
 import { PLATFORM_EVENT_FEED_AUTO_PAUSED } from "./platform-event-catalog";
 
-export const FEED_AUTO_PAUSE_BEHAVIOR_SLUG = "feed-auto-pause";
+/** Catalog entry id + installed Behavior slug (must stay in sync with templates). */
+export const FEED_AUTO_PAUSE_CATALOG_ID = "feed-auto-pause";
+export const FEED_AUTO_PAUSE_BEHAVIOR_SLUG = FEED_AUTO_PAUSE_CATALOG_ID;
 
-const PROMPT = `A connector feed was auto-paused after too many consecutive sync failures.
-
-Read the trigger signal (label + input_text + attributes) for feed id, connector, connection, consecutive failure count, and last error.
-
-Decide the most useful next step for an org admin:
-1. If last_error indicates auth/session/scopes expired — tell them to re-authenticate the connection (include connection id / connector key).
-2. If last_error is worker_claim_timeout or device offline — tell them to open the paired device / Owletto and keep it online.
-3. If last_error is config/missing path (takeout dirs, Mac bridge, etc.) — explain what to fix and that the feed can stay paused until then.
-4. Otherwise summarize the failure and suggest inspecting the feed in Connections.
-
-Keep the response short. Prefer client.notifications.send to org admins when available; do not unpause the feed automatically.`;
+function feedAutoPauseCatalogTemplate(): {
+	name: string;
+	slug: string;
+	description: string | null;
+	prompt: string;
+	tags: string[];
+	notification_channel: string;
+	notification_priority: string;
+} {
+	const entry = BEHAVIOR_CATALOG_TEMPLATES.find(
+		(t) => t.id === FEED_AUTO_PAUSE_CATALOG_ID,
+	);
+	if (!entry) {
+		throw new Error(
+			`Behavior catalog is missing required template '${FEED_AUTO_PAUSE_CATALOG_ID}'`,
+		);
+	}
+	const detail = entry.detail ?? {};
+	const slug =
+		typeof detail.slug === "string" && detail.slug.length > 0
+			? detail.slug
+			: FEED_AUTO_PAUSE_BEHAVIOR_SLUG;
+	const prompt = typeof detail.prompt === "string" ? detail.prompt : "";
+	if (!prompt) {
+		throw new Error(
+			`Behavior catalog template '${FEED_AUTO_PAUSE_CATALOG_ID}' has no prompt`,
+		);
+	}
+	const tags = Array.isArray(detail.tags)
+		? detail.tags.filter((t): t is string => typeof t === "string")
+		: ["platform", "feed-health"];
+	return {
+		name: entry.name,
+		slug,
+		description:
+			typeof entry.description === "string" ? entry.description : null,
+		prompt,
+		tags,
+		notification_channel:
+			typeof detail.notification_channel === "string"
+				? detail.notification_channel
+				: "notification",
+		notification_priority:
+			typeof detail.notification_priority === "string"
+				? detail.notification_priority
+				: "high",
+	};
+}
 
 function buildEventTrigger(connectorKey: string): BehaviorEventTrigger {
 	return {
@@ -73,9 +112,8 @@ async function resolveOrgActorUserId(
 }
 
 /**
- * Install (or no-op if present) the feed-auto-pause Behavior, adding the
- * given connector_key to its event triggers. Call after a connection is
- * created so the org starts with coverage for that connector's feeds.
+ * Install the catalog feed-auto-pause template if missing, then ensure this
+ * connector_key has a feed.auto_paused event trigger on it.
  */
 export async function ensureFeedAutoPauseBehavior(args: {
 	organizationId: string;
@@ -85,6 +123,7 @@ export async function ensureFeedAutoPauseBehavior(args: {
 }): Promise<{ created: boolean; behaviorId: number | null }> {
 	const sql = args.db ?? getDb();
 	const eventTrigger = buildEventTrigger(args.connectorKey);
+	const template = feedAutoPauseCatalogTemplate();
 
 	try {
 		return await sql.begin(async (tx) => {
@@ -98,7 +137,7 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				SELECT id, triggers
 				FROM watchers
 				WHERE organization_id = ${args.organizationId}
-				  AND slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+				  AND slug = ${template.slug}
 				  AND status = 'active'
 				LIMIT 1
 				FOR UPDATE
@@ -135,7 +174,6 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				return { created: false, behaviorId: null };
 			}
 
-			// created_by is FK to user(id) — never use system_agent_id here.
 			const createdBy =
 				args.createdBy ??
 				(await resolveOrgActorUserId(tx, args.organizationId));
@@ -159,9 +197,9 @@ export async function ensureFeedAutoPauseBehavior(args: {
 					agent_kind, notification_channel, notification_priority, min_cooldown_seconds
 				) VALUES (
 					${watcherId},
-					'Feed auto-pause helper',
-					${FEED_AUTO_PAUSE_BEHAVIOR_SLUG},
-					'Notifies when Lobu hard-pauses a feed after consecutive sync failures.',
+					${template.name},
+					${template.slug},
+					${template.description},
 					${args.organizationId},
 					'{}'::bigint[],
 					NULL, NULL,
@@ -170,10 +208,13 @@ export async function ensureFeedAutoPauseBehavior(args: {
 					'{}'::jsonb,
 					'[]'::jsonb,
 					1, NULL,
-					ARRAY['platform', 'feed-health']::text[],
+					${pgTextArray(template.tags)}::text[],
 					'active', ${createdBy},
 					current_timestamp, current_timestamp, ${watcherId},
-					'lobu', 'notification', 'high', 0
+					'lobu',
+					${template.notification_channel},
+					${template.notification_priority},
+					0
 				)
 			`;
 
@@ -183,11 +224,11 @@ export async function ensureFeedAutoPauseBehavior(args: {
 					version_sources, change_notes, created_by, created_at
 				) VALUES (
 					${versionId}, ${watcherId}, 1,
-					'Feed auto-pause helper',
-					'Notifies when Lobu hard-pauses a feed after consecutive sync failures.',
-					${PROMPT},
+					${template.name},
+					${template.description},
+					${template.prompt},
 					'[]'::jsonb,
-					'Installed on connection create',
+					${`Installed from catalog template ${FEED_AUTO_PAUSE_CATALOG_ID}`},
 					${createdBy},
 					current_timestamp
 				)
@@ -203,8 +244,9 @@ export async function ensureFeedAutoPauseBehavior(args: {
 					organization_id: args.organizationId,
 					behavior_id: watcherId,
 					connector_key: args.connectorKey,
+					catalog_id: FEED_AUTO_PAUSE_CATALOG_ID,
 				},
-				"[feed-auto-pause] installed default Behavior",
+				"[feed-auto-pause] installed catalog Behavior",
 			);
 			return { created: true, behaviorId: watcherId };
 		});
@@ -221,9 +263,7 @@ export async function ensureFeedAutoPauseBehavior(args: {
 	}
 }
 
-/**
- * Backfill coverage for connections that already exist.
- */
+/** Backfill coverage for connections that already exist in one org. */
 export async function reconcileFeedAutoPauseBehavior(args: {
 	organizationId: string;
 	createdBy?: string | null;
@@ -259,9 +299,8 @@ export async function backfillFeedAutoPauseBehaviors(args?: {
 }): Promise<{ orgs: number; errors: number }> {
 	const sql = args?.db ?? getDb();
 	const limitOrgs = Math.min(Math.max(args?.limitOrgs ?? 50, 1), 200);
+	const slug = feedAutoPauseCatalogTemplate().slug;
 
-	// Orgs with system agent + live connections that either lack the Behavior
-	// entirely or have a connector_key not yet on its event triggers.
 	const orgs = (await sql`
 		SELECT o.id AS organization_id
 		FROM organization o
@@ -275,7 +314,7 @@ export async function backfillFeedAutoPauseBehaviors(args?: {
 		    NOT EXISTS (
 		      SELECT 1 FROM watchers w
 		      WHERE w.organization_id = o.id
-		        AND w.slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+		        AND w.slug = ${slug}
 		        AND w.status = 'active'
 		    )
 		    OR EXISTS (
@@ -288,7 +327,7 @@ export async function backfillFeedAutoPauseBehaviors(args?: {
 		          FROM watchers w,
 		               jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) t
 		          WHERE w.organization_id = o.id
-		            AND w.slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+		            AND w.slug = ${slug}
 		            AND w.status = 'active'
 		            AND t->>'kind' = 'event'
 		            AND t->>'connector_key' = c.connector_key

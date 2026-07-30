@@ -13,6 +13,7 @@ import {
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
+import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
 import type { Env } from '../../index';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -184,9 +185,9 @@ async function getContentImpl(
     if (args.behavior_id) {
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
-        // Required for private connection visibility (oauth_account X, etc.).
-        // Without this, Behavior sources silently return org-visible events only.
-        userId: ctx.userId,
+        // A signed Behavior-run session executes the durable author's job; its
+        // ctx.userId is the assigned agent owner, who can be a different user.
+        userId: ctx.sourceContext?.source === BEHAVIOR_RUN_SOURCE ? null : ctx.userId,
       });
     }
 

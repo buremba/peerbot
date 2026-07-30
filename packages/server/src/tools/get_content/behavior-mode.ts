@@ -40,13 +40,10 @@ interface ContentQueryParams {
   window_end: string;
   organizationId: string;
   /**
-   * Connection-visibility principal. Private connections are visible only when
-   * this matches `connections.created_by` (or when visibility='org'). Behavior
-   * mode must pass the caller's user id or fall back to the Behavior author —
-   * null yields org-visible-only and silently drops private feed content
-   * (e.g. personal X oauth_account connections).
+   * Connection-visibility principal. A null principal sees org-visible
+   * connections only.
    */
-  userId?: string | null;
+  userId: string | null;
   entityIds?: number[];
 	throwOnSourceError?: boolean;
   page?: {
@@ -78,7 +75,7 @@ async function queryContentData(
   const page = params.page;
   const queryContext: DataSourceContext = {
     organizationId: params.organizationId,
-    userId: params.userId ?? null,
+    userId: params.userId,
     entityIds: params.entityIds,
     windowStart: params.window_start,
     windowEnd: params.window_end,
@@ -139,7 +136,7 @@ async function queryContentData(
           organizationId: params.organizationId,
           entityType: source.ref.entityType,
           measure: source.ref.measure,
-          userId: params.userId ?? null,
+          userId: params.userId,
         });
       } catch (err) {
 		if (params.throwOnSourceError) throw err;
@@ -283,18 +280,14 @@ export async function fingerprintWatcherSources(args: {
   const sources = (
     versionSources.length > 0 ? versionSources : parseJson(row.sources) || []
   ) as WatcherSource[];
-  // Fingerprint must use the same principal as knowledge.read so skip_if_unchanged
-  // does not treat private-connection content as "empty forever".
-  const fingerprintUserId =
-    typeof row.created_by === 'string' && row.created_by.trim()
-      ? row.created_by.trim()
-      : null;
   const result = await queryContentData(args.sql, {
     sources,
     window_start: args.windowStart,
     window_end: args.windowEnd,
     organizationId: String(row.organization_id),
-    userId: fingerprintUserId,
+    // Scheduled fingerprinting is a read on behalf of the Behavior author.
+    // Without that durable principal, private sources look permanently empty.
+    userId: row.created_by as string,
     entityIds: parsePgNumberArray(row.entity_ids),
 	throwOnSourceError: true,
   });
@@ -335,12 +328,8 @@ export async function handleBehaviorMode(
   sql: DbClient,
   context: {
     organizationId: string;
-    /**
-     * Caller's user id when present (human MCP / agent-owner session). When
-     * null (headless), falls back to the Behavior's created_by so private
-     * connections owned by the Behavior author remain readable.
-     */
-    userId?: string | null;
+    /** Verified caller, or null when the read is a headless Behavior run. */
+    userId: string | null;
   }
 ): Promise<GetContentResult> {
   const { generateWindowToken } = await import('../../utils/jwt');
@@ -440,18 +429,9 @@ export async function handleBehaviorMode(
   const sourceEntityIds = watcherEntityIds;
   const entityIdPlaceholders = sourceEntityIds.map((_, i) => `$${i + 1}`).join(',');
 
-  // Private connections are visible only to their creator (or when org-visible).
-  // Prefer the live caller (human MCP / agent-owner session); fall back to the
-  // Behavior author so headless agent turns still see the author's private feeds.
-  const callerUserId =
-    typeof context.userId === 'string' && context.userId.trim()
-      ? context.userId.trim()
-      : null;
-  const authorUserId =
-    typeof watcher.created_by === 'string' && watcher.created_by.trim()
-      ? (watcher.created_by as string).trim()
-      : null;
-  const visibilityUserId = callerUserId ?? authorUserId;
+  // A headless Behavior run acts on behalf of its durable author. Interactive
+  // reads keep the verified caller's own connection visibility.
+  const visibilityUserId = context.userId ?? (watcher.created_by as string);
 
   // Run content query and total stats in parallel
   const contentData = await queryContentData(sql, {

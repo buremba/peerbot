@@ -250,6 +250,7 @@ describe("watcher automation contract", () => {
 			dbClient,
 			{
 				organizationId: workspace.org.id,
+				userId: null,
 			}
 		)) as {
 			window_token: string;

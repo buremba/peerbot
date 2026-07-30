@@ -457,7 +457,11 @@ export const QUERYABLE_SCHEMA = {
         'notification_channel',
         'notification_priority',
         'min_cooldown_seconds',
-        'last_fired_at'
+        'last_fired_at',
+        // Dispatch-time cursor for the min_cooldown_seconds debounce. Distinct
+        // from last_fired_at, which is stamped when a run reaches a terminal
+        // state.
+        'last_event_activation_at'
       ),
     },
     // event_classifications

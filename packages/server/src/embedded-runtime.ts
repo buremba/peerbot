@@ -127,7 +127,35 @@ export function embeddedPgOptions(databaseDir: string, port: number) {
 		port,
 		persistent: true,
 		initdbFlags: ["--locale=C", "--encoding=UTF8"],
+		createPostgresUser: runningAsRoot(),
 	};
+}
+
+/**
+ * True only when the process is genuinely uid 0.
+ *
+ * `createPostgresUser` MUST be conditional, not always-on. Postgres refuses to
+ * run as root, so a root shell — the default on a VPS, in WSL, in an LXC
+ * container, and in most Docker images — dies on first boot with:
+ *
+ *   You are running this script as root. Postgres does not support running as
+ *   root. ... set the `createPostgresUser` option to true.
+ *
+ * That killed `lobu run`, the landing page's own quickstart, for those users.
+ * With the flag set, embedded-postgres creates a `postgres` user/group and
+ * chowns the data dir to it.
+ *
+ * But turning it on unconditionally breaks everyone else. When not root,
+ * embedded-postgres's `getUidAndGid()` short-circuits to `{}`, so the
+ * "no uid and no gid" branch fires and it runs `groupadd`/`useradd` anyway —
+ * which fails on macOS (no such commands) and as an unprivileged Linux user
+ * (EPERM), turning a working boot into "Failed to create and initialize a new
+ * user on this system." So gate on the actual uid.
+ *
+ * `process.getuid` is undefined on Windows; absent means "not root".
+ */
+function runningAsRoot(): boolean {
+	return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
 /**

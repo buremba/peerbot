@@ -25,14 +25,6 @@ export const PLATFORM_BEHAVIOR_EVENTS: PlatformBehaviorEventDef[] = [
 	},
 ];
 
-const PLATFORM_EVENT_KEYS = new Set(
-	PLATFORM_BEHAVIOR_EVENTS.map((event) => event.key),
-);
-
-export function isPlatformBehaviorEvent(eventType: string): boolean {
-	return PLATFORM_EVENT_KEYS.has(eventType);
-}
-
 /** Merge platform events into a connector's declared behavior_events list. */
 export function withPlatformBehaviorEvents<T extends { key: string }>(
 	events: T[],

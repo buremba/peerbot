@@ -56,6 +56,22 @@ function hasConnectorTrigger(
 	);
 }
 
+/** Prefer owner, then admin, as created_by (FK → user.id). */
+async function resolveOrgActorUserId(
+	sql: DbClient,
+	organizationId: string,
+): Promise<string | null> {
+	const rows = (await sql`
+		SELECT "userId" AS user_id
+		FROM "member"
+		WHERE "organizationId" = ${organizationId}
+		  AND role IN ('owner', 'admin')
+		ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, "createdAt" ASC
+		LIMIT 1
+	`) as Array<{ user_id: string }>;
+	return rows[0]?.user_id ?? null;
+}
+
 /**
  * Install (or no-op if present) the feed-auto-pause Behavior, adding the
  * given connector_key to its event triggers. Call after a connection is
@@ -72,45 +88,26 @@ export async function ensureFeedAutoPauseBehavior(args: {
 
 	try {
 		return await sql.begin(async (tx) => {
-			// Serialize provisioning per org (hashtext is stable; lock is tx-scoped).
 			await tx`
 				SELECT pg_advisory_xact_lock(
 					hashtext(${`feed-auto-pause:${args.organizationId}`})
 				)
 			`;
 
-			// Match on slug alone, NOT `status = 'active'`: idx_watchers_org_slug is
-			// UNIQUE on (organization_id, slug) WHERE slug IS NOT NULL and is not
-			// scoped by status, so an archived/deactivated helper still reserves the
-			// slug. Filtering by status here would fall through to the INSERT, hit
-			// the unique constraint, and lose args.connectorKey inside the
-			// "install failed (non-fatal)" catch.
 			const existing = (await tx`
-				SELECT id, triggers, status
+				SELECT id, triggers
 				FROM watchers
 				WHERE organization_id = ${args.organizationId}
 				  AND slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+				  AND status = 'active'
 				LIMIT 1
 				FOR UPDATE
-			`) as Array<{ id: number; triggers: unknown; status: string }>;
+			`) as Array<{ id: number; triggers: unknown }>;
 
 			if (existing.length > 0) {
 				const triggers = Array.isArray(existing[0].triggers)
 					? (existing[0].triggers as BehaviorEventTrigger[])
 					: [];
-				if (existing[0].status !== "active") {
-					// Record coverage but never resurrect a Behavior the org turned
-					// off — that is a deliberate user state, not drift.
-					logger.info(
-						{
-							organization_id: args.organizationId,
-							behavior_id: Number(existing[0].id),
-							status: existing[0].status,
-							connector_key: args.connectorKey,
-						},
-						"[feed-auto-pause] existing Behavior is not active — leaving status as-is",
-					);
-				}
 				if (hasConnectorTrigger(triggers, args.connectorKey)) {
 					return { created: false, behaviorId: Number(existing[0].id) };
 				}
@@ -138,21 +135,18 @@ export async function ensureFeedAutoPauseBehavior(args: {
 				return { created: false, behaviorId: null };
 			}
 
-			// watchers.created_by is NOT NULL with an FK to "user", so the org's
-			// system agent id is NOT a usable fallback — inserting it raises a
-			// constraint error that the outer catch would swallow as
-			// "install failed (non-fatal)". Skip honestly instead.
-			const createdBy = args.createdBy;
+			// created_by is FK to user(id) — never use system_agent_id here.
+			const createdBy =
+				args.createdBy ??
+				(await resolveOrgActorUserId(tx, args.organizationId));
 			if (!createdBy) {
-				logger.debug(
-					{
-						organization_id: args.organizationId,
-						connector_key: args.connectorKey,
-					},
-					"[feed-auto-pause] no attributable user — skip Behavior install",
+				logger.warn(
+					{ organization_id: args.organizationId },
+					"[feed-auto-pause] no owner/admin user — skip Behavior install",
 				);
 				return { created: false, behaviorId: null };
 			}
+
 			const watcherId = await getNextNumericId(tx, "watchers");
 			const versionId = await getNextNumericId(tx, "watcher_versions");
 
@@ -229,11 +223,6 @@ export async function ensureFeedAutoPauseBehavior(args: {
 
 /**
  * Backfill coverage for connections that already exist.
- *
- * `ensureFeedAutoPauseBehavior` no-ops when the org has no system agent yet, so
- * a connector connected before `organization.system_agent_id` was populated
- * would never get a trigger — later connects only add their own connector_key.
- * Call this once the pointer is set so those earlier connectors are covered.
  */
 export async function reconcileFeedAutoPauseBehavior(args: {
 	organizationId: string;
@@ -260,9 +249,9 @@ export async function reconcileFeedAutoPauseBehavior(args: {
 }
 
 /**
- * Rollout backfill: for every org that has a system agent and at least one
- * live connection, ensure the feed-auto-pause Behavior covers those connectors.
- * Bounded + single-claimant job only — not request path.
+ * Rollout backfill for orgs that still lack full feed-auto-pause coverage.
+ * Selects only orgs that still need work so progress is not stuck on the
+ * first 50 forever.
  */
 export async function backfillFeedAutoPauseBehaviors(args?: {
 	limitOrgs?: number;
@@ -271,8 +260,10 @@ export async function backfillFeedAutoPauseBehaviors(args?: {
 	const sql = args?.db ?? getDb();
 	const limitOrgs = Math.min(Math.max(args?.limitOrgs ?? 50, 1), 200);
 
+	// Orgs with system agent + live connections that either lack the Behavior
+	// entirely or have a connector_key not yet on its event triggers.
 	const orgs = (await sql`
-		SELECT o.id AS organization_id, o.system_agent_id
+		SELECT o.id AS organization_id
 		FROM organization o
 		WHERE o.system_agent_id IS NOT NULL
 		  AND EXISTS (
@@ -280,16 +271,50 @@ export async function backfillFeedAutoPauseBehaviors(args?: {
 		    WHERE c.organization_id = o.id
 		      AND c.deleted_at IS NULL
 		  )
+		  AND (
+		    NOT EXISTS (
+		      SELECT 1 FROM watchers w
+		      WHERE w.organization_id = o.id
+		        AND w.slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+		        AND w.status = 'active'
+		    )
+		    OR EXISTS (
+		      SELECT 1
+		      FROM connections c
+		      WHERE c.organization_id = o.id
+		        AND c.deleted_at IS NULL
+		        AND NOT EXISTS (
+		          SELECT 1
+		          FROM watchers w,
+		               jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) t
+		          WHERE w.organization_id = o.id
+		            AND w.slug = ${FEED_AUTO_PAUSE_BEHAVIOR_SLUG}
+		            AND w.status = 'active'
+		            AND t->>'kind' = 'event'
+		            AND t->>'connector_key' = c.connector_key
+		            AND t->'event_types' ? ${PLATFORM_EVENT_FEED_AUTO_PAUSED}
+		        )
+		    )
+		  )
 		ORDER BY o.id
 		LIMIT ${limitOrgs}
-	`) as Array<{ organization_id: string; system_agent_id: string }>;
+	`) as Array<{ organization_id: string }>;
 
 	let errors = 0;
 	for (const org of orgs) {
 		try {
+			const actor = await resolveOrgActorUserId(sql, String(org.organization_id));
+			if (!actor) {
+				errors++;
+				logger.warn(
+					{ organization_id: org.organization_id },
+					"[feed-auto-pause] backfill skipped — no owner/admin user",
+				);
+				continue;
+			}
 			await reconcileFeedAutoPauseBehavior({
 				organizationId: String(org.organization_id),
-				createdBy: org.system_agent_id,
+				createdBy: actor,
 				db: sql,
 			});
 		} catch (err) {

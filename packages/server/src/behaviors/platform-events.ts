@@ -8,7 +8,7 @@ import { feedBackoff } from "../connectors/feed-backoff";
 import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import logger from "../utils/logger";
-import { recordLifecycleEvent } from "../utils/insert-event";
+import { insertEvent } from "../utils/insert-event";
 import {
 	activateBehaviorSignal,
 	dispatchBehaviorRunsBestEffort,
@@ -18,7 +18,6 @@ import { PLATFORM_EVENT_FEED_AUTO_PAUSED } from "./platform-event-catalog";
 export {
 	PLATFORM_BEHAVIOR_EVENTS,
 	PLATFORM_EVENT_FEED_AUTO_PAUSED,
-	isPlatformBehaviorEvent,
 	withPlatformBehaviorEvents,
 	type PlatformBehaviorEventDef,
 } from "./platform-event-catalog";
@@ -44,13 +43,48 @@ export interface FeedAutoPausedInput {
 	db?: DbClient;
 }
 
+function auditOriginId(feedId: number, pauseGeneration: string | number): string {
+	return `feed_auto_paused:${feedId}:${pauseGeneration}`;
+}
+
+async function alreadyDeliveredBehaviorSignal(
+	sql: DbClient,
+	organizationId: string,
+	deliveryId: string,
+): Promise<boolean> {
+	const rows = (await sql`
+		SELECT 1
+		FROM runs
+		WHERE organization_id = ${organizationId}
+		  AND run_type = 'behavior'
+		  AND approved_input->'delivery_ids' ? ${deliveryId}
+		LIMIT 1
+	`) as Array<{ "?column?": number }>;
+	return rows.length > 0;
+}
+
+async function alreadyWroteAuditEvent(
+	sql: DbClient,
+	organizationId: string,
+	originId: string,
+): Promise<boolean> {
+	const rows = (await sql`
+		SELECT 1
+		FROM events
+		WHERE organization_id = ${organizationId}
+		  AND origin_id = ${originId}
+		LIMIT 1
+	`) as Array<{ "?column?": number }>;
+	return rows.length > 0;
+}
+
 /**
  * Emit a connector-neutral Behavior signal when a feed hard-pauses after
  * consecutive failures. Idempotent per (feedId, pauseGeneration) via the run
  * queue's delivery_id unique key.
  *
- * Also writes a lifecycle change event (`semantic_type='change'`) so dashboards
- * / knowledge search see the pause — not a Sentry-specific integration.
+ * Also writes a lifecycle change event (`semantic_type='change'`) with a
+ * deterministic origin_id so retries never append duplicate audit rows.
  */
 export async function emitFeedAutoPaused(
 	input: FeedAutoPausedInput,
@@ -64,12 +98,14 @@ export async function emitFeedAutoPaused(
 		return;
 	}
 
+	const sql = input.db ?? getDb();
 	const feedLabel =
 		input.displayName?.trim() ||
 		input.feedKey ||
 		`feed ${input.feedId}`;
 	const errorLine = (input.lastError ?? "unknown error").slice(0, 500);
 	const deliveryId = `feed-auto-paused:${input.feedId}:${input.pauseGeneration}`;
+	const originId = auditOriginId(input.feedId, input.pauseGeneration);
 
 	const signal: ConnectorTriggerSignal = {
 		connector_key: input.connectorKey,
@@ -101,51 +137,73 @@ export async function emitFeedAutoPaused(
 		},
 	};
 
-	// Durable Behavior runs first (delivery_id unique → retries are no-ops).
-	// Failures propagate so the caller can surface them; lifecycle is best-effort
-	// after so an activation error does not block the audit row when the caller
-	// chooses to catch.
-	const results = await activateBehaviorSignal({
-		organizationId: input.organizationId,
-		signal,
-		db: input.db,
-	});
-	await dispatchBehaviorRunsBestEffort(results);
-	logger.info(
-		{
-			feed_id: input.feedId,
-			delivery_id: deliveryId,
-			activations: results.length,
-		},
-		"[platform-events] feed.auto_paused signal dispatched",
+	const signalDone = await alreadyDeliveredBehaviorSignal(
+		sql,
+		input.organizationId,
+		deliveryId,
 	);
+	if (!signalDone) {
+		const results = await activateBehaviorSignal({
+			organizationId: input.organizationId,
+			signal,
+			db: input.db,
+		});
+		await dispatchBehaviorRunsBestEffort(results);
+		logger.info(
+			{
+				feed_id: input.feedId,
+				delivery_id: deliveryId,
+				activations: results.length,
+			},
+			"[platform-events] feed.auto_paused signal dispatched",
+		);
+	} else {
+		logger.debug(
+			{ feed_id: input.feedId, delivery_id: deliveryId },
+			"[platform-events] feed.auto_paused already delivered — skip activate",
+		);
+	}
 
-	// Durable audit / dashboard row (semantic_type=change). Fire-and-forget
-	// insert with retry inside recordLifecycleEvent — not Sentry.
-	recordLifecycleEvent({
-		organizationId: input.organizationId,
-		entityType: "feed",
-		op: "updated",
-		entityId: input.feedId,
-		summary: `Feed auto-paused after ${input.consecutiveFailures} consecutive failures: ${feedLabel}`,
-		extra: {
-			reason: PLATFORM_EVENT_FEED_AUTO_PAUSED,
-			connector_key: input.connectorKey,
-			connection_id: connectionId,
-			feed_key: input.feedKey,
-			consecutive_failures: input.consecutiveFailures,
-			last_error: errorLine,
-			run_id: input.runId ?? null,
-			delivery_id: deliveryId,
-		},
-	});
+	const auditDone = await alreadyWroteAuditEvent(
+		sql,
+		input.organizationId,
+		originId,
+	);
+	if (!auditDone) {
+		await insertEvent({
+			entityIds: [],
+			organizationId: input.organizationId,
+			connectionId,
+			originId,
+			title: `Feed auto-paused after ${input.consecutiveFailures} consecutive failures: ${feedLabel}`,
+			semanticType: "change",
+			originType: "feed_updated",
+			payloadType: "empty",
+			metadata: {
+				category: "lifecycle",
+				entity_type: "feed",
+				op: "updated",
+				entity_id: String(input.feedId),
+				extra: {
+					reason: PLATFORM_EVENT_FEED_AUTO_PAUSED,
+					connector_key: input.connectorKey,
+					connection_id: connectionId,
+					feed_key: input.feedKey,
+					consecutive_failures: input.consecutiveFailures,
+					last_error: errorLine,
+					run_id: input.runId ?? null,
+					delivery_id: deliveryId,
+				},
+			},
+		});
+	}
 }
 
 /**
  * After a feed UPDATE that may have hard-paused, load identity and emit when
  * the feed is paused at/above the threshold. Uses a stable delivery_id per
- * failure episode (first_failure_at) so a failed activation can be retried on
- * the next complete for the same episode without double-firing later.
+ * failure episode (first_failure_at) so a failed activation can be retried
+ * without double-firing later.
  */
 export async function maybeEmitFeedAutoPausedAfterFailure(args: {
 	feedId: number;
@@ -213,14 +271,9 @@ export async function maybeEmitFeedAutoPausedAfterFailure(args: {
 }
 
 /**
- * Recover feed.auto_paused deliveries that were lost after a hard pause
- * (activation threw, process died, no Behavior installed yet).
- *
- * Scans hard-paused feeds at/above the pause threshold and re-invokes emit.
- * delivery_id is stable per failure episode (first_failure_at), so already-
- * delivered signals are no-ops via the runs idempotency key.
- *
- * Call from a single-claimant scheduled job — never from request path.
+ * Recover feed.auto_paused deliveries that were lost after a hard pause.
+ * Only selects episodes with no Behavior run yet for that delivery_id so
+ * retries do not reprocess already-delivered feeds forever.
  */
 export async function retryPendingFeedAutoPausedSignals(args?: {
 	pauseThreshold?: number;
@@ -231,20 +284,51 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 	const threshold = args?.pauseThreshold ?? feedBackoff.pauseThreshold;
 	const limit = Math.min(Math.max(args?.limit ?? 50, 1), 200);
 
+	// Candidate hard-paused feeds; JS builds delivery_id and filters delivered.
 	const rows = (await sql`
-		SELECT f.id, f.consecutive_failures
+		SELECT f.id, f.organization_id, f.consecutive_failures, f.first_failure_at
 		FROM feeds f
 		WHERE f.status = 'paused'
 		  AND f.deleted_at IS NULL
 		  AND f.consecutive_failures >= ${threshold}
 		  AND f.connection_id IS NOT NULL
-		ORDER BY f.updated_at DESC
-		LIMIT ${limit}
-	`) as Array<{ id: number; consecutive_failures: number }>;
+		ORDER BY f.updated_at ASC
+		LIMIT ${limit * 3}
+	`) as Array<{
+		id: number;
+		organization_id: string;
+		consecutive_failures: number;
+		first_failure_at: Date | string | null;
+	}>;
 
 	let attempted = 0;
 	let errors = 0;
+	let scanned = 0;
 	for (const row of rows) {
+		if (attempted >= limit) break;
+		scanned++;
+		const firstFailMs = row.first_failure_at
+			? new Date(row.first_failure_at).getTime()
+			: Number(row.consecutive_failures);
+		const pauseGeneration = Number.isFinite(firstFailMs)
+			? firstFailMs
+			: Number(row.consecutive_failures);
+		const deliveryId = `feed-auto-paused:${row.id}:${pauseGeneration}`;
+		const originId = auditOriginId(Number(row.id), pauseGeneration);
+
+		const delivered = await alreadyDeliveredBehaviorSignal(
+			sql,
+			String(row.organization_id),
+			deliveryId,
+		);
+		const audited = await alreadyWroteAuditEvent(
+			sql,
+			String(row.organization_id),
+			originId,
+		);
+		// Need retry if either Behavior delivery or audit is missing.
+		if (delivered && audited) continue;
+
 		attempted++;
 		try {
 			await maybeEmitFeedAutoPausedAfterFailure({
@@ -261,5 +345,5 @@ export async function retryPendingFeedAutoPausedSignals(args?: {
 			);
 		}
 	}
-	return { scanned: rows.length, attempted, errors };
+	return { scanned, attempted, errors };
 }

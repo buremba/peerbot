@@ -6,8 +6,8 @@
 -- this code is fully rolled out — so old replicas mid-deploy never SELECT a
 -- column that no longer exists.
 --
--- Remediation path: feed hard auto-pause → feed.auto_paused Behavior signal
--- (+ default Behavior on connect). No repair-agent threads.
+-- Remediation path: feed hard auto-pause → feed.auto_paused lifecycle event +
+-- optional catalog Behavior template (opt-in install). No repair-agent threads.
 --
 -- Phase-2 follow-up: DROP feeds.repair_* and
 -- connector_definitions.default_repair_agent_id + feeds_open_repair_thread_uniq.

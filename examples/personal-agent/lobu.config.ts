@@ -766,6 +766,78 @@ const learning = defineEntityType({
   },
 });
 
+
+// Human mirror of agent IDENTITY/SOUL: durable per-channel profiles for how
+// Burak writes (mode=voice) and what he engages with (mode=taste). Not stored
+// on $member metadata — that type is reserved/system-provisioned and role-gated.
+// Rows are keyed (channel, mode) by voice-profile-synth so field pinning works.
+const voiceProfile = defineEntityType({
+  // Platform slugifies underscores → hyphens; keep key aligned with prod slug.
+  key: "voice-profile",
+  name: "Voice profile",
+  description:
+    "How the member sounds on one channel (mode=voice, from own posts/replies/DMs) or what they engage with (mode=taste, from likes/bookmarks/saves). Human analogue of agent identity/soul files — one row per (channel, mode).",
+  metadata: { icon: "🎙️", color: "#F59E0B" },
+  properties: {
+    channel: {
+      type: "string",
+      enum: ["core", "x", "linkedin", "reddit", "instagram"],
+      description:
+        "Platform. `core` is reserved for a future cross-channel baseline (not synthesized in v1).",
+      "x-table-column": true,
+      "x-table-label": "Channel",
+    },
+    mode: {
+      type: "string",
+      enum: ["voice", "taste"],
+      description:
+        "voice = how he writes (own text). taste = what he engages with (others' content).",
+      "x-table-column": true,
+      "x-table-label": "Mode",
+    },
+    summary: {
+      type: "string",
+      description:
+        "2–5 sentences another agent can paste into a prompt. Primary payload.",
+    },
+    themes: {
+      type: "array",
+      items: { type: "string" },
+      description: "Recurring subjects, most frequent first. Max 12.",
+    },
+    prefers: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Concrete observed patterns to imitate (voice) or seek (taste). Max 8.",
+    },
+    avoids: {
+      type: "array",
+      items: { type: "string" },
+      description: "Patterns absent or actively skipped. Max 8.",
+    },
+    confidence: {
+      type: "string",
+      enum: ["low", "medium", "high"],
+      "x-table-column": true,
+      "x-table-label": "Confidence",
+    },
+    evidence_count: {
+      type: "number",
+      description: "Events this synthesis read.",
+      "x-table-column": true,
+      "x-table-label": "Evidence",
+    },
+    evidence_from: { type: "string", format: "date" },
+    evidence_to: { type: "string", format: "date" },
+    sample_event_ids: {
+      type: "array",
+      items: { type: "number" },
+      description: "Up to 10 representative source event ids.",
+    },
+  },
+});
+
 // Revolut auth is implicit: the connector reads the rendered web app through
 // the paired Owletto Chrome extension's signed-in session — there's no stored
 // secret and no browser-auth profile to grant.
@@ -972,6 +1044,143 @@ const duplicateEntityResolution = defineBehavior({
   skills: ["duplicate-entity-resolution-real-v3-final"],
 });
 
+
+// Synthesizes voice_profile rows from engagement evidence. Weekly — voice
+// moves slowly. Separate from social-interest-radar (which only consumes).
+const voiceProfileSynth = defineBehavior({
+  agent: personalAgent,
+  slug: "voice-profile-synth",
+  name: "Voice profile synthesis",
+  tags: ["voice", "identity", "social"],
+  triggers: [{ kind: "schedule", cron: "40 6 * * 1" }],
+  notification: { channel: "canvas", priority: "low" },
+  minCooldownSeconds: 3600,
+  keyingConfig: {
+    entityType: "voice-profile",
+    entityPath: "profiles",
+    keyFields: ["channel", "mode"],
+    keyOutputField: "profile_key",
+  },
+  sources: {
+    // context:true so evidence is not clipped by the Behavior window bounds.
+    authored: {
+      context: true,
+      query:
+        "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 500) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'buremba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message')) ORDER BY occurred_at DESC LIMIT 250",
+    },
+    engaged: {
+      context: true,
+      query:
+        "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 250",
+    },
+    existing_profiles: {
+      context: true,
+      query:
+        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
+    },
+    anchor_events:
+      "SELECT id, occurred_at, connector_key, origin_type, left(coalesce(payload_text,''), 80) AS payload_text FROM events WHERE connector_key IN ('x','twitter.takeout','linkedin','linkedin.takeout','instagram.takeout') ORDER BY created_at DESC LIMIT 5",
+  },
+  reactionsGuidance:
+    "Emit one profiles[] row per (channel, mode) pair you have real evidence for — never invent a pair. channel from {x,linkedin,instagram} only (never core). mode=voice from authored text; mode=taste from engaged content. confidence: low under 20 events, medium under 80, high above. Quote observed patterns not generic advice. Set name to '{Channel} · {mode}' e.g. 'X · voice'. Always call completeWindow.",
+  prompt: `Synthesize Burak's voice/taste profiles from the evidence windows.
+
+sources.authored = text he wrote (replies, tweets, LinkedIn messages) → mode=voice per channel.
+sources.engaged = content he liked/bookmarked/saved → mode=taste per channel.
+sources.existing_profiles = prior rows — refine, do not restyle from scratch if already good.
+
+For each (channel, mode) with enough evidence, emit a profile. Map channels:
+- twitter.takeout / x → channel "x"
+- linkedin / linkedin.takeout → channel "linkedin"
+- instagram.takeout → channel "instagram"
+
+Return JSON:
+{
+  "profiles": [
+    {
+      "name": "X · voice",
+      "channel": "x",
+      "mode": "voice",
+      "profile_key": "x:voice",
+      "summary": "2-5 sentences usable as agent prompt context",
+      "themes": ["..."],
+      "prefers": ["concrete observed patterns"],
+      "avoids": ["..."],
+      "confidence": "low"|"medium"|"high",
+      "evidence_count": 0,
+      "evidence_from": "YYYY-MM-DD",
+      "evidence_to": "YYYY-MM-DD",
+      "sample_event_ids": [1,2]
+    }
+  ],
+  "analysis_summary": "what changed vs prior profiles"
+}
+
+Max 6 profiles. Never invent channel=core. Prefer fewer high-confidence rows over speculative ones.`,
+});
+
+// Hourly high-signal digest of X + LinkedIn home feeds. Consumes voice_profile
+// as context for ranking — does not write voice (separate synthesizer).
+// NOTE: X is oauth_account/private; Behavior knowledge.read needs a connection-
+// visibility principal (shipped in #2354) or only org-visible LinkedIn appears.
+const socialInterestRadar = defineBehavior({
+  agent: personalAgent,
+  slug: "social-interest-radar",
+  name: "Social interest radar (X + LinkedIn)",
+  tags: ["social", "x", "linkedin", "notifications"],
+  triggers: [
+    {
+      kind: "schedule",
+      cron: "25 * * * *",
+      skip_if_unchanged: false,
+    },
+  ],
+  notification: { channel: "both", priority: "normal" },
+  minCooldownSeconds: 1800,
+  sources: {
+    recent_social:
+      "SELECT id, occurred_at, created_at, title, payload_text, semantic_type, connector_key, origin_type, metadata FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL ORDER BY occurred_at DESC LIMIT 200",
+    voice_profiles: {
+      context: true,
+      query:
+        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
+    },
+    known_people: {
+      context: true,
+      query:
+        "SELECT id, name, metadata FROM entities WHERE entity_type = 'person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 80",
+    },
+  },
+  reactionsGuidance:
+    "Produce a short notification digest. Prefer 3–8 high-signal items ranked using voice_profiles taste. Each item: author, platform, why it matches his taste/voice, source_event_id. Empty items[] if nothing qualifies. Always call completeWindow even when items is empty.",
+  prompt: `You are Burak's social radar over X and LinkedIn.
+
+Use sources.voice_profiles (taste + writing voice) to decide what he would care about.
+Use sources.known_people as identity context only.
+Window + sources.recent_social are the candidate posts.
+
+Prefer: AI/agents/infra/dev tools, people he knows, concrete launches/funding, technical substance, high-quality TR/EU tech signals.
+Ignore: engagement bait, empty memes, pure sports noise, ads.
+
+Return JSON:
+{
+  "digest_title": "string",
+  "analysis_summary": "2-4 sentences",
+  "items": [
+    {
+      "platform": "x"|"linkedin",
+      "author": "string",
+      "snippet": "string",
+      "why": "why it matches his taste/voice",
+      "priority": "high"|"normal"|"low",
+      "source_event_id": 0,
+      "suggested_action": "optional"
+    }
+  ]
+}
+Max 8 items. If nothing qualifies, items: [].`,
+});
+
 export default defineConfig({
   // Source of truth for buremba definitions. Deletes org-owned entity /
   // relationship types and behaviors absent from this config (including
@@ -1013,9 +1222,10 @@ export default defineConfig({
     trip,
     goal,
     learning,
+    voiceProfile,
   ],
   relationships: [worksAt, memberOf, mentions],
-  behaviors: [hourlyTaskCollaborator, duplicateEntityResolution],
+  behaviors: [hourlyTaskCollaborator, duplicateEntityResolution, voiceProfileSynth, socialInterestRadar],
   connections: [
     midasConnection,
     revolutConnection,

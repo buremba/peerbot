@@ -198,7 +198,7 @@ describe("watcher automation contract", () => {
 			runIds: [queued.runId],
 		});
 		const [run] = await sql`
-      SELECT status, window_id
+      SELECT status, window_id, model_used
       FROM runs
       WHERE id = ${queued.runId}
     `;
@@ -206,6 +206,7 @@ describe("watcher automation contract", () => {
 		expect(result.reconciled).toBe(1);
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(windowRootId);
+		expect(String(run.model_used)).toBe("external-client");
 	});
 
 	it("completes a queued watcher run from complete_window provenance", async () => {
@@ -236,7 +237,10 @@ describe("watcher automation contract", () => {
 
 		await sql`
       UPDATE runs
-      SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`}
+      SET status = 'running',
+          claimed_at = NOW(),
+          claimed_by = ${`lobu:${agent.agentId}`},
+          dispatched_message_id = 'msg-complete-window-provenance'
       WHERE id = ${queued.runId}
     `;
 
@@ -290,7 +294,7 @@ describe("watcher automation contract", () => {
 		})) as { action: string; window_id: number };
 
 		const [run] = await sql`
-      SELECT status, window_id, run_metadata
+      SELECT status, window_id, model_used, run_metadata
       FROM runs
       WHERE id = ${queued.runId}
     `;
@@ -298,6 +302,7 @@ describe("watcher automation contract", () => {
 		expect(completion.action).toBe("complete_window");
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(completion.window_id);
+		expect(String(run.model_used)).toBe("lobu-agent");
 		// The forged prompt_rendered from the completion payload must be
 		// stripped — that key is reserved for historical server-stamped runs.
 		expect(

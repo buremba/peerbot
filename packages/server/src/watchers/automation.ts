@@ -401,7 +401,8 @@ export async function reconcileWatcherRuns(
 	// canvas_state so it never matches tab_event/tab_snapshot BROWSER rows
 	// carrying run_id.
 	const rows = await sql`
-    SELECT r.id, COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
+    SELECT r.id, r.dispatched_message_id,
+           COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
     FROM runs r
     JOIN events ww
       ON ww.run_id = r.id
@@ -417,8 +418,13 @@ export async function reconcileWatcherRuns(
 	for (const row of rows) {
 		const runId = Number((row as { id: unknown }).id);
 		const windowId = Number((row as { window_id: unknown }).window_id);
+		const fallbackModel =
+			typeof (row as { dispatched_message_id?: unknown })
+				.dispatched_message_id === "string"
+				? "lobu-agent"
+				: undefined;
 
-		await markWatcherRunCompleted(sql, runId, windowId);
+		await markWatcherRunCompleted(sql, runId, windowId, fallbackModel);
 		reconciled++;
 	}
 
@@ -1243,7 +1249,10 @@ async function dispatchWatcherRun(
 		return "failed";
 	}
 
-	// Already-produced window for this exact run (e.g. retry after crash).
+	// Already-produced window for this exact run (e.g. retry after crash, or an
+	// external complete_window whose tx committed the canvas but lost the status
+	// update). No provenance stamp: the window can predate this dispatch, so
+	// being claimed for the platform agent does NOT prove the agent produced it.
 	const existingWindowId = await findWindowIdForRun(sql, run.id);
 	if (existingWindowId) {
 		await markWatcherRunCompleted(sql, run.id, existingWindowId);

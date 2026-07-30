@@ -68,17 +68,44 @@ export async function findWindowIdForRun(
 	return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
 }
 
+/**
+ * Mark a Behavior run completed, recording who executed it when the caller
+ * knows.
+ *
+ * `complete_window` used to default `runs.model_used` to the literal
+ * 'external-client' whenever its caller omitted `model`, and the platform's own
+ * Lobu agent omits it — so server-dispatched runs were labelled as though an
+ * outside MCP client had executed them. That label reads as an observation and
+ * is not one: triaging the July 2026 Behavior collapse from this column
+ * produced exactly that wrong conclusion.
+ *
+ * `fallbackModel` is the caller's assertion about the executor and is applied
+ * ONLY over the placeholder or a NULL — a model the agent genuinely reported
+ * always wins. Callers that cannot prove who executed the run must omit it
+ * rather than guess: `reconcileWatcherRuns` sweeps active runs without
+ * filtering on `dispatched_message_id`, so it can reach runs an external client
+ * created, and stamping those would invert the very bug this fixes.
+ *
+ * (SQL comments are kept out of the template literal: a backtick inside one
+ * terminates the string and fails the esbuild transform, not just at runtime.)
+ */
 export async function markWatcherRunCompleted(
 	sql: DbClient,
 	runId: number,
-	windowId: number | null
+	windowId: number | null,
+	fallbackModel?: string
 ): Promise<void> {
 	await sql`
     UPDATE runs
     SET status = 'completed',
         window_id = ${windowId},
         completed_at = current_timestamp,
-        error_message = NULL
+        error_message = NULL,
+        model_used = COALESCE(
+          NULLIF(model_used, 'external-client'),
+          ${fallbackModel ?? null},
+          model_used
+        )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
@@ -176,7 +203,7 @@ export async function resolveWatcherRunsByMessageIds(
 		}
 
 		if (typedRow.approved_input?.trigger_execution === "turn") {
-			await markWatcherRunCompleted(sql, runId, null);
+			await markWatcherRunCompleted(sql, runId, null, "lobu-agent");
 			resolved++;
 			continue;
 		}
@@ -213,7 +240,7 @@ export async function resolveWatcherRunsByMessageIds(
 			continue;
 		}
 
-		await markWatcherRunCompleted(sql, runId, windowId);
+		await markWatcherRunCompleted(sql, runId, windowId, "lobu-agent");
 		resolved++;
 	}
 

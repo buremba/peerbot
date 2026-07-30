@@ -2,6 +2,17 @@ import type { Context } from "hono";
 import { routePath } from "hono/route";
 
 /**
+ * Compose caller args with the route's server-selected action last, so a
+ * caller-supplied `action` cannot retarget a fixed-action route.
+ */
+export function fixedActionArgs(
+	action: string,
+	callerArgs?: Record<string, unknown>
+): Record<string, unknown> {
+	return { ...callerArgs, action };
+}
+
+/**
  * Fixed-action GET proxies shared by route registration and public-org auth.
  * Keeping both consumers on one table prevents the authorized pair from
  * drifting away from the pair the handler executes.

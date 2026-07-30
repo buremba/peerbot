@@ -21,6 +21,23 @@ import {
   TEST_GATEWAY_URL,
 } from "./setup.js";
 
+/**
+ * The reply path consults the cooldown claim, which is Postgres-backed. Stub
+ * the module so this suite stays DB-free; `cooldownAllows` defaults to true so
+ * every other test behaves exactly as before (they all use the 0 default, which
+ * the bridge never claims for anyway).
+ */
+const cooldownClaims: number[] = [];
+let cooldownAllows = true;
+mock.module("../../behaviors/cooldown.js", () => ({
+  claimBehaviorCooldownStandalone: async (behaviorId: number) => {
+    cooldownClaims.push(behaviorId);
+    return cooldownAllows;
+  },
+  claimBehaviorCooldown: async () => true,
+  lockBehaviorForActivation: async () => undefined,
+}));
+
 describe("buildAttachmentTranscriptText", () => {
   const file = (id: string, name: string, mimetype: string) => ({
     id,
@@ -628,6 +645,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
               agentKind: null,
               model: opts.linkedBehavior.model ?? null,
               instructions: "Respond helpfully to the incoming message.",
+              minCooldownSeconds: 0,
               trigger: {
                 kind: "event",
                 connector_key: "slack",
@@ -764,6 +782,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
         agentKind: null,
         model: null,
         instructions: "Handle support messages.",
+        minCooldownSeconds: 0,
         trigger,
       },
       {
@@ -774,6 +793,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
         agentKind: null,
         model: null,
         instructions: "Audit support messages.",
+        minCooldownSeconds: 0,
         trigger,
       },
     ];
@@ -814,6 +834,102 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       THREAD_ID,
     );
     expect(entries).toHaveLength(1);
+  });
+
+  test("a reply Behavior inside its cooldown window is suppressed", async () => {
+    // `reply_to_source` targets are handed to the chat transport and never
+    // write a `behavior` run row, so a cooldown expressed over `runs` was a
+    // silent no-op for these Behaviors.
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const behaviors: MatchingBehaviorActivation[] = [
+      {
+        behaviorId: 81,
+        organizationId: "org-a",
+        agentId: "agent-a",
+        deviceWorkerId: null,
+        agentKind: null,
+        model: null,
+        instructions: "Handle support messages.",
+        minCooldownSeconds: 1800,
+        trigger,
+      },
+    ];
+    cooldownClaims.length = 0;
+    cooldownAllows = false;
+    try {
+      const { bridge, enqueueMessage } = makePreviewHarness({ behaviors });
+      const thread = makeThread(undefined);
+
+      await bridge.handleMessage(
+        thread,
+        makeMessage({ raw: { team_id: "TREAL" } }),
+        "mention",
+      );
+
+      expect(cooldownClaims).toEqual([81]);
+      expect(enqueueMessage).not.toHaveBeenCalled();
+      // A suppressed Behavior must not fall through to the connection owner —
+      // that would answer the message with a plain chat turn and defeat the
+      // debounce entirely.
+      expect(
+        thread.post.mock.calls.every(
+          (c: unknown[]) => !String(c[0]).includes("/lobu link"),
+        ),
+      ).toBe(true);
+    } finally {
+      cooldownAllows = true;
+    }
+  });
+
+  test("a reply Behavior at the 0 default never reaches the cooldown claim", async () => {
+    const trigger = {
+      kind: "event" as const,
+      connector_key: "slack",
+      connection_id: 42,
+      event_types: ["message.created"],
+      match: { channel_id: CHANNEL_ID },
+      execution: "turn" as const,
+      active_run: "queue" as const,
+      output: "reply_to_source" as const,
+      skip_if_unchanged: false,
+    };
+    const behaviors: MatchingBehaviorActivation[] = [
+      {
+        behaviorId: 82,
+        organizationId: "org-a",
+        agentId: "agent-a",
+        deviceWorkerId: null,
+        agentKind: null,
+        model: null,
+        instructions: "Handle support messages.",
+        minCooldownSeconds: 0,
+        trigger,
+      },
+    ];
+    cooldownClaims.length = 0;
+    const { bridge, enqueueMessage } = makePreviewHarness({ behaviors });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ raw: { team_id: "TREAL" } }),
+      "mention",
+    );
+
+    // Ordinary chat must not pay a round-trip per message or encounter a
+    // cooldown-claim failure.
+    expect(cooldownClaims).toEqual([]);
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
   });
 
   test("a rejected Behavior filter cannot be bypassed by channel fallback", async () => {
@@ -923,6 +1039,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
           agentKind: null,
           model: null,
           instructions: "Handle support messages.",
+          minCooldownSeconds: 0,
           trigger,
         },
       ],
@@ -1518,6 +1635,7 @@ describe("MessageHandlerBridge.handleMessage — routing and unlinked chats", ()
       agentKind: null,
       model: null,
       instructions: "Respond helpfully to the incoming message.",
+      minCooldownSeconds: 0,
       trigger: {
         kind: "event",
         connector_key: "slack",

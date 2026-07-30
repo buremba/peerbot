@@ -4,7 +4,7 @@ import type { DbClient } from "../db/client";
 import { getDb } from "../db/client";
 import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
 import {
-  type BehaviorEventRunResult,
+  type BehaviorEventRunQueued,
   createBehaviorEventRun,
 } from "../runs/queue-service";
 import logger from "../utils/logger";
@@ -19,10 +19,17 @@ export interface MatchingBehaviorActivation {
   agentKind: string | null;
   model: string | null;
   instructions: string;
+  /**
+   * The Behavior's `min_cooldown_seconds`. Carried on the match so a caller can
+   * skip the cooldown claim for Behaviors observed at the 0 default. Positive
+   * values are re-read and consumed authoritatively under the per-Behavior lock
+   * in `claimBehaviorCooldown`.
+   */
+  minCooldownSeconds: number;
   trigger: BehaviorEventTrigger;
 }
 
-export interface BehaviorActivationResult extends BehaviorEventRunResult {
+export interface BehaviorActivationResult extends BehaviorEventRunQueued {
   behaviorId: number;
   trigger: BehaviorEventTrigger;
 }
@@ -101,7 +108,7 @@ export async function findMatchingBehaviorActivations(
   const rows = await db`
 		SELECT w.id, w.organization_id, w.agent_id, w.device_worker_id::text AS device_worker_id,
 		       w.agent_kind, w.triggers, w.execution_config->>'model' AS model,
-		       v.prompt
+		       w.min_cooldown_seconds, v.prompt
 		FROM watchers w
 		JOIN watcher_versions v ON v.id = w.current_version_id
 		WHERE w.status = 'active'
@@ -136,6 +143,7 @@ export async function findMatchingBehaviorActivations(
       agentKind: typeof row.agent_kind === "string" ? row.agent_kind : null,
       model: typeof row.model === "string" ? row.model : null,
       instructions: typeof row.prompt === "string" ? row.prompt : "",
+      minCooldownSeconds: Number(row.min_cooldown_seconds ?? 0),
       trigger,
     });
   }
@@ -197,6 +205,10 @@ export async function queueBehaviorActivations(args: {
       },
       args.db,
     );
+    // A cooldown-suppressed activation produced no run, so it has nothing to
+    // dispatch and must not reach `dispatchBehaviorRunsBestEffort`. The
+    // decision itself is logged inside the claim.
+    if (queued.disposition === "cooldown") continue;
     results.push({
       ...queued,
       behaviorId: match.behaviorId,

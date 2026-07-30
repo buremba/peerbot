@@ -30,10 +30,12 @@ import { resolveSlackBotIdentity } from "../../authz/slack-acl-sync.js";
 import {
   type BehaviorActivationPlan,
   dispatchBehaviorRunsBestEffort,
+  type MatchingBehaviorActivation,
   planBehaviorActivationsForRuntimeConnection,
   queueBehaviorActivations,
   type RuntimeConnectionBehaviorLookup,
 } from "../../behaviors/activation.js";
+import { claimBehaviorCooldownStandalone } from "../../behaviors/cooldown.js";
 import {
   buildAgentSettingsUrl,
   buildProviderConnectUrl,
@@ -1166,9 +1168,36 @@ export class MessageHandlerBridge {
     });
     await dispatchBehaviorRunsBestEffort(backgroundRuns);
 
+    // `reply_to_source` Behaviors answer through the chat transport and never
+    // write a `behavior` run row, so they are invisible to the cooldown claim
+    // `createBehaviorEventRun` makes for background targets above. Claiming the
+    // same cursor here is what stops `min_cooldown_seconds` being a debounce on
+    // one half of the feature and a silent no-op on the other.
+    const replyTargetsOffCooldown: MatchingBehaviorActivation[] = [];
+    for (const candidate of replyBehaviors) {
+      // `minCooldownSeconds` is a feature-enabled hint carried on the match, so
+      // an ordinary chat Behavior (the 0 default) costs no extra round-trip and
+      // cannot be dropped by a cooldown claim. Behaviors that opted in re-read
+      // and consume the window under the per-Behavior lock; claim failures
+      // propagate out of this handler.
+      if (
+        candidate.minCooldownSeconds > 0 &&
+        !(await claimBehaviorCooldownStandalone(candidate.behaviorId))
+      ) {
+        continue;
+      }
+      replyTargetsOffCooldown.push(candidate);
+    }
+    // Every reply Behavior being suppressed is not the same as none matching:
+    // fall through to the empty-targets return rather than the owner-agent
+    // fallback, or a debounced Behavior would be answered by a plain chat turn.
+    if (replyBehaviors.length > 0 && replyTargetsOffCooldown.length === 0) {
+      return;
+    }
+
     const directTargets =
-      replyBehaviors.length > 0
-        ? replyBehaviors.map((candidate) => ({
+      replyTargetsOffCooldown.length > 0
+        ? replyTargetsOffCooldown.map((candidate) => ({
             agentId: candidate.agentId,
             organizationId: candidate.organizationId,
             model: candidate.model ?? undefined,

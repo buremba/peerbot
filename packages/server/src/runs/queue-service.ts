@@ -10,6 +10,10 @@
 import type { DbClient } from '../db/client';
 import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
+import {
+  claimBehaviorCooldown,
+  lockBehaviorForActivation,
+} from '../behaviors/cooldown';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -593,12 +597,29 @@ export async function createWatcherRun(
   }
 }
 
-export interface BehaviorEventRunResult {
+/** An activation that produced (or joined) a durable run. */
+export interface BehaviorEventRunQueued {
   runId: number;
   status: string;
   created: boolean;
   disposition: 'queued' | 'coalesced' | 'duplicate';
 }
+
+/**
+ * An activation refused by the Behavior's `min_cooldown_seconds` window. No
+ * run exists, so there is no id to dispatch — the distinct shape stops callers
+ * treating a suppressed activation as a queued one.
+ */
+export interface BehaviorEventRunSuppressed {
+  runId: null;
+  status: 'suppressed';
+  created: false;
+  disposition: 'cooldown';
+}
+
+export type BehaviorEventRunResult =
+  | BehaviorEventRunQueued
+  | BehaviorEventRunSuppressed;
 
 /**
  * Durably materialize a normalized connector signal as a Behavior run. A
@@ -619,12 +640,7 @@ export async function createBehaviorEventRun(
 ): Promise<BehaviorEventRunResult> {
   const sql = db ?? getDb();
   const execute = async (tx: DbClient): Promise<BehaviorEventRunResult> => {
-    await tx`
-      SELECT pg_advisory_xact_lock(
-        hashtext('behavior_event_run'),
-        ${params.watcherId}
-      )
-    `;
+    await lockBehaviorForActivation(tx, params.watcherId);
 
     const duplicate = await tx`
       SELECT id, status
@@ -708,6 +724,22 @@ export async function createBehaviorEventRun(
           };
         }
       }
+    }
+
+    // Only a genuinely NEW firing consumes the operator's cooldown window.
+    // Everything above this line either returned an existing run (a duplicate
+    // delivery) or folded the signal into one already pending (coalesce) —
+    // neither starts the Behavior again, so neither should count against
+    // `min_cooldown_seconds`. We hold the per-Behavior advisory lock, so the
+    // read-and-consume inside this claim cannot interleave with another
+    // replica handling a concurrent delivery.
+    if (!(await claimBehaviorCooldown(tx, params.watcherId))) {
+      return {
+        runId: null,
+        status: 'suppressed',
+        created: false,
+        disposition: 'cooldown',
+      };
     }
 
     const versionRows = await tx`

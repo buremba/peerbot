@@ -85,7 +85,7 @@ describe('manage_classifiers apply — skip reasons', () => {
         watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
       ) VALUES (
         ${org.id}, 'apply-reasons', 'apply reasons classifier', 'apply-reasons', 'active', ${user.id},
-        NULL, NULL, 0.5, NULL, ${JSON.stringify(attributeValues)}::jsonb
+        NULL, NULL, 0.5, NULL, ${sql.json(attributeValues as never)}
       )
     `;
 
@@ -235,7 +235,7 @@ describe('manage_classifiers apply — skip reasons', () => {
       ) VALUES (
         ${org.id}, 'behavior-owned', 'behavior owned', 'behavior-owned', 'active', ${user.id},
         ${behavior.id}, NULL, 0.5, NULL,
-        ${JSON.stringify({ positive: { embedding: basisVector(0), embedding_model: getConfiguredEmbeddingModel() } })}::jsonb
+        ${sql.json({ positive: { embedding: basisVector(0), embedding_model: getConfiguredEmbeddingModel() } } as never)}
       )
     `;
 

@@ -14,8 +14,8 @@
  * queryable in the same breath.
  *
  * That is precisely the content `manage_classifiers apply` exists to label —
- * its own contract says it "needs no entity link, so this is how org-scoped
- * feed content gets classified". Measured against prod on 2026-07-31: `apply`
+ * its own contract says it "needs no entity link, so it is the only way to
+ * classify org-scoped feed content". Measured against prod on 2026-07-31: `apply`
  * reported 280 rows written, the physical table held them, and query_sql
  * returned 0 of 281 because they hung off entity-less feed events.
  *
@@ -79,7 +79,10 @@ async function readClassificationCount(ctx: ToolContext): Promise<number> {
     {} as never,
     ctx
   );
-  const rows = (result as { rows?: Array<{ n: number }> }).rows ?? [];
+  // A failed query returns `rows: []` WITH an `error` field — reading that as
+  // count 0 would let every hides-* assertion pass vacuously. Fail loud instead.
+  const { rows = [], error } = result as { rows?: Array<{ n: number }>; error?: string };
+  if (error) throw new Error(`query_sql failed: ${error}`);
   return rows.length > 0 ? Number(rows[0].n) : 0;
 }
 

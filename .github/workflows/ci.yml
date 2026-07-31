@@ -1096,7 +1096,17 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if command -v bwrap >/dev/null 2>&1; then
-            if bwrap --unshare-user --unshare-pid --ro-bind /usr /usr \
+            # Bind set mirrors probeBwrap() in exec-sandbox.ts. /lib64 is not
+            # optional: /usr/bin/true's ELF interpreter is
+            # /lib64/ld-linux-*.so, so binding only /usr makes exec fail with
+            # an execvp error even where userns works — the probe would then
+            # report "present but refused" and name the wrong cause, which is
+            # the exact failure this PR exists to remove.
+            if bwrap --unshare-user --unshare-pid \
+                 --ro-bind /usr /usr \
+                 --ro-bind-try /lib /lib \
+                 --ro-bind-try /lib64 /lib64 \
+                 --ro-bind-try /bin /bin \
                  --proc /proc --dev /dev -- /usr/bin/true >/tmp/bwrap.err 2>&1; then
               echo "- bwrap: **isolation works**" >> "$GITHUB_STEP_SUMMARY"
             else

@@ -28,6 +28,7 @@ import type { Env } from '../../index';
 import { executeClassificationQuery } from '../../utils/classification-query';
 import {
   generateEmbeddings as generateEmbeddingsViaService,
+  getConfiguredEmbeddingModel,
   isValidEmbedding,
 } from '../../utils/embeddings';
 import logger from '../../utils/logger';
@@ -556,7 +557,7 @@ async function handleClassify(
  * dropped by a WHERE clause — reporting the count is what keeps that from
  * looking like a successful no-op.
  */
-async function handleApply(
+async function runApply(
   args: ManageClassifiersArgs,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
@@ -572,11 +573,15 @@ async function handleApply(
   // Dedupe so the counts below describe distinct events, not request repeats.
   const requestedIds = [...new Set(args.content_ids)];
 
+  // Mirrors the engine's classifier-template lookup exactly (org + active +
+  // watcher_id IS NULL). Diverging here would report a watcher-owned classifier
+  // as "found" and then blame its zero results on min_similarity.
   const classifierRows = (await sql`
     SELECT cf.id AS classifier_id
     FROM classify_facet cf
     WHERE cf.slug = ${args.classifier_slug}
       AND cf.status = 'active'
+      AND cf.watcher_id IS NULL
       AND cf.organization_id = ${ctx.organizationId}
   `) as unknown as Array<{ classifier_id: number }>;
 
@@ -590,11 +595,16 @@ async function handleApply(
 
   // Partition the request BEFORE classifying so each skip has a real reason
   // rather than being inferred from a missing result.
+  // `has_embedding` has to match the engine's representative-vector join
+  // (chunk 0 AND the configured model), or an event whose only chunk-0 vector is
+  // from a stale model reads as embedded and gets the wrong skip reason.
   const reachable = (await sql`
     SELECT e.id,
            EXISTS (
              SELECT 1 FROM event_embeddings emb
-             WHERE emb.event_id = e.id AND emb.chunk_index = 0
+             WHERE emb.event_id = e.id
+               AND emb.chunk_index = 0
+               AND emb.embedding_model = ${getConfiguredEmbeddingModel()}
            ) AS has_embedding
     FROM events e
     WHERE e.organization_id = ${ctx.organizationId}
@@ -647,6 +657,30 @@ async function handleApply(
       sample_skipped_below_threshold: skippedBelowThreshold.slice(0, 20),
     },
   };
+}
+
+/**
+ * Same failure contract as `classify`: a thrown DB/engine error comes back as a
+ * `manage_classifiers` result with `success: false`, not a raw exception out of
+ * `routeAction`.
+ */
+async function handleApply(
+  args: ManageClassifiersArgs,
+  ctx: ToolContext
+): Promise<ManageClassifiersResult> {
+  try {
+    return await runApply(args, ctx);
+  } catch (error) {
+    logger.error(
+      { error, classifier_slug: args.classifier_slug, requested: args.content_ids?.length ?? 0 },
+      'Failed to apply classifier over content ids'
+    );
+    return {
+      success: false,
+      action: 'apply',
+      message: error instanceof Error ? error.message : 'Failed to apply classifier',
+    };
+  }
 }
 
 async function updateSingleClassification(

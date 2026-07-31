@@ -1,5 +1,29 @@
 # Changelog
 
+## [14.9.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.8.0...lobu-v14.9.0) (2026-07-31)
+
+
+### Features
+
+* **server:** org-scope the classification engine and expose it as manage_classifiers apply ([#2389](https://github.com/lobu-ai/lobu/issues/2389)) ([eac0468](https://github.com/lobu-ai/lobu/commit/eac0468da2b8e6b58287007743ca10d17e2536d2))
+* **server:** surface trigger_feed's dry_run on the ClientSDK ([#2397](https://github.com/lobu-ai/lobu/issues/2397)) ([a8fe130](https://github.com/lobu-ai/lobu/commit/a8fe130ffacf48b174c69b33d716e52aa4d7efce))
+
+
+### Bug Fixes
+
+* **agent-worker:** report why exec-sandbox is unavailable instead of guessing ([#2395](https://github.com/lobu-ai/lobu/issues/2395)) ([ea850ad](https://github.com/lobu-ai/lobu/commit/ea850ad756283df6c20e9b705f79321590c4bc13))
+* **chat:** stop double-posting when the agent already answered in-band ([#2403](https://github.com/lobu-ai/lobu/issues/2403)) ([63ba944](https://github.com/lobu-ai/lobu/commit/63ba9442ff9e135f1fdac019841eb602821c6e0a))
+* **mac-release:** stamp CFBundleVersion so Sparkle stops re-staging every release ([6411c50](https://github.com/lobu-ai/lobu/commit/6411c507a092249b6f09bfc7e77411d49593bb6c))
+* **owletto:** unify agent sub-page layout and make entity views opt-in ([#2400](https://github.com/lobu-ai/lobu/issues/2400)) ([fe4220e](https://github.com/lobu-ai/lobu/commit/fe4220ea2925e543fa9e36ee6d2bbb7d9abe063c))
+* **server:** let a Behavior define its own classifier ([#2405](https://github.com/lobu-ai/lobu/issues/2405)) ([c12a4d0](https://github.com/lobu-ai/lobu/commit/c12a4d02d9a6db871578ba19896ade8de3e41b26))
+* **server:** make classifications visible exactly when their event is ([#2402](https://github.com/lobu-ai/lobu/issues/2402)) ([1801528](https://github.com/lobu-ai/lobu/commit/1801528e33267a9ceca34893e6c69530ed7282fb))
+* **server:** make the classification engine reachable by agents ([#2394](https://github.com/lobu-ai/lobu/issues/2394)) ([3ac8ba1](https://github.com/lobu-ai/lobu/commit/3ac8ba127493be3e6c6143e72b9fa093779d33be))
+* **server:** model-stamp classifier label vectors so a swap can't compare across spaces ([#2407](https://github.com/lobu-ai/lobu/issues/2407)) ([6b54e95](https://github.com/lobu-ai/lobu/commit/6b54e9585ff0434590959a6b0143ae49ae5536ac))
+* **server:** retry the device-connector wire when its slug races a sibling ([#2399](https://github.com/lobu-ai/lobu/issues/2399)) ([bae1e0f](https://github.com/lobu-ai/lobu/commit/bae1e0f11c3a264d52603dcca8e9209094fa665d))
+* **server:** scope classifier slug uniqueness to the organization ([#2406](https://github.com/lobu-ai/lobu/issues/2406)) ([c605b8d](https://github.com/lobu-ai/lobu/commit/c605b8d733490833c2f641590109b92ce527690b))
+* **server:** stop the catalog scan warning about files that were never connectors ([#2393](https://github.com/lobu-ai/lobu/issues/2393)) ([d8a22a9](https://github.com/lobu-ai/lobu/commit/d8a22a96713045a0ce27c06612bbd0f729b9a253))
+* **server:** tell the caller why no sync run was queued ([#2398](https://github.com/lobu-ai/lobu/issues/2398)) ([a63c21a](https://github.com/lobu-ai/lobu/commit/a63c21ac0a4403df9de7334406d0739c251dbf85))
+
 ## [14.8.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.7.1...lobu-v14.8.0) (2026-07-31)
 
 

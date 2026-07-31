@@ -20,7 +20,6 @@ interface ClientRecord {
   status: string;
   authState: string;
   lastSeenAt: number | null;
-  firstParty: boolean;
 }
 
 export async function clientsListCommand(
@@ -55,12 +54,11 @@ export async function clientsListCommand(
     const agent = record.assignedAgentName
       ? chalk.dim(` → ${record.assignedAgentName}`)
       : "";
-    const firstParty = record.firstParty ? chalk.dim(" [lobu]") : "";
     const lastSeen = record.lastSeenAt
       ? chalk.dim(`  last seen ${new Date(record.lastSeenAt).toISOString()}`)
       : "";
     console.log(
-      `  ${dot} ${chalk.bold(title)} ${chalk.dim(`(${record.kind})`)}${platform}${agent}${firstParty}${lastSeen}`
+      `  ${dot} ${chalk.bold(title)} ${chalk.dim(`(${record.kind})`)}${platform}${agent}${lastSeen}`
     );
     if (record.kind === "mcp") {
       console.log(chalk.dim(`    id: ${record.id}`));

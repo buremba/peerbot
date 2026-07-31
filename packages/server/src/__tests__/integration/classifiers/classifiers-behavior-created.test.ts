@@ -11,11 +11,12 @@
  *     violates not-null constraint
  *
  * `created_by` was resolved as `args.created_by ?? ctx.userId`, and a Behavior
- * has no user identity. Measured before the fix: `list`, `apply` and `classify`
- * all succeeded for a Behavior; `create` was the ONLY unreachable verb — which
- * is precisely what blocked an agent from inventing a classifier to automate its
- * own work. The failure surfaced as a raw Postgres 23502, not a ToolUserError,
- * so the agent got a constraint dump instead of guidance.
+ * has no user identity. Measured on a Behavior context before the fix: `list`
+ * and `apply` both succeeded, so `create` was the verb blocking an agent from
+ * inventing a classifier to automate its own work. (`classify` and `delete`
+ * were not exercised; neither writes `created_by`.) The failure surfaced as a
+ * raw Postgres 23502, not a ToolUserError, so the agent got a constraint dump
+ * instead of guidance.
  *
  * `classify_facet.created_by` carries no foreign key (the table has none), so a
  * sentinel is valid — this does not smuggle a fake row into `user`.

@@ -223,13 +223,14 @@ async function handleCreate(
   // `action-router.ts` returns early for a system context, so a Behavior
   // reaction (userId null, memberRole null) skips the admin gate and reached
   // this INSERT with no identity — dying on the NOT NULL as a raw Postgres
-  // 23502. `list`, `apply` and `classify` all worked for a Behavior; `create`
-  // was the one verb it could not reach, which is what made ad-hoc
-  // agent-defined classification impossible.
+  // 23502. Measured on a Behavior context: `list` and `apply` both succeeded,
+  // so `create` was the verb blocking ad-hoc agent-defined classification.
+  // (`classify` and `delete` were not exercised; neither writes `created_by`.)
   //
-  // Sentinel matches the existing precedent in manage_entity.ts
-  // (`ctx.agentId ?? ctx.userId ?? "system"`); a Behavior sets neither userId
-  // nor agentId, so it lands on 'system'.
+  // The 'system' sentinel follows the manage_entity.ts precedent
+  // (`ctx.agentId ?? ctx.userId ?? "system"`), but userId stays first here to
+  // preserve the pre-existing user attribution when both are set. A Behavior
+  // sets neither, so it lands on 'system'.
   const createdBy = args.created_by ?? ctx.userId ?? ctx.agentId ?? 'system';
   // Config lives on the single classify_facet row now (no version table) — hydrate embeddings first,
   // then one insert carrying identity + config.

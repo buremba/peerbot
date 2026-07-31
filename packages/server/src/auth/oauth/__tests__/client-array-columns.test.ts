@@ -88,9 +88,9 @@ describe('oauth_clients array columns', () => {
       expect(client?.redirect_uris.includes(forged)).toBe(false);
     }
 
-    expect(client?.redirect_uris.includes('https://app.example.com/callback')).toBe(
-      true
-    );
+    // `toContain` on an array is exact element membership, so this stays a
+    // real membership assertion (and does not read as URL substring matching).
+    expect(client?.redirect_uris).toContain('https://app.example.com/callback');
   });
 
   test('grant-type membership is exact, not substring', async () => {

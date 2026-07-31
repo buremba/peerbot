@@ -86,6 +86,10 @@ const lead = defineEntityType({
       enum: ["signal", "trial", "conversation", "pilot", "customer", "cold"],
       "x-table-label": "Stage",
       "x-table-column": true,
+      // Board layout is deliberate for the CRM pipeline — the stage enum IS
+      // the board column set. Declared explicitly so the pipeline defaults to
+      // Board; a status/state/stage name alone no longer implies a board.
+      "x-lobu": { role: "workflowState" },
     },
     source: {
       type: "string",

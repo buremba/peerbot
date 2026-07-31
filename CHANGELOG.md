@@ -1,5 +1,53 @@
 # Changelog
 
+## [14.8.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.7.1...lobu-v14.8.0) (2026-07-31)
+
+
+### Features
+
+* **agent-worker:** tell the agent which agent, conversation and Lobu it is in ([#2322](https://github.com/lobu-ai/lobu/issues/2322)) ([8c97066](https://github.com/lobu-ai/lobu/commit/8c9706632427b7febec8d063802b2325ecfc208d))
+* **cli,server:** compile Behavior skills[] into frozen prompt at apply ([#2331](https://github.com/lobu-ai/lobu/issues/2331)) ([847768a](https://github.com/lobu-ai/lobu/commit/847768a8e5b43a40398dae069cc36c482dd064a9))
+* **connectors:** virtual Jira/Linear issues + OAuth cloud_id stamp ([#2333](https://github.com/lobu-ai/lobu/issues/2333)) ([84b3bc5](https://github.com/lobu-ai/lobu/commit/84b3bc59bee10dbe33656cd0bd9388560b34cddd))
+* **server:** device Behavior complete-behavior resume + Mac CLI path ([#2361](https://github.com/lobu-ai/lobu/issues/2361)) ([a23ad74](https://github.com/lobu-ai/lobu/commit/a23ad740f6f11b28892628037b295ddbe601d112))
+* **server:** dry-run feed syncs that execute for real and persist nothing ([#2390](https://github.com/lobu-ai/lobu/issues/2390)) ([8811a76](https://github.com/lobu-ai/lobu/commit/8811a765403344a97021013baa9f866d5be1ef8f))
+* **server:** feed.auto_paused signal; delete connector repair-agent ([#2351](https://github.com/lobu-ai/lobu/issues/2351)) ([84821ec](https://github.com/lobu-ai/lobu/commit/84821ec46a1571b3db0f0142d263e42a1c5f860b))
+* **server:** pin Behavior skills as version snapshots and deliver them as files ([#2371](https://github.com/lobu-ai/lobu/issues/2371)) ([84b86a6](https://github.com/lobu-ai/lobu/commit/84b86a6a724d6d07264083005ca2f49d48ad3bc4))
+* **server:** record and show what a merge re-check changed ([#2337](https://github.com/lobu-ai/lobu/issues/2337)) ([f302083](https://github.com/lobu-ai/lobu/commit/f3020833504154a985e882834fe727262934507c))
+* **server:** reject a prompt that references an unpinned skill ([#2374](https://github.com/lobu-ai/lobu/issues/2374)) ([48bc4c1](https://github.com/lobu-ai/lobu/commit/48bc4c1c8175b85da026ceffd36726b488ef2df9))
+
+
+### Bug Fixes
+
+* **agent-worker:** stop every installed CLI agent turn crashing on __filename ([#2375](https://github.com/lobu-ai/lobu/issues/2375)) ([8f13ad8](https://github.com/lobu-ai/lobu/commit/8f13ad825024e2633de8f9c3ef17ccff1bbd2ab3))
+* **ci:** give the app-image smoke an ENCRYPTION_KEY, and time the boot window off a blank DB ([#2383](https://github.com/lobu-ai/lobu/issues/2383)) ([0f62f5c](https://github.com/lobu-ai/lobu/commit/0f62f5c4c6b6ef19d4f0e8253b6806bc177821d8))
+* **mac:** stop TCC probes blocking the main actor and lying about capability ([#2373](https://github.com/lobu-ai/lobu/issues/2373)) ([9dc5986](https://github.com/lobu-ai/lobu/commit/9dc5986c2ccacd775431c04544f8b097d74a6d80))
+* **pgvector-embedded:** build Linux prebuilts on glibc 2.31, not the runner's ([#2376](https://github.com/lobu-ai/lobu/issues/2376)) ([c964865](https://github.com/lobu-ai/lobu/commit/c9648654295b1bc14c9610e04028a9b16aa7cb72))
+* **review:** make the review harness survive a single-CLI outage ([#2372](https://github.com/lobu-ai/lobu/issues/2372)) ([377d24c](https://github.com/lobu-ai/lobu/commit/377d24c46ec06828d8e24e849f4638e98f7f15de))
+* **server:** advance a Behavior's cron cursor when its run fails ([#2326](https://github.com/lobu-ai/lobu/issues/2326)) ([4527ebe](https://github.com/lobu-ai/lobu/commit/4527ebe809f4900815bf0035bf73b0c952f1553e))
+* **server:** apply a re-checked merge on one approval when evidence strengthened ([#2330](https://github.com/lobu-ai/lobu/issues/2330)) ([fa04035](https://github.com/lobu-ai/lobu/commit/fa04035b4e943f770c54d3035030c136cbbe91a5))
+* **server:** honour min_cooldown_seconds on event-triggered Behaviors ([#2341](https://github.com/lobu-ai/lobu/issues/2341)) ([b348aa8](https://github.com/lobu-ai/lobu/commit/b348aa899328023408fc3307fff1c8f578eb3710))
+* **server:** keep the live skill library out of Behavior runs ([#2342](https://github.com/lobu-ai/lobu/issues/2342)) ([18a5f34](https://github.com/lobu-ai/lobu/commit/18a5f3432c476350e4ce9b8bb65adfd48402d554))
+* **server:** let `lobu run` boot embedded Postgres in a root shell ([#2377](https://github.com/lobu-ai/lobu/issues/2377)) ([fdb1a75](https://github.com/lobu-ai/lobu/commit/fdb1a7505adb214327f9b51f44c3c33417300285))
+* **server:** let public orgs answer declared read-only REST proxies ([#2364](https://github.com/lobu-ai/lobu/issues/2364)) ([7765124](https://github.com/lobu-ai/lobu/commit/77651247127780f898b927383ce71b86657bde7b))
+* **server:** make DM conversations visible to the workspace owner ([#2362](https://github.com/lobu-ai/lobu/issues/2362)) ([bab0801](https://github.com/lobu-ai/lobu/commit/bab0801a287aae1c3f11ee054d7af28cc232f21a))
+* **server:** name the approval gate in a Behavior finalize failure, and share the carve-out ([#2335](https://github.com/lobu-ai/lobu/issues/2335)) ([ce4725e](https://github.com/lobu-ai/lobu/commit/ce4725e0d4195363f9c927ed56b14d469e635468))
+* **server:** parse oauth_clients array columns at the read boundary ([#2381](https://github.com/lobu-ai/lobu/issues/2381)) ([5cdb555](https://github.com/lobu-ai/lobu/commit/5cdb555259e4539a5d2c884aa86bb218f343d5ea))
+* **server:** pass connection-visibility principal into Behavior knowledge.read ([#2354](https://github.com/lobu-ai/lobu/issues/2354)) ([85bedf0](https://github.com/lobu-ai/lobu/commit/85bedf0f08cdd34c52ea843f7bf5e885de76db2e))
+* **server:** re-present a merge whose fingerprint format changed, not dead-end it ([#2325](https://github.com/lobu-ai/lobu/issues/2325)) ([7c27a13](https://github.com/lobu-ai/lobu/commit/7c27a1377f4432465f0d12c04b3f70b63610e122))
+* **server:** recycle stale agent deployments at the dispatch chokepoint ([#2315](https://github.com/lobu-ai/lobu/issues/2315)) ([b8f1e92](https://github.com/lobu-ai/lobu/commit/b8f1e922c121295c38d546693e55d43a76c3c924))
+* **server:** remove Handlebars templating from Behavior prompts ([#2327](https://github.com/lobu-ai/lobu/issues/2327)) ([f5a5661](https://github.com/lobu-ai/lobu/commit/f5a5661d64a210b3d18266ac73d0df3b6f92fbb9))
+* **server:** report an MCP client's registered name, not its driver ([#2380](https://github.com/lobu-ai/lobu/issues/2380)) ([e08636f](https://github.com/lobu-ai/lobu/commit/e08636f1df02aa10bb7369451255bcabc4113686))
+* **server:** stop a Behavior's instruction text from authoring its sources ([#2345](https://github.com/lobu-ai/lobu/issues/2345)) ([db32432](https://github.com/lobu-ai/lobu/commit/db32432a7fab64cccd36bf5d4906817a72daaefa))
+* **server:** stop caller input overriding server-fixed tool discriminators ([#2360](https://github.com/lobu-ai/lobu/issues/2360)) ([0b641f5](https://github.com/lobu-ai/lobu/commit/0b641f5c7a8614de614035f07e8fa4e3121157b0))
+* **server:** stop server-dispatched Behavior runs reporting an external executor ([#2352](https://github.com/lobu-ai/lobu/issues/2352)) ([5215f53](https://github.com/lobu-ai/lobu/commit/5215f5377caa841660be3a97d4685b0bc6771601))
+* **server:** verify behavior_run session intent and reserve the Behavior conversation suffix ([#2340](https://github.com/lobu-ai/lobu/issues/2340)) ([1016092](https://github.com/lobu-ai/lobu/commit/101609279e9fc9b9a7b9d592f274245f2530da6a))
+* **server:** withhold connection credentials and identity from non-members ([#2363](https://github.com/lobu-ai/lobu/issues/2363)) ([de1af49](https://github.com/lobu-ai/lobu/commit/de1af49e290bfdde774e670df6ad81cdddab538b))
+
+
+### Performance Improvements
+
+* **server:** order Behaviors by a stored stamp instead of aggregating run history ([#2370](https://github.com/lobu-ai/lobu/issues/2370)) ([48ce061](https://github.com/lobu-ai/lobu/commit/48ce061566e91bc0d37a7c9829d9b4948839a250))
+
 ## [14.7.1](https://github.com/lobu-ai/lobu/compare/lobu-v14.7.0...lobu-v14.7.1) (2026-07-29)
 
 

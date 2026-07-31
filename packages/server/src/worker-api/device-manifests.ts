@@ -266,7 +266,7 @@ function compareSemverish(a: string, b: string): number {
 
 function connectorKeyAllowedForPlatform(platform: string, key: string): boolean {
   if (platform === 'macos') {
-    return key.startsWith('apple.') || key === 'local.directory' || key === 'whatsapp.local';
+    return key.startsWith('apple.') || key === 'local.directory' || key === 'whatsapp.local' || key === 'os.shell';
   }
   if (platform === 'chrome-extension') {
     return key === 'chrome' || key.startsWith('chrome.');

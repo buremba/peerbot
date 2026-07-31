@@ -9,7 +9,8 @@ export const ManageClassifiersSchema = Type.Object({
     [
       // Template CRUD
       Type.Literal("create", {
-        description: "Create a classifier (must belong to a Behavior).",
+        description:
+          "Create a classifier. Org-level by default; pass behavior_id to scope it to one Behavior.",
       }),
       Type.Literal("list", { description: "List classifiers with filters." }),
       Type.Literal("generate_embeddings", {
@@ -40,7 +41,7 @@ export const ManageClassifiersSchema = Type.Object({
   behavior_id: Type.Optional(
     Type.String({
       description:
-        "[create] Persisted Behavior ID (`behavior_id`) returned by manage_behaviors (numeric string; required)",
+        "[create] Persisted Behavior ID returned by manage_behaviors (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Behavior.",
     })
   ),
   classifier_id: Type.Optional(

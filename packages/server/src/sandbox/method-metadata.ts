@@ -938,12 +938,12 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.create": {
 		summary:
-			"Create a classifier template. REQUIRES `behavior_id` (the owning Behavior) plus `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list.",
+			"Create a classifier template. Requires `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `behavior_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Behavior.",
 		access: "admin",
 		signature:
-			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
+			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id?: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
 		example:
-			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', behavior_id: '42', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
+			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},
 	"classifiers.generateEmbeddings": {
 		summary: "Generate embeddings for attribute values (cost-heavy).",
@@ -963,6 +963,16 @@ export default async (_ctx, client) => {
 			"classifiers.classify(input: { classifier_slug: string; content_id?: number; value?: string | null; reasoning?: string; classifications?: Array<{ content_id: number; value: string | null; reasoning?: string }>; source?: 'llm' | 'user' }): Promise<unknown>",
 		example:
 			"await client.classifiers.classify({ classifier_slug: 'sentiment', content_id: 101, value: 'positive', source: 'user' });",
+	},
+	"classifiers.apply": {
+		summary:
+			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `behavior_id`).",
+		access: "admin",
+		cost: "expensive",
+		signature:
+			"classifiers.apply(input: { classifier_slug: string; content_ids: number[] }): Promise<unknown>",
+		example:
+			"await client.classifiers.apply({ classifier_slug: 'sentiment', content_ids: [101, 102, 103] });",
 	},
 
 	// viewTemplates

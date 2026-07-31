@@ -26,7 +26,7 @@ import { buildPublishedDeclaration } from "./published-declaration.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 
-const result = await esbuild.build({
+const buildOptions = {
   absWorkingDir: pkgDir,
   entryPoints: [join(pkgDir, "src/index.ts")],
   outfile: join(pkgDir, "dist/index.bundle.mjs"),
@@ -59,12 +59,65 @@ const result = await esbuild.build({
     },
   ],
   // esbuild emits require() calls when inlining CJS-flavoured workspace source;
-  // ESM output has no require, so provide one. Per-module __filename/__dirname
-  // shims are emitted by esbuild itself, so don't add them here.
+  // ESM output has no require, so provide one.
+  //
+  // It does NOT follow that __filename/__dirname are equally covered. esbuild
+  // only synthesises those for modules it treats as CJS; in a TS/ESM source
+  // module a bare `__filename` is just an unbound global and is emitted
+  // verbatim. Under bun that still resolves (bun defines it in ESM), so such a
+  // bundle passes every in-repo check and then throws `ReferenceError` under
+  // node, which is what actually runs the published worker. The scan below
+  // fails the build rather than shipping that again.
   banner: {
     js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
   },
+};
+
+// Fail the build on any CJS-ism that node's ESM does not define. A bare
+// `__filename`/`__dirname` surviving into this bundle is a latent
+// `ReferenceError` for every installed user, invisible in-repo because bun
+// defines both (#2153 class).
+//
+// Detection is a probe pass with `define`, never written to disk: esbuild
+// substitutes a define only for an *unbound* reference and leaves
+// locally-declared bindings (including its own CJS shims) alone, so a surviving
+// sentinel means exactly "used without being defined" — no hand-rolled scope
+// analysis, no false positives on modules that shim correctly.
+//
+// It runs BEFORE the real build so a rejected bundle is never written: leaving
+// a broken dist/ on disk is how a later step reads a stale artifact and goes
+// green (see the tsconfig.tsbuildinfo note below for the same failure mode).
+const CJS_GLOBALS = ["__filename", "__dirname"];
+const sentinelFor = (name) => `__LOBU_UNBOUND${name}__`;
+const probe = await esbuild.build({
+  ...buildOptions,
+  write: false,
+  sourcemap: false,
+  metafile: false,
+  logLevel: "silent",
+  define: Object.fromEntries(
+    CJS_GLOBALS.map((name) => [name, JSON.stringify(sentinelFor(name))])
+  ),
 });
+const probeText = probe.outputFiles[0].text;
+const unbound = CJS_GLOBALS.filter((name) =>
+  probeText.includes(sentinelFor(name))
+);
+if (unbound.length > 0) {
+  console.error(
+    `\n[build-worker-bundle] FAILED: ${unbound.join(", ")} used without being defined.\n` +
+      "  This bundle is ESM and runs under node (see buildWorkerInvocation in\n" +
+      "  server/src/gateway/orchestration/deployment-manager.ts), where these are\n" +
+      "  NOT ambient — it would throw ReferenceError at runtime. Bun defines them,\n" +
+      "  so every in-repo check stays green.\n" +
+      "  Fix: derive from import.meta.url, e.g.\n" +
+      "    createRequire(import.meta.url)\n" +
+      "    const __dirname = dirname(fileURLToPath(import.meta.url))"
+  );
+  process.exit(1);
+}
+
+const result = await esbuild.build(buildOptions);
 
 // tsc is incremental: after `rm -rf dist` a stale tsconfig.tsbuildinfo makes it
 // exit 0 having emitted nothing, which would publish a typeless bundle with no

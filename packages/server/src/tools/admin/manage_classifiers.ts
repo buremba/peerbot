@@ -11,6 +11,9 @@
  *
  * Manual classification:
  * - classify: Update content classification manually (single or batch)
+ *
+ * Bulk classification:
+ * - apply: Run a classifier's embedding match over given content ids
  */
 
 import {
@@ -20,8 +23,9 @@ import {
   type ManageClassifiersResult,
 } from '@lobu/core/contracts/tools/manage-classifiers';
 import type { DbClient } from '../../db/client';
-import { getDb } from '../../db/client';
+import { getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
+import { executeClassificationQuery } from '../../utils/classification-query';
 import {
   generateEmbeddings as generateEmbeddingsViaService,
   isValidEmbedding,
@@ -137,6 +141,7 @@ export const manageClassifiers = withValidatedArgs(
     generate_embeddings: flatAction((args, ctx, env) => handleGenerateEmbeddings(args, env, ctx)),
     delete: flatAction(handleDelete),
     classify: flatAction(handleClassify),
+    apply: flatAction(handleApply),
   })
 );
 
@@ -537,6 +542,111 @@ async function handleClassify(
       message: error instanceof Error ? error.message : 'Failed to update classification',
     };
   }
+}
+
+/**
+ * Run a classifier's embedding match over caller-supplied content ids.
+ *
+ * This is the agent-facing entry to the same engine the reconciliation cron
+ * uses; the cron only ever reaches it in `entity` mode, so org-scoped feeds
+ * (events with no entity link) had no way to be classified at all.
+ *
+ * Every id that does not produce a classification is reported with a reason.
+ * The engine filters on `fe.embedding IS NOT NULL`, so an unembedded event is
+ * dropped by a WHERE clause — reporting the count is what keeps that from
+ * looking like a successful no-op.
+ */
+async function handleApply(
+  args: ManageClassifiersArgs,
+  ctx: ToolContext
+): Promise<ManageClassifiersResult> {
+  const sql = getDb();
+
+  if (!args.classifier_slug) {
+    return { success: false, action: 'apply', message: 'classifier_slug is required' };
+  }
+  if (!args.content_ids || args.content_ids.length === 0) {
+    return { success: false, action: 'apply', message: 'content_ids is required and must be non-empty' };
+  }
+
+  // Dedupe so the counts below describe distinct events, not request repeats.
+  const requestedIds = [...new Set(args.content_ids)];
+
+  const classifierRows = (await sql`
+    SELECT cf.id AS classifier_id
+    FROM classify_facet cf
+    WHERE cf.slug = ${args.classifier_slug}
+      AND cf.status = 'active'
+      AND cf.organization_id = ${ctx.organizationId}
+  `) as unknown as Array<{ classifier_id: number }>;
+
+  if (classifierRows.length === 0) {
+    return {
+      success: false,
+      action: 'apply',
+      message: `Classifier not found or inactive: ${args.classifier_slug}`,
+    };
+  }
+
+  // Partition the request BEFORE classifying so each skip has a real reason
+  // rather than being inferred from a missing result.
+  const reachable = (await sql`
+    SELECT e.id,
+           EXISTS (
+             SELECT 1 FROM event_embeddings emb
+             WHERE emb.event_id = e.id AND emb.chunk_index = 0
+           ) AS has_embedding
+    FROM events e
+    WHERE e.organization_id = ${ctx.organizationId}
+      AND e.id = ANY(${pgBigintArray(requestedIds)}::bigint[])
+  `) as unknown as Array<{ id: number; has_embedding: boolean }>;
+
+  const reachableIds = new Set(reachable.map((r) => Number(r.id)));
+  const embeddedIds = reachable.filter((r) => r.has_embedding).map((r) => Number(r.id));
+
+  const skippedNotInOrg = requestedIds.filter((id) => !reachableIds.has(id));
+  const skippedNoEmbedding = reachable.filter((r) => !r.has_embedding).map((r) => Number(r.id));
+
+  let classifiedIds: number[] = [];
+  if (embeddedIds.length > 0) {
+    const results = await executeClassificationQuery({
+      mode: 'content_ids',
+      organizationId: ctx.organizationId,
+      content_ids: embeddedIds,
+      enabledClassifiers: [args.classifier_slug],
+    });
+    classifiedIds = [...new Set(results.map((r) => Number(r.content_id)))];
+  }
+
+  // Embedded, in-org, and still unclassified means every attribute value scored
+  // below the classifier's min_similarity and no fallback_value is set.
+  const classifiedSet = new Set(classifiedIds);
+  const skippedBelowThreshold = embeddedIds.filter((id) => !classifiedSet.has(id));
+
+  return {
+    success: true,
+    action: 'apply',
+    message:
+      `Classified ${classifiedIds.length}/${requestedIds.length} with "${args.classifier_slug}"` +
+      (skippedNoEmbedding.length > 0 ? `; ${skippedNoEmbedding.length} not embedded` : '') +
+      (skippedNotInOrg.length > 0 ? `; ${skippedNotInOrg.length} not in this organization` : '') +
+      (skippedBelowThreshold.length > 0
+        ? `; ${skippedBelowThreshold.length} below min_similarity`
+        : ''),
+    data: {
+      requested: requestedIds.length,
+      classified: classifiedIds.length,
+      skipped: {
+        not_embedded: skippedNoEmbedding.length,
+        not_in_organization: skippedNotInOrg.length,
+        below_threshold: skippedBelowThreshold.length,
+      },
+      // Bounded samples: enough to debug a bad classifier without returning
+      // thousands of ids into the agent's context.
+      sample_skipped_not_embedded: skippedNoEmbedding.slice(0, 20),
+      sample_skipped_below_threshold: skippedBelowThreshold.slice(0, 20),
+    },
+  };
 }
 
 async function updateSingleClassification(

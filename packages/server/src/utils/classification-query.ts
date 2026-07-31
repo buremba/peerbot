@@ -87,6 +87,18 @@ interface ClassificationQueryOptions {
   mode: 'entity' | 'content_ids';
 
   /**
+   * Owning organization. REQUIRED: both the target-content and the
+   * classifier-template lookups filter on it. Before this was threaded through,
+   * `content_ids` mode selected purely on `f.id IN (...)` and the template
+   * lookup purely on `cf.slug IN (...)`, so a caller could classify another
+   * org's events, or match against another org's classifier of the same slug.
+   * That was unreachable while the only caller was the reconciliation cron
+   * (which derives ids from one org's own entity); it becomes reachable the
+   * moment an agent-facing action can pass ids directly.
+   */
+  organizationId: string;
+
+  /**
    * Enabled classifier slugs
    */
   enabledClassifiers: string[];
@@ -191,8 +203,10 @@ async function fetchTargetContent(
 
   if (mode === 'content_ids') {
     const contentIds = options.content_ids!;
-    const contentPlaceholders = contentIds.map((_, i) => `$${i + 1}`).join(', ');
+    const contentPlaceholders = contentIds.map((_, i) => `$${i + 2}`).join(', ');
 
+    // $1 is the org; ids start at $2. Org-scoping here is what makes the
+    // agent-facing `apply` action safe to expose — see ClassificationQueryOptions.
     targetRows = await sql.unsafe(
       `SELECT DISTINCT
          f.id,
@@ -203,9 +217,10 @@ async function fetchTargetContent(
        FROM current_event_records f
        LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
        ${repEmbeddingJoins}
-       WHERE f.id IN (${contentPlaceholders})
+       WHERE f.organization_id = $1
+         AND f.id IN (${contentPlaceholders})
          AND fe.embedding IS NOT NULL`,
-      contentIds
+      [options.organizationId, ...contentIds]
     );
   } else if (mode === 'entity') {
     const entityId = options.entity_id!;
@@ -216,8 +231,9 @@ async function fetchTargetContent(
        FROM classify_facet cf
        WHERE cf.slug IN (${classifierPlaceholders})
          AND cf.status = 'active'
-         AND cf.watcher_id IS NULL`,
-      enabledClassifiers
+         AND cf.watcher_id IS NULL
+         AND cf.organization_id = $${enabledClassifiers.length + 1}`,
+      [...enabledClassifiers, options.organizationId]
     );
     const classifierIds = classifierRows.map((r) => r.classifier_id);
 
@@ -287,7 +303,8 @@ async function fetchTargetContent(
 async function fetchClassifierTemplates(
   sql: DbClient,
   enabledClassifiers: string[],
-  targetContent: TargetContent[]
+  targetContent: TargetContent[],
+  organizationId: string
 ): Promise<ClassifierTemplate[]> {
   if (targetContent.length === 0) return [];
 
@@ -310,8 +327,9 @@ async function fetchClassifierTemplates(
      FROM classify_facet cf
      WHERE cf.slug IN (${classifierPlaceholders})
        AND cf.status = 'active'
-       AND cf.watcher_id IS NULL`,
-    enabledClassifiers
+       AND cf.watcher_id IS NULL
+       AND cf.organization_id = $${enabledClassifiers.length + 1}`,
+    [...enabledClassifiers, organizationId]
   );
 
   // Collect unique entity_ids from target content for scoping
@@ -461,12 +479,17 @@ function generateParentClassifications(
 
 // ── Step 6: Fetch all classifier version slugs for parent lookups ──────
 
-async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
+async function fetchAllClassifierVersions(
+  sql: DbClient,
+  organizationId: string
+): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
     `SELECT cf.slug, cf.id as classifier_id
      FROM classify_facet cf
-     WHERE cf.status = 'active' AND cf.watcher_id IS NULL`,
-    []
+     WHERE cf.status = 'active'
+       AND cf.watcher_id IS NULL
+       AND cf.organization_id = $1`,
+    [organizationId]
   );
 }
 
@@ -608,7 +631,12 @@ export async function executeClassificationQuery(
     }
 
     // Step 2: Fetch classifier templates (attribute_values expanded in TypeScript)
-    const templates = await fetchClassifierTemplates(sql, enabledClassifiers, targetContent);
+    const templates = await fetchClassifierTemplates(
+      sql,
+      enabledClassifiers,
+      targetContent,
+      options.organizationId
+    );
     if (templates.length === 0) {
       logger.info({ mode }, '[Classification Query] No classifier templates found');
       return [];
@@ -621,7 +649,7 @@ export async function executeClassificationQuery(
     const bestMatches = determineBestMatches(similarities);
 
     // Step 5: Build parent classifications from parent_mapping
-    const classifierVersionRows = await fetchAllClassifierVersions(sql);
+    const classifierVersionRows = await fetchAllClassifierVersions(sql, options.organizationId);
     const classifierVersionLookup = new Map(
       classifierVersionRows.map((r) => [r.slug, r])
     );

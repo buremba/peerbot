@@ -160,7 +160,11 @@ describe('event_classifications read scope', () => {
       organization_id: theirs.id,
       content: 'another tenant’s post',
     });
-    const foreignClassifier = await seedClassifier(theirs.id, foreignUser.id, 'sentiment');
+    // Distinct slugs: `classify_facet_unique_per_insight` is UNIQUE NULLS NOT
+    // DISTINCT (entity_id, watcher_id, slug) with NO organization_id, so two
+    // tenants cannot hold the same org-level slug. Sidestepped here rather than
+    // asserted — the missing tenancy column is its own bug, not this one.
+    const foreignClassifier = await seedClassifier(theirs.id, foreignUser.id, 'sentiment-theirs');
     await classify(Number(foreign.id), foreignClassifier, 'positive');
 
     expect(await readClassificationCount(ctx)).toBe(0);

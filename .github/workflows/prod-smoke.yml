@@ -39,6 +39,9 @@ on:
       expect_sha:
         description: Require this commit to be live (ancestor test)
         required: false
+      rollout_wait:
+        description: Seconds to wait for expect_sha to appear (default 600 when expect_sha is set)
+        required: false
 
 permissions:
   contents: read
@@ -74,8 +77,14 @@ jobs:
                 || '' }}
           # Flux polls the registry then rolls the deployment; ~10min covers a
           # normal rollout without turning a genuinely stuck deploy into a
-          # 25-minute job.
-          ROLLOUT_WAIT: ${{ github.event_name == 'workflow_run' && '600' || '0' }}
+          # 25-minute job. Any run that expects a SHA gets that wait, including a
+          # manual spot-check dispatched right after a merge; a manual run with
+          # no expect_sha has nothing to wait for.
+          ROLLOUT_WAIT: >-
+            ${{ inputs.rollout_wait
+                || ((github.event_name == 'workflow_run' || inputs.expect_sha)
+                    && '600')
+                || '0' }}
         run: |
           chmod +x scripts/prod-smoke.sh
           scripts/prod-smoke.sh

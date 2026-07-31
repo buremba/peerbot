@@ -32,6 +32,14 @@ BASE="${1:-${PROD_URL:-https://app.lobu.ai}}"
 BASE="${BASE%/}"
 EXPECT_SHA="${EXPECT_SHA:-}"
 ROLLOUT_WAIT="${ROLLOUT_WAIT:-0}"
+# ROLLOUT_WAIT feeds `[ ... -ge ... ]` in the rollout loop; a non-integer would
+# make that test error forever and spin until the job timeout instead of failing.
+case "$ROLLOUT_WAIT" in
+  *[!0-9]*)
+    echo "ROLLOUT_WAIT must be a non-negative integer (seconds), got: ${ROLLOUT_WAIT}" >&2
+    exit 1
+    ;;
+esac
 
 PASS=0
 FAIL=0

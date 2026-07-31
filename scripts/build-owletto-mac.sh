@@ -7,6 +7,7 @@
 #   make owletto-mac                  # build → /tmp/owletto-build/.../Owletto.app
 #   make owletto-mac INSTALL=1        # also replace /Applications/Owletto.app
 #   make owletto-mac INSTALL=1 OPEN=1 # install and launch
+#   VERSION=14.8.1-dev make owletto-mac   # stamp a specific version
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +16,20 @@ MAC="$ROOT/packages/owletto/apps/mac"
 DERIVED="${DERIVED:-/tmp/owletto-build}"
 TEAM_ID="CCV9Q352W3"
 SIGN_ID="Developer ID Application"
+# Stamp a version instead of inheriting the pbxproj placeholders
+# (MARKETING_VERSION=0.1.0, CURRENT_PROJECT_VERSION=1). Two failures come from
+# leaving them alone, and this script is the Release+Developer ID+/Applications
+# path, so the DEBUG guard in OwlettoUpdater does not apply:
+#   1. The app reports app_version 0.1.0 to the server, which is
+#      indistinguishable from a real release and hid for weeks that two paired
+#      Macs were running local builds.
+#   2. CFBundleVersion=1 is below every appcast <sparkle:version>, so Sparkle
+#      treats a release as newer forever and silently replaces the build you
+#      deliberately made — re-downloading and re-staging on every check.
+# The default sorts above any real release so a dev build is never clobbered.
+# Override for a build meant to be superseded by a later release:
+#   VERSION=14.8.1-dev make owletto-mac
+VERSION="${VERSION:-99.0.0-dev}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -32,7 +47,7 @@ EOF
 )"
 fi
 
-echo ">> Building Owletto (Release, $SIGN_ID)..."
+echo ">> Building Owletto (Release, $SIGN_ID, version $VERSION)..."
 (
   cd "$MAC"
   xcodebuild -scheme Owletto -configuration Release \
@@ -41,6 +56,8 @@ echo ">> Building Owletto (Release, $SIGN_ID)..."
     CODE_SIGN_IDENTITY="$SIGN_ID" \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     ENABLE_HARDENED_RUNTIME=YES \
+    MARKETING_VERSION="$VERSION" \
+    CURRENT_PROJECT_VERSION="$VERSION" \
     build
 )
 

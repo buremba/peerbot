@@ -8,6 +8,7 @@
 import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
+import { isReservedConnectorKey } from './reserved';
 
 export interface ConnectorMetadata {
   key: string;
@@ -175,5 +176,15 @@ export async function extractConnectorMetadata(compiledCode: string): Promise<Co
 export function validateConnectorMetadata(metadata: ConnectorMetadata): void {
   if (!metadata.key || !metadata.name || !metadata.version) {
     throw new Error('Connector must have key, name, and version.');
+  }
+  // The web app routes `/connectors/<key>/<connectionId>` against a catch-all
+  // param, and static sibling segments (CONNECTOR_SUBROUTE_SEGMENTS) win the
+  // match. A connector installed under one of those names would have every
+  // connection page it owns shadowed by an unrelated route — reject the
+  // install rather than ship a connector whose pages are unreachable.
+  if (isReservedConnectorKey(metadata.key)) {
+    throw new Error(
+      `Connector key '${metadata.key}' is reserved by a /connectors/ route. Pick another key.`
+    );
   }
 }

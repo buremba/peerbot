@@ -20,6 +20,26 @@
 # configured chat platform can't be driven unattended -- those are exercised at
 # the "runs + fails gracefully" level or logged as SKIP with the reason.
 #
+# WHAT THIS GATE STRUCTURALLY CANNOT CATCH -- do not assume otherwise.
+# LOBU_BIN below points at the SOURCE TREE, which silently pins four things:
+#
+#   tarball-vs-source   this runs the monorepo, never an `npm install`ed build
+#   bun-vs-node         the gateway picks the worker entrypoint by EXTENSION
+#                       (gateway/config/index.ts -> src/index.ts in-repo,
+#                       dist/index.bundle.mjs installed) and
+#                       buildWorkerInvocation spawns .ts under bun, .mjs under
+#                       node. In-repo we can only ever take the bun path.
+#   root-vs-not         CI runs unprivileged
+#   glibc               CI runs a modern-glibc runner
+#
+# Each of those hid a real shipped bug (#2186, `__filename is not defined`,
+# the uid-0 embedded-postgres refusal, the GLIBC_2.38 pgvector floor). Walking
+# MORE commands here cannot help: the failing path does not exist in-repo.
+# scripts/published-artifact-smoke.sh owns those axes -- it installs from the
+# registry and runs a real agent turn as root and non-root, on old and new
+# glibc. Add packaging/runtime-environment coverage THERE, command coverage
+# HERE.
+#
 # Kept ASCII-only on purpose: a stray non-ASCII byte hugging a $var expansion is
 # swallowed into the variable name under a UTF-8 locale ("unbound variable").
 #

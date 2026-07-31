@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+#
+# Published-artifact smoke: install @lobu/cli FROM NPM into a clean container
+# and drive the landing page's own quickstart end to end.
+#
+# Why this exists, and why cli-smoke.sh is not enough.
+#
+# Every "I can't get started" issue we have shipped has the same shape: it
+# works from the monorepo and is broken from the published artifact. Nothing in
+# CI installed what we published, so the whole class was invisible:
+#
+#   #2186     unpublished private dep — the tarball could not resolve @lobu/*
+#   #2231     no `lobu` on PATH inside the app image
+#   __filename  bundle is ESM-under-node; bun defines it, node does not
+#   GLIBC_2.38  pgvector prebuilt built on too new a runner
+#   uid 0     embedded-postgres refuses to run as root
+#
+# `scripts/cli-smoke.sh` walks the whole command surface, but it points
+# LOBU_BIN at the SOURCE TREE, which pins four things at once — and each pin
+# hides one of the bugs above:
+#
+#   source tree, not the tarball  ->  #2186, missing bin, packaging breakage
+#   .ts entry, so spawned by bun  ->  __filename (node's ESM has no such global)
+#   non-root runner               ->  uid-0 embedded-postgres refusal
+#   modern-glibc runner           ->  GLIBC_2.38 pgvector floor
+#
+# The bun one is structural, not incidental: the gateway picks the worker
+# entrypoint by extension (`gateway/config/index.ts` resolves `src/index.ts`
+# in-repo and `dist/index.bundle.mjs` when installed), and
+# `buildWorkerInvocation` spawns `.ts` under bun, `.mjs` under node. In-repo we
+# can only ever take the bun path. cli-smoke could not catch `__filename` no
+# matter how many commands it walked.
+#
+# So this gate varies exactly those axes: real tarball, real `node`, root AND
+# non-root, old AND new glibc — and it runs a REAL AGENT TURN, because the turn
+# is the only thing that exercises the worker's egress bootstrap.
+#
+# No provider key: it reuses the deterministic mock provider from
+# scripts/sdk-e2e/, so this needs no secrets and is reproducible.
+#
+# Usage:
+#   scripts/published-artifact-smoke.sh [version]     # default: latest
+#
+# Env:
+#   LOBU_VERSION   npm version/tag to install (default "latest")
+#   SMOKE_AS_USER  unprivileged username to drop to (default: run as-is)
+#   GW_PORT        gateway port (default 8799)
+#   MOCK_PORT      mock provider port (default 11439)
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HARNESS="$REPO_ROOT/scripts/sdk-e2e"
+LOBU_VERSION="${1:-${LOBU_VERSION:-latest}}"
+GW_PORT="${GW_PORT:-8799}"
+MOCK_PORT="${MOCK_PORT:-11439}"
+MOCK_REPLY="ARTIFACT_SMOKE_OK"
+
+WORK="${SMOKE_WORK:-/tmp/lobu-artifact-smoke}"
+rm -rf "$WORK"; mkdir -p "$WORK"
+export HOME="$WORK/home"; mkdir -p "$HOME"
+
+PASSES=0; FAILS=0
+pass() { echo "  [OK]   $*"; PASSES=$((PASSES + 1)); }
+fail() { echo "  [FAIL] $*" >&2; FAILS=$((FAILS + 1)); }
+note() { echo ""; echo "== $* =="; }
+
+MOCK_PID=""
+cleanup() {
+  [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null
+  pkill -f "lobu-artifact-smoke.*run" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
+
+echo "================================================================"
+echo "  published-artifact smoke"
+echo "    version : @lobu/cli@$LOBU_VERSION"
+echo "    node    : $(node --version 2>/dev/null || echo MISSING)"
+echo "    uid     : $(id -u) ($(id -un))"
+echo "    glibc   : $(getconf GNU_LIBC_VERSION 2>/dev/null || ldd --version 2>&1 | head -1)"
+echo "================================================================"
+
+# ---------------------------------------------------------------------------
+# 1. Install from the registry. This is the step cli-smoke never performs.
+# ---------------------------------------------------------------------------
+note "install @lobu/cli@$LOBU_VERSION from npm"
+INSTALL_DIR="$WORK/install"; mkdir -p "$INSTALL_DIR"
+(
+  cd "$INSTALL_DIR" || exit 1
+  npm init -y >/dev/null 2>&1
+  npm install --no-audit --no-fund "@lobu/cli@$LOBU_VERSION" 2>&1 | tail -5
+)
+LOBU_BIN="$INSTALL_DIR/node_modules/.bin/lobu"
+if [ ! -x "$LOBU_BIN" ]; then
+  fail "npm install did not produce an executable lobu bin at $LOBU_BIN"
+  echo "RESULT: published-artifact smoke FAILED (install)"; exit 1
+fi
+pass "installed, bin present"
+
+RESOLVED="$("$LOBU_BIN" --version 2>&1 | tr -d '[:space:]')"
+if [ -n "$RESOLVED" ]; then pass "lobu --version -> $RESOLVED"; else fail "lobu --version produced nothing"; fi
+
+# The worker bundle is the artifact that actually has to load under node.
+WORKER_BUNDLE="$INSTALL_DIR/node_modules/@lobu/worker/dist/index.bundle.mjs"
+if [ -f "$WORKER_BUNDLE" ]; then
+  pass "worker bundle present ($(wc -c < "$WORKER_BUNDLE" | tr -d ' ') bytes)"
+else
+  fail "no worker bundle at $WORKER_BUNDLE — the agent turn cannot work"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Deterministic provider, so a real turn needs no key.
+# ---------------------------------------------------------------------------
+note "start the mock provider on :$MOCK_PORT"
+MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" \
+  node "$HARNESS/mock-openai.mjs" > "$WORK/mock.log" 2>&1 &
+MOCK_PID=$!
+for _ in $(seq 1 20); do
+  curl -sf --max-time 2 "http://127.0.0.1:$MOCK_PORT/v1/models" >/dev/null 2>&1 && break
+  sleep 1
+done
+if curl -sf --max-time 2 "http://127.0.0.1:$MOCK_PORT/v1/models" >/dev/null 2>&1; then
+  pass "mock provider answering"
+else
+  fail "mock provider never came up"; echo "RESULT: FAILED (mock)"; exit 1
+fi
+
+PROVIDERS="$WORK/providers.json"
+node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const port=process.argv[2];for(const g of j.providers||[])for(const s of g.providers||[])if(s.upstreamBaseUrl)s.upstreamBaseUrl=s.upstreamBaseUrl.replace(/:\d+/,":"+port);fs.writeFileSync(process.argv[3],JSON.stringify(j,null,2))' \
+  "$HARNESS/providers.json" "$MOCK_PORT" "$PROVIDERS"
+export LOBU_PROVIDER_REGISTRY_PATH="$PROVIDERS"
+
+# ---------------------------------------------------------------------------
+# 3. The quickstart: init -> validate -> run.
+# ---------------------------------------------------------------------------
+note "lobu init (the landing page's own first step)"
+PROJ="$WORK/proj"; mkdir -p "$PROJ"
+( cd "$PROJ" && "$LOBU_BIN" init . -y --here --provider gemini ) > "$WORK/init.log" 2>&1
+if grep -qi "Lobu initialized" "$WORK/init.log"; then pass "lobu init"; else fail "lobu init"; tail -20 "$WORK/init.log" >&2; fi
+
+# `network.allowed` is LOAD-BEARING, not decoration, and the key name matters.
+#
+# The worker's bash bootstrap only builds the egress transport when the agent
+# has a non-empty allow-list:
+#
+#   const egressFetch = allowedDomains.length > 0
+#     ? buildEgressFetch(NetworkAccessDeniedError) : undefined;
+#
+# and `buildEgressFetch` is what spawns the egress worker thread — the code
+# that carried the `__filename` crash. An agent with no allow-list never
+# reaches it.
+#
+# Use `allowed`, NOT `allowedDomains`. The CLI's public `NetworkConfig`
+# (cli/src/config/define.ts) is `{ allowed, denied }`; `allowedDomains` is the
+# internal core name, and a config carrying it is accepted and then silently
+# dropped — `lobu agent config get` comes back `networkConfig: {}`. Both
+# earlier drafts of this gate did exactly that and went GREEN against a 14.7.1
+# that is provably broken. A gate that cannot fail is worse than no gate.
+cat > "$PROJ/lobu.config.ts" <<'TS'
+import { defineAgent, defineConfig, secret } from "@lobu/cli/config";
+
+const echo = defineAgent({
+  id: "echo", name: "Echo", dir: "./agents/echo",
+  providers: [{ id: "mock", model: "mock-model", key: secret("MOCK_API_KEY") }],
+  network: { allowed: ["127.0.0.1", "localhost"] },
+});
+
+export default defineConfig({ agents: [echo] });
+TS
+
+# WORKER_ALLOWED_DOMAINS is what `lobu init` writes for a real user, and it is
+# what makes the gateway hand the worker an HTTP_PROXY — which is what makes
+# `buildEgressFetch` spawn the egress worker eagerly. Without it the turn never
+# touches the code path that carried the __filename crash.
+{
+  printf '\n'
+  echo "MOCK_API_KEY=mock-key-artifact-smoke"
+  echo "WORKER_ALLOWED_DOMAINS=127.0.0.1,localhost"
+  echo "LOBU_DISABLE_SYSTEMD_RUN=1"
+} >> "$PROJ/.env"
+
+( cd "$PROJ" && "$LOBU_BIN" validate ) > "$WORK/validate.log" 2>&1
+if grep -qi "is valid" "$WORK/validate.log"; then pass "lobu validate"; else fail "lobu validate"; tail -20 "$WORK/validate.log" >&2; fi
+
+note "lobu run (embedded Postgres + pgvector on THIS glibc, as THIS uid)"
+RUN_LOG="$WORK/run.log"
+( cd "$PROJ" && "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
+for _ in $(seq 1 180); do
+  grep -qiE "Apply complete|auto-apply skipped|Apply halted" "$RUN_LOG" 2>/dev/null && break
+  sleep 1
+done
+if grep -qi "Apply complete" "$RUN_LOG"; then
+  pass "lobu run booted + auto-applied"
+else
+  fail "lobu run never came up"
+  # Name the two failures this gate exists to catch, so the log reads itself.
+  if grep -qi "GLIBC_" "$RUN_LOG"; then
+    echo "         ^ pgvector prebuilt needs a newer glibc than this base has" >&2
+  fi
+  if grep -qi "running this script as root" "$RUN_LOG"; then
+    echo "         ^ embedded-postgres refused to run as root (createPostgresUser)" >&2
+  fi
+  tail -40 "$RUN_LOG" >&2
+  echo ""
+  echo "  smoke summary: $PASSES passed, $FAILS failed"
+  echo "RESULT: published-artifact smoke FAILED (boot)"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 4. THE point of this gate: one real agent turn, under node, from the tarball.
+#    This is the assertion cli-smoke structurally cannot make.
+# ---------------------------------------------------------------------------
+note "a real agent turn (the __filename / worker-packaging assertion)"
+( cd "$PROJ" && "$LOBU_BIN" whoami -c local ) > /dev/null 2>&1
+CHAT_OUT="$WORK/chat.log"
+( cd "$PROJ" && timeout 120 "$LOBU_BIN" chat "say the safe word" -c local ) > "$CHAT_OUT" 2>&1
+CHAT_RC=$?
+
+if grep -qF "$MOCK_REPLY" "$CHAT_OUT"; then
+  pass "lobu chat returned the model's reply ($MOCK_REPLY)"
+else
+  fail "lobu chat did not return the model's reply (exit=$CHAT_RC)"
+  if grep -qiE "__filename|__dirname|is not defined" "$CHAT_OUT" "$RUN_LOG" 2>/dev/null; then
+    echo "         ^ a CJS global leaked into the ESM worker bundle; node has no such" >&2
+    echo "           binding (bun does, which is why in-repo checks stay green)" >&2
+  fi
+  tail -30 "$CHAT_OUT" >&2
+fi
+
+# A crash inside the worker can still exit 0 at the CLI, so assert on the log
+# too — this is how the __filename break looked to a user: a "successful"
+# command with a dead worker behind it.
+if grep -qiE "Worker crashed|ReferenceError|is not defined" "$RUN_LOG" 2>/dev/null; then
+  fail "the worker logged a crash during the turn"
+  grep -iE "Worker crashed|ReferenceError|is not defined" "$RUN_LOG" | head -5 >&2
+else
+  pass "no worker crash in the run log"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. MCP surface. The memory MCP server is in-process, so it exercises the
+#    published server bundle's tool registration and JSON-RPC plumbing — a
+#    different packaging path from the worker bundle above, and the one every
+#    MCP client (Claude, ChatGPT, the SDK) actually talks to.
+# ---------------------------------------------------------------------------
+note "MCP (memory server + admin tool dispatch) from the installed artifact"
+
+MCP_OUT="$WORK/mcp.log"
+
+( cd "$PROJ" && timeout 60 "$LOBU_BIN" memory health -c local ) > "$MCP_OUT" 2>&1
+if grep -qF "ok: true" "$MCP_OUT"; then
+  pass "lobu memory health (MCP server reachable)"
+else
+  fail "lobu memory health did not report ok"; tail -15 "$MCP_OUT" >&2
+fi
+
+# Listing tools proves the server registered its tool schemas, not merely that
+# the process is up — an empty registry still answers a health check.
+( cd "$PROJ" && timeout 60 "$LOBU_BIN" memory run -c local ) > "$MCP_OUT" 2>&1
+if grep -qE "[0-9]+ tool\(s\)" "$MCP_OUT"; then
+  pass "lobu memory run (tools registered: $(grep -oE '[0-9]+ tool\(s\)' "$MCP_OUT" | head -1))"
+else
+  fail "lobu memory run listed no tools"; tail -15 "$MCP_OUT" >&2
+fi
+
+# A real tool INVOCATION, not just discovery — round-trips request and response
+# through the MCP transport.
+( cd "$PROJ" && timeout 60 "$LOBU_BIN" call manage_feeds -c local --arg "action=list_feeds" ) > "$MCP_OUT" 2>&1
+MCP_RC=$?
+if [ "$MCP_RC" -eq 0 ]; then
+  pass "lobu call manage_feeds list_feeds (MCP tool invocation)"
+else
+  fail "MCP tool invocation failed (exit=$MCP_RC)"; tail -15 "$MCP_OUT" >&2
+fi
+
+( cd "$PROJ" && timeout 60 "$LOBU_BIN" call --list -c local ) > "$MCP_OUT" 2>&1
+if grep -qE "tool\(s\)" "$MCP_OUT"; then
+  pass "lobu call --list (admin tool surface)"
+else
+  fail "lobu call --list exposed no tools"; tail -15 "$MCP_OUT" >&2
+fi
+
+echo ""
+echo "================================================================"
+echo "  smoke summary: $PASSES passed, $FAILS failed"
+echo "================================================================"
+if [ "$FAILS" -gt 0 ]; then
+  echo "RESULT: published-artifact smoke FAILED"; exit 1
+fi
+echo "RESULT: published-artifact smoke PASSED (@lobu/cli@$RESOLVED)"

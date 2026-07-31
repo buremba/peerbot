@@ -1,5 +1,5 @@
 /**
- * Two device manifests sharing a display name must both wire.
+ * A device connector whose slug is taken out from under it must still wire.
  *
  * `ensureDeviceConnectorWired` derives a connection slug from the manifest's
  * display NAME, and `connections_org_slug_unique` enforces uniqueness per ORG —
@@ -14,6 +14,14 @@
  * device-connector-manifests.test.ts, where a sibling intermittently failed to
  * install.
  *
+ * The regression guard FORCES that interleaving instead of hoping for it: an
+ * uncommitted transaction squats on the exact slug the wire is about to
+ * compute, and is committed only once the wire's INSERT is observed parked on
+ * the unique index. Two live sibling manifests would reproduce it only
+ * probabilistically — a 15-round loop still left roughly a 1-in-8 chance of
+ * every round missing the collision, i.e. of the pre-fix code passing its own
+ * regression test.
+ *
  * Driven through the real poll endpoint rather than a hand-built
  * `device_workers` row — capabilities are stored in a shape poll owns, and a
  * fixture that guesses it wrong reconciles nothing and passes for the wrong
@@ -21,17 +29,21 @@
  * green). A stubbed rejection would be worse: it would pass against any
  * wrapper and prove nothing about the path that actually fails.
  *
- * Asserts the OUTCOME (both wired, distinct slugs) rather than a log line,
+ * Asserts the OUTCOME (wired, with the suffixed slug) rather than a log line,
  * because the fix makes the failure stop happening rather than merely become
  * visible.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
+import { slugifyConnectionName } from '../../utils/connections';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { post } from '../setup/test-helpers';
 
 const SHARED_NAME = 'Colliding Device Connector';
+/** The slug the wire computes from `SHARED_NAME` when nothing has claimed it. */
+const BASE_SLUG = slugifyConnectionName(SHARED_NAME);
+const SQUATTER_KEY = 'apple.collide_squatter';
 
 function manifestFor(key: string, capability: string) {
   return {
@@ -65,7 +77,16 @@ function manifestFor(key: string, capability: string) {
   };
 }
 
-async function pollWithCollidingManifests() {
+/** A promise plus its resolver, for handing control between two live tasks. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+async function seedFleet() {
   const sql = getTestDb();
   const userId = `user_${generateSecureToken(4)}`;
   const orgId = `org-wirefail-${generateSecureToken(4)}`;
@@ -90,22 +111,50 @@ async function pollWithCollidingManifests() {
     INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
     VALUES (${userId}, ${workerId}, 'macos', '0.1.0', ${sql.json([])}, 'Colliding Mac', ${orgId})
   `;
+  return { userId, orgId, workerId };
+}
 
-  const res = await post('/api/workers/poll', {
+function pollManifests(workerId: string, manifests: Array<ReturnType<typeof manifestFor>>) {
+  return post('/api/workers/poll', {
     body: {
       worker_id: workerId,
       platform: 'macos',
       app_version: '9.9.0',
       label: 'Colliding Mac',
       capabilities: { screentime: true, photos: true },
-      connector_manifests: [
-        manifestFor('apple.collide_one', 'screentime'),
-        manifestFor('apple.collide_two', 'photos'),
-      ],
+      connector_manifests: manifests,
     },
   });
-  expect(res.status).toBe(200);
-  return { userId, orgId };
+}
+
+/**
+ * Resolve once a backend is parked on `blockerPid`'s uncommitted row while
+ * inserting into `connections` — i.e. once the slug collision has actually
+ * happened. Waiting on this condition rather than on a fixed delay is what
+ * makes the collision deterministic: releasing the squatter any earlier would
+ * let the wire see the committed row and suffix its slug on the first try,
+ * exercising nothing.
+ */
+async function waitForWireBlockedOn(blockerPid: number): Promise<void> {
+  const sql = getTestDb();
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const rows = (await sql`
+      SELECT count(*)::int AS blocked
+      FROM pg_stat_activity a
+      WHERE ${blockerPid}::int = ANY(pg_blocking_pids(a.pid))
+        AND a.query ILIKE '%INSERT INTO connections%'
+    `) as unknown as Array<{ blocked: number }>;
+    if ((rows[0]?.blocked ?? 0) > 0) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        'Timed out waiting for the device-connector wire to block on the squatted slug — ' +
+          'the wire no longer computes it from the manifest display name, so this test ' +
+          'is no longer forcing the collision it claims to force.'
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 describe('device connector slug race', () => {
@@ -113,35 +162,96 @@ describe('device connector slug race', () => {
     await cleanupTestDatabase();
   });
 
+  it('retries the wire when a concurrent insert takes the slug it computed', async () => {
+    const sql = getTestDb();
+    const { userId, orgId, workerId } = await seedFleet();
+
+    const squatterReady = deferred<number>();
+    const releaseSquatter = deferred<void>();
+
+    // Hold an UNCOMMITTED connection on the slug the wire is about to compute.
+    // `ensureUniqueConnectionSlug`'s SELECT cannot see it under READ COMMITTED,
+    // so the wire computes BASE_SLUG and its INSERT parks on the unique index
+    // until this transaction resolves — exactly the interleaving a sibling
+    // manifest produces in the field, minus the coin flip.
+    const squatter = sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO connections (
+          organization_id, connector_key, slug, display_name, status,
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility
+        ) VALUES (
+          ${orgId}, ${SQUATTER_KEY}, ${BASE_SLUG}, ${SHARED_NAME}, 'active',
+          NULL, NULL, NULL, ${userId}, 'private'
+        )
+      `;
+      const pidRows = (await tx`SELECT pg_backend_pid()::int AS pid`) as unknown as Array<{
+        pid: number;
+      }>;
+      squatterReady.resolve(pidRows[0].pid);
+      await releaseSquatter.promise;
+    });
+
+    let status: number;
+    try {
+      const squatterPid = await squatterReady.promise;
+      const polled = pollManifests(workerId, [manifestFor('apple.collide_one', 'screentime')]);
+      await waitForWireBlockedOn(squatterPid);
+      releaseSquatter.resolve();
+      // COMMIT: the parked INSERT wakes into the unique violation.
+      await squatter;
+      status = (await polled).status;
+    } finally {
+      // Never leave the squatter's transaction open if the wait above threw.
+      releaseSquatter.resolve();
+      await squatter.catch(() => {});
+    }
+    expect(status).toBe(200);
+
+    const conns = (await sql`
+      SELECT connector_key, slug FROM connections
+      WHERE organization_id = ${orgId} AND deleted_at IS NULL
+      ORDER BY connector_key
+    `) as unknown as Array<{ connector_key: string; slug: string }>;
+
+    // The connector must be wired. Pre-fix the unique violation escaped the
+    // wire and the row was simply absent — that absence is the whole defect,
+    // and it is what made an unrelated test flake ~1 run in 8.
+    expect(
+      conns.map((c) => c.connector_key),
+      'the wire lost the slug race and never retried'
+    ).toEqual(['apple.collide_one', SQUATTER_KEY]);
+
+    // And the retry must resolve the collision by suffixing against the now
+    // visible winner, not by betting on the same slug again.
+    expect(conns.find((c) => c.connector_key === 'apple.collide_one')?.slug).toBe(
+      `${BASE_SLUG}-2`
+    );
+  }, 60_000);
+
   it('wires both connectors when two manifests share a display name', async () => {
     const sql = getTestDb();
+    const { orgId, workerId } = await seedFleet();
 
-    // Repeated because the collision is probabilistic: the two wires must
-    // interleave between ensureUniqueConnectionSlug and the INSERT. Every round
-    // must succeed, so a round that happens not to collide is harmless — but
-    // across 15 rounds the race is overwhelmingly likely to fire at least once,
-    // and pre-fix it did so in roughly 1 run in 8.
-    for (let round = 0; round < 15; round++) {
-      const { orgId } = await pollWithCollidingManifests();
+    // The field scenario, end-to-end: two sibling manifests, one display name,
+    // both expected to land with distinct slugs. Whether the two wires actually
+    // interleave here is up to the scheduler, so this is a smoke check on the
+    // real shape of the bug — the forced-collision test above is the guard.
+    const res = await pollManifests(workerId, [
+      manifestFor('apple.collide_one', 'screentime'),
+      manifestFor('apple.collide_two', 'photos'),
+    ]);
+    expect(res.status).toBe(200);
 
-      const conns = (await sql`
-        SELECT connector_key, slug FROM connections
-        WHERE organization_id = ${orgId} AND deleted_at IS NULL
-        ORDER BY connector_key
-      `) as Array<{ connector_key: string; slug: string }>;
+    const conns = (await sql`
+      SELECT connector_key, slug FROM connections
+      WHERE organization_id = ${orgId} AND deleted_at IS NULL
+      ORDER BY connector_key
+    `) as unknown as Array<{ connector_key: string; slug: string }>;
 
-      // Both must be wired. Pre-fix the loser of the slug race was absent here
-      // — that absence is the whole defect, and it is what made an unrelated
-      // test flake ~1 run in 8.
-      expect(
-        conns.map((c) => c.connector_key),
-        `round ${round}: a connector failed to wire`
-      ).toEqual(['apple.collide_one', 'apple.collide_two']);
-
-      // And the retry must resolve the collision by suffixing, not by
-      // colliding again — two identical slugs would mean the unique index is
-      // not actually enforcing what this test assumes.
-      expect(new Set(conns.map((c) => c.slug)).size, `round ${round}: slugs collided`).toBe(2);
-    }
-  }, 180_000);
+    expect(conns.map((c) => c.connector_key), 'a connector failed to wire').toEqual([
+      'apple.collide_one',
+      'apple.collide_two',
+    ]);
+    expect(new Set(conns.map((c) => c.slug)).size, 'slugs collided').toBe(2);
+  }, 60_000);
 });

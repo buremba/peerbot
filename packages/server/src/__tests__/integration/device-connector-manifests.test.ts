@@ -438,6 +438,63 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
   });
 
+  /**
+   * `os.shell` is admitted for macOS, and — the part that actually bit — an
+   * unrecognised key does not merely drop itself. It sets
+   * `accepted = false` for the whole payload, and the caller then declines to
+   * replace the device's inventory at all, so every OTHER connector on that
+   * device disappears with it. That is deliberate (a malformed poll must not
+   * look like removal), which is exactly why the key allowlist must not lag
+   * behind the capability allowlist in @lobu/core.
+   *
+   * Asserted here with a synthetic manifest rather than relying on the
+   * real-Owletto-manifests test above: that one only covers `os.shell` for as
+   * long as owletto happens to ship `os_shell.json`.
+   */
+  it('admits os.shell on macOS and does not let one unknown key drop its siblings', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+
+    // Synthetic sibling on purpose. A real key like `apple.screen_time` also
+    // exists in the bundled device-connector catalog, which puts it on a
+    // different reconcile path and makes the result depend on catalog state
+    // rather than on the allowlist under test.
+    // Distinct display name is load-bearing, not cosmetic. `ensureDeviceConnectorWired`
+    // runs per key under Promise.allSettled with an advisory lock keyed on
+    // (userId, connectorKey), so two manifests sharing a name race
+    // ensureUniqueConnectionSlug: one connection INSERT loses on
+    // connections_org_slug_unique and allSettled swallows it, leaving the
+    // sibling's definition unwired. That is a test-only collision here, but see
+    // the note below — the race itself is not test-only.
+    //
+    // NOT test-only: two same-named device-manifest connectors wired in one
+    // reconcile pass can genuinely lose a connection INSERT in production. It
+    // self-heals on the next poll (slug suffixing), and today's real manifests
+    // all carry distinct names, so it is latent rather than live. Tracked
+    // separately — fixing the swallowed unique violation in
+    // ensureDeviceConnectorWired is a different concern from this allowlist.
+    const shell = manifest({
+      key: 'os.shell',
+      required_capability: 'os.shell',
+      name: 'OS Shell Probe',
+    });
+    const sibling = manifest();
+
+    const res = await poll(workerId, [shell, sibling], 'macos', {
+      'os.shell': true,
+      screentime: true,
+    });
+    expect(res.status).toBe(200);
+
+    // The sibling survives. This is the whole regression: pre-fix, `os.shell`
+    // was rejected by the key allowlist, which set accepted=false for the
+    // entire payload and left apple.screen_time uninstalled alongside it.
+    //
+    // Deliberately NOT asserting that os.shell's own definition materializes —
+    // it declares no feeds, and what reconcile does with a feedless device
+    // connector is a separate question this test has no business pinning.
+    expect(await readDefinition(orgId)).not.toBeNull();
+  });
+
   it('drops a manifest that still declares removed entityLinks rules', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const legacyManifest = manifest({
@@ -529,6 +586,7 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'apple.screen_time')).not.toBeNull();
     expect(await readDefinition(orgId, 'apple.computer_use')).not.toBeNull();
     expect(await readDefinition(orgId, 'local.directory')).not.toBeNull();
+    expect(await readDefinition(orgId, 'os.shell')).not.toBeNull();
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
 
     const whatsapp = await readDefinition(orgId, 'whatsapp.local');

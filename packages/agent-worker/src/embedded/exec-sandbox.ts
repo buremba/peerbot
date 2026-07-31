@@ -12,10 +12,14 @@
  *     data paths (~/.ssh, ~/.aws, /etc, /Users, keychains, etc.) and writes
  *     restricted to the workspace.
  *   - "bwrap" (Linux) — true deny-default via bind mounts; only the workspace
- *     and ro system paths are visible. Probed at startup with a real spawn
- *     because `--unshare-user` requires `kernel.unprivileged_userns_clone=1`.
+ *     and ro system paths are visible. Probed at startup with a real spawn,
+ *     because whether `--unshare-user` is permitted is a host policy question
+ *     with no single knob to read: the Debian `kernel.unprivileged_userns_clone`
+ *     sysctl does not exist on Ubuntu 24.04 (AppArmor governs it there), and a
+ *     container runtime can restrict `uid_map` regardless of either. Only an
+ *     actual spawn answers it.
  *   - "none" — no sandbox available; commands run with host privileges. A
- *     warning is logged once at probe time.
+ *     warning is logged once at probe time reporting what was observed.
  *
  * Override with LOBU_EXEC_SANDBOX={auto,bwrap,sandbox-exec,off}. Explicit
  * overrides fail closed: requesting `bwrap` on a host without bubblewrap is a
@@ -99,63 +103,22 @@ function envOverride(): SandboxKind | null {
  * present and would not help if it weren't.
  */
 type BwrapProbe =
-  | { isolated: true }
+  | { isolated: true; path: string }
   | { isolated: false; reason: "not_found" }
   | { isolated: false; reason: "unshare_denied"; detail: string };
 
 /**
- * Shared by the boolean predicate and the reporting probe so the two can never
- * answer about different flag sets — a drift that would make the diagnostic
- * describe a probe the selection path never ran.
- */
-const BWRAP_ISOLATION_PROBE_ARGS = [
-  "--unshare-user",
-  "--unshare-pid",
-  "--unshare-ipc",
-  "--unshare-uts",
-  "--unshare-net",
-  "--ro-bind",
-  "/usr",
-  "/usr",
-  "--ro-bind-try",
-  "/lib",
-  "/lib",
-  "--ro-bind-try",
-  "/lib64",
-  "/lib64",
-  "--ro-bind-try",
-  "/bin",
-  "/bin",
-  "--proc",
-  "/proc",
-  "--dev",
-  "/dev",
-  "--",
-  "/usr/bin/true",
-];
-
-/**
  * Run bwrap with the same unshare flags we use in production but against
- * `/bin/true`. If user namespaces aren't available (kernel disabled, seccomp
- * profile blocking `unshare(CLONE_NEWUSER)`), this fails — and we should
- * surface it rather than silently degrade to "no sandbox".
- */
-function bwrapDeliversIsolation(bwrapPath: string): boolean {
-  try {
-    execFileSync(bwrapPath, BWRAP_ISOLATION_PROBE_ARGS, {
-      stdio: "ignore",
-      timeout: 3000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Same probe, but keeps what it learned. `probeBwrap` is what the reporting
- * path uses; `bwrapDeliversIsolation` stays as the boolean predicate the
- * strategy selection already reads, so selection behaviour is untouched.
+ * `/bin/true`, and keep what was learned. If user namespaces aren't available
+ * (kernel disabled, seccomp profile blocking `unshare(CLONE_NEWUSER)`), this
+ * fails — and the reason is what every caller needs, because "not installed"
+ * and "installed but refused" call for opposite responses.
+ *
+ * This is the single probe: strategy selection, the explicit-override error and
+ * the no-sandbox warning all read it. An earlier split — a boolean predicate
+ * for selection plus a reporting probe alongside it — let the diagnostic
+ * describe a probe selection had never run. One function cannot drift from
+ * itself.
  */
 function probeBwrap(): BwrapProbe {
   const bwrapPath = which("bwrap");
@@ -163,11 +126,36 @@ function probeBwrap(): BwrapProbe {
     return { isolated: false, reason: "not_found" };
   }
   try {
-    execFileSync(bwrapPath, BWRAP_ISOLATION_PROBE_ARGS, {
-      stdio: "pipe",
-      timeout: 3000,
-    });
-    return { isolated: true };
+    execFileSync(
+      bwrapPath,
+      [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-net",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind-try",
+        "/lib",
+        "/lib",
+        "--ro-bind-try",
+        "/lib64",
+        "/lib64",
+        "--ro-bind-try",
+        "/bin",
+        "/bin",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--",
+        "/usr/bin/true",
+      ],
+      { stdio: "pipe", timeout: 3000 }
+    );
+    return { isolated: true, path: bwrapPath };
   } catch (err) {
     // The stderr of a refused unshare is the actionable part ("No permissions
     // to creating new namespace", "setting up uid map: Permission denied").
@@ -212,15 +200,11 @@ export function probeSandboxStrategy(): SandboxStrategy {
       );
     }
     if (override === "bwrap") {
-      const p = which("bwrap");
-      if (p && fs.existsSync(p) && bwrapDeliversIsolation(p)) {
-        return setCache(key, { kind: "bwrap", path: p });
+      const probe = probeBwrap();
+      if (probe.isolated) {
+        return setCache(key, { kind: "bwrap", path: probe.path });
       }
-      throw new Error(
-        `[exec-sandbox] LOBU_EXEC_SANDBOX=bwrap but bubblewrap is unavailable ` +
-          `or user namespaces are blocked. Install bubblewrap and ensure ` +
-          `kernel.unprivileged_userns_clone=1 (or seccomp profile permits unshare).`
-      );
+      throw new Error(formatBwrapOverrideError(probe));
     }
   }
 
@@ -232,16 +216,19 @@ export function probeSandboxStrategy(): SandboxStrategy {
     }
   }
 
+  // Probed once and reused for the warning below, so the message can never
+  // describe a different probe run than the one that decided the strategy.
+  let linuxBwrap: BwrapProbe | undefined;
   if (process.platform === "linux") {
-    const p = which("bwrap");
-    if (p && fs.existsSync(p) && bwrapDeliversIsolation(p)) {
-      return setCache(key, { kind: "bwrap", path: p });
+    linuxBwrap = probeBwrap();
+    if (linuxBwrap.isolated) {
+      return setCache(key, { kind: "bwrap", path: linuxBwrap.path });
     }
   }
 
   if (!warnedNoSandbox) {
     warnedNoSandbox = true;
-    console.warn(`[exec-sandbox] ${describeNoSandbox()}`);
+    console.warn(`[exec-sandbox] ${describeNoSandbox(linuxBwrap)}`);
   }
   return setCache(key, { kind: "none" });
 }
@@ -262,7 +249,7 @@ export function probeSandboxStrategy(): SandboxStrategy {
  * kernel's own refusal text when there is one. The remedy is only stated in the
  * case where a remedy exists.
  */
-export function describeNoSandbox(): string {
+export function describeNoSandbox(alreadyProbed?: BwrapProbe): string {
   if (process.platform === "darwin") {
     const p = which("sandbox-exec") ?? "/usr/bin/sandbox-exec";
     return formatNoSandboxReport(process.platform, {
@@ -272,7 +259,54 @@ export function describeNoSandbox(): string {
   if (process.platform !== "linux") {
     return formatNoSandboxReport(process.platform, {});
   }
-  return formatNoSandboxReport(process.platform, { bwrap: probeBwrap() });
+  // Callers that already probed pass their result in rather than spawning bwrap
+  // a second time — the probe costs a process spawn, and a second one could in
+  // principle disagree with the one that actually decided the strategy.
+  return formatNoSandboxReport(process.platform, {
+    bwrap: alreadyProbed ?? probeBwrap(),
+  });
+}
+
+/**
+ * Message for `LOBU_EXEC_SANDBOX=bwrap` on a host that cannot honour it. Fails
+ * closed exactly as before — only the wording changes.
+ *
+ * It previously prescribed "Install bubblewrap and ensure
+ * kernel.unprivileged_userns_clone=1" for *both* causes, the same defect this
+ * change fixes in the auto path's warning. An operator who set the override on
+ * the managed cluster was sent after a package that was already installed, and
+ * after a sysctl that does not exist on Ubuntu 24.04.
+ *
+ * Pure and exported for the same reason as `formatNoSandboxReport`: the branch
+ * that matters in production is a userns refusal, which is otherwise assertable
+ * only on a Linux host that also happens to block userns.
+ */
+export function formatBwrapOverrideError(
+  probe: Extract<BwrapProbe, { isolated: false }>
+): string {
+  return (
+    `[exec-sandbox] LOBU_EXEC_SANDBOX=bwrap was requested but cannot be ` +
+    `honoured. ${explainBwrapUnavailable(probe)}`
+  );
+}
+
+/**
+ * The reason-specific half of the diagnosis, shared by the no-sandbox warning
+ * and the explicit-override throw so the two can never disagree about the same
+ * host. Only `not_found` is allowed to recommend installing anything.
+ */
+function explainBwrapUnavailable(
+  probe: Extract<BwrapProbe, { isolated: false }>
+): string {
+  if (probe.reason === "not_found") {
+    return `bubblewrap (bwrap) was not found on PATH. Installing it enables the sandbox on hosts whose kernel permits unprivileged user namespaces.`;
+  }
+  return (
+    `bubblewrap is installed but could not create a user namespace: ${probe.detail}. ` +
+    `This is a host/runtime policy (unprivileged userns or uid_map restricted), not a missing package — ` +
+    `installing bubblewrap again will not change it. On the managed cluster this is the expected state and ` +
+    `contributed CLIs are refused by design; see charts/lobu/values.yaml.`
+  );
 }
 
 /**
@@ -311,15 +345,7 @@ export function formatNoSandboxReport(
     // print a confident story about a state that shouldn't exist.
     return `${head} Inconsistent probe: bubblewrap reported working isolation on re-probe but was not selected. Please report this — it indicates a bug in strategy selection, not a host misconfiguration.`;
   }
-  if (probe.reason === "not_found") {
-    return `${head} bubblewrap (bwrap) was not found on PATH. Installing it enables the sandbox on hosts whose kernel permits unprivileged user namespaces.`;
-  }
-  return (
-    `${head} bubblewrap is installed but could not create a user namespace: ${probe.detail}. ` +
-    `This is a host/runtime policy (unprivileged userns or uid_map restricted), not a missing package — ` +
-    `installing bubblewrap again will not change it. On the managed cluster this is the expected state and ` +
-    `contributed CLIs are refused by design; see charts/lobu/values.yaml.`
-  );
+  return `${head} ${explainBwrapUnavailable(probe)}`;
 }
 
 /** For tests: forget the cached strategy + warning state. */

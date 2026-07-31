@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import {
   type SandboxStrategy,
   describeNoSandbox,
+  formatBwrapOverrideError,
   formatNoSandboxReport,
   probeSandboxStrategy,
   resetSandboxProbeForTests,
@@ -61,10 +62,18 @@ describe("probeSandboxStrategy", () => {
     }
   });
 
+  // Host-conditional on purpose, and deliberately narrow: what needs the real
+  // code path here is that an unhonourable override THROWS rather than quietly
+  // degrading to kind:"none". The wording is asserted by the
+  // `formatBwrapOverrideError` tests, which run on every host — leaving message
+  // assertions here would make the production branch (a Linux userns refusal)
+  // untestable anywhere but a Linux box that also blocks userns.
   test("explicit override fails closed when backend unavailable", () => {
     if (process.platform !== "darwin") return;
     process.env.LOBU_EXEC_SANDBOX = "bwrap";
-    expect(() => probeSandboxStrategy()).toThrow(/bubblewrap is unavailable/);
+    expect(() => probeSandboxStrategy()).toThrow(
+      /LOBU_EXEC_SANDBOX=bwrap was requested but cannot be honoured/
+    );
   });
 
   test("cache invalidates when override env changes", () => {
@@ -360,7 +369,7 @@ const linuxBwrapWorks = (() => {
   });
   if (!bwrapPath) return false;
   try {
-    // Mirror `bwrapDeliversIsolation` in exec-sandbox.ts. /lib64 must be
+    // Mirror `probeBwrap` in exec-sandbox.ts. /lib64 must be
     // bound because /usr/bin/true's ELF interpreter is /lib64/ld-linux-*.so.
     execFileSync(
       bwrapPath,
@@ -638,5 +647,49 @@ describe("describeNoSandbox / formatNoSandboxReport", () => {
   test("an unsupported platform says so instead of naming a backend", () => {
     const other = formatNoSandboxReport("win32", {});
     expect(other).toContain("No sandbox backend is implemented");
+  });
+});
+
+/**
+ * The explicit-override throw is the SECOND site that carried the same wrong
+ * prescription, and it is the one an operator hits deliberately — they set
+ * LOBU_EXEC_SANDBOX=bwrap precisely because they want to know why the sandbox
+ * is not active. Sending them after an already-installed package there is worse
+ * than in the passive warning, not better.
+ *
+ * Both sites now route through `explainBwrapUnavailable`, so these assertions
+ * are what stops the two diagnoses drifting apart again.
+ */
+describe("formatBwrapOverrideError", () => {
+  test("still fails closed and names the override that was requested", () => {
+    const msg = formatBwrapOverrideError({
+      isolated: false,
+      reason: "not_found",
+    });
+    expect(msg).toContain("LOBU_EXEC_SANDBOX=bwrap");
+    expect(msg).toContain("cannot be honoured");
+  });
+
+  test("a userns refusal does not tell the operator to install anything", () => {
+    const msg = formatBwrapOverrideError({
+      isolated: false,
+      reason: "unshare_denied",
+      detail: "bwrap: setting up uid map: Permission denied",
+    });
+    expect(msg).toContain("setting up uid map: Permission denied");
+    expect(msg).toContain("not a missing package");
+    expect(msg).not.toContain("Installing it enables");
+    // The old text pointed at a sysctl that does not even exist on Ubuntu
+    // 24.04, where AppArmor governs userns instead.
+    expect(msg).not.toContain("unprivileged_userns_clone=1");
+  });
+
+  test("a missing bubblewrap is still allowed to say install it", () => {
+    const msg = formatBwrapOverrideError({
+      isolated: false,
+      reason: "not_found",
+    });
+    expect(msg).toContain("not found on PATH");
+    expect(msg).toContain("Installing it enables");
   });
 });

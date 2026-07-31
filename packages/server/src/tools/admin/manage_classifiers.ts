@@ -546,18 +546,6 @@ async function handleClassify(
 }
 
 /**
- * Run a classifier's embedding match over caller-supplied content ids.
- *
- * This is the agent-facing entry to the same engine the reconciliation cron
- * uses; the cron only ever reaches it in `entity` mode, so org-scoped feeds
- * (events with no entity link) had no way to be classified at all.
- *
- * Every id that does not produce a classification is reported with a reason.
- * The engine filters on `fe.embedding IS NOT NULL`, so an unembedded event is
- * dropped by a WHERE clause — reporting the count is what keeps that from
- * looking like a successful no-op.
- */
-/**
  * Why an id the caller asked for produced no classification. These are the
  * engine's own target-selection conjuncts, in the order it applies them.
  */
@@ -570,6 +558,18 @@ const SKIP_REASON_TEXT: Record<SkipReason, string> = {
   below_threshold: 'below min_similarity',
 };
 
+/**
+ * Run a classifier's embedding match over caller-supplied content ids.
+ *
+ * This is the agent-facing entry to the same engine the reconciliation cron
+ * uses; the cron only ever reaches it in `entity` mode, so org-scoped feeds
+ * (events with no entity link) had no way to be classified at all.
+ *
+ * Every id that does not produce a classification is reported with a reason.
+ * The engine filters on `fe.embedding IS NOT NULL`, so an unembedded event is
+ * dropped by a WHERE clause — reporting the count is what keeps that from
+ * looking like a successful no-op.
+ */
 async function runApply(
   args: ManageClassifiersArgs,
   ctx: ToolContext

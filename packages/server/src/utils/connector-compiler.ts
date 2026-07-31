@@ -52,6 +52,23 @@ export interface ConnectorMetadata {
   supportsExecute?: boolean;
 }
 
+/**
+ * Emitted when a compiled file exports no ConnectorRuntime class.
+ *
+ * This is the "it isn't a connector" signal, not a malfunction: the catalog
+ * scan compiles every `.ts` in the connectors directory, and that directory
+ * legitimately also holds support modules (identity modules, egress guards,
+ * behavior-event definitions) which were never meant to be connectors.
+ *
+ * It is a shared constant rather than two copies of a sentence because the
+ * throw happens inside CONNECTOR_RUNNER_CODE — a subprocess — and comes back
+ * over `process.send({ error: error.message })`. A string is the only channel
+ * available, so the two sides are pinned to one exported literal instead of
+ * matching prose that a later reword would silently desynchronise.
+ */
+export const NO_CONNECTOR_RUNTIME_ERROR =
+  "No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.";
+
 const CONNECTOR_RUNNER_CODE = `
 import { pathToFileURL } from 'node:url';
 
@@ -86,9 +103,7 @@ async function main() {
     }
 
     if (!RuntimeClass) {
-      throw new Error(
-        'No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.'
-      );
+      throw new Error(${JSON.stringify(NO_CONNECTOR_RUNTIME_ERROR)});
     }
 
     const instance = new RuntimeClass();

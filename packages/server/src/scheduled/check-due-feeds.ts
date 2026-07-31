@@ -64,8 +64,9 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
       logger.info(`[CheckDueFeeds] Found ${feeds.length} due feeds`);
     },
     createRun: async (feed) => {
-      const runId = await createSyncRun(feed.id, env, sql);
-      if (runId === null) return 'skipped';
+      const created = await createSyncRun(feed.id, env, sql);
+      if (!created.ok) return 'skipped';
+      const runId = created.runId;
       logger.debug(
         `[CheckDueFeeds] Created run ${runId} for feed ${feed.id} (${feed.connector_key}/${feed.feed_key})`
       );

@@ -42,7 +42,7 @@ import {
 } from '../tools/admin/helpers/connection-helpers';
 import { registerConnectorWebhook } from './webhook-registration';
 import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scopes';
-import { createSyncRun } from '../runs/queue-service';
+import { createSyncRun, describeSyncRunSkip } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
 import {
@@ -331,11 +331,11 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
   });
 
   const feedId = Number(feed.id);
-  const runId = await createSyncRun(feedId, c.env as unknown as Env);
-
-  if (!runId) {
-    return c.json({ error: 'Failed to create validation run (may already be in progress)' }, 409);
+  const created = await createSyncRun(feedId, c.env as unknown as Env);
+  if (!created.ok) {
+    return c.json({ error: describeSyncRunSkip(created.reason) }, 409);
   }
+  const runId = created.runId;
 
   logger.info(
     { connection_id: tokenRow.connection_id, run_id: runId, feed_id: feedId },

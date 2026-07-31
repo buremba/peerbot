@@ -319,6 +319,16 @@ jobs:
       # Sparkle helpers" step after archive re-signs each helper leaf-first
       # with --options runtime + --timestamp, then re-signs the umbrella
       # Owletto.app so the new helper signatures are sealed into the parent.
+      #
+      # CURRENT_PROJECT_VERSION must be overridden alongside MARKETING_VERSION.
+      # Info.plist maps CFBundleVersion to $(CURRENT_PROJECT_VERSION), whose
+      # pbxproj value is the placeholder `1`, while the appcast publisher below
+      # passes `--build "$VERSION"` into <sparkle:version>. Sparkle compares
+      # <sparkle:version> against the INSTALLED app's CFBundleVersion, so
+      # shipping `1` made every release look permanently newer than itself:
+      # installed apps re-downloaded and re-staged the same DMG on every check
+      # forever (observed on a Mac holding both 14.5.0 and 14.8.0 staged).
+      # MARKETING_VERSION alone only fixes the human-readable string.
       - name: Archive (signed)
         if: steps.mode.outputs.signed == 'true'
         env:
@@ -335,6 +345,7 @@ jobs:
             "DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }}"
             ENABLE_HARDENED_RUNTIME=YES
             "MARKETING_VERSION=${{ steps.v.outputs.version }}"
+            "CURRENT_PROJECT_VERSION=${{ steps.v.outputs.version }}"
           )
           if [ "${{ steps.profile.outputs.installed }}" = "true" ]; then
             ARGS+=("PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME")
@@ -390,7 +401,8 @@ jobs:
             -project packages/owletto/apps/mac/Owletto.xcodeproj -scheme Owletto -configuration Release \
             -archivePath "$RUNNER_TEMP/Owletto.xcarchive" archive \
             CODE_SIGNING_ALLOWED=NO \
-            MARKETING_VERSION="${{ steps.v.outputs.version }}"
+            MARKETING_VERSION="${{ steps.v.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.v.outputs.version }}"
           # arm64 apps must carry at least an ad-hoc signature to launch at all;
           # this also lets users do right-click → Open past "unidentified
           # developer". A real Developer ID + notarization removes that prompt.

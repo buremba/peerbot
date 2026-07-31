@@ -92,6 +92,10 @@ export function tsTimeOrNull(value: unknown): number | undefined {
  * Parse a value that may be a JS array or a PostgreSQL array literal
  * (`{a,b,"c d"}`) into a string array. Quoted elements are unquoted and
  * `\"` / `\\` escapes are resolved.
+ *
+ * The separator is only a separator OUTSIDE quotes: PostgreSQL quotes any
+ * element containing a comma, so `{"https://x/cb?tags=a,b"}` is ONE element.
+ * Splitting on every comma would shred it into two invalid ones.
  */
 export function parsePgTextArray(
   raw: string | string[] | null | undefined
@@ -101,13 +105,36 @@ export function parsePgTextArray(
   const inner =
     raw.startsWith('{') && raw.endsWith('}') ? raw.slice(1, -1) : raw;
   if (inner === '') return [];
-  return inner.split(',').map((v) => {
-    const trimmed = v.trim();
-    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-      return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  const out: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let quoted = false;
+  let escaped = false;
+  for (const ch of inner) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
     }
-    return trimmed;
-  });
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      if (inQuotes) quoted = true;
+      continue;
+    }
+    if (ch === ',' && !inQuotes) {
+      out.push(quoted ? current : current.trim());
+      current = '';
+      quoted = false;
+      continue;
+    }
+    current += ch;
+  }
+  out.push(quoted ? current : current.trim());
+  return out;
 }
 
 /**

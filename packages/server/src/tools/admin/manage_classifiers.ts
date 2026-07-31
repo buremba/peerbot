@@ -595,9 +595,16 @@ async function runApply(
 
   // Partition the request BEFORE classifying so each skip has a real reason
   // rather than being inferred from a missing result.
-  // `has_embedding` has to match the engine's representative-vector join
-  // (chunk 0 AND the configured model), or an event whose only chunk-0 vector is
-  // from a stale model reads as embedded and gets the wrong skip reason.
+  //
+  // Every clause here mirrors the engine's target selection, because the whole
+  // value of this action is that a skip reason is TRUE. Three ways it can drift,
+  // each of which silently reports the wrong reason:
+  //   - relation: the engine reads `current_event_records`, so a superseded
+  //     event is invisible to it. Reading `events` here would call that event
+  //     reachable and then blame `below_threshold`.
+  //   - chunk/model: the engine joins the representative vector (chunk 0 AND the
+  //     configured model), so a stale-model vector is not an embedding to it.
+  //   - organization: the engine is org-scoped, as is this.
   const reachable = (await sql`
     SELECT e.id,
            EXISTS (
@@ -606,7 +613,7 @@ async function runApply(
                AND emb.chunk_index = 0
                AND emb.embedding_model = ${getConfiguredEmbeddingModel()}
            ) AS has_embedding
-    FROM events e
+    FROM current_event_records e
     WHERE e.organization_id = ${ctx.organizationId}
       AND e.id = ANY(${pgBigintArray(requestedIds)}::bigint[])
   `) as unknown as Array<{ id: number; has_embedding: boolean }>;

@@ -54,6 +54,8 @@ interface SeedRunOpts {
 	/** Defaults to 'auto' (worker-claimable). Set 'pending' for a human-approval run. */
 	approvalStatus?: "auto" | "pending" | "approved" | "rejected" | "expired";
 	createdAtAgoDays?: number;
+	/** runs.dry_run — the connector executes for real, the server persists nothing. */
+	dryRun?: boolean;
 }
 
 async function seedRun(opts: SeedRunOpts): Promise<number> {
@@ -74,10 +76,10 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 	const rows = (await sql.unsafe(
 		`INSERT INTO runs (
        organization_id, run_type, feed_id, status, approval_status,
-       claimed_at, last_heartbeat_at, claimed_by, created_at
+       claimed_at, last_heartbeat_at, claimed_by, created_at, dry_run
      ) VALUES (
        $1, $2, $3, $4, $5,
-       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}
+       ${claimInterval}, ${hbInterval}, 'test-worker', ${createdAt}, $6
      )
      RETURNING id`,
 		[
@@ -86,6 +88,7 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
 			opts.feedId ?? null,
 			opts.status,
 			opts.approvalStatus ?? "auto",
+			opts.dryRun ?? false,
 		],
 	)) as unknown as Array<{ id: number | string }>;
 	return Number(rows[0].id);
@@ -607,5 +610,92 @@ describe("reapStaleRuns — atomic timeout + retry (lobu#862)", () => {
 		const byStatus = Object.fromEntries(counts.map((r) => [r.status, r.n]));
 		expect(byStatus.pending).toBe(3);
 		expect(byStatus.timeout).toBe(3);
+	});
+});
+
+/**
+ * A dry run (`runs.dry_run`) executes the connector for real but the server
+ * persists nothing. The reaper is the one path that can undo that AFTER the
+ * run was created: it re-queues a stale sync as a fresh run, and that INSERT
+ * does not carry `dry_run`. Without a guard, a dry run that lost its worker
+ * would come back as a REAL sync and persist everything the operator asked to
+ * only preview — silently, on a timer, with no one watching.
+ *
+ * The never-claimed path is the same class of bug in the other direction: it
+ * stamps the FEED failed, increments consecutive_failures, backs off
+ * next_run_at and can auto-pause. Those record the outcome of real syncs; a
+ * dry run must not degrade the real schedule.
+ *
+ * The non-dry controls for both live above ("a stale never-claimed sync is
+ * finalized without an immediate retry" and "a stale sync run gets timed out
+ * AND a retry queued in one statement") — without them these tests would pass
+ * against a reaper that had stopped working entirely.
+ */
+describe("reapStaleRuns — dry runs are reaped but never resurrected", () => {
+	test("a stale claimed dry sync is timed out and NOT retried as a real sync", async () => {
+		const feedId = 7171;
+		await seedFeed(feedId);
+		const dryId = await seedRun({
+			status: "running",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			runType: "sync",
+			feedId,
+			dryRun: true,
+		});
+
+		const result = await reapStaleRuns();
+
+		// Reaped — a dry run still has to be finalized, it is real working state.
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(dryId)).toBe("timeout");
+		// But never re-queued. This is THE assertion: a retry here would be a
+		// persisting sync the operator never asked for.
+		expect(result.retriesCreated).toBe(0);
+
+		const sql = getDb();
+		const requeued = (await sql`
+      SELECT id, dry_run FROM runs
+      WHERE feed_id = ${feedId} AND run_type = 'sync' AND status = 'pending'
+    `) as unknown as Array<{ id: number | string; dry_run: boolean }>;
+		expect(requeued).toHaveLength(0);
+	});
+
+	test("a stale never-claimed dry sync stamps no feed failure state", async () => {
+		const feedId = 7272;
+		await seedFeed(feedId);
+		const sql = getDb();
+		await sql`
+      UPDATE feeds
+      SET last_sync_status = 'success',
+          next_run_at = current_timestamp + INTERVAL '1 hour'
+      WHERE id = ${feedId}
+    `;
+		const [before] = (await sql`
+      SELECT last_sync_status, last_error, consecutive_failures, next_run_at, status
+      FROM feeds WHERE id = ${feedId}
+    `) as unknown as Array<Record<string, unknown>>;
+
+		const dryId = await seedRun({
+			status: "pending",
+			lastHeartbeatAgoSeconds: null,
+			runType: "sync",
+			feedId,
+			createdAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+			dryRun: true,
+		});
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(dryId)).toBe("timeout");
+
+		// Feed row is byte-identical: no 'failed' stamp, no failure increment,
+		// no backoff of next_run_at, no auto-pause.
+		const [after] = (await sql`
+      SELECT last_sync_status, last_error, consecutive_failures, next_run_at, status
+      FROM feeds WHERE id = ${feedId}
+    `) as unknown as Array<Record<string, unknown>>;
+		expect(after).toEqual(before);
 	});
 });

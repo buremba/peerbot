@@ -153,7 +153,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           FROM stale_candidates c
           WHERE r.id = c.id
           RETURNING r.id, r.run_type, r.feed_id, r.connection_id, r.connector_key,
-                    r.connector_version, r.organization_id, c.stale_status
+                    r.connector_version, r.organization_id, r.dry_run, c.stale_status
         ),
         retries AS (
           INSERT INTO public.runs (
@@ -167,6 +167,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           WHERE t.run_type = 'sync'
             AND t.stale_status IN ('claimed', 'running')
             AND t.feed_id IS NOT NULL
+            -- Never retry a dry run. This INSERT does not carry the dry_run
+            -- flag, so a retried dry run would come back as a REAL sync that
+            -- persists everything the operator asked to only preview. A dry
+            -- run is also an interactive one-shot — reaping it as 'timeout'
+            -- and letting the operator re-trigger is the correct outcome.
+            AND NOT t.dry_run
             AND NOT EXISTS (
               -- Look for an unrelated active sync run on the same feed.
               -- Exclude timed_out.id because in PostgreSQL the sibling
@@ -214,6 +220,10 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           FROM timed_out t
           WHERE t.run_type = 'sync'
             AND t.stale_status = 'pending'
+            -- A never-claimed dry run must not stamp the feed failed, back off
+            -- next_run_at, or auto-pause — those record the outcome of REAL
+            -- syncs, which a dry run leaves untouched (see runs.dry_run).
+            AND NOT t.dry_run
             AND t.feed_id = f.id
           RETURNING f.id, f.consecutive_failures, f.status
         )
@@ -223,7 +233,12 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           (SELECT count(*)::int FROM timed_out
             WHERE run_type = 'sync'
               AND stale_status IN ('claimed', 'running')
-              AND feed_id IS NOT NULL) AS sync_eligible,
+              AND feed_id IS NOT NULL
+              -- Same NOT dry_run predicate as the retries CTE. A dry run is
+              -- never eligible for retry, so counting it here would inflate
+              -- skippedRetries below and attribute the skip to "another
+              -- active sync run exists", which would be false.
+              AND NOT dry_run) AS sync_eligible,
           (SELECT coalesce(
              json_agg(json_build_object(
                'id', id,

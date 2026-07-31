@@ -429,7 +429,8 @@ async function handleReadFeed(
   }
 
   const runs = await sql`
-    SELECT id, status, items_collected, error_message, created_at, completed_at, checkpoint, connector_version
+    SELECT id, status, items_collected, error_message, created_at, completed_at, checkpoint, connector_version,
+           dry_run, dry_run_preview
     FROM runs
     WHERE feed_id = ${args.feed_id} AND run_type = 'sync'
     ORDER BY created_at DESC
@@ -937,10 +938,20 @@ async function handleTriggerFeed(
     return { error: `Feed is ${feed.status}, must be active to trigger sync` };
   }
 
-  const runId = await createSyncRun(args.feed_id, env);
+  const dryRun = args.dry_run === true;
+  const runId = await createSyncRun(args.feed_id, env, undefined, { dryRun });
   if (runId === null) {
     return { action: 'trigger_feed', message: 'Sync already pending or running for this feed' };
   }
 
-  return { action: 'trigger_feed', triggered: true, run_id: runId, feed_id: args.feed_id };
+  // `dry_run` is echoed only when true, and only because it was honoured. A
+  // caller cannot otherwise distinguish "ran dry" from "flag silently dropped
+  // and everything persisted", which is the one outcome that would matter.
+  return {
+    action: 'trigger_feed',
+    triggered: true,
+    run_id: runId,
+    feed_id: args.feed_id,
+    ...(dryRun ? { dry_run: true } : {}),
+  };
 }

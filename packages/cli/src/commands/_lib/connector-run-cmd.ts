@@ -12,7 +12,10 @@
  *
  * Scope (v1): browser_session profiles only. OAuth / env / interactive
  * profiles need credentials the CLI doesn't have; they require gateway-side
- * execution (a separate trigger_feed dry_run path, not yet wired).
+ * execution — `manage_feeds` action `trigger_feed` with `dry_run: true`, which
+ * runs the connector for real on the server and persists nothing (runs.dry_run).
+ * Note this command needs no dry_run flag of its own: it ALREADY persists
+ * nothing, because it never reaches the server's ingest path at all.
  *
  * Execution uses SubprocessExecutor (the same one the worker daemon uses),
  * not an in-process executor — bugs in connector code don't take the CLI
@@ -234,7 +237,7 @@ export async function connectorRun(
   // live on the server and can't be safely materialized in the CLI process.
   if (profile.profile_kind !== "browser_session") {
     throw new Error(
-      `Profile kind '${profile.profile_kind}' is not supported by \`lobu connector run\` (v1 supports only browser_session). Use the server-side trigger_feed path for OAuth/env-based profiles.`
+      `Profile kind '${profile.profile_kind}' is not supported by \`lobu connector run\` (v1 supports only browser_session) — its credentials are durable and never leave the gateway. To test this connector without persisting anything, run it server-side: manage_feeds action 'trigger_feed' with dry_run: true. The connector executes for real; no events, entities, attachments or checkpoint advance are written.`
     );
   }
 

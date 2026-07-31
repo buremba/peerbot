@@ -188,6 +188,13 @@ export const TriggerFeedAction = Type.Object({
     description: "Trigger an immediate sync run for a collected feed.",
   }),
   feed_id: Type.Number({ description: "Feed ID to trigger sync for" }),
+  dry_run: Type.Optional(
+    Type.Boolean({
+      description:
+        "Execute the connector for real but persist nothing in Lobu — no events, no entities, no attachments, and the feed's checkpoint and sync state do not move. The run executes asynchronously; once it completes, a capped preview of what would have been ingested is on the run's dry_run_preview, visible via read_feed's recent_runs. Use this to test a connector whose credentials are OAuth or API-key based; those never leave the gateway, so the sync can only run server-side. Two limits worth knowing: it does not undo side effects the connector causes UPSTREAM (marking a message read, etc.), and it occupies the feed's single active-sync slot while it runs, so a scheduled sync landing mid-run is skipped until the next tick.",
+      default: false,
+    })
+  ),
 });
 
 // ============================================
@@ -288,6 +295,10 @@ export const ManageFeedsResultSchema = Type.Union([
     triggered: Type.Literal(true),
     run_id: Type.Integer(),
     feed_id: Type.Integer(),
+    // Present and true only for a dry run. Echoed back so a caller that passed
+    // `dry_run` can confirm the run really was created dry — silently ignoring
+    // the flag and persisting anyway is the one failure mode that matters here.
+    dry_run: Type.Optional(Type.Boolean()),
   }),
   Type.Object({
     action: Type.Literal("trigger_feed"),

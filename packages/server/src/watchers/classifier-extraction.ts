@@ -437,7 +437,12 @@ export async function createClassifiersForWatcher(
 	classifierDefs: ClassifierDefinition[],
 	options: {
 		createdBy: string;
-		organizationId?: string | null;
+		// Required, not `string | null`. It is part of the ON CONFLICT key below,
+		// and `classify_facet.organization_id` is NOT NULL — so the old
+		// `organizationId ?? null` could only ever produce a 23502, never a
+		// tenant-less classifier. The sole caller (manage_behaviors/crud.ts)
+		// already passes `ctx.organizationId` unconditionally.
+		organizationId: string;
 	},
 ): Promise<number[]> {
 	const classifierIds: number[] = [];
@@ -475,7 +480,7 @@ export async function createClassifiersForWatcher(
         ${entityId},
         ${entityIdsLiteral}::bigint[],
         ${watcherId},
-        ${options.organizationId ?? null},
+        ${options.organizationId},
         ${def.slug},
         'active',
         ${options.createdBy},
@@ -483,9 +488,17 @@ export async function createClassifiersForWatcher(
         0.7,
         ${sql.json(extractionConfig as any)}
       )
-      ON CONFLICT (entity_id, watcher_id, slug) DO UPDATE
+      -- Must match classify_facet_unique_per_insight exactly, organization_id
+      -- included: Postgres resolves an ON CONFLICT column list to a specific
+      -- unique index, so the old 3-column target stops resolving and this INSERT
+      -- would fail outright once the constraint is org-scoped.
+      --
+      -- The dropped \`organization_id = COALESCE(classify_facet.organization_id,
+      -- EXCLUDED.organization_id)\` was unreachable: the column is NOT NULL, so
+      -- the left arm never yielded NULL, and it is now a key column anyway —
+      -- a conflicting row necessarily already holds this exact value.
+      ON CONFLICT (organization_id, entity_id, watcher_id, slug) DO UPDATE
       SET name = EXCLUDED.name,
-          organization_id = COALESCE(classify_facet.organization_id, EXCLUDED.organization_id),
           updated_at = NOW()
       RETURNING id
     `;

@@ -75,9 +75,9 @@ describe('manage_classifiers apply — skip reasons', () => {
     };
     // Seeded in the CALLER's org only. The other org deliberately has no
     // classifier: its event must be excluded by the org filter, not by failing
-    // to find a template. (It could not have one anyway — `classify_facet`'s
-    // unique constraint is (entity_id, watcher_id, slug) with no organization_id,
-    // so a global slug is first-come-first-served across all tenants.)
+    // to find a template. (Slugs are org-scoped, so the other org COULD hold
+    // its own 'apply-reasons' — leaving it out keeps the exclusion attributable
+    // to the org filter alone.)
     const sql = getTestDb();
     await sql`
       INSERT INTO classify_facet (

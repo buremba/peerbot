@@ -1074,3 +1074,47 @@ jobs:
 
       - name: CLI runtime self-check (host)
         run: node packages/cli/bin/lobu.js connector runtime-self-check --json
+
+  # The prebuilt pgvector libraries are committed binaries, so nothing in the
+  # normal build/test path ever looks at them — `make build-packages` copies the
+  # file, it does not link against it. That blind spot shipped a `vector.so`
+  # requiring GLIBC_2.38, which made `lobu run` unable to boot embedded Postgres
+  # on Debian 12 (including `node:22-slim`), Ubuntu 22.04 LTS, RHEL 9 and AL2023.
+  #
+  # #2376 fixed the BUILDER (it now pins debian:bullseye). This job is the
+  # separate half: it asserts the artifacts ACTUALLY IN THE TREE clear the floor,
+  # so a future rebuild on a newer base can't silently reintroduce it. Cheap
+  # enough (seconds, no deps) that it runs unfiltered.
+  pgvector-glibc-floor:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # Static half: read the dynamic-symbol version table. Covers BOTH arches
+      # (arm64 included, which we cannot execute here without QEMU) and names the
+      # offending symbol when it fails.
+      - name: Assert glibc floor on committed prebuilts
+        run: |
+          set -euo pipefail
+          for arch in linux-x64 linux-arm64; do
+            packages/pgvector-embedded/scripts/assert-glibc-floor.sh \
+              "packages/pgvector-embedded/prebuilt/${arch}"
+          done
+
+      # Dynamic half: the symbol table says what the library ASKS for; this says
+      # whether an old-glibc system can actually satisfy it. debian:bullseye is
+      # the floor itself (glibc 2.31), so a resolvable link here means every
+      # distro at or above it can load the library. `ldd` on an unsatisfiable
+      # object prints "version `GLIBC_2.xx' not found" and still exits 0, so the
+      # grep — not the exit code — is the assertion.
+      - name: Resolve the x64 prebuilt on the oldest supported glibc
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye \
+            ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
+          echo "$out"
+          if echo "$out" | grep -qi "not found"; then
+            echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)."
+            exit 1
+          fi

@@ -44,7 +44,16 @@ export interface FeedsNamespace {
 		timezone?: string | null;
 	}): Promise<unknown>;
 	delete(input: { feed_id: number }): Promise<unknown>;
-	trigger(input: { feed_id: number }): Promise<unknown>;
+	trigger(input: {
+		feed_id: number;
+		/**
+		 * Run the connector for real but persist nothing — no events, entities or
+		 * attachments, and the feed's checkpoint and sync state stay put. Once the
+		 * run completes, a capped preview of what would have been ingested is on
+		 * its `dry_run_preview`, readable via `feeds.get`.
+		 */
+		dry_run?: boolean;
+	}): Promise<unknown>;
 }
 
 export function buildFeedsNamespace(

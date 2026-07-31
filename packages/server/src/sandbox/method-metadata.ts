@@ -873,9 +873,13 @@ export default async (_ctx, client) => {
 		example: "await client.feeds.delete({ feed_id: 42 });",
 	},
 	"feeds.trigger": {
-		summary: "Trigger an immediate sync for a feed (external side-effect).",
+		summary:
+			"Trigger an immediate sync for a feed (external side-effect). Pass dry_run: true to execute the connector for real but persist nothing — no events, entities or attachments, and the feed's checkpoint and sync state do not move; the run executes asynchronously, and once it completes a capped preview of what would have been ingested is on its dry_run_preview, readable via feeds.get. Use it to test a feed's config or credentials without writing to the workspace. Two limits: it cannot undo side effects the connector causes UPSTREAM (marking a message read, etc.), and it occupies the feed's single active-sync slot while it runs.",
 		access: "external",
-		example: "await client.feeds.trigger({ feed_id: 42 });",
+		signature:
+			"feeds.trigger(input: { feed_id: number; dry_run?: boolean }): Promise<unknown>",
+		example:
+			"await client.feeds.trigger({ feed_id: 42 });\n// Validate without writing anything; read the preview via feeds.get once the run completes:\nawait client.feeds.trigger({ feed_id: 42, dry_run: true });",
 	},
 
 	// authProfiles

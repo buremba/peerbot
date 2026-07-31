@@ -1075,6 +1075,57 @@ jobs:
       - name: CLI runtime self-check (host)
         run: node packages/cli/bin/lobu.js connector runtime-self-check --json
 
+  # Measurement, not a gate. `probeSandboxStrategy()` returns "none" on the
+  # managed cluster because bubblewrap cannot create a user namespace there
+  # (uid_map is runtime-restricted — charts/lobu/values.yaml records the
+  # measurement), so contributed CLIs exit 127 by design. bwrap is not the only
+  # possible backend, and this job answers the open question "is systemd-run
+  # --user even available to us?" with a fact instead of an assumption.
+  #
+  # Deliberately `continue-on-error`: nothing depends on the answer yet, and a
+  # runner without a user session must not redden main. Read the summary, do
+  # not gate on it. No checkout: the probe only inspects the runner itself.
+  exec-sandbox-backend-probe:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Report available exec-sandbox backends
+        run: |
+          echo "### exec-sandbox backend probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if command -v bwrap >/dev/null 2>&1; then
+            if bwrap --unshare-user --unshare-pid --ro-bind /usr /usr \
+                 --proc /proc --dev /dev -- /usr/bin/true >/tmp/bwrap.err 2>&1; then
+              echo "- bwrap: **isolation works**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- bwrap: present but refused — \`$(head -c 200 /tmp/bwrap.err)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- bwrap: not installed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # The actual open question. --user needs a systemd user session; a
+          # container without one fails here, which is itself the answer.
+          if command -v systemd-run >/dev/null 2>&1; then
+            if systemd-run --user --scope --quiet /bin/true >/tmp/sdr.err 2>&1; then
+              echo "- systemd-run --user: **works** (viable alternative backend)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- systemd-run --user: present but failed — \`$(head -c 200 /tmp/sdr.err)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- systemd-run: not installed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Both knobs: unprivileged_userns_clone is the Debian patch (absent on
+          # Ubuntu 24.04), apparmor_restrict_unprivileged_userns is what actually
+          # governs userns on this runner's distro.
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "kernel.unprivileged_userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
   # The prebuilt pgvector libraries are committed binaries, so nothing in the
   # normal build/test path ever looks at them — `make build-packages` copies the
   # file, it does not link against it. That blind spot shipped a `vector.so`

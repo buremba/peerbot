@@ -88,6 +88,53 @@ function envOverride(): SandboxKind | null {
 }
 
 /**
+ * What the bwrap isolation probe observed. The reason is kept rather than
+ * collapsed to a boolean because "bubblewrap is not installed" and "bubblewrap
+ * is installed but the kernel/seccomp policy refuses unshare(CLONE_NEWUSER)"
+ * call for opposite responses, and only the first is fixable by installing
+ * anything. On the managed cluster it is always the second — see
+ * charts/lobu/values.yaml, which records that no securityContext change can
+ * enable it because uid_map is runtime-restricted — so telling an operator to
+ * "install bubblewrap" there sends them after a package that is already
+ * present and would not help if it weren't.
+ */
+type BwrapProbe =
+  | { isolated: true }
+  | { isolated: false; reason: "not_found" }
+  | { isolated: false; reason: "unshare_denied"; detail: string };
+
+/**
+ * Shared by the boolean predicate and the reporting probe so the two can never
+ * answer about different flag sets — a drift that would make the diagnostic
+ * describe a probe the selection path never ran.
+ */
+const BWRAP_ISOLATION_PROBE_ARGS = [
+  "--unshare-user",
+  "--unshare-pid",
+  "--unshare-ipc",
+  "--unshare-uts",
+  "--unshare-net",
+  "--ro-bind",
+  "/usr",
+  "/usr",
+  "--ro-bind-try",
+  "/lib",
+  "/lib",
+  "--ro-bind-try",
+  "/lib64",
+  "/lib64",
+  "--ro-bind-try",
+  "/bin",
+  "/bin",
+  "--proc",
+  "/proc",
+  "--dev",
+  "/dev",
+  "--",
+  "/usr/bin/true",
+];
+
+/**
  * Run bwrap with the same unshare flags we use in production but against
  * `/bin/true`. If user namespaces aren't available (kernel disabled, seccomp
  * profile blocking `unshare(CLONE_NEWUSER)`), this fails — and we should
@@ -95,38 +142,46 @@ function envOverride(): SandboxKind | null {
  */
 function bwrapDeliversIsolation(bwrapPath: string): boolean {
   try {
-    execFileSync(
-      bwrapPath,
-      [
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-net",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--ro-bind-try",
-        "/lib",
-        "/lib",
-        "--ro-bind-try",
-        "/lib64",
-        "/lib64",
-        "--ro-bind-try",
-        "/bin",
-        "/bin",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--",
-        "/usr/bin/true",
-      ],
-      { stdio: "ignore", timeout: 3000 }
-    );
+    execFileSync(bwrapPath, BWRAP_ISOLATION_PROBE_ARGS, {
+      stdio: "ignore",
+      timeout: 3000,
+    });
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Same probe, but keeps what it learned. `probeBwrap` is what the reporting
+ * path uses; `bwrapDeliversIsolation` stays as the boolean predicate the
+ * strategy selection already reads, so selection behaviour is untouched.
+ */
+function probeBwrap(): BwrapProbe {
+  const bwrapPath = which("bwrap");
+  if (!bwrapPath || !fs.existsSync(bwrapPath)) {
+    return { isolated: false, reason: "not_found" };
+  }
+  try {
+    execFileSync(bwrapPath, BWRAP_ISOLATION_PROBE_ARGS, {
+      stdio: "pipe",
+      timeout: 3000,
+    });
+    return { isolated: true };
+  } catch (err) {
+    // The stderr of a refused unshare is the actionable part ("No permissions
+    // to creating new namespace", "setting up uid map: Permission denied").
+    // Swallowing it is what left operators with a bare exit 127 and a warning
+    // that named the wrong cause.
+    const e = err as { stderr?: Buffer | string; message?: string };
+    const stderr =
+      typeof e.stderr === "string" ? e.stderr : (e.stderr?.toString() ?? "");
+    const detail = (stderr.trim() || e.message || "unknown error")
+      .split("\n")
+      .slice(0, 2)
+      .join(" ")
+      .slice(0, 300);
+    return { isolated: false, reason: "unshare_denied", detail };
   }
 }
 
@@ -186,13 +241,85 @@ export function probeSandboxStrategy(): SandboxStrategy {
 
   if (!warnedNoSandbox) {
     warnedNoSandbox = true;
-    console.warn(
-      `[exec-sandbox] No sandbox available on platform=${process.platform}. ` +
-        `Spawned binaries will run with host privileges. ` +
-        `Install bubblewrap (Linux) or check sandbox-exec (macOS).`
-    );
+    console.warn(`[exec-sandbox] ${describeNoSandbox()}`);
   }
   return setCache(key, { kind: "none" });
+}
+
+/**
+ * Describe what the probe actually observed, rather than prescribing a remedy.
+ *
+ * The previous message said "Install bubblewrap (Linux) or check sandbox-exec
+ * (macOS)" for every no-sandbox outcome. On the managed cluster that is wrong
+ * twice: bubblewrap may already be installed, and installing it cannot help,
+ * because the refusal is the runtime's uid_map restriction rather than a
+ * missing package (charts/lobu/values.yaml records the measurement). An
+ * operator who follows that advice loses time and still ends up with
+ * contributed CLIs exiting 127 — which is the intended, documented behaviour
+ * for that environment, not a fault to chase.
+ *
+ * So: report the platform, what was looked for, what was found, and the
+ * kernel's own refusal text when there is one. The remedy is only stated in the
+ * case where a remedy exists.
+ */
+export function describeNoSandbox(): string {
+  if (process.platform === "darwin") {
+    const p = which("sandbox-exec") ?? "/usr/bin/sandbox-exec";
+    return formatNoSandboxReport(process.platform, {
+      sandboxExec: { path: p, present: fs.existsSync(p) },
+    });
+  }
+  if (process.platform !== "linux") {
+    return formatNoSandboxReport(process.platform, {});
+  }
+  return formatNoSandboxReport(process.platform, { bwrap: probeBwrap() });
+}
+
+/**
+ * Pure formatter: given observed facts, produce the report. Separated from the
+ * gathering so every branch is reachable in a test on any host — otherwise the
+ * Linux userns wording (the case that actually matters in production) could
+ * only ever be asserted on a Linux CI box that also happens to block userns,
+ * and would silently go uncovered everywhere else.
+ */
+export function formatNoSandboxReport(
+  platform: string,
+  observed: {
+    sandboxExec?: { path: string; present: boolean };
+    bwrap?: BwrapProbe;
+  }
+): string {
+  const head = `No sandbox available on platform=${platform}; spawned binaries run with host privileges.`;
+
+  if (observed.sandboxExec !== undefined) {
+    const { path: execPath, present } = observed.sandboxExec;
+    if (present) {
+      // Reaching here means selection and reporting disagree; say so rather
+      // than misreport a binary that exists as missing.
+      return `${head} Inconsistent probe: sandbox-exec exists at ${execPath} but was not selected. Please report this — it indicates a bug in strategy selection, not a host misconfiguration.`;
+    }
+    return `${head} Probed sandbox-exec at ${execPath}: not present. Expected on stock macOS — a trimmed or non-standard image is the usual cause.`;
+  }
+
+  const probe = observed.bwrap;
+  if (!probe) {
+    return `${head} No sandbox backend is implemented for this platform (bwrap is Linux-only, sandbox-exec macOS-only).`;
+  }
+
+  if (probe.isolated) {
+    // Reaching here means selection and reporting disagree; say so rather than
+    // print a confident story about a state that shouldn't exist.
+    return `${head} Inconsistent probe: bubblewrap reported working isolation on re-probe but was not selected. Please report this — it indicates a bug in strategy selection, not a host misconfiguration.`;
+  }
+  if (probe.reason === "not_found") {
+    return `${head} bubblewrap (bwrap) was not found on PATH. Installing it enables the sandbox on hosts whose kernel permits unprivileged user namespaces.`;
+  }
+  return (
+    `${head} bubblewrap is installed but could not create a user namespace: ${probe.detail}. ` +
+    `This is a host/runtime policy (unprivileged userns or uid_map restricted), not a missing package — ` +
+    `installing bubblewrap again will not change it. On the managed cluster this is the expected state and ` +
+    `contributed CLIs are refused by design; see charts/lobu/values.yaml.`
+  );
 }
 
 /** For tests: forget the cached strategy + warning state. */

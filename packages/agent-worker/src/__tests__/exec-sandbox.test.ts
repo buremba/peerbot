@@ -6,6 +6,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   type SandboxStrategy,
+  describeNoSandbox,
+  formatNoSandboxReport,
   probeSandboxStrategy,
   resetSandboxProbeForTests,
   wrapInvocation,
@@ -569,5 +571,72 @@ describeBwrap("bwrap escape matrix", () => {
     if (r.ok) {
       expect(r.stdout.trim()).not.toBe("0");
     }
+  });
+});
+
+/**
+ * The diagnostic is the whole point of this surface on hosts that cannot
+ * sandbox: contributed CLIs exit 127 by design there, and the only thing
+ * standing between an operator and a wasted afternoon is whether the log names
+ * the real cause. The old message prescribed "Install bubblewrap" for every
+ * no-sandbox outcome, which on the managed cluster is wrong twice over —
+ * bubblewrap may already be present, and the refusal is a uid_map runtime
+ * restriction no package can fix.
+ *
+ * These pin the distinction that matters: a MISSING bubblewrap is the one case
+ * where installing something helps and is the only case allowed to say so.
+ */
+describe("describeNoSandbox / formatNoSandboxReport", () => {
+  test("the live call names the platform and the loss of isolation", () => {
+    const msg = describeNoSandbox();
+    expect(msg).toContain(`platform=${process.platform}`);
+    expect(msg).toContain("host privileges");
+  });
+
+  test("a MISSING bubblewrap is the only case that recommends installing it", () => {
+    const missing = formatNoSandboxReport("linux", {
+      bwrap: { isolated: false, reason: "not_found" },
+    });
+    expect(missing).toContain("was not found on PATH");
+    expect(missing).toContain("Installing it enables");
+  });
+
+  test("a userns refusal is reported as host policy, never as a missing package", () => {
+    const denied = formatNoSandboxReport("linux", {
+      bwrap: {
+        isolated: false,
+        reason: "unshare_denied",
+        detail: "bwrap: setting up uid map: Permission denied",
+      },
+    });
+    // The kernel's own words survive to the operator — that is the whole point.
+    expect(denied).toContain("setting up uid map: Permission denied");
+    expect(denied).toContain("not a missing package");
+    expect(denied).toContain("charts/lobu/values.yaml");
+    // And it must NOT tell them to install anything: on the managed cluster
+    // that advice costs an afternoon and changes nothing.
+    expect(denied).not.toContain("Installing it enables");
+  });
+
+  test("macOS reports the probed path rather than Linux advice", () => {
+    const mac = formatNoSandboxReport("darwin", {
+      sandboxExec: { path: "/usr/bin/sandbox-exec", present: false },
+    });
+    expect(mac).toContain("/usr/bin/sandbox-exec");
+    expect(mac).toContain("not present");
+    expect(mac).not.toContain("bubblewrap");
+  });
+
+  test("a present sandbox-exec is never misreported as missing", () => {
+    const mac = formatNoSandboxReport("darwin", {
+      sandboxExec: { path: "/usr/bin/sandbox-exec", present: true },
+    });
+    expect(mac).toContain("Inconsistent probe");
+    expect(mac).not.toContain("not present");
+  });
+
+  test("an unsupported platform says so instead of naming a backend", () => {
+    const other = formatNoSandboxReport("win32", {});
+    expect(other).toContain("No sandbox backend is implemented");
   });
 });

@@ -48,7 +48,7 @@ import { recordChangeEvent } from '../../utils/insert-event';
 import { recordToolConfigChange } from './helpers/config-audit';
 import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
-import { createSyncRun } from '../../runs/queue-service';
+import { createSyncRun, describeSyncRunSkip } from '../../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
@@ -939,10 +939,11 @@ async function handleTriggerFeed(
   }
 
   const dryRun = args.dry_run === true;
-  const runId = await createSyncRun(args.feed_id, env, undefined, { dryRun });
-  if (runId === null) {
-    return { action: 'trigger_feed', message: 'Sync already pending or running for this feed' };
+  const created = await createSyncRun(args.feed_id, env, undefined, { dryRun });
+  if (!created.ok) {
+    return { action: 'trigger_feed', message: describeSyncRunSkip(created.reason) };
   }
+  const runId = created.runId;
 
   // `dry_run` is echoed only when true, and only because it was honoured. A
   // caller cannot otherwise distinguish "ran dry" from "flag silently dropped

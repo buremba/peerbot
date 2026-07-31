@@ -244,15 +244,51 @@ async function resolveActiveConnectorVersion(
 }
 
 /**
- * Create a pending sync run for a feed (within an existing client/tx). Returns
- * the run ID, or null if skipped — a duplicate active sync run, or an
- * unresolvable orphan feed that was soft-deleted (see softDeleteOrphanFeed).
+ * Why no sync run was queued. The reasons differ in remedy — `already_active`
+ * resolves itself when the current run finishes, while the others never will
+ * (the two connector reasons also retire the feed) — so callers that surface
+ * a skip to a human must render the specific reason, not a catch-all.
+ */
+export type SyncRunSkipReason =
+  | 'already_active'
+  | 'feed_not_found'
+  | 'cloud_restricted'
+  | 'connector_uninstalled'
+  | 'connector_version_unrunnable';
+
+export type CreateSyncRunResult =
+  | { ok: true; runId: number }
+  | { ok: false; reason: SyncRunSkipReason };
+
+/** Operator-facing sentence per cause. Kept beside the reasons so a new reason
+ *  cannot be added without deciding what a human should be told. */
+export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
+  switch (reason) {
+    case 'already_active':
+      return 'Sync already pending or running for this feed';
+    case 'feed_not_found':
+      return 'Feed not found';
+    case 'cloud_restricted':
+      return 'This connector cannot run on Lobu Cloud yet, so no sync was queued';
+    case 'connector_uninstalled':
+      return 'The connector is no longer installed in this workspace; the feed has been retired';
+    case 'connector_version_unrunnable':
+      return 'The connector version has no runnable code; the feed has been retired';
+  }
+}
+
+/**
+ * Create a pending sync run for a feed (within an existing client/tx). Skips
+ * with a `SyncRunSkipReason` instead of queueing when a run is already active,
+ * the feed is missing or cloud-restricted, or the connector resolves to
+ * nothing runnable — the connector cases also soft-delete the feed (see
+ * softDeleteOrphanFeed).
  */
 async function createSyncRunWithClient(
   sql: DbClient,
   feedId: number,
   dryRun = false
-): Promise<number | null> {
+): Promise<CreateSyncRunResult> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`
     SELECT id FROM runs
@@ -266,7 +302,7 @@ async function createSyncRunWithClient(
     logger.info(
       `[queue] Skipping run creation for feed ${feedId} - already has pending/running run`
     );
-    return null;
+    return { ok: false, reason: 'already_active' };
   }
 
   // Get feed details (including pinned_version)
@@ -279,7 +315,7 @@ async function createSyncRunWithClient(
   `;
   if (feedRows.length === 0) {
     logger.warn(`[queue] Feed ${feedId} not found`);
-    return null;
+    return { ok: false, reason: 'feed_not_found' };
   }
   const feed = feedRows[0] as {
     organization_id: string;
@@ -301,7 +337,7 @@ async function createSyncRunWithClient(
       { feedId, connector_key: feed.connector_key },
       '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE'
     );
-    return null;
+    return { ok: false, reason: 'cloud_restricted' };
   }
 
   // Resolve connector version: pinned_version → connector_definitions.version,
@@ -324,7 +360,7 @@ async function createSyncRunWithClient(
         feed,
         'no active connector_definition for (connector_key, org).'
       );
-      return null;
+      return { ok: false, reason: 'connector_uninstalled' };
     }
     if (resolved.reason === 'no-version') {
       throw new Error(
@@ -342,7 +378,7 @@ async function createSyncRunWithClient(
       feed,
       `no compiled code and no bundled source for version '${resolved.version}'.`
     );
-    return null;
+    return { ok: false, reason: 'connector_version_unrunnable' };
   }
   const connectorVersion = resolved.version;
 
@@ -395,7 +431,7 @@ async function createSyncRunWithClient(
   logger.info(
     `[queue] Created sync run ${runId} for feed ${feedId} (${feed.connector_key}, version=${connectorVersion})`
   );
-  return runId;
+  return { ok: true, runId };
 }
 
 export async function createSyncRun(
@@ -406,7 +442,7 @@ export async function createSyncRun(
   // check-due-feeds, manage_feeds) keep persisting. Only an explicit opt-in is
   // dry — a flag that defaulted the other way would silently stop real syncs.
   opts?: { dryRun?: boolean }
-): Promise<number | null> {
+): Promise<CreateSyncRunResult> {
   const sql = db ?? getDb();
   const dryRun = opts?.dryRun === true;
 
@@ -421,7 +457,9 @@ export async function createSyncRun(
   } catch (error) {
     if (isUniqueViolation(error, 'idx_runs_active_sync_per_feed')) {
       logger.info(`[queue] Skipping run creation for feed ${feedId} - duplicate active sync run`);
-      return null;
+      // Lost the race against a concurrent trigger — indistinguishable, from
+      // here, from having found that run on the way in.
+      return { ok: false, reason: 'already_active' };
     }
     logger.error({ error }, `[queue] Failed to create sync run for feed ${feedId}`);
     throw error;

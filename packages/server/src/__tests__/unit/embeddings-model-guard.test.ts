@@ -4,15 +4,17 @@
  * service reports a different model, generateEmbeddings must FAIL LOUD rather
  * than returning vectors that would be compared across incompatible spaces.
  *
- * Also covers configuredEmbeddingModelSqlLiteral's validation (it is inlined
- * into SQL, so an unsafe value must be rejected).
+ * Also covers resolveEmbeddingModel's validation of the CONFIGURED model (it is
+ * inlined into SQL via embeddingModelSqlLiteral, so an unsafe value must be
+ * rejected).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
-  configuredEmbeddingModelSqlLiteral,
+  embeddingModelSqlLiteral,
   generateEmbeddings,
   getConfiguredEmbeddingModel,
+  resolveEmbeddingModel,
 } from '../../utils/embeddings';
 
 // biome-ignore lint/suspicious/noExplicitAny: minimal Env stub for the util
@@ -51,7 +53,7 @@ describe('server generateEmbeddings model guard (Finding #3)', () => {
   it('rejects a service model that differs from the configured model', async () => {
     stubFetch({ model: 'some-other-model-v2', dimensions: 768, embeddings: [vec768()] });
     await expect(generateEmbeddings(['hi'], ENV)).rejects.toThrow(
-      /returned model 'some-other-model-v2' but this deployment is configured/
+      /returned model 'some-other-model-v2' but 'Xenova\/bge-base-en-v1\.5' was requested/
     );
   });
 
@@ -69,14 +71,16 @@ describe('server generateEmbeddings model guard (Finding #3)', () => {
   });
 });
 
-describe('configuredEmbeddingModelSqlLiteral', () => {
-  it('quotes a valid model name', () => {
+describe('configured-model SQL literal', () => {
+  it('quotes a valid configured model name', () => {
     process.env.EMBEDDINGS_MODEL = 'Xenova/bge-base-en-v1.5';
-    expect(configuredEmbeddingModelSqlLiteral()).toBe("'Xenova/bge-base-en-v1.5'");
+    expect(embeddingModelSqlLiteral(getConfiguredEmbeddingModel())).toBe(
+      "'Xenova/bge-base-en-v1.5'"
+    );
   });
 
-  it('rejects an unsafe model identifier (SQL-injection / whitespace)', () => {
+  it('rejects an unsafe configured model (SQL-injection / whitespace)', () => {
     process.env.EMBEDDINGS_MODEL = "x'; DROP TABLE event_embeddings; --";
-    expect(() => configuredEmbeddingModelSqlLiteral()).toThrow(/not a valid model identifier/);
+    expect(() => resolveEmbeddingModel()).toThrow(/not a valid model identifier/);
   });
 });

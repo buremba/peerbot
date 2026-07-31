@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { searchContentByText } from '../../../utils/content-search';
 import type { Env } from '../../../index';
 import { insertEvent } from '../../../utils/insert-event';
-import { needsEmbeddingSql } from '../../../utils/embeddings';
+import { getConfiguredEmbeddingModel, needsEmbeddingSql } from '../../../utils/embeddings';
 import { completeEmbeddings } from '../../../worker-api';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -270,7 +270,7 @@ describe('embedding model swap E2E (Finding #3)', () => {
     // Flagged as needing embedding by the shared stale rule, so the backfill
     // produces a properly-stamped vector for it.
     const staleRows = (await sql.unsafe(
-      `SELECT e.id FROM events e WHERE e.id = ${Number(legacy.id)} AND ${needsEmbeddingSql('e')}`
+      `SELECT e.id FROM events e WHERE e.id = ${Number(legacy.id)} AND ${needsEmbeddingSql('e', getConfiguredEmbeddingModel())}`
     )) as Array<{ id: number }>;
     expect(staleRows.map((r) => Number(r.id))).toContain(legacy.id);
   });

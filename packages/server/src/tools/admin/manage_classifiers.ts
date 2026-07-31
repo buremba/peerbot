@@ -28,7 +28,7 @@ import type { Env } from '../../index';
 import { executeClassificationQuery } from '../../utils/classification-query';
 import {
   generateEmbeddings as generateEmbeddingsViaService,
-  getConfiguredEmbeddingModel,
+  resolveEmbeddingModel,
   isValidEmbedding,
 } from '../../utils/embeddings';
 import logger from '../../utils/logger';
@@ -72,7 +72,7 @@ async function hydrateAttributeEmbeddings(
     }
   >,
   env: Env,
-  options: { forceRegenerate?: boolean } = {}
+  options: { forceRegenerate?: boolean; embeddingModel?: string } = {}
 ): Promise<{
   attributeValues: Record<
     string,
@@ -85,7 +85,11 @@ async function hydrateAttributeEmbeddings(
   >;
   generatedCount: number;
 }> {
-  const configuredModel = getConfiguredEmbeddingModel();
+  // The model these label vectors will live in. Defaults to the deployment's
+  // configured model; an override embeds the labels into whichever space the
+  // caller intends to classify in, which is the only way label and event
+  // vectors can be made to agree under a non-default model.
+  const targetModel = resolveEmbeddingModel(options.embeddingModel);
   const updated: Record<
     string,
     {
@@ -112,7 +116,7 @@ async function hydrateAttributeEmbeddings(
     // survive to be read here: the backfill migration stamps all 208 of them at
     // deploy, deriving the value from event_embeddings.
     const isForeignModel =
-      config.embedding_model != null && config.embedding_model !== configuredModel;
+      config.embedding_model != null && config.embedding_model !== targetModel;
     const reusable = hasEmbedding && !isForeignModel;
     if (!reusable || options.forceRegenerate) {
       valuesToEmbed.push(value);
@@ -123,17 +127,17 @@ async function hydrateAttributeEmbeddings(
       // Vector and stamp move together — never carry a vector past its stamp,
       // and never leave a stamp describing a vector that is no longer there.
       embedding: reusable ? (config.embedding as number[]) : undefined,
-      embedding_model: reusable ? configuredModel : undefined,
+      embedding_model: reusable ? targetModel : undefined,
     };
   }
 
   if (valuesToEmbed.length > 0) {
-    const embeddings = await generateEmbeddingsViaService(valuesToEmbed, env);
+    const embeddings = await generateEmbeddingsViaService(valuesToEmbed, env, targetModel);
     valuesToEmbed.forEach((value, index) => {
       updated[value] = {
         ...updated[value],
         embedding: embeddings[index],
-        embedding_model: configuredModel,
+        embedding_model: targetModel,
       };
     });
   }
@@ -295,7 +299,8 @@ async function handleCreate(
   // then one insert carrying identity + config.
   const { attributeValues: withEmbeddings, generatedCount } = await hydrateAttributeEmbeddings(
     args.attribute_values,
-    env
+    env,
+    { embeddingModel: args.embedding_model }
   );
 
   const classifierResult = await sql`
@@ -428,7 +433,7 @@ async function handleGenerateEmbeddings(
   const { attributeValues: updatedValues, generatedCount } = await hydrateAttributeEmbeddings(
     attributeValues,
     env,
-    { forceRegenerate: args.force_regenerate }
+    { forceRegenerate: args.force_regenerate, embeddingModel: args.embedding_model }
   );
 
   // Config + embeddings live on the single classify_facet row now.
@@ -663,6 +668,12 @@ async function runApply(
   // Dedupe so the counts below describe distinct events, not request repeats.
   const requestedIds = [...new Set(args.content_ids)];
 
+  // Resolved once and used for BOTH the has_embedding probe and the engine
+  // call. If the probe checked one model and the engine another, an event
+  // would pass the probe and then be dropped by the engine's join — landing in
+  // `below_threshold`, which would be a lie about a row that was never scored.
+  const embeddingModel = resolveEmbeddingModel(args.embedding_model);
+
   // Mirrors the engine's classifier-template lookup exactly (org + active +
   // watcher_id IS NULL). Diverging here would report a watcher-owned classifier
   // as "found" and then blame its zero results on min_similarity.
@@ -700,7 +711,8 @@ async function runApply(
   //     opposite error: the event looks reachable and gets blamed on
   //     `below_threshold`.
   //   - chunk/model: the engine joins the representative vector (chunk 0 AND the
-  //     configured model), so a stale-model vector is not an embedding to it.
+  //     SAME model resolved above), so a stale-model vector is not an embedding
+  //     to it.
   //     Ignoring the model stamp reports `below_threshold` for a row that the
   //     engine never scored at all.
   //   - organization: the engine is org-scoped, as is this.
@@ -711,7 +723,7 @@ async function runApply(
              SELECT 1 FROM event_embeddings emb
              WHERE emb.event_id = e.id
                AND emb.chunk_index = 0
-               AND emb.embedding_model = ${getConfiguredEmbeddingModel()}
+               AND emb.embedding_model = ${embeddingModel}
            ) AS has_embedding
     FROM events e
     WHERE e.organization_id = ${ctx.organizationId}
@@ -730,6 +742,7 @@ async function runApply(
       organizationId: ctx.organizationId,
       content_ids: embeddedIds,
       enabledClassifiers: [args.classifier_slug],
+      embeddingModel,
     });
     classifiedIds = [...new Set(results.map((r) => Number(r.content_id)))];
   }

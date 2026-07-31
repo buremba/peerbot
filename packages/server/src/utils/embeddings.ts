@@ -31,39 +31,64 @@ export function getConfiguredEmbeddingModel(): string {
 }
 
 /**
- * SQL-safe string literal for the configured model, for inlining into a query
- * builder where threading another bound parameter would be error-prone. The
- * value is server config (not user input); we still validate it against the
- * service's model-name allowlist and reject otherwise — fail closed rather than
- * risk injection.
+ * Resolve the embedding model an operation should read/write, given an optional
+ * caller-supplied override. Falls back to the deployment's configured model, so
+ * every existing call site keeps its current behaviour by passing nothing.
+ *
+ * A non-default model is only meaningful where vectors under it actually exist
+ * — `event_embeddings` is keyed `(event_id, embedding_model, chunk_index)`, so
+ * two models coexist in storage, but a model with no rows reads as "nothing is
+ * embedded" rather than as an error. Callers that expose this to an agent should
+ * surface that emptiness (see `manage_classifiers`' `not_embedded` skip reason)
+ * instead of reporting a silent zero-result.
+ *
+ * Validated here rather than at each call site: the override reaches SQL as an
+ * inlined literal via `embeddingModelSqlLiteral`, and one unvalidated path is
+ * all it takes.
  */
-export function configuredEmbeddingModelSqlLiteral(): string {
-  const model = getConfiguredEmbeddingModel();
+export function resolveEmbeddingModel(requested?: string | null): string {
+  const model = requested?.trim() || getConfiguredEmbeddingModel();
   if (!MODEL_NAME_PATTERN.test(model)) {
     throw new Error(
-      `EMBEDDINGS_MODEL '${model}' is not a valid model identifier (allowed: ${MODEL_NAME_PATTERN}).`
+      `Embedding model '${model}' is not a valid model identifier (allowed: ${MODEL_NAME_PATTERN}).`
     );
   }
-  return `'${model}'`;
+  return model;
 }
 
 /**
- * SQL predicate: does the event aliased `eventAlias` need (re)embedding under the
- * configured model? True when it has no representative (chunk 0) vector for this
- * model — covering "never embedded", a stale model, and a NULL stamp. Centralized
- * so the backfill discovery and the worker fetch can never disagree on what
- * "stale" means. Correlates on `eventAlias`.
+ * SQL-safe string literal for an embedding model, for inlining into a query
+ * builder where threading another bound parameter would be error-prone. Always
+ * route the value through `resolveEmbeddingModel` first — this re-validates
+ * rather than trusting the caller, because an unvalidated model string inlined
+ * here is a straight injection.
+ */
+export function embeddingModelSqlLiteral(model: string): string {
+  return `'${resolveEmbeddingModel(model)}'`;
+}
+
+/**
+ * SQL predicate: does the event aliased `eventAlias` need (re)embedding under
+ * `model`? True when it has no representative (chunk 0) vector for that model —
+ * covering "never embedded", a stale model, and a NULL stamp. Centralized so the
+ * backfill discovery and the worker fetch can never disagree on what "stale"
+ * means. Correlates on `eventAlias`.
+ *
+ * The model is an explicit argument, not a global read: discovery and the worker
+ * fetch MUST agree on which space they are filling, and defaulting it here would
+ * let those two sites silently diverge the moment one of them is given an
+ * override and the other is not.
  *
  * Expand phase: chunking is not enabled yet (one row per event), so this is the
  * chunk-0 existence check only. The CONTRACT release adds the "long content but
  * no tail chunks" arm once the worker actually produces tail chunks — adding it
  * now would re-queue long events forever (they'd never get a chunk >= 1).
  */
-export function needsEmbeddingSql(eventAlias: string): string {
-  const model = configuredEmbeddingModelSqlLiteral();
+export function needsEmbeddingSql(eventAlias: string, model: string): string {
+  const literal = embeddingModelSqlLiteral(model);
   const e = eventAlias;
   return `NOT EXISTS (SELECT 1 FROM event_embeddings emb
-    WHERE emb.event_id = ${e}.id AND emb.embedding_model = ${model} AND emb.chunk_index = 0)`;
+    WHERE emb.event_id = ${e}.id AND emb.embedding_model = ${literal} AND emb.chunk_index = 0)`;
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -125,12 +150,19 @@ export async function validateEmbeddingsService(env: Env): Promise<void> {
  *
  * @param texts - Array of texts to embed
  * @param env - Environment with embeddings service configuration
+ * @param model - Model to embed under; defaults to the deployment's configured model
  * @returns Array of 768-dimensional embedding vectors
  */
-export async function generateEmbeddings(texts: string[], env: Env): Promise<number[][]> {
+export async function generateEmbeddings(
+  texts: string[],
+  env: Env,
+  model?: string | null
+): Promise<number[][]> {
   if (texts.length === 0) {
     return [];
   }
+
+  const requestedModel = resolveEmbeddingModel(model);
 
   const url = resolveEmbeddingServiceUrl(env);
   const parsedTimeout = Number.parseInt(env.EMBEDDINGS_TIMEOUT_MS || '', 10);
@@ -150,7 +182,7 @@ export async function generateEmbeddings(texts: string[], env: Env): Promise<num
     const response = await fetch(`${url}/api/embeddings`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ texts }),
+      body: JSON.stringify({ texts, model: requestedModel }),
       signal: controller.signal,
     });
 
@@ -190,13 +222,20 @@ export async function generateEmbeddings(texts: string[], env: Env): Promise<num
     // stored rows MUST come from the same model those rows are scoped to. If the
     // service reports a different model, fail loud rather than silently
     // comparing across incompatible vector spaces.
+    //
+    // Checked against the REQUESTED model, not the configured one. A caller
+    // asking for a non-default model is the case this guard most needs to cover:
+    // the local backend pins one model per process and ignores an unsupported
+    // request, so without this the caller would silently get default-model
+    // vectors back and stamp them as the requested model — poisoning the very
+    // table the model stamp exists to keep clean.
     if (payload.model) {
-      const configuredModel = getConfiguredEmbeddingModel();
-      if (payload.model !== configuredModel) {
+      if (payload.model !== requestedModel) {
         throw new Error(
-          `Embeddings service returned model '${payload.model}' but this deployment is ` +
-            `configured for '${configuredModel}'. Refusing to compare across incompatible ` +
-            `vector spaces — align EMBEDDINGS_MODEL on the server and the embeddings service.`
+          `Embeddings service returned model '${payload.model}' but '${requestedModel}' was ` +
+            `requested. Refusing to compare across incompatible vector spaces — align ` +
+            `EMBEDDINGS_MODEL on the server and the embeddings service, or use a service ` +
+            `that can serve the requested model.`
         );
       }
       logger.debug({ model: payload.model }, '[Embeddings] Service model');

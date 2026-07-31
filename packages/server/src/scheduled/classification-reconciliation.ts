@@ -55,6 +55,7 @@ async function getEnabledClassifiers(entityId: string | number): Promise<string[
 
 interface EntityRow {
   entity_id: number;
+  organization_id: string;
 }
 
 export async function runClassificationReconciliation(_env: Env): Promise<{
@@ -72,7 +73,7 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
     // purpose: the inline path covers them, and a query that walked
     // inheritance would defeat the GIN partial index on enabled_classifiers.
     const entities = await sql<EntityRow>`
-      SELECT DISTINCT ent.id AS entity_id
+      SELECT DISTINCT ent.id AS entity_id, ent.organization_id
       FROM entities ent
       WHERE ent.enabled_classifiers IS NOT NULL
         AND cardinality(ent.enabled_classifiers) > 0
@@ -162,6 +163,7 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
         try {
           const results = await executeClassificationQuery({
             mode: 'entity',
+            organizationId: entity.organization_id,
             entity_id: entityId,
             enabledClassifiers,
           });

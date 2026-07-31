@@ -22,6 +22,10 @@ export const ManageClassifiersSchema = Type.Object({
       Type.Literal("classify", {
         description: "Manual single/batch classification.",
       }),
+      Type.Literal("apply", {
+        description:
+          "Run a classifier over specific content ids (embedding match, no LLM). Re-running re-labels: it replaces prior embedding results and never touches manual/LLM ones. Use after editing a classifier — run generate_embeddings first.",
+      }),
     ],
     { description: "Action to perform" }
   ),
@@ -133,10 +137,18 @@ export const ManageClassifiersSchema = Type.Object({
       }
     )
   ),
+  content_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      minItems: 1,
+      maxItems: 2000,
+      description:
+        "[apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.",
+    })
+  ),
   classifier_slug: Type.Optional(
     Type.String({
       description:
-        '[classify] Classifier slug (e.g., "sentiment", "bug-severity")',
+        '[classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")',
     })
   ),
   value: Type.Optional(

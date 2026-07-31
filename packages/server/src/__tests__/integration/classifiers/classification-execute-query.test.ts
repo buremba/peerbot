@@ -82,6 +82,7 @@ describe('executeClassificationQuery (full embedding pipeline)', () => {
 
     const results = await executeClassificationQuery({
       mode: 'content_ids',
+      organizationId: org.id,
       enabledClassifiers: ['cq-sentiment'],
       content_ids: [Number(event.id)],
     });
@@ -132,6 +133,7 @@ describe('executeClassificationQuery (full embedding pipeline)', () => {
 
     const results = await executeClassificationQuery({
       mode: 'content_ids',
+      organizationId: org.id,
       enabledClassifiers: ['cq-fallback'],
       content_ids: [Number(event.id)],
     });
@@ -147,5 +149,91 @@ describe('executeClassificationQuery (full embedding pipeline)', () => {
     expect(rows[0].met).toBe('false');
     expect(rows[0].best_match_attribute).toBe('positive'); // closest, even if below threshold
     expect(rows[0].vals).toBe('{unknown}'); // fallback_value
+  });
+
+  // Org isolation. `content_ids` mode selected purely on `f.id IN (...)`, so a caller
+  // could classify another organization's events just by naming their ids. Unreachable
+  // while the reconciliation cron (which derives ids from one org's own entity) was the
+  // only caller; reachable as soon as an agent-facing action passes ids directly.
+  it('refuses to classify an event belonging to another organization', async () => {
+    await cleanupTestDatabase();
+    const callerOrg = await createTestOrganization({ name: 'CQ Caller Org' });
+    const victimOrg = await createTestOrganization({ name: 'CQ Victim Org' });
+    const user = await createTestUser({ email: 'cq-iso@test.com' });
+
+    const facetId = await seedFacet({
+      orgId: callerOrg.id,
+      createdBy: user.id,
+      slug: 'cq-isolation',
+      positiveSlot: 0,
+      negativeSlot: 1,
+      minSimilarity: 0.5,
+      fallbackValue: null,
+    });
+
+    // Would match `positive` at cosine 1.0 if it were ever reached.
+    const victimEvent = await createTestEvent({
+      organization_id: victimOrg.id,
+      content: 'excellent and amazing',
+      embedding: basisVector(0),
+    });
+
+    const results = await executeClassificationQuery({
+      mode: 'content_ids',
+      organizationId: callerOrg.id,
+      enabledClassifiers: ['cq-isolation'],
+      content_ids: [Number(victimEvent.id)],
+    });
+
+    expect(results).toEqual([]);
+
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT 1 FROM event_classifications
+      WHERE event_id = ${Number(victimEvent.id)} AND classifier_id = ${facetId}
+    `) as Array<unknown>;
+    expect(rows).toHaveLength(0);
+  });
+
+  // Classifier-template isolation: same slug in two orgs must not cross over. The
+  // template lookup matched on slug alone, so the caller could match against another
+  // org's attribute definitions.
+  it('does not match against another organization’s classifier of the same slug', async () => {
+    await cleanupTestDatabase();
+    const callerOrg = await createTestOrganization({ name: 'CQ Slug Caller' });
+    const otherOrg = await createTestOrganization({ name: 'CQ Slug Other' });
+    const user = await createTestUser({ email: 'cq-slug@test.com' });
+
+    // Only the OTHER org defines this slug. The caller org has no such classifier.
+    await seedFacet({
+      orgId: otherOrg.id,
+      createdBy: user.id,
+      slug: 'cq-shared-slug',
+      positiveSlot: 0,
+      negativeSlot: 1,
+      minSimilarity: 0.5,
+      fallbackValue: null,
+    });
+
+    const callerEvent = await createTestEvent({
+      organization_id: callerOrg.id,
+      content: 'excellent and amazing',
+      embedding: basisVector(0),
+    });
+
+    const results = await executeClassificationQuery({
+      mode: 'content_ids',
+      organizationId: callerOrg.id,
+      enabledClassifiers: ['cq-shared-slug'],
+      content_ids: [Number(callerEvent.id)],
+    });
+
+    expect(results).toEqual([]);
+
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT 1 FROM event_classifications WHERE event_id = ${Number(callerEvent.id)}
+    `) as Array<unknown>;
+    expect(rows).toHaveLength(0);
   });
 });

@@ -557,6 +557,19 @@ async function handleClassify(
  * dropped by a WHERE clause — reporting the count is what keeps that from
  * looking like a successful no-op.
  */
+/**
+ * Why an id the caller asked for produced no classification. These are the
+ * engine's own target-selection conjuncts, in the order it applies them.
+ */
+type SkipReason = 'not_in_organization' | 'superseded' | 'not_embedded' | 'below_threshold';
+
+const SKIP_REASON_TEXT: Record<SkipReason, string> = {
+  not_in_organization: 'not in this organization',
+  superseded: 'superseded',
+  not_embedded: 'not embedded',
+  below_threshold: 'below min_similarity',
+};
+
 async function runApply(
   args: ManageClassifiersArgs,
   ctx: ToolContext
@@ -596,33 +609,42 @@ async function runApply(
   // Partition the request BEFORE classifying so each skip has a real reason
   // rather than being inferred from a missing result.
   //
-  // Every clause here mirrors the engine's target selection, because the whole
-  // value of this action is that a skip reason is TRUE. Three ways it can drift,
-  // each of which silently reports the wrong reason:
-  //   - relation: the engine reads `current_event_records`, so a superseded
-  //     event is invisible to it. Reading `events` here would call that event
-  //     reachable and then blame `below_threshold`.
+  // The engine's target set is (in this org) AND (live) AND (has a representative
+  // vector). Each of those three is evaluated SEPARATELY here, because the value
+  // of this action is not just the classified/skipped split — it is that the
+  // stated reason is TRUE. Collapsing any two of them reports a real condition
+  // under a false name:
+  //   - live: read from `events` and derive liveness from `superseded_by`, NOT
+  //     from `current_event_records`. The view is the right relation for the
+  //     ENGINE, but selecting through it here makes a superseded event
+  //     indistinguishable from a foreign one, and it gets reported as
+  //     `not_in_organization` — sending the reader after a tenancy bug that does
+  //     not exist. Reading the base table without the liveness split is the
+  //     opposite error: the event looks reachable and gets blamed on
+  //     `below_threshold`.
   //   - chunk/model: the engine joins the representative vector (chunk 0 AND the
   //     configured model), so a stale-model vector is not an embedding to it.
+  //     Ignoring the model stamp reports `below_threshold` for a row that the
+  //     engine never scored at all.
   //   - organization: the engine is org-scoped, as is this.
-  const reachable = (await sql`
+  const inOrg = (await sql`
     SELECT e.id,
+           (e.superseded_by IS NULL) AS is_live,
            EXISTS (
              SELECT 1 FROM event_embeddings emb
              WHERE emb.event_id = e.id
                AND emb.chunk_index = 0
                AND emb.embedding_model = ${getConfiguredEmbeddingModel()}
            ) AS has_embedding
-    FROM current_event_records e
+    FROM events e
     WHERE e.organization_id = ${ctx.organizationId}
       AND e.id = ANY(${pgBigintArray(requestedIds)}::bigint[])
-  `) as unknown as Array<{ id: number; has_embedding: boolean }>;
+  `) as unknown as Array<{ id: number; is_live: boolean; has_embedding: boolean }>;
 
-  const reachableIds = new Set(reachable.map((r) => Number(r.id)));
-  const embeddedIds = reachable.filter((r) => r.has_embedding).map((r) => Number(r.id));
-
-  const skippedNotInOrg = requestedIds.filter((id) => !reachableIds.has(id));
-  const skippedNoEmbedding = reachable.filter((r) => !r.has_embedding).map((r) => Number(r.id));
+  const byId = new Map(inOrg.map((r) => [Number(r.id), r]));
+  const embeddedIds = inOrg
+    .filter((r) => r.is_live && r.has_embedding)
+    .map((r) => Number(r.id));
 
   let classifiedIds: number[] = [];
   if (embeddedIds.length > 0) {
@@ -634,34 +656,50 @@ async function runApply(
     });
     classifiedIds = [...new Set(results.map((r) => Number(r.content_id)))];
   }
+  const classified = new Set(classifiedIds);
 
-  // Embedded, in-org, and still unclassified means every attribute value scored
-  // below the classifier's min_similarity and no fallback_value is set.
-  const classifiedSet = new Set(classifiedIds);
-  const skippedBelowThreshold = embeddedIds.filter((id) => !classifiedSet.has(id));
+  // One pass, in the engine's own conjunct order, so an id can only ever carry
+  // the FIRST condition it actually fails. Counts and samples are derived from
+  // this single list rather than from parallel filters, so they cannot disagree.
+  const skipped: Array<{ id: number; reason: SkipReason }> = [];
+  for (const id of requestedIds) {
+    const row = byId.get(id);
+    // An id this org cannot see is indistinguishable from one that never
+    // existed, and both are equally "not yours to classify".
+    if (!row) skipped.push({ id, reason: 'not_in_organization' });
+    else if (!row.is_live) skipped.push({ id, reason: 'superseded' });
+    else if (!row.has_embedding) skipped.push({ id, reason: 'not_embedded' });
+    // In-org, live, embedded and still unclassified means every attribute value
+    // scored below min_similarity and no fallback_value is set.
+    else if (!classified.has(id)) skipped.push({ id, reason: 'below_threshold' });
+  }
+
+  const counts: Record<SkipReason, number> = {
+    not_in_organization: 0,
+    superseded: 0,
+    not_embedded: 0,
+    below_threshold: 0,
+  };
+  for (const s of skipped) counts[s.reason]++;
+
+  const detail = (Object.entries(counts) as Array<[SkipReason, number]>)
+    .filter(([, n]) => n > 0)
+    .map(([reason, n]) => `${n} ${SKIP_REASON_TEXT[reason]}`);
 
   return {
     success: true,
     action: 'apply',
     message:
       `Classified ${classifiedIds.length}/${requestedIds.length} with "${args.classifier_slug}"` +
-      (skippedNoEmbedding.length > 0 ? `; ${skippedNoEmbedding.length} not embedded` : '') +
-      (skippedNotInOrg.length > 0 ? `; ${skippedNotInOrg.length} not in this organization` : '') +
-      (skippedBelowThreshold.length > 0
-        ? `; ${skippedBelowThreshold.length} below min_similarity`
-        : ''),
+      (detail.length > 0 ? `; ${detail.join('; ')}` : ''),
     data: {
       requested: requestedIds.length,
       classified: classifiedIds.length,
-      skipped: {
-        not_embedded: skippedNoEmbedding.length,
-        not_in_organization: skippedNotInOrg.length,
-        below_threshold: skippedBelowThreshold.length,
-      },
-      // Bounded samples: enough to debug a bad classifier without returning
-      // thousands of ids into the agent's context.
-      sample_skipped_not_embedded: skippedNoEmbedding.slice(0, 20),
-      sample_skipped_below_threshold: skippedBelowThreshold.slice(0, 20),
+      skipped: counts,
+      // Bounded sample: enough to go look at the actual events behind a
+      // disappointing run, without returning thousands of ids into the agent's
+      // context. Truncation is visible from `skipped` vs this length.
+      sample_skipped: skipped.slice(0, 20),
     },
   };
 }

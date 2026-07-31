@@ -51,6 +51,7 @@
 -- Existing rows read as false, which is the correct meaning: everything written
 -- before this column existed really did persist.
 
+-- migrate:up
 ALTER TABLE public.runs
   ADD COLUMN IF NOT EXISTS dry_run boolean DEFAULT false NOT NULL,
   ADD COLUMN IF NOT EXISTS dry_run_preview jsonb;
@@ -60,3 +61,8 @@ COMMENT ON COLUMN public.runs.dry_run IS
 
 COMMENT ON COLUMN public.runs.dry_run_preview IS
   'What a dry run WOULD have ingested: {items: [...], total, truncated}. Capped — see DRY_RUN_PREVIEW_LIMIT in worker-api/run-lifecycle.ts. NULL for normal runs.';
+
+-- migrate:down
+ALTER TABLE public.runs
+  DROP COLUMN IF EXISTS dry_run_preview,
+  DROP COLUMN IF EXISTS dry_run;

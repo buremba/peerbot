@@ -56,10 +56,22 @@ async function seedFacet(opts: {
       watcher_id, entity_ids, min_similarity, fallback_value, attribute_values
     ) VALUES (
       ${opts.orgId}, ${opts.slug}, ${`${opts.slug} classifier`}, ${opts.slug}, 'active', ${opts.createdBy},
-      NULL, NULL, ${opts.minSimilarity}, ${opts.fallbackValue}, ${JSON.stringify(attributeValues)}::jsonb
+      NULL, NULL, ${opts.minSimilarity}, ${opts.fallbackValue}, ${sql.json(attributeValues as never)}
     )
     RETURNING id
   `) as Array<{ id: number }>;
+
+  // `sql.json`, not `JSON.stringify(...)::jsonb` — the latter binds the text as
+  // a parameter that lands as a jsonb STRING (`jsonb_typeof` = 'string'), i.e.
+  // double-encoded. This same mistake in RunsQueue shipped to prod: it broke
+  // every `action_input ->> 'field'` reader and 403'd workers via the snapshot
+  // ownership verifier. Assert the shape so a fixture can never again store
+  // something production does not.
+  const [shape] = (await sql`
+    SELECT jsonb_typeof(attribute_values) AS t FROM classify_facet WHERE id = ${Number(row.id)}
+  `) as Array<{ t: string }>;
+  expect(shape.t).toBe('object');
+
   return Number(row.id);
 }
 
@@ -120,7 +132,17 @@ describe('executeClassificationQuery (full embedding pipeline)', () => {
     const org = await createTestOrganization({ name: 'CQ Org 2' });
     const user = await createTestUser({ email: 'cq2@test.com' });
 
-    // event embedding (basis 3) is orthogonal to both attributes → best cosine 0.0 < 0.99
+    // Leans toward `positive` (0.949) over `negative` (0.316), and BOTH are
+    // below the 0.99 threshold — so `best_match_attribute` below is a real
+    // winner rather than a coin flip.
+    //
+    // This previously used basis 3, orthogonal to both attributes: cosine
+    // exactly 0.0 each, so "closest" was a tie and the assertion only held
+    // because of the order attributes happened to come back in. Under jsonb
+    // that order is jsonb's own (key length, then bytewise — so `negative`
+    // sorts before `positive`), not authoring order, and the tie flipped. The
+    // old fixture stored a double-encoded jsonb *string*, which preserved
+    // authoring order and hid it.
     const facetId = await seedFacet({
       orgId: org.id,
       createdBy: user.id,
@@ -130,10 +152,13 @@ describe('executeClassificationQuery (full embedding pipeline)', () => {
       minSimilarity: 0.99,
       fallbackValue: 'unknown',
     });
+    const leaningPositive = new Array<number>(DIM).fill(0);
+    leaningPositive[2] = 0.3;
+    leaningPositive[4] = 0.1;
     const event = await createTestEvent({
       organization_id: org.id,
       content: 'neutral content matching nothing',
-      embedding: basisVector(3),
+      embedding: leaningPositive,
     });
 
     const results = await executeClassificationQuery({

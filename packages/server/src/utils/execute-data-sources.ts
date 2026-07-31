@@ -436,6 +436,25 @@ export function buildScopedQuery(
     return ` ${vis.sql}`;
   };
 
+  // Tenancy predicate for an events table (alias has `organization_id`,
+  // `entity_ids`, `connection_id`). Mirrors buildOrgScopeWhere in
+  // content-search.ts: an event is in scope if it was stamped to the caller's
+  // org directly, OR any of its entity_ids belong to the caller's org, OR it
+  // came in through a connection in the caller's org.
+  //
+  // Shared by `events` and `event_classifications` on purpose. These were two
+  // hand-written predicates and they drifted: the classifications CTE only ever
+  // implemented the middle disjunct (an entity join), so labels on an
+  // entity-less event were invisible while the event itself was queryable in
+  // the same breath. A classification must be visible exactly when its event
+  // is, and one expression is the only way to keep that true.
+  const eventOrgScope = (alias: string): string =>
+    `(${alias}.organization_id = ${orgP} ` +
+    `OR EXISTS (SELECT 1 FROM public.entities ent WHERE ent.id = ANY(${alias}.entity_ids) ` +
+    `AND ent.organization_id = ${orgP}) ` +
+    `OR EXISTS (SELECT 1 FROM public.connections con WHERE con.id = ${alias}.connection_id ` +
+    `AND con.organization_id = ${orgP}))`;
+
   // Per-channel membership gate for the `channel_messages` table (alias has
   // `connection_id` + `channel_id`): on an ACL-enforced Slack connection, restrict
   // to channels the requester is `member_of`. A headless/null principal sees only
@@ -539,19 +558,12 @@ export function buildScopedQuery(
           `WHERE e.organization_id = ${orgP})`
       );
     } else if (table === 'events') {
-      // Match buildOrgScopeWhere in content-search.ts: an event is in scope if
-      // it was stamped to the caller's org directly, OR any of its entity_ids
-      // belong to the caller's org, OR it came in through a connection in the
-      // caller's org. Mirroring that here keeps query_sql consistent with
-      // what search_memory/get_content surface.
+      // Tenancy via eventOrgScope, shared with event_classifications — keeps
+      // query_sql consistent with what search_memory/get_content surface.
       // security-allowed: see block comment above the for-loop
       let eventsCte =
         `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev ` +
-        `WHERE (ev.organization_id = ${orgP} ` +
-        'OR EXISTS (SELECT 1 FROM public.entities ent WHERE ent.id = ANY(ev.entity_ids) ' +
-        `AND ent.organization_id = ${orgP}) ` +
-        'OR EXISTS (SELECT 1 FROM public.connections con WHERE con.id = ev.connection_id ' +
-        `AND con.organization_id = ${orgP}))`;
+        `WHERE ${eventOrgScope('ev')}`;
 
       // Entity scoping: filter events to the watcher's entities
       if (context.entityIds && context.entityIds.length > 0) {
@@ -618,6 +630,9 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'cw')} FROM public.canvas_windows cw WHERE cw.organization_id = ${orgP})`
       );
     } else if (table === 'event_classifications') {
+      // Visible exactly when the underlying event is: same eventOrgScope
+      // tenancy, then the same two per-user gates on `ev`.
+      //
       // `excerpts`/`values`/`reasoning` carry verbatim source-event content, so
       // the EXISTS must apply per-user connection visibility on `ev` — otherwise
       // any member reads classifications of another user's private-connection
@@ -628,8 +643,7 @@ export function buildScopedQuery(
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'ec')} FROM public.event_classifications ec WHERE EXISTS (` +
           'SELECT 1 FROM public.current_event_records ev ' +
-          'JOIN public.entities ent ON ent.id = ANY(ev.entity_ids) ' +
-          `WHERE ev.id = ec.event_id AND ent.organization_id = ${orgP}` +
+          `WHERE ev.id = ec.event_id AND ${eventOrgScope('ev')}` +
           eventConnVisibility('ev') +
           eventResourceVisibility('ev') +
           '))'

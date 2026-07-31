@@ -438,6 +438,52 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
   });
 
+  /**
+   * `os.shell` is admitted for macOS, and — the part that actually bit — an
+   * unrecognised key does not merely drop itself. It sets
+   * `accepted = false` for the whole payload, and the caller then declines to
+   * replace the device's inventory at all, so every OTHER connector on that
+   * device disappears with it. That is deliberate (a malformed poll must not
+   * look like removal), which is exactly why the key allowlist must not lag
+   * behind the capability allowlist in @lobu/core.
+   *
+   * Asserted here with a synthetic manifest rather than relying on the
+   * real-Owletto-manifests test above: that one only covers `os.shell` for as
+   * long as owletto happens to ship `os_shell.json`.
+   */
+  it('admits os.shell on macOS and does not let one unknown key drop its siblings', async () => {
+    const { orgId, workerId } = await seedDeviceOwner();
+
+    // Prime the poll handler's module-level due-feed-materialize cooldown, as
+    // the first test in this file does and for the same reason: the suite runs
+    // singleFork + isolate:false, so whether a preceding poll left the cooldown
+    // hot changes what this one does. Without it this test failed ~2 runs in 7.
+    const primer = await poll(workerId, []);
+    expect(primer.status).toBe(200);
+
+    // Synthetic sibling on purpose. A real key like `apple.screen_time` also
+    // exists in the bundled device-connector catalog, which puts it on a
+    // different reconcile path and makes the result depend on catalog state
+    // rather than on the allowlist under test.
+    const shell = manifest({ key: 'os.shell', required_capability: 'os.shell' });
+    const sibling = manifest();
+
+    const res = await poll(workerId, [shell, sibling], 'macos', {
+      'os.shell': true,
+      screentime: true,
+    });
+    expect(res.status).toBe(200);
+
+    // The sibling survives. This is the whole regression: pre-fix, `os.shell`
+    // was rejected by the key allowlist, which set accepted=false for the
+    // entire payload and left apple.screen_time uninstalled alongside it.
+    //
+    // Deliberately NOT asserting that os.shell's own definition materializes —
+    // it declares no feeds, and what reconcile does with a feedless device
+    // connector is a separate question this test has no business pinning.
+    expect(await readDefinition(orgId)).not.toBeNull();
+  });
+
   it('drops a manifest that still declares removed entityLinks rules', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const legacyManifest = manifest({

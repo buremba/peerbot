@@ -3,6 +3,7 @@
  * Canonical definitions live in `@lobu/core`.
  */
 export {
+  isReservedConnectorKey,
   isReservedEntityTypeSlug,
   RESERVED_ENTITY_TYPE_SLUGS,
   RESERVED_PATHS_SET,

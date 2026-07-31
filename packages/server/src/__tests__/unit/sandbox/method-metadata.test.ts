@@ -341,7 +341,7 @@ describe("method-metadata", () => {
 			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],
 			[
 				"classifiers.create",
-				["behavior_id: string", "attribute_values", "examples: string[]"],
+				["behavior_id?: string", "attribute_values", "examples: string[]"],
 			],
 		];
 		for (const [path, fragments] of expectations) {

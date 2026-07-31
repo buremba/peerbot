@@ -458,20 +458,13 @@ describe('device connector manifests', () => {
     // exists in the bundled device-connector catalog, which puts it on a
     // different reconcile path and makes the result depend on catalog state
     // rather than on the allowlist under test.
-    // Distinct display name is load-bearing, not cosmetic. `ensureDeviceConnectorWired`
-    // runs per key under Promise.allSettled with an advisory lock keyed on
-    // (userId, connectorKey), so two manifests sharing a name race
-    // ensureUniqueConnectionSlug: one connection INSERT loses on
-    // connections_org_slug_unique and allSettled swallows it, leaving the
-    // sibling's definition unwired. That is a test-only collision here, but see
-    // the note below — the race itself is not test-only.
-    //
-    // NOT test-only: two same-named device-manifest connectors wired in one
-    // reconcile pass can genuinely lose a connection INSERT in production. It
-    // self-heals on the next poll (slug suffixing), and today's real manifests
-    // all carry distinct names, so it is latent rather than live. Tracked
-    // separately — fixing the swallowed unique violation in
-    // ensureDeviceConnectorWired is a different concern from this allowlist.
+    // Distinct display name keeps this test independent of the connection-slug
+    // race: two manifests sharing a name race ensureUniqueConnectionSlug under
+    // Promise.allSettled (the advisory lock is keyed on (userId, connectorKey),
+    // not the slug), and the loser's INSERT trips connections_org_slug_unique.
+    // ensureDeviceConnectorWired now retries that collision once — covered by
+    // device-reconcile-slug-race.test.ts — but the allowlist under test here
+    // has nothing to do with slugs, so the names stay distinct anyway.
     const shell = manifest({
       key: 'os.shell',
       required_capability: 'os.shell',

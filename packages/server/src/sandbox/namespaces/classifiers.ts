@@ -11,6 +11,8 @@ import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
 export interface ClassifierCreateInput {
+	/** Model to embed the label vectors under; defaults to the configured one. */
+	embedding_model?: string;
 	slug: string;
 	name: string;
 	description?: string;
@@ -57,6 +59,13 @@ export interface ClassifierClassifyInput {
 export interface ClassifierApplyInput {
 	classifier_slug: string;
 	content_ids: number[];
+	/**
+	 * Vector space to match in; defaults to the deployment's configured model.
+	 * The classifier's label vectors must already live in this model too (embed
+	 * them with `generateEmbeddings({ embedding_model })`), and so must the
+	 * events — ids without a vector in this model come back `not_embedded`.
+	 */
+	embedding_model?: string;
 }
 
 export interface ClassifiersNamespace {
@@ -66,6 +75,8 @@ export interface ClassifiersNamespace {
 	generateEmbeddings(input: {
 		classifier_id: number;
 		force_regenerate?: boolean;
+		/** Model to embed the label vectors under; defaults to the configured one. */
+		embedding_model?: string;
 	}): Promise<unknown>;
 	delete(input: { classifier_id: number }): Promise<unknown>;
 	classify(input: ClassifierClassifyInput): Promise<unknown>;

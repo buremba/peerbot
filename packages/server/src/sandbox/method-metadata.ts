@@ -950,9 +950,12 @@ export default async (_ctx, client) => {
 			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},
 	"classifiers.generateEmbeddings": {
-		summary: "Generate embeddings for attribute values (cost-heavy).",
+		summary:
+			"Generate embeddings for attribute values (cost-heavy). `embedding_model` picks the vector space; it defaults to the deployment's configured model, and must match the model the events were embedded under or `apply` will match nothing.",
 		access: "admin",
 		cost: "expensive",
+		signature:
+			"classifiers.generateEmbeddings(input: { classifier_id: number; force_regenerate?: boolean; embedding_model?: string }): Promise<unknown>",
 	},
 	"classifiers.delete": {
 		summary: "Delete a classifier.",
@@ -970,11 +973,11 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.apply": {
 		summary:
-			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `behavior_id`).",
+			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `behavior_id`). `embedding_model` selects the vector space for BOTH the labels and the events; ids with no vector in that model are reported `not_embedded`.",
 		access: "admin",
 		cost: "expensive",
 		signature:
-			"classifiers.apply(input: { classifier_slug: string; content_ids: number[] }): Promise<unknown>",
+			"classifiers.apply(input: { classifier_slug: string; content_ids: number[]; embedding_model?: string }): Promise<unknown>",
 		example:
 			"await client.classifiers.apply({ classifier_slug: 'sentiment', content_ids: [101, 102, 103] });",
 	},

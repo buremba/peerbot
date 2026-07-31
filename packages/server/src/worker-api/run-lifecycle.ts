@@ -40,7 +40,7 @@ import {
 import { toSecretRefAuthData } from "../utils/auth-credential-secrets";
 import { autoLinkEvent } from "../utils/auto-linker";
 import { nextRunAt as nextRunAtFromCron } from "../utils/cron";
-import { needsEmbeddingSql } from "../utils/embeddings";
+import { getConfiguredEmbeddingModel, needsEmbeddingSql } from "../utils/embeddings";
 import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
@@ -1550,7 +1550,7 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
 			`SELECT e.id, e.payload_text, e.title
        FROM events e
        WHERE e.id IN (${placeholders})
-         AND ${needsEmbeddingSql("e")}`,
+         AND ${needsEmbeddingSql("e", getConfiguredEmbeddingModel())}`,
 			safeIds
 		);
 

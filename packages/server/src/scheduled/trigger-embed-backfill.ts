@@ -7,7 +7,7 @@
  */
 
 import { getDb } from '../db/client';
-import { needsEmbeddingSql } from '../utils/embeddings';
+import { getConfiguredEmbeddingModel, needsEmbeddingSql } from '../utils/embeddings';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 import { isQueryCanceled, isUniqueViolation } from '../utils/pg-errors';
@@ -74,8 +74,11 @@ interface OrgBatch {
 // the worker fetch. Correlated anti-join lets the planner drive off `events`
 // (and the partial index) instead of hash-joining the whole event_embeddings
 // table. (The contract release adds the long-content "needs tail chunks" arm.)
+// The deployment's configured model, not a caller override: this is the
+// background job that fills the default space, and the run it creates is
+// drained by a worker reading the same env var.
 function needsEmbeddingPredicate(): string {
-  return needsEmbeddingSql('e');
+  return needsEmbeddingSql('e', getConfiguredEmbeddingModel());
 }
 
 // current_event_records masks superseded rows with this anti-join. We query the

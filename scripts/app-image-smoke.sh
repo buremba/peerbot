@@ -65,9 +65,14 @@ echo "================================================================"
 #    127.0.0.1 and publishes 8787 on the runner without port-mapping games.
 # ---------------------------------------------------------------------------
 note "boot"
+# A real generated key, not LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1. The escape
+# hatch would boot too, but it takes a different startup branch than prod does,
+# and the point of this gate is to exercise the path operators actually run.
+# Throwaway: the container and its database are destroyed at the end of the job.
 CID=$(docker run -d --network host \
   -e "DATABASE_URL=${DATABASE_URL}" \
   -e "JWT_SECRET=app-image-smoke-not-a-real-secret" \
+  -e "ENCRYPTION_KEY=$(openssl rand -base64 32)" \
   -e "ALLOW_DB_CREATE=1" \
   -e "PORT=${APP_PORT}" \
   "$IMAGE")
@@ -77,10 +82,12 @@ if [ -z "$CID" ]; then
 fi
 echo "  container ${CID:0:12}"
 
-# Migrations run at start, so allow a generous window. Poll /health rather than
-# sleeping: a fixed sleep either wastes time or flakes.
+# Migrations run at start against a BLANK database — the full ledger from the
+# baseline, measured at ~113s on a runner — so the window has to clear that with
+# room for a slower runner, not just the steady-state restart case. Poll /health
+# rather than sleeping: a fixed sleep either wastes time or flakes.
 booted=false
-for _ in $(seq 1 90); do
+for _ in $(seq 1 150); do
   if curl -fsS --max-time 3 "${BASE}/health" >/dev/null 2>&1; then
     booted=true
     break

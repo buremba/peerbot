@@ -20,7 +20,7 @@ import {
 } from '../utils/connector-catalog';
 import { extractConnectorMetadata, type ConnectorMetadata } from '../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-install';
-import { ensureUniqueConnectionSlug } from '../utils/connections';
+import { ensureUniqueConnectionSlug, isConnectionSlugUniqueViolation } from '../utils/connections';
 import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
@@ -347,7 +347,7 @@ async function ensureDeviceConnectorWired(
     }
 
     let connectionId: number | undefined;
-    await sql.begin(async (tx) => {
+    const wireOnce = () => sql.begin(async (tx) => {
       // Serialize per (user, connector): two concurrent polls / two devices
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
@@ -402,11 +402,22 @@ async function ensureDeviceConnectorWired(
       }
       if (!connectionId) {
         // Stable slug for `lobu apply` diffing — same generation path as
-        // manage_connections. No insert-retry here: this whole block runs
-        // under a `pg_advisory_xact_lock` keyed on (userId, connectorKey) plus
-        // the existence check above, so the slug can't be raced for this
-        // (org, connector, user) tuple — and a unique violation would abort
-        // the surrounding transaction, making a retry pointless anyway.
+        // manage_connections.
+        //
+        // The advisory lock above does NOT make this race-free, contrary to
+        // what this comment used to claim. The lock is keyed on
+        // (userId, connectorKey), but the slug derives from the connector's
+        // DISPLAY NAME and uniqueness is enforced per-ORG by
+        // `connections_org_slug_unique`. Two different connector keys take two
+        // different locks and run concurrently, so two connectors sharing a
+        // display name compute the same free slug and the loser's INSERT trips
+        // the constraint. Reproduced: see
+        // device-reconcile-slug-race.test.ts. Lock scope and
+        // uniqueness scope simply are not the same scope.
+        //
+        // The retry lives OUTSIDE this transaction (at the wireOnce call
+        // site below), because an aborted transaction cannot be continued —
+        // which is the one thing the old comment got right.
         const slug = await ensureUniqueConnectionSlug({
           organizationId,
           connectorKey,
@@ -465,6 +476,27 @@ async function ensureDeviceConnectorWired(
       // serving the capability, or leave it unpinned when several do.
       await reconcilePin(tx, connectionId);
     });
+
+    try {
+      await wireOnce();
+    } catch (err) {
+      // Retry ONCE, and only for the slug collision described above. The
+      // retry recomputes the slug against a tree that now contains the
+      // winner's committed row, so it converges on `<base>-2` rather than
+      // repeating the same losing bet.
+      //
+      // Bounded at one attempt deliberately. The next poll is the real retry
+      // budget for this reconcile — it already heals the collision — so this
+      // exists to avoid a spurious error-level log and a poll-cycle delay,
+      // not to guarantee convergence here. Anything unbounded would be a
+      // second retry budget layered on the existing one.
+      if (!isConnectionSlugUniqueViolation(err)) throw err;
+      logger.info(
+        { userId, connectorKey, organizationId },
+        '[device-connectors] Connection slug raced a concurrent wire; retrying once'
+      );
+      await wireOnce();
+    }
 
     if (connectionId) {
       logger.info(

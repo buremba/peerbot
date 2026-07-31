@@ -92,58 +92,104 @@ export function foldUnprocessedRanges(
 /**
  * Compute the pending window dates for a watcher.
  *
- * Logic:
- * - Finds the last completed window for this watcher
- * - Computes the next window period based on granularity
- * - If no previous windows, uses "now minus one period" as the start
+ * Returns a period-aligned window of exactly one granularity period:
+ * `[aligned start, start + 1 period)`. The end is EXCLUSIVE.
+ *
+ * Chains off the last window's `window_start`, never its `window_end`. Using
+ * the end assumes it is an exclusive boundary, and it is not reliably one:
+ * windows are written by agents through `complete_window`, and prod holds both
+ * conventions in the same table (measured 2026-07-31 — daily: 29 rows ending
+ * `23:59:59.999` vs 32 ending `00:00:00`; weekly: 28 vs 2). Chaining off an
+ * inclusive end starts the next window a day-minus-a-millisecond early, which
+ * then (a) collapses to a ZERO-length window once clamped — five such windows
+ * exist on prod, every one with `content_analyzed = 0` — and (b) never matches
+ * a fresh period in `findCanvasHead`, so no new chain root is created, so this
+ * function keeps returning the same window forever (Behavior 71 spent a full
+ * day re-completing the previous day's window).
+ *
+ * Re-aligning the stored start also makes the 14 already-misaligned prod rows
+ * self-heal on their next run, with no migration rewriting window identities.
+ *
+ * The period never runs ahead of the clock: `BEHAVIOR_TIME_GRANULARITIES` has
+ * no 'hourly', so an hourly cron necessarily gets a DAILY window and every run
+ * inside a day must resolve to that SAME day for `replace_existing` to refresh
+ * it. Advancing unconditionally would mint tomorrow's window at 00:01 and march
+ * into the future. Hence the clamp to the current period rather than a cap on
+ * the end — a clamped END is what produced the zero-length windows.
  */
 export async function computePendingWindow(
   sql: DbClient,
   watcherId: number,
   granularity: BehaviorTimeGranularity
 ): Promise<WindowDates> {
-  // Find the last completed leaf window for this watcher (canvas_windows =
-  // one row per chain root, so this is the latest completed period). Zero-
-  // content windows are durable cursor progress too; otherwise empty periods
-  // can be reprocessed forever.
+  // Latest period this Behavior has a chain root for (canvas_windows = one row
+  // per root). Ordered by window_start because that is the field being chained;
+  // ordering by window_end would re-introduce the boundary ambiguity above.
+  // Zero-content windows are durable cursor progress too, otherwise empty
+  // periods get reprocessed forever.
   const lastWindow = await sql`
-    SELECT window_end
+    SELECT window_start
     FROM canvas_windows
     WHERE watcher_id = ${watcherId}
-    ORDER BY window_end DESC
+    ORDER BY window_start DESC
     LIMIT 1
   `;
 
   const now = new Date();
-  let windowStart: Date;
-  let windowEnd: Date;
+  const windowStart = nextBehaviorWindowStart(
+    lastWindow.length > 0 ? new Date(lastWindow[0].window_start as string) : null,
+    now,
+    granularity
+  );
 
-  if (lastWindow.length > 0) {
-    // Continue from where the last window ended
-    windowStart = new Date(lastWindow[0].window_end as string);
-  } else {
-    // No previous windows - start from aligned "now minus one period"
-    windowStart = alignToBehaviorWindowStart(subtractBehaviorPeriod(now, granularity), granularity);
-  }
-
-  // Compute window end based on granularity
-  windowEnd = addBehaviorPeriod(windowStart, granularity);
-
-  // Cap window_end at aligned now (don't process future dates)
-  const alignedNow = alignToBehaviorWindowStart(now, granularity);
-  // For current period, use end of period instead of aligned start
-  const currentPeriodEnd = addBehaviorPeriod(alignedNow, granularity);
-  if (windowEnd > currentPeriodEnd) {
-    windowEnd = currentPeriodEnd;
-  }
-
-  // Ensure window_start is before window_end
-  if (windowStart >= windowEnd) {
-    // If window is too small, extend back by one period
-    windowStart = subtractBehaviorPeriod(windowEnd, granularity);
-  }
+  // Always a full period. `windowStart <= alignedNow` by construction, so this
+  // can never exceed the current period's end and never needs clamping — which
+  // is what keeps it from degenerating.
+  const windowEnd = addBehaviorPeriod(windowStart, granularity);
 
   return { windowStart, windowEnd };
+}
+
+/**
+ * The period a Behavior should analyse next, given the start of its most recent
+ * window (or null if it has none).
+ *
+ * Pure and exported because TWO call sites need it and they must not drift:
+ * `computePendingWindow` above, which is what actually dispatches, and
+ * `get_behavior`'s `next_window`, which only PREVIEWS the dispatch. While those
+ * were two implementations they disagreed by a full period on legacy rows —
+ * telling the agent one window and handing the run another. One rule, one
+ * implementation, no drift.
+ *
+ * Takes the last window's START, never its end: `window_end` is not reliably an
+ * exclusive boundary (agents write windows through `complete_window`, and prod
+ * holds both conventions), so chaining off it starts the next period a
+ * millisecond short of a full one.
+ *
+ * `now` is a parameter rather than read here so the rule stays a pure function
+ * of its inputs and can be tested at a chosen instant.
+ */
+export function nextBehaviorWindowStart(
+  lastWindowStart: Date | null,
+  now: Date,
+  granularity: BehaviorTimeGranularity
+): Date {
+  const alignedNow = alignToBehaviorWindowStart(now, granularity);
+
+  if (!lastWindowStart) {
+    // Nothing analysed yet — start one aligned period back.
+    return alignToBehaviorWindowStart(subtractBehaviorPeriod(now, granularity), granularity);
+  }
+
+  // Next period after the last one, re-aligned so a corrupt stored start cannot
+  // propagate. Capped at the current period: being "done" with today means today
+  // gets re-analysed (and superseded), not that tomorrow starts — granularity has
+  // no 'hourly', so a sub-daily cron must keep resolving to the same day.
+  const nextStart = addBehaviorPeriod(
+    alignToBehaviorWindowStart(lastWindowStart, granularity),
+    granularity
+  );
+  return nextStart > alignedNow ? alignedNow : nextStart;
 }
 
 /**

@@ -8,6 +8,7 @@
 
 import {
   addBehaviorPeriod,
+  alignToBehaviorWindowStart,
   getFinerBehaviorGranularities,
   inferBehaviorGranularityFromSchedule,
   type BehaviorTimeGranularity,
@@ -55,6 +56,7 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
+  nextBehaviorWindowStart,
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
@@ -242,6 +244,7 @@ interface WatcherQueryRow {
   sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
+  latest_window_start: string | null;
   // jsonb_agg of identity scopes for primary entity
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
@@ -562,6 +565,12 @@ async function getBehaviorImpl(
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
         (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
+        -- Latest window START drives the next_window preview, so it chains off
+        -- exactly what computePendingWindow chains off. Chaining the preview off
+        -- the END instead makes the two disagree by a full period on a legacy
+        -- row stored with an inclusive 23:59:59.999 end.
+        (SELECT window_start FROM canvas_windows WHERE watcher_id = i.id
+          ORDER BY window_start DESC LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -839,6 +848,7 @@ async function getBehaviorImpl(
       (STANDARD_IDENTITY_NAMESPACES as readonly string[]).includes(s.namespace)
     );
     const latestEnd = watcherRow.latest_window_end;
+    const latestStart = watcherRow.latest_window_start;
     // Two entity-link fragments: one with `$1 = watcher_id` reserved (for
     // queries that join on the watcher's windows), one without (for queries
     // that only need the entity scope). Sharing one fragment and passing a
@@ -948,9 +958,13 @@ async function getBehaviorImpl(
       let windowStart: Date;
       let windowEnd: Date;
 
-      if (latestEnd) {
-        // Continue from where we left off.
-        windowStart = new Date(latestEnd);
+      if (latestStart) {
+        // The dispatcher's own rule, called — not reimplemented. `get_behavior`
+        // only PREVIEWS what `computePendingWindow` will hand the run, so a
+        // second copy here is a second thing to keep in sync, and it already
+        // drifted once (preview chained off window_end, dispatcher off
+        // window_start — a full period apart on legacy rows).
+        windowStart = nextBehaviorWindowStart(new Date(latestStart), now, timeGranularity);
       } else {
         // No windows yet — find the earliest unprocessed event for this
         // entity. Unbounded by occurred_at: pi review (#481) flagged that
@@ -965,16 +979,19 @@ async function getBehaviorImpl(
           [args.behavior_id, ...entityLinkParams]
         );
         const earliest = earliestResult[0]?.earliest as string | null;
-        windowStart = earliest ? new Date(earliest) : now;
+        // Aligned too: an arbitrary event timestamp would preview a window
+        // starting mid-period, which is not a period the dispatcher can emit.
+        windowStart = alignToBehaviorWindowStart(
+          earliest ? new Date(earliest) : now,
+          timeGranularity
+        );
       }
 
-      // Calculate window end based on granularity
+      // A full period, never truncated at `now`. Truncating made the preview
+      // disagree with what `computePendingWindow` actually dispatches (it always
+      // emits a whole period), and a partial end is not a window any run can be
+      // given.
       windowEnd = addBehaviorPeriod(windowStart, timeGranularity);
-
-      // Don't go past now
-      if (windowEnd > now) {
-        windowEnd = now;
-      }
 
       nextWindow = {
         start: windowStart.toISOString(),

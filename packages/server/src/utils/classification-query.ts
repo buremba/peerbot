@@ -7,7 +7,7 @@
  * Vector operations (cosine similarity) are computed in TypeScript.
  */
 
-import { type DbClient, getDb, pgTextArray } from '../db/client';
+import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
 import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
@@ -85,6 +85,18 @@ interface ClassificationQueryOptions {
    * Target selection mode
    */
   mode: 'entity' | 'content_ids';
+
+  /**
+   * Owning organization. REQUIRED: both the target-content and the
+   * classifier-template lookups filter on it. Before this was threaded through,
+   * `content_ids` mode selected purely on `f.id IN (...)` and the template
+   * lookup purely on `cf.slug IN (...)`, so a caller could classify another
+   * org's events, or match against another org's classifier of the same slug.
+   * That was unreachable while the only caller was the reconciliation cron
+   * (which derives ids from one org's own entity); it becomes reachable the
+   * moment an agent-facing action can pass ids directly.
+   */
+  organizationId: string;
 
   /**
    * Enabled classifier slugs
@@ -191,8 +203,10 @@ async function fetchTargetContent(
 
   if (mode === 'content_ids') {
     const contentIds = options.content_ids!;
-    const contentPlaceholders = contentIds.map((_, i) => `$${i + 1}`).join(', ');
+    const contentPlaceholders = contentIds.map((_, i) => `$${i + 2}`).join(', ');
 
+    // $1 is the org; ids start at $2. Org-scoping here is what makes the
+    // agent-facing `apply` action safe to expose — see ClassificationQueryOptions.
     targetRows = await sql.unsafe(
       `SELECT DISTINCT
          f.id,
@@ -203,9 +217,10 @@ async function fetchTargetContent(
        FROM current_event_records f
        LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
        ${repEmbeddingJoins}
-       WHERE f.id IN (${contentPlaceholders})
+       WHERE f.organization_id = $1
+         AND f.id IN (${contentPlaceholders})
          AND fe.embedding IS NOT NULL`,
-      contentIds
+      [options.organizationId, ...contentIds]
     );
   } else if (mode === 'entity') {
     const entityId = options.entity_id!;
@@ -216,8 +231,9 @@ async function fetchTargetContent(
        FROM classify_facet cf
        WHERE cf.slug IN (${classifierPlaceholders})
          AND cf.status = 'active'
-         AND cf.watcher_id IS NULL`,
-      enabledClassifiers
+         AND cf.watcher_id IS NULL
+         AND cf.organization_id = $${enabledClassifiers.length + 1}`,
+      [...enabledClassifiers, options.organizationId]
     );
     const classifierIds = classifierRows.map((r) => r.classifier_id);
 
@@ -274,7 +290,11 @@ async function fetchTargetContent(
 
       return {
         id: row.id,
-        entity_ids: row.entity_ids,
+        // `entity_ids` is bigint[]; under fetch_types:false it arrives as the raw
+        // literal "{1,2}" (or "{}"), never a JS array. The scope check flatMaps
+        // these into a Set — flatMap doesn't flatten strings, so the Set would
+        // hold the raw literal and numeric membership tests would never match.
+        entity_ids: parsePgNumberArray(row.entity_ids),
         parent_id: row.parent_id,
         combined_embedding: combined,
       };
@@ -287,7 +307,8 @@ async function fetchTargetContent(
 async function fetchClassifierTemplates(
   sql: DbClient,
   enabledClassifiers: string[],
-  targetContent: TargetContent[]
+  targetContent: TargetContent[],
+  organizationId: string
 ): Promise<ClassifierTemplate[]> {
   if (targetContent.length === 0) return [];
 
@@ -310,8 +331,9 @@ async function fetchClassifierTemplates(
      FROM classify_facet cf
      WHERE cf.slug IN (${classifierPlaceholders})
        AND cf.status = 'active'
-       AND cf.watcher_id IS NULL`,
-    enabledClassifiers
+       AND cf.watcher_id IS NULL
+       AND cf.organization_id = $${enabledClassifiers.length + 1}`,
+    [...enabledClassifiers, organizationId]
   );
 
   // Collect unique entity_ids from target content for scoping
@@ -322,7 +344,11 @@ async function fetchClassifierTemplates(
 
   for (const row of rows) {
     // Scope check: classifier must be global (empty entity_ids) OR overlap with target content entity_ids
-    const classifierEntityIds = row.entity_ids ?? [];
+    // Same raw-array read as above. Without the parse, "{}" is a 2-char string:
+    // the length guard passes and `.some` throws TypeError. `manage_classifiers
+    // create` writes ARRAY[]::bigint[] rather than NULL, so every org-level
+    // classifier it creates would crash the engine on this line.
+    const classifierEntityIds = parsePgNumberArray(row.entity_ids ?? []);
     if (
       classifierEntityIds.length > 0 &&
       !classifierEntityIds.some((id) => targetEntityIds.has(id))
@@ -461,12 +487,17 @@ function generateParentClassifications(
 
 // ── Step 6: Fetch all classifier version slugs for parent lookups ──────
 
-async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
+async function fetchAllClassifierVersions(
+  sql: DbClient,
+  organizationId: string
+): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
     `SELECT cf.slug, cf.id as classifier_id
      FROM classify_facet cf
-     WHERE cf.status = 'active' AND cf.watcher_id IS NULL`,
-    []
+     WHERE cf.status = 'active'
+       AND cf.watcher_id IS NULL
+       AND cf.organization_id = $1`,
+    [organizationId]
   );
 }
 
@@ -608,7 +639,12 @@ export async function executeClassificationQuery(
     }
 
     // Step 2: Fetch classifier templates (attribute_values expanded in TypeScript)
-    const templates = await fetchClassifierTemplates(sql, enabledClassifiers, targetContent);
+    const templates = await fetchClassifierTemplates(
+      sql,
+      enabledClassifiers,
+      targetContent,
+      options.organizationId
+    );
     if (templates.length === 0) {
       logger.info({ mode }, '[Classification Query] No classifier templates found');
       return [];
@@ -621,7 +657,7 @@ export async function executeClassificationQuery(
     const bestMatches = determineBestMatches(similarities);
 
     // Step 5: Build parent classifications from parent_mapping
-    const classifierVersionRows = await fetchAllClassifierVersions(sql);
+    const classifierVersionRows = await fetchAllClassifierVersions(sql, options.organizationId);
     const classifierVersionLookup = new Map(
       classifierVersionRows.map((r) => [r.slug, r])
     );

@@ -78,7 +78,8 @@ describe('createSyncRun cloud gate (postgres) — queue-time', () => {
     const { feedId } = await setupPostgresFeed();
 
     process.env.LOBU_CLOUD_MODE = '1';
-    const runId = await createSyncRun(feedId, {} as Env, sql);
+    const created = await createSyncRun(feedId, {} as Env, sql);
+    const runId = created.ok ? created.runId : null;
 
     expect(runId).not.toBeNull();
     const runs = await sql`SELECT status FROM runs WHERE feed_id = ${feedId}`;
@@ -90,7 +91,8 @@ describe('createSyncRun cloud gate (postgres) — queue-time', () => {
     const { feedId } = await setupPostgresFeed();
 
     process.env.LOBU_CLOUD_MODE = undefined;
-    const runId = await createSyncRun(feedId, {} as Env, sql);
+    const created = await createSyncRun(feedId, {} as Env, sql);
+    const runId = created.ok ? created.runId : null;
 
     expect(runId).not.toBeNull();
     const runs = await sql`SELECT status FROM runs WHERE feed_id = ${feedId}`;

@@ -11,6 +11,9 @@
  *
  * Manual classification:
  * - classify: Update content classification manually (single or batch)
+ *
+ * Bulk classification:
+ * - apply: Run a classifier's embedding match over given content ids
  */
 
 import {
@@ -20,10 +23,12 @@ import {
   type ManageClassifiersResult,
 } from '@lobu/core/contracts/tools/manage-classifiers';
 import type { DbClient } from '../../db/client';
-import { getDb } from '../../db/client';
+import { getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
+import { executeClassificationQuery } from '../../utils/classification-query';
 import {
   generateEmbeddings as generateEmbeddingsViaService,
+  getConfiguredEmbeddingModel,
   isValidEmbedding,
 } from '../../utils/embeddings';
 import logger from '../../utils/logger';
@@ -137,6 +142,7 @@ export const manageClassifiers = withValidatedArgs(
     generate_embeddings: flatAction((args, ctx, env) => handleGenerateEmbeddings(args, env, ctx)),
     delete: flatAction(handleDelete),
     classify: flatAction(handleClassify),
+    apply: flatAction(handleApply),
   })
 );
 
@@ -159,27 +165,27 @@ async function handleCreate(
     };
   }
 
-  if (!args.behavior_id) {
-    return {
-      success: false,
-      action: 'create',
-      message: 'Missing required field: behavior_id. Classifiers must be associated with a Behavior.',
-    };
-  }
-
   const entityId = args.entity_id ?? null;
-  const behaviorId = args.behavior_id;
+  // Optional on purpose. `behavior_id` becomes `classify_facet.watcher_id`, and
+  // every embedding-engine lookup filters `cf.watcher_id IS NULL` — so while
+  // this was required, EVERY classifier creatable through this tool or the
+  // ClientSDK was invisible to the engine, and `apply`/the reconciliation cron
+  // reported clean zero-result runs over it. Omit it for an org-level
+  // classifier the engine can match; pass it for a Behavior-scoped one.
+  const behaviorId = args.behavior_id ?? null;
 
-  const watcher = await sql`
-    SELECT id FROM watchers
-    WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
-  `;
-  if (watcher.length === 0) {
-    return {
-      success: false,
-      action: 'create',
-      message: `Behavior not found: ${behaviorId}`,
-    };
+  if (behaviorId !== null) {
+    const watcher = await sql`
+      SELECT id FROM watchers
+      WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
+    `;
+    if (watcher.length === 0) {
+      return {
+        success: false,
+        action: 'create',
+        message: `Behavior not found: ${behaviorId}`,
+      };
+    }
   }
 
   if (entityId !== null) {
@@ -258,7 +264,12 @@ async function handleList(
   // repeated E2E runs left deprecated rows visible in the ordinary list (#2051).
   const statusFilter = args.status ?? 'active';
 
-  const conditions: string[] = ['fc.watcher_id IS NOT NULL', 'fc.organization_id = $1'];
+  // No watcher_id filter: org-level classifiers (watcher_id IS NULL) are the
+  // kind `create` now produces by default and the only kind the engine matches.
+  // The old `fc.watcher_id IS NOT NULL` condition hid every one of them from
+  // the agent that had just created it (and left the NULLS LAST ordering below
+  // dead).
+  const conditions: string[] = ['fc.organization_id = $1'];
   const params: unknown[] = [ctx.organizationId];
   let paramIdx = 2;
 
@@ -535,6 +546,189 @@ async function handleClassify(
       success: false,
       action: 'classify',
       message: error instanceof Error ? error.message : 'Failed to update classification',
+    };
+  }
+}
+
+/**
+ * Why an id the caller asked for produced no classification. These are the
+ * engine's own target-selection conjuncts, in the order it applies them.
+ */
+type SkipReason = 'not_in_organization' | 'superseded' | 'not_embedded' | 'below_threshold';
+
+const SKIP_REASON_TEXT: Record<SkipReason, string> = {
+  not_in_organization: 'not in this organization',
+  superseded: 'superseded',
+  not_embedded: 'not embedded',
+  below_threshold: 'below min_similarity',
+};
+
+/**
+ * Run a classifier's embedding match over caller-supplied content ids.
+ *
+ * This is the agent-facing entry to the same engine the reconciliation cron
+ * uses; the cron only ever reaches it in `entity` mode, so org-scoped feeds
+ * (events with no entity link) had no way to be classified at all.
+ *
+ * Every id that does not produce a classification is reported with a reason.
+ * The engine filters on `fe.embedding IS NOT NULL`, so an unembedded event is
+ * dropped by a WHERE clause — reporting the count is what keeps that from
+ * looking like a successful no-op.
+ */
+async function runApply(
+  args: ManageClassifiersArgs,
+  ctx: ToolContext
+): Promise<ManageClassifiersResult> {
+  const sql = getDb();
+
+  if (!args.classifier_slug) {
+    return { success: false, action: 'apply', message: 'classifier_slug is required' };
+  }
+  if (!args.content_ids || args.content_ids.length === 0) {
+    return { success: false, action: 'apply', message: 'content_ids is required and must be non-empty' };
+  }
+
+  // Dedupe so the counts below describe distinct events, not request repeats.
+  const requestedIds = [...new Set(args.content_ids)];
+
+  // Mirrors the engine's classifier-template lookup exactly (org + active +
+  // watcher_id IS NULL). Diverging here would report a watcher-owned classifier
+  // as "found" and then blame its zero results on min_similarity.
+  const classifierRows = (await sql`
+    SELECT cf.id AS classifier_id
+    FROM classify_facet cf
+    WHERE cf.slug = ${args.classifier_slug}
+      AND cf.status = 'active'
+      AND cf.watcher_id IS NULL
+      AND cf.organization_id = ${ctx.organizationId}
+  `) as unknown as Array<{ classifier_id: number }>;
+
+  if (classifierRows.length === 0) {
+    return {
+      success: false,
+      action: 'apply',
+      message: `Classifier not found or inactive: ${args.classifier_slug}`,
+    };
+  }
+
+  // Partition the request BEFORE classifying so each skip has a real reason
+  // rather than being inferred from a missing result.
+  //
+  // The engine's target set is (in this org) AND (live) AND (has a representative
+  // vector). Each of those three is evaluated SEPARATELY here, because the value
+  // of this action is not just the classified/skipped split — it is that the
+  // stated reason is TRUE. Collapsing any two of them reports a real condition
+  // under a false name:
+  //   - live: read from `events` and derive liveness from `superseded_by`, NOT
+  //     from `current_event_records`. The view is the right relation for the
+  //     ENGINE, but selecting through it here makes a superseded event
+  //     indistinguishable from a foreign one, and it gets reported as
+  //     `not_in_organization` — sending the reader after a tenancy bug that does
+  //     not exist. Reading the base table without the liveness split is the
+  //     opposite error: the event looks reachable and gets blamed on
+  //     `below_threshold`.
+  //   - chunk/model: the engine joins the representative vector (chunk 0 AND the
+  //     configured model), so a stale-model vector is not an embedding to it.
+  //     Ignoring the model stamp reports `below_threshold` for a row that the
+  //     engine never scored at all.
+  //   - organization: the engine is org-scoped, as is this.
+  const inOrg = (await sql`
+    SELECT e.id,
+           (e.superseded_by IS NULL) AS is_live,
+           EXISTS (
+             SELECT 1 FROM event_embeddings emb
+             WHERE emb.event_id = e.id
+               AND emb.chunk_index = 0
+               AND emb.embedding_model = ${getConfiguredEmbeddingModel()}
+           ) AS has_embedding
+    FROM events e
+    WHERE e.organization_id = ${ctx.organizationId}
+      AND e.id = ANY(${pgBigintArray(requestedIds)}::bigint[])
+  `) as unknown as Array<{ id: number; is_live: boolean; has_embedding: boolean }>;
+
+  const byId = new Map(inOrg.map((r) => [Number(r.id), r]));
+  const embeddedIds = inOrg
+    .filter((r) => r.is_live && r.has_embedding)
+    .map((r) => Number(r.id));
+
+  let classifiedIds: number[] = [];
+  if (embeddedIds.length > 0) {
+    const results = await executeClassificationQuery({
+      mode: 'content_ids',
+      organizationId: ctx.organizationId,
+      content_ids: embeddedIds,
+      enabledClassifiers: [args.classifier_slug],
+    });
+    classifiedIds = [...new Set(results.map((r) => Number(r.content_id)))];
+  }
+  const classified = new Set(classifiedIds);
+
+  // One pass, in the engine's own conjunct order, so an id can only ever carry
+  // the FIRST condition it actually fails. Counts and samples are derived from
+  // this single list rather than from parallel filters, so they cannot disagree.
+  const skipped: Array<{ id: number; reason: SkipReason }> = [];
+  for (const id of requestedIds) {
+    const row = byId.get(id);
+    // An id this org cannot see is indistinguishable from one that never
+    // existed, and both are equally "not yours to classify".
+    if (!row) skipped.push({ id, reason: 'not_in_organization' });
+    else if (!row.is_live) skipped.push({ id, reason: 'superseded' });
+    else if (!row.has_embedding) skipped.push({ id, reason: 'not_embedded' });
+    // In-org, live, embedded and still unclassified means every attribute value
+    // scored below min_similarity and no fallback_value is set.
+    else if (!classified.has(id)) skipped.push({ id, reason: 'below_threshold' });
+  }
+
+  const counts: Record<SkipReason, number> = {
+    not_in_organization: 0,
+    superseded: 0,
+    not_embedded: 0,
+    below_threshold: 0,
+  };
+  for (const s of skipped) counts[s.reason]++;
+
+  const detail = (Object.entries(counts) as Array<[SkipReason, number]>)
+    .filter(([, n]) => n > 0)
+    .map(([reason, n]) => `${n} ${SKIP_REASON_TEXT[reason]}`);
+
+  return {
+    success: true,
+    action: 'apply',
+    message:
+      `Classified ${classifiedIds.length}/${requestedIds.length} with "${args.classifier_slug}"` +
+      (detail.length > 0 ? `; ${detail.join('; ')}` : ''),
+    data: {
+      requested: requestedIds.length,
+      classified: classifiedIds.length,
+      skipped: counts,
+      // Bounded sample: enough to go look at the actual events behind a
+      // disappointing run, without returning thousands of ids into the agent's
+      // context. Truncation is visible from `skipped` vs this length.
+      sample_skipped: skipped.slice(0, 20),
+    },
+  };
+}
+
+/**
+ * Same failure contract as `classify`: a thrown DB/engine error comes back as a
+ * `manage_classifiers` result with `success: false`, not a raw exception out of
+ * `routeAction`.
+ */
+async function handleApply(
+  args: ManageClassifiersArgs,
+  ctx: ToolContext
+): Promise<ManageClassifiersResult> {
+  try {
+    return await runApply(args, ctx);
+  } catch (error) {
+    logger.error(
+      { error, classifier_slug: args.classifier_slug, requested: args.content_ids?.length ?? 0 },
+      'Failed to apply classifier over content ids'
+    );
+    return {
+      success: false,
+      action: 'apply',
+      message: error instanceof Error ? error.message : 'Failed to apply classifier',
     };
   }
 }

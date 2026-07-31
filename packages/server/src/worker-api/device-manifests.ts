@@ -264,9 +264,19 @@ function compareSemverish(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
+// Device-connector keys the platform's bridge is allowed to register. A key
+// outside this list rejects the WHOLE poll payload (see `accepted` above), so a
+// new on-device connector must land here in the same change that ships its
+// manifest — `os.shell` is the Mac shell connector (owletto#669), whose
+// `os.shell` capability is already allowlisted in `@lobu/core`.
 function connectorKeyAllowedForPlatform(platform: string, key: string): boolean {
   if (platform === 'macos') {
-    return key.startsWith('apple.') || key === 'local.directory' || key === 'whatsapp.local';
+    return (
+      key.startsWith('apple.') ||
+      key === 'local.directory' ||
+      key === 'whatsapp.local' ||
+      key === 'os.shell'
+    );
   }
   if (platform === 'chrome-extension') {
     return key === 'chrome' || key.startsWith('chrome.');

@@ -24,7 +24,9 @@ export interface ClassifierCreateInput {
 		}
 	>;
 	entity_id?: number;
-	behavior_id: string;
+	/** Omit for an org-level classifier (the only kind `apply` and the
+	 *  reconciliation job match); set to scope to a single Behavior. */
+	behavior_id?: string;
 	min_similarity?: number;
 	fallback_value?: unknown;
 	created_by?: string;
@@ -45,6 +47,18 @@ export interface ClassifierClassifyInput {
 	reasoning?: string;
 }
 
+/**
+ * `apply` runs the classifier's embedding match over content ids you supply.
+ * Unlike the reconciliation cron it needs no entity link, so it is the only way
+ * to classify org-scoped feed content. Ids that produce no classification come
+ * back with a reason (`not_in_organization` | `superseded` | `not_embedded` |
+ * `below_threshold`) rather than as a silent shortfall.
+ */
+export interface ClassifierApplyInput {
+	classifier_slug: string;
+	content_ids: number[];
+}
+
 export interface ClassifiersNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(input?: { entity_id?: number; status?: string }): Promise<unknown>;
@@ -55,6 +69,7 @@ export interface ClassifiersNamespace {
 	}): Promise<unknown>;
 	delete(input: { classifier_id: number }): Promise<unknown>;
 	classify(input: ClassifierClassifyInput): Promise<unknown>;
+	apply(input: ClassifierApplyInput): Promise<unknown>;
 }
 
 export function buildClassifiersNamespace(
@@ -70,5 +85,6 @@ export function buildClassifiersNamespace(
 		generateEmbeddings: (input) => action("generate_embeddings", input),
 		delete: (input) => action("delete", input),
 		classify: (input) => action("classify", input),
+		apply: (input) => action("apply", input),
 	};
 }

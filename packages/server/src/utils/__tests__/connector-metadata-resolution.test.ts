@@ -20,7 +20,10 @@ import { join } from 'node:path';
 import { createConnectorCompiler } from '@lobu/connector-worker/compile';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { formatMetadataExtractionError } from '../compiler-core';
-import { extractConnectorMetadata } from '../connector-compiler';
+import {
+  extractConnectorMetadata,
+  NO_CONNECTOR_RUNTIME_ERROR,
+} from '../connector-compiler';
 
 const CONNECTOR_SOURCE = `
 import { ConnectorRuntime } from '@lobu/connector-sdk';
@@ -116,4 +119,42 @@ describe('formatMetadataExtractionError', () => {
     );
     expect(formatted).not.toContain('npm install');
   });
+});
+
+/**
+ * `connector-catalog` routes "file exports no ConnectorRuntime" outcomes to
+ * debug instead of warn by matching NO_CONNECTOR_RUNTIME_ERROR against the
+ * error message — the throw happens in a subprocess and crosses back as
+ * `process.send({ error: error.message })`, so a string is the only channel.
+ *
+ * This pins the coupling, not the wording: the runner interpolates the same
+ * constant, so rewording it moves both sides together and stays green. What
+ * turns it red is breaking the coupling — replacing the
+ * `${JSON.stringify(NO_CONNECTOR_RUNTIME_ERROR)}` interpolation with a
+ * hardcoded literal — at which point the catalog stops recognising its own
+ * sentinel and every not-a-connector file silently routes back to `warn`.
+ */
+describe('non-connector files are identifiable, not just failures', () => {
+  test('a module with no ConnectorRuntime rejects with exactly NO_CONNECTOR_RUNTIME_ERROR', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lobu-nonconnector-'));
+    try {
+      const modulePath = join(dir, 'support_module.ts');
+      // Shaped like the real offenders: a plain support module that exports
+      // helpers and no class with sync()/execute().
+      writeFileSync(
+        modulePath,
+        'export const NAMESPACES = ["github"];\n' +
+          'export function normalize(v: string) { return v.toLowerCase(); }\n'
+      );
+
+      const { compileConnectorFromFile } = createConnectorCompiler();
+      const compiled = await compileConnectorFromFile(modulePath);
+
+      await expect(extractConnectorMetadata(compiled)).rejects.toThrow(
+        NO_CONNECTOR_RUNTIME_ERROR
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

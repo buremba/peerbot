@@ -9,7 +9,8 @@ export const ManageClassifiersSchema = Type.Object({
     [
       // Template CRUD
       Type.Literal("create", {
-        description: "Create a classifier (must belong to a Behavior).",
+        description:
+          "Create a classifier. Org-level by default; pass behavior_id to scope it to one Behavior.",
       }),
       Type.Literal("list", { description: "List classifiers with filters." }),
       Type.Literal("generate_embeddings", {
@@ -21,6 +22,10 @@ export const ManageClassifiersSchema = Type.Object({
       // Manual classification
       Type.Literal("classify", {
         description: "Manual single/batch classification.",
+      }),
+      Type.Literal("apply", {
+        description:
+          "Run a classifier over specific content ids (embedding match, no LLM). Re-running re-labels: it replaces prior embedding results and never touches manual/LLM ones. Use after editing a classifier — run generate_embeddings first.",
       }),
     ],
     { description: "Action to perform" }
@@ -36,7 +41,7 @@ export const ManageClassifiersSchema = Type.Object({
   behavior_id: Type.Optional(
     Type.String({
       description:
-        "[create] Persisted Behavior ID (`behavior_id`) returned by manage_behaviors (numeric string; required)",
+        "[create] Persisted Behavior ID returned by manage_behaviors (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Behavior.",
     })
   ),
   classifier_id: Type.Optional(
@@ -133,10 +138,18 @@ export const ManageClassifiersSchema = Type.Object({
       }
     )
   ),
+  content_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      minItems: 1,
+      maxItems: 2000,
+      description:
+        "[apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.",
+    })
+  ),
   classifier_slug: Type.Optional(
     Type.String({
       description:
-        '[classify] Classifier slug (e.g., "sentiment", "bug-severity")',
+        '[classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")',
     })
   ),
   value: Type.Optional(

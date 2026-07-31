@@ -44,6 +44,11 @@ describe('requiresOwnerAdmin', () => {
   it('should require admin for manage_classifiers mutating actions', () => {
     expect(requiresOwnerAdmin('manage_classifiers', { action: 'create' }, false)).toBe(true);
     expect(requiresOwnerAdmin('manage_classifiers', { action: 'classify' }, false)).toBe(true);
+    // `apply` writes event_classifications in bulk. The pinned access-matrix
+    // fixture would also catch a regression, but it is a snapshot — this states
+    // the requirement directly, and names the tier a reader should expect.
+    expect(requiresOwnerAdmin('manage_classifiers', { action: 'apply' }, false)).toBe(true);
+    expect(isPublicReadable('manage_classifiers', { action: 'apply' })).toBe(false);
   });
 
   it('should require admin for manage_operations execute; approve/reject are write-tier (handler enforces admin-or-run-owner)', () => {

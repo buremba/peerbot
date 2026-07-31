@@ -51,6 +51,13 @@ export class HttpWorkerTransport implements WorkerTransport {
    */
   private toolsUsed = new Set<string>();
   /**
+   * Latched when `send_message` posted into the conversation this turn is
+   * replying to. Stamped on the terminal completion so the gateway skips
+   * delivering `finalText` as a second message. A latch, not a count: any
+   * number of in-band posts collapses to the same "already answered" fact.
+   */
+  private repliedInBand = false;
+  /**
    * Once-per-turn latch for user-facing errors. Three uncoordinated emitters
    * can report the SAME failed turn — `worker.ts`'s result-false branch,
    * `worker.ts`'s catch branch, and `sse-client.ts`'s outer catch — and every
@@ -104,6 +111,15 @@ export class HttpWorkerTransport implements WorkerTransport {
   recordToolUsed(toolName: string): void {
     const name = toolName.trim();
     if (name) this.toolsUsed.add(name);
+  }
+
+  /**
+   * Record that the agent answered in-band this turn — it posted into the
+   * conversation it is replying to, so the terminal reply must not also be
+   * delivered.
+   */
+  recordInBandReply(): void {
+    this.repliedInBand = true;
   }
 
   async signalDone(finalDelta?: string): Promise<void> {
@@ -218,6 +234,10 @@ export class HttpWorkerTransport implements WorkerTransport {
         // Always stamp (including empty) so the gateway can tell "no tools"
         // from "worker too old to report" (undefined).
         toolsUsed: [...this.toolsUsed],
+        // Only stamp the true case: an absent field means "nothing posted
+        // in-band" AND "worker too old to report" alike, and both must render
+        // the reply. Fails toward delivering, never toward silence.
+        ...(this.repliedInBand ? { repliedInBand: true } : {}),
       })
     );
   }

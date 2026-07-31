@@ -215,10 +215,23 @@ async function handleCreate(
     };
   }
 
-  // created_by has a FK to user(id) — fall back to ctx.userId, not a literal
-  // string. Anonymous public reads can't reach this code path (the route is
-  // admin-gated), so ctx.userId is non-null here.
-  const createdBy = args.created_by ?? ctx.userId;
+  // `created_by` is NOT NULL and carries NO foreign key — `classify_facet` has
+  // no FK at all (9 NOT NULLs, a PK, one unique index), so any stable
+  // identifier satisfies it. The previous comment here asserted an FK to
+  // `user(id)` that does not exist, and concluded from "the route is
+  // admin-gated" that `ctx.userId` is non-null. Both halves were wrong:
+  // `action-router.ts` returns early for a system context, so a Behavior
+  // reaction (userId null, memberRole null) skips the admin gate and reached
+  // this INSERT with no identity — dying on the NOT NULL as a raw Postgres
+  // 23502. Measured on a Behavior context: `list` and `apply` both succeeded,
+  // so `create` was the verb blocking ad-hoc agent-defined classification.
+  // (`classify` and `delete` were not exercised; neither writes `created_by`.)
+  //
+  // The 'system' sentinel follows the manage_entity.ts precedent
+  // (`ctx.agentId ?? ctx.userId ?? "system"`), but userId stays first here to
+  // preserve the pre-existing user attribution when both are set. A Behavior
+  // sets neither, so it lands on 'system'.
+  const createdBy = args.created_by ?? ctx.userId ?? ctx.agentId ?? 'system';
   // Config lives on the single classify_facet row now (no version table) — hydrate embeddings first,
   // then one insert carrying identity + config.
   const { attributeValues: withEmbeddings, generatedCount } = await hydrateAttributeEmbeddings(

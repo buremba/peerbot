@@ -8,7 +8,10 @@ import {
 } from "@lobu/connector-worker/compile";
 import { getErrorMessage } from "@lobu/core";
 import { getConnectorCloudAvailability } from "./connector-cloud-gate";
-import { extractConnectorMetadata } from "./connector-compiler";
+import {
+	extractConnectorMetadata,
+	NO_CONNECTOR_RUNTIME_ERROR,
+} from "./connector-compiler";
 import logger from "./logger";
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
@@ -238,10 +241,27 @@ async function extractConnectorCatalogMetadata(
 		metadataCache.set(filePath, { mtimeMs: fileStat.mtimeMs, value });
 		return value;
 	} catch (error) {
-		logger.warn(
-			{ file_path: filePath, error: getErrorMessage(error) },
-			"Skipping connector catalog entry after metadata extraction failed",
-		);
+		const message = getErrorMessage(error);
+		// "No ConnectorRuntime class" is the expected outcome for the support
+		// modules that live alongside connectors in the same directory (see
+		// NO_CONNECTOR_RUNTIME_ERROR): the scan compiles every `.ts` it finds, so
+		// discovering that a file is not a connector is normal control flow, and
+		// warning on it made a first `lobu run` print seven "metadata extraction
+		// failed" lines that read as a broken install. Real failures — a compile
+		// error, a missing connector SDK — still warn, because those DO mean a
+		// connector the user expects is missing.
+		const notAConnector = message.includes(NO_CONNECTOR_RUNTIME_ERROR);
+		if (notAConnector) {
+			logger.debug(
+				{ file_path: filePath },
+				"Skipping catalog entry: file exports no ConnectorRuntime",
+			);
+		} else {
+			logger.warn(
+				{ file_path: filePath, error: message },
+				"Skipping connector catalog entry after metadata extraction failed",
+			);
+		}
 		metadataCache.set(filePath, { mtimeMs: fileStat.mtimeMs, value: null });
 		return null;
 	}

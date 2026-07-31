@@ -33,6 +33,51 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Refuse to publish off a commit whose post-merge image smoke is red.
+      #
+      # `app-image-smoke` (in build-images.yml) BOOTS the app image built from
+      # this exact commit. If that is failing, the tree is known-broken at
+      # runtime and a release would ship it — every bug this guards against
+      # (#2231, #2183, __filename, GLIBC_2.38, uid-0) was green on every check
+      # that does not run the artifact.
+      #
+      # Deliberately NOT gated on "Published-artifact smoke": that one installs
+      # `@lobu/cli@latest` from npm, i.e. the PREVIOUS release. It is red
+      # precisely when a fix is waiting to be published, so gating on it would
+      # deadlock the release that repairs it. Its job is to alert on what users
+      # can install right now, and to verify the new version after publishing.
+      - name: Require a green app-image smoke for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "publishing from ${sha}"
+
+          # Newest run of build-images for this SHA. `head_sha` filters server
+          # side so a busy main can't push ours off the first page.
+          run=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${sha}&per_page=1" \
+            --jq 'if (.workflow_runs | length) == 0 then "missing"
+                  else "\(.workflow_runs[0].status) \(.workflow_runs[0].conclusion // "none")" end')
+          status="${run%% *}"
+          conclusion="${run#* }"
+          echo "build-images status: ${status}, conclusion: ${conclusion}"
+
+          if [ "$status" = "missing" ]; then
+            echo "::error::No build-images run for ${sha}. The app image for this commit has never been built or smoked; publish would ship an unverified tree."
+            exit 1
+          fi
+          if [ "$status" != "completed" ]; then
+            echo "::error::build-images for ${sha} is still '${status}'. Wait for the app-image smoke to finish, then re-run this publish."
+            exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::build-images for ${sha} concluded '${conclusion}'. The app image smoke is not green — fix main before releasing."
+            exit 1
+          fi
+          echo "app-image smoke green for ${sha} — proceeding."
+
       - uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}

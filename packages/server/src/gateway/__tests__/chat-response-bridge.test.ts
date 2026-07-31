@@ -689,7 +689,11 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
     // is the double-message this flag exists to prevent.
     const { target } = createStreamingTarget();
     const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
-    const { manager } = createHarness(target, "slack", slackPost);
+    const { conversationState, manager } = createHarness(
+      target,
+      "slack",
+      slackPost
+    );
     const bridge = new ChatResponseBridge(manager as any);
 
     await bridge.handleCompletion(
@@ -704,6 +708,21 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
 
     expect(slackPost).not.toHaveBeenCalled();
     expect(target.post).not.toHaveBeenCalled();
+    // Prompt history still gets the assistant turn — suppression drops the
+    // duplicate delivery, not the model's memory of having answered.
+    expect(
+      await conversationState.getHistory(
+        "conn-1",
+        "slack:C123",
+        "slack:C123:1700000000.123456"
+      )
+    ).toEqual([
+      {
+        role: "assistant",
+        content: "I answered the e2e check — confirmed I am up.",
+        name: undefined,
+      },
+    ]);
   });
 
   test("posting to a different conversation still delivers the terminal reply", async () => {

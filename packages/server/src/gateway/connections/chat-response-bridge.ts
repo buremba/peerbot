@@ -501,9 +501,12 @@ export class ChatResponseBridge implements ResponseRenderer {
       // Durable transcript: persist the bot's interactive reply too, so
       // read_conversation shows both sides. No platform message id is surfaced
       // here, so key on the turn's messageId (stable across a redelivered
-      // completion). Fire-and-forget + idempotent.
+      // completion). Fire-and-forget + idempotent. Skipped when the terminal
+      // reply was suppressed: the transcript mirrors the platform channel, and
+      // this text was never posted there — the in-band message was already
+      // captured by the send route with its real platform id.
       const replyMd = readPlatformMetadata(payload.platformMetadata);
-      if (replyMd.organizationId) {
+      if (replyMd.organizationId && !suppressedByInBandReply) {
         captureChannelMessage({
           organizationId: replyMd.organizationId,
           connectionId,
@@ -600,9 +603,13 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     if (
       !blockedAtCompletion &&
+      !suppressedByInBandReply &&
       !completionMd.sessionReset &&
       historyText?.trim()
     ) {
+      // Suppressed turns skip the chips too: `historyText` is the undelivered
+      // report about the in-band message, so chips derived from it would
+      // trail a reply that was never posted.
       // Fire-and-forget: the `thread_response` worker runs at concurrency 1
       // (runs-queue.ts DEFAULT_WORKER_CONCURRENCY), so awaiting an up-to-15s
       // model call here would head-of-line block every other conversation's

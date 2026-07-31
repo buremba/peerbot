@@ -454,18 +454,29 @@ describe('device connector manifests', () => {
   it('admits os.shell on macOS and does not let one unknown key drop its siblings', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
 
-    // Prime the poll handler's module-level due-feed-materialize cooldown, as
-    // the first test in this file does and for the same reason: the suite runs
-    // singleFork + isolate:false, so whether a preceding poll left the cooldown
-    // hot changes what this one does. Without it this test failed ~2 runs in 7.
-    const primer = await poll(workerId, []);
-    expect(primer.status).toBe(200);
-
     // Synthetic sibling on purpose. A real key like `apple.screen_time` also
     // exists in the bundled device-connector catalog, which puts it on a
     // different reconcile path and makes the result depend on catalog state
     // rather than on the allowlist under test.
-    const shell = manifest({ key: 'os.shell', required_capability: 'os.shell' });
+    // Distinct display name is load-bearing, not cosmetic. `ensureDeviceConnectorWired`
+    // runs per key under Promise.allSettled with an advisory lock keyed on
+    // (userId, connectorKey), so two manifests sharing a name race
+    // ensureUniqueConnectionSlug: one connection INSERT loses on
+    // connections_org_slug_unique and allSettled swallows it, leaving the
+    // sibling's definition unwired. That is a test-only collision here, but see
+    // the note below — the race itself is not test-only.
+    //
+    // NOT test-only: two same-named device-manifest connectors wired in one
+    // reconcile pass can genuinely lose a connection INSERT in production. It
+    // self-heals on the next poll (slug suffixing), and today's real manifests
+    // all carry distinct names, so it is latent rather than live. Tracked
+    // separately — fixing the swallowed unique violation in
+    // ensureDeviceConnectorWired is a different concern from this allowlist.
+    const shell = manifest({
+      key: 'os.shell',
+      required_capability: 'os.shell',
+      name: 'OS Shell Probe',
+    });
     const sibling = manifest();
 
     const res = await poll(workerId, [shell, sibling], 'macos', {

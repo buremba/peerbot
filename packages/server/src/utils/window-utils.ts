@@ -136,23 +136,11 @@ export async function computePendingWindow(
   `;
 
   const now = new Date();
-  const alignedNow = alignToBehaviorWindowStart(now, granularity);
-
-  let windowStart: Date;
-  if (lastWindow.length > 0) {
-    // Next period after the last one, re-aligned so a corrupt stored start
-    // cannot propagate. Capped at the current period: being "done" with today
-    // means today gets re-analysed (and superseded), not that tomorrow starts.
-    const lastStart = alignToBehaviorWindowStart(
-      new Date(lastWindow[0].window_start as string),
-      granularity
-    );
-    const nextStart = addBehaviorPeriod(lastStart, granularity);
-    windowStart = nextStart > alignedNow ? alignedNow : nextStart;
-  } else {
-    // No previous windows - start from aligned "now minus one period"
-    windowStart = alignToBehaviorWindowStart(subtractBehaviorPeriod(now, granularity), granularity);
-  }
+  const windowStart = nextBehaviorWindowStart(
+    lastWindow.length > 0 ? new Date(lastWindow[0].window_start as string) : null,
+    now,
+    granularity
+  );
 
   // Always a full period. `windowStart <= alignedNow` by construction, so this
   // can never exceed the current period's end and never needs clamping — which
@@ -160,6 +148,48 @@ export async function computePendingWindow(
   const windowEnd = addBehaviorPeriod(windowStart, granularity);
 
   return { windowStart, windowEnd };
+}
+
+/**
+ * The period a Behavior should analyse next, given the start of its most recent
+ * window (or null if it has none).
+ *
+ * Pure and exported because TWO call sites need it and they must not drift:
+ * `computePendingWindow` above, which is what actually dispatches, and
+ * `get_behavior`'s `next_window`, which only PREVIEWS the dispatch. While those
+ * were two implementations they disagreed by a full period on legacy rows —
+ * telling the agent one window and handing the run another. One rule, one
+ * implementation, no drift.
+ *
+ * Takes the last window's START, never its end: `window_end` is not reliably an
+ * exclusive boundary (agents write windows through `complete_window`, and prod
+ * holds both conventions), so chaining off it starts the next period a
+ * millisecond short of a full one.
+ *
+ * `now` is a parameter rather than read here so the rule stays a pure function
+ * of its inputs and can be tested at a chosen instant.
+ */
+export function nextBehaviorWindowStart(
+  lastWindowStart: Date | null,
+  now: Date,
+  granularity: BehaviorTimeGranularity
+): Date {
+  const alignedNow = alignToBehaviorWindowStart(now, granularity);
+
+  if (!lastWindowStart) {
+    // Nothing analysed yet — start one aligned period back.
+    return alignToBehaviorWindowStart(subtractBehaviorPeriod(now, granularity), granularity);
+  }
+
+  // Next period after the last one, re-aligned so a corrupt stored start cannot
+  // propagate. Capped at the current period: being "done" with today means today
+  // gets re-analysed (and superseded), not that tomorrow starts — granularity has
+  // no 'hourly', so a sub-daily cron must keep resolving to the same day.
+  const nextStart = addBehaviorPeriod(
+    alignToBehaviorWindowStart(lastWindowStart, granularity),
+    granularity
+  );
+  return nextStart > alignedNow ? alignedNow : nextStart;
 }
 
 /**

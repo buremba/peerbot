@@ -36,7 +36,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { computePendingWindow } from '../window-utils';
+import { computePendingWindow, nextBehaviorWindowStart } from '../window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import { createTestOrganization, createTestUser } from '../../__tests__/setup/test-fixtures';
 
@@ -283,5 +283,61 @@ describe('computePendingWindow', () => {
 
     expect(windowStart.toISOString().endsWith('T00:00:00.000Z')).toBe(true);
     expect(windowEnd.getTime() - windowStart.getTime()).toBe(DAY_MS);
+  });
+});
+
+/**
+ * The rule itself, at a fixed instant and with no database.
+ *
+ * `get_behavior`'s `next_window` PREVIEWS what `computePendingWindow`
+ * dispatches. While those were two implementations they drifted — the preview
+ * chained off `window_end` and the dispatcher off `window_start`, a full period
+ * apart on a legacy row with an inclusive end, so the agent was shown one
+ * window and the run was handed another. They now share this function, and
+ * these cases pin the shared contract rather than either caller.
+ */
+describe('nextBehaviorWindowStart', () => {
+  const NOW = new Date('2026-07-31T17:26:00.000Z');
+
+  it('advances one aligned period from the previous start', () => {
+    expect(
+      nextBehaviorWindowStart(new Date('2026-07-30T00:00:00.000Z'), NOW, 'daily').toISOString()
+    ).toBe('2026-07-31T00:00:00.000Z');
+  });
+
+  // Both boundary conventions, and a corrupt start, must land on the same period.
+  it.each([
+    ['aligned start', '2026-07-30T00:00:00.000Z'],
+    ['inclusive-end-derived start', '2026-07-30T23:59:59.999Z'],
+    ['mid-period start', '2026-07-30T11:17:03.221Z'],
+  ])('normalises a %s to the same next period', (_label, stored) => {
+    expect(nextBehaviorWindowStart(new Date(stored), NOW, 'daily').toISOString()).toBe(
+      '2026-07-31T00:00:00.000Z'
+    );
+  });
+
+  it('caps at the current period instead of minting a future one', () => {
+    // Today is already done — a sub-daily cron must get today again, not tomorrow.
+    expect(
+      nextBehaviorWindowStart(new Date('2026-07-31T00:00:00.000Z'), NOW, 'daily').toISOString()
+    ).toBe('2026-07-31T00:00:00.000Z');
+  });
+
+  it('still catches up one period at a time when far behind', () => {
+    expect(
+      nextBehaviorWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
+    ).toBe('2026-01-11T00:00:00.000Z');
+  });
+
+  it('starts one aligned period back when there is no previous window', () => {
+    expect(nextBehaviorWindowStart(null, NOW, 'daily').toISOString()).toBe(
+      '2026-07-30T00:00:00.000Z'
+    );
+  });
+
+  it('aligns weekly to Monday', () => {
+    const out = nextBehaviorWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
+    expect(out.getUTCDay()).toBe(1);
+    expect(out.toISOString()).toBe('2026-06-29T00:00:00.000Z');
   });
 });

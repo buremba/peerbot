@@ -56,6 +56,7 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
+  nextBehaviorWindowStart,
   parseBigintArray,
 } from '../utils/window-utils';
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
@@ -243,6 +244,7 @@ interface WatcherQueryRow {
   sel_version_reactions_guidance: string | null;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
+  latest_window_start: string | null;
   // jsonb_agg of identity scopes for primary entity
   entity_scopes: Array<{ namespace: string; identifier: string }> | null;
 }
@@ -563,6 +565,12 @@ async function getBehaviorImpl(
         sv.reactions_guidance as sel_version_reactions_guidance,
         -- Latest window end for the unprocessedCount bound.
         (SELECT MAX(window_end) FROM canvas_windows WHERE watcher_id = i.id) as latest_window_end,
+        -- Latest window START drives the next_window preview, so it chains off
+        -- exactly what computePendingWindow chains off. Chaining the preview off
+        -- the END instead makes the two disagree by a full period on a legacy
+        -- row stored with an inclusive 23:59:59.999 end.
+        (SELECT window_start FROM canvas_windows WHERE watcher_id = i.id
+          ORDER BY window_start DESC LIMIT 1) as latest_window_start,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
@@ -840,6 +848,7 @@ async function getBehaviorImpl(
       (STANDARD_IDENTITY_NAMESPACES as readonly string[]).includes(s.namespace)
     );
     const latestEnd = watcherRow.latest_window_end;
+    const latestStart = watcherRow.latest_window_start;
     // Two entity-link fragments: one with `$1 = watcher_id` reserved (for
     // queries that join on the watcher's windows), one without (for queries
     // that only need the entity scope). Sharing one fragment and passing a
@@ -949,29 +958,13 @@ async function getBehaviorImpl(
       let windowStart: Date;
       let windowEnd: Date;
 
-      if (latestEnd) {
-        // Continue from the period AFTER the last one, aligned. Same rule as
-        // `computePendingWindow` (utils/window-utils), which is what actually
-        // dispatches — this is only the preview of it, and a preview that
-        // disagrees with the dispatcher tells the agent one period and hands it
-        // another. Aligning matters because `window_end` is not reliably an
-        // exclusive boundary: agents write windows through `complete_window`
-        // and prod holds both conventions, so `new Date(latestEnd)` could start
-        // the preview at `…T23:59:59.999Z`.
-        const latestEndDate = new Date(latestEnd);
-        windowStart = alignToBehaviorWindowStart(latestEndDate, timeGranularity);
-        if (windowStart < latestEndDate) {
-          windowStart = addBehaviorPeriod(windowStart, timeGranularity);
-        }
-        // The dispatcher's clamp, too: when the last window IS the current
-        // period, `computePendingWindow` re-dispatches the current period
-        // (superseding its head) rather than minting a future one. Without
-        // this the preview advertises tomorrow while the dispatcher hands
-        // out today.
-        const alignedNow = alignToBehaviorWindowStart(now, timeGranularity);
-        if (windowStart > alignedNow) {
-          windowStart = alignedNow;
-        }
+      if (latestStart) {
+        // The dispatcher's own rule, called — not reimplemented. `get_behavior`
+        // only PREVIEWS what `computePendingWindow` will hand the run, so a
+        // second copy here is a second thing to keep in sync, and it already
+        // drifted once (preview chained off window_end, dispatcher off
+        // window_start — a full period apart on legacy rows).
+        windowStart = nextBehaviorWindowStart(new Date(latestStart), now, timeGranularity);
       } else {
         // No windows yet — find the earliest unprocessed event for this
         // entity. Unbounded by occurred_at: pi review (#481) flagged that

@@ -165,27 +165,27 @@ async function handleCreate(
     };
   }
 
-  if (!args.behavior_id) {
-    return {
-      success: false,
-      action: 'create',
-      message: 'Missing required field: behavior_id. Classifiers must be associated with a Behavior.',
-    };
-  }
-
   const entityId = args.entity_id ?? null;
-  const behaviorId = args.behavior_id;
+  // Optional on purpose. `behavior_id` becomes `classify_facet.watcher_id`, and
+  // every embedding-engine lookup filters `cf.watcher_id IS NULL` — so while
+  // this was required, EVERY classifier creatable through this tool or the
+  // ClientSDK was invisible to the engine, and `apply`/the reconciliation cron
+  // reported clean zero-result runs over it. Omit it for an org-level
+  // classifier the engine can match; pass it for a Behavior-scoped one.
+  const behaviorId = args.behavior_id ?? null;
 
-  const watcher = await sql`
-    SELECT id FROM watchers
-    WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
-  `;
-  if (watcher.length === 0) {
-    return {
-      success: false,
-      action: 'create',
-      message: `Behavior not found: ${behaviorId}`,
-    };
+  if (behaviorId !== null) {
+    const watcher = await sql`
+      SELECT id FROM watchers
+      WHERE id = ${behaviorId} AND organization_id = ${ctx.organizationId}
+    `;
+    if (watcher.length === 0) {
+      return {
+        success: false,
+        action: 'create',
+        message: `Behavior not found: ${behaviorId}`,
+      };
+    }
   }
 
   if (entityId !== null) {
@@ -264,7 +264,12 @@ async function handleList(
   // repeated E2E runs left deprecated rows visible in the ordinary list (#2051).
   const statusFilter = args.status ?? 'active';
 
-  const conditions: string[] = ['fc.watcher_id IS NOT NULL', 'fc.organization_id = $1'];
+  // No watcher_id filter: org-level classifiers (watcher_id IS NULL) are the
+  // kind `create` now produces by default and the only kind the engine matches.
+  // The old `fc.watcher_id IS NOT NULL` condition hid every one of them from
+  // the agent that had just created it (and left the NULLS LAST ordering below
+  // dead).
+  const conditions: string[] = ['fc.organization_id = $1'];
   const params: unknown[] = [ctx.organizationId];
   let paramIdx = 2;
 

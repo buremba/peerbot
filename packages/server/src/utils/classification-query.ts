@@ -7,7 +7,7 @@
  * Vector operations (cosine similarity) are computed in TypeScript.
  */
 
-import { type DbClient, getDb, pgTextArray } from '../db/client';
+import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
 import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
@@ -290,7 +290,11 @@ async function fetchTargetContent(
 
       return {
         id: row.id,
-        entity_ids: row.entity_ids,
+        // `entity_ids` is bigint[]; under fetch_types:false it arrives as the raw
+        // literal "{1,2}" (or "{}"), never a JS array. The scope check flatMaps
+        // these into a Set — flatMap doesn't flatten strings, so the Set would
+        // hold the raw literal and numeric membership tests would never match.
+        entity_ids: parsePgNumberArray(row.entity_ids),
         parent_id: row.parent_id,
         combined_embedding: combined,
       };
@@ -340,7 +344,11 @@ async function fetchClassifierTemplates(
 
   for (const row of rows) {
     // Scope check: classifier must be global (empty entity_ids) OR overlap with target content entity_ids
-    const classifierEntityIds = row.entity_ids ?? [];
+    // Same raw-array read as above. Without the parse, "{}" is a 2-char string:
+    // the length guard passes and `.some` throws TypeError. `manage_classifiers
+    // create` writes ARRAY[]::bigint[] rather than NULL, so every org-level
+    // classifier it creates would crash the engine on this line.
+    const classifierEntityIds = parsePgNumberArray(row.entity_ids ?? []);
     if (
       classifierEntityIds.length > 0 &&
       !classifierEntityIds.some((id) => targetEntityIds.has(id))

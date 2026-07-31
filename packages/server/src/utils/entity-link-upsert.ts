@@ -596,13 +596,21 @@ async function applyTraits(
  * traits onto the resolved entity. Rules are loaded from the connector
  * definition (poll/sync path).
  */
-export async function applyEventAttributions(params: {
-  connectorKey: string;
-  connectionId?: number | null;
-  feedKey: string | null;
-  orgId: string;
-  items: BatchItem[];
-}): Promise<void> {
+export async function applyEventAttributions(
+  params: {
+    connectorKey: string;
+    connectionId?: number | null;
+    feedKey: string | null;
+    orgId: string;
+    items: BatchItem[];
+  },
+  // Optional transaction handle, same contract the webhook path already uses via
+  // resolveEventAttributionsForItems: the entity match/create/trait writes land
+  // on the caller's tx instead of the singleton. The sync dry-run path threads
+  // its rolled-back tx here so auto-created entities disappear with the events
+  // that referenced them. Omitted → getDb().
+  sql?: DbClient
+): Promise<void> {
   if (!params.feedKey || params.items.length === 0) return;
 
   const rulesByKind = await loadEventAttributionRules({
@@ -612,13 +620,16 @@ export async function applyEventAttributions(params: {
   });
   if (Object.keys(rulesByKind).length === 0) return;
 
-  await resolveLinksByKind({
-    connectorKey: params.connectorKey,
-    connectionId: params.connectionId,
-    orgId: params.orgId,
-    items: params.items,
-    rulesByKind,
-  });
+  await resolveLinksByKind(
+    {
+      connectorKey: params.connectorKey,
+      connectionId: params.connectionId,
+      orgId: params.orgId,
+      items: params.items,
+      rulesByKind,
+    },
+    sql ?? getDb()
+  );
 }
 
 /**

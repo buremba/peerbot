@@ -62,6 +62,16 @@ type DbClient = ReturnType<typeof getDb>;
 type SqlFragment = ReturnType<DbClient>;
 
 /**
+ * Caps on `runs.dry_run_preview`. A dry run exists so an operator can see the
+ * SHAPE of what a connector would ingest; it is not a second copy of `events`,
+ * and an uncapped preview of a feed that emits thousands of long-bodied items
+ * would be a large jsonb write on every batch. `total` in the stored preview is
+ * always the true count, so truncation is visible rather than silent.
+ */
+const DRY_RUN_PREVIEW_LIMIT = 50;
+const DRY_RUN_CONTENT_CHARS = 500;
+
+/**
  * Atomic terminal-state transition guarded on `status = 'running' AND
  * claimed_by = worker_id`. If the run was already finalized by another path
  * (e.g. the gateway reaped it on a timeout and the worker reports in late) or
@@ -222,6 +232,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// Look up run details for event columns
 		const runRows = (await sql`
     SELECT r.feed_id, r.connection_id, r.connector_key, r.organization_id,
+           r.dry_run,
            f.feed_key, f.entity_ids
     FROM runs r
     LEFT JOIN feeds f ON f.id = r.feed_id
@@ -231,6 +242,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			connection_id: number | null;
 			connector_key: string;
 			organization_id: string;
+			dry_run: boolean;
 			feed_key: string | null;
 			entity_ids: number[] | null;
 		}>;
@@ -242,34 +254,83 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		const run = runRows[0];
 		const entityIds = parsePgNumberArray(run.entity_ids);
 
-		// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
-		// come over the wire as base64 in `attachment.data`. Materialize each into
-		// the ArtifactStore before the row hits events.attachments — the events
-		// table is not a binary store. Audio attachments are queued for async
-		// transcription after insert.
-		const { items: materializedItems, pendingTranscriptions } =
-			await materializeInlineAttachments(batch.items);
-		batch.items = materializedItems as typeof batch.items;
+		// A dry run executes the connector for real — same code, same credentials,
+		// same validation, the same INSERTs — and then throws the writes away by
+		// rolling back. Read from the run row rather than the request so a worker
+		// cannot elect to skip writes, and so any replica handling this callback
+		// reaches the same decision.
+		//
+		// Why rollback rather than a guard on each write. The set of things a dry
+		// run must NOT do is open-ended — it grows every time anyone adds a write
+		// to this path, and nothing makes them notice. The set it must KEEP is
+		// closed: the preview, and that's it. So the code enumerates the closed
+		// set and lets the transaction cover the open one. A write added below
+		// tomorrow is rolled back without anyone remembering this feature exists.
+		//
+		// The bonus is the point of the feature: because the real INSERTs actually
+		// run, a dry run answers "would this sync work?" honestly. A constraint
+		// violation, a bad enum or a NOT NULL surfaces exactly as it would on the
+		// real path. Skipping the insert would have reported success on data that
+		// could never land.
+		//
+		// What rollback does NOT cover is anything that leaves Postgres, and those
+		// are guarded individually below (marked ESCAPES THE TX). That is a
+		// mechanically checkable category — "does this call escape the tx?" — not
+		// a list someone has to keep in their head.
+		const isDry = run.dry_run === true;
+		const dryPreview: Array<Record<string, unknown>> = [];
 
-		// Resolve or create entities declared via eventKinds[kind].attributions
-		// before inserting events. One query per (entityType, matchField) per
-		// batch — cheap compared to the per-event inserts that follow.
-		await applyEventAttributions({
-			connectorKey: run.connector_key,
-			connectionId: run.connection_id,
-			feedKey: run.feed_key,
-			orgId: run.organization_id,
-			items: batch.items,
-		});
+		// The whole batch, parameterised on a DB handle. The real path passes the
+		// singleton and behaves exactly as before (statement-per-autocommit — this
+		// refactor deliberately does not put production's hot path inside one long
+		// transaction). The dry path passes a tx that is rolled back.
+		const ingestBatch = async (db: DbClient) => {
+			// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
+			// come over the wire as base64 in `attachment.data`. Materialize each into
+			// the ArtifactStore before the row hits events.attachments — the events
+			// table is not a binary store. Audio attachments are queued for async
+			// transcription after insert.
+			//
+			// ESCAPES THE TX: this uploads a blob to the ArtifactStore, which no
+			// Postgres rollback can retract. Because the blob is written before the
+			// row that would reference it, a dry run doing this would leave an
+			// orphaned artifact behind — storage that quietly accumulates.
+			let pendingTranscriptions: Awaited<
+				ReturnType<typeof materializeInlineAttachments>
+			>["pendingTranscriptions"] = [];
+			if (!isDry) {
+				const { items: materializedItems, pendingTranscriptions: pending } =
+					await materializeInlineAttachments(batch.items);
+				batch.items = materializedItems as typeof batch.items;
+				pendingTranscriptions = pending;
+			}
 
-		let totalItems = 0;
-		const rejectedItems: Array<{
-			id: string;
-			semantic_type?: string;
-			errors: string[];
-		}> = [];
+			// Resolve or create entities declared via eventKinds[kind].attributions
+			// before inserting events. One query per (entityType, matchField) per
+			// batch — cheap compared to the per-event inserts that follow.
+			//
+			// Runs on a dry run too, against `db`: it creates entity rows, and those
+			// roll back with everything else. Running it is what makes the inserts
+			// below realistic — events carry the entity ids it resolves.
+			await applyEventAttributions(
+				{
+					connectorKey: run.connector_key,
+					connectionId: run.connection_id,
+					feedKey: run.feed_key,
+					orgId: run.organization_id,
+					items: batch.items,
+				},
+				db
+			);
 
-		for (const item of batch.items) {
+			let totalItems = 0;
+			const rejectedItems: Array<{
+				id: string;
+				semantic_type?: string;
+				errors: string[];
+			}> = [];
+
+			for (const item of batch.items) {
 			try {
 				const itemOriginType = item.origin_type ?? null;
 				const itemSemanticType =
@@ -347,6 +408,15 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					},
 					{
 						onConflictUpdate: true,
+						// Dry path only: the tx that gets rolled back — the INSERT
+						// genuinely executes, so every constraint, trigger and NOT NULL
+						// is exercised for real. The real path must NOT pass `db` even
+						// though it equals the singleton: a caller-supplied `sql` makes
+						// insertEvent skip its advisory-lock dedup transaction (the
+						// caller's tx is assumed to be the atomic scope), and that lock
+						// is what serializes concurrent ingests of the same
+						// (connection_id, origin_id) across replicas.
+						sql: isDry ? db : undefined,
 						afterPersist: async (persisted, tx) => {
 							for (const [draftIndex, draft] of (
 								item.behavior_signals ?? []
@@ -370,10 +440,20 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						},
 					}
 				);
-				await dispatchBehaviorRunsBestEffort(activations);
+				// ESCAPES THE TX: this dispatches real Behavior runs to the worker
+				// fleet. The activation ROWS roll back with the tx, but a dispatched
+				// agent run has already left the database — it would run against, and
+				// react to, an event that is about to cease to exist.
+				if (!isDry) {
+					await dispatchBehaviorRunsBestEffort(activations);
+				}
 				if (inserted) {
 					totalItems++;
-					if (entityIds.length > 0) {
+					// ESCAPES THE TX: detached (`.catch(() => {})`) and writes through
+					// the getDb() singleton, not `db`, so its writes would commit
+					// independently of the rollback — and race it, since nothing awaits
+					// them.
+					if (entityIds.length > 0 && !isDry) {
 						autoLinkEvent({
 							eventId: Number(inserted.id),
 							entityIds,
@@ -382,6 +462,27 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 							organizationId: run.organization_id,
 						}).catch(() => {});
 					}
+					// Captured after a successful insert, so the preview describes rows
+					// that really did land (and would land again on a real sync) rather
+					// than rows we merely hoped would.
+					if (isDry && dryPreview.length < DRY_RUN_PREVIEW_LIMIT) {
+						dryPreview.push({
+							origin_id: item.id,
+							title: item.title,
+							semantic_type: itemSemanticType,
+							payload_type: item.payload_type,
+							occurred_at: item.occurred_at,
+							author_name: item.author_name,
+							source_url: item.source_url,
+							// Bounded: a preview is for eyeballing shape, and some
+							// connectors emit very large bodies.
+							content_preview:
+								typeof item.payload_text === "string"
+									? item.payload_text.slice(0, DRY_RUN_CONTENT_CHARS)
+									: null,
+							attachment_count: item.attachments?.length ?? 0,
+						});
+					}
 				}
 			} catch (err) {
 				console.error("[stream] Insert failed for item", item.id, ":", err);
@@ -389,24 +490,105 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			}
 		}
 
-		// Kick off background transcription for any audio attachments
-		// materialized above. Runs detached — never blocks the stream-batch ack.
-		triggerAudioTranscriptions(run.organization_id, pendingTranscriptions);
+			// ESCAPES THE TX: transcription is an external, paid API call, and it
+			// is fired detached so nothing awaits it. `pendingTranscriptions` is
+			// already empty on a dry run (nothing was materialized above), but the
+			// guard stays so this cannot start costing money if materialization
+			// ever grows a dry path.
+			if (!isDry) {
+				triggerAudioTranscriptions(run.organization_id, pendingTranscriptions);
+			}
 
-		// Update feed + run checkpoint if provided (so mid-run state like QR codes
-		// surface in UI via recent_runs[0].checkpoint before the run completes).
-		if (batch.checkpoint) {
-			if (run.feed_id) {
-				await sql`
+			// Update feed + run checkpoint if provided (so mid-run state like QR
+			// codes surface in UI via recent_runs[0].checkpoint before the run
+			// completes). No dry-run guard: on a dry run these write to the tx and
+			// vanish with it, which is exactly right — advancing the feed checkpoint
+			// would silently change what the NEXT real sync collects, making the
+			// rows this run previewed unreachable.
+			if (batch.checkpoint) {
+				if (run.feed_id) {
+					await db`
       UPDATE feeds
-      SET checkpoint = ${sql.json(batch.checkpoint)},
+      SET checkpoint = ${db.json(batch.checkpoint)},
           updated_at = current_timestamp
       WHERE id = ${run.feed_id}
     `;
+				}
+				await db`
+      UPDATE runs
+      SET checkpoint = ${db.json(batch.checkpoint)}
+      WHERE id = ${batch.run_id}
+    `;
 			}
+
+			return { totalItems, rejectedItems };
+		};
+
+		// The real path: singleton handle, autocommit per statement, byte-for-byte
+		// the behaviour that shipped before dry runs existed.
+		//
+		// The dry path: the same closure against a transaction, then an unconditional
+		// rollback. postgres.js rolls back when the `begin` callback throws, so the
+		// throw IS the mechanism — a sentinel, not an error condition. Catching only
+		// that exact object means a genuine failure inside the batch still propagates
+		// to the 500 handler below instead of being swallowed as "rolled back fine".
+		const DRY_RUN_ROLLBACK = Symbol("dry-run-rollback");
+		let outcome: Awaited<ReturnType<typeof ingestBatch>> | null = null;
+		if (isDry) {
+			try {
+				await sql.begin(async (tx) => {
+					outcome = await ingestBatch(tx);
+					throw DRY_RUN_ROLLBACK;
+				});
+			} catch (err) {
+				if (err !== DRY_RUN_ROLLBACK) throw err;
+			}
+		} else {
+			outcome = await ingestBatch(sql);
+		}
+		// Unreachable: ingestBatch either assigns `outcome` or throws (and a throw
+		// that is not the rollback sentinel is rethrown above). Asserted rather
+		// than defaulted to {totalItems: 0} — TypeScript cannot see the assignment
+		// through the transaction closure, and a silent zero here would report
+		// "ingested nothing" for a batch that may well have ingested plenty.
+		if (outcome === null) {
+			throw new Error("[stream] batch completed without an outcome");
+		}
+		const { totalItems, rejectedItems } = outcome as Awaited<
+			ReturnType<typeof ingestBatch>
+		>;
+
+		if (isDry) {
+			// Written AFTER the rollback, on the singleton — this is the one thing a
+			// dry run keeps, so it must not be inside the transaction it discards.
+			// Accumulates across batches: a sync streams many, and the preview should
+			// describe the whole run rather than only its last chunk. The per-batch
+			// JS cap only bounds one request's payload, so the stored array is
+			// re-capped here — without the ordinality slice a long sync would grow
+			// the preview by up to DRY_RUN_PREVIEW_LIMIT per batch, unbounded.
+			// `total` counts everything that would have been ingested even past the
+			// cap, so the number stays honest when `items` is truncated.
 			await sql`
       UPDATE runs
-      SET checkpoint = ${sql.json(batch.checkpoint)}
+      SET dry_run_preview = jsonb_build_object(
+            'items',
+            (SELECT COALESCE(jsonb_agg(e.value ORDER BY e.ord), '[]'::jsonb)
+             FROM jsonb_array_elements(
+               COALESCE(dry_run_preview -> 'items', '[]'::jsonb)
+                 || ${sql.json(dryPreview)}::jsonb
+             ) WITH ORDINALITY AS e(value, ord)
+             WHERE e.ord <= ${DRY_RUN_PREVIEW_LIMIT}),
+            'total',
+            COALESCE((dry_run_preview ->> 'total')::int, 0) + ${totalItems},
+            'truncated',
+            LEAST(
+              jsonb_array_length(
+                COALESCE(dry_run_preview -> 'items', '[]'::jsonb)
+                  || ${sql.json(dryPreview)}::jsonb
+              ),
+              ${DRY_RUN_PREVIEW_LIMIT}
+            ) < COALESCE((dry_run_preview ->> 'total')::int, 0) + ${totalItems}
+          )
       WHERE id = ${batch.run_id}
     `;
 		}
@@ -414,6 +596,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		return c.json({
 			batches_received: 1,
 			total_items: totalItems,
+			...(isDry && { dry_run: true }),
 			...(rejectedItems.length > 0 && { rejected_items: rejectedItems }),
 		});
 	} catch (err: unknown) {
@@ -457,6 +640,14 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		// completion resurrects a reaped run and the feed/auth bookkeeping below
 		// double-applies (consecutive_failures, items_collected, next_run_at,
 		// auth_data). The failed path also stamps exit diagnostics.
+		//
+		// The checkpoint write is CASE-guarded on `dry_run` in SQL (rather than
+		// read-then-branch in JS) so the guard rides the same atomic UPDATE as the
+		// terminal transition: a dry run's row never records the connector's final
+		// checkpoint, matching the streamContent guard on the mid-run write.
+		const dryGuardedCheckpoint = sql`
+          checkpoint = CASE WHEN dry_run THEN checkpoint
+                       ELSE COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint) END`;
 		const updatedRuns = (await finalizeRun(sql, {
 			runId: req.run_id,
 			workerId: req.worker_id,
@@ -465,20 +656,19 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				req.status === "failed"
 					? sql`,
           items_collected = ${req.items_collected ?? 0},
-          error_message = ${req.error_message ?? null},
-          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint),
+          error_message = ${req.error_message ?? null},${dryGuardedCheckpoint},
           output_tail = ${req.output_tail ?? null},
           exit_code = ${req.exit_code ?? null},
           exit_signal = ${req.exit_signal ?? null},
           exit_reason = ${req.exit_reason ?? null}`
 					: sql`,
           items_collected = ${req.items_collected ?? 0},
-          error_message = ${req.error_message ?? null},
-          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)`,
-			returning: sql`feed_id, connection_id`,
+          error_message = ${req.error_message ?? null},${dryGuardedCheckpoint}`,
+			returning: sql`feed_id, connection_id, dry_run`,
 		})) as unknown as Array<{
 			feed_id: number | null;
 			connection_id: number | null;
+			dry_run: boolean;
 		}>;
 
 		if (updatedRuns.length === 0) {
@@ -499,8 +689,28 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		// Update the feed's sync state
 		const runRows = updatedRuns;
 		const feedId = runRows[0]?.feed_id;
+		const isDry = runRows[0]?.dry_run === true;
 
-		if (feedId) {
+		// Never for a dry run: this block stamps last_sync_at/status, resets or
+		// increments consecutive_failures, adds items_collected, ADVANCES THE FEED
+		// CHECKPOINT, and moves next_run_at (with backoff/auto-pause on failure).
+		// Every one of those durably changes what the next REAL sync does or how
+		// the feed reports its last real outcome — exactly the state a dry run
+		// exists to leave untouched.
+		//
+		// Why this stays an explicit guard while streamContent uses a rolled-back
+		// transaction instead. Two reasons, and they are the reasons — not an
+		// oversight to be tidied up later:
+		//
+		//  1. This function's write set is closed and cannot grow the way an
+		//     item-ingest loop grows: it finalizes one run row and stamps one feed
+		//     row. One guard covers one block; there is no open set to lose track of.
+		//  2. The keep/discard sets are INTERLEAVED. A dry run must still finalize
+		//     its own run row — that is real working state, and finalizeRun's whole
+		//     purpose is that the terminal transition is atomic. Rolling back here
+		//     would mean lifting the run update out of the transaction and giving up
+		//     that guarantee to buy uniformity. Not a trade worth making.
+		if (feedId && !isDry) {
 			const feedRows = (await sql`
       SELECT schedule, timezone FROM feeds WHERE id = ${feedId}
     `) as unknown as Array<{
@@ -591,7 +801,14 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			}
 		}
 
-		// Persist refreshed browser auth data on the auth profile
+		// Persist refreshed browser auth data on the auth profile.
+		//
+		// Deliberately NOT gated on dry_run: this is credential liveness, not
+		// ingested data. Session-state connectors (browser cookies, Baileys creds)
+		// rotate their tokens on every real connect — the connector genuinely ran,
+		// so discarding the rotation would leave the profile holding invalidated
+		// credentials and break the next REAL sync. "Persist nothing" means the
+		// workspace's data, never the auth state the run consumed.
 		const connectionId = runRows[0]?.connection_id;
 		if (req.status === "success" && req.auth_update && connectionId) {
 			const connectionRows = (await sql`

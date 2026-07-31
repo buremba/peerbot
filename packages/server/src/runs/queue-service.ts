@@ -248,7 +248,11 @@ async function resolveActiveConnectorVersion(
  * the run ID, or null if skipped — a duplicate active sync run, or an
  * unresolvable orphan feed that was soft-deleted (see softDeleteOrphanFeed).
  */
-async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<number | null> {
+async function createSyncRunWithClient(
+  sql: DbClient,
+  feedId: number,
+  dryRun = false
+): Promise<number | null> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`
     SELECT id FROM runs
@@ -347,7 +351,26 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   const nextRunAt = feed.schedule
     ? nextRunAtFromCron(feed.schedule, new Date(), feed.timezone)
     : null;
-  const inserted = await sql`
+  // A dry run inserts the run row and stops there. The sibling `UPDATE feeds`
+  // below is a real side effect — it stamps `last_sync_status = 'pending'`,
+  // clears `last_error`, and rolls `next_run_at` forward to the next cron slot.
+  // Letting a dry run do that would move the feed's schedule and overwrite the
+  // recorded outcome of the last REAL sync, which is exactly the state a dry
+  // run exists to leave untouched.
+  const inserted = dryRun
+    ? await sql`
+    INSERT INTO runs (
+      organization_id, run_type, feed_id, connection_id,
+      connector_key, connector_version, status, approval_status, created_at,
+      dry_run
+    ) VALUES (
+      ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
+      ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
+      true
+    )
+    RETURNING id
+  `
+    : await sql`
     WITH inserted AS (
       INSERT INTO runs (
         organization_id, run_type, feed_id, connection_id,
@@ -378,16 +401,23 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
 export async function createSyncRun(
   feedId: number,
   _env: Env,
-  db?: DbClient
+  db?: DbClient,
+  // Defaults false so all four existing call sites (connect/routes, app-install,
+  // check-due-feeds, manage_feeds) keep persisting. Only an explicit opt-in is
+  // dry — a flag that defaulted the other way would silently stop real syncs.
+  opts?: { dryRun?: boolean }
 ): Promise<number | null> {
   const sql = db ?? getDb();
+  const dryRun = opts?.dryRun === true;
 
   try {
     if (db) {
-      return await createSyncRunWithClient(sql, feedId);
+      return await createSyncRunWithClient(sql, feedId, dryRun);
     }
 
-    return await sql.begin(async (tx) => createSyncRunWithClient(tx, feedId));
+    return await sql.begin(async (tx) =>
+      createSyncRunWithClient(tx, feedId, dryRun)
+    );
   } catch (error) {
     if (isUniqueViolation(error, 'idx_runs_active_sync_per_feed')) {
       logger.info(`[queue] Skipping run creation for feed ${feedId} - duplicate active sync run`);

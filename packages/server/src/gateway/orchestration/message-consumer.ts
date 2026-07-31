@@ -257,6 +257,8 @@ export function buildRunJobToken(args: {
   allowedDomains?: string[];
   /** Resolved egress denylist for a remote runtime sandbox (signed claim). */
   deniedDomains?: string[];
+  /** Resolved nix package set for a remote runtime sandbox (signed claim). */
+  nixPackages?: string[];
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -475,6 +477,19 @@ export class MessageConsumer {
                 organizationId: data.organizationId,
               })
             : null;
+        // The inbound delivery is the common authoritative source for DM-ness:
+        // the message bridge derives `isDirect` from its delivery source and
+        // carries it on platformMetadata. Interaction clicks omit the hint
+        // because their conversationId/channelId relationship describes
+        // threading, not the original surface. Anything absent or non-boolean
+        // stores null, which the read gate treats as unknown and keeps
+        // fail-closed. Owned (web) rows are not channels at all, so they stay
+        // null.
+        const isDirectHint = data.platformMetadata?.isDirect;
+        const isDirect =
+          kind === "platform" && typeof isDirectHint === "boolean"
+            ? isDirectHint
+            : null;
         await upsertConversation({
           organizationId: data.organizationId,
           agentId: data.agentId,
@@ -484,6 +499,7 @@ export class MessageConsumer {
           kind,
           userId: data.userId,
           title: data.messageText?.slice(0, 200) || null,
+          isDirect,
           lastActivityAt: new Date(),
         });
       }
@@ -562,7 +578,13 @@ export class MessageConsumer {
       // provider from the signed runJobToken below, never this body field.
       data.runtimeProviderId = runtimeSelection.runtimeProviderId;
 
-      await this.foldConnectorTooling(data, traceId);
+      // Stamp the resolved tooling fingerprint onto the payload so the
+      // dispatch chokepoint (the owner pod's job router) can compare it
+      // against the fingerprint the target deployment was built with, without
+      // re-resolving per delivery attempt. Resolution failures propagate: a
+      // DB error is not evidence that a worker is fresh, so the outer queue
+      // handler retries instead of delivering on unknown durable state.
+      data.toolingFingerprint = await this.foldConnectorTooling(data);
 
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
@@ -587,6 +609,9 @@ export class MessageConsumer {
         // deployment-token mint) — the runtime route reads them, never the body.
         allowedDomains: data.networkConfig?.allowedDomains,
         deniedDomains: data.networkConfig?.deniedDomains,
+        // Same rule for the package set: signed, so the remote runtime never
+        // takes a package list off the wire from the worker.
+        nixPackages: data.nixConfig?.packages,
       });
 
       logger.info(
@@ -613,7 +638,6 @@ export class MessageConsumer {
           );
           const resolved = resolveAgentGuardrails(
             settings ?? { guardrails: [] },
-            (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
             this.guardrailRegistry,
             { inline: enabledInlineGuardrails(settings) }
           );
@@ -941,7 +965,16 @@ export class MessageConsumer {
       // Create the thread-specific queue if it doesn't exist
       await this.queue.createQueue(threadQueueName);
 
-      // Send message to thread-specific queue
+      // Send message to thread-specific queue.
+      //
+      // The retry budget bounds GENUINE failures only. Dispatch-gate deferrals
+      // (stale worker mid-turn, FIFO fence, recycle) throw `StaleWorkerError`,
+      // which carries the queue's deferral contract (`isDeferralError`) and is
+      // rescheduled every `retryDelay` seconds WITHOUT consuming an attempt —
+      // so a follow-up can wait out an arbitrarily long prior turn on this
+      // small budget, while a genuinely undeliverable job still fails fast
+      // instead of surviving long enough to zombie-deliver after its
+      // turn-liveness marker has been swept.
       const jobId = await this.queue.send(threadQueueName, data, {
         expireInSeconds: this.config.queues.expireInSeconds,
         retryLimit: this.config.queues.retryLimit,
@@ -1005,45 +1038,37 @@ export class MessageConsumer {
    * `nixConfig.packages` — folding domains alone lets that reconcile revoke the
    * substituter hosts the contributed packages depend on.
    *
-   * Never throws: a resolution failure leaves the payload untouched and the
-   * sandbox runs without the contribution, rather than failing the turn.
+   * Infrastructure failures propagate so the queue retries the enclosing
+   * dispatch. Once the fingerprint participates in the delivery gate, a failed
+   * lookup cannot safely mean "no evidence of change."
    */
-  protected async foldConnectorTooling(
-    data: MessagePayload,
-    traceId: string
-  ): Promise<void> {
-    try {
-      const contribution = await resolveAgentToolingDeclaration({
-        organizationId: data.organizationId,
-      });
-      if (contribution.domains.length > 0) {
-        data.networkConfig = {
-          ...data.networkConfig,
-          allowedDomains: [
-            ...new Set([
-              ...(data.networkConfig?.allowedDomains ?? []),
-              ...contribution.domains,
-            ]),
-          ],
-        };
-      }
-      if (contribution.packages.length > 0) {
-        data.nixConfig = {
-          ...data.nixConfig,
-          packages: [
-            ...new Set([
-              ...(data.nixConfig?.packages ?? []),
-              ...contribution.packages,
-            ]),
-          ],
-        };
-      }
-    } catch (error) {
-      logger.warn(
-        { traceId, agentId: data.agentId, error: getErrorMessage(error) },
-        "Failed to resolve connector tooling contribution; continuing without it"
-      );
+  protected async foldConnectorTooling(data: MessagePayload): Promise<string> {
+    const contribution = await resolveAgentToolingDeclaration({
+      organizationId: data.organizationId,
+    });
+    if (contribution.domains.length > 0) {
+      data.networkConfig = {
+        ...data.networkConfig,
+        allowedDomains: [
+          ...new Set([
+            ...(data.networkConfig?.allowedDomains ?? []),
+            ...contribution.domains,
+          ]),
+        ],
+      };
     }
+    if (contribution.packages.length > 0) {
+      data.nixConfig = {
+        ...data.nixConfig,
+        packages: [
+          ...new Set([
+            ...(data.nixConfig?.packages ?? []),
+            ...contribution.packages,
+          ]),
+        ],
+      };
+    }
+    return contribution.fingerprint;
   }
 
   private async ensureWorkerExists(

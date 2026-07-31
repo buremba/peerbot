@@ -209,17 +209,17 @@ export default async (_ctx, client) => {
 	"entitySchema.createType": {
 		summary:
 			"Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT `properties` — a top-level `properties` key is silently ignored.",
-		access: "write",
+		access: "admin",
 		example:
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
 	},
 	"entitySchema.updateType": {
 		summary: "Update an entity type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.deleteType": {
 		summary: "Delete an entity type.",
-		access: "write",
+		access: "admin",
 		example: "await client.entitySchema.deleteType({ slug: 'widget' });",
 	},
 	"entitySchema.auditType": {
@@ -245,15 +245,15 @@ export default async (_ctx, client) => {
 	},
 	"entitySchema.createRelType": {
 		summary: "Create a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.updateRelType": {
 		summary: "Update a relationship type.",
-		access: "write",
+		access: "admin",
 	},
 	"entitySchema.deleteRelType": {
 		summary: "Delete a relationship type.",
-		access: "write",
+		access: "admin",
 		example: "await client.entitySchema.deleteRelType({ slug: 'works-at' });",
 	},
 	"entitySchema.addRule": {
@@ -538,7 +538,7 @@ export default async (ctx, client) => {
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from the window content.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
 		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
@@ -546,7 +546,7 @@ export default async (_ctx, client) => {
   return client.behaviors.create({
     slug: 'pricing',
     agent_id: 'agt_123',
-    prompt: 'Extract current pricing records from {{content}}.',
+    prompt: 'Extract current pricing records from the window content.',
     keying_config: {
       entity_type: 'price',
       entity_path: 'prices',
@@ -786,10 +786,6 @@ export default async (_ctx, client) => {
 		summary: "Update a connector definition's default connection config.",
 		access: "admin",
 	},
-	"connections.updateConnectorDefaultRepairAgent": {
-		summary: "Set or clear the connector's default repair agent.",
-		access: "admin",
-	},
 
 	// operations
 	"operations.manage": {
@@ -864,22 +860,26 @@ export default async (_ctx, client) => {
 	"feeds.create": {
 		summary:
 			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like the feed urls) in `config`.",
-		access: "write",
+		access: "admin",
 		signature:
 			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
-	"feeds.update": { summary: "Update a feed.", access: "write" },
+	"feeds.update": { summary: "Update a feed.", access: "admin" },
 	"feeds.delete": {
 		summary: "Delete a feed.",
-		access: "write",
+		access: "admin",
 		example: "await client.feeds.delete({ feed_id: 42 });",
 	},
 	"feeds.trigger": {
-		summary: "Trigger an immediate sync for a feed (external side-effect).",
+		summary:
+			"Trigger an immediate sync for a feed (external side-effect). Pass dry_run: true to execute the connector for real but persist nothing — no events, entities or attachments, and the feed's checkpoint and sync state do not move; the run executes asynchronously, and once it completes a capped preview of what would have been ingested is on its dry_run_preview, readable via feeds.get. Use it to test a feed's config or credentials without writing to the workspace. Two limits: it cannot undo side effects the connector causes UPSTREAM (marking a message read, etc.), and it occupies the feed's single active-sync slot while it runs.",
 		access: "external",
-		example: "await client.feeds.trigger({ feed_id: 42 });",
+		signature:
+			"feeds.trigger(input: { feed_id: number; dry_run?: boolean }): Promise<unknown>",
+		example:
+			"await client.feeds.trigger({ feed_id: 42 });\n// Validate without writing anything; read the preview via feeds.get once the run completes:\nawait client.feeds.trigger({ feed_id: 42, dry_run: true });",
 	},
 
 	// authProfiles
@@ -923,7 +923,7 @@ export default async (_ctx, client) => {
 	},
 	"authProfiles.delete": {
 		summary: "Delete an auth profile.",
-		access: "write",
+		access: "admin",
 		signature:
 			"authProfiles.delete(auth_profile_slug: string, options?: { force?: boolean }): Promise<unknown> // or authProfiles.delete({ auth_profile_slug })",
 		example: "await client.authProfiles.delete('google-calendar-account');",
@@ -942,12 +942,12 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.create": {
 		summary:
-			"Create a classifier template. REQUIRES `behavior_id` (the owning Behavior) plus `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list.",
+			"Create a classifier template. Requires `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `behavior_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Behavior.",
 		access: "admin",
 		signature:
-			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
+			"classifiers.create(input: { slug: string; name: string; attribute_key: string; behavior_id?: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
 		example:
-			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', behavior_id: '42', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
+			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},
 	"classifiers.generateEmbeddings": {
 		summary: "Generate embeddings for attribute values (cost-heavy).",
@@ -967,6 +967,16 @@ export default async (_ctx, client) => {
 			"classifiers.classify(input: { classifier_slug: string; content_id?: number; value?: string | null; reasoning?: string; classifications?: Array<{ content_id: number; value: string | null; reasoning?: string }>; source?: 'llm' | 'user' }): Promise<unknown>",
 		example:
 			"await client.classifiers.classify({ classifier_slug: 'sentiment', content_id: 101, value: 'positive', source: 'user' });",
+	},
+	"classifiers.apply": {
+		summary:
+			"Run a classifier's embedding match over content ids you supply and STORE the labels. Needs no entity link, so this is how org-scoped feed content gets classified. Returns `classified` plus a `skipped` breakdown (not_in_organization | superseded | not_embedded | below_threshold) — a zero result always says why. Only matches org-level classifiers (those created without `behavior_id`).",
+		access: "admin",
+		cost: "expensive",
+		signature:
+			"classifiers.apply(input: { classifier_slug: string; content_ids: number[] }): Promise<unknown>",
+		example:
+			"await client.classifiers.apply({ classifier_slug: 'sentiment', content_ids: [101, 102, 103] });",
 	},
 
 	// viewTemplates

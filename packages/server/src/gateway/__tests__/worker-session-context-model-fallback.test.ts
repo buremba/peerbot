@@ -48,6 +48,12 @@ let savedEncryptionKey: string | undefined;
  */
 const ORG = "org-worker-ctx-fallback";
 const AGENT = "agent-worker-ctx";
+const EMPTY_AGENT_LAYERS = {
+  identityMd: "",
+  soulMd: "",
+  userMd: "",
+  unconfiguredNotice: "",
+};
 
 function buildGatewayNoCatalog(getSettings: () => Promise<any>): WorkerGateway {
   return new WorkerGateway(
@@ -56,7 +62,7 @@ function buildGatewayNoCatalog(getSettings: () => Promise<any>): WorkerGateway {
     { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
     {
       getSessionContext: async () => ({
-        agentInstructions: "",
+        agentLayers: EMPTY_AGENT_LAYERS,
         platformInstructions: "",
         networkInstructions: "",
         skillsInstructions: "",
@@ -91,6 +97,32 @@ async function sessionContextModel(
     providerConfig?: { defaultModel?: string };
   };
   return body.providerConfig?.defaultModel;
+}
+
+/**
+ * Full providerConfig from /session-context. `sessionContextModel` above reads
+ * only `defaultModel`; CTA attribution needs the provider fields too.
+ */
+async function sessionContextProviderConfig(gateway: WorkerGateway): Promise<{
+  defaultProvider?: string;
+  defaultProviderServesModel?: boolean;
+}> {
+  const token = generateWorkerToken("user-1", "conv-1", "worker-a", {
+    channelId: "channel-1",
+    agentId: AGENT,
+    organizationId: ORG,
+  });
+  const res = await gateway.getApp().request("/session-context", {
+    headers: { authorization: `Bearer ${token}`, host: "gateway.example.com" },
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as {
+    providerConfig?: {
+      defaultProvider?: string;
+      defaultProviderServesModel?: boolean;
+    };
+  };
+  return body.providerConfig ?? {};
 }
 
 describe("worker model fallback (real DB, both channels)", () => {
@@ -203,7 +235,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -256,7 +288,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",
@@ -270,6 +302,131 @@ describe("worker model fallback (real DB, both channels)", () => {
 
     // The real routable ref is published — NOT undefined, NOT the sentinel.
     expect(await sessionContextModel(gateway)).toBe("byo2/byo2-model");
+  });
+
+  test("CTA attribution: a model-MATCHED provider publishes defaultProviderServesModel=true", async () => {
+    // `defaultProviderServesModel` tells the worker whether the published
+    // `defaultProvider` was MATCHED to the model (findProviderForModel) or
+    // merely picked by the credentialed-fallback scan. The worker gates failure
+    // CTA attribution on it: true means this provider genuinely serves the ref,
+    // so the CTA stays here even when the model's prefix names some OTHER
+    // installed provider (OpenRouter's "openai/gpt-4o" vendor namespace).
+    //
+    // With models PINNED (as here) the allow-list path applies and
+    // `resolveDispatchModel` fails closed, so an unroutable ref is replaced or
+    // yields no provider at all — this branch always sees a matched provider.
+    // The false branch is reached via the ALLOW-ALL path instead (no pinned
+    // models ⇒ `allowedRefs === null` ⇒ no routability check); see the
+    // fallback-picked test below.
+    const sql = getDb();
+    await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "byo2",
+      kind: "openai",
+      apiKey: "sk-byo2",
+      capabilities: {
+        text: { base_url: "https://api.byo2.example.com", model: "byo2-model" },
+      },
+    });
+    await setInferenceProviderDefault(ORG, "byo2");
+
+    const settings = {
+      getSettings: async () => ({ models: ["byo2/byo2-model"] }),
+    } as any;
+    const catalog = new ProviderCatalogService(
+      settings,
+      { getBestProfile: async () => null } as any,
+      (org: string) => listInferenceProviders(org),
+      () => {},
+    );
+    const gateway = new WorkerGateway(
+      { send: async () => undefined } as any,
+      "https://gateway.example.com",
+      { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
+      {
+        getSessionContext: async () => ({
+          agentLayers: EMPTY_AGENT_LAYERS,
+          platformInstructions: "",
+          networkInstructions: "",
+          skillsInstructions: "",
+          mcpStatus: [],
+        }),
+      } as any,
+      undefined,
+      catalog,
+      settings,
+    );
+
+    const pc = await sessionContextProviderConfig(gateway);
+    expect(pc.defaultProvider).toBe("byo2");
+    expect(pc.defaultProviderServesModel).toBe(true);
+  });
+
+  test("CTA attribution: a FALLBACK-picked provider publishes defaultProviderServesModel=false", async () => {
+    // The live wrong-provider shape. The agent pins NO models, so the policy is
+    // ALLOW-ALL (`allowedRefs === null`) and `enforceModelAllowList` returns the
+    // requested ref VERBATIM with no routability check — the one path where an
+    // unroutable model survives to resolveProviderConfig instead of being
+    // replaced or failing closed.
+    //
+    // The org default names "gemini", which has no installed module here, so
+    // findProviderForModel matches nothing and the credentialed-fallback scan
+    // publishes byo2 — a provider that does NOT serve the requested model.
+    // Without the false, the worker would pin the failure CTA on byo2 and tell
+    // the user to reconnect a provider they never asked for.
+    const sql = getDb();
+    await sql`DELETE FROM inference_providers WHERE organization_id = ${ORG}`;
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "byo2",
+      kind: "openai",
+      apiKey: "sk-byo2",
+      capabilities: {
+        text: { base_url: "https://api.byo2.example.com", model: "byo2-model" },
+      },
+    });
+    // A SECOND org row whose slug is "gemini" with NO custom text upstream:
+    // synthesizeOrgProviderModule returns null for it, so it contributes no
+    // module — yet it IS the org default, so it supplies the requested ref.
+    await createInferenceProvider({
+      organizationId: ORG,
+      slug: "gemini",
+      kind: "gemini",
+      apiKey: "sk-gemini",
+      capabilities: { text: { model: "gemini-2.5-flash" } },
+    });
+    await setInferenceProviderDefault(ORG, "gemini");
+
+    // models: [] ⇒ allow-all. The org default supplies the requested ref.
+    const settings = { getSettings: async () => ({ models: [] }) } as any;
+    const catalog = new ProviderCatalogService(
+      settings,
+      { getBestProfile: async () => null } as any,
+      (org: string) => listInferenceProviders(org),
+      () => {},
+    );
+    const gateway = new WorkerGateway(
+      { send: async () => undefined } as any,
+      "https://gateway.example.com",
+      { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
+      {
+        getSessionContext: async () => ({
+          agentLayers: EMPTY_AGENT_LAYERS,
+          platformInstructions: "",
+          networkInstructions: "",
+          skillsInstructions: "",
+          mcpStatus: [],
+        }),
+      } as any,
+      undefined,
+      catalog,
+      settings,
+    );
+
+    const pc = await sessionContextProviderConfig(gateway);
+    expect(pc.defaultProvider).toBe("byo2");
+    expect(pc.defaultProviderServesModel).toBe(false);
   });
 
   test("R5 #4: an ORGLESS worker token publishes NO model for a db-backed shared id (no cross-org read)", async () => {
@@ -297,7 +454,7 @@ describe("worker model fallback (real DB, both channels)", () => {
       { getWorkerConfig: async () => ({ mcpServers: {} }) } as any,
       {
         getSessionContext: async () => ({
-          agentInstructions: "",
+          agentLayers: EMPTY_AGENT_LAYERS,
           platformInstructions: "",
           networkInstructions: "",
           skillsInstructions: "",

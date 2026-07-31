@@ -15,6 +15,13 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
+import {
+  BEHAVIOR_RUN_SOURCE,
+  type BehaviorRunSkillResolver,
+  formatBehaviorRunSkillInstructions,
+  resolveBehaviorRunSkills,
+} from "../behavior-run-session.js";
+import { toPublicWebOrigin } from "../../utils/url-builder.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
@@ -36,6 +43,7 @@ import {
   type SSEWriter,
   WorkerConnectionManager,
 } from "./connection-manager.js";
+import type { DispatchRecycler } from "./dispatch-recycle.js";
 import { WorkerJobRouter } from "./job-router.js";
 import { createTranscriptRoutes } from "./transcript-routes.js";
 
@@ -68,6 +76,7 @@ export class WorkerGateway {
   private mcpProxy?: McpProxy;
   private providerCatalogService?: ProviderCatalogService;
   private agentSettingsStore?: AgentSettingsStore;
+  private behaviorRunSkillResolver: BehaviorRunSkillResolver;
   private deploymentActivityTracker?: DeploymentActivityTracker;
 
   constructor(
@@ -77,7 +86,8 @@ export class WorkerGateway {
     instructionService: InstructionService,
     mcpProxy?: McpProxy,
     providerCatalogService?: ProviderCatalogService,
-    agentSettingsStore?: AgentSettingsStore
+    agentSettingsStore?: AgentSettingsStore,
+    behaviorRunSkillResolver: BehaviorRunSkillResolver = resolveBehaviorRunSkills
   ) {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
@@ -88,6 +98,7 @@ export class WorkerGateway {
     this.mcpProxy = mcpProxy;
     this.providerCatalogService = providerCatalogService;
     this.agentSettingsStore = agentSettingsStore;
+    this.behaviorRunSkillResolver = behaviorRunSkillResolver;
 
     // Setup Hono app
     this.app = new Hono();
@@ -118,6 +129,16 @@ export class WorkerGateway {
    */
   setDeploymentActivityTracker(tracker: DeploymentActivityTracker): void {
     this.deploymentActivityTracker = tracker;
+  }
+
+  /**
+   * Wire the deployment manager into the job router's claim-side recycle gate
+   * (see `dispatch-recycle.ts`). Same composition-root pattern as
+   * `setDeploymentActivityTracker`: the gateway and the orchestrator are built
+   * separately, and the router runs without it (jobs deliver ungated).
+   */
+  setDispatchRecycler(recycler: DispatchRecycler): void {
+    this.jobRouter.setDispatchRecycler(recycler);
   }
 
   /**
@@ -588,6 +609,7 @@ export class WorkerGateway {
       const instructionContext: InstructionContext = {
         userId,
         agentId: agentId || "",
+        connectionId: auth.tokenData.connectionId,
         organizationId: tokenOrgId,
         // Instruction providers skip their by-id settings read when this is
         // false (orgless DB-backed agent) and use the generic branch.
@@ -713,24 +735,38 @@ export class WorkerGateway {
       // `agentSettings` fetched above — it is null for an orgless DB-backed agent
       // (the correct fail-closed value: NO skill content leaks cross-tenant), and
       // this removes the duplicate id-only read that ignored the org guard.
+      //
+      // A Behavior run uses version-pinned instructions, so the live library
+      // must not re-enter the turn. Replace both live surfaces with the pinned
+      // snapshot: `skillsConfig` syncs the frozen files, and the compact catalog
+      // tells the agent which of those files this version requires.
+      const behaviorRun = auth.tokenData.source === BEHAVIOR_RUN_SOURCE;
       let skillsConfig: Array<{ name: string; content: string }> = [];
       const mcpContext: Record<string, string> = {};
-      if (agentSettings) {
+      if (behaviorRun) {
+        skillsConfig = await this.behaviorRunSkillResolver({
+          conversationId,
+          organizationId: tokenOrgId,
+          agentId,
+        });
+      } else if (agentSettings) {
         const skills = agentSettings.skillsConfig?.skills || [];
         skillsConfig = skills
           .filter((s) => s.enabled && s.content)
           .map((s) => ({ name: s.name, content: s.content! }));
       }
 
-      const mergedSkillsInstructions = contextData.skillsInstructions || "";
+      const mergedSkillsInstructions = behaviorRun
+        ? formatBehaviorRunSkillInstructions(skillsConfig)
+        : contextData.skillsInstructions || "";
 
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentInstructions.length} chars agent instructions, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentLayers.identityMd.length}/${contextData.agentLayers.soulMd.length}/${contextData.agentLayers.userMd.length} chars identity/soul/user, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${mergedSkillsInstructions.length} chars skills instructions, ${enrichedMcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, ${Object.keys(mcpInstructions).length} MCP instructions, ${skillsConfig.length} skills${behaviorRun ? " (Behavior run — pinned snapshot)" : ""}, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({
         mcpConfig,
-        agentInstructions: contextData.agentInstructions,
+        agentLayers: contextData.agentLayers,
         platformInstructions: contextData.platformInstructions,
         networkInstructions: contextData.networkInstructions,
         skillsInstructions: mergedSkillsInstructions,
@@ -740,6 +776,12 @@ export class WorkerGateway {
         mcpContext,
         providerConfig,
         skillsConfig,
+        // The origin an agent can build user-openable Lobu links against.
+        // Deliberately NOT `getRequestBaseUrl(c)`: this endpoint is called by
+        // the worker over the INTERNAL dispatcher address, so the request Host
+        // is a cluster name no user can reach. The configured public origin is
+        // the only value here that is correct off-cluster.
+        webOrigin: toPublicWebOrigin(this.publicGatewayUrl),
       });
     } catch (error) {
       logger.error("Failed to generate session context", { err: error });
@@ -861,6 +903,9 @@ export class WorkerGateway {
         // (deny) and re-open denied hosts mid-turn.
         allowedDomains: tokenData.allowedDomains,
         deniedDomains: tokenData.deniedDomains,
+        // And the package claim with them — a long turn that rotates its token
+        // would otherwise stop provisioning the connector's CLI mid-run.
+        nixPackages: tokenData.nixPackages,
       }
     );
 
@@ -912,6 +957,8 @@ export class WorkerGateway {
     credentialEnvVarName?: string;
     defaultProvider?: string;
     defaultProviderSlug?: string;
+    /** True when defaultProvider was MATCHED to the model, not fallback-picked. */
+    defaultProviderServesModel?: boolean;
     defaultModel?: string;
     cliBackends?: Array<{
       providerId: string;
@@ -961,6 +1008,16 @@ export class WorkerGateway {
         )
       : undefined;
 
+    // Whether `primaryProvider` was MATCHED to the agent's model, as opposed to
+    // picked by the credentialed-fallback scan below. Only the gateway knows
+    // this: downstream, a matched provider and a fallback one look identical.
+    // The worker needs it to attribute failure CTAs, because a slash prefix is
+    // ambiguous on its own — "openai/gpt-4o" under OpenRouter is OpenRouter's
+    // vendor namespace (matched → blame OpenRouter), while
+    // "gemini/gemini-2.5-flash" under a fallback-selected openai is a genuine
+    // request for gemini (unmatched → blame gemini, not the fallback).
+    const defaultProviderServesModel = !!primaryProvider;
+
     if (!primaryProvider) {
       for (const candidate of effectiveProviders) {
         if (
@@ -970,6 +1027,29 @@ export class WorkerGateway {
           primaryProvider = candidate;
           break;
         }
+      }
+      // The fallback silently re-points the turn at a provider the model does
+      // not belong to, so "<slug>/<model>" goes upstream verbatim and returns an
+      // opaque "400 invalid model ID" naming neither the requested provider nor
+      // the reason it was skipped. The provider is usually INSTALLED but not
+      // routable — commonly an `inference_providers` row with no
+      // `capabilities.<modality>` block, whose org key therefore never resolves.
+      // Without this line the only evidence is a slash surviving in the model id.
+      const requestedSlug = agentModel?.includes("/")
+        ? agentModel.slice(0, agentModel.indexOf("/"))
+        : undefined;
+      if (requestedSlug && requestedSlug !== primaryProvider?.providerId) {
+        logger.warn(
+          {
+            agentId,
+            organizationId,
+            agentModel,
+            requestedProvider: requestedSlug,
+            fallbackProvider: primaryProvider?.providerId ?? null,
+            installedProviders: effectiveProviders.map((p) => p.providerId),
+          },
+          "Requested model's provider is not routable (not installed, or no resolvable credential) — falling back to a credentialed provider; the model keeps its prefix"
+        );
       }
     }
 
@@ -1039,6 +1119,8 @@ export class WorkerGateway {
       credentialEnvVarName?: string;
       defaultProvider?: string;
       defaultProviderSlug?: string;
+      /** True when defaultProvider was MATCHED to the model, not fallback-picked. */
+      defaultProviderServesModel?: boolean;
       defaultModel?: string;
       cliBackends?: typeof cliBackends;
       providerBaseUrlMappings?: Record<string, string>;
@@ -1061,6 +1143,8 @@ export class WorkerGateway {
       if (upstream?.slug && upstream.slug !== primaryProvider.providerId) {
         result.defaultProviderSlug = primaryProvider.providerId;
       }
+      // Only meaningful alongside a published defaultProvider.
+      result.defaultProviderServesModel = defaultProviderServesModel;
     }
 
     // Only an explicitly configured model is used — Lobu no longer silently

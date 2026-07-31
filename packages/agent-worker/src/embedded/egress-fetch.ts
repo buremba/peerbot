@@ -40,7 +40,6 @@
  * only while requests are in flight.
  */
 
-import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import type { SecureFetch } from "just-bash";
 
@@ -267,7 +266,27 @@ function ensureWorker(): Worker {
   const worker = new Worker(WORKER_SOURCE, {
     eval: true,
     workerData: {
-      undiciPath: createRequire(__filename).resolve("undici"),
+      // `require.resolve`, not `createRequire(__filename)`: this package emits
+      // BOTH a CJS `dist/index.js` (tsc, the declared package entry) and an ESM
+      // `dist/index.bundle.mjs` (esbuild, what the gateway actually spawns —
+      // `.mjs` → node, `.ts` → bun, see `buildWorkerInvocation` in
+      // server/src/gateway/orchestration/deployment-manager.ts).
+      //
+      // `__filename` is ambient in the CJS output and in bun's ESM, but NOT in
+      // node's ESM — so it typechecked, ran fine in-repo under bun, and threw
+      // `ReferenceError` for every installed CLI user on their first agent turn.
+      // `import.meta.url` is the mirror-image trap: tsc rejects it under
+      // `module: CommonJS`. `require` is the one binding defined on both paths
+      // (ambient in CJS; supplied by the bundle's own `createRequire` banner),
+      // and under node it resolves to an absolute path either way.
+      //
+      // Bun is the third path (`src/index.ts`, spawned in-repo) and there
+      // `require.resolve` returns the bare specifier rather than a path. That
+      // is harmless *because* undici is loaded only by `forProxy`, which only
+      // `nodeFetch` calls, which only runs when `!isBun` — the Bun branch uses
+      // native fetch and never reads this value. If undici ever gains a
+      // Bun-side consumer, this must resolve to a real path first.
+      undiciPath: require.resolve("undici"),
     },
   });
   worker.unref();
@@ -346,7 +365,8 @@ export function buildEgressFetch(
   NetworkAccessDeniedError: NetworkAccessDeniedErrorCtor
 ): SecureFetch {
   // Captured once from the worker's own env (bash scripts only ever see a
-  // scrubbed copy, so agents cannot repoint the proxy).
+  // filtered copy with an egress-only credential, so agents cannot repoint
+  // the transport or reuse its credential against worker-facing APIs).
   const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
   const httpsProxy =
     process.env.HTTPS_PROXY || process.env.https_proxy || httpProxy;

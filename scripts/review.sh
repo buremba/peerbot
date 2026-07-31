@@ -43,6 +43,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/review-process.sh"
 # shellcheck source=scripts/lib/review-reviewer.sh
 . "$SCRIPT_DIR/lib/review-reviewer.sh"
+# shellcheck source=scripts/lib/review-upstream-guard.sh
+. "$SCRIPT_DIR/lib/review-upstream-guard.sh"
 
 # --- preflight --------------------------------------------------------------
 
@@ -105,6 +107,11 @@ echo ">> base: $BASE_BRANCH (merge-base $MERGE_BASE)"
 echo ">> head: $HEAD_SHA"
 echo ">> reviewer: $REVIEWER_CLI_SELECTED"
 
+# Before spending a reviewer run, make sure the verdict can actually land on
+# the PR head. Runs ahead of the build and the commit lock so a superseded
+# HEAD costs nothing.
+review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT" || exit 2
+
 post_review_status() {
   [ "$GH_AVAILABLE" = "1" ] || return 0
   local state="$1"
@@ -127,6 +134,14 @@ post_review_status() {
 REVIEW_STATUS_STARTED=0
 REVIEW_STATUS_FINALIZED=0
 finalize_review_status() {
+  # The upstream can move during the reviewer run. Do not finalize a verdict
+  # on a commit that is no longer the PR head.
+  if [ "$GH_AVAILABLE" = "1" ] &&
+     ! review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT"; then
+    # Suppress the EXIT trap's fallback error status on the same stale commit.
+    REVIEW_STATUS_FINALIZED=1
+    return 2
+  fi
   post_review_status "$1" "$2" "${3:-}"
   REVIEW_STATUS_FINALIZED=1
 }
@@ -336,6 +351,10 @@ fi
 # --- agent review -----------------------------------------------------------
 
 PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
+# Shared by both reviewer CLIs below, which do NOT accept the same dialect:
+# `claude --json-schema` refuses a `$schema` meta-reference outright ("no
+# schema with key or ref …") while codex ignores it. The schema therefore
+# declares no dialect — see scripts/__tests__/review-output-schema.test.ts.
 SCHEMA_FILE="$(pwd)/prompts/review-output-schema.json"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
 [ -f "$SCHEMA_FILE" ] || { echo "schema not found: $SCHEMA_FILE" >&2; exit 2; }
@@ -383,7 +402,7 @@ SIMPLICITY="$(echo "$VERDICT" | jq -r .simplicity)"
 TESTS_ADEQUATE="$(echo "$VERDICT" | jq -r .tests_adequate)"
 RISK="$(echo "$VERDICT" | jq -r .behavior_change_risk)"
 BLOCKER_COUNT="$(echo "$VERDICT" | jq -r '.blockers|length')"
-HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers"
+HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers, risk $RISK"
 STATUS_STATE="success"
 STATUS_REASONS=()
 [ "$BUG_FREE" -ge "$PI_REVIEW_MIN_BUG_FREE" ] || STATUS_REASONS+=("bug_free<$PI_REVIEW_MIN_BUG_FREE")
@@ -392,7 +411,14 @@ STATUS_REASONS=()
 [ "$SIMPLICITY" -ge "$PI_REVIEW_MIN_SIMPLICITY" ] || STATUS_REASONS+=("simplicity<$PI_REVIEW_MIN_SIMPLICITY")
 [ "$BLOCKER_COUNT" -eq 0 ] || STATUS_REASONS+=("blockers>0")
 [ "$TESTS_ADEQUATE" = "true" ] || STATUS_REASONS+=("tests inadequate")
-[ "$RISK" != "high" ] || STATUS_REASONS+=("high risk needs human approval")
+# `behavior_change_risk` is REPORTED in the headline (see HEADLINE above) but
+# never gates. The check exists so the reviewer catches DEFECTS before a merge,
+# and bugs/blockers already cover those; a self-reported tier is not a defect.
+# Its rubric (docs/REVIEW_SCHEMA.md) classifies any queue/scheduler/retry change
+# as "high", so gating on it blocked routine fixes at 0 bugs and 0 blockers, and
+# the only way past was disabling enforce_admins on main — strictly worse than
+# merging the change under review. Gate matrix is tested in
+# scripts/lib/__tests__/review-reviewer.test.sh.
 if [ "${#STATUS_REASONS[@]}" -gt 0 ]; then
   STATUS_STATE="failure"
   STATUS_DESCRIPTION="$HEADLINE; $(IFS=', '; echo "${STATUS_REASONS[*]}")"
@@ -421,6 +447,9 @@ finalize_review_status "$STATUS_STATE" "$STATUS_DESCRIPTION" "$PR_URL"
 if [ -z "$PR_NUMBER" ]; then
   echo ">> no PR for current branch; skipping GitHub comment"
 else
+  # A push between the final status and this comment would make the displayed
+  # verdict stale even though branch protection correctly blocks the new head.
+  review_assert_head_is_current "$HEAD_SHA" "$PI_REVIEW_STATUS_CONTEXT" || exit 2
   NOTES="$(echo "$VERDICT" | jq -r '.notes // ""')"
   PRETTY="$(echo "$VERDICT" | jq .)"
   SUGGESTIONS_TABLE="$(echo "$VERDICT" | jq -r '

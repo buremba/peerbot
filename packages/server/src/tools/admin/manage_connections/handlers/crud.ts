@@ -32,6 +32,7 @@ import {
   getOperationsSummary,
   getOperationsSummaryBatch,
 } from "../../../../operations/connector-operations";
+import { projectConnectionForReader } from "../public-projection";
 import {
   getAuthProfileById,
   getAuthProfileBySlug,
@@ -47,6 +48,7 @@ import {
   connectionSlugFormatError,
   connectionSlugTaken,
   insertConnectionWithSlug,
+  isConnectionDevicePinUniqueViolation,
   isConnectionSlugUniqueViolation,
   resolveNewConnectionSlug,
 } from "../../../../utils/connections";
@@ -431,7 +433,9 @@ export async function handleList(
 
   return {
 		action: "list",
-    connections,
+    connections: connections.map((row) =>
+      projectConnectionForReader(row, ctx)
+    ),
     total: connections.length,
     limit,
     offset,
@@ -553,7 +557,7 @@ export async function handleGet(
 
   return {
 		action: "get",
-    connection: {
+    connection: projectConnectionForReader({
       ...resolved,
 			error_message: effectiveConnectionErrorMessage({
 				error_message: getRow.error_message as string | null,
@@ -587,7 +591,7 @@ export async function handleGet(
         appAuthProfileId: getRow.app_auth_profile_id,
         authProfileId: getRow.auth_profile_id,
       }),
-    },
+    }, ctx),
     view_url: viewUrl,
   };
 }
@@ -1773,6 +1777,29 @@ export async function handleUpdate(
     nextSlug = updateExplicitSlug;
   }
 
+	// Same pre-flight the create path runs (see the duplicate check above):
+	// `idx_connections_org_connector_device_live` is UNIQUE on
+	// (organization_id, connector_key, device_worker_id) for live rows, so
+	// re-pointing this connection at a device another live connection already
+	// holds hits the index as a raw 23505 instead of a readable error. Only
+	// the create path was guarded; the update path was not.
+	if (nextDeviceWorkerId) {
+		const pinDup = (await sql`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${existing.connector_key}
+          AND device_worker_id = ${nextDeviceWorkerId}
+          AND deleted_at IS NULL
+          AND id <> ${args.connection_id}
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+		if (pinDup.length > 0) {
+			return {
+				error: `A ${existing.connector_key} connection (id: ${pinDup[0].id}) is already assigned to that device in this org.`,
+			};
+		}
+	}
+
   // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
   let updated: any[];
   try {
@@ -1819,7 +1846,7 @@ export async function handleUpdate(
       const lockedConnectionConfig = lockedSplit?.connectionConfig ?? null;
       const lockedReplaceConfig = lockedConnectionConfig ?? {};
 
-      return tx`
+      const rows = await tx`
         UPDATE connections
         SET display_name = COALESCE(${args.display_name ?? null}, display_name),
             slug = COALESCE(${nextSlug}, slug),
@@ -1837,6 +1864,38 @@ export async function handleUpdate(
         WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
         RETURNING *
       `;
+      // The device pin writes in THIS transaction, not after it. The pre-flight
+      // above is an unlocked SELECT, so two replicas can both see the device as
+      // free and race into `idx_connections_org_connector_device_live`; the
+      // loser's violation must abort the general update too, or a combined
+      // request reports failure while persisting the display_name/config/auth
+      // changes it claims to have rejected.
+      if (
+        hasDeviceWorkerArg ||
+        (updateProfileDeviceWorkerId && !hasDeviceWorkerArg)
+      ) {
+        await tx`
+          UPDATE connections
+          SET device_worker_id = ${nextDeviceWorkerId},
+              error_message = CASE
+                WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+                THEN NULL
+                ELSE error_message
+              END,
+              status = CASE
+                WHEN ${nextDeviceWorkerId != null}
+                 AND status = 'paused'
+                 AND error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
+                THEN 'active'
+                ELSE status
+              END,
+              updated_at = NOW()
+          WHERE id = ${args.connection_id}
+            AND organization_id = ${organizationId}
+            AND deleted_at IS NULL
+        `;
+      }
+      return rows;
     });
     if (updated.length === 0) return { error: "Connection not found" };
   } catch (err) {
@@ -1847,6 +1906,24 @@ export async function handleUpdate(
     }
 		if (isPersonalCredVisibilityViolation(err))
 			return { error: PERSONAL_CRED_ORG_VISIBILITY_ERROR };
+		// A replica won the device between our pre-flight and this write. The
+		// transaction aborted, so nothing was persisted — report the same readable
+		// collision the pre-flight would have.
+		if (isConnectionDevicePinUniqueViolation(err)) {
+			const winner = (await sql`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${existing.connector_key}
+          AND device_worker_id = ${nextDeviceWorkerId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+			return {
+				error: winner[0]
+					? `A ${existing.connector_key} connection (id: ${winner[0].id}) is already assigned to that device in this org.`
+					: `That device is already assigned to another ${existing.connector_key} connection in this org.`,
+			};
+		}
     throw err;
   }
 
@@ -1861,26 +1938,6 @@ export async function handleUpdate(
 			.error_message as string | null;
 		const pinningDevice = nextDeviceWorkerId != null;
 		clearedDeviceTombstone = isDevicePinTombstone(previousError);
-		await sql`
-      UPDATE connections
-      SET device_worker_id = ${nextDeviceWorkerId},
-          error_message = CASE
-            WHEN error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
-            THEN NULL
-            ELSE error_message
-          END,
-          status = CASE
-            WHEN ${pinningDevice}
-             AND status = 'paused'
-             AND error_message = ANY(${pgTextArray([...DEVICE_PIN_TOMBSTONE_MESSAGES])}::text[])
-            THEN 'active'
-            ELSE status
-          END,
-          updated_at = NOW()
-      WHERE id = ${args.connection_id}
-        AND organization_id = ${organizationId}
-        AND deleted_at IS NULL
-    `;
 		(updated[0] as Record<string, unknown>).device_worker_id =
 			nextDeviceWorkerId;
 		if (clearedDeviceTombstone) {

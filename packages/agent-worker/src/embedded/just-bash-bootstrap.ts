@@ -12,9 +12,8 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { buildAgentEnv } from "../shared/worker-env-keys";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
 import { buildEgressFetch } from "./egress-fetch";
 import {
@@ -75,6 +74,15 @@ export function buildBinaryInvocation(
  * arbitrary code through them. They are excluded by default; an agent that
  * genuinely needs them must opt in via
  * `LOBU_ALLOW_UNSANDBOXED_EXEC=1` (set per-agent in lobu.config.ts).
+ *
+ * This filter blocks the AGENT from invoking a listed binary DIRECTLY through
+ * the shell: an unregistered name is "command not found". It does NOT stop a
+ * binary that IS registered (a tool not on this list, e.g. `awk`, `sed`) from
+ * re-execing a listed one — a registered command inherits the worker PATH, so
+ * `awk 'BEGIN{system("bunx x")}'` can still reach the manager. Closing that
+ * residual at the child PATH was tried and reverted (it removed co-located
+ * node/git and could not gate an absolute /nix/store re-exec); it belongs at
+ * the process/mount boundary and is tracked separately.
  */
 const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "node",
@@ -109,6 +117,12 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "nix-build",
   "nix-shell",
   "nix-env",
+  "nix-store",
+  "nix-channel",
+  "nix-instantiate",
+  "nix-prefetch-url",
+  "nix-collect-garbage",
+  "nix-copy-closure",
   "npm",
   "npx",
   "pnpm",
@@ -117,10 +131,48 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
   "pip3",
   "pipx",
   "uv",
+  "uvx",
+  "bunx",
   "poetry",
   "gem",
   "cargo",
   "go",
+  // Exec wrappers: they run an arbitrary trailing argv as a new process with the
+  // worker's PATH, so a registered wrapper re-execs any /nix/store binary —
+  // including one deliberately filtered above (`env sh`, `env nix`, `xargs npm`,
+  // `find … -exec …`). Gating `sh`/`nix` while leaving these registerable would
+  // be a hole: the wrapper is the same arbitrary-code capability by proxy. They
+  // join the same default-off tier and are re-enabled per-agent by
+  // LOBU_ALLOW_UNSANDBOXED_EXEC=1, exactly like the interpreters above.
+  "env",
+  "command",
+  "xargs",
+  "find",
+  "nice",
+  "ionice",
+  "nohup",
+  "setsid",
+  "stdbuf",
+  "timeout",
+  "time",
+  "chrt",
+  "taskset",
+  "watch",
+  "flock",
+  // `make` belongs to the same tier for the same reason: every recipe line is
+  // handed to `/bin/sh -c`, so a registered `make` runs an arbitrary script from
+  // a Makefile the agent just wrote.
+  "make",
+  // Privilege / namespace / trace tools also exec an arbitrary trailing argv
+  // (and `su`, `chroot`, `nsenter` default to a SHELL when given no command),
+  // so registering one is the same proxy hole as `env`.
+  "sudo",
+  "su",
+  "unshare",
+  "nsenter",
+  "chroot",
+  "strace",
+  "ltrace",
 ]);
 
 /**
@@ -284,21 +336,19 @@ async function buildCustomCommands(
   for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
-        const envRecord = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
+        // `ctx.env` is whatever the agent exported inside just-bash. It is
+        // merged on top so a script can set its own variables, but it starts
+        // from the allowlisted worker env, never from `process.env` — the agent
+        // cannot re-introduce a gateway secret it was never given.
+        const shellEnv: Record<string, string> = {};
         if (ctx.env && typeof ctx.env.forEach === "function") {
           ctx.env.forEach((v: string, k: string) => {
-            envRecord[k] = v;
+            shellEnv[k] = v;
           });
         } else if (ctx.env && typeof ctx.env === "object") {
-          Object.assign(envRecord, ctx.env);
+          Object.assign(shellEnv, ctx.env);
         }
-        // The agent can `export WORKER_TOKEN=...` inside just-bash to slip a
-        // value through `ctx.env`. Re-strip so spawned binaries (and anything
-        // that may echo or log env) never see a sensitive-shaped key, even an
-        // attacker-controlled one.
-        for (const key of SENSITIVE_WORKER_ENV_KEYS) {
-          delete envRecord[key];
-        }
+        const envRecord = buildAgentEnv(process.env, shellEnv);
 
         // Pin HOME / TMPDIR to dedicated subdirs so tool dotfiles (~/.gitconfig,
         // ~/.cache, ~/.config) and temp files don't collide with workspace
@@ -624,7 +674,7 @@ export async function createEmbeddedBashOps(
   const bashInstance = new Bash({
     fs: bashFs,
     cwd: "/",
-    env: stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS),
+    env: buildAgentEnv(process.env),
     executionLimits: EMBEDDED_BASH_LIMITS,
     ...(egressFetch && { fetch: egressFetch }),
     ...(customCommands.length > 0 && { customCommands }),

@@ -18,6 +18,7 @@ import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
+import { BEHAVIOR_RUN_SOURCE } from "../behavior-run-session.js";
 import {
   finalizeTurnSuggestions,
   readCurrentSuggestion,
@@ -66,7 +67,7 @@ interface ChatInteractionEnvelope {
  * SSE client on any pod. These bypass the API owner-gate in routeToRenderer.
  * Producers: routes/public/agent.ts (watcher-run/direct-api from session
  * intent), services/agent-threads.ts (internal default), connectors/
- * repair-agent.ts, scheduled/jobs.ts.
+ * scheduled/jobs.ts.
  *
  * KEEP IN LOCKSTEP with `AUTONOMOUS_SOURCES` in authz/entity-policy.ts: every
  * headless (no-human) source here must also be treated as autonomous by the
@@ -74,7 +75,7 @@ interface ChatInteractionEnvelope {
  * autonomous-only restrictions.
  */
 const HEADLESS_SOURCES = new Set([
-  "watcher-run",
+  BEHAVIOR_RUN_SOURCE,
   "connector-repair",
   "scheduled-job",
   "internal",

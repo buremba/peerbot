@@ -1,6 +1,7 @@
 import {
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineBehavior,
   reactionFromFile,
@@ -8,8 +9,15 @@ import {
 } from "@lobu/cli/config";
 import type catalogStalenessCheckerReaction from "./catalog-staleness-checker.reaction.ts";
 
+const catalogStalenessCheckerSkill = defineSkill({
+  name: "catalog-staleness-checker",
+  content:
+    'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
+});
+
 const atlasCurator = defineAgent({
   id: "atlas-curator",
+  skills: [catalogStalenessCheckerSkill],
   name: "atlas-curator",
   description:
     "Curate Atlas reference data — countries, cities, regions, industries, technologies, universities",
@@ -209,8 +217,7 @@ const catalogStalenessChecker = defineBehavior({
   reaction: reactionFromFile<typeof catalogStalenessCheckerReaction>(
     "./catalog-staleness-checker.reaction.ts"
   ),
-  prompt:
-    'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
+  skills: ["catalog-staleness-checker"],
 });
 
 export default defineConfig({

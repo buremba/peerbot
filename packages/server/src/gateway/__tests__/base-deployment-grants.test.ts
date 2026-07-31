@@ -75,6 +75,12 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
   let policyStore: PolicyStore;
   let manager: TestDeploymentManager;
 
+  // Grant reads are org-scoped, so every lookup needs the payload org.
+  const hasGrant = (pattern: string, organizationId = "test-org") =>
+    grantStore.hasGrant("agent-1", pattern, organizationId);
+  const isDenied = (pattern: string, organizationId = "test-org") =>
+    grantStore.isDenied("agent-1", pattern, organizationId);
+
   beforeAll(async () => {
     await ensureDbForGatewayTests();
   });
@@ -99,8 +105,8 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(await grantStore.hasGrant("agent-1", ".github.com")).toBe(true);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await hasGrant(".github.com")).toBe(true);
   });
 
   test("syncs preApprovedTools as MCP tool grants", async () => {
@@ -113,13 +119,9 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/list_messages")
-    ).toBe(true);
+    expect(await hasGrant("/mcp/gmail/tools/list_messages")).toBe(true);
     // Wildcard pattern should match a specific tool under it.
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/linear/tools/create_issue")
-    ).toBe(true);
+    expect(await hasGrant("/mcp/linear/tools/create_issue")).toBe(true);
   });
 
   test("syncs networkConfig.deniedDomains as deny grants", async () => {
@@ -132,10 +134,10 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(true);
-    expect(await grantStore.isDenied("agent-1", "sub.bad.com")).toBe(true);
-    expect(await grantStore.hasGrant("agent-1", "evil.com")).toBe(false);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await isDenied("evil.com")).toBe(true);
+    expect(await isDenied("sub.bad.com")).toBe(true);
+    expect(await hasGrant("evil.com")).toBe(false);
   });
 
   test("removing a denied domain from config revokes the deny grant", async () => {
@@ -144,12 +146,12 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
         networkConfig: { deniedDomains: ["evil.com"] },
       })
     );
-    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(true);
+    expect(await isDenied("evil.com")).toBe(true);
 
     await manager.syncNetworkConfigGrants(
       buildPayload({ networkConfig: { deniedDomains: [] } })
     );
-    expect(await grantStore.isDenied("agent-1", "evil.com")).toBe(false);
+    expect(await isDenied("evil.com")).toBe(false);
   });
 
   test("flipping a domain from denied to allowed updates the grant", async () => {
@@ -158,17 +160,15 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
         networkConfig: { deniedDomains: ["flip.example.com"] },
       })
     );
-    expect(await grantStore.isDenied("agent-1", "flip.example.com")).toBe(true);
+    expect(await isDenied("flip.example.com")).toBe(true);
 
     await manager.syncNetworkConfigGrants(
       buildPayload({
         networkConfig: { allowedDomains: ["flip.example.com"] },
       })
     );
-    expect(await grantStore.isDenied("agent-1", "flip.example.com")).toBe(
-      false
-    );
-    expect(await grantStore.hasGrant("agent-1", "flip.example.com")).toBe(true);
+    expect(await isDenied("flip.example.com")).toBe(false);
+    expect(await hasGrant("flip.example.com")).toBe(true);
   });
 
   test("same agent id in two orgs syncs independently (org-scoped cache)", async () => {
@@ -188,12 +188,8 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.isDenied("agent-1", "evil.com", "test-org")).toBe(
-      true
-    );
-    expect(await grantStore.isDenied("agent-1", "evil.com", "org-b")).toBe(
-      true
-    );
+    expect(await isDenied("evil.com")).toBe(true);
+    expect(await isDenied("evil.com", "org-b")).toBe(true);
   });
 
   test("revokes a config-removed domain even when the sync cache is cold", async () => {
@@ -202,7 +198,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
         networkConfig: { allowedDomains: ["a.example.com"] },
       })
     );
-    expect(await grantStore.hasGrant("agent-1", "a.example.com")).toBe(true);
+    expect(await hasGrant("a.example.com")).toBe(true);
 
     // Fresh manager = cold cache (pod restart / other replica). The domain
     // was removed from config; revocation must not depend on pod-local state.
@@ -213,7 +209,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       buildPayload({ networkConfig: { allowedDomains: [] } })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "a.example.com")).toBe(false);
+    expect(await hasGrant("a.example.com")).toBe(false);
   });
 
   test("cold-cache sync does not revoke user-approved MCP tool grants", async () => {
@@ -234,23 +230,21 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       buildPayload({ networkConfig: { allowedDomains: ["x.example.com"] } })
     );
 
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(true);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(true);
   });
 
   test("grants nix cache domains while nix is configured, revokes on removal", async () => {
     await manager.syncNetworkConfigGrants(
       buildPayload({ nixConfig: { packages: ["python311"] } })
     );
-    expect(await grantStore.hasGrant("agent-1", "cache.nixos.org")).toBe(true);
+    expect(await hasGrant("cache.nixos.org")).toBe(true);
 
     const freshManager = new TestDeploymentManager(TEST_CONFIG);
     freshManager.setGrantStore(grantStore);
     freshManager.setPolicyStore(policyStore);
     await freshManager.syncNetworkConfigGrants(buildPayload({}));
 
-    expect(await grantStore.hasGrant("agent-1", "cache.nixos.org")).toBe(false);
+    expect(await hasGrant("cache.nixos.org")).toBe(false);
   });
 
   test("removing a deny listed under an alias spelling re-allows the domain", async () => {
@@ -263,15 +257,15 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
         },
       })
     );
-    expect(await grantStore.isDenied("agent-1", "api.example.com")).toBe(true);
+    expect(await isDenied("api.example.com")).toBe(true);
 
     await manager.syncNetworkConfigGrants(
       buildPayload({
         networkConfig: { allowedDomains: ["*.example.com"] },
       })
     );
-    expect(await grantStore.isDenied("agent-1", "api.example.com")).toBe(false);
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
+    expect(await isDenied("api.example.com")).toBe(false);
+    expect(await hasGrant("api.example.com")).toBe(true);
   });
 
   test("reconcile preserves infra-granted npm registry domains", async () => {
@@ -292,9 +286,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       buildPayload({ networkConfig: { allowedDomains: ["x.example.com"] } })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "registry.npmjs.org")).toBe(
-      true
-    );
+    expect(await hasGrant("registry.npmjs.org")).toBe(true);
   });
 
   test("a config-denied npm registry row survives reconcile as a deny", async () => {
@@ -305,9 +297,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
         networkConfig: { deniedDomains: ["registry.npmjs.org"] },
       })
     );
-    expect(
-      await grantStore.isDenied("agent-1", "registry.npmjs.org", "test-org")
-    ).toBe(true);
+    expect(await isDenied("registry.npmjs.org")).toBe(true);
 
     // Removing the deny from config drops the row even though the domain is
     // in the infra exempt set — a denied row is never exempt.
@@ -315,9 +305,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     freshManager.setGrantStore(grantStore);
     freshManager.setPolicyStore(policyStore);
     await freshManager.syncNetworkConfigGrants(buildPayload({}));
-    expect(
-      await grantStore.isDenied("agent-1", "registry.npmjs.org", "test-org")
-    ).toBe(false);
+    expect(await isDenied("registry.npmjs.org")).toBe(false);
   });
 
   test("two-replica X→Y→X: a warm stale cache must not skip reconciliation", async () => {
@@ -332,15 +320,15 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     // Replica A syncs X (warm cache = X), replica B syncs Y (DB = Y).
     await replicaA.syncNetworkConfigGrants(buildPayload(configX));
     await replicaB.syncNetworkConfigGrants(buildPayload(configY));
-    expect(await grantStore.hasGrant("agent-1", "y.example.com")).toBe(true);
-    expect(await grantStore.hasGrant("agent-1", "x.example.com")).toBe(false);
+    expect(await hasGrant("y.example.com")).toBe(true);
+    expect(await hasGrant("x.example.com")).toBe(false);
 
     // Config reverts to X and the message lands on replica A, whose cache
     // already says X. Skipping on the pod-local cache would leave Y's rows
     // active and X's rows missing.
     await replicaA.syncNetworkConfigGrants(buildPayload(configX));
-    expect(await grantStore.hasGrant("agent-1", "y.example.com")).toBe(false);
-    expect(await grantStore.hasGrant("agent-1", "x.example.com")).toBe(true);
+    expect(await hasGrant("y.example.com")).toBe(false);
+    expect(await hasGrant("x.example.com")).toBe(true);
   });
 
   test("syncs both network and pre-approved tools in one call", async () => {
@@ -351,10 +339,8 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(true);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(true);
   });
 
   test("no-op when grantStore is not set", async () => {
@@ -463,11 +449,9 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(await grantStore.hasGrant("agent-1", ".github.com")).toBe(true);
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(true);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await hasGrant(".github.com")).toBe(true);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(true);
 
     // Shrink the set: drop the second domain and the MCP tool grant.
     await manager.syncNetworkConfigGrants(
@@ -477,11 +461,9 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     );
 
     expect(revokeSpy).toHaveBeenCalledTimes(2);
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(await grantStore.hasGrant("agent-1", ".github.com")).toBe(false);
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(false);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await hasGrant(".github.com")).toBe(false);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(false);
   });
 
   test("domain sync writes only on drift, and repairs drift without invalidation", async () => {
@@ -506,7 +488,7 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     await grantStore.revoke("agent-1", "api.example.com", "test-org");
     await manager.syncNetworkConfigGrants(payload);
     expect(grantSpy.mock.calls.length).toBe(firstCallCount + 1);
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
+    expect(await hasGrant("api.example.com")).toBe(true);
   });
 
   test("revokes all grants when the config is cleared entirely", async () => {
@@ -517,18 +499,14 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(true);
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(true);
+    expect(await hasGrant("api.example.com")).toBe(true);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(true);
 
     // Operator clears both lists.
     await manager.syncNetworkConfigGrants(buildPayload({}));
 
-    expect(await grantStore.hasGrant("agent-1", "api.example.com")).toBe(false);
-    expect(
-      await grantStore.hasGrant("agent-1", "/mcp/gmail/tools/send_email")
-    ).toBe(false);
+    expect(await hasGrant("api.example.com")).toBe(false);
+    expect(await hasGrant("/mcp/gmail/tools/send_email")).toBe(false);
   });
 });
 

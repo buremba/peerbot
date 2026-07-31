@@ -8,8 +8,7 @@
  * path runs with NO ambient orgContext. Before the #1779 fix, `resolveAgentOptions`
  * fell to an id-only read and returned an arbitrary org's model (the Gemini/Claude
  * 404). This drives the real resolver against the real store and asserts the
- * right model comes back — and that a deliberately unscoped read returns the wrong
- * one (the bug it fixes).
+ * right model comes back — and that a deliberately unscoped read fails closed.
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -24,8 +23,8 @@ import {
 } from "./helpers/db-setup.js";
 
 const AGENT = "lobu-builder";
-const ORG_CLAUDE = "org-claude"; // the org an unscoped read returns first
-const ORG_GEMINI = "org-gemini"; // install 10's org in the real incident
+const ORG_CLAUDE = "org-claude";
+const ORG_GEMINI = "org-gemini";
 
 describe("worker-path org scope (real store, shared agent id)", () => {
   let store: AgentSettingsStore;
@@ -38,9 +37,7 @@ describe("worker-path org scope (real store, shared agent id)", () => {
     await resetTestDatabase();
     store = new AgentSettingsStore(createPostgresAgentConfigStore());
 
-    // Seed the SAME agent id in two orgs with different models lists. Order
-    // matters: org-claude is created first so an unscoped `WHERE id = $agentId`
-    // (no ORDER BY) tends to return it — the wrong row for a gemini install.
+    // Seed the same agent id in two orgs with different model lists.
     await seedAgentRow(AGENT, { organizationId: ORG_CLAUDE });
     await seedAgentRow(AGENT, { organizationId: ORG_GEMINI });
     await orgContext.run({ organizationId: ORG_CLAUDE }, () =>
@@ -65,14 +62,10 @@ describe("worker-path org scope (real store, shared agent id)", () => {
     expect(resolved.model).not.toBe("claude/claude-sonnet-4-6");
   });
 
-  test("the OLD unscoped read returns the WRONG org's model (the bug this fixes)", async () => {
-    // Simulate the pre-fix behavior: read with no org and no ambient context.
-    // The store falls to the id-only query and returns an arbitrary org's row.
+  test("an unscoped read cannot return either org's model", async () => {
     const unscoped = await store.getSettings(AGENT);
 
-    // Whatever it returns, it is NOT reliably the gemini org — demonstrating why
-    // the explicit org scope is required. In this seeding it returns claude's.
-    expect(unscoped?.models?.[0]).toBe("claude/claude-sonnet-4-6");
+    expect(unscoped).toBeNull();
   });
 
   test("each org resolves its own model independently", async () => {

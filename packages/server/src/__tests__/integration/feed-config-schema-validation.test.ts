@@ -312,4 +312,43 @@ describe("manage_feeds config validation against connector configSchema", () => 
 		expect(result.error).toBeUndefined();
 		expect(result.feed?.id).toBeDefined();
 	});
+
+	it("still validates a VIRTUAL feed's config shape (only required is exempt)", async () => {
+		const error = await owner.feeds
+			.create({
+				connection_id: rssConnectionId,
+				feed_key: "articles",
+				virtual: true,
+				config: { max_items_per_feed: 5000 },
+			})
+			.catch((reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(ClientSdkActionError);
+		expect((error as ClientSdkActionError).message).toContain("max_items_per_feed");
+	});
+
+	it("does not gate a VIRTUAL feed's update_feed on the sync configSchema", async () => {
+		const created = (await owner.feeds.manage({
+			action: "create_feed",
+			connection_id: rssConnectionId,
+			feed_key: "articles",
+			virtual: true,
+			config: { query: "virtual update target" },
+		})) as { feed?: { id: number } };
+		const feedId = Number(created.feed?.id);
+		expect(feedId).toBeGreaterThan(0);
+
+		// Merged config still has no `feed_urls` (that requirement belongs to the
+		// sync path this feed never takes), but the shape check still runs.
+		const result = (await owner.feeds.update({
+			feed_id: feedId,
+			config: { max_items_per_feed: 10 },
+		})) as { error?: string };
+		expect(result.error).toBeUndefined();
+
+		const rejected = await owner.feeds
+			.update({ feed_id: feedId, config: { max_items_per_feed: 5000 } })
+			.catch((reason: unknown) => reason);
+		expect(rejected).toBeInstanceOf(ClientSdkActionError);
+	});
 });

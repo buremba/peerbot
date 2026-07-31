@@ -27,8 +27,12 @@ import {
   type BehaviorUpdatePatch,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
+  assertAgentExists,
+  assertKeyingConfigEntityTypeExists,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
+  assertBehaviorSkillsResolve,
+  assertPromptSkillTokensPinned,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
@@ -42,6 +46,7 @@ import {
   extractReactionInputSchema,
 } from '../../../watchers/reaction-executor';
 import {
+  assertBehaviorInstructions,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -91,15 +96,20 @@ export async function handleCreate(
 }> {
   const sql = getDb();
 
-  // Require slug + prompt for create. The output contract is not authored
+  // Require slug for create. Instruction text (prompt) is required only when
+  // the trigger shape runs on instructions alone — event-turn Behaviors may
+  // omit it and run on the built-in default (see assertBehaviorInstructions,
+  // called after triggers resolve below). The output contract is not authored
   // here: an entity-typed watcher (keying_config.entity_type) derives it from
   // entity_types.metadata_schema at runtime, and an untyped watcher uses the
   // worker's free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
-  if (!args.prompt) {
-    throw new ToolUserError('prompt is required for create action');
+  if (!args.agent_id) {
+    throw new ToolUserError(
+      'agent_id is required to create a Behavior (the agent that executes it).'
+    );
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
@@ -119,7 +129,10 @@ export async function handleCreate(
   //      — the backend derives them so the UI sends only the raw prompt.
   //   2. explicit `args.sources` (API callers / legacy).
   // If neither yields anything, fall back to a default all-events source.
-  const promptSources = extractSourcesFromPromptTokens(args.prompt);
+  // `create_version` deliberately does NOT derive (see version-actions.ts):
+  // an existing prompt's prose must not silently re-author the Behavior's
+  // source set during an otherwise unrelated version bump.
+  const promptSources = extractSourcesFromPromptTokens(args.prompt ?? '');
   const explicitSources = args.sources ?? [];
   const merged = mergePromptSources(explicitSources, promptSources);
   const sources: Array<{ name: string; query: string }> =
@@ -196,6 +209,12 @@ export async function handleCreate(
   if (!organizationId) {
     throw new ToolUserError('Cannot resolve Behavior sources without an organization');
   }
+  // Both of these are free-text columns with NO database foreign key, so an
+  // unresolvable id is accepted by the INSERT and only shows up as a Behavior
+  // that never runs (agent_id) or one whose output contract is silently voided
+  // (keying_config.entity_type). Resolve them BEFORE the row is written.
+  await assertAgentExists(sql, organizationId, args.agent_id);
+  await assertKeyingConfigEntityTypeExists(sql, organizationId, keyingConfig);
   await assertWatcherSourcesResolve(
     sql,
     organizationId,
@@ -206,6 +225,10 @@ export async function handleCreate(
     triggers: args.triggers,
   });
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
+  const skills = args.skills ?? [];
+  assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
+  assertPromptSkillTokensPinned(args.prompt, skills);
+  await assertBehaviorSkillsResolve(sql, organizationId, args.agent_id, skills);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -287,12 +310,12 @@ export async function handleCreate(
       await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, version_sources,
+        prompt, version_sources, skills,
         keying_config, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
-        ${args.prompt}, ${toJsonParam(tx, sources)},
+        ${args.prompt ?? ''}, ${toJsonParam(tx, sources)}, ${tx.json(skills)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
@@ -389,7 +412,7 @@ export async function handleCreate(
         notification_channel: args.notification_channel ?? 'canvas',
         notification_priority: args.notification_priority ?? 'normal',
         min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
-        prompt: args.prompt,
+        prompt: args.prompt ?? '',
         description: args.description ?? null,
         keying_config: keyingConfig ?? null,
         classifiers: classifiers ?? null,
@@ -432,9 +455,11 @@ export async function handleUpdate(
 
   await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
-    SELECT organization_id, agent_id, schedule, timezone, triggers
-    FROM watchers
-    WHERE id = ${args.behavior_id}
+    SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
+           cv.prompt AS current_prompt, cv.skills AS current_skills
+    FROM watchers w
+    LEFT JOIN watcher_versions cv ON cv.id = w.current_version_id
+    WHERE w.id = ${args.behavior_id}
     LIMIT 1
   `;
   const currentRow = currentRows[0] as {
@@ -443,6 +468,8 @@ export async function handleUpdate(
     schedule: string | null;
     timezone: string | null;
     triggers: ManageBehaviorsArgs['triggers'];
+    current_prompt: string | null;
+    current_skills: Array<{ name: string; content: string }> | null;
   };
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
@@ -453,6 +480,15 @@ export async function handleUpdate(
     !behaviorTriggersEqual(currentRow.triggers ?? [], triggerWrite.triggers)
   ) {
     await assertBehaviorTriggerConnections(sql, currentRow.organization_id, triggerWrite.triggers);
+    // Trigger shape alone can force the instruction rule (event-turn → schedule
+    // with an empty current prompt must fail). Callers that need to change both
+    // triggers and instructions atomically must use create_version with both
+    // fields — lobu apply does that path.
+    assertBehaviorInstructions(
+      triggerWrite.triggers,
+      currentRow.current_prompt,
+      currentRow.current_skills
+    );
   }
 
   // Match the invariant from handleCreate: a watcher with no agent_id is
@@ -472,6 +508,11 @@ export async function handleUpdate(
       );
     }
   }
+  // Same unresolvable-reference hole as create: `agent_id` has no FK, so
+  // re-pointing a Behavior at a nonexistent/cross-org agent would silently
+  // strand it (the scheduler joins on agents). Fence on ctx.organizationId —
+  // the same org the UPDATE below scopes to.
+  await assertAgentExists(sql, ctx.organizationId, args.agent_id);
 
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
@@ -720,6 +761,12 @@ export async function handleCreateFromVersion(
     );
   }
 
+  // The source's agent_id is copied verbatim onto every clone, and a version can
+  // outlive the agent it named (agent_id has no FK, so a deleted agent leaves the
+  // reference dangling). Resolve it once here so the fan-out cannot mint a whole
+  // batch of Behaviors the scheduler will never run.
+  await assertAgentExists(sql, organizationId, version.agent_id as string);
+
   // Reject cross-org entity_ids before cloning: a watcher attached to another
   // org's entity links its synced/extracted content to a non-existent in-org
   // entity (silent data-correctness bug). Names are fetched org-scoped below.
@@ -800,6 +847,17 @@ export async function handleCreateFromVersion(
         // system:chat-link tag): those bind a live channel responder, and
         // cloning them would create a second agent turn for the same message.
         const cloneTriggers = stripChatLinkTriggers(version.triggers);
+        // After stripping, the residual trigger shape must still satisfy the
+        // instruction rule (chat-link-only sources become manual/empty triggers
+        // and require a non-empty prompt).
+        // The clone SHARES the source's watcher_versions row, so its pinned
+        // skills come along with it — they satisfy the rule here exactly as they
+        // will at dispatch.
+        assertBehaviorInstructions(
+          (Array.isArray(cloneTriggers) ? cloneTriggers : []) as BehaviorTrigger[],
+          version.prompt as string | null | undefined,
+          version.skills as Array<{ name: string; content: string }> | null
+        );
         // `tags` is a text[] column read under fetch_types:false, so postgres.js
         // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),
         // not a JS array. Parse it before filtering.

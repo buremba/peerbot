@@ -27,7 +27,8 @@ so `gh pr merge --auto` completes only when both the suites and the agent
 verdict are green. The status fails when
 any merge gate below fails: `bug_free_confidence < 80`, `bugs > 0`,
 `slop > 15`, `simplicity < 70`, `blockers` is non-empty,
-`tests_adequate == false`, or `behavior_change_risk == "high"`. Thresholds
+or `tests_adequate == false`. `behavior_change_risk` is reported in the
+status description but does NOT gate. Thresholds
 are tunable for one-off runs with `PI_REVIEW_MIN_BUG_FREE`,
 `PI_REVIEW_MAX_SLOP`, and `PI_REVIEW_MIN_SIMPLICITY`.
 
@@ -158,9 +159,8 @@ Override for one run with `PI_REVIEW_MIN_SIMPLICITY=<n>`.
 > **Independent axes.** `bug_free_confidence`, `slop`, and `simplicity` are
 > independent. A change can score high `bug_free_confidence` (works), high
 > `slop` (lots of unused code added), and low `simplicity` (overengineered).
-> The `pi-review` status requires all seven gates to pass: these three metrics,
-> `bugs == 0`, `blockers.length == 0`, `behavior_change_risk != "high"`, and
-> `tests_adequate == true`.
+> The `pi-review` status requires all six gates to pass: these three metrics,
+> `bugs == 0`, `blockers.length == 0`, and `tests_adequate == true`.
 
 ### `blockers` (array of strings)
 
@@ -206,8 +206,13 @@ One of: `none`, `low`, `medium`, `high`.
   data integrity, or anything with cross-system consequences (queue,
   scheduler, retry).
 
-**Gate:** `make review` fails when risk is `high`; that path requires human
-approval / admin merge even if scores otherwise pass.
+**Not a gate.** Risk is reported in the status description (`…, 0 blockers,
+risk high`) so a reviewer can weigh it, but it does not fail `pi-review`. It is
+a self-reported tier, not a defect: `pi-review` exists to catch defects before
+merge, and `bugs` / `blockers` already cover those. Gating on it blocked every
+routine change to a queue, scheduler, or retry path — the categories named
+above — even at `0 bugs, 0 blockers`, and the only way past was disabling
+`enforce_admins` on `main`, which is strictly worse than merging the change.
 
 ### `tests_adequate` (boolean)
 

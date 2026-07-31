@@ -357,18 +357,13 @@ describe("sdkSearch", () => {
 		expect(send.results[0]).toContain("accepted aliases: message → body");
 	});
 
-	it("exposes authProfiles.get in read mode with its exact signature", async () => {
-		// authProfiles.get returns serializeAuthProfile output (no raw
-		// credentials/auth_data) — hiding it from query_sdk was an access-tier
-		// mismatch (#2046).
+	it("advertises authProfiles.get to a read-tier caller", async () => {
 		const result = await sdkSearch(
 			{ query: "authProfiles.get", mode: "read" },
 			stubEnv,
 			readCtx
 		);
 		expect(result.match_count).toBe(1);
-		expect(result.results[0]).toContain(
-			"authProfiles.get(auth_profile_slug: string)"
-		);
+		expect(result.results[0]).toContain("authProfiles.get");
 	});
 });

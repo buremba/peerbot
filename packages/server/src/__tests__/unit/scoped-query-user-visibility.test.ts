@@ -60,12 +60,29 @@ describe('buildScopedQuery events CTE — per-user connection visibility (S0)', 
   });
 
   it('gates feeds via their owning connection (connection_id NOT NULL)', () => {
-    const { sql, params } = buildScopedQuery('SELECT config FROM feeds', ['feeds'], {
+    // The gate is the connection ROW predicate (same one manage_feeds applies),
+    // not the FK/events form. The FK form additionally required the connection
+    // to be non-soft-deleted, which hid live feeds that `client.feeds.get`
+    // still returned — the SDK and the SQL view disagreed about what exists.
+    const { sql } = buildScopedQuery('SELECT config FROM feeds', ['feeds'], {
       organizationId: 'org_test',
       userId: 'user_a',
     });
-    expect(sql).toContain('fd.connection_id');
-    expect(sql).toContain("vc.visibility = 'org'");
-    expect(params).toContain('user_a');
+    expect(sql).toContain('fc.id = fd.connection_id');
+    expect(sql).toContain("fc.visibility = 'org'");
+    // Private connections created by OTHER users are still excluded.
+    expect(sql).toContain("fc.created_by = 'user_a'");
+  });
+
+  it('does not leak another org’s feeds when widening connection visibility', () => {
+    // Both the feed row and its owning connection stay bound to the org param —
+    // widening must never trade a visibility bug for a tenancy leak.
+    const { sql, params } = buildScopedQuery('SELECT id FROM feeds', ['feeds'], {
+      organizationId: 'org_test',
+      userId: 'user_a',
+    });
+    expect(sql).toContain('fd.organization_id = $1');
+    expect(sql).toContain('fc.organization_id = $1');
+    expect(params[0]).toBe('org_test');
   });
 });

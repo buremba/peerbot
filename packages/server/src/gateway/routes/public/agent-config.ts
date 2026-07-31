@@ -7,6 +7,7 @@
 import { Type } from "@sinclair/typebox";
 import type { AgentConfigStore, ModelOption, SkillConfig } from "@lobu/core";
 import { type Context, Hono } from "hono";
+import { orgContext, tryGetOrgId } from "../../../lobu/stores/org-context.js";
 import { defineRoute, type RouteSpec } from "../shared/define-route.js";
 import {
 	buildProviderCatalog,
@@ -31,7 +32,7 @@ import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import type { IMessageQueue } from "../../infrastructure/queue/index.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
-import { createTokenVerifier } from "../shared/agent-ownership.js";
+import { createOwnershipResolver } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import {
 	ErrorResponseSchema,
@@ -161,10 +162,17 @@ async function buildResolvedConfigResponse(
 	agentId: string,
 	payload: SettingsTokenPayload | null,
 	providerModels: Record<string, ModelOption[]>,
+	organizationId?: string,
 ): Promise<any> {
 	const [settingsView, grants] = await Promise.all([
 		resolveSettingsView(config, agentId, payload),
-		config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
+		// `grants` rows are keyed by organization, so there is nothing to read
+		// for a declared agent authorized without a tenant. Asking anyway used
+		// to answer across every organization at once.
+		organizationId
+			? (config.grantStore?.listGrants(agentId, organizationId) ??
+				Promise.resolve([]))
+			: Promise.resolve([]),
 	]);
 	const settings = settingsView.settings;
 
@@ -298,7 +306,7 @@ async function buildResolvedConfigResponse(
 export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 	const app = new Hono();
 
-	const baseVerifyToken = createTokenVerifier({
+	const resolveOwnership = createOwnershipResolver({
 		userAgentsStore: config.userAgentsStore,
 		agentMetadataStore: config.agentConfigStore,
 	});
@@ -313,63 +321,101 @@ export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 	const verifyToken = async (
 		payload: SettingsTokenPayload | null,
 		agentId: string,
-	): Promise<SettingsTokenPayload | null> => {
+	): Promise<{
+		payload: SettingsTokenPayload;
+		organizationId?: string;
+	} | null> => {
 		if (!payload) return null;
 		if (payload.isAdmin || payload.settingsMode === "admin") {
+			const organizationId = tryGetOrgId() ?? undefined;
+			if (
+				!organizationId &&
+				!config.agentSettingsStore.isDeclaredAgent(agentId)
+			) {
+				return null;
+			}
 			return {
-				...payload,
-				isAdmin: true,
-				settingsMode: "admin",
+				payload: {
+					...payload,
+					isAdmin: true,
+					settingsMode: "admin",
+				},
+				organizationId,
 			};
 		}
 
-		const verified = await baseVerifyToken(payload, agentId);
-		if (!verified) return null;
+		const ownership = await resolveOwnership(payload, agentId);
+		if (!ownership.authorized) return null;
+		if (
+			!ownership.organizationId &&
+			!config.agentSettingsStore.isDeclaredAgent(agentId)
+		) {
+			return null;
+		}
 
-		if (verified.agentId || verified.settingsMode === "user") {
-			return verified;
+		if (payload.agentId || payload.settingsMode === "user") {
+			return { payload, organizationId: ownership.organizationId };
 		}
 
 		return {
-			...verified,
-			isAdmin: true,
-			settingsMode: "admin",
+			payload: {
+				...payload,
+				isAdmin: true,
+				settingsMode: "admin",
+			},
+			organizationId: ownership.organizationId,
 		};
 	};
 
 	/**
 	 * Resolve the `agentId` path param and verify the settings session/token for
-	 * it. Returns the verified payload plus agentId, or a 401 Response to
-	 * early-return. Collapses the identical preamble every config handler ran.
+	 * it. Returns the verified payload and tenant scope, or a 401 Response.
 	 */
 	const requireConfigAuth = async (
 		c: Context,
-	): Promise<{ agentId: string; payload: SettingsTokenPayload } | Response> => {
+	): Promise<{
+		agentId: string;
+		payload: SettingsTokenPayload;
+		organizationId?: string;
+	} | Response> => {
 		const agentId = c.req.param("agentId") || "";
-		const payload = await verifyToken(
+		const auth = await verifyToken(
 			await verifySettingsSessionOrToken(c),
 			agentId,
 		);
-		if (!payload) return errorResponse(c, "Unauthorized", 401);
-		return { agentId, payload };
+		if (!auth) return errorResponse(c, "Unauthorized", 401);
+		return { agentId, ...auth };
 	};
 
 	defineRoute(app, getConfigRoute, async (c): Promise<Response> => {
 		const auth = await requireConfigAuth(c);
 		if (auth instanceof Response) return auth;
-		const { agentId, payload } = auth;
-		const providerModels = await collectProviderModelOptions(
-			agentId,
-			payload.userId,
-		);
-		return c.json(
-			await buildResolvedConfigResponse(
-				config,
+		const { agentId, payload, organizationId } = auth;
+		const loadConfig = async () => {
+			const providerModels = await collectProviderModelOptions(
 				agentId,
-				payload,
-				providerModels,
-			),
-		);
+				payload.userId,
+			);
+			return c.json(
+				await buildResolvedConfigResponse(
+					config,
+					agentId,
+					payload,
+					providerModels,
+					organizationId,
+				),
+			);
+		};
+		// No org here means `verifyToken` authorized a DECLARED agent, whose
+		// settings are org-agnostic — a DB-backed agent without a tenant is
+		// already rejected there with 401. So the config still loads; the org
+		// only decides whether there are grants to read, and
+		// `buildResolvedConfigResponse` skips them rather than querying
+		// unscoped (which used to answer for every tenant at once).
+		if (!organizationId) {
+			return loadConfig();
+		}
+		return orgContext.run({ organizationId }, loadConfig);
 	});
 
 	// ===== Grant Endpoints (read-only) =====
@@ -382,7 +428,15 @@ export function createAgentConfigRoutes(config: AgentConfigRoutesConfig): Hono {
 			const auth = await requireConfigAuth(c);
 			if (auth instanceof Response) return auth;
 
-			const grants = await grantStore.listGrants(auth.agentId);
+			// Same tenant rule as the config route: a declared agent authorized
+			// without an org has no org-scoped rows to list, and `listGrants`
+			// now refuses to run unscoped rather than answering for everyone.
+			if (!auth.organizationId) return c.json([]);
+
+			const grants = await grantStore.listGrants(
+				auth.agentId,
+				auth.organizationId,
+			);
 			return c.json(grants);
 		});
 	}

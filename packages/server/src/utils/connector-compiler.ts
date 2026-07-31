@@ -8,6 +8,7 @@
 import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
+import { isReservedConnectorKey } from './reserved';
 
 export interface ConnectorMetadata {
   key: string;
@@ -51,6 +52,23 @@ export interface ConnectorMetadata {
   supportsExecute?: boolean;
 }
 
+/**
+ * Emitted when a compiled file exports no ConnectorRuntime class.
+ *
+ * This is the "it isn't a connector" signal, not a malfunction: the catalog
+ * scan compiles every `.ts` in the connectors directory, and that directory
+ * legitimately also holds support modules (identity modules, egress guards,
+ * behavior-event definitions) which were never meant to be connectors.
+ *
+ * It is a shared constant rather than two copies of a sentence because the
+ * throw happens inside CONNECTOR_RUNNER_CODE — a subprocess — and comes back
+ * over `process.send({ error: error.message })`. A string is the only channel
+ * available, so the two sides are pinned to one exported literal instead of
+ * matching prose that a later reword would silently desynchronise.
+ */
+export const NO_CONNECTOR_RUNTIME_ERROR =
+  "No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.";
+
 const CONNECTOR_RUNNER_CODE = `
 import { pathToFileURL } from 'node:url';
 
@@ -85,9 +103,7 @@ async function main() {
     }
 
     if (!RuntimeClass) {
-      throw new Error(
-        'No ConnectorRuntime class found in compiled code. Expected a class with sync() and execute() methods.'
-      );
+      throw new Error(${JSON.stringify(NO_CONNECTOR_RUNTIME_ERROR)});
     }
 
     const instance = new RuntimeClass();
@@ -175,5 +191,15 @@ export async function extractConnectorMetadata(compiledCode: string): Promise<Co
 export function validateConnectorMetadata(metadata: ConnectorMetadata): void {
   if (!metadata.key || !metadata.name || !metadata.version) {
     throw new Error('Connector must have key, name, and version.');
+  }
+  // The web app routes `/connectors/<key>/<connectionId>` against a catch-all
+  // param, and static sibling segments (CONNECTOR_SUBROUTE_SEGMENTS) win the
+  // match. A connector installed under one of those names would have every
+  // connection page it owns shadowed by an unrelated route — reject the
+  // install rather than ship a connector whose pages are unreachable.
+  if (isReservedConnectorKey(metadata.key)) {
+    throw new Error(
+      `Connector key '${metadata.key}' is reserved by a /connectors/ route. Pick another key.`
+    );
   }
 }

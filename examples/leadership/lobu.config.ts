@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -9,8 +10,15 @@ import {
 } from "@lobu/cli/config";
 import type LinearCyclesConnector from "./linear-cycles.connector.ts";
 
+const boardActionTrackerSkill = defineSkill({
+  name: "board-action-tracker",
+  content:
+    "Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.\n",
+});
+
 const leadership = defineAgent({
   id: "leadership",
+  skills: [boardActionTrackerSkill],
   name: "leadership",
   description:
     "Help leadership teams turn memos, decisions, and board materials into reusable operating context",
@@ -187,8 +195,7 @@ const boardActionTracker = defineBehavior({
   notification: { priority: "high", channel: "both" },
   tags: ["leadership", "daily", "board"],
   agentKind: "notifier",
-  prompt:
-    "Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.\n",
+  skills: ["board-action-tracker"],
 });
 
 export default defineConfig({

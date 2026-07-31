@@ -533,6 +533,16 @@ function diffWatcher(
   if (desired.prompt !== (remote.prompt ?? "")) {
     versionBound.push("prompt");
   }
+  // Compare the resolved snapshots, not the config's name list. Editing a
+  // SKILL.md changes no name, so a name-level diff would report "no changes"
+  // and leave every Behavior pinned to the old body — re-apply is how a config
+  // project takes a skill update, and this comparison is what makes it land.
+  if (
+    desired.skillSnapshots !== undefined &&
+    !deepEqual(desired.skillSnapshots, remote.skills ?? [])
+  ) {
+    versionBound.push("skills");
+  }
   // Sources live on the watchers row but are written as part of create_version
   // when changed (server copies them to the version's per-assignment scope).
   // Diff against `remote.sources` (also from the row) and route through

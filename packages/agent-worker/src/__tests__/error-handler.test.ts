@@ -123,7 +123,7 @@ describe("handleExecutionError", () => {
     expect(errors[0].code).toBe("PROVIDER_BASE_URL_UNRESOLVED");
   });
 
-  test("provider QUOTA (z.ai 429) classifies + relays the raw message verbatim", async () => {
+  test("provider QUOTA (z.ai 429) classifies + signals the raw message", async () => {
     const { transport, deltas, errors } = makeTransport();
 
     // The exact prod shape from the app pod logs.
@@ -131,10 +131,8 @@ describe("handleExecutionError", () => {
       "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
     await handleExecutionError(new Error(raw), transport, { provider: "z-ai" });
 
-    // No worker-formatted delta — the renderer presents it (raw message body +
-    // the code's CTA link). The raw message reaches the wire UNCHANGED: it
-    // already tells the user when the quota resets, so we relay it verbatim
-    // instead of parsing a reset time out of it.
+    // No worker-formatted delta. The raw message reaches the gateway unchanged;
+    // the gateway renderer labels/unwraps it and adds the code's CTA.
     expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("PROVIDER_QUOTA_EXHAUSTED");
@@ -158,6 +156,22 @@ describe("classifyError", () => {
           "401 No provider credentials configured. End-user provider setup is not available in chat yet."
         )
       )
+    ).toBe("PROVIDER_AUTH");
+    // Seen live on Telegram after connecting Claude via subscription OAuth:
+    // Anthropic 403s the inference call for orgs that disallow OAuth. The
+    // auth-hint regex misses it (no "api key"/"authentication failed" wording),
+    // so it surfaced as a raw `Worker crashed: 403 {...}` blob with no CTA —
+    // the credential IS the problem, so it belongs in the auth class.
+    expect(
+      classifyError(
+        new Error(
+          '403 {"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization.","details":{"error_code":"oauth_not_allowed_for_organization"}},"request_id":"req_011CdVRTidLfu6D81Mjz76wh"}'
+        )
+      )
+    ).toBe("PROVIDER_AUTH");
+    // The generic shape, not just the one vendor string we happened to see.
+    expect(
+      classifyError(new Error('403 {"error":{"type":"permission_error"}}'))
     ).toBe("PROVIDER_AUTH");
   });
 
@@ -209,6 +223,43 @@ describe("classifyError", () => {
   test("leaves unrelated crashes unclassified", () => {
     expect(classifyError(new Error("kaboom"))).toBeUndefined();
     expect(classifyError("not an error")).toBeUndefined();
+  });
+
+  test("recognizes a credit/billing-exhausted 400 as quota, not a raw crash", () => {
+    // Observed live: the Anthropic key was present but out of credits. This is
+    // a BILLING-class failure, functionally identical to quota exhaustion, but
+    // it carries no "quota"/"rate limit"/429 token so it fell through to
+    // `undefined` → a raw `💥 Worker crashed: 400 {…}` blob in the user's chat.
+    const raw =
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}';
+    expect(classifyError(new Error(raw))).toBe("PROVIDER_QUOTA_EXHAUSTED");
+
+    // Sibling phrasings from other providers.
+    expect(
+      classifyError(new Error("402 Payment Required: insufficient credits"))
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(
+      classifyError(new Error("Your account has insufficient balance."))
+    ).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(classifyError(new Error("billing_hard_limit_reached"))).toBe(
+      "PROVIDER_QUOTA_EXHAUSTED"
+    );
+  });
+
+  test("recognizes Gemini MALFORMED_FUNCTION_CALL as a provider tool-call failure", () => {
+    expect(
+      classifyError(
+        new Error(
+          "Provider finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL"
+        )
+      )
+    ).toBe("PROVIDER_TOOL_CALL_FAILED");
+    expect(
+      classifyError(new Error("Provider finish_reason: content_filter"))
+    ).toBeUndefined();
+    expect(
+      classifyError(new Error("Provider finish_reason: length"))
+    ).toBeUndefined();
   });
 
   test("SESSION_TIMEOUT and NO_MODEL_CONFIGURED still classify", () => {

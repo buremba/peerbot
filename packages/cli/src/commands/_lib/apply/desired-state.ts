@@ -96,7 +96,25 @@ export interface DesiredWatcher {
   name?: string;
   description?: string;
   triggers?: DesiredBehaviorTrigger[];
+  /**
+   * The Behavior's task statement, authored via `defineBehavior({ prompt })`.
+   * Stored as the version's frozen instruction text (the internal `prompt`
+   * column). Empty when the Behavior's whole job is its skills, or when an
+   * event-turn Behavior relies on the server-side default at run time.
+   */
   prompt: string;
+  /**
+   * Ordered skill names as written in config — the authoring input, resolved
+   * into {@link DesiredWatcher.skillSnapshots} at load time.
+   */
+  skills?: string[];
+  /**
+   * The resolved `{name, content}` pairs actually sent to the server and pinned
+   * onto the version. Separate from `skills` because the diff must compare
+   * BODIES, not names: editing a skill's text changes nothing about the name
+   * list, and a name-only diff would let a re-apply silently skip the update.
+   */
+  skillSnapshots?: Array<{ name: string; content: string }>;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: BehaviorSource[];
   /**
@@ -317,7 +335,6 @@ export interface DesiredState {
 interface SkillFrontmatter {
   name?: string;
   description?: string;
-  nixPackages?: string[];
 }
 
 async function parseSkillFrontmatter(raw: string): Promise<{
@@ -341,16 +358,14 @@ type SkillConfigEntry = NonNullable<
 /**
  * Map a resolved skill (inline `defineSkill` or file-loaded `skillFromFile`)
  * into a `SkillConfig` entry — the shape stored on agent settings and synced to
- * the worker's `.skills/`. The nix packages here merge into the agent's worker
- * sandbox at apply time, which is why skills resolve eagerly. Skills are
- * prompt/behavior only — they declare no network or MCP config.
+ * the worker's `.skills/`. Skills are instruction text only — they declare no
+ * nix, network, or MCP config.
  */
 function skillToConfig(args: {
   name: string;
   content: string;
   source: "inline" | "file";
   description?: string;
-  nixPackages?: string[];
 }): SkillConfigEntry {
   const skill: SkillConfigEntry = {
     repo: `${args.source}/${args.name}`,
@@ -359,7 +374,6 @@ function skillToConfig(args: {
     enabled: true,
   };
   if (args.description) skill.description = args.description;
-  if (args.nixPackages?.length) skill.nixPackages = args.nixPackages;
   return skill;
 }
 
@@ -406,7 +420,6 @@ async function resolveSkill(
       content,
       source: "file",
       description: fm?.description,
-      nixPackages: fm?.nixPackages,
     });
   }
   if (!skill.name) {
@@ -417,8 +430,58 @@ async function resolveSkill(
     content: skill.content ?? "",
     source: "inline",
     description: skill.description,
-    nixPackages: skill.nixPackages,
   });
+}
+
+/** Byte cap on the skill snapshots pinned to one Behavior version (issue #2320). */
+const MAX_COMPILED_INSTRUCTIONS_BYTES = 32 * 1024;
+
+/**
+ * Resolve a Behavior's ordered `skills[]` into frozen `{name, content}`
+ * snapshots. Fails loud on a name the owning agent's library does not declare,
+ * a name the worker cannot materialize safely, an empty body, or a total payload
+ * over {@link MAX_COMPILED_INSTRUCTIONS_BYTES}.
+ */
+function resolveBehaviorSkills(
+  watcher: DesiredWatcher,
+  agentSkills: SkillConfigEntry[]
+): Array<{ name: string; content: string }> {
+  const names = watcher.skills ?? [];
+  if (names.length === 0) return [];
+  const byName = new Map(agentSkills.map((skill) => [skill.name, skill]));
+  const resolved = names.map((name) => {
+    if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" cannot pin skill "${name}" — names may contain only letters, numbers, ".", "_", and "-"`
+      );
+    }
+    const skill = byName.get(name);
+    if (!skill) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" references skill "${name}", but agent "${watcher.agent}" declares no skill with that name in its skills library`
+      );
+    }
+    const body = skill.content?.trim();
+    if (!body) {
+      throw new ValidationError(
+        `Behavior "${watcher.slug}" references skill "${name}", but its body is empty — a pinned skill needs text`
+      );
+    }
+    return { name, content: body };
+  });
+  // The cap is on total pinned text, not on any one skill: the whole set is
+  // written into the worker's `.skills/` tree and, for a device-pinned Behavior,
+  // shipped in the dispatch payload.
+  const bytes = resolved.reduce(
+    (total, skill) => total + Buffer.byteLength(skill.content, "utf8"),
+    0
+  );
+  if (bytes > MAX_COMPILED_INSTRUCTIONS_BYTES) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" pins ${bytes} bytes of skill text — the maximum is ${MAX_COMPILED_INSTRUCTIONS_BYTES} (${MAX_COMPILED_INSTRUCTIONS_BYTES / 1024}KB)`
+    );
+  }
+  return resolved;
 }
 
 /**
@@ -1011,6 +1074,7 @@ export async function loadDesiredStateFromConfig(
   // Agent artifacts: SOUL/IDENTITY/USER.md (convention, from the agent dir) +
   // skills (explicit `defineAgent({ skills })`, inline or `skillFromFile`). The
   // mapper stays pure (no file IO); we read the files here and merge them in.
+  const skillsByAgentId = new Map<string, SkillConfigEntry[]>();
   await Promise.all(
     typedProject.agents.map(async (agent, i) => {
       const settings = state.agents[i]?.settings;
@@ -1022,8 +1086,23 @@ export async function loadDesiredStateFromConfig(
         opts.cwd
       );
       mergeAgentDirArtifacts(settings, markdown, localSkills);
+      skillsByAgentId.set(agent.id, localSkills);
     })
   );
+
+  // Resolve each Behavior's `skills[]` to {name, content} snapshots against the
+  // owning agent's library. This happens BEFORE the diff reads them, so a change
+  // to a referenced skill's BODY still drives version churn — re-applying is how
+  // a config project takes a skill update, and the diff is what notices.
+  //
+  // The bodies are no longer folded into `prompt`: the prompt is the author's
+  // task statement (or empty), and skills ride alongside as pinned files.
+  for (const watcher of state.watchers) {
+    watcher.skillSnapshots = resolveBehaviorSkills(
+      watcher,
+      skillsByAgentId.get(watcher.agent) ?? []
+    );
+  }
 
   // Behavior reaction scripts: a sibling `.ts` file referenced by path. The
   // mapper stays pure; resolve + read the source here (raw, server compiles

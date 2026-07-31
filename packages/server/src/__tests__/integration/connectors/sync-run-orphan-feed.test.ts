@@ -45,7 +45,8 @@ describe('createSyncRun orphan-feed handling (#1012)', () => {
     const feedId = Number((feed as { id: number }).id);
 
     // Pre-fix: threw "has no compiled code and no bundled source file".
-    const runId = await createSyncRun(feedId, {} as Env, sql);
+    const created = await createSyncRun(feedId, {} as Env, sql);
+    const runId = created.ok ? created.runId : null;
     expect(runId).toBeNull();
 
     const [after] = await sql`SELECT deleted_at FROM feeds WHERE id = ${feedId}`;

@@ -25,10 +25,7 @@ import {
 } from "../behaviors/activation";
 import { materializeConnectorBehaviorSignal } from "../behaviors/connector-signal";
 import { feedBackoff } from "../connectors/feed-backoff";
-import {
-	maybeCloseRepairThread,
-	maybeOpenOrAppendRepairThread,
-} from "../connectors/repair-agent";
+import { maybeEmitFeedAutoPausedAfterFailure } from "../behaviors/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
 import { emit } from "../events/emitter";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
@@ -54,11 +51,25 @@ import {
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
 import { stripNulDeep } from "../utils/strip-nul";
-import { advanceWatcherSchedule } from "../watchers/automation";
+import {
+	bumpDeviceFinalizeNudge,
+	resolveFinalizeNudgeBudget,
+} from "../watchers/run-completion";
+import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
 type DbClient = ReturnType<typeof getDb>;
 type SqlFragment = ReturnType<DbClient>;
+
+/**
+ * Caps on `runs.dry_run_preview`. A dry run exists so an operator can see the
+ * SHAPE of what a connector would ingest; it is not a second copy of `events`,
+ * and an uncapped preview of a feed that emits thousands of long-bodied items
+ * would be a large jsonb write on every batch. `total` in the stored preview is
+ * always the true count, so truncation is visible rather than silent.
+ */
+const DRY_RUN_PREVIEW_LIMIT = 50;
+const DRY_RUN_CONTENT_CHARS = 500;
 
 /**
  * Atomic terminal-state transition guarded on `status = 'running' AND
@@ -221,6 +232,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		// Look up run details for event columns
 		const runRows = (await sql`
     SELECT r.feed_id, r.connection_id, r.connector_key, r.organization_id,
+           r.dry_run,
            f.feed_key, f.entity_ids
     FROM runs r
     LEFT JOIN feeds f ON f.id = r.feed_id
@@ -230,6 +242,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			connection_id: number | null;
 			connector_key: string;
 			organization_id: string;
+			dry_run: boolean;
 			feed_key: string | null;
 			entity_ids: number[] | null;
 		}>;
@@ -241,34 +254,83 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		const run = runRows[0];
 		const entityIds = parsePgNumberArray(run.entity_ids);
 
-		// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
-		// come over the wire as base64 in `attachment.data`. Materialize each into
-		// the ArtifactStore before the row hits events.attachments — the events
-		// table is not a binary store. Audio attachments are queued for async
-		// transcription after insert.
-		const { items: materializedItems, pendingTranscriptions } =
-			await materializeInlineAttachments(batch.items);
-		batch.items = materializedItems as typeof batch.items;
+		// A dry run executes the connector for real — same code, same credentials,
+		// same validation, the same INSERTs — and then throws the writes away by
+		// rolling back. Read from the run row rather than the request so a worker
+		// cannot elect to skip writes, and so any replica handling this callback
+		// reaches the same decision.
+		//
+		// Why rollback rather than a guard on each write. The set of things a dry
+		// run must NOT do is open-ended — it grows every time anyone adds a write
+		// to this path, and nothing makes them notice. The set it must KEEP is
+		// closed: the preview, and that's it. So the code enumerates the closed
+		// set and lets the transaction cover the open one. A write added below
+		// tomorrow is rolled back without anyone remembering this feature exists.
+		//
+		// The bonus is the point of the feature: because the real INSERTs actually
+		// run, a dry run answers "would this sync work?" honestly. A constraint
+		// violation, a bad enum or a NOT NULL surfaces exactly as it would on the
+		// real path. Skipping the insert would have reported success on data that
+		// could never land.
+		//
+		// What rollback does NOT cover is anything that leaves Postgres, and those
+		// are guarded individually below (marked ESCAPES THE TX). That is a
+		// mechanically checkable category — "does this call escape the tx?" — not
+		// a list someone has to keep in their head.
+		const isDry = run.dry_run === true;
+		const dryPreview: Array<Record<string, unknown>> = [];
 
-		// Resolve or create entities declared via eventKinds[kind].attributions
-		// before inserting events. One query per (entityType, matchField) per
-		// batch — cheap compared to the per-event inserts that follow.
-		await applyEventAttributions({
-			connectorKey: run.connector_key,
-			connectionId: run.connection_id,
-			feedKey: run.feed_key,
-			orgId: run.organization_id,
-			items: batch.items,
-		});
+		// The whole batch, parameterised on a DB handle. The real path passes the
+		// singleton and behaves exactly as before (statement-per-autocommit — this
+		// refactor deliberately does not put production's hot path inside one long
+		// transaction). The dry path passes a tx that is rolled back.
+		const ingestBatch = async (db: DbClient) => {
+			// Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
+			// come over the wire as base64 in `attachment.data`. Materialize each into
+			// the ArtifactStore before the row hits events.attachments — the events
+			// table is not a binary store. Audio attachments are queued for async
+			// transcription after insert.
+			//
+			// ESCAPES THE TX: this uploads a blob to the ArtifactStore, which no
+			// Postgres rollback can retract. Because the blob is written before the
+			// row that would reference it, a dry run doing this would leave an
+			// orphaned artifact behind — storage that quietly accumulates.
+			let pendingTranscriptions: Awaited<
+				ReturnType<typeof materializeInlineAttachments>
+			>["pendingTranscriptions"] = [];
+			if (!isDry) {
+				const { items: materializedItems, pendingTranscriptions: pending } =
+					await materializeInlineAttachments(batch.items);
+				batch.items = materializedItems as typeof batch.items;
+				pendingTranscriptions = pending;
+			}
 
-		let totalItems = 0;
-		const rejectedItems: Array<{
-			id: string;
-			semantic_type?: string;
-			errors: string[];
-		}> = [];
+			// Resolve or create entities declared via eventKinds[kind].attributions
+			// before inserting events. One query per (entityType, matchField) per
+			// batch — cheap compared to the per-event inserts that follow.
+			//
+			// Runs on a dry run too, against `db`: it creates entity rows, and those
+			// roll back with everything else. Running it is what makes the inserts
+			// below realistic — events carry the entity ids it resolves.
+			await applyEventAttributions(
+				{
+					connectorKey: run.connector_key,
+					connectionId: run.connection_id,
+					feedKey: run.feed_key,
+					orgId: run.organization_id,
+					items: batch.items,
+				},
+				db
+			);
 
-		for (const item of batch.items) {
+			let totalItems = 0;
+			const rejectedItems: Array<{
+				id: string;
+				semantic_type?: string;
+				errors: string[];
+			}> = [];
+
+			for (const item of batch.items) {
 			try {
 				const itemOriginType = item.origin_type ?? null;
 				const itemSemanticType =
@@ -346,6 +408,15 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					},
 					{
 						onConflictUpdate: true,
+						// Dry path only: the tx that gets rolled back — the INSERT
+						// genuinely executes, so every constraint, trigger and NOT NULL
+						// is exercised for real. The real path must NOT pass `db` even
+						// though it equals the singleton: a caller-supplied `sql` makes
+						// insertEvent skip its advisory-lock dedup transaction (the
+						// caller's tx is assumed to be the atomic scope), and that lock
+						// is what serializes concurrent ingests of the same
+						// (connection_id, origin_id) across replicas.
+						sql: isDry ? db : undefined,
 						afterPersist: async (persisted, tx) => {
 							for (const [draftIndex, draft] of (
 								item.behavior_signals ?? []
@@ -369,10 +440,20 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						},
 					}
 				);
-				await dispatchBehaviorRunsBestEffort(activations);
+				// ESCAPES THE TX: this dispatches real Behavior runs to the worker
+				// fleet. The activation ROWS roll back with the tx, but a dispatched
+				// agent run has already left the database — it would run against, and
+				// react to, an event that is about to cease to exist.
+				if (!isDry) {
+					await dispatchBehaviorRunsBestEffort(activations);
+				}
 				if (inserted) {
 					totalItems++;
-					if (entityIds.length > 0) {
+					// ESCAPES THE TX: detached (`.catch(() => {})`) and writes through
+					// the getDb() singleton, not `db`, so its writes would commit
+					// independently of the rollback — and race it, since nothing awaits
+					// them.
+					if (entityIds.length > 0 && !isDry) {
 						autoLinkEvent({
 							eventId: Number(inserted.id),
 							entityIds,
@@ -381,6 +462,27 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 							organizationId: run.organization_id,
 						}).catch(() => {});
 					}
+					// Captured after a successful insert, so the preview describes rows
+					// that really did land (and would land again on a real sync) rather
+					// than rows we merely hoped would.
+					if (isDry && dryPreview.length < DRY_RUN_PREVIEW_LIMIT) {
+						dryPreview.push({
+							origin_id: item.id,
+							title: item.title,
+							semantic_type: itemSemanticType,
+							payload_type: item.payload_type,
+							occurred_at: item.occurred_at,
+							author_name: item.author_name,
+							source_url: item.source_url,
+							// Bounded: a preview is for eyeballing shape, and some
+							// connectors emit very large bodies.
+							content_preview:
+								typeof item.payload_text === "string"
+									? item.payload_text.slice(0, DRY_RUN_CONTENT_CHARS)
+									: null,
+							attachment_count: item.attachments?.length ?? 0,
+						});
+					}
 				}
 			} catch (err) {
 				console.error("[stream] Insert failed for item", item.id, ":", err);
@@ -388,24 +490,105 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			}
 		}
 
-		// Kick off background transcription for any audio attachments
-		// materialized above. Runs detached — never blocks the stream-batch ack.
-		triggerAudioTranscriptions(run.organization_id, pendingTranscriptions);
+			// ESCAPES THE TX: transcription is an external, paid API call, and it
+			// is fired detached so nothing awaits it. `pendingTranscriptions` is
+			// already empty on a dry run (nothing was materialized above), but the
+			// guard stays so this cannot start costing money if materialization
+			// ever grows a dry path.
+			if (!isDry) {
+				triggerAudioTranscriptions(run.organization_id, pendingTranscriptions);
+			}
 
-		// Update feed + run checkpoint if provided (so mid-run state like QR codes
-		// surface in UI via recent_runs[0].checkpoint before the run completes).
-		if (batch.checkpoint) {
-			if (run.feed_id) {
-				await sql`
+			// Update feed + run checkpoint if provided (so mid-run state like QR
+			// codes surface in UI via recent_runs[0].checkpoint before the run
+			// completes). No dry-run guard: on a dry run these write to the tx and
+			// vanish with it, which is exactly right — advancing the feed checkpoint
+			// would silently change what the NEXT real sync collects, making the
+			// rows this run previewed unreachable.
+			if (batch.checkpoint) {
+				if (run.feed_id) {
+					await db`
       UPDATE feeds
-      SET checkpoint = ${sql.json(batch.checkpoint)},
+      SET checkpoint = ${db.json(batch.checkpoint)},
           updated_at = current_timestamp
       WHERE id = ${run.feed_id}
     `;
+				}
+				await db`
+      UPDATE runs
+      SET checkpoint = ${db.json(batch.checkpoint)}
+      WHERE id = ${batch.run_id}
+    `;
 			}
+
+			return { totalItems, rejectedItems };
+		};
+
+		// The real path: singleton handle, autocommit per statement, byte-for-byte
+		// the behaviour that shipped before dry runs existed.
+		//
+		// The dry path: the same closure against a transaction, then an unconditional
+		// rollback. postgres.js rolls back when the `begin` callback throws, so the
+		// throw IS the mechanism — a sentinel, not an error condition. Catching only
+		// that exact object means a genuine failure inside the batch still propagates
+		// to the 500 handler below instead of being swallowed as "rolled back fine".
+		const DRY_RUN_ROLLBACK = Symbol("dry-run-rollback");
+		let outcome: Awaited<ReturnType<typeof ingestBatch>> | null = null;
+		if (isDry) {
+			try {
+				await sql.begin(async (tx) => {
+					outcome = await ingestBatch(tx);
+					throw DRY_RUN_ROLLBACK;
+				});
+			} catch (err) {
+				if (err !== DRY_RUN_ROLLBACK) throw err;
+			}
+		} else {
+			outcome = await ingestBatch(sql);
+		}
+		// Unreachable: ingestBatch either assigns `outcome` or throws (and a throw
+		// that is not the rollback sentinel is rethrown above). Asserted rather
+		// than defaulted to {totalItems: 0} — TypeScript cannot see the assignment
+		// through the transaction closure, and a silent zero here would report
+		// "ingested nothing" for a batch that may well have ingested plenty.
+		if (outcome === null) {
+			throw new Error("[stream] batch completed without an outcome");
+		}
+		const { totalItems, rejectedItems } = outcome as Awaited<
+			ReturnType<typeof ingestBatch>
+		>;
+
+		if (isDry) {
+			// Written AFTER the rollback, on the singleton — this is the one thing a
+			// dry run keeps, so it must not be inside the transaction it discards.
+			// Accumulates across batches: a sync streams many, and the preview should
+			// describe the whole run rather than only its last chunk. The per-batch
+			// JS cap only bounds one request's payload, so the stored array is
+			// re-capped here — without the ordinality slice a long sync would grow
+			// the preview by up to DRY_RUN_PREVIEW_LIMIT per batch, unbounded.
+			// `total` counts everything that would have been ingested even past the
+			// cap, so the number stays honest when `items` is truncated.
 			await sql`
       UPDATE runs
-      SET checkpoint = ${sql.json(batch.checkpoint)}
+      SET dry_run_preview = jsonb_build_object(
+            'items',
+            (SELECT COALESCE(jsonb_agg(e.value ORDER BY e.ord), '[]'::jsonb)
+             FROM jsonb_array_elements(
+               COALESCE(dry_run_preview -> 'items', '[]'::jsonb)
+                 || ${sql.json(dryPreview)}::jsonb
+             ) WITH ORDINALITY AS e(value, ord)
+             WHERE e.ord <= ${DRY_RUN_PREVIEW_LIMIT}),
+            'total',
+            COALESCE((dry_run_preview ->> 'total')::int, 0) + ${totalItems},
+            'truncated',
+            LEAST(
+              jsonb_array_length(
+                COALESCE(dry_run_preview -> 'items', '[]'::jsonb)
+                  || ${sql.json(dryPreview)}::jsonb
+              ),
+              ${DRY_RUN_PREVIEW_LIMIT}
+            ) < COALESCE((dry_run_preview ->> 'total')::int, 0) + ${totalItems}
+          )
       WHERE id = ${batch.run_id}
     `;
 		}
@@ -413,6 +596,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 		return c.json({
 			batches_received: 1,
 			total_items: totalItems,
+			...(isDry && { dry_run: true }),
 			...(rejectedItems.length > 0 && { rejected_items: rejectedItems }),
 		});
 	} catch (err: unknown) {
@@ -456,6 +640,14 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		// completion resurrects a reaped run and the feed/auth bookkeeping below
 		// double-applies (consecutive_failures, items_collected, next_run_at,
 		// auth_data). The failed path also stamps exit diagnostics.
+		//
+		// The checkpoint write is CASE-guarded on `dry_run` in SQL (rather than
+		// read-then-branch in JS) so the guard rides the same atomic UPDATE as the
+		// terminal transition: a dry run's row never records the connector's final
+		// checkpoint, matching the streamContent guard on the mid-run write.
+		const dryGuardedCheckpoint = sql`
+          checkpoint = CASE WHEN dry_run THEN checkpoint
+                       ELSE COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint) END`;
 		const updatedRuns = (await finalizeRun(sql, {
 			runId: req.run_id,
 			workerId: req.worker_id,
@@ -464,20 +656,19 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				req.status === "failed"
 					? sql`,
           items_collected = ${req.items_collected ?? 0},
-          error_message = ${req.error_message ?? null},
-          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint),
+          error_message = ${req.error_message ?? null},${dryGuardedCheckpoint},
           output_tail = ${req.output_tail ?? null},
           exit_code = ${req.exit_code ?? null},
           exit_signal = ${req.exit_signal ?? null},
           exit_reason = ${req.exit_reason ?? null}`
 					: sql`,
           items_collected = ${req.items_collected ?? 0},
-          error_message = ${req.error_message ?? null},
-          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)`,
-			returning: sql`feed_id, connection_id`,
+          error_message = ${req.error_message ?? null},${dryGuardedCheckpoint}`,
+			returning: sql`feed_id, connection_id, dry_run`,
 		})) as unknown as Array<{
 			feed_id: number | null;
 			connection_id: number | null;
+			dry_run: boolean;
 		}>;
 
 		if (updatedRuns.length === 0) {
@@ -498,8 +689,28 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		// Update the feed's sync state
 		const runRows = updatedRuns;
 		const feedId = runRows[0]?.feed_id;
+		const isDry = runRows[0]?.dry_run === true;
 
-		if (feedId) {
+		// Never for a dry run: this block stamps last_sync_at/status, resets or
+		// increments consecutive_failures, adds items_collected, ADVANCES THE FEED
+		// CHECKPOINT, and moves next_run_at (with backoff/auto-pause on failure).
+		// Every one of those durably changes what the next REAL sync does or how
+		// the feed reports its last real outcome — exactly the state a dry run
+		// exists to leave untouched.
+		//
+		// Why this stays an explicit guard while streamContent uses a rolled-back
+		// transaction instead. Two reasons, and they are the reasons — not an
+		// oversight to be tidied up later:
+		//
+		//  1. This function's write set is closed and cannot grow the way an
+		//     item-ingest loop grows: it finalizes one run row and stamps one feed
+		//     row. One guard covers one block; there is no open set to lose track of.
+		//  2. The keep/discard sets are INTERLEAVED. A dry run must still finalize
+		//     its own run row — that is real working state, and finalizeRun's whole
+		//     purpose is that the terminal transition is atomic. Rolling back here
+		//     would mean lifting the run update out of the transaction and giving up
+		//     that guarantee to buy uniformity. Not a trade worth making.
+		if (feedId && !isDry) {
 			const feedRows = (await sql`
       SELECT schedule, timezone FROM feeds WHERE id = ${feedId}
     `) as unknown as Array<{
@@ -524,14 +735,15 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			//    from the NEW consecutive_failures count (post-increment) directly in
 			//    SQL so it stays correct under concurrent completions across replicas.
 			//  - Hard auto-pause: once the NEW count crosses the pause threshold, the
-			//    feed is paused (status='paused'; the DB trigger nulls next_run_at)
-			//    independent of any repair agent. Manual feeds (no schedule) can't
-			//    exponentially back off (nextRun is NULL) but still hard-pause.
+			//    feed is paused (status='paused'; the DB trigger nulls next_run_at).
+			//    Crossing the threshold emits feed.auto_paused so Behaviors can react.
+			//    Manual feeds (no schedule) can't exponentially back off (nextRun is
+			//    NULL) but still hard-pause.
 			const backoffBaseMs = feedBackoff.baseMs;
 			const backoffMaxMs = feedBackoff.maxMs;
 			const pauseThreshold = feedBackoff.pauseThreshold;
 
-			await sql`
+			const feedUpdate = (await sql`
         UPDATE feeds
         SET last_sync_at = current_timestamp,
             last_sync_status = ${req.status},
@@ -562,32 +774,41 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 						},
             updated_at = current_timestamp
         WHERE id = ${feedId}
-      `;
+        RETURNING consecutive_failures, status
+      `) as Array<{ consecutive_failures: number; status: string }>;
 
-			// Repair-agent trigger: open / append / close threads based on the
-			// updated streak state. Fire-and-forget — all errors are swallowed
-			// inside the helper, the inner UPDATEs use atomic claims so concurrent
-			// invocations are safe, and the worker-completion ACK should not wait on
-			// repair-thread bookkeeping. (If the process dies mid-check the next
-			// failure re-triggers it.)
-			if (isSuccess) {
-				void maybeCloseRepairThread(feedId, req.run_id).catch((err) => {
-					logger.warn(
+			if (!isSuccess) {
+				const after = feedUpdate[0];
+				const consec = Number(after?.consecutive_failures ?? 0);
+				// Emit when paused at/above threshold. delivery_id is stable per
+				// failure episode (first_failure_at), so retries after a failed
+				// activation are idempotent and do not double-queue Behaviors.
+				try {
+					await maybeEmitFeedAutoPausedAfterFailure({
+						feedId,
+						consecutiveFailures: consec,
+						pauseThreshold,
+						runId: req.run_id,
+					});
+				} catch (err) {
+					// Feed is already paused; log hard so we notice lost activation,
+					// but do not fail the worker complete ACK (run is terminal).
+					logger.error(
 						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeCloseRepairThread threw"
+						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw",
 					);
-				});
-			} else {
-				void maybeOpenOrAppendRepairThread(feedId, req.run_id).catch((err) => {
-					logger.warn(
-						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeOpenOrAppendRepairThread threw"
-					);
-				});
+				}
 			}
 		}
 
-		// Persist refreshed browser auth data on the auth profile
+		// Persist refreshed browser auth data on the auth profile.
+		//
+		// Deliberately NOT gated on dry_run: this is credential liveness, not
+		// ingested data. Session-state connectors (browser cookies, Baileys creds)
+		// rotate their tokens on every real connect — the connector genuinely ran,
+		// so discarding the rotation would leave the profile holding invalidated
+		// credentials and break the next REAL sync. "Persist nothing" means the
+		// workspace's data, never the auth state the run consumed.
 		const connectionId = runRows[0]?.connection_id;
 		if (req.status === "success" && req.auth_update && connectionId) {
 			const connectionRows = (await sql`
@@ -707,26 +928,41 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 }
 
 /**
+ * Prompt appended to the re-spawned CLI when a device Behavior exited without
+ * calling completeWindow. Module-level so a granted resume and its idempotent
+ * replay hand the device byte-identical instructions.
+ */
+const MISSING_COMPLETE_WINDOW_NUDGE =
+	"Device CLI exited without calling completeWindow. Re-run the Behavior task and " +
+	"finalize via the lobu skill + CLI (preferred): " +
+	"`lobu memory exec` with client.knowledge.read({ behavior_id }) then " +
+	"client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id }). " +
+	"MCP query_sdk/run_sdk is also fine if wired. Do not only print a summary.";
+
+/**
  * POST /api/workers/me/runs/:runId/complete-behavior
  *
  * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
- * (Claude Code, etc.) on the user's machine. The Owletto Mac app's
+ * (Claude Code, agy, etc.) on the user's machine. The Owletto Mac app's
  * `WatcherDispatcher` posts here once the subprocess exits.
  *
- * The CLI agent completes the run itself, over MCP, exactly like a
- * server-side watcher agent: `query_sdk` (`client.knowledge.read`) →
- * window_token → `run_sdk` (`client.behaviors.completeWindow`). The
- * dispatcher wires the gateway MCP server into the spawned CLI
- * (--mcp-config) and the prompt carries the completion instructions. This
- * endpoint therefore only records process exit metadata:
+ * The agent is expected to complete window Behaviors itself — via Lobu MCP
+ * tools (`query_sdk` / `run_sdk` → `completeWindow`) and/or the local
+ * `lobu` CLI (`lobu memory exec` with the same ClientSDK calls). This
+ * endpoint records process exit metadata and enforces the finalize contract:
  *
  * - body.error set → the subprocess crashed/timed out → run failed.
  * - clean exit + run already completed (by complete_window) → ack; stamp
  *   exit metadata and the window's wall-clock.
- * - clean exit + run still running → the agent never called
- *   complete_window → run FAILED. Same rule as the server-side dispatch
- *   guard (automation.ts): complete_window is the only signal that real
- *   work happened; absence of it is a failure, not a pass.
+ * - clean exit + event-turn Behavior still running → complete without a
+ *   window (turn path has no completeWindow step).
+ * - clean exit + window Behavior still running + finalize budget left →
+ *   status `resume` (run stays claimed/running; Mac re-spawns with nudge).
+ * - clean exit + window Behavior still running + budget exhausted →
+ *   failed with reason_code `missing_complete_window`.
+ * - a replay of a report already answered with a resume (body
+ *   `finalize_attempt` behind the stored count, i.e. the device never saw the
+ *   response) → the same `resume` again, consuming no further attempt.
  *
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
@@ -749,6 +985,13 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		exit_code?: number | null;
 		exit_signal?: string | null;
 		exit_reason?: "ok" | "error_message" | "timeout" | "oom" | "crash";
+		/**
+		 * Which finalize attempt this report covers: the run's
+		 * `finalize_nudge_count` at the time the reporting spawn started. 0 for
+		 * the first spawn. Makes the report replayable — see the replay guard
+		 * below.
+		 */
+		finalize_attempt?: number;
 	}>(c, "Invalid or missing JSON body");
 	if (body instanceof Response) return body;
 
@@ -762,11 +1005,11 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 
 	const sql = getDb();
 	// Reload the row now that authorization has cleared. Status drives the
-	// exit-report decision; the authoritative guard against double-writes is
-	// failRun's status-filtered UPDATE, so a stale read can't double-fail —
-	// at worst it reports `idempotent: true` with the loser's view.
+	// exit-report decision; the status-and-claim predicates on the writes below
+	// remain authoritative if this read races another terminal path.
 	const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status, window_id
+    SELECT id, organization_id, watcher_id, approved_input, run_type,
+           claimed_at, claimed_by, status, window_id
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -777,6 +1020,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		approved_input: Record<string, unknown> | null;
 		run_type: string;
 		claimed_at: string | Date | null;
+		claimed_by: string | null;
 		status: string;
 		window_id: number | null;
 	}>;
@@ -787,6 +1031,9 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 	}
 	if (run.watcher_id == null) {
 		return c.json({ error: "Behavior run missing watcher_id" }, 500);
+	}
+	if (run.claimed_by !== body.worker_id) {
+		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
 	const watcherId = Number(run.watcher_id);
@@ -905,35 +1152,42 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			? Math.max(0, Math.floor(body.duration_ms))
 			: null;
 
-	// Mark the run failed and tick the schedule forward — but only when the
-	// UPDATE actually transitioned the row (RETURNING guard), so a concurrent
-	// duplicate POST can't double-advance `next_run_at` and skip a window.
+	// Mark the run failed and, for non-event dispatches, tick the schedule
+	// forward. The RETURNING guard keeps a concurrent duplicate POST from
+	// advancing `next_run_at` twice and skipping a window.
 	// The stdout tail is stashed for diagnosis (why didn't the agent call
 	// complete_window?); the worker redacts before sending.
 	const failRun = async (reason: string): Promise<boolean> => {
-		const failedRows = (await sql`
-      UPDATE runs
-      SET status = 'failed',
-          completed_at = current_timestamp,
-          error_message = ${reason},
-          output_tail = ${output ? output.slice(-2000) : null},
-          exit_code = ${body.exit_code ?? null},
-          exit_signal = ${body.exit_signal ?? null},
-          exit_reason = ${body.exit_reason ?? "error_message"}
-      WHERE id = ${runId}
-        AND status = 'running'
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-		if (failedRows.length === 0) return false;
-		await sql`
-      UPDATE watchers
-      SET last_fired_at = NOW(), updated_at = NOW()
-      WHERE id = ${watcherId}
-    `;
-		if (approved.dispatch_source !== "event") {
-			await advanceWatcherSchedule(sql, watcherId);
-		}
-		return true;
+		return sql.begin(async (tx) => {
+			const failedRows = (await tx`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${reason},
+            output_tail = ${output ? output.slice(-2000) : null},
+            exit_code = ${body.exit_code ?? null},
+            exit_signal = ${body.exit_signal ?? null},
+            exit_reason = ${body.exit_reason ?? "error_message"}
+        WHERE id = ${runId}
+          AND status = 'running'
+          AND claimed_by = ${body.worker_id}
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+			if (failedRows.length === 0) return false;
+			await tx`
+        UPDATE watchers
+        SET last_fired_at = NOW(), updated_at = NOW()
+        WHERE id = ${watcherId}
+      `;
+			await advanceScheduleAfterTerminalFailure(
+				tx,
+				watcherId,
+				typeof approved.dispatch_source === "string"
+					? approved.dispatch_source
+					: null
+			);
+			return true;
+		});
 	};
 
 	const emitCompletionEvent = (
@@ -1057,19 +1311,210 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 		return c.json({ ok: true, status: run.status, idempotent: true });
 	}
 
-	// Clean exit but the run is still `running`: the agent never called
-	// run_sdk (client.behaviors.completeWindow). Fail closed — completeWindow is
-	// the only signal that real work happened (the same rule the server-side
-	// dispatch guard enforces in automation.ts). The stdout tail lands in
-	// runs.output_tail for diagnosis.
+	// Clean exit but the run is still `running`.
+	// Event turns complete on agent reply — no completeWindow.
+	if (approved.trigger_execution === "turn") {
+		const agentKind =
+			typeof approved.agent_kind === "string" &&
+			(approved.agent_kind as string).trim()
+				? (approved.agent_kind as string).trim()
+				: null;
+		const completedRows = await finalizeRun(sql, {
+			runId,
+			workerId: body.worker_id,
+			status: "completed",
+			extraSet: sql`,
+        window_id = NULL,
+        error_message = NULL,
+        model_used = COALESCE(
+          NULLIF(model_used, 'external-client'),
+          ${agentKind ? `device-cli:${agentKind}` : "device-cli"},
+          model_used
+        ),
+        exit_code = ${body.exit_code ?? null},
+        exit_signal = ${body.exit_signal ?? null},
+        exit_reason = ${body.exit_reason ?? "ok"},
+        output_tail = ${output ? output.slice(-2000) : null},
+        run_metadata = CASE
+          WHEN ${durationMs}::bigint IS NULL THEN COALESCE(run_metadata, '{}'::jsonb)
+          ELSE jsonb_set(
+            COALESCE(run_metadata, '{}'::jsonb),
+            '{execution_time_ms}',
+            to_jsonb(${durationMs}::bigint)
+          )
+        END`,
+		});
+		if (completedRows.length === 0) {
+			const finalRows = (await sql`
+        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+      `) as unknown as Array<{ status: string }>;
+			return c.json({
+				ok: true,
+				status: finalRows[0]?.status ?? "failed",
+				idempotent: true,
+			});
+		}
+		await sql`
+      UPDATE watchers
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+		emitCompletionEvent("completed");
+		return c.json({
+			ok: true,
+			status: "completed",
+			reason_code: "event_turn",
+			window_id: null,
+		});
+	}
+
+	// Window Behavior: agent never called completeWindow. Bounded device-held
+	// resume (same finalize_nudges budget as cloud) so the Mac can re-spawn.
+	const watcherRows = (await sql`
+    SELECT execution_config
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `) as unknown as Array<{
+		execution_config: Record<string, unknown> | null;
+	}>;
+	const budget = resolveFinalizeNudgeBudget(
+		watcherRows[0]?.execution_config ?? null
+	);
+	const nudgeCount = Number(approved.finalize_nudge_count ?? 0);
+	const attemptsSoFar = Number.isFinite(nudgeCount) ? nudgeCount : 0;
+
+	// Replay guard. `finalize_attempt` is the finalize_nudge_count the reporting
+	// spawn ran under (0 = first spawn, N = the spawn a resume #N granted). When
+	// the stored count is already past it, this exact exit report was answered
+	// with a resume the device never saw — its POST committed and the response
+	// was lost. That is an ambiguous delivery outcome, not a fresh attempt, so
+	// re-serve the same grant. Consuming another attempt here would fail the run
+	// one spawn early, reinterpreting a lost response as work that happened.
+	//
+	// A device that omits the field (a build older than this endpoint's resume
+	// contract) reads as "reporting the attempt the server has", i.e. the
+	// pre-existing behavior — the field is what makes a retry safe, so the Mac
+	// retry loop and this guard ship together.
+	const reportedAttempt =
+		typeof body.finalize_attempt === "number" &&
+		Number.isFinite(body.finalize_attempt)
+			? Math.max(0, Math.trunc(body.finalize_attempt))
+			: attemptsSoFar;
+	if (reportedAttempt < attemptsSoFar) {
+		logger.info(
+			{ run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
+			"[completeBehaviorRun] replayed exit report — re-serving the granted resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: attemptsSoFar,
+			max_attempts: budget,
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
+			idempotent: true,
+		});
+	}
+
+	// attemptsSoFar is how many resumes already granted; next spawn is attempt+1.
+	// Budget N means N extra spawns after the first (same as cloud).
+	if (attemptsSoFar < budget) {
+		const nextAttempt = attemptsSoFar + 1;
+		const bumped = await bumpDeviceFinalizeNudge(
+			sql,
+			runId,
+			body.worker_id,
+			nextAttempt,
+			output ? output.slice(-2000) : null
+		);
+		if (!bumped) {
+			const finalRows = (await sql`
+        SELECT status,
+               claimed_by,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs
+        WHERE id = ${runId}
+        LIMIT 1
+      `) as unknown as Array<{
+				status: string;
+				claimed_by: string | null;
+				finalize_nudge_count: string | null;
+			}>;
+			const final = finalRows[0];
+			const grantedAttempt = Number(final?.finalize_nudge_count);
+			// The CAS can lose to an identical concurrent report after both
+			// requests read the same count. Reconcile that committed grant into
+			// the same replayable response; returning plain `running` would make
+			// the device stop without ever receiving its nudge.
+			if (
+				final?.status === "running" &&
+				final.claimed_by === body.worker_id &&
+				Number.isFinite(grantedAttempt) &&
+				grantedAttempt > attemptsSoFar
+			) {
+				return c.json({
+					ok: true,
+					status: "resume",
+					reason_code: "missing_complete_window",
+					attempt: grantedAttempt,
+					max_attempts: budget,
+					nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+					error: MISSING_COMPLETE_WINDOW_NUDGE,
+					idempotent: true,
+				});
+			}
+			return c.json({
+				ok: true,
+				status: final?.status ?? "failed",
+				idempotent: true,
+			});
+		}
+		logger.info(
+			{ run_id: runId, attempt: nextAttempt, max: budget },
+			"[completeBehaviorRun] missing completeWindow — device resume"
+		);
+		return c.json({
+			ok: true,
+			status: "resume",
+			reason_code: "missing_complete_window",
+			attempt: nextAttempt,
+			max_attempts: budget,
+			// Total spawns allowed = first + budget resumes.
+			// attempt is the resume index (1..budget); Mac should re-spawn now
+			// and report back with finalize_attempt = attempt.
+			nudge: MISSING_COMPLETE_WINDOW_NUDGE,
+			error: MISSING_COMPLETE_WINDOW_NUDGE,
+		});
+	}
+
 	const reason =
-		"Device CLI exited without calling run_sdk (client.behaviors.completeWindow). " +
-		"The Behavior prompt instructs the agent to complete via the lobu MCP server — check that " +
-		"the dispatcher passed --mcp-config with query_sdk/run_sdk allowed, the gateway is reachable " +
-		"from the device, and the device token has mcp:write scope.";
-	await failRun(reason);
+		"Device CLI exited without calling completeWindow " +
+		(budget > 0 ? `after ${budget + 1} attempt(s)` : "(finalize nudges disabled)") +
+		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
+		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
+		"and that the device token has mcp:write if using MCP.";
+	const transitioned = await failRun(reason);
+	if (!transitioned) {
+		const finalRows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+		return c.json({
+			ok: true,
+			status: finalRows[0]?.status ?? "failed",
+			idempotent: true,
+		});
+	}
 	emitCompletionEvent("failed", reason);
-	return c.json({ ok: true, status: "failed", error: reason });
+	return c.json({
+		ok: true,
+		status: "failed",
+		reason_code: "missing_complete_window",
+		attempt: attemptsSoFar,
+		max_attempts: budget,
+		error: reason,
+	});
 }
 
 /**

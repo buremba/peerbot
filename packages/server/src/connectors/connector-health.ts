@@ -1,12 +1,13 @@
 /**
  * Connector-health alerter.
  *
- * The per-feed repair-agent (`repair-agent.ts`) only fires when a worker
- * actually RUNS and fails — it cannot catch a connector that has silently
- * stopped scheduling runs, an active connection that collects nothing, or a
- * whole connection whose every feed is dead. Those failure modes currently
- * surface to nobody and have gone unnoticed for weeks in prod (expired Revolut
- * sessions, "Authentication failed — cookies may be expired", etc.).
+ * Per-feed hard auto-pause + `feed.auto_paused` covers feeds that keep failing
+ * on run. It cannot catch a connector that has silently stopped scheduling
+ * runs, an active connection that collects nothing, a whole connection whose
+ * every feed is dead, or a connection where most feeds have been auto-paused
+ * while one survivor masks them. Those failure modes used to surface to nobody
+ * for weeks in prod (expired Revolut sessions, LinkedIn connection 412 dark
+ * for 11 days, etc.).
  *
  * This module is a periodic, read-only scan over `connections` + `feeds` that
  * classifies each active connection as healthy or unhealthy by clear rules and
@@ -42,7 +43,7 @@ export function isBrowserAuthExpiredError(lastError: string | null | undefined):
 
 /**
  * A feed is "failing" if its most recent sync failed OR it has accumulated at
- * least this many consecutive failures. Matches the repair-agent default.
+ * least this many consecutive failures.
  */
 const FAILURE_THRESHOLD = 3;
 
@@ -67,11 +68,56 @@ const ZERO_FEEDS_GRACE_HOURS = 48;
  */
 const NO_SYNC_DAYS = 7;
 
+/**
+ * Fraction of the feeds a connection is still expected to run that must be
+ * PERSISTENTLY failing before the connection is "degraded" — sick even though
+ * at least one feed still works.
+ *
+ * Why a proportion and not "any failing feed": a single transiently-failing
+ * feed alongside nine healthy ones is normal operational noise, and alerting on
+ * it would make the signal useless. Why 0.5: a connection collecting less than
+ * half of what it is configured to collect is materially broken. Prod LinkedIn
+ * connection 412 sat at 10/11 = 0.91 for eleven days while reporting fully
+ * healthy.
+ *
+ * This ratio ALONE is not enough: it is trivially reachable on a tiny
+ * connection (1 of 2 expected feeds failing is exactly 0.5 and fires), which
+ * would page an operator for a single bad feed. `DEGRADED_MIN_EXPECTED_FEEDS`
+ * below is what keeps that quiet — see its docstring.
+ */
+const DEGRADED_FAILING_RATIO = 0.5;
+
+/**
+ * Minimum number of expected feeds (feeds the operator has NOT deliberately
+ * paused) a connection must have before the degraded rule may fire at all.
+ *
+ * A ratio is meaningless at small denominators. With 2 expected feeds, one
+ * persistently-failing feed is 1/2 = 0.5 and clears `DEGRADED_FAILING_RATIO`
+ * — so without this floor every 2-feed connection with one bad feed pages an
+ * operator, which is exactly the alert fatigue the degraded rule exists to
+ * avoid. At 3 expected feeds the cheapest way to reach the ratio is 2 of 3
+ * feeds persistently failing, which is a real outage rather than one flaky
+ * feed.
+ *
+ * The floor does NOT weaken coverage of the case this rule was built for: prod
+ * LinkedIn 412 has 11 expected feeds with 10 failing. And a small connection
+ * whose feeds ALL fail is still caught — by Rule A (`all_feeds_failing`), which
+ * has no floor. What the floor gives up is exactly one shape: a 1-or-2-feed
+ * connection that is partly (not wholly) failing. That is deliberate.
+ *
+ * Pinned by 'does not flag a 2-feed connection with one persistently failing
+ * feed' and 'flags a 3-feed connection at the degraded ratio' in
+ * `__tests__/integration/connector-health-alert.test.ts`.
+ */
+const DEGRADED_MIN_EXPECTED_FEEDS = 3;
+
 export interface ConnectorHealthConfig {
   failureThreshold: number;
   minConnectionAgeHours: number;
   zeroFeedsGraceHours: number;
   noSyncDays: number;
+  degradedFailingRatio: number;
+  degradedMinExpectedFeeds: number;
 }
 
 export const DEFAULT_CONNECTOR_HEALTH_CONFIG: ConnectorHealthConfig = {
@@ -79,9 +125,15 @@ export const DEFAULT_CONNECTOR_HEALTH_CONFIG: ConnectorHealthConfig = {
   minConnectionAgeHours: MIN_CONNECTION_AGE_HOURS,
   zeroFeedsGraceHours: ZERO_FEEDS_GRACE_HOURS,
   noSyncDays: NO_SYNC_DAYS,
+  degradedFailingRatio: DEGRADED_FAILING_RATIO,
+  degradedMinExpectedFeeds: DEGRADED_MIN_EXPECTED_FEEDS,
 };
 
-export type UnhealthyReason = 'all_feeds_failing' | 'zero_feeds' | 'no_recent_sync';
+export type UnhealthyReason =
+  | 'all_feeds_failing'
+  | 'feeds_degraded'
+  | 'zero_feeds'
+  | 'no_recent_sync';
 
 export interface UnhealthyConnection {
   connectionId: number;
@@ -124,6 +176,9 @@ interface UnhealthyRow {
   feed_count: string;
   failing_feed_count: string;
   active_feed_count: string;
+  operator_paused_feed_count: string;
+  persistently_failing_feed_count: string;
+  failing_expected_feed_count: string;
   newest_sync_at: Date | null;
   last_error: string | null;
 }
@@ -161,6 +216,34 @@ async function loadConnectionHealthRows(
       COUNT(f.id) FILTER (
         WHERE NOT (f.status = 'paused' AND f.consecutive_failures = 0)
       ) AS active_feed_count,
+      -- Feeds an OPERATOR deliberately switched off: paused with a clean
+      -- failure counter. These are intent, so they are excluded from the
+      -- degraded-ratio denominator entirely — pausing 9 of 10 feeds on purpose
+      -- must never read as a dying connection. Distinct from a feed the system
+      -- AUTO-paused after repeated failures (paused with consecutive_failures
+      -- > 0), which is a symptom and stays in the denominator.
+      COUNT(f.id) FILTER (
+        WHERE f.status = 'paused' AND f.consecutive_failures = 0
+      ) AS operator_paused_feed_count,
+      -- Feeds failing PERSISTENTLY (past the failure threshold), as opposed to
+      -- failing_feed_count which also counts a single most-recent-run blip.
+      -- Only persistent failures feed the degraded ratio, so one transiently
+      -- failing feed on a small connection is not an alert.
+      COUNT(f.id) FILTER (
+        WHERE f.consecutive_failures >= ${cfg.failureThreshold}
+      ) AS persistently_failing_feed_count,
+      -- Rule A's numerator: the SAME "failing" predicate as
+      -- failing_feed_count (a single most-recent-run failure counts), but over
+      -- expected feeds only. Rule A must stay sensitive to one bad run —
+      -- narrowing it to persistent failures would let a connection whose every
+      -- expected feed just failed report healthy until the counters climb.
+      COUNT(f.id) FILTER (
+        WHERE NOT (f.status = 'paused' AND f.consecutive_failures = 0)
+          AND (
+            f.last_sync_status = 'failed'
+            OR f.consecutive_failures >= ${cfg.failureThreshold}
+          )
+      ) AS failing_expected_feed_count,
       MAX(f.last_sync_at) FILTER (WHERE f.last_sync_status = 'success') AS newest_sync_at,
       (ARRAY_AGG(f.last_error) FILTER (WHERE f.last_error IS NOT NULL))[1] AS last_error
     FROM connections c
@@ -185,8 +268,10 @@ function classify(
   nowMs: number
 ): UnhealthyReason | null {
   const feedCount = Number(row.feed_count);
-  const failingCount = Number(row.failing_feed_count);
   const activeCount = Number(row.active_feed_count);
+  const operatorPausedCount = Number(row.operator_paused_feed_count);
+  const persistentlyFailingCount = Number(row.persistently_failing_feed_count);
+  const failingExpectedCount = Number(row.failing_expected_feed_count);
 
   // Rule B: active connection, zero non-deleted feeds. (Grace handled by the
   // query's min-age window — a connection that has existed > min age and still
@@ -198,8 +283,47 @@ function classify(
   // paused-clean feed.
   if (activeCount === 0) return null;
 
-  // Rule A: every non-deleted feed is failing.
-  if (failingCount === feedCount) return 'all_feeds_failing';
+  // Rule A: every feed the operator still EXPECTS to run is failing.
+  //
+  // The denominator is expected feeds, not all feeds — the same one Rule D
+  // uses. Comparing against `feedCount` instead left a hole exactly where the
+  // two rules meet: a connection with 8 deliberately-paused-clean feeds and 2
+  // persistently failing ones satisfies neither `2 === 10` nor Rule D's
+  // three-expected-feed floor, so it reported healthy while 100% of what it was
+  // still expected to collect was dead. Deliberately switching feeds off must
+  // never make the remaining failures harder to see.
+  //
+  // The PREDICATE is unchanged from the original rule — a feed counts as
+  // failing if its latest sync failed OR it is past the failure threshold.
+  // Only the denominator narrowed. Reusing the degraded rule's stricter
+  // persistent-failure count here would have been a second regression: a
+  // connection whose every expected feed just failed once would report healthy
+  // until the counters climbed to the threshold.
+  const expectedCount = feedCount - operatorPausedCount;
+  if (expectedCount > 0 && failingExpectedCount === expectedCount) {
+    return 'all_feeds_failing';
+  }
+
+  // Rule D: a substantial proportion of the feeds the operator still expects to
+  // run are failing, but at least one survivor keeps Rule A from firing. That
+  // survivor also refreshes newest_sync_at, so Rule C cannot catch this either
+  // — without this rule the connection reports fully healthy while most of it
+  // is dark (prod LinkedIn 412: 10 of 11 feeds auto-paused for eleven days).
+  //
+  // The denominator excludes operator-paused-clean feeds so that deliberately
+  // switching feeds off never trips the rule; only feeds that are running or
+  // were auto-paused BY failure are counted. The numerator counts only
+  // PERSISTENT failures, so a single bad run on a small connection stays quiet.
+  //
+  // The min-expected-feeds floor is load-bearing, not belt-and-braces: at 2
+  // expected feeds one persistent failure is exactly the ratio and would fire.
+  // Small connections that are WHOLLY failing are still caught by Rule A above.
+  if (
+    expectedCount >= cfg.degradedMinExpectedFeeds &&
+    persistentlyFailingCount / expectedCount >= cfg.degradedFailingRatio
+  ) {
+    return 'feeds_degraded';
+  }
 
   // Rule C: was collecting but stopped. Only applies when at least one feed
   // once succeeded (newest_sync_at not null) — a connection that never synced

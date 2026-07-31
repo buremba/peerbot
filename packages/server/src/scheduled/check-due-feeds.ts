@@ -64,8 +64,16 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
       logger.info(`[CheckDueFeeds] Found ${feeds.length} due feeds`);
     },
     createRun: async (feed) => {
-      const runId = await createSyncRun(feed.id, env, sql);
-      if (runId === null) return 'skipped';
+      const created = await createSyncRun(feed.id, env, sql);
+      if (!created.ok) {
+        // A skip is no longer necessarily a race: the connector may be
+        // cloud-restricted, uninstalled, or have no runnable version.
+        logger.debug(
+          `[CheckDueFeeds] Skipped feed ${feed.id} (${feed.connector_key}/${feed.feed_key}): ${created.reason}`
+        );
+        return 'skipped';
+      }
+      const runId = created.runId;
       logger.debug(
         `[CheckDueFeeds] Created run ${runId} for feed ${feed.id} (${feed.connector_key}/${feed.feed_key})`
       );
@@ -76,7 +84,7 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
     },
     onDone: ({ runsCreated, skipped }) => {
       if (runsCreated > 0) {
-        logger.info(`[CheckDueFeeds] Created ${runsCreated} runs (${skipped} skipped due to race)`);
+        logger.info(`[CheckDueFeeds] Created ${runsCreated} runs (${skipped} skipped)`);
       }
     },
   });

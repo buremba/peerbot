@@ -50,6 +50,26 @@ export class HttpWorkerTransport implements WorkerTransport {
    * tool without a separate durable ledger.
    */
   private toolsUsed = new Set<string>();
+  /**
+   * Once-per-turn latch for user-facing errors. Three uncoordinated emitters
+   * can report the SAME failed turn — `worker.ts`'s result-false branch,
+   * `worker.ts`'s catch branch, and `sse-client.ts`'s outer catch — and every
+   * `signalError` is a terminal POST the gateway turns into its own chat
+   * message. That is how one Telegram question produced a 401 CTA, an answer,
+   * and a crash blob. The FIRST error wins: it carries the real classification
+   * (later re-signals are typically code-less). This transport is per-turn, so
+   * a new turn starts unlatched.
+   */
+  private errorSignalled = false;
+  /**
+   * The in-flight terminal error delivery, claimed BEFORE the first await.
+   * `errorSignalled` cannot elect the winner on its own: it is set only after
+   * `sendResponse` resolves (deliberately — see `signalError`), so two
+   * overlapping callers would both pass the latch check and both POST, which is
+   * the duplicate this latch exists to prevent. Cleared when delivery fails so
+   * a later signal can still retry.
+   */
+  private errorSignalInFlight?: Promise<void>;
 
   constructor(config: WorkerTransportConfig) {
     this.gatewayUrl = config.gatewayUrl;
@@ -207,7 +227,22 @@ export class HttpWorkerTransport implements WorkerTransport {
     errorCode?: string,
     errorContext?: AgentErrorContext
   ): Promise<void> {
-    await this.sendResponse(
+    // Drop every error after the first for this turn. Keep the detail in the
+    // logs — the suppressed one is often the more specific provider string, and
+    // losing it silently is what made these turns undiagnosable.
+    if (this.errorSignalled || this.errorSignalInFlight) {
+      logger.warn(
+        `[WORKER-HTTP] Suppressing duplicate error signal for this turn (code=${
+          errorCode ?? "none"
+        }): ${error.message}`
+      );
+      return;
+    }
+    // Claim the turn BEFORE the first await. There is no await between the
+    // check above and this assignment, so the claim is atomic against another
+    // `signalError` interleaving here — without it, two concurrent callers both
+    // see an unset `errorSignalled` and both post a user-facing error.
+    const delivery = this.sendResponse(
       this.buildBaseResponse({
         error: error.message,
         processedMessageIds: this.processedMessageIds,
@@ -216,6 +251,20 @@ export class HttpWorkerTransport implements WorkerTransport {
         ...(errorContext && { errorContext }),
       })
     );
+    this.errorSignalInFlight = delivery;
+    try {
+      await delivery;
+    } catch (err) {
+      // Release the claim so a later signal can retry. `sendResponse` retries
+      // internally and throws when it ultimately fails; holding the claim (or
+      // latching) here would permanently suppress every later attempt, so the
+      // user would get NO terminal error at all — strictly worse than the
+      // duplicate this latch exists to prevent.
+      this.errorSignalInFlight = undefined;
+      throw err;
+    }
+    // Latch only AFTER the terminal response is actually delivered.
+    this.errorSignalled = true;
   }
 
   async sendStatusUpdate(elapsedSeconds: number, state: string): Promise<void> {

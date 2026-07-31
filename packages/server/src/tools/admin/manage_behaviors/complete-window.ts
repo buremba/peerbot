@@ -24,7 +24,7 @@ import {
   processWatcherClassifications,
   stripFields,
 } from '../../../watchers/classifier-extraction';
-import { advanceWatcherSchedule } from '../../../watchers/automation';
+import { advanceWatcherSchedule } from '../../../watchers/schedule-cursor';
 import { executeReaction } from '../../../watchers/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
 import type { KeyingConfig } from '../../../types/watchers';
@@ -63,14 +63,15 @@ export async function handleCompleteWindow(
 }> {
   const sql = getDb();
   const provenanceClientId = args.client_id ?? ctx.clientId ?? null;
-  const provenanceModel =
-    typeof args.model === 'string' && args.model.trim() ? args.model : 'external-client';
+  const explicitProvenanceModel =
+    typeof args.model === 'string' && args.model.trim() ? args.model : null;
   const provenanceMetadata: Record<string, unknown> =
     args.run_metadata && typeof args.run_metadata === 'object' && !Array.isArray(args.run_metadata)
       ? { ...(args.run_metadata as Record<string, unknown>) }
       : {};
-  // The rendered task is stamped by get_content from the server-side prompt.
-  // A completion payload may add provenance but must not replace that source.
+  // Historical runs carry a server-stamped `prompt_rendered` in run_metadata
+  // (the pre-literal-prompt templating era), and the run-thread view reads it
+  // back. A completion payload must never introduce or replace that key.
   delete provenanceMetadata.prompt_rendered;
   // Public arg is `behavior_run_id`; the persisted provenance jsonb key stays
   // the internal `watcher_run_id` (run_metadata is not part of the API surface).
@@ -615,7 +616,14 @@ export async function handleCompleteWindow(
         UPDATE runs
         SET status = 'completed',
             window_id = ${windowId},
-            model_used = ${provenanceModel},
+            model_used = COALESCE(
+              ${explicitProvenanceModel},
+              NULLIF(model_used, 'external-client'),
+              CASE
+                WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
+                ELSE 'external-client'
+              END
+            ),
             run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)},
             completed_at = current_timestamp,
             error_message = NULL
@@ -636,7 +644,14 @@ export async function handleCompleteWindow(
         await tx`
           UPDATE runs
           SET window_id = ${windowId},
-              model_used = COALESCE(${provenanceModel}, model_used),
+              model_used = COALESCE(
+                ${explicitProvenanceModel},
+                NULLIF(model_used, 'external-client'),
+                CASE
+                  WHEN dispatched_message_id IS NOT NULL THEN 'lobu-agent'
+                  ELSE 'external-client'
+                END
+              ),
               run_metadata = COALESCE(run_metadata, '{}'::jsonb) || ${sql.json(provenanceMetadata)}
           WHERE id = ${watcherRunId}
             AND watcher_id = ${watcherId}

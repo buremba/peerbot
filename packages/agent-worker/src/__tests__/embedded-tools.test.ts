@@ -758,7 +758,13 @@ describe("session context cache TTL", () => {
 
   function makeSessionResponse() {
     return {
-      agentInstructions: "test agent",
+      agentLayers: {
+        identityMd: "test agent",
+        soulMd: "",
+        userMd: "",
+        unconfiguredNotice: "",
+      },
+      webOrigin: "https://app.lobu.ai",
       platformInstructions: "test platform",
       networkInstructions: "test network",
       skillsInstructions: "test skills",
@@ -799,7 +805,10 @@ describe("session context cache TTL", () => {
     const second = await getAgentSessionContext();
 
     expect(fetchCount).toBe(1);
+    expect(first.agentLayers).toEqual(makeSessionResponse().agentLayers);
+    expect(first.webOrigin).toBe("https://app.lobu.ai");
     expect(first.mcpContext).toEqual({ lobu: "Check memory" });
+    expect(second.webOrigin).toBe("https://app.lobu.ai");
     expect(second.mcpContext).toEqual({ lobu: "Check memory" });
   });
 

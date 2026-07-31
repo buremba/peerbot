@@ -46,6 +46,28 @@ export const TERMINAL_DELIVERY_SEND_OPTS: QueueOptions = {
   retryDelay: 1,
 };
 
+/**
+ * A handler-thrown error carrying `deferral: true` asks the queue to
+ * reschedule the job WITHOUT consuming an attempt: the job is waiting on an
+ * external condition (e.g. the dispatch gate waiting out a prior turn on the
+ * same worker), not failing. `max_attempts` stays a genuine-failure budget —
+ * without this flag, a legitimately hour-long prior turn would exhaust the
+ * follower job's budget and strand it as a failed, never-delivered row.
+ *
+ * Opt-in by design: throws that USE exhaustion as their drop policy (the
+ * thread_response owner-gate above) must keep consuming attempts. A thrower
+ * setting this flag must have an external termination bound (a sweep,
+ * head-of-line progress) — the flag is not a license to wait on a condition
+ * nothing else resolves.
+ */
+export function isDeferralError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { deferral?: unknown }).deferral === true
+  );
+}
+
 export interface QueueStats {
   waiting: number;
   active: number;

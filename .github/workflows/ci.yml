@@ -580,6 +580,32 @@ jobs:
         # disables that alarm, so it is pinned by tests like the tag logic above.
         run: bun test scripts/__tests__/audit-release-images.test.ts
 
+      - name: Merge integrity decision table
+        # #2273 was based on another feature branch; squashing that base away
+        # left GitHub reporting it MERGED with its fix absent from main, while
+        # #2279 stayed open describing that exact bug. Every required check was
+        # green. Same reasoning as the gates above — the guard is pinned here so
+        # it cannot quietly stop catching the thing it exists for.
+        run: bun test scripts/__tests__/check-merge-integrity.test.ts
+
+      - name: Review-prompt blocker rule
+        # `pi-review` is required and enforce_admins is on, so `blockers>0` is
+        # unbypassable. §4 of the review prompt told the reviewer to record its
+        # OWN inability to run tests as a blocker, which red-flagged #2306 twice
+        # under codex's read-only sandbox and then passed on an identical re-run.
+        # Three other sections say the opposite; this pins the one direction.
+        run: bun test scripts/__tests__/review-prompt-env-blockers.test.ts
+
+      - name: Review output schema dialect
+        # prompts/review-output-schema.json is handed to BOTH reviewer CLIs —
+        # `claude --json-schema` and `codex exec --output-schema` — and the
+        # review gate fails closed on a schema either one rejects. A stray
+        # draft-2020-12 `$schema` meta-ref made claude refuse the file outright
+        # ("no schema with key or ref …"), which surfaced only under a codex
+        # quota outage and read as a dead reviewer, not a bad key. Pins the
+        # schema to the reference-free shape both CLIs load.
+        run: bun test scripts/__tests__/review-output-schema.test.ts
+
       - name: Raw-array SQL-param gate
         # packages/server's postgres.js client runs fetch_types:false, where a raw
         # JS array bound as a query param serializes to a malformed array literal
@@ -603,6 +629,7 @@ jobs:
           bash scripts/lib/__tests__/review-commit-lock.test.sh
           bash scripts/lib/__tests__/review-process.test.sh
           bash scripts/lib/__tests__/review-reviewer.test.sh
+          bash scripts/lib/__tests__/review-upstream-guard.test.sh
 
   typecheck:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -883,23 +910,25 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
           fi
 
-  # Cheap end-to-end Xcode build for the Mac app. `mac-release.yml` is
-  # workflow_dispatch only, so a rename or path move inside the owletto
-  # submodule (Mac source lives at `packages/owletto/apps/mac/`) can silently
-  # break the release pipeline and only surface the next time someone
-  # triggers a release. Build-only (no archive, no signing, no notarize)
-  # is enough to prove the Xcode project + submodule layout still compose.
+  # Standalone Swift tests + a cheap end-to-end Xcode build for the Mac app.
+  # `mac-release.yml` runs only for manual dispatches and published releases,
+  # so a rename or path move inside the owletto submodule (Mac source lives at
+  # `packages/owletto/apps/mac/`) can silently break the release pipeline and
+  # surface only during a release. Build-only (no archive, no signing, no
+  # notarize) is enough to prove the Xcode project + submodule layout still
+  # compose.
   #
   # Runner cost is bounded by the filter job above — the macOS runner is
-  # only allocated when the submodule pointer, the release workflow, the
-  # submodule setup action, or `.gitmodules` changes.
+  # only allocated when the submodule pointer, the release workflow, this
+  # workflow, the submodule setup action, or `.gitmodules` changes. This
+  # workflow is in the filter so a PR editing this job can't skip it.
   mac-build-smoke:
     needs: mac-build-smoke-filter
     if: needs.mac-build-smoke-filter.outputs.run == 'true'
@@ -927,6 +956,15 @@ jobs:
       - name: Skip on fork PRs without submodule access
         if: steps.submodule.outputs.stubbed == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: echo "::notice::Submodule stubbed on fork PR — skipping Mac smoke build."
+
+      # The Mac app has no XCTest target, so xcodebuild does not discover the
+      # standalone @main tests under apps/mac/Tests — before this step they ran
+      # only when someone pasted a swiftc line out of a file header, which is
+      # how WatcherDecodingTests stopped compiling on 2026-07-05 and stayed
+      # broken. Runs before the app build so a failure names the assertion.
+      - name: Run standalone Swift tests
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: packages/owletto/apps/mac/Tests/run-tests.sh
 
       - name: Build (unsigned, no archive)
         if: steps.submodule.outputs.stubbed != 'true'
@@ -995,7 +1033,7 @@ jobs:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       # Build the worker image for amd64 only (no QEMU/arm64 — this is a smoke
       # gate, not a release) and load it into the local daemon instead of
@@ -1036,3 +1074,108 @@ jobs:
 
       - name: CLI runtime self-check (host)
         run: node packages/cli/bin/lobu.js connector runtime-self-check --json
+
+  # Measurement, not a gate. `probeSandboxStrategy()` returns "none" on the
+  # managed cluster because bubblewrap cannot create a user namespace there
+  # (uid_map is runtime-restricted — charts/lobu/values.yaml records the
+  # measurement), so contributed CLIs exit 127 by design. bwrap is not the only
+  # possible backend, and this job answers the open question "is systemd-run
+  # --user even available to us?" with a fact instead of an assumption.
+  #
+  # Deliberately `continue-on-error`: nothing depends on the answer yet, and a
+  # runner without a user session must not redden main. Read the summary, do
+  # not gate on it. No checkout: the probe only inspects the runner itself.
+  exec-sandbox-backend-probe:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Report available exec-sandbox backends
+        run: |
+          echo "### exec-sandbox backend probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if command -v bwrap >/dev/null 2>&1; then
+            # Bind set mirrors probeBwrap() in exec-sandbox.ts. /lib64 is not
+            # optional: /usr/bin/true's ELF interpreter is
+            # /lib64/ld-linux-*.so, so binding only /usr makes exec fail with
+            # an execvp error even where userns works — the probe would then
+            # report "present but refused" and name the wrong cause, which is
+            # the exact failure this PR exists to remove.
+            if bwrap --unshare-user --unshare-pid \
+                 --ro-bind /usr /usr \
+                 --ro-bind-try /lib /lib \
+                 --ro-bind-try /lib64 /lib64 \
+                 --ro-bind-try /bin /bin \
+                 --proc /proc --dev /dev -- /usr/bin/true >/tmp/bwrap.err 2>&1; then
+              echo "- bwrap: **isolation works**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- bwrap: present but refused — \`$(head -c 200 /tmp/bwrap.err)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- bwrap: not installed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # The actual open question. --user needs a systemd user session; a
+          # container without one fails here, which is itself the answer.
+          if command -v systemd-run >/dev/null 2>&1; then
+            if systemd-run --user --scope --quiet /bin/true >/tmp/sdr.err 2>&1; then
+              echo "- systemd-run --user: **works** (viable alternative backend)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- systemd-run --user: present but failed — \`$(head -c 200 /tmp/sdr.err)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "- systemd-run: not installed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Both knobs: unprivileged_userns_clone is the Debian patch (absent on
+          # Ubuntu 24.04), apparmor_restrict_unprivileged_userns is what actually
+          # governs userns on this runner's distro.
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "kernel.unprivileged_userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
+          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
+  # The prebuilt pgvector libraries are committed binaries, so nothing in the
+  # normal build/test path ever looks at them — `make build-packages` copies the
+  # file, it does not link against it. That blind spot shipped a `vector.so`
+  # requiring GLIBC_2.38, which made `lobu run` unable to boot embedded Postgres
+  # on Debian 12 (including `node:22-slim`), Ubuntu 22.04 LTS, RHEL 9 and AL2023.
+  #
+  # #2376 fixed the BUILDER (it now pins debian:bullseye). This job is the
+  # separate half: it asserts the artifacts ACTUALLY IN THE TREE clear the floor,
+  # so a future rebuild on a newer base can't silently reintroduce it. Cheap
+  # enough (seconds, no deps) that it runs unfiltered.
+  pgvector-glibc-floor:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # Static half: read the dynamic-symbol version table. Covers BOTH arches
+      # (arm64 included, which we cannot execute here without QEMU) and names the
+      # offending symbol when it fails.
+      - name: Assert glibc floor on committed prebuilts
+        run: |
+          set -euo pipefail
+          for arch in linux-x64 linux-arm64; do
+            packages/pgvector-embedded/scripts/assert-glibc-floor.sh \
+              "packages/pgvector-embedded/prebuilt/${arch}"
+          done
+
+      # Dynamic half: the symbol table says what the library ASKS for; this says
+      # whether an old-glibc system can actually satisfy it. debian:bullseye is
+      # the floor itself (glibc 2.31), so a resolvable link here means every
+      # distro at or above it can load the library. `ldd` on an unsatisfiable
+      # object prints "version `GLIBC_2.xx' not found" and still exits 0, so the
+      # grep — not the exit code — is the assertion.
+      - name: Resolve the x64 prebuilt on the oldest supported glibc
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye \
+            ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
+          echo "$out"
+          if echo "$out" | grep -qi "not found"; then
+            echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)."
+            exit 1
+          fi

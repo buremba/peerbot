@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -9,8 +10,15 @@ import {
 } from "@lobu/cli/config";
 import type ShopifyOrdersConnector from "./shopify-orders.connector.ts";
 
+const phoenixRolloutTrackerSkill = defineSkill({
+  name: "phoenix-rollout-tracker",
+  content:
+    "Check project blockers, milestone progress, and generate the weekly risk summary for leadership.\n",
+});
+
 const delivery = defineAgent({
   id: "delivery",
+  skills: [phoenixRolloutTrackerSkill],
   name: "delivery",
   description:
     "Help delivery teams keep milestones, blockers, owners, and artifacts aligned",
@@ -157,8 +165,7 @@ const phoenixRolloutTracker = defineBehavior({
   notification: { priority: "high", channel: "both" },
   tags: ["delivery", "weekly", "rollout"],
   minCooldownSeconds: 3600,
-  prompt:
-    "Check project blockers, milestone progress, and generate the weekly risk summary for leadership.\n",
+  skills: ["phoenix-rollout-tracker"],
 });
 
 export default defineConfig({

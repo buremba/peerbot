@@ -11,11 +11,11 @@ import {
   requireReadAccess,
   requireWriteAccess,
 } from '../../../utils/organization-access';
-import { validateTemplate } from '../../../watchers/renderer';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import {
   validateWatcherSourceRef,
   resolveWatcherSourcesForSave,
+  extractSkillNamesFromPromptTokens,
 } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
 import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behaviors';
@@ -156,13 +156,15 @@ function validateWatcherConfig(input: {
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): string | null {
-  if (!input.prompt || typeof input.prompt !== 'string') {
-    return 'prompt is required and must be a string';
-  }
-
-  const templateValidation = validateTemplate(input.prompt);
-  if (templateValidation) {
-    return `prompt: ${templateValidation}`;
+  // Instruction PRESENCE is trigger-shape-dependent (event-turn Behaviors may
+  // run with no instruction text) and is enforced by assertBehaviorInstructions
+  // when either instructions or triggers change — here an absent or empty
+  // prompt is structurally valid.
+  //
+  // Prompts are literal instruction text — no templating layer — so `{{` is
+  // legal prose and there is nothing else to validate about the shape.
+  if (input.prompt !== undefined && typeof input.prompt !== 'string') {
+    return 'prompt must be a string';
   }
 
   // The output contract is no longer authored on the watcher. An entity-typed
@@ -246,6 +248,133 @@ export function assertWatcherVersionConfigValid(parsed: {
 }
 
 /**
+ * Resolve every pinned skill name against the owning agent's library at save
+ * time, and reject the write if any is missing or disabled.
+ *
+ * Fail closed rather than dropping the unknown entry: a Behavior that silently
+ * loses one of its skills still runs, unattended, with part of its instructions
+ * gone — the failure surfaces as quietly wrong output hours later, on a run
+ * nobody is watching. A 422 at save is the only point where the author is
+ * present to see it.
+ *
+ * The name is validated but the CALLER's `content` is what gets stored: the
+ * snapshot is the author's, taken at save time, and re-reading the body here
+ * would silently upgrade a pin the author never agreed to. This checks that the
+ * reference is real, not that the text still matches.
+ */
+export async function assertBehaviorSkillsResolve(
+  sql: DbClient,
+  organizationId: string,
+  agentId: string,
+  skills: Array<{ name: string; content: string }>
+): Promise<void> {
+  if (skills.length === 0) return;
+  if (skills.length > 5) {
+    throw new ToolUserError('A Behavior may pin at most 5 skills.', 422);
+  }
+  const invalidName = skills.find(
+    (skill) => !/^[a-zA-Z0-9._-]+$/.test(skill.name)
+  );
+  if (invalidName) {
+    throw new ToolUserError(
+      `Skill "${invalidName.name}" cannot be pinned: names may contain only letters, numbers, ".", "_", and "-".`,
+      422
+    );
+  }
+  const empty = skills.find((skill) => !skill.content.trim());
+  if (empty) {
+    throw new ToolUserError(
+      `Skill "${empty.name}" cannot be pinned because its body is empty.`,
+      422
+    );
+  }
+  const totalBytes = skills.reduce(
+    (sum, skill) => sum + Buffer.byteLength(skill.content, 'utf8'),
+    0
+  );
+  if (totalBytes > 32 * 1024) {
+    throw new ToolUserError(
+      `Pinned Behavior skills contain ${totalBytes} bytes of text; the maximum is 32768 bytes (32KB).`,
+      422
+    );
+  }
+
+  const rows = await sql`
+    SELECT skills_config
+    FROM agents
+    WHERE id = ${agentId}
+      AND organization_id = ${organizationId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(
+      `Agent ${agentId} was not found in this organization, so its skills cannot be resolved.`,
+      422
+    );
+  }
+
+  const library = Array.isArray(rows[0]?.skills_config?.skills)
+    ? (rows[0].skills_config.skills as Array<Record<string, unknown>>)
+    : [];
+  const enabled = new Set(
+    library
+      .filter((entry) => entry.enabled !== false && typeof entry.name === 'string')
+      .map((entry) => entry.name as string)
+  );
+
+  const unknown = skills.map((skill) => skill.name).filter((name) => !enabled.has(name));
+  if (unknown.length > 0) {
+    throw new ToolUserError(
+      `Skill${unknown.length > 1 ? 's' : ''} ${unknown.map((n) => `"${n}"`).join(', ')} ` +
+        `${unknown.length > 1 ? 'are' : 'is'} not enabled in agent ${agentId}'s skill library. ` +
+        `Enable ${unknown.length > 1 ? 'them' : 'it'} on the agent, or remove ${unknown.length > 1 ? 'them' : 'it'} from this Behavior.`,
+      422
+    );
+  }
+
+  const duplicates = skills
+    .map((skill) => skill.name)
+    .filter((name, index, all) => all.indexOf(name) !== index);
+  if (duplicates.length > 0) {
+    throw new ToolUserError(
+      `Skill "${duplicates[0]}" is listed more than once. Each skill may be pinned once per Behavior.`,
+      422
+    );
+  }
+}
+
+/**
+ * Every `@[skill:…]` chip in the prompt must have a pinned entry in `skills[]`.
+ *
+ * Ref tokens survive into the instructions verbatim — nothing strips them (see
+ * `extractSourcesFromPromptTokens`) — so an unpinned chip does not fail, it
+ * degrades: the agent reads the literal `@[skill:deploy-runbook:…](…)` as if it
+ * were guidance, with no `.skills/` file behind it. The web composer always
+ * sends both halves; a CLI or MCP caller writing the token by hand can send the
+ * prompt alone, and that is the case this catches.
+ *
+ * Names only — the pinned BODY still comes from the caller, never from a
+ * save-time read of the live library.
+ */
+export function assertPromptSkillTokensPinned(
+  prompt: string | null | undefined,
+  skills: ReadonlyArray<{ name: string }> | null | undefined
+): void {
+  const referenced = extractSkillNamesFromPromptTokens(prompt ?? '');
+  if (referenced.length === 0) return;
+  const pinned = new Set((skills ?? []).map((skill) => skill.name));
+  const missing = referenced.filter((name) => !pinned.has(name));
+  if (missing.length === 0) return;
+  throw new ToolUserError(
+    `The prompt references skill${missing.length > 1 ? 's' : ''} ` +
+      `${missing.map((n) => `"${n}"`).join(', ')} that ${missing.length > 1 ? 'are' : 'is'} not ` +
+      `pinned on this Behavior. Pass ${missing.length > 1 ? 'them' : 'it'} in "skills" so the body is ` +
+      `frozen with this version, or remove the reference from the prompt.`,
+    422
+  );
+}
+
+/**
  * Resolve every @ref source against the org at save time so a typo fails here
  * (loud 422) rather than silently producing empty context at read_knowledge.
  * Custom-SQL sources are skipped (id projection is already enforced by
@@ -265,6 +394,84 @@ export async function assertWatcherSourcesResolve(
   } catch (err) {
     throw new ToolUserError(
       `Behavior validation failed: ${err instanceof Error ? err.message : String(err)}`,
+      422
+    );
+  }
+}
+
+// ============================================
+// Foreign-key-shaped reference validation
+// ============================================
+
+/**
+ * Resolve `agent_id` against the caller's org before it is persisted.
+ *
+ * `watchers.agent_id` is NOT NULL but carries NO foreign key to `agents`, so a
+ * typo'd or cross-org id is accepted by the database and only surfaces as a
+ * Behavior that reports status 'active' / health 'healthy' and never runs — the
+ * scheduler joins watchers to agents on `agent_id` (see watchers/automation.ts),
+ * so an unresolvable owner silently drops the row out of every scheduling pass.
+ * `behaviors.create` already documents `throws: ["EntityNotFound"]` for this
+ * case in src/sandbox/method-metadata.ts; this honours that contract.
+ *
+ * Org-scoped by design: `agents` ids are unique only WITHIN an org, so resolving
+ * without the org fence would let one tenant name another tenant's agent.
+ * Matches the 404 shape manage_agents' own get/update handlers emit.
+ */
+export async function assertAgentExists(
+  sql: DbClient,
+  organizationId: string,
+  agentId: string | null | undefined
+): Promise<void> {
+  if (agentId == null) return;
+  const rows = await sql<{ id: string }>`
+    SELECT id FROM agents
+    WHERE organization_id = ${organizationId} AND id = ${agentId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(`Agent "${agentId}" not found`, 404);
+  }
+}
+
+/**
+ * Resolve `keying_config.entity_type` against the org before it is persisted.
+ *
+ * An entity-typed Behavior derives its whole output contract from the named
+ * type's `metadata_schema`. When the type does not exist,
+ * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
+ * extraction validation entirely — so a typo does not fail loudly, it silently
+ * VOIDS the contract the Behavior was created to enforce. Its sibling
+ * `entity_id` is already existence-checked at create, so validating here makes
+ * the pair consistent.
+ *
+ * Uses the same tenant-first-then-public-catalog visibility rule as
+ * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
+ * that derivation CAN see is never rejected here — checking existence only, as
+ * a type legitimately may carry no metadata_schema yet.
+ */
+export async function assertKeyingConfigEntityTypeExists(
+  sql: DbClient,
+  organizationId: string,
+  keyingConfig: Record<string, unknown> | null | undefined
+): Promise<void> {
+  const rawType = keyingConfig?.entity_type;
+  if (typeof rawType !== 'string') return;
+  const entityType = rawType.trim();
+  if (!entityType) return;
+
+  const rows = await sql<{ id: number }>`
+    SELECT et.id
+    FROM entity_types et
+    LEFT JOIN organization o ON o.id = et.organization_id
+    WHERE et.slug = ${entityType}
+      AND et.deleted_at IS NULL
+      AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+    LIMIT 1
+  `;
+  if (rows.length === 0) {
+    throw new ToolUserError(
+      `Unknown entity type '${entityType}' in keying_config. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
       422
     );
   }

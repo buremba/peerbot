@@ -93,3 +93,35 @@ export async function takePendingTool(
   if (rows.length === 0) return null;
 	return (rows[0] as { payload: PendingToolInvocation }).payload ?? null;
 }
+
+/** Active tool approvals belonging to this Behavior run's agent session. */
+export async function listPendingToolsForRun(
+	runId: number,
+	sql: ReturnType<typeof getDb>
+): Promise<Array<{ mcpId: string; toolName: string }>> {
+	const rows = await sql`
+    SELECT DISTINCT
+      pending.payload->>'mcpId' AS mcp_id,
+      pending.payload->>'toolName' AS tool_name
+    FROM oauth_states pending
+    JOIN runs behavior_run
+      ON behavior_run.id = ${runId}
+     AND behavior_run.run_type = 'behavior'
+    WHERE pending.scope = ${SCOPE}
+      AND pending.expires_at > now()
+      AND pending.payload->>'organizationId' = behavior_run.organization_id
+      AND right(
+        pending.payload->>'conversationId',
+        length(
+          '_watcher_' || behavior_run.watcher_id::text ||
+          '_run_' || behavior_run.id::text
+        )
+      ) = '_watcher_' || behavior_run.watcher_id::text ||
+          '_run_' || behavior_run.id::text
+    ORDER BY mcp_id, tool_name
+  `;
+	return rows
+		.map((r) => r as { mcp_id: string | null; tool_name: string | null })
+		.filter((r) => r.mcp_id && r.tool_name)
+		.map((r) => ({ mcpId: r.mcp_id as string, toolName: r.tool_name as string }));
+}

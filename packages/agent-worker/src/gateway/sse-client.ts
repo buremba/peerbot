@@ -11,14 +11,13 @@ import {
   type MessagePayload,
   type QueuedMessage,
   SpanStatusCode,
-  stripEnv,
 } from "@lobu/core";
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
 import { invalidateSessionContextCache } from "../runtime/session-context";
 import { LobuAgentWorker } from "../runtime/worker";
 import { createGatewayClient } from "@lobu/plugin-toolkit";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { buildAgentEnv } from "../shared/worker-env-keys";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";
 import {
@@ -659,14 +658,13 @@ export class GatewayClient {
     let sigkillTimer: NodeJS.Timeout | null = null;
 
     try {
-      // Strip the worker's own gateway credentials before handing the shell
-      // its env. An `exec` command is an arbitrary string from the gateway
-      // that ends up under `sh -c`; leaking WORKER_TOKEN / DISPATCHER_URL
-      // into that environment would let a malicious or buggy exec impersonate
-      // the worker against its own gateway. The bash-tool and just-bash
-      // spawners already apply the same filter (see runtime/tools.ts and
-      // embedded/just-bash-bootstrap.ts) — keep parity here.
-      const baseEnv = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
+      // Build the shell env from the allowlist. An `exec` command is an
+      // arbitrary string from the gateway that ends up under `sh -c`, so it
+      // must not inherit the worker's ambient environment: WORKER_TOKEN would
+      // let it impersonate the worker, and ENCRYPTION_KEY / DATABASE_URL are
+      // simply readable. The bash-tool and just-bash spawners use the same
+      // helper (see runtime/tools.ts and embedded/just-bash-bootstrap.ts).
+      const baseEnv = buildAgentEnv(process.env);
       const proc = spawn("sh", ["-c", execCommand], {
         cwd: workingDir,
         env: { ...baseEnv, ...execEnv },

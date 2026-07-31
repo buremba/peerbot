@@ -5,6 +5,8 @@ import {
 } from "../utils/encryption";
 import {
   generateWorkerToken,
+  generateWorkerTokenPair,
+  verifyEgressProxyToken,
   verifyWorkerToken,
   type WorkerTokenData,
 } from "../worker/auth";
@@ -104,6 +106,26 @@ describe("worker auth token", () => {
     // both must still verify
     expect(verifyWorkerToken(t1)).not.toBeNull();
     expect(verifyWorkerToken(t2)).not.toBeNull();
+  });
+
+  test("worker and egress-proxy credentials are accepted only on their own surfaces", () => {
+    const pair = generateWorkerTokenPair("u", "c", "d", {
+      channelId: "ch",
+    });
+
+    expect(verifyWorkerToken(pair.workerToken)).not.toBeNull();
+    expect(verifyEgressProxyToken(pair.egressProxyToken)).not.toBeNull();
+    expect(verifyWorkerToken(pair.egressProxyToken)).toBeNull();
+    expect(verifyEgressProxyToken(pair.workerToken)).toBeNull();
+  });
+
+  test("a deployment token pair shares one revocation id", () => {
+    const pair = generateWorkerTokenPair("u", "c", "d", { channelId: "ch" });
+    const worker = verifyWorkerToken(pair.workerToken);
+    const egress = verifyEgressProxyToken(pair.egressProxyToken);
+
+    expect(worker?.jti).toBeTruthy();
+    expect(egress?.jti).toBe(worker?.jti);
   });
 
   test("missing channelId throws", () => {
@@ -330,6 +352,41 @@ describe("worker auth token: explicit expiry", () => {
     expect(d).not.toBeNull();
     expect(d.runtimeProviderId).toBe("vercel");
     expect(d.sandboxId).toBe("env-abc");
+  });
+
+  test("verifyWorkerToken round-trips a nixPackages claim", () => {
+    const token = generateWorkerToken("u", "c", "d", {
+      channelId: "ch",
+      runtimeProviderId: "vercel",
+      nixPackages: ["gh", "ripgrep"],
+    });
+    const d = verifyWorkerToken(token) as WorkerTokenData;
+    expect(d).not.toBeNull();
+    expect(d.nixPackages).toEqual(["gh", "ripgrep"]);
+  });
+
+  test("verifyWorkerToken rejects a nixPackages claim that is not a string[]", () => {
+    // Each entry reaches a package-install command line in the remote runtime.
+    // The provider validates each NAME, but a non-array (or a nested object)
+    // would defeat that per-element check entirely, so reject rather than coerce.
+    for (const nixPackages of [
+      "gh",
+      { 0: "gh" },
+      ["gh", 42],
+      ["gh", { toString: () => "evil" }],
+    ]) {
+      const token = encrypt(
+        JSON.stringify({
+          userId: "u",
+          conversationId: "c",
+          channelId: "ch",
+          deploymentName: "d",
+          timestamp: Date.now(),
+          nixPackages,
+        })
+      );
+      expect(verifyWorkerToken(token)).toBeNull();
+    }
   });
 
   test("verifyWorkerToken rejects a legacy `environmentId` claim (superseded by sandboxId)", () => {

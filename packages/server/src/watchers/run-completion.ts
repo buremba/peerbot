@@ -1,7 +1,9 @@
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
+import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
 import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
+import { advanceScheduleAfterTerminalFailure } from "./schedule-cursor";
 
 type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
@@ -25,15 +27,18 @@ const MAX_FINALIZE_NUDGES: number = (() => {
 	const raw = process.env.LOBU_WATCHER_FINALIZE_NUDGES;
 	if (raw === undefined) return 1;
 	const n = Number(raw);
-	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
+	return Number.isFinite(n) && n >= 0 ? Math.min(5, Math.floor(n)) : 1;
 })();
 
 /**
  * Finalize-nudge budget for a run: the watcher's per-watcher override
  * (execution_config.finalize_nudges, 0-5) when set, else the global default.
  * Clamped defensively in case a raw DB value sits outside the schema's range.
+ *
+ * Shared by the cloud dispatch path and the device `complete-behavior` exit
+ * report so both honor the same per-Behavior / global budget.
  */
-function resolveFinalizeNudgeBudget(
+export function resolveFinalizeNudgeBudget(
 	executionConfig: Record<string, unknown> | null | undefined
 ): number {
 	const override = executionConfig?.finalize_nudges;
@@ -41,6 +46,48 @@ function resolveFinalizeNudgeBudget(
 		return Math.min(5, Math.max(0, Math.floor(override)));
 	}
 	return MAX_FINALIZE_NUDGES;
+}
+
+/**
+ * Device-held finalize retry: keep the run `running` under the same claim and
+ * bump `approved_input.finalize_nudge_count` so the Mac app can re-spawn the
+ * local CLI with a nudge. Unlike {@link requeueWatcherRunForFinalizeNudge}
+ * (cloud: release claim → pending), this does not clear `claimed_by`.
+ *
+ * Returns false when the row is no longer `running` under this worker's claim,
+ * or when the stored count already moved past the caller's read. The count
+ * predicate is a compare-and-swap: two duplicate exit reports (a Mac retry
+ * after a timed-out response) both read the same `finalize_nudge_count` and
+ * both pass the caller's `attemptsSoFar < budget` check, so without it both
+ * would be granted a resume and the run would get one more spawn than the
+ * budget allows. Callers derive `nextNudgeCount` as read + 1, so
+ * `nextNudgeCount - 1` is the expected prior value. The count is only ever
+ * written with `to_jsonb(int)`, so the cast is safe.
+ */
+export async function bumpDeviceFinalizeNudge(
+	sql: DbClient,
+	runId: number,
+	workerId: string,
+	nextNudgeCount: number,
+	outputTail: string | null
+): Promise<boolean> {
+	const rows = (await sql`
+    UPDATE runs
+    SET approved_input = jsonb_set(
+          COALESCE(approved_input, '{}'::jsonb),
+          '{finalize_nudge_count}',
+          to_jsonb(${nextNudgeCount}::int)
+        ),
+        output_tail = ${outputTail},
+        error_message = ${`Device CLI attempt ${nextNudgeCount}: completeWindow not called — resume allowed`}
+    WHERE id = ${runId}
+      AND status = 'running'
+      AND claimed_by = ${workerId}
+      AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0)
+          = ${nextNudgeCount - 1}
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+	return rows.length > 0;
 }
 
 export async function findWindowIdForRun(
@@ -66,17 +113,44 @@ export async function findWindowIdForRun(
 	return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
 }
 
+/**
+ * Mark a Behavior run completed, recording who executed it when the caller
+ * knows.
+ *
+ * `complete_window` used to default `runs.model_used` to the literal
+ * 'external-client' whenever its caller omitted `model`, and the platform's own
+ * Lobu agent omits it — so server-dispatched runs were labelled as though an
+ * outside MCP client had executed them. That label reads as an observation and
+ * is not one: triaging the July 2026 Behavior collapse from this column
+ * produced exactly that wrong conclusion.
+ *
+ * `fallbackModel` is the caller's assertion about the executor and is applied
+ * ONLY over the placeholder or a NULL — a model the agent genuinely reported
+ * always wins. Callers that cannot prove who executed the run must omit it
+ * rather than guess: `reconcileWatcherRuns` sweeps active runs without
+ * filtering on `dispatched_message_id`, so it can reach runs an external client
+ * created, and stamping those would invert the very bug this fixes.
+ *
+ * (SQL comments are kept out of the template literal: a backtick inside one
+ * terminates the string and fails the esbuild transform, not just at runtime.)
+ */
 export async function markWatcherRunCompleted(
 	sql: DbClient,
 	runId: number,
-	windowId: number | null
+	windowId: number | null,
+	fallbackModel?: string
 ): Promise<void> {
 	await sql`
     UPDATE runs
     SET status = 'completed',
         window_id = ${windowId},
         completed_at = current_timestamp,
-        error_message = NULL
+        error_message = NULL,
+        model_used = COALESCE(
+          NULLIF(model_used, 'external-client'),
+          ${fallbackModel ?? null},
+          model_used
+        )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
@@ -86,15 +160,28 @@ async function markWatcherRunFailed(
 	sql: DbClient,
 	runId: number,
 	message: string
-): Promise<void> {
-	await sql`
-    UPDATE runs
-    SET status = 'failed',
-        completed_at = current_timestamp,
-        error_message = ${message}
-    WHERE id = ${runId}
-      AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-  `;
+): Promise<boolean> {
+	return sql.begin(async (tx) => {
+		const [failed] = await tx<{
+			watcher_id: string | number | null;
+			dispatch_source: string | null;
+		}>`
+      UPDATE runs
+      SET status = 'failed',
+          completed_at = current_timestamp,
+          error_message = ${message}
+      WHERE id = ${runId}
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+    `;
+		if (!failed) return false;
+		await advanceScheduleAfterTerminalFailure(
+			tx,
+			failed.watcher_id == null ? null : Number(failed.watcher_id),
+			failed.dispatch_source
+		);
+		return true;
+	});
 }
 
 /**
@@ -156,13 +243,12 @@ export async function resolveWatcherRunsByMessageIds(
 		if (!Number.isFinite(runId)) continue;
 
 		if (!result.ok) {
-			await markWatcherRunFailed(sql, runId, result.error);
-			resolved++;
+			if (await markWatcherRunFailed(sql, runId, result.error)) resolved++;
 			continue;
 		}
 
 		if (typedRow.approved_input?.trigger_execution === "turn") {
-			await markWatcherRunCompleted(sql, runId, null);
+			await markWatcherRunCompleted(sql, runId, null, "lobu-agent");
 			resolved++;
 			continue;
 		}
@@ -187,21 +273,65 @@ export async function resolveWatcherRunsByMessageIds(
 				continue;
 			}
 
-			await markWatcherRunFailed(
-				sql,
-				runId,
-				"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
-					(budget > 0 ? ` after ${budget + 1} attempt(s)` : "") +
-					". Check that the assigned agent has the lobu-memory MCP attached and that query_sdk / " +
-					"run_sdk tools are approved for it."
-			);
-			resolved++;
+			if (
+				await markWatcherRunFailed(
+					sql,
+					runId,
+					await describeFinalizeMiss(sql, runId, budget)
+				)
+			) {
+				resolved++;
+			}
 			continue;
 		}
 
-		await markWatcherRunCompleted(sql, runId, windowId);
+		await markWatcherRunCompleted(sql, runId, windowId, "lobu-agent");
 		resolved++;
 	}
 
 	return { resolved };
+}
+
+async function describeFinalizeMiss(
+	sql: DbClient,
+	runId: number,
+	budget: number
+): Promise<string> {
+	const attempts = budget > 0 ? ` after ${budget + 1} attempt(s)` : "";
+	const agentMiss =
+		"Agent reply finished without calling run_sdk (client.behaviors.completeWindow)" +
+		attempts;
+	let pending: Array<{ mcpId: string; toolName: string }>;
+	try {
+		pending = await listPendingToolsForRun(runId, sql);
+	} catch (error) {
+		logger.warn(
+			{ error, run_id: runId },
+			"[watchers] Could not check pending tool approvals for a finalize miss"
+		);
+		return (
+			agentMiss +
+			". Tool approval status could not be checked; inspect the warning log " +
+			"before attributing the miss to the agent."
+		);
+	}
+
+	if (pending.length > 0) {
+		const tools = pending.map((p) => `${p.mcpId}/${p.toolName}`).join(", ");
+		const grants = pending
+			.map((p) => `/mcp/${p.mcpId}/tools/${p.toolName}`)
+			.join(", ");
+		return (
+			`Behavior run blocked on tool approval${attempts}: ${tools} queued for ` +
+			"human approval, so complete_window never ran. Headless Behavior runs " +
+			`cannot answer approval cards; grant standing access (${grants}) and ` +
+			"retry the Behavior."
+		);
+	}
+
+	return (
+		agentMiss +
+		". No active tool approval was found, so check that the assigned agent has the " +
+		"lobu-memory MCP attached and that query_sdk / run_sdk are available to it."
+	);
 }

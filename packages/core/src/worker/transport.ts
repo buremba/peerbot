@@ -45,10 +45,10 @@ export interface WorkerTransport {
   /**
    * Signal that an error occurred during processing
    *
-   * @param error - The error that occurred. Its message is relayed verbatim as
-   *                the user-facing body for provider errors.
-   * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors); the
-   *                    renderer uses it only to select the CTA link.
+   * @param error - The error that occurred. Provider messages reach the gateway
+   *                unchanged; the renderer uses context to label/unwrap them.
+   * @param errorCode - Classified `AgentErrorCode` (see @lobu/core errors);
+   *                    selects the catalog text/CTA behavior.
    * @param context - Non-secret provider/model targeting for the error CTA.
    */
   signalError(

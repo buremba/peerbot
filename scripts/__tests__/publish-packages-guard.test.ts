@@ -11,11 +11,14 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { buildPublishedDeclaration } from "../../packages/agent-worker/scripts/published-declaration.mjs";
@@ -493,33 +496,58 @@ describe("installed worker entry point is actually published", () => {
  * the real script and assert it refuses BEFORE writing anything.
  */
 describe("bump-version input validation (subprocess)", () => {
-  // bump-version writes the root manifest AND every workspace package it lists,
-  // so all of them are snapshotted and restored. Restoring only the root left
-  // 9 packages bumped to the test's version — a test must never mutate the repo.
+  // Snapshot workspace manifests independently of the publish list:
+  // bump-version still versions plugin-api and plugin-host even though the
+  // publish script does not publish them.
   const manifests = [
     join(REPO_ROOT, "package.json"),
-    ...__testing.PACKAGES.map((p: { dir: string }) =>
-      join(REPO_ROOT, p.dir, "package.json")
-    ),
+    ...readdirSync(join(REPO_ROOT, "packages"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(REPO_ROOT, "packages", entry.name, "package.json"))
+      .filter((file) => existsSync(file)),
   ];
 
+  /**
+   * Runs bump-version against a throwaway copy of the manifests rather than the
+   * checkout.
+   *
+   * This used to spawn with `cwd: REPO_ROOT` and put the files back afterwards.
+   * Restoring is not the same as not writing: the restore list was built from
+   * the publish set while the script writes a different set, so plugin-api and
+   * plugin-host were rewritten to the fixture version and left there by a green
+   * suite. bump-version resolves its root from `process.cwd()`, so pointing it
+   * at a temp tree makes the checkout untouchable by construction instead of by
+   * a cleanup step that has to be kept in sync — and an interrupted run can no
+   * longer strand a downgrade in the working tree.
+   */
   function runBump(arg: string) {
-    const before = new Map(
-      manifests.map((file) => [file, readFileSync(file, "utf8")])
-    );
-    const result = spawnSync(
-      process.execPath,
-      [join(REPO_ROOT, "scripts/bump-version.mjs"), arg],
-      { cwd: REPO_ROOT, encoding: "utf8" }
-    );
-    let wrote = false;
-    for (const [file, original] of before) {
-      if (readFileSync(file, "utf8") !== original) {
-        wrote = true;
-        writeFileSync(file, original);
+    const sandbox = mkdtempSync(join(tmpdir(), "bump-version-"));
+    try {
+      for (const file of manifests) {
+        const target = join(sandbox, relative(REPO_ROOT, file));
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, readFileSync(file, "utf8"));
       }
+      const before = new Map(
+        manifests.map((file) => [
+          file,
+          readFileSync(join(sandbox, relative(REPO_ROOT, file)), "utf8"),
+        ])
+      );
+      const result = spawnSync(
+        process.execPath,
+        [join(REPO_ROOT, "scripts/bump-version.mjs"), arg],
+        { cwd: sandbox, encoding: "utf8" }
+      );
+      let wrote = false;
+      for (const [file, original] of before) {
+        const copy = join(sandbox, relative(REPO_ROOT, file));
+        if (readFileSync(copy, "utf8") !== original) wrote = true;
+      }
+      return { result, wrote };
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
     }
-    return { result, wrote };
   }
 
   it.each([
@@ -545,5 +573,35 @@ describe("bump-version input validation (subprocess)", () => {
     const { result, wrote } = runBump(good);
     expect(result.status).toBe(0);
     expect(wrote).toBe(true);
+  });
+
+  it("leaves every workspace manifest byte-identical, not just the published ones", () => {
+    // Re-enumerates the filesystem rather than reusing `manifests`, so it
+    // still sees writes to a package that list does not cover.
+    //
+    // What it guards changed with the temp-tree runner. It no longer catches a
+    // narrowed restore list — narrowing `manifests` now fails the accepted-semver
+    // assertions instead, because the sandbox copy would omit a package
+    // bump-version writes. What it catches now is the subprocess being pointed
+    // back at the checkout. Measured, not assumed: restoring `cwd` to REPO_ROOT
+    // takes this suite to 24 pass / 4 fail and leaves 10 real manifests dirty,
+    // the root one included.
+    const everyManifest = readdirSync(join(REPO_ROOT, "packages"), {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(REPO_ROOT, "packages", entry.name, "package.json"))
+      .filter((file) => existsSync(file));
+
+    const before = new Map(
+      everyManifest.map((file) => [file, readFileSync(file, "utf8")])
+    );
+
+    runBump("9.9.9");
+
+    const dirty = everyManifest.filter(
+      (file) => readFileSync(file, "utf8") !== before.get(file)
+    );
+    expect(dirty).toEqual([]);
   });
 });

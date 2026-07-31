@@ -405,7 +405,32 @@ export interface Behavior {
   description?: string;
   /** Connector events and/or cadence that activate this Behavior. */
   triggers?: BehaviorTriggerConfig[];
-  prompt: string;
+  /**
+   * The task this Behavior performs, in plain text — *what to do when it fires*,
+   * as distinct from the reusable know-how in {@link Behavior.skills}.
+   *
+   * Delivered to the agent verbatim, with no template expansion; the window's
+   * data arrives separately in the knowledge-read payload. Skills are NOT
+   * concatenated into it — they ship as files the agent reads on demand — so a
+   * prompt saying "draft the brief using deal-brief" works without pasting the
+   * skill body here.
+   */
+  prompt?: string;
+  /**
+   * Ordered skill names from the owning agent's skill library
+   * ({@link Agent.skills}). `lobu apply` resolves each name to its body and
+   * pins the pair onto the Behavior's version, so a run gets the text as it
+   * stood at apply time. Editing the library later does not reach an existing
+   * Behavior until the next `lobu apply`; re-applying is the explicit upgrade
+   * action for a declarative project.
+   *
+   * Supply {@link Behavior.prompt}, `skills`, or both. One of the two is
+   * required for schedule triggers, event triggers with execution `"window"`,
+   * and Behaviors with no triggers (manual runs); an event trigger with
+   * execution `"turn"` may omit both, since the incoming event is the content
+   * and a built-in default applies.
+   */
+  skills?: string[];
   /**
    * Stable key generation for promoted entities. When `entityType` is set, the
    * Behavior is entity-typed: its output schema derives from that entity type's
@@ -425,7 +450,8 @@ export interface Behavior {
   /**
    * Named SQL data sources. Value is either a query string or
    * `{ query, context? }` — `context: true` marks a context-only source
-   * (bound into the prompt template but not the watcher window body).
+   * (included in the Behavior payload's `sources` field but not the window's
+   * event set).
    */
   sources?: Record<string, string | { query: string; context?: boolean }>;
   notification?: BehaviorNotification;
@@ -582,9 +608,9 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
 // ---------------------------------------------------------------------------
 
 /**
- * A skill an agent can use — an instruction block (`content`) plus the nix
- * packages it declares. Skills are referenced explicitly from
- * {@link Agent.skills}; there is no directory auto-discovery.
+ * A skill an agent can use — an instruction block (`content`). Skills are
+ * referenced explicitly from {@link Agent.skills}; there is no directory
+ * auto-discovery.
  *
  * Build one of two ways, both producing this same object:
  *   - {@link defineSkill} — inline: `content` is a string, the rest is JSON.
@@ -593,9 +619,9 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
  *     fields from its frontmatter + body. `path` is mutually exclusive with the
  *     inline fields.
  *
- * The frontmatter a skill declares (`nixPackages`) is merged into the agent's
- * worker sandbox at apply time — that's why skills are resolved eagerly, not
- * loaded by the worker at run time.
+ * Skills are instruction text only. Packages belong on the agent
+ * ({@link Agent.nixPackages}) or on a connector's `agentTooling` — a skill
+ * declares none.
  */
 export interface Skill {
   readonly kind: "skill";
@@ -608,8 +634,6 @@ export interface Skill {
   description?: string;
   /** The skill body (markdown instructions shown to the agent). */
   content?: string;
-  /** Nix packages provisioned into the worker when this skill is present. */
-  nixPackages?: string[];
   /**
    * Load body + frontmatter from a `SKILL.md`, relative to the config file. Set
    * by {@link skillFromFile}; resolved by the loader. Mutually exclusive with

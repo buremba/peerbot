@@ -24,6 +24,7 @@ import {
   type InstallationTokenProvider,
   InMemoryInstallationTokenCache,
   type MintedInstallationToken,
+  type MintTokenOptions,
 } from "./installation-token-provider.js";
 
 const logger = createLogger("github-installation-token");
@@ -161,19 +162,27 @@ export class GitHubInstallationTokenProvider
     return { appId, privateKeyPem };
   }
 
-  /** Cache key: provider-app-aware so two Apps over one tenant never collide. */
-  private cacheKey(install: AppInstallationRow): string {
-    return `github:${install.providerInstance}:${install.providerAppId}:${install.externalTenantId}`;
+  /**
+   * Cache key: provider-App and credential-mapping aware.
+   *
+   * A connector definition can repoint an existing installation at a different
+   * App env mapping. That change recycles warm workers; keeping the old cache
+   * entry eligible here would put the previous App's token straight back into
+   * the rebuilt worker.
+   */
+  private cacheKey(install: AppInstallationRow, appId: string): string {
+    return `github:${install.providerInstance}:${install.providerAppId}:${install.externalTenantId}:${appId}`;
   }
 
   async mintToken(
-    install: AppInstallationRow
+    install: AppInstallationRow,
+    options?: MintTokenOptions
   ): Promise<MintedInstallationToken> {
-    const key = this.cacheKey(install);
-    const cached = this.cache.get(key);
+    const { appId, privateKeyPem } = this.resolveAppConfig(install);
+    const key = this.cacheKey(install, appId);
+    const cached = this.cache.get(key, options?.minTtlMs);
     if (cached) return cached;
 
-    const { appId, privateKeyPem } = this.resolveAppConfig(install);
     const jwt = buildGitHubAppJwt({
       appId,
       privateKeyPem,
@@ -238,6 +247,12 @@ export class GitHubInstallationTokenProvider
       throw new InstallationTokenError(
         "exchange_failed",
         "GitHub installation-token exchange body missing token/expires_at"
+      );
+    }
+    if (!Number.isFinite(Date.parse(body.expires_at))) {
+      throw new InstallationTokenError(
+        "exchange_failed",
+        "GitHub installation-token exchange body has an invalid expires_at"
       );
     }
 

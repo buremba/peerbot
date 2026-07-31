@@ -1,0 +1,101 @@
+name: Prod smoke
+
+# Verifies the DEPLOYED system, which nothing else does.
+#
+#   app-image-smoke        is the image broken?   (boots with its OWN env + db)
+#   published-artifact-…   can users install it?  (npm tarball, 4 environments)
+#   THIS                   did the rollout land, and does prod work with the
+#                          REAL Helm config, ingress, TLS and database?
+#
+# An image smoke cannot catch a missing Helm env var, a broken ingress route, an
+# expired certificate, or Flux rolling a tag whose migration failed against real
+# data — it boots with its own environment. So this is not redundant with it.
+#
+# It is deliberately NOT a release gate: by the time it is red, users are
+# already affected, and prod depends on third parties and provider quota. Gating
+# releases on it would block shipping for reasons unrelated to the release. It
+# detects and alarms; app-image-smoke is what gates.
+#
+# Read-only: `events` is append-only, so a smoke that writes cannot clean up
+# after itself. Every request is a GET or an unauthenticated POST expected to be
+# rejected.
+
+on:
+  # After images are pushed. Flux rolls out asynchronously, so the job waits for
+  # the merge commit to actually appear in prod's reported revision rather than
+  # assuming the push means it is live.
+  workflow_run:
+    workflows: ["Build and Push Images"]
+    types: [completed]
+  # Continuous canary. A certificate expires, a node drains, a dependency fails
+  # — none of which involve us pushing anything.
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Base URL to smoke
+        default: https://app.lobu.ai
+      expect_sha:
+        description: Require this commit to be live (ancestor test)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # `types: [completed]` fires on failed and cancelled builds too. A failed
+    # build pushes no image, so the rollout gate would wait ROLLOUT_WAIT for a
+    # SHA that can never deploy and then page Slack — duplicating the alarm
+    # build-images' own notify-failure already sent. The scheduled canary
+    # still covers plain health.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
+    steps:
+      # Full history: the rollout gate runs `git merge-base --is-ancestor`
+      # against the SHA prod reports, which a shallow clone cannot resolve.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Smoke prod
+        env:
+          PROD_URL: ${{ inputs.url || 'https://app.lobu.ai' }}
+          # On a workflow_run, require the commit that triggered the image build
+          # to actually be live. On a schedule there is no specific commit to
+          # wait for, so the rollout gate is skipped and this is a pure health
+          # canary.
+          EXPECT_SHA: >-
+            ${{ inputs.expect_sha
+                || (github.event_name == 'workflow_run'
+                    && github.event.workflow_run.head_sha)
+                || '' }}
+          # Flux polls the registry then rolls the deployment; ~10min covers a
+          # normal rollout without turning a genuinely stuck deploy into a
+          # 25-minute job.
+          ROLLOUT_WAIT: ${{ github.event_name == 'workflow_run' && '600' || '0' }}
+        run: |
+          chmod +x scripts/prod-smoke.sh
+          scripts/prod-smoke.sh
+
+      # Same devops channel the Flux notification-controller and build-images'
+      # notify-failure post to, so cluster-side and CI-side breakage land in one
+      # place. Skipped when the webhook is unset; never fails the job itself.
+      - name: Post failure to Slack devops
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TARGET: ${{ inputs.url || 'https://app.lobu.ai' }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_DEPLOY_WEBHOOK_URL not set; skipping notification."
+            exit 0
+          fi
+          payload=$(jq -nc --arg text \
+            ":rotating_light: prod smoke FAILED against ${TARGET} — <${RUN_URL}|run>" \
+            '{text: $text}')
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data "$payload" "$SLACK_WEBHOOK_URL"

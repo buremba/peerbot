@@ -13,7 +13,8 @@ import * as net from "node:net";
 import {
   __resetEncryptionKeyCacheForTests,
   generateWorkerToken,
-  verifyWorkerToken,
+  generateWorkerTokenPair,
+  verifyEgressProxyToken,
 } from "@lobu/core";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
@@ -153,10 +154,10 @@ function connectRequest(
 }
 
 function createValidToken(deploymentName: string): string {
-  return generateWorkerToken("test-user", "test-conv", deploymentName, {
+  return generateWorkerTokenPair("test-user", "test-conv", deploymentName, {
     channelId: "test-channel",
     platform: "test",
-  });
+  }).egressProxyToken;
 }
 
 // ─── Auth tests ──────────────────────────────────────────────────────────────
@@ -172,6 +173,17 @@ describe("HTTP Proxy Authentication", () => {
     test("rejects request with invalid token (407)", async () => {
       const res = await rawProxyRequest("http://example.com/test", {
         proxyAuth: makeBasicAuth("my-deployment", "not-a-valid-token"),
+      });
+      expect(res.statusCode).toBe(407);
+    });
+
+    test("rejects a worker bearer exposed as proxy auth (407)", async () => {
+      const deploymentName = "worker-token-is-not-proxy-auth";
+      const token = generateWorkerToken("test-user", "test-conv", deploymentName, {
+        channelId: "test-channel",
+      });
+      const res = await rawProxyRequest("http://example.com/test", {
+        proxyAuth: makeBasicAuth(deploymentName, token),
       });
       expect(res.statusCode).toBe(407);
     });
@@ -229,7 +241,7 @@ describe("HTTP Proxy Authentication", () => {
     test("denies an HTTP request whose jti is revoked in this pod's cache (407)", async () => {
       const deploymentName = "revoked-http-worker";
       const token = createValidToken(deploymentName);
-      const jti = verifyWorkerToken(token)?.jti;
+      const jti = verifyEgressProxyToken(token)?.jti;
       expect(jti).toBeTruthy();
 
       setProxyRevokedTokenStore(makeCachedRevokedStore(jti!));
@@ -243,7 +255,7 @@ describe("HTTP Proxy Authentication", () => {
     test("denies a CONNECT tunnel whose jti is revoked in this pod's cache (407)", async () => {
       const deploymentName = "revoked-connect-worker";
       const token = createValidToken(deploymentName);
-      const jti = verifyWorkerToken(token)?.jti;
+      const jti = verifyEgressProxyToken(token)?.jti;
       expect(jti).toBeTruthy();
 
       setProxyRevokedTokenStore(makeCachedRevokedStore(jti!));
@@ -269,7 +281,7 @@ describe("HTTP Proxy Authentication", () => {
     test("a cross-replica revoke not yet cached is allowed once, then refreshed into the cache via a background DB lookup", async () => {
       const deploymentName = "cross-replica-worker";
       const token = createValidToken(deploymentName);
-      const jti = verifyWorkerToken(token)?.jti;
+      const jti = verifyEgressProxyToken(token)?.jti;
       expect(jti).toBeTruthy();
 
       let isRevokedCalls = 0;

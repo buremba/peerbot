@@ -8,6 +8,7 @@ import type { DbClient } from "../db/client";
 import { listCatalogEntries } from "../catalog/load";
 import { validateSchedule, validateTimezone } from "../utils/cron";
 import { ToolUserError } from "../utils/errors";
+import { withPlatformBehaviorEvents } from "./platform-event-catalog";
 
 export interface BehaviorTriggerProjection {
 	triggers: BehaviorTrigger[];
@@ -58,7 +59,9 @@ async function getConnectorBehaviorEventCatalog(
 	if (Array.isArray(row?.behavior_events)) {
 		return {
 			name: row.name,
-			events: parseBehaviorEventDefinitions(row.behavior_events),
+			events: withPlatformBehaviorEvents(
+				parseBehaviorEventDefinitions(row.behavior_events),
+			) as BehaviorEventDefinition[],
 		};
 	}
 
@@ -70,7 +73,9 @@ async function getConnectorBehaviorEventCatalog(
 	);
 	return {
 		name: row?.name ?? catalog?.name ?? connectorKey,
-		events: parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+		events: withPlatformBehaviorEvents(
+			parseBehaviorEventDefinitions(catalog?.detail.behavior_events),
+		) as BehaviorEventDefinition[],
 	};
 }
 
@@ -193,6 +198,52 @@ export function resolveBehaviorTriggerWrite(args: {
 		schedule: scheduleTrigger?.cron ?? null,
 		timezone: scheduleTrigger?.timezone ?? null,
 	};
+}
+
+/**
+ * Whether this trigger set runs on stored instructions alone. An event trigger
+ * executing as "turn" carries its own content — the incoming message/event is
+ * the input, and the built-in default instruction applies when the Behavior
+ * has none. Schedule triggers, event triggers with execution "window", and an
+ * empty trigger set (manual runs) have no such content, so they need
+ * instruction text. An omitted event execution defaults to "turn"
+ * (the contract's default).
+ */
+export function behaviorRequiresInstructions(
+	triggers: BehaviorTrigger[]
+): boolean {
+	if (triggers.length === 0) return true;
+	return triggers.some(
+		(trigger) =>
+			trigger.kind === "schedule" ||
+			(trigger.kind === "event" && trigger.execution === "window")
+	);
+}
+
+/**
+ * Enforce the instruction-presence rule on a complete trigger + instruction
+ * pair before either side is stored. Callers must pass the *final* resolved
+ * values (inherited prompt/skills when omitted, resolved triggers after
+ * write-merge).
+ *
+ * Either source satisfies the requirement on its own. They are no longer the
+ * same field: skills used to be concatenated into `prompt` at save time, so one
+ * check covered both, but pinned skills now remain separate from the stored
+ * prompt. Requiring both would be stricter than the behaviour this replaced —
+ * a Behavior whose whole job is "run this skill" has nothing to put in a task
+ * statement, and one that spells its task out inline needs no skill.
+ */
+export function assertBehaviorInstructions(
+	triggers: BehaviorTrigger[],
+	instructions: string | null | undefined,
+	skills?: ReadonlyArray<{ name: string; content: string }> | null
+): void {
+	if (!behaviorRequiresInstructions(triggers)) return;
+	if (instructions?.trim()) return;
+	if (skills?.some((skill) => skill.content.trim())) return;
+	throw new ToolUserError(
+		"This Behavior runs from a schedule, an analysis window, or manual runs, so it needs instructions: attach at least one skill or provide instruction text. Only event triggers with execution 'turn' may omit both."
+	);
 }
 
 /** Validate connection-scoped triggers against the owning organization. */

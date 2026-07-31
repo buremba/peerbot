@@ -69,10 +69,6 @@ export interface ConnectionsNamespace {
 		connector_key: string;
 		default_connection_config: Record<string, unknown>;
 	}): Promise<unknown>;
-	updateConnectorDefaultRepairAgent(input: {
-		connector_key: string;
-		default_repair_agent_id: string | null;
-	}): Promise<unknown>;
 }
 
 export function buildConnectionsNamespace(
@@ -146,7 +142,5 @@ export function buildConnectionsNamespace(
 			action("update_connector_auth", input, "updateConnectorAuth"),
 		updateConnectorDefaultConfig: (input) =>
 			action("update_connector_default_config", input, "updateConnectorDefaultConfig"),
-		updateConnectorDefaultRepairAgent: (input) =>
-			action("update_connector_default_repair_agent", input, "updateConnectorDefaultRepairAgent"),
 	};
 }

@@ -128,34 +128,32 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 	const store: AgentConfigStore = {
 		async getSettings(agentId) {
 			const sql = getDb();
-			// Workers/gateway-internal callers run without org context — agent IDs
-			// are globally unique and the worker token already proves authenticity,
-			// so falling back to id-only lookup is safe. HTTP request paths always
-			// have an org context (set by middleware) and get the row scoped to it.
+			// CROSS-TENANT GUARD: `agents` is keyed (organization_id, id) with no
+			// global unique index on `id`, so a per-org system agent (`lobu-builder`)
+			// has one row per tenant and an id-only read returns an arbitrary one.
+			// The settings-cookie routes authenticate without a Better Auth user, so
+			// `createLobuOrgContextMiddleware` opens no context on a real, externally
+			// reachable path. Callers must prove the tenant and open their own
+			// orgContext; fail closed here, as PR #2284 did for agent history.
 			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            SELECT models,
-                   network_config, nix_config,
-                   soul_md, user_md, identity_md,
-                   skills_config, tools_config,
-                   verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
-                   sandbox_id, updated_at
-            FROM agents
-            WHERE id = ${agentId} AND organization_id = ${orgId}
-          `
-				: await sql`
-            SELECT models,
-                   network_config, nix_config,
-                   soul_md, user_md, identity_md,
-                   skills_config, tools_config,
-                   verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline,
-                   sandbox_id, updated_at
-            FROM agents
-            WHERE id = ${agentId}
-          `;
+			if (!orgId) {
+				logger.warn(
+					{ agentId },
+					"[getSettings] no org context — returning null (cross-tenant guard)",
+				);
+				return null;
+			}
+			const rows = await sql`
+          SELECT models,
+                 network_config, nix_config,
+                 soul_md, user_md, identity_md,
+                 skills_config, tools_config,
+                 verbose_logging, show_tool_calls,
+                 pre_approved_tools, guardrails, guardrails_inline,
+                 sandbox_id, updated_at
+          FROM agents
+          WHERE id = ${agentId} AND organization_id = ${orgId}
+        `;
 			if (rows.length === 0) return null;
 			return rowToSettings(rows[0]);
 		},
@@ -214,20 +212,24 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 		},
 		async getMetadata(agentId) {
 			const sql = getDb();
+			// CROSS-TENANT GUARD: same composite-key reasoning as `getSettings`, and
+			// higher stakes — `verifyOwnedAgentAccess` vouches the caller against the
+			// `owner_*` columns of whatever row this returns, so an id-only read lets
+			// an arbitrary tenant's row decide authorization.
 			const orgId = tryGetOrgId();
-			const rows = orgId
-				? await sql`
-            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   created_at, last_used_at
-            FROM agents
-            WHERE id = ${agentId} AND organization_id = ${orgId}
-          `
-				: await sql`
-            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   created_at, last_used_at
-            FROM agents
-            WHERE id = ${agentId}
-          `;
+			if (!orgId) {
+				logger.warn(
+					{ agentId },
+					"[getMetadata] no org context — returning null (cross-tenant guard)",
+				);
+				return null;
+			}
+			const rows = await sql`
+          SELECT id, organization_id, name, description, owner_platform, owner_user_id,
+                 created_at, last_used_at
+          FROM agents
+          WHERE id = ${agentId} AND organization_id = ${orgId}
+        `;
 			if (rows.length === 0) return null;
 			return rowToMetadata(rows[0]);
 		},

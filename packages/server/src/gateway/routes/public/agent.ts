@@ -25,6 +25,7 @@ import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
+import { BEHAVIOR_RUN_SOURCE } from "../../behavior-run-session.js";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -40,6 +41,10 @@ import {
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
+import {
+  parseBehaviorRunConversationId,
+  verifyBehaviorRunIntent,
+} from "../../permissions/behavior-run-intent.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
@@ -254,6 +259,9 @@ const createAgentRoute: RouteSpec = {
     ...errorResponses(ErrorResponseSchema, {
       400: "Invalid request",
       401: "Unauthorized",
+      // Unverified `behavior_run` intent, and the cross-tenant session-resume
+      // refusal further down.
+      403: "Forbidden",
     }),
   },
 };
@@ -860,7 +868,33 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const tokenOrganizationId =
       ownership.organizationId ?? metadataOrgId ?? callerOrgId;
 
+    // A `behavior_run` intent decides this session's userId/thread, and hence
+    // the `_watcher_<id>_run_<id>` conversation suffix that downstream gates
+    // read a Behavior's identity out of. Verify both the dispatcher claim and
+    // its short-lived internal token HERE — the one place the intent enters
+    // the system — so downstream code can trust the packed correlation.
     const behaviorIntent = intent?.kind === "behavior_run" ? intent : null;
+    if (
+      behaviorIntent &&
+      !(await verifyBehaviorRunIntent({
+        intent: behaviorIntent,
+        organizationId: tokenOrganizationId,
+        accessToken: tokenFromHeader(c),
+      }))
+    ) {
+      logger.warn(
+        {
+          runId: behaviorIntent.runId,
+          behaviorId: behaviorIntent.behaviorId,
+          organizationId: tokenOrganizationId,
+        },
+        "Rejected a Behavior-run session: intent does not name a dispatched run",
+      );
+      return c.json(
+        { success: false, error: "Unknown or undispatched Behavior run" },
+        403,
+      );
+    }
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
     // is the session-store key. For pinned agents the agentId is per-org so
     // collisions are bounded to a single tenant. For the default-agent path
@@ -915,6 +949,23 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       organizationId: behaviorIntent ? undefined : tokenOrganizationId,
       threadId: effectiveThread || undefined,
     });
+    // Validate the packed id, not individual request fields: a caller can place
+    // `_watcher_<id>_run_<id>` across userId/thread boundaries or entirely
+    // inside either field. Only the verified internal intent may create the
+    // suffix consumed by the unattended-tool policy.
+    if (
+      !behaviorIntent &&
+      parseBehaviorRunConversationId(conversationId) !== null
+    ) {
+      logger.warn(
+        { conversationId, organizationId: tokenOrganizationId },
+        "Rejected a session using the reserved Behavior conversation suffix",
+      );
+      return c.json(
+        { success: false, error: "Reserved Behavior conversation suffix" },
+        400,
+      );
+    }
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 
@@ -1615,7 +1666,10 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           // Echoed back on every response row so output-guardrail audit events
           // remain scoped to the authoritative organization.
           organizationId: messageOrganizationId,
-          source: session.intent?.kind === "behavior_run" ? "watcher-run" : "direct-api",
+          source:
+            session.intent?.kind === "behavior_run"
+              ? BEHAVIOR_RUN_SOURCE
+              : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,
           intent: session.intent,

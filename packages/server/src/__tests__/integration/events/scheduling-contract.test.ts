@@ -214,7 +214,8 @@ describe('scheduler and worker ingestion contracts', () => {
       RETURNING id
     `;
 
-    const runId = await createSyncRun(Number(feed.id), {} as Env, sql);
+    const created = await createSyncRun(Number(feed.id), {} as Env, sql);
+    const runId = created.ok ? created.runId : null;
     expect(runId).not.toBeNull();
 
     const [queuedFeed] = await sql`

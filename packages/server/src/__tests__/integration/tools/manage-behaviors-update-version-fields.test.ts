@@ -463,7 +463,20 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 		expect(await fetchSources()).toEqual([]);
 	});
 
-	it("removes the derived source when the last source token is removed", async () => {
+	it("a chip in the prompt does not author sources — only `sources` does", async () => {
+		// `prompt` is compiled skill text since #2331 (issue #2320 must-fix 2).
+		// The block above left this Behavior sourceless; give it one back.
+		await executeTool(
+			"manage_behaviors",
+			{
+				action: "create_version",
+				behavior_id: behaviorId,
+				sources: [{ name: "alpha", query: "SELECT id FROM events" }],
+			},
+			TEST_ENV,
+			ownerCtx,
+		);
+
 		const chip = `@[sql:s1:Recent](#sql=${encodeURIComponent("SELECT id FROM events WHERE 1=0")})`;
 		await executeTool(
 			"manage_behaviors",
@@ -475,20 +488,22 @@ describe("manage_behaviors create_version — source replacement semantics (#204
 			TEST_ENV,
 			ownerCtx,
 		);
-		expect((await fetchSources()).map((s) => s.name)).toEqual(["recent"]);
+		expect((await fetchSources()).map((s) => s.name)).toEqual(["alpha"]);
 
-		const chipRemoved = (await executeTool(
+		// Clearing is an explicit act, not a side effect of editing text.
+		const cleared = (await executeTool(
 			"manage_behaviors",
 			{
 				action: "create_version",
 				behavior_id: behaviorId,
 				prompt: "Look at nothing in particular.",
+				sources: [],
 			},
 			TEST_ENV,
 			ownerCtx,
 		)) as { source_count?: number; removed_sources?: string[] };
-		expect(chipRemoved.source_count).toBe(0);
-		expect(chipRemoved.removed_sources).toEqual(["recent"]);
+		expect(cleared.source_count).toBe(0);
+		expect(cleared.removed_sources).toEqual(["alpha"]);
 		expect(await fetchSources()).toEqual([]);
 	});
 });

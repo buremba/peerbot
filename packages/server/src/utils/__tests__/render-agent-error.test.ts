@@ -6,6 +6,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { AgentErrorCode } from "@lobu/core";
 import { type AgentErrorCtaResolvers, renderAgentError } from "../url-builder";
 
@@ -126,5 +128,80 @@ describe("renderAgentError", () => {
     });
     expect(r.text).toBe("auth fail");
     expect(r.ctaUrl).toBeNull();
+  });
+});
+
+describe("provider error bodies are labelled and unwrapped", () => {
+  // Regression for Anthropic's status-prefixed JSON error envelope.
+  const RAW_400 =
+    '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},"request_id":"req_011CdVJwuwSg3kq5CWVwRR7N"}';
+
+  it("names the provider and unwraps the JSON envelope", async () => {
+    const r = await renderAgentError(
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      RAW_400,
+      resolvers,
+      { provider: "anthropic" }
+    );
+    expect(r.text).toBe(
+      "Anthropic returned an error:\nYour credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+    );
+  });
+
+  it("unwraps a top-level JSON message", async () => {
+    const r = await renderAgentError(
+      AgentErrorCode.PROVIDER_AUTH,
+      '{"message":"API key expired"}',
+      resolvers,
+      { provider: "openai" }
+    );
+    expect(r.text).toBe("OpenAI API returned an error:\nAPI key expired");
+  });
+
+  it("relays a plain provider sentence unchanged apart from the label", async () => {
+    // Non-JSON bodies are already human-readable; unwrapping must not mangle
+    // them, and we must not double-report the status code.
+    const plain =
+      "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
+    const r = await renderAgentError(
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      plain,
+      resolvers,
+      { provider: "z-ai" }
+    );
+    expect(r.text).toBe(`z.ai returned an error:\n${plain}`);
+  });
+
+  it("falls back to the raw body when no provider is known", async () => {
+    // errorContext is optional; with no provider there is nothing to label
+    // with, and the old behaviour (relay verbatim) must still hold.
+    const r = await renderAgentError(
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      "429 slow down",
+      resolvers
+    );
+    expect(r.text).toBe("429 slow down");
+  });
+});
+
+describe("provider display names track the registry", () => {
+  // The runtime avoids registry I/O, so pin every static/fallback label here.
+  it("matches config/providers.json for every registered provider", async () => {
+    const raw = readFileSync(
+      resolve(__dirname, "../../../../../config/providers.json"),
+      "utf8"
+    );
+    const registry: { providers: Array<{ id: string; name: string }> } =
+      JSON.parse(raw);
+
+    for (const p of registry.providers) {
+      const rendered = await renderAgentError(
+        AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+        "boom",
+        resolveNothing,
+        { provider: p.id }
+      );
+      expect(rendered.text).toBe(`${p.name} returned an error:\nboom`);
+    }
   });
 });

@@ -212,6 +212,22 @@ class LobuStateAdapter implements StateAdapter {
     `;
   }
 
+  /**
+   * Claim `key` iff it is not currently held — where "held" means present AND
+   * unexpired. Both callers are TTL-bounded claims: the Chat SDK's inbound
+   * dedupe (5-minute window) and `claimThreadBackfill` (24-hour window, whose
+   * own docstring promises "at most once per thread per TTL window"). A lapsed
+   * claim must therefore be re-acquirable.
+   *
+   * A bare `ON CONFLICT DO NOTHING` blocks on the row's EXISTENCE, not its
+   * validity, and expired rows are only swept opportunistically inside `get()`
+   * — which this path never calls. That turned every TTL here into "once,
+   * permanently": a Telegram message id claimed by one bot silently discarded a
+   * different bot's message months later, since ids restart at 1 per bot chat.
+   *
+   * Mirrors `acquireLock` above; this was the one TTL-bounded claim in the file
+   * not already written that way.
+   */
   async setIfNotExists(
     key: string,
     value: unknown,
@@ -223,7 +239,15 @@ class LobuStateAdapter implements StateAdapter {
     const rows = await this.sql<{ cache_key: string }>`
       INSERT INTO chat_state_cache (key_prefix, cache_key, value, expires_at)
       VALUES (${this.keyPrefix}, ${key}, ${serialized}, ${expiresAt})
-      ON CONFLICT (key_prefix, cache_key) DO NOTHING
+      ON CONFLICT (key_prefix, cache_key) DO UPDATE
+        SET value = EXCLUDED.value,
+            expires_at = EXCLUDED.expires_at,
+            updated_at = now()
+        -- Expired rows are logically absent. A live row fails this guard, so
+        -- nothing is updated and RETURNING is empty: the caller sees false and
+        -- the stored value is untouched. A NULL expires_at (never expires) also
+        -- fails it, since NULL compared to now() is NULL rather than TRUE.
+        WHERE chat_state_cache.expires_at <= now()
       RETURNING cache_key
     `;
     return rows.length > 0;

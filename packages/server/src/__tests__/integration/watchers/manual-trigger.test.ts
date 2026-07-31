@@ -458,7 +458,7 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
     expect(runs.filter((run) => run.status === 'pending')).toHaveLength(1);
   });
 
-  it('poll payload carries the run-pinned version prompt, not a later edit', async () => {
+  it('poll payload carries the run-pinned prompt and skills, not a later edit', async () => {
     const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-prompt' });
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
@@ -466,8 +466,18 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
       'mac-poll-prompt'
     );
 
-    // Queue a run: createWatcherRun snapshots the current version (prompt v1)
-    // into approved_input.version_id.
+    await ctx.sql`
+      UPDATE watcher_versions
+      SET skills = ${ctx.sql.json([
+        { name: 'device-runbook', content: 'Follow the frozen v1 runbook.' },
+      ])}
+      WHERE id = (
+        SELECT current_version_id FROM watchers WHERE id = ${ctx.watcherId}
+      )
+    `;
+
+    // Queue a run: createWatcherRun snapshots the current version (prompt +
+    // skills v1) into approved_input.version_id.
     const trig = await post(`/api/workers/me/behaviors/${ctx.watcherId}/trigger`, { token });
     expect(trig.status).toBe(200);
 
@@ -485,8 +495,9 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
     )) as { version: number };
     expect(v2.version).toBe(2);
 
-    // The poll must deliver the prompt of the version snapshotted at queue time
-    // (v1) — the same version complete_window validates against — not the edit.
+    // The poll must deliver both instruction sources from the version
+    // snapshotted at queue time (v1) — the same version complete_window
+    // validates against — not the edit.
     const pollRes = await post('/api/workers/poll', {
       token,
       body: { worker_id: 'mac-poll-prompt', capabilities: {} },
@@ -497,6 +508,9 @@ describe('POST /api/workers/me/behaviors/:watcher_id/trigger', () => {
       payload?: { watcher?: { prompt?: string } };
     };
     expect(job.run_type).toBe('behavior');
-    expect(job.payload?.watcher?.prompt).toBe('Summarize {{entities}}.');
+    expect(job.payload?.watcher?.prompt).toContain('Summarize {{entities}}.');
+    expect(job.payload?.watcher?.prompt).toContain('### device-runbook');
+    expect(job.payload?.watcher?.prompt).toContain('Follow the frozen v1 runbook.');
+    expect(job.payload?.watcher?.prompt).not.toContain('EDITED-AFTER-QUEUE');
   });
 });

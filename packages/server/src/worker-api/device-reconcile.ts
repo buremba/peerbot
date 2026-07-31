@@ -20,7 +20,7 @@ import {
 } from '../utils/connector-catalog';
 import { extractConnectorMetadata, type ConnectorMetadata } from '../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-install';
-import { ensureUniqueConnectionSlug } from '../utils/connections';
+import { ensureUniqueConnectionSlug, isConnectionSlugUniqueViolation } from '../utils/connections';
 import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
@@ -55,6 +55,7 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
+  requiredCapability: string,
   source?: { metadata: ConnectorMetadata; sourcePath: string; manifestHash: string }
 ): Promise<void> {
   const sql = getDb();
@@ -63,7 +64,42 @@ async function ensureDeviceConnectorWired(
   // (the WHERE matches nothing when the pin is already a valid fresh device), and
   // runs even on the fast path so a stale pin doesn't silently strand the feeds.
   const reconcilePin = async (db: typeof sql, connectionId: number) => {
-    const target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    let target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    // `idx_connections_org_connector_device_live` is UNIQUE on
+    // (organization_id, connector_key, device_worker_id) for live rows, and an
+    // org legitimately holds one connection PER DEVICE (same shape as
+    // `idx_connections_org_connector_account_live` for OAuth accounts). So the
+    // row we were handed is not necessarily the one that owns `target`: retiring
+    // a Mac leaves its connection pinned to the stale device while the new Mac's
+    // connection holds the only fresh one, and pinning the former to the latter's
+    // device violates the index, aborts the whole wire transaction, and retries
+    // forever (~8/min in prod for apple.computer_use).
+    //
+    // Never steal a pin another live connection holds — the same guard
+    // `resolveOnlineChromeConnection` already carries for this index (see
+    // `findOwnerOf` in dispatch-chrome-action.ts, where it used to 500 the
+    // dispatcher). Fall back to NULL rather than skipping the UPDATE: NULL still
+    // clears the dead pin (a connection pinned to a vanished device is claimable
+    // by nobody, while an unpinned one is claimable by any polling device), so
+    // the documented stale-pin repair survives.
+    if (target) {
+      const owner = (await db`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${connectorKey}
+          AND device_worker_id = ${target}::uuid
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+      const ownerId = owner[0]?.id;
+      if (ownerId != null && Number(ownerId) !== connectionId) {
+        logger.warn(
+          { userId, connectorKey, connectionId, ownerConnectionId: ownerId, deviceWorkerId: target },
+          '[device-connectors] Device already pinned to another connection — unpinning instead'
+        );
+        target = null;
+      }
+    }
     // Compare via text on both sides — passing a `pgTextArray(...)` literal
     // through a `::uuid[]` cast trips a postgres "malformed array literal"
     // failure under the extended-protocol path postgres.js uses (the bound
@@ -77,6 +113,54 @@ async function ensureDeviceConnectorWired(
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
         AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
+    `;
+    // The statement above repairs only the row we were handed, but an org holds
+    // one connection PER DEVICE and the fast path resolves just one of them
+    // (`GROUP BY … LIMIT 1`, no ORDER BY). When it returns the row that is
+    // already correctly pinned, the UPDATE no-ops — and a sibling left pinned to
+    // a device that has dropped out is never revisited, so it stays bound to a
+    // worker that will never poll again. Sweep every live row instead: a pin
+    // outside the fresh set is stale by definition, and NULL is strictly better
+    // than a dead pin (unpinned is claimable by any polling device; a vanished
+    // device is claimable by nobody).
+    //
+    // Safe for the multi-fresh case — pins INSIDE the fresh set are deliberate
+    // and untouched — and the empty-fleet case never reaches here, because
+    // `reconcileDeviceCapabilities` only calls this connector's wire pass when
+    // `matchingDeviceIds.length > 0` (an offline fleet routes to
+    // `pauseStaleDeviceFeeds`, which must not unpin anything).
+    // Re-check freshness against `device_workers` AT MUTATION TIME rather than
+    // trusting `matchingDeviceIds`, which is snapshotted before the advisory
+    // lock is taken (see `reconcileDeviceCapabilities`). A concurrent poll on
+    // another replica can refresh a device's heartbeat between this pass's
+    // snapshot and its commit; sweeping from the stale list would unpin a
+    // device that is live again. The NOT EXISTS makes the sweep self-verifying:
+    // a row is cleared only if its worker is genuinely absent, stale, or no
+    // longer advertising the capability as of this statement.
+    await db`
+      UPDATE connections c
+      SET device_worker_id = NULL, updated_at = NOW()
+      WHERE c.organization_id = ${organizationId}
+        AND c.connector_key = ${connectorKey}
+        AND c.deleted_at IS NULL
+        -- The device-connector identity: auto-wire's own INSERT writes NULL to
+        -- BOTH profile columns, so anything with either set is credential-backed
+        -- and user-created. Unpinning one would hand it to any capable device
+        -- while the poll withholds credentials from unpinned connections —
+        -- breaking a connection this pass never created.
+        AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
+        AND c.device_worker_id IS NOT NULL
+        -- Deliberately NOT also gated on matchingDeviceIds: ANDing the stale
+        -- snapshot in would let a device that has since dropped the capability
+        -- survive, by short-circuiting this check.
+        AND NOT EXISTS (
+          SELECT 1 FROM device_workers dw
+          WHERE dw.id = c.device_worker_id
+            AND dw.user_id = ${userId}
+            AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+            AND dw.capabilities @> ${db.json([requiredCapability])}
+        )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
     // connection is not stuck as active + red "Device was removed".
@@ -138,6 +222,12 @@ async function ensureDeviceConnectorWired(
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
        AND c.auth_profile_id IS NULL
+       -- Auto-wire's own INSERT writes NULL to BOTH profile columns, so a row
+       -- with either one set is credential-backed and user-created. Matching on
+       -- auth_profile_id alone let the fast path adopt an app-auth-backed
+       -- connection and re-pin it — the poll withholds credentials from
+       -- unpinned connections, so that breaks a connection this pass never made.
+       AND c.app_auth_profile_id IS NULL
        AND c.deleted_at IS NULL
       LEFT JOIN feeds f
         ON f.connection_id = c.id
@@ -212,7 +302,16 @@ async function ensureDeviceConnectorWired(
           }
         });
       } else {
-        await reconcilePin(sql, readyConnectionId);
+        // Same advisory lock as the `source` branch above: reconcilePin's owner
+        // check is read-then-write, so two replicas polling concurrently could
+        // both observe "nobody owns this device" and race into the unique index.
+        // (No bundled device connectors ship today, so this branch is currently
+        // unreachable — keep it serialized anyway rather than leave the race
+        // armed for the first one that does.)
+        await sql.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+          await reconcilePin(tx, readyConnectionId);
+        });
       }
       return;
     }
@@ -248,7 +347,7 @@ async function ensureDeviceConnectorWired(
     }
 
     let connectionId: number | undefined;
-    await sql.begin(async (tx) => {
+    const wireOnce = () => sql.begin(async (tx) => {
       // Serialize per (user, connector): two concurrent polls / two devices
       // both reach here, but only one holds the lock at a time, so the
       // existence-check-then-insert below is atomic.
@@ -286,6 +385,7 @@ async function ensureDeviceConnectorWired(
         WHERE organization_id = ${organizationId}
           AND connector_key = ${connectorKey}
           AND auth_profile_id IS NULL
+          AND app_auth_profile_id IS NULL
           AND deleted_at IS NULL
         ORDER BY id ASC
         LIMIT 1
@@ -302,11 +402,22 @@ async function ensureDeviceConnectorWired(
       }
       if (!connectionId) {
         // Stable slug for `lobu apply` diffing — same generation path as
-        // manage_connections. No insert-retry here: this whole block runs
-        // under a `pg_advisory_xact_lock` keyed on (userId, connectorKey) plus
-        // the existence check above, so the slug can't be raced for this
-        // (org, connector, user) tuple — and a unique violation would abort
-        // the surrounding transaction, making a retry pointless anyway.
+        // manage_connections.
+        //
+        // The advisory lock above does NOT make this race-free, contrary to
+        // what this comment used to claim. The lock is keyed on
+        // (userId, connectorKey), but the slug derives from the connector's
+        // DISPLAY NAME and uniqueness is enforced per-ORG by
+        // `connections_org_slug_unique`. Two different connector keys take two
+        // different locks and run concurrently, so two connectors sharing a
+        // display name compute the same free slug and the loser's INSERT trips
+        // the constraint. Reproduced: see
+        // device-reconcile-slug-race.test.ts. Lock scope and
+        // uniqueness scope simply are not the same scope.
+        //
+        // The retry lives OUTSIDE this transaction (at the wireOnce call
+        // site below), because an aborted transaction cannot be continued —
+        // which is the one thing the old comment got right.
         const slug = await ensureUniqueConnectionSlug({
           organizationId,
           connectorKey,
@@ -366,6 +477,27 @@ async function ensureDeviceConnectorWired(
       await reconcilePin(tx, connectionId);
     });
 
+    try {
+      await wireOnce();
+    } catch (err) {
+      // Retry ONCE, and only for the slug collision described above. The
+      // retry recomputes the slug against a tree that now contains the
+      // winner's committed row, so it converges on `<base>-2` rather than
+      // repeating the same losing bet.
+      //
+      // Bounded at one attempt deliberately. The next poll is the real retry
+      // budget for this reconcile — it already heals the collision — so this
+      // exists to avoid a spurious error-level log and a poll-cycle delay,
+      // not to guarantee convergence here. Anything unbounded would be a
+      // second retry budget layered on the existing one.
+      if (!isConnectionSlugUniqueViolation(err)) throw err;
+      logger.info(
+        { userId, connectorKey, organizationId },
+        '[device-connectors] Connection slug raced a concurrent wire; retrying once'
+      );
+      await wireOnce();
+    }
+
     if (connectionId) {
       logger.info(
         { userId, connectorKey, organizationId, connectionId },
@@ -400,6 +532,7 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
         AND c.connector_key = ${connectorKey}
         AND c.created_by = ${userId}
         AND c.auth_profile_id IS NULL
+        AND c.app_auth_profile_id IS NULL
         AND c.deleted_at IS NULL
         AND f.status = 'active'
         AND f.deleted_at IS NULL
@@ -643,6 +776,7 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
             dc.key,
             dc.feedKeys,
             matchingDeviceIds,
+            dc.requiredCapability,
             'source' in dc && dc.source === 'device-manifest'
               ? { metadata: dc.metadata, sourcePath: dc.sourcePath, manifestHash: dc.manifestHash }
               : undefined

@@ -13,6 +13,8 @@ import {
 } from '../../authz/entity-policy';
 import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../db/client';
+import { BEHAVIOR_RUN_SOURCE } from '../../gateway/behavior-run-session';
+import { parseBehaviorRunConversationId } from '../../gateway/permissions/behavior-run-intent';
 import type { Env } from '../../index';
 import { ToolUserError } from '../../utils/errors';
 import {
@@ -41,6 +43,45 @@ import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationEr
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleBehaviorMode } from './behavior-mode';
 import { withValidatedArgs } from '../validate-args';
+
+/**
+ * Connection-visibility principal for Behavior knowledge.read.
+ *
+ * - Interactive (human MCP / ordinary agent chat): the verified caller.
+ * - Signed Behavior run (`BEHAVIOR_RUN_SOURCE`): null → Behavior.created_by,
+ *   but only when the verified run identity matches `requestedBehaviorId`.
+ *   Fails closed on mismatch so a worker cannot request another Behavior and
+ *   inherit that author's private oauth_account feeds.
+ */
+export function resolveBehaviorVisibilityUserId(
+  ctx: ToolContext,
+  requestedBehaviorId: number
+): string | null {
+  if (ctx.sourceContext?.source !== BEHAVIOR_RUN_SOURCE) {
+    return ctx.userId;
+  }
+
+  const fromConversation = ctx.sourceContext.conversationId
+    ? parseBehaviorRunConversationId(ctx.sourceContext.conversationId)
+    : null;
+  const verifiedBehaviorId =
+    ctx.actingWatcherId != null
+      ? Number(ctx.actingWatcherId)
+      : (fromConversation?.behaviorId ?? null);
+
+  if (
+    verifiedBehaviorId == null ||
+    !Number.isSafeInteger(verifiedBehaviorId) ||
+    verifiedBehaviorId !== Number(requestedBehaviorId)
+  ) {
+    throw new ToolUserError(
+      'A Behavior run may only call knowledge.read for its own behavior_id.',
+      403
+    );
+  }
+
+  return null;
+}
 
 /**
  * Stamp `metadata.pending_proposal_count` onto every `change_set` content item,
@@ -184,7 +225,12 @@ async function getContentImpl(
     if (args.behavior_id) {
       return await handleBehaviorMode(args, env, sql, {
         organizationId: ctx.organizationId,
-        sourceConversationId: ctx.sourceContext?.conversationId ?? null,
+        // Interactive reads keep the caller's private-connection scope.
+        // Signed Behavior runs act for the durable Behavior *author*, but only
+        // when the verified run identity matches the requested behavior_id —
+        // otherwise a same-org worker could pass another Behavior's id and
+        // inherit that author's private feeds.
+        userId: resolveBehaviorVisibilityUserId(ctx, args.behavior_id),
       });
     }
 

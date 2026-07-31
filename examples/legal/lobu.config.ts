@@ -2,6 +2,7 @@ import {
   connectorFromFile,
   defineAgent,
   defineConfig,
+  defineSkill,
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
@@ -9,8 +10,15 @@ import {
 } from "@lobu/cli/config";
 import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
 
+const contractReviewTrackerSkill = defineSkill({
+  name: "contract-review-tracker",
+  content:
+    "Review active contracts for approaching deadlines, unsigned agreements, and unresolved risk items. Flag any clauses that still need counsel approval.\n",
+});
+
 const legalReview = defineAgent({
   id: "legal-review",
+  skills: [contractReviewTrackerSkill],
   name: "legal-review",
   description:
     "Review contracts, summarize risk, and surface missing protections",
@@ -179,8 +187,7 @@ const contractReviewTracker = defineBehavior({
   minCooldownSeconds: 1800,
   reactionsGuidance:
     "For any contract with `status: needs_counsel`, route an entity-scoped event\nto the assigned reviewer. For contracts >90 days unsigned, escalate to the\ncounterparty owner; never auto-resolve risk items.\n",
-  prompt:
-    "Review active contracts for approaching deadlines, unsigned agreements, and unresolved risk items. Flag any clauses that still need counsel approval.\n",
+  skills: ["contract-review-tracker"],
 });
 
 export default defineConfig({

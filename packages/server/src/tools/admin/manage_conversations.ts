@@ -106,7 +106,7 @@ async function handleList(
   // conversation; a plain member sees only their own owned threads. (Deriving
   // scope from `ctx.userId` alone inverted this — an admin was limited to their
   // own rows while a null-userId caller saw all.)
-  const scope = isAdminOrOwnerRole(ctx.memberRole) ? "all" : "user";
+  const scope = isAdminOrOwnerRole(ctx.memberRole) ? "admin" : "user";
   const conversations = await listConversations({
     organizationId: ctx.organizationId,
     agentId: args.agent_id,

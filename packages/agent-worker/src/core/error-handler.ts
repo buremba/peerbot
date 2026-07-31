@@ -53,9 +53,9 @@ const SESSION_TIMEOUT_MESSAGE = "SESSION_TIMEOUT";
  * rather than re-implementing its own regex. Adding a failure mode = one pattern
  * here + one entry in `AGENT_ERRORS`.
  *
- * The code selects only the CTA link. The user-facing TEXT for provider errors
- * is the provider's own message (relayed verbatim); we do NOT parse or reword
- * it — no reset-time extraction, no provider-label interpolation.
+ * Provider errors reach the gateway unchanged with available provider/model
+ * context. The renderer uses that context to label the source and unwrap the
+ * common JSON message envelope without rewording the provider's sentence.
  */
 export function classifyError(error: unknown): AgentErrorCode | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -68,12 +68,35 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   // Exhausted", generic rate-limit/quota phrasings, and a bare 429. Placed
   // before PROVIDER_AUTH because a rate-limited request can also echo auth-ish
   // words; the quota shape is the more specific, more actionable signal.
+  // Billing/credit exhaustion belongs to the same actionable class as a quota
+  // trip: the key is VALID, the account just can't spend. Anthropic returns it
+  // as a 400 `invalid_request_error` ("Your credit balance is too low…"), which
+  // carries none of the quota vocabulary below — so without this clause it fell
+  // through to `undefined` and surfaced as a raw `💥 Worker crashed: 400 {…}`
+  // JSON blob in the user's chat.
+  if (
+    /credit balance is too low|insufficient (?:credits?|balance|funds|quota)\b|billing_hard_limit_reached|payment required|exceeded your current quota|out of credits?\b/i.test(
+      message
+    )
+  )
+    return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
+
   if (
     /weekly\/monthly limit exhausted|limit exhausted|rate[-\s]?limit|quota (?:exceeded|exhausted)|too many requests|\b429\b|resource_exhausted/i.test(
       message
     )
   )
     return AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED;
+
+  // Gemini can end a turn with this provider-side tool-call rejection instead
+  // of a usable stop reason. Keep the match specific: other finish reasons can
+  // describe different failures and must not inherit this remediation text.
+  if (
+    /^Provider finish_reason:\s*function_call_filter:\s*MALFORMED_FUNCTION_CALL\b/i.test(
+      message
+    )
+  )
+    return AgentErrorCode.PROVIDER_TOOL_CALL_FAILED;
 
   if (
     message.includes("No model configured") ||
@@ -98,6 +121,19 @@ export function classifyError(error: unknown): AgentErrorCode | undefined {
   // PROVIDER_* Sentry alert.
   if (
     /no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message)
+  )
+    return AgentErrorCode.PROVIDER_AUTH;
+  // The provider accepted the credential but refuses to USE it: Anthropic 403s
+  // subscription-OAuth inference for orgs that disallow it
+  // (`oauth_not_allowed_for_organization`). None of the wording above matches —
+  // there is no "api key" or "authentication failed" — so it surfaced as a raw
+  // `Worker crashed: 403 {…}` blob with no CTA. Seen live on Telegram right
+  // after connecting Claude by subscription sign-in. The credential is what the
+  // user must change, so this is the auth class: "Reconnect provider".
+  if (
+    /permission_error|oauth[_\s]not[_\s]allowed|not allowed for this organization/i.test(
+      message
+    )
   )
     return AgentErrorCode.PROVIDER_AUTH;
   // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /

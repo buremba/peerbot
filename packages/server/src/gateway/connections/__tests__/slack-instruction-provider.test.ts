@@ -1,9 +1,9 @@
 /**
  * R7 BLOCK #1 layer (b): SlackInstructionProvider must NOT leak another tenant's
- * Slack identity. Its `listConnections` read is agent-scoped and — without an
- * ambient org — would return ANOTHER org's newest Slack connection for a shared
- * agent id (foreign botUsername/botUserId). So:
- *   - orgless context ⇒ "" (no identity without an org);
+ * Slack identity. Identity now resolves from the signed `connectionId` rather
+ * than an agent-scoped connection listing, so:
+ *   - orgless/connection-less context ⇒ participation framing only, and no
+ *     connection read at all (nothing to leak);
  *   - org-present ⇒ the read runs INSIDE the token org (orgContext.run).
  */
 
@@ -16,6 +16,7 @@ function ctx(overrides: Partial<InstructionContext>): InstructionContext {
   return {
     userId: "u1",
     agentId: "lobu-builder",
+    connectionId: "conn-1",
     sessionKey: "u1",
     workingDirectory: "/workspace",
     availableProjects: [],
@@ -24,36 +25,36 @@ function ctx(overrides: Partial<InstructionContext>): InstructionContext {
 }
 
 describe("SlackInstructionProvider — cross-tenant guard", () => {
-  test("orgless context: returns '' (no Slack identity leaked) and does NOT read connections", async () => {
-    let listCalled = false;
+  test("orgless context: leaks no Slack identity and does NOT read connections", async () => {
+    let getCalled = false;
     const manager = {
-      listConnections: async () => {
-        listCalled = true;
-        return [
-          { metadata: { botUsername: "foreign-bot", botUserId: "UFOREIGN" } },
-        ];
+      getConnection: async () => {
+        getCalled = true;
+        return {
+          metadata: { botUsername: "foreign-bot", botUserId: "UFOREIGN" },
+        };
       },
     } as never;
     const provider = new SlackInstructionProvider(manager);
 
     const result = await provider.getInstructions(
-      ctx({ organizationId: undefined })
+      ctx({ organizationId: undefined, connectionId: undefined })
     );
 
-    expect(result).toBe("");
     // No connection read happened at all — nothing to leak.
-    expect(listCalled).toBe(false);
+    expect(getCalled).toBe(false);
+    expect(result).not.toContain("foreign");
+    // The participation framing is unconditional; only the handle is gated.
+    expect(result).toContain("participant in this conversation");
   });
 
   test("org-present: reads connections INSIDE the token org and returns the identity", async () => {
     let seenOrg: string | undefined;
     const manager = {
-      listConnections: async (_filter: unknown) => {
+      getConnection: async (_connectionId: string) => {
         // Capture the AMBIENT org the read runs under (must be the token org).
         seenOrg = orgContext.getStore()?.organizationId;
-        return [
-          { metadata: { botUsername: "acme-bot", botUserId: "UACME" } },
-        ];
+        return { metadata: { botUsername: "acme-bot", botUserId: "UACME" } };
       },
     } as never;
     const provider = new SlackInstructionProvider(manager);

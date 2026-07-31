@@ -393,9 +393,10 @@ function emitAgent(
     });
   }
 
-  // Local skills → skills/<name>/SKILL.md (with frontmatter for net/nix/mcp),
-  // referenced explicitly via `skillFromFile` so the apply loader picks them up
-  // (there is no directory auto-discovery). System/runtime skills are skipped.
+  // Local skills → skills/<name>/SKILL.md (frontmatter is name/description
+  // only — skills are instruction text), referenced explicitly via
+  // `skillFromFile` so the apply loader picks them up (there is no directory
+  // auto-discovery). System/runtime skills are skipped.
   const skillRefs: string[] = [];
   for (const skill of settings?.skillsConfig?.skills ?? []) {
     if (skill.system) continue;
@@ -420,11 +421,6 @@ function emitSkillFile(
 ): string {
   const fm: string[] = [`name: ${skill.name}`];
   if (skill.description) fm.push(`description: ${skill.description}`);
-  if (skill.nixPackages?.length) {
-    fm.push(
-      `nixPackages: [${skill.nixPackages.map((p) => str(p)).join(", ")}]`
-    );
-  }
   const body = skill.content ?? "";
   return `---\n${fm.join("\n")}\n---\n${body}\n`;
 }
@@ -496,6 +492,23 @@ function emitRelationshipType(
   };
 }
 
+/**
+ * Instruction-presence rule, mirrored from `lobu apply` validation: only an
+ * event-turn-only Behavior may omit both prompt and skills (the built-in
+ * default applies).
+ */
+function behaviorRequiresInstructions(
+  triggers: RemoteBehavior["triggers"]
+): boolean {
+  const list = triggers ?? [];
+  if (list.length === 0) return true;
+  return list.some(
+    (trigger) =>
+      trigger.kind === "schedule" ||
+      (trigger.kind === "event" && trigger.execution === "window")
+  );
+}
+
 function emitBehavior(
   w: RemoteBehavior,
   reactionScript: string | null,
@@ -525,7 +538,14 @@ function emitBehavior(
     });
     fields.push(`triggers: ${emitValue(triggers, 1)}`);
   }
-  fields.push(`prompt: ${str(w.prompt ?? "")}`);
+  // Emit the author-facing prompt verbatim and preserve the pinned skill names.
+  // The generated agent library carries its CURRENT bodies; generateProject
+  // warns when those differ from this version's snapshots because the next
+  // apply will then publish an explicit skill upgrade.
+  if (w.prompt?.trim()) fields.push(`prompt: ${str(w.prompt)}`);
+  if (w.skills?.length) {
+    fields.push(`skills: [${w.skills.map((s) => str(s.name)).join(", ")}]`);
+  }
   // A watcher's output schema is owned by its entity type (keying_config.entityType)
   // or falls back to the worker's free-form `{ summary }` — never inline. Emit
   // `keyingConfig` (the entity connection) only.
@@ -926,6 +946,54 @@ function generateProject(
   const minter = new IdentMinter();
   const files: Array<{ relPath: string; body: string }> = [];
   const warnings: string[] = [];
+
+  // Prompt text round-trips directly. Skill references resolve through the
+  // generated agent library, whose bodies are the library's current state, not
+  // necessarily the older snapshots pinned on each Behavior version. Surface
+  // that drift honestly: the generated config is an upgrade when bodies differ.
+  const agentsById = new Map(
+    state.agents.map(({ agent, settings }) => [agent.agentId, settings])
+  );
+  for (const { watcher } of state.watchers) {
+    if (
+      !watcher.prompt?.trim() &&
+      !watcher.skills?.length &&
+      behaviorRequiresInstructions(watcher.triggers)
+    ) {
+      warnings.push(
+        `Behavior "${watcher.slug}" has no stored instructions but is not event-turn-only — give it a prompt or attach at least one skill before the next \`lobu apply\`.`
+      );
+    }
+    const library =
+      agentsById.get(watcher.agent_id ?? "")?.skillsConfig?.skills ?? [];
+    for (const snapshot of watcher.skills ?? []) {
+      const current = library.find(
+        (skill) => !skill.system && skill.name === snapshot.name
+      );
+      if (!current) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${watcher.agent_id ?? ""}"'s current library — restore it or remove the Behavior reference before \`lobu apply\`.`
+        );
+        continue;
+      }
+      if (!current.content?.trim()) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins skill "${snapshot.name}", but its current agent-library body is empty — restore the body or remove the Behavior reference before \`lobu apply\`.`
+        );
+        continue;
+      }
+      if (current.enabled === false) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins disabled skill "${snapshot.name}" — the generated config declares it as enabled, so the next \`lobu apply\` will re-enable it and publish the current body.`
+        );
+      }
+      if (current.content.trim() !== snapshot.content.trim()) {
+        warnings.push(
+          `Behavior "${watcher.slug}" pins an older body of skill "${snapshot.name}" — the generated config uses the agent library's current body, so the next \`lobu apply\` will publish that upgrade.`
+        );
+      }
+    }
+  }
 
   // Agents first (watchers reference their handles).
   const agentHandles = new Map<string, string>();

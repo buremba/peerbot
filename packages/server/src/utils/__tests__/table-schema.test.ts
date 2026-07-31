@@ -2,6 +2,7 @@ import { describe, expect, inject, it } from 'vitest';
 import { validateAndScopeQuery } from '../execute-data-sources';
 import {
   buildColumnList,
+  physicalTableFor,
   QUERYABLE_SCHEMA,
   QUERYABLE_TABLE_NAMES,
   SAFE_COLUMN_DEFS,
@@ -14,9 +15,11 @@ describe('QUERYABLE_TABLE_NAMES', () => {
       'entities',
       'events',
       'connections',
-      'watchers',
+      // Agent-facing relation names: the engine's `watchers` /
+      // `watcher_versions` are exposed as Behavior vocabulary.
+      'behaviors',
       'event_classifications',
-      'watcher_versions',
+      'behavior_versions',
       'oauth_clients',
       'oauth_tokens',
       'user',
@@ -71,14 +74,14 @@ describe('SAFE_COLUMN_DEFS', () => {
     expect(cols).not.toContain('"content_tsv"');
   });
 
-  it('should emit direct columns for watcher_versions', () => {
-    const cols = colList('watcher_versions');
+  it('should emit direct columns for behavior_versions', () => {
+    const cols = colList('behavior_versions');
     expect(cols).toContain('"prompt"');
     expect(cols).toContain('"classifiers"');
   });
 
   it('should prefix columns with alias', () => {
-    const defs = SAFE_COLUMN_DEFS.get('watcher_versions')!;
+    const defs = SAFE_COLUMN_DEFS.get('behavior_versions')!;
     const cols = buildColumnList(defs, 'wv');
     expect(cols).toContain('wv."prompt"');
     expect(cols).toContain('wv."id"');
@@ -134,8 +137,17 @@ describe('validateAndScopeQuery', () => {
 
 /**
  * Schema drift detection — runs whenever the suite has a Postgres backend.
- * Ensures every real column in queryable tables is listed in QUERYABLE_SCHEMA
- * so the polyglot-sql validator doesn't reject valid JOINs.
+ *
+ * BIDIRECTIONAL, and it has to be. The original block only checked DB → schema
+ * ("is every real column listed?"). The opposite direction is the one that
+ * takes a relation down entirely: `buildColumnList` emits an EXPLICIT
+ * projection into the generated CTE, so a schema column that does not exist in
+ * the database is injected into every query against that relation — including
+ * `SELECT 1 AS one FROM behavior_versions`, which references no column at all.
+ * `behavior_versions` listed `sources` (a `watchers` column that has never
+ * existed on `watcher_versions`) and was therefore 100% unqueryable in prod,
+ * with an error naming a column no caller ever wrote, while this gate stayed
+ * green. A one-directional drift check is a half gate.
  *
  * Gating note: the previous `describe.skipIf(!process.env.DATABASE_URL)` was
  * evaluated at module load. In the embedded-PG path the URL is set by
@@ -154,7 +166,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // flip makes the view `WHERE superseded_by IS NULL`, so through the view
     // the column is always NULL. Lineage queries belong on the raw table.
     events: new Set(['superseded_by']),
-    connections: new Set(['credentials', 'unhealthy_alerted_at']),
+    connections: new Set(['credentials']),
     // Large per-connector JSONB blobs — too big and structure-dependent to expose
     // via raw SQL. Callers should hit the typed connector handler instead.
     connector_definitions: new Set([
@@ -162,12 +174,91 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'api_config',
       'openapi_config',
       'default_connection_config',
+      // Retired with the connector repair-agent subsystem. Schema exposure is
+      // removed ahead of the two-phase column drop, so the physical column
+      // outlives its QUERYABLE_SCHEMA entry until the phase-2 migration.
+      'default_repair_agent_id',
     ]),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
     oauth_tokens: new Set(['token_hash']),
-    feeds: new Set(['checkpoint']),
+    // repair_*/last_repair_*: same retired repair-agent subsystem, awaiting the
+    // phase-2 DROP COLUMN migration.
+    feeds: new Set([
+      'checkpoint',
+      'repair_agent_id',
+      'repair_thread_id',
+      'repair_attempt_count',
+      'last_repair_at',
+      'last_repair_post_hash',
+    ]),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
   };
+
+  /**
+   * Schema columns that legitimately have no physical column of that name on
+   * the backing table, because the CTE DERIVES them. Keep this list tiny: every
+   * entry is a column the reverse check can no longer protect.
+   */
+  const DERIVED_COLUMNS: Record<string, Set<string>> = {
+    // entities CTE JOINs entity_types and aliases et.slug AS entity_type.
+    entities: new Set(['entity_type']),
+  };
+
+  /** relation name → physical column set, read once per drift test. */
+  async function loadDbColumns(): Promise<Map<string, Set<string>>> {
+    const { getDb, pgTextArray } = await import('../../db/client');
+    const sql = getDb();
+
+    // Query by PHYSICAL table: an exposed relation may be renamed for the
+    // agent-facing surface (behaviors → watchers). Looking up the relation name
+    // in information_schema would find nothing and silently skip the table —
+    // exactly the "guard skips its own surface" failure mode.
+    const physicalNames = QUERYABLE_SCHEMA.tables.map((t) => physicalTableFor(t.name));
+
+    const rows = await sql`
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = ANY(${pgTextArray(physicalNames)}::text[])
+      ORDER BY table_name, ordinal_position
+    `;
+
+    const byPhysical = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const table = row.table_name as string;
+      if (!byPhysical.has(table)) byPhysical.set(table, new Set());
+      byPhysical.get(table)!.add(row.column_name as string);
+    }
+
+    const byRelation = new Map<string, Set<string>>();
+    for (const t of QUERYABLE_SCHEMA.tables) {
+      const physical = byPhysical.get(physicalTableFor(t.name));
+      if (physical) byRelation.set(t.name, physical);
+    }
+    return byRelation;
+  }
+
+  it('resolves every exposed relation to a real physical table', async (ctx) => {
+    const databaseUrl = inject('databaseUrl');
+    if (!databaseUrl) {
+      ctx.skip();
+      return;
+    }
+    process.env.DATABASE_URL = databaseUrl;
+
+    // A relation that resolves to nothing means both drift directions silently
+    // pass for it. Assert coverage explicitly rather than letting a `continue`
+    // skip it.
+    const byRelation = await loadDbColumns();
+    const unresolved = QUERYABLE_SCHEMA.tables
+      .map((t) => t.name)
+      .filter((name) => !byRelation.has(name));
+
+    expect(
+      unresolved,
+      `Exposed relations with no backing table/view:\n  ${unresolved.join('\n  ')}`
+    ).toEqual([]);
+  });
 
   it('should have every DB column listed in the schema (or intentionally omitted)', async (ctx) => {
     const databaseUrl = inject('databaseUrl');
@@ -180,42 +271,55 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // global-setup, independent of env-propagation timing into this fork.
     process.env.DATABASE_URL = databaseUrl;
 
-    const { getDb, pgTextArray } = await import('../../db/client');
-    const sql = getDb();
-
-    const tableNames = QUERYABLE_SCHEMA.tables.map((t) => t.name);
-
-    const dbColumns = await sql`
-      SELECT table_name, column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = ANY(${pgTextArray(tableNames)}::text[])
-      ORDER BY table_name, ordinal_position
-    `;
-
-    const schemaColumnsByTable = new Map<string, Set<string>>();
-    for (const t of QUERYABLE_SCHEMA.tables) {
-      schemaColumnsByTable.set(t.name, new Set(t.columns.map((c) => c.name)));
-    }
+    const byRelation = await loadDbColumns();
 
     const missing: string[] = [];
-    for (const row of dbColumns) {
-      const table = row.table_name as string;
-      const column = row.column_name as string;
-      const schemaCols = schemaColumnsByTable.get(table);
-      if (!schemaCols) continue;
-
-      const omitted = INTENTIONALLY_OMITTED[table];
-      if (omitted?.has(column)) continue;
-
-      if (!schemaCols.has(column)) {
-        missing.push(`${table}.${column}`);
+    for (const t of QUERYABLE_SCHEMA.tables) {
+      const dbCols = byRelation.get(t.name);
+      if (!dbCols) continue; // asserted non-empty by the coverage test above
+      const schemaCols = new Set(t.columns.map((c) => c.name));
+      const omitted = INTENTIONALLY_OMITTED[t.name];
+      for (const column of dbCols) {
+        if (omitted?.has(column)) continue;
+        if (!schemaCols.has(column)) missing.push(`${t.name}.${column}`);
       }
     }
 
     expect(missing, `DB columns missing from QUERYABLE_SCHEMA:\n  ${missing.join('\n  ')}`).toEqual(
       []
     );
+  });
+
+  it('should not list a schema column the physical table does not have', async (ctx) => {
+    const databaseUrl = inject('databaseUrl');
+    if (!databaseUrl) {
+      ctx.skip();
+      return;
+    }
+    process.env.DATABASE_URL = databaseUrl;
+
+    // The direction that was missing. A phantom column is injected into the
+    // generated CTE's explicit projection, so it does not degrade one query —
+    // it breaks EVERY query against the relation. This is what let
+    // `behavior_versions.sources` reach prod.
+    const byRelation = await loadDbColumns();
+
+    const phantom: string[] = [];
+    for (const t of QUERYABLE_SCHEMA.tables) {
+      const dbCols = byRelation.get(t.name);
+      if (!dbCols) continue; // asserted non-empty by the coverage test above
+      const derived = DERIVED_COLUMNS[t.name];
+      for (const c of t.columns) {
+        if (derived?.has(c.name)) continue;
+        if (!dbCols.has(c.name)) phantom.push(`${t.name}.${c.name}`);
+      }
+    }
+
+    expect(
+      phantom,
+      `QUERYABLE_SCHEMA columns with no physical column (every query against ` +
+        `these relations fails):\n  ${phantom.join('\n  ')}`
+    ).toEqual([]);
   });
 
   it('should execute graph CTEs with local and public relationship types only', async (ctx) => {

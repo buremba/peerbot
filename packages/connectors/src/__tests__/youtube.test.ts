@@ -364,3 +364,291 @@ describe('YouTubeConnector actions', () => {
     expect(result.error).toMatch(/requires OAuth/i);
   });
 });
+
+describe('YouTubeConnector stale page-token recovery', () => {
+  /**
+   * Serves search.list. The first request is rejected with `rejection`; every
+   * later request succeeds. Records each request's pageToken so the test can
+   * assert the dead cursor was dropped rather than replayed forever.
+   */
+  function searchHttp(rejection: { status: number; body: string }) {
+    const pageTokens: Array<string | null> = [];
+    let call = 0;
+    return {
+      pageTokens,
+      http: {
+        raw: async (url: string) => {
+          const u = new URL(url);
+          if (u.pathname.endsWith('/search')) {
+            pageTokens.push(u.searchParams.get('pageToken'));
+            call++;
+            if (call === 1) {
+              return {
+                ok: false,
+                status: rejection.status,
+                text: async () => rejection.body,
+                json: async () => JSON.parse(rejection.body),
+              } as unknown as Response;
+            }
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                items: [
+                  {
+                    id: { videoId: 'vid1' },
+                    snippet: { publishedAt: '2026-07-01T10:00:00Z', title: 'Recovered' },
+                  },
+                ],
+              }),
+              text: async () => '',
+            } as unknown as Response;
+          }
+          // videos.list — details for the recovered video.
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              items: [
+                {
+                  id: 'vid1',
+                  snippet: {
+                    publishedAt: '2026-07-01T10:00:00Z',
+                    title: 'Recovered',
+                    channelTitle: 'Chan',
+                    description: '',
+                  },
+                  statistics: { viewCount: '1', likeCount: '0', commentCount: '0' },
+                  contentDetails: { duration: 'PT1M' },
+                },
+              ],
+            }),
+            text: async () => '',
+          } as unknown as Response;
+        },
+      },
+    };
+  }
+
+  const INVALID_PAGE_TOKEN = JSON.stringify({
+    error: {
+      code: 400,
+      message: "Request contains an invalid argument.",
+      errors: [{ reason: 'invalidPageToken' }],
+    },
+  });
+
+  test('a rejected persisted pageToken is dropped and the search restarts from page one', async () => {
+    const connector = new YouTubeConnector();
+    const { http, pageTokens } = searchHttp({ status: 400, body: INVALID_PAGE_TOKEN });
+    connector.http = http;
+
+    const result = await connector.syncSearchVideos(
+      {
+        config: {
+          search_query: 'lobu',
+          max_results: 5,
+          include_transcripts: false,
+          include_comments: false,
+        },
+        credentials: { accessToken: 'tok' },
+        checkpoint: { next_page_token: 'DEAD_TOKEN' },
+      },
+      { accessToken: 'tok' }
+    );
+
+    // Dead cursor tried once, then abandoned for a first-page request.
+    expect(pageTokens[0]).toBe('DEAD_TOKEN');
+    expect(pageTokens[1]).toBeNull();
+    // Recovery actually produced events instead of throwing.
+    expect(result.events.length).toBeGreaterThan(0);
+  });
+
+  test('a quota 403 is not treated as a stale cursor and still throws', async () => {
+    const connector = new YouTubeConnector();
+    const quota = JSON.stringify({
+      error: { code: 403, errors: [{ reason: 'quotaExceeded' }] },
+    });
+    const { http, pageTokens } = searchHttp({ status: 403, body: quota });
+    connector.http = http;
+
+    await expect(
+      connector.syncSearchVideos(
+        {
+          config: { search_query: 'lobu', max_results: 5 },
+          credentials: { accessToken: 'tok' },
+          checkpoint: { next_page_token: 'GOOD' },
+        },
+        { accessToken: 'tok' }
+      )
+    ).rejects.toThrow(/quotaExceeded/);
+
+    // No blind restart was attempted.
+    expect(pageTokens).toHaveLength(1);
+  });
+
+  /**
+   * Serves search.list for a feed whose cursor dies *mid*-pagination: page one
+   * always succeeds and always advertises `DEAD` as its next page, but `DEAD`
+   * is always rejected. This is the shape that turns a naive "restart from page
+   * one" recovery into an infinite loop — the restart re-fetches page one,
+   * which hands the dead cursor straight back to the paginator.
+   */
+  function midPaginationHttp(rejection: { status: number; body: string }) {
+    const pageTokens: Array<string | null> = [];
+    return {
+      pageTokens,
+      http: {
+        raw: async (url: string) => {
+          const u = new URL(url);
+          if (u.pathname.endsWith('/search')) {
+            const token = u.searchParams.get('pageToken');
+            pageTokens.push(token);
+            // Runaway guard: fail loudly instead of hanging until the timeout.
+            if (pageTokens.length > 20) {
+              throw new Error(`runaway pagination: ${JSON.stringify(pageTokens)}`);
+            }
+            if (token === 'DEAD') {
+              return {
+                ok: false,
+                status: rejection.status,
+                text: async () => rejection.body,
+                json: async () => JSON.parse(rejection.body),
+              } as unknown as Response;
+            }
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                nextPageToken: 'DEAD',
+                items: [
+                  {
+                    id: { videoId: 'vid1' },
+                    snippet: { publishedAt: '2026-07-01T10:00:00Z', title: 'Page one' },
+                  },
+                ],
+              }),
+              text: async () => '',
+            } as unknown as Response;
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              items: [
+                {
+                  id: 'vid1',
+                  snippet: {
+                    publishedAt: '2026-07-01T10:00:00Z',
+                    title: 'Page one',
+                    channelTitle: 'Chan',
+                    description: '',
+                  },
+                  statistics: { viewCount: '1', likeCount: '0', commentCount: '0' },
+                  contentDetails: { duration: 'PT1M' },
+                },
+              ],
+            }),
+            text: async () => '',
+          } as unknown as Response;
+        },
+      },
+    };
+  }
+
+  test('a cursor rejected mid-pagination terminates instead of looping back into it', async () => {
+    const connector = new YouTubeConnector();
+    const { http, pageTokens } = midPaginationHttp({ status: 400, body: INVALID_PAGE_TOKEN });
+    connector.http = http;
+
+    const result = await connector.syncSearchVideos(
+      {
+        config: {
+          search_query: 'lobu',
+          max_results: 50,
+          include_transcripts: false,
+          include_comments: false,
+        },
+        credentials: { accessToken: 'tok' },
+        checkpoint: {},
+      },
+      { accessToken: 'tok' }
+    );
+
+    // page one (null) -> DEAD rejected -> restart at page one -> page one hands
+    // back DEAD again, which is already known-dead, so the sync stops.
+    expect(pageTokens).toEqual([null, 'DEAD', null]);
+    expect(result.events.length).toBeGreaterThan(0);
+    // The dead cursor must NOT be persisted, or the next run starts wedged.
+    expect(result.checkpoint.next_page_token).toBeUndefined();
+  });
+
+  test('subscriptions pagination is bounded even when the API never stops paging', async () => {
+    const connector = new YouTubeConnector();
+    // Drop the politeness delay: 200 pages x 200ms would blow the test timeout.
+    connector.RATE_LIMIT_MS = 0;
+    let calls = 0;
+    connector.http = {
+      raw: async () => {
+        calls++;
+        // Runaway guard well above the 200-page ceiling: without maxPages this
+        // endpoint would page forever, since it always advertises a new cursor
+        // and the caller's item budget (5000) is never reached.
+        if (calls > 400) throw new Error(`runaway pagination: ${calls} requests`);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            nextPageToken: `page${calls}`,
+            items: [
+              {
+                id: `sub${calls}`,
+                snippet: {
+                  publishedAt: '2026-01-02T00:00:00Z',
+                  title: `Channel ${calls}`,
+                  resourceId: { kind: 'youtube#channel', channelId: `UC${calls}` },
+                },
+              },
+            ],
+          }),
+          text: async () => '',
+        } as unknown as Response;
+      },
+    };
+
+    const result = await connector.sync({
+      feedKey: 'subscriptions',
+      credentials: { accessToken: 'tok' },
+      config: { max_results: 5000 },
+      checkpoint: {},
+    });
+
+    // Stopped by the page ceiling, not by the item budget.
+    expect(calls).toBe(200);
+    expect(result.events).toHaveLength(200);
+  });
+
+  test('the recovered run persists a checkpoint free of the rejected cursor', async () => {
+    const connector = new YouTubeConnector();
+    const { http } = searchHttp({ status: 400, body: INVALID_PAGE_TOKEN });
+    connector.http = http;
+
+    const result = await connector.syncSearchVideos(
+      {
+        config: {
+          search_query: 'lobu',
+          max_results: 5,
+          include_transcripts: false,
+          include_comments: false,
+        },
+        credentials: { accessToken: 'tok' },
+        checkpoint: { next_page_token: 'DEAD_TOKEN' },
+      },
+      { accessToken: 'tok' }
+    );
+
+    // The restart page carried no nextPageToken, so the stored cursor clears
+    // rather than persisting the rejected one for the next run to choke on.
+    expect(result.checkpoint.next_page_token).toBeUndefined();
+  });
+});

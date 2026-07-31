@@ -4,8 +4,8 @@
  * Verifies that scope=all surfaces, for one agent in one org:
  *   - the requesting user's own WEB threads (platform "web"),
  *   - PLATFORM conversations (e.g. `slack:…`) tagged with the derived platform,
- *   - one WATCHER entry per watcher (platform "watcher", carrying watcherId),
- * sorted newest-first — and that a watcher's per-run snapshot never leaks in as
+ *   - one Behavior entry per Behavior (platform "behavior", carrying behaviorId),
+ * sorted newest-first — and that a Behavior's per-run snapshot never leaks in as
  * its own platform row. Also drives the two read endpoints the feed links to:
  * readConversationMessages (platform, by raw id) and readWatcherRunThreads.
  */
@@ -33,7 +33,10 @@ const AGENT = "thread-list-scope-all-agent";
 const SLACK_CONV = "slack:C123:1781641725.28"; // channel C123 — agent is bound to it
 const SLACK_UNBOUND_CONV = "slack:CSECRET:1781641725.99"; // channel the agent is NOT bound to
 const CSECRET_CONN_RUNTIME_ID = "slackinst-csecret"; // managed connection owning CSECRET, initially no chat-link
+const TELEGRAM_DM_CONV = "telegram:6570514069"; // an unbound DM, gated on org role
+const TELEGRAM_LEGACY_CONV = "telegram:111222333"; // platform row with is_direct NULL (unknown)
 const WATCHER_ID = 990001;
+const ARCHIVED_WATCHER_ID = 990003; // completed a run, then archived
 const OTHER_AGENT = "thread-list-other-agent";
 const OTHER_WATCHER_ID = 990002;
 
@@ -78,12 +81,9 @@ describe("listAgentThreads scope=all", () => {
 		});
 		const sql = getTestDb();
 
-		// A transcript snapshot backs the read endpoints (readConversationMessages,
-		// readWatcherRunThreads) and the watcher derivation. The sidebar LISTING,
-		// however, now reads the `conversations` entity — so a conversation only
-		// appears in listAgentThreads if it ALSO has a conversations row (which the
-		// gateway dual-writes on every turn). insertSnapshot writes both by default;
-		// pass listed=false for the watcher run (stays derived, no entity row).
+		// A transcript snapshot backs the read endpoints (readConversationMessages
+		// and readWatcherRunThreads). Ordinary conversation listing reads the
+		// `conversations` entity, so one appears only when it also has that row.
 		const insertSnapshot = async (
 			conversationId: string,
 			text: string,
@@ -92,6 +92,7 @@ describe("listAgentThreads scope=all", () => {
 				platform: string;
 				kind: "owned" | "platform";
 				userId: string | null;
+				isDirect?: boolean | null;
 			},
 		) => {
 			const [run] = await sql<{ id: number }[]>`
@@ -107,10 +108,10 @@ describe("listAgentThreads scope=all", () => {
 				await sql`
           INSERT INTO conversations
             (organization_id, agent_id, platform, conversation_id,
-             kind, user_id, title, last_activity_at, created_at)
+             kind, user_id, title, is_direct, last_activity_at, created_at)
           VALUES (${org}, ${AGENT}, ${entity.platform},
                   ${conversationId}, ${entity.kind}, ${entity.userId}, ${text},
-                  ${at}, ${at})`;
+                  ${entity.isDirect ?? null}, ${at}, ${at})`;
 			}
 		};
 
@@ -182,6 +183,34 @@ describe("listAgentThreads scope=all", () => {
 				userId: null,
 			},
 		);
+		// A Telegram DM with no chat-link Behavior. The channel fence can only fail
+		// closed on it, so it is listable on the DM rule (owner/admin) or not at
+		// all.
+		await insertSnapshot(
+			TELEGRAM_DM_CONV,
+			"hello from telegram dm",
+			"2026-06-28T04:00:00Z",
+			{
+				platform: "telegram",
+				kind: "platform",
+				userId: "6570514069",
+				isDirect: true,
+			},
+		);
+		// A platform row predating the column: is_direct unknown. Must keep the
+		// old fail-closed behaviour rather than riding in on the DM rule.
+		await insertSnapshot(
+			TELEGRAM_LEGACY_CONV,
+			"legacy row with unknown surface",
+			"2026-06-28T04:30:00Z",
+			{
+				platform: "telegram",
+				kind: "platform",
+				userId: "999",
+				isDirect: null,
+			},
+		);
+
 		// A watcher + one of its run snapshots.
 		await sql`
       INSERT INTO watchers
@@ -220,6 +249,39 @@ describe("listAgentThreads scope=all", () => {
 			   ${watcherRun.id}, ${watcherJsonl}, ${Buffer.byteLength(watcherJsonl)},
 			   'completed', '2026-06-28T00:30:00Z')
 		`;
+
+		// The completed run above stamps the Behavior at the database boundary.
+		// Its sidebar entry is read from that column, not re-derived from the
+		// snapshot on every request.
+
+		// An ARCHIVED Behavior that completed a run is stamped like any other. Its
+		// snapshot rows are permanent — archiving cannot unmake them — which is why
+		// the old query kept it listed. The listing now filters on live `status`, so
+		// it drops out with no lifecycle sync anywhere.
+		await sql`
+      INSERT INTO watchers
+        (id, organization_id, agent_id, created_by, watcher_group_id, name, status, notification_channel, notification_priority, min_cooldown_seconds, created_at, updated_at)
+      VALUES (${ARCHIVED_WATCHER_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Watcher', 'archived', 'notification', 'normal', 0, now(), now())`;
+		const [archivedRun] = await sql<{ id: number }[]>`
+			INSERT INTO runs
+			  (run_type, status, organization_id, watcher_id, approval_status,
+			   run_metadata, created_at, completed_at)
+			VALUES
+			  ('behavior', 'completed', ${org}, ${ARCHIVED_WATCHER_ID}, 'auto',
+			   ${sql.json({ prompt_rendered: "Archived watcher task" })},
+			   '2026-06-28T00:40:00Z', '2026-06-28T00:41:00Z')
+			RETURNING id`;
+		const archivedJsonl = sessionJsonl("archived watcher run output");
+		await sql`
+			INSERT INTO agent_transcript_snapshot
+			  (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl,
+			   byte_size, terminal_status, created_at)
+			VALUES
+			  (${org}, ${AGENT}, ${`${AGENT}_watcher_${ARCHIVED_WATCHER_ID}_run_${archivedRun.id}`},
+			   ${archivedRun.id}, ${archivedJsonl}, ${Buffer.byteLength(archivedJsonl)},
+			   'completed', '2026-06-28T00:41:00Z')
+		`;
+
 		const [approvalRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
 			  (run_type, status, organization_id, watcher_id, window_id,
@@ -252,6 +314,56 @@ describe("listAgentThreads scope=all", () => {
 		await cleanupTestDatabase();
 	});
 
+	it("lists an unbound DM for an owner/admin", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		const dm = threads.find((t) => t.id === TELEGRAM_DM_CONV);
+		expect(dm).toBeDefined();
+		expect(dm?.platform).toBe("telegram");
+	});
+
+	it("hides a DM from a plain member, and hides unknown-surface rows from everyone", async () => {
+		const asMember = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: false,
+		});
+		expect(asMember.map((t) => t.id)).not.toContain(TELEGRAM_DM_CONV);
+
+		// is_direct NULL must not ride in on the DM rule — it keeps the channel
+		// fence, which fails closed for an unbound channel.
+		const asAdmin = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		expect(asAdmin.map((t) => t.id)).not.toContain(TELEGRAM_LEGACY_CONV);
+		expect(asMember.map((t) => t.id)).not.toContain(TELEGRAM_LEGACY_CONV);
+	});
+
+	it("keeps the group-channel fence unchanged for an admin", async () => {
+		// Admin is the DM rule only — it must not become a blanket bypass of the
+		// channel-membership fence for group channels.
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: true,
+		});
+		expect(threads.map((t) => t.id)).not.toContain(SLACK_UNBOUND_CONV);
+		expect(threads.map((t) => t.id)).toContain(SLACK_CONV);
+	});
+
 	it("returns web + platform + watcher entries with correct platforms, newest-first", async () => {
 		const threads = await listAgentThreads({
 			agentId: AGENT,
@@ -270,6 +382,7 @@ describe("listAgentThreads scope=all", () => {
 		const behavior = byPlatform.get("behavior");
 		expect(behavior?.behaviorId).toBe(WATCHER_ID);
 		expect(behavior?.title).toBe("Test Watcher");
+		expect(behavior?.createdAt).toBe(behavior?.updatedAt);
 
 		// Newest VISIBLE is the bound Slack channel at 02:00 — the unbound channel
 		// at 03:00 is fenced out, so it must not take the top slot (or any slot).
@@ -278,6 +391,43 @@ describe("listAgentThreads scope=all", () => {
 
 		// A watcher's per-run snapshot must NOT surface as its own platform row.
 		expect(threads.some((t) => t.id.includes("_watcher_"))).toBe(false);
+	});
+
+	it("drops an archived Behavior even though its completed runs remain", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+
+		// The archived Behavior's transcript snapshot is still in the table and
+		// still terminal_status='completed' — permanent history. The old query
+		// ignored the current Behavior status and listed it.
+		expect(
+			threads.some((t) => t.behaviorId === ARCHIVED_WATCHER_ID),
+		).toBe(false);
+		expect(threads.some((t) => t.title === "Archived Watcher")).toBe(false);
+
+		// The live Behavior beside it is untouched — this is a lifecycle filter,
+		// not a blanket exclusion of Behaviors.
+		expect(threads.some((t) => t.behaviorId === WATCHER_ID)).toBe(true);
+	});
+
+	it("orders a Behavior by its stored last-run stamp, not by run history", async () => {
+		const threads = await listAgentThreads({
+			agentId: AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+		});
+		const behavior = threads.find((t) => t.behaviorId === WATCHER_ID);
+
+		expect(behavior?.id).toBe(`watcher_${WATCHER_ID}`);
+		// The stamped value, not max(created_at) over the snapshots.
+		expect(behavior?.updatedAt).toBe(
+			new Date("2026-06-28T00:30:00Z").getTime(),
+		);
 	});
 
 	it("fences out platform conversations on channels the agent isn't bound to", async () => {
@@ -608,5 +758,71 @@ describe("listAgentThreads scope=all", () => {
 				status: "pending",
 			}),
 		]);
+	});
+});
+
+/**
+ * An EXPLICITLY bound DM (Slack Preview `/link`, claim onboarding) is the case
+ * that makes the owner/admin rule a BYPASS rather than a replacement: it is a DM
+ * (`is_direct = true`) but it does have a chat-link Behavior, so the ordinary
+ * channel fence already admits it and a plain member must keep that access.
+ *
+ * It gets its own org/agent because the shared fixture above asserts a single
+ * slack conversation and newest-first ordering; a second visible slack row there
+ * would decide those assertions instead of testing this one.
+ */
+describe("listAgentThreads scope=all — an explicitly bound DM", () => {
+	const BOUND_DM_AGENT = "thread-list-bound-dm-agent";
+	const BOUND_DM_CONV = "slack:D123:";
+	let org: string;
+	let userId: string;
+
+	beforeAll(async () => {
+		org = (await createTestOrganization()).id;
+		userId = (await createTestUser()).id;
+		await createTestAgent({
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			ownerUserId: userId,
+		});
+		const sql = getTestDb();
+		const connId = "conn_bound_dm";
+		await insertChatConnectionRow({
+			id: connId,
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			platform: "slack",
+			status: "active",
+		});
+		await createTestBehaviorSubscription({
+			organizationId: org,
+			agentId: BOUND_DM_AGENT,
+			connectionSlug: `agentconn-${connId}`,
+			platform: "slack",
+			channelId: "slack:D123",
+			teamId: "T1",
+		});
+		await sql`
+      INSERT INTO conversations
+        (organization_id, agent_id, platform, conversation_id,
+         kind, user_id, title, is_direct, last_activity_at, created_at)
+      VALUES (${org}, ${BOUND_DM_AGENT}, 'slack', ${BOUND_DM_CONV},
+              'platform', 'U123', 'hello from a bound slack dm',
+              true, '2026-06-28T02:00:00Z', '2026-06-28T02:00:00Z')`;
+	});
+
+	afterAll(async () => {
+		await cleanupTestDatabase();
+	});
+
+	it("stays visible to a plain member via the channel fence, without admin", async () => {
+		const threads = await listAgentThreads({
+			agentId: BOUND_DM_AGENT,
+			organizationId: org,
+			userId,
+			scope: "all",
+			isAdmin: false,
+		});
+		expect(threads.map((t) => t.id)).toContain(BOUND_DM_CONV);
 	});
 });

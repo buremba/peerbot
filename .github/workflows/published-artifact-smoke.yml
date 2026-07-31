@@ -1,0 +1,117 @@
+name: Published-artifact smoke
+
+# Installs @lobu/cli FROM NPM into a clean container and drives the landing
+# page's quickstart end to end — init, validate, run, and one REAL agent turn.
+#
+# This is the gate for the "works from the monorepo, broken from the artifact"
+# class (#2186, #2231, __filename, GLIBC_2.38, uid-0). `ci.yml`'s cli-smoke job
+# walks every command but points at the SOURCE TREE, which pins four things at
+# once — tarball-vs-source, bun-vs-node, root-vs-not, and the runner's glibc —
+# and each pin hid one of those bugs. The bun/node one is structural: the
+# gateway picks the worker entrypoint by extension and spawns `.ts` under bun,
+# `.mjs` under node, so in-repo it can only ever take the bun path.
+#
+# Deliberately keyless: reuses the deterministic mock provider from
+# scripts/sdk-e2e/, so no secret is required and the run is reproducible.
+
+on:
+  # Every merge to main. The artifact on the registry is the PREVIOUS release,
+  # so this is a standing check that what users can install right now still
+  # works — it would have been red continuously through the __filename, glibc
+  # and uid-0 breakages instead of waiting for someone to file an issue.
+  push:
+    branches: [main]
+  # After a release publishes, verify what actually landed on the registry.
+  workflow_run:
+    workflows: ["Publish Packages"]
+    types: [completed]
+  # Daily canary. The registry can break without us pushing anything (a
+  # dependency yanks a version, a transitive install changes), and a bad
+  # release otherwise sits undetected until a user files an issue.
+  schedule:
+    - cron: "0 7 * * *"
+  # On demand, e.g. to check a specific version after a hotfix.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: npm version or dist-tag to smoke
+        default: latest
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # Each cell is an axis that hid a real, shipped bug. Keep all four.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.36. Older than the 2.38 the pgvector prebuilt wanted, and
+          # `node:22-slim` IS bookworm — the most obvious base a self-hoster
+          # picks. This cell is what catches a too-new prebuilt.
+          - { name: bookworm-nonroot, image: "node:22-bookworm-slim", as_root: false }
+          # Root is the default in a VPS shell, WSL, LXC and most Docker
+          # images. Postgres refuses to run as root, so this cell catches a
+          # missing `createPostgresUser`.
+          - { name: bookworm-root, image: "node:22-bookworm-slim", as_root: true }
+          # glibc 2.41 control. If bookworm fails and trixie passes, the
+          # failure is a glibc floor and not a general breakage — that
+          # distinction is most of the debugging.
+          - { name: trixie-nonroot, image: "node:22-trixie-slim", as_root: false }
+          # The oldest LTS we claim to support; catches a floor that clears
+          # bookworm but not 22.04.
+          - { name: jammy-nonroot, image: "ubuntu:22.04", as_root: false }
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 25
+    steps:
+      - name: Install prerequisites
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git procps psmisc
+
+          # ubuntu:22.04 has no node at all; the node:* images already do.
+          if ! command -v node >/dev/null 2>&1; then
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            apt-get install -y --no-install-recommends nodejs
+          fi
+
+          node --version
+          getconf GNU_LIBC_VERSION || ldd --version | head -1
+
+      - uses: actions/checkout@v7
+
+      # Only the mock-provider harness is used from the checkout; everything
+      # under test comes from npm.
+      - name: Smoke the published artifact
+        env:
+          LOBU_VERSION: ${{ inputs.version || 'latest' }}
+        run: |
+          set -u
+          chmod +x scripts/published-artifact-smoke.sh
+
+          if [ "${{ matrix.as_root }}" = "true" ]; then
+            echo ">> running as root (uid $(id -u))"
+            scripts/published-artifact-smoke.sh
+          else
+            # The container starts as root, so drop to an unprivileged user.
+            # Everything the script touches lives under its own $WORK/$HOME.
+            useradd -m -s /bin/bash smoke
+            chown -R smoke:smoke .
+            su smoke -c "env LOBU_VERSION='$LOBU_VERSION' \
+              SMOKE_WORK=/tmp/lobu-artifact-smoke-smoke \
+              bash scripts/published-artifact-smoke.sh"
+          fi
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs-${{ matrix.name }}
+          path: /tmp/lobu-artifact-smoke*/**
+          if-no-files-found: ignore
+          retention-days: 7

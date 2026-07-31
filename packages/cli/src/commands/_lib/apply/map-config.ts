@@ -274,10 +274,9 @@ export interface AgentMarkdown {
  * settings. Pure (no file IO — the loader reads the files and passes the
  * results in) so it can be unit-tested directly.
  *
- * Mirrors `buildAgentSettings`'s skill-merge semantics exactly: agent-level
- * nix is laid down first (already in `settings`), then skill nix packages are
- * unioned on top (deduped). Skills are prompt/behavior only — they no longer
- * contribute network or MCP config.
+ * Skills are instruction text only — they contribute no nix, network, or MCP
+ * config. Packages come from the agent (`nixConfig`, already in `settings`) or
+ * connector `agentTooling`, never from skills.
  */
 export function mergeAgentDirArtifacts(
   settings: Partial<AgentSettings>,
@@ -290,18 +289,6 @@ export function mergeAgentDirArtifacts(
 
   if (localSkills.length > 0) {
     settings.skillsConfig = { skills: localSkills };
-  }
-
-  // Nix merge — agent packages first, then skill packages, deduped.
-  const nixPackages = [
-    ...(settings.nixConfig?.packages ?? []),
-    ...localSkills.flatMap((s) => s.nixPackages ?? []),
-  ];
-  if (nixPackages.length > 0) {
-    settings.nixConfig = {
-      ...settings.nixConfig,
-      packages: [...new Set(nixPackages)],
-    };
   }
 }
 
@@ -534,6 +521,51 @@ function normalizeKeyingConfig(
   return out;
 }
 
+/** Max skills a Behavior may pin on one version (issue #2320 cap). */
+const MAX_BEHAVIOR_SKILLS = 5;
+
+/**
+ * Skills-presence rule. An event trigger executing as "turn" carries its own
+ * content (the incoming message/event), so it may run with zero skills on the
+ * built-in default instruction. Everything else — schedule triggers, event
+ * triggers with execution "window", and Behaviors with no triggers at all
+ * (manual runs) — needs a prompt, at least one skill, or both.
+ *
+ * This CLI preflight mirrors the server rule, catching the error against the
+ * config file (naming the slug) rather than as a 422 mid-apply. When both
+ * triggers and instructions change, apply sends them together through
+ * create_version so the final pair is validated atomically.
+ */
+function assertBehaviorSkills(watcher: DesiredWatcher): void {
+  const skills = watcher.skills ?? [];
+  const duplicates = skills.filter((name, i) => skills.indexOf(name) !== i);
+  if (duplicates.length > 0) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" lists duplicate skill(s): ${[...new Set(duplicates)].join(", ")} — each skill may appear once (the compile is ordered, not repeated)`
+    );
+  }
+  if (skills.length > MAX_BEHAVIOR_SKILLS) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" references ${skills.length} skills — the maximum is ${MAX_BEHAVIOR_SKILLS}`
+    );
+  }
+  const triggers = watcher.triggers ?? [];
+  const requiresSkills =
+    triggers.length === 0 ||
+    triggers.some(
+      (trigger) => trigger.kind === "schedule" || trigger.execution === "window"
+    );
+  // Either instruction source satisfies the rule. A Behavior whose whole job is
+  // "run this skill" has no task statement to write, and one that spells its
+  // task out inline needs no skill — demanding both would be stricter than the
+  // server and would reject configs the API accepts.
+  if (requiresSkills && skills.length === 0 && !watcher.prompt.trim()) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" needs instructions: schedule triggers, event triggers with execution "window", and Behaviors with no triggers run on stored instructions alone, so give it a "prompt", at least one skill, or both. Only event triggers with execution "turn" may omit both.`
+    );
+  }
+}
+
 function mapBehavior(behavior: Behavior): DesiredWatcher {
   const watcher = behavior;
   const sources = watcher.sources
@@ -604,7 +636,13 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
   return {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
-    prompt: watcher.prompt,
+    // The author's task statement, carried straight through. Skill BODIES are
+    // no longer folded in here — the loader resolves them into `skillSnapshots`
+    // (see `resolveBehaviorSkills` in desired-state.ts), because the mapper is
+    // pure and cannot read skill files. "" is legitimate for a Behavior whose
+    // whole job is its skills, and for event-turn Behaviors with neither.
+    prompt: watcher.prompt ?? "",
+    ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
     ...(watcher.keyingConfig
       ? { keyingConfig: normalizeKeyingConfig(watcher.keyingConfig) }
       : {}),
@@ -881,6 +919,7 @@ export function mapProjectToDesiredState(
         `Behavior "${watcher.slug}" names agent "${watcher.agent}", but no agent with that id is declared in lobu.config.ts`
       );
     }
+    assertBehaviorSkills(watcher);
     for (const trigger of watcher.triggers ?? []) {
       if (trigger.kind !== "event" || !trigger.connectionSlug) continue;
       const connection = (project.connections ?? []).find(

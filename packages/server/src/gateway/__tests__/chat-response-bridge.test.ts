@@ -262,6 +262,56 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     expect(plainPosts).toEqual([]);
   });
 
+  test("handleError renders PROVIDER_TOOL_CALL_FAILED as catalog text, never the raw provider blob", async () => {
+    // Seen live on Telegram: a Gemini turn that ends with
+    // `function_call_filter: MALFORMED_FUNCTION_CALL` reached the user as a raw
+    // `💥 Worker crashed: Provider finish_reason: …` blob. The worker now
+    // classifies it, so this bridge — the ONE place a coded error becomes
+    // Telegram/Slack output — must swap in the catalog sentence and drop the
+    // provider's own unusable finish_reason string entirely.
+    const { target, plainPosts } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleError(
+      {
+        ...basePayload,
+        error:
+          "Provider finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL",
+        errorCode: "PROVIDER_TOOL_CALL_FAILED",
+      },
+      "s"
+    );
+
+    const posted = plainPosts.map((p) => String(p)).join("\n");
+    expect(posted).toContain("rejected its own tool call");
+    // The three fragments of the raw blob a user must never see.
+    expect(posted).not.toContain("MALFORMED_FUNCTION_CALL");
+    expect(posted).not.toContain("finish_reason");
+    expect(posted).not.toContain("Worker crashed");
+  });
+
+  test("handleError labels and unwraps a provider error body", async () => {
+    const { target, plainPosts } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleError(
+      {
+        ...basePayload,
+        error:
+          '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low."},"request_id":"req_123"}',
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        errorContext: { provider: "anthropic" },
+      },
+      "s"
+    );
+
+    expect(plainPosts).toContain(
+      "Error: Anthropic returned an error:\nYour credit balance is too low."
+    );
+  });
+
   test("isFullReplacement closes prior stream and opens a new one", async () => {
     const { target } = createStreamingTarget();
     const { manager } = createHarness(target);

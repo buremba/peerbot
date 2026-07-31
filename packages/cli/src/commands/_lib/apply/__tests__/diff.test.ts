@@ -438,12 +438,15 @@ describe("apply diff — watchers", () => {
           defineBehavior({
             agent,
             slug: "minimal-schedule",
-            prompt: "Produce a digest.",
+            skills: ["digest"],
             triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           }),
         ],
       })
     );
+    // The loader compiles skills[] into prompt before diffing; this test maps
+    // directly, so stand in for the compile step.
+    if (desired.watchers[0]) desired.watchers[0].prompt = "Produce a digest.";
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
       agents: [{ agentId: "triage", name: "triage" }],

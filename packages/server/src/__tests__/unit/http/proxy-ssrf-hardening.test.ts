@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerTokenPair } from "@lobu/core";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   __testOnly,
@@ -54,10 +54,10 @@ function basicAuth(user: string, pass: string): string {
 }
 
 function token(deployment: string): string {
-  return generateWorkerToken("u", "c", deployment, {
+  return generateWorkerTokenPair("u", "c", deployment, {
     channelId: "ch",
     platform: "test",
-  });
+  }).egressProxyToken;
 }
 
 function rawGet(

@@ -3,7 +3,8 @@
  * discarded embeddedBashOps (Finding #10).
  *
  * The worker builds its bash tool via createLobuTools() with a spawnHook
- * that strips SENSITIVE_WORKER_ENV_KEYS and (optionally) custom BashOperations.
+ * that builds the env from the worker allowlist (buildAgentEnv) and (optionally)
+ * custom BashOperations.
  * Those instances must be the ones the agent actually runs. We assert that the
  * bash tool the session ends up with both strips the secrets and uses the
  * provided BashOperations — i.e. the Lobu-built bash is not silently discarded.
@@ -16,7 +17,7 @@ import { join } from "node:path";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { buildAgentSession } from "../runtime/session-runner";
 import { createLobuTools } from "../runtime/tools";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { buildAgentEnv } from "../shared/worker-env-keys";
 
 let tempDir: string;
 let originalDispatcherUrl: string | undefined;
@@ -53,7 +54,7 @@ function getBashTool(tools: { name: string }[]) {
 }
 
 describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () => {
-  test("session bash strips SENSITIVE_WORKER_ENV_KEYS from the spawned env", async () => {
+  test("session bash does not leak the worker gateway credentials", async () => {
     const builtins = createLobuTools(tempDir);
     const { session } = await buildAgentSession({
       cwd: tempDir,
@@ -133,8 +134,8 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
     });
 
     // Every built-in the agent can run must be the exact Lobu instance, not
-    // pi's rebuilt one — that is what carries the env-strip spawnHook and the
-    // embedded BashOperations.
+    // pi's rebuilt one — that is what carries the env-allowlisting spawnHook
+    // and the embedded BashOperations.
     for (const tool of session.agent.state.tools) {
       const lobuTool = lobuByName.get(tool.name);
       if (lobuTool) {
@@ -148,8 +149,19 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
     session.dispose();
   });
 
-  test("SENSITIVE_WORKER_ENV_KEYS covers the worker gateway creds", () => {
-    expect(SENSITIVE_WORKER_ENV_KEYS).toContain("WORKER_TOKEN");
-    expect(SENSITIVE_WORKER_ENV_KEYS).toContain("DISPATCHER_URL");
+  test("the worker gateway creds are excluded from the agent env", () => {
+    // Was: an assertion that a denylist named these two. The allowlist gives a
+    // stronger property — they are excluded because they are not named, as is
+    // every other gateway secret, present or future.
+    const env = buildAgentEnv({
+      WORKER_TOKEN: "super-secret-worker-token",
+      DISPATCHER_URL: "http://gateway:8080",
+      ENCRYPTION_KEY: "vault-key",
+      PATH: "/usr/bin",
+    });
+    expect(env).not.toHaveProperty("WORKER_TOKEN");
+    expect(env).not.toHaveProperty("DISPATCHER_URL");
+    expect(env).not.toHaveProperty("ENCRYPTION_KEY");
+    expect(env.PATH).toBe("/usr/bin");
   });
 });

@@ -186,6 +186,14 @@ export enum AgentErrorCode {
    * with remediation steps, not a transient user error.
    */
   WORKER_SANDBOX_REQUIRED = "WORKER_SANDBOX_REQUIRED",
+  /**
+   * The provider aborted the turn on its own tool-call filter rather than
+   * returning a usable stop reason — e.g. Gemini's
+   * `finish_reason: function_call_filter: MALFORMED_FUNCTION_CALL`. A
+   * provider-side, usually transient condition: nothing about the agent's
+   * config is wrong, so it must not render as a worker crash.
+   */
+  PROVIDER_TOOL_CALL_FAILED = "PROVIDER_TOOL_CALL_FAILED",
   /** Session exceeded its time budget (exit 124); retried silently. */
   SESSION_TIMEOUT = "SESSION_TIMEOUT",
 }
@@ -206,16 +214,17 @@ export type AgentErrorCtaKind =
  * The spec is deliberately thin. Two families of failure:
  *
  *  - PROVIDER errors (quota/auth/unknown-model/routing) carry NO `message`: the
- *    provider's own error string (relayed verbatim via `payload.error`) is the
- *    body, because it already says the useful thing — including a reset time
- *    like "will reset at 2026-07-10". We don't re-derive or reword it; the spec
- *    only decides the CTA link to append. Zero string parsing.
+ *    provider's own error string rides in `payload.error`. When provider context
+ *    is available, the gateway labels it and unwraps the common JSON message
+ *    envelope without rewording the provider's sentence (including reset times).
+ *    The spec only decides the CTA link to append.
  *
  *  - WORKER / config errors DO carry a `message`: they're synthesized by us (the
  *    sweep, the deployment manager, the model resolver) so there is no upstream
  *    provider string to fall back to.
  *
- * The renderer picks `spec.message ?? payload.error` and appends the CTA.
+ * The renderer prefers `spec.message`, otherwise formats `payload.error`, and
+ * appends the CTA.
  */
 export interface AgentErrorSpec {
   /**
@@ -254,6 +263,15 @@ export const AGENT_ERRORS: Record<AgentErrorCode, AgentErrorSpec> = {
   [AgentErrorCode.PROVIDER_BASE_URL_UNRESOLVED]: {
     cta: "provider-management",
     ctaLabel: "Manage provider",
+  },
+  // The provider's own finish_reason string is not useful to an end user
+  // ("function_call_filter: MALFORMED_FUNCTION_CALL"), so unlike the other
+  // PROVIDER_* entries this one carries its own text and does NOT relay the
+  // upstream blob. The raw message stays in the logs / Sentry.
+  [AgentErrorCode.PROVIDER_TOOL_CALL_FAILED]: {
+    message:
+      "The model provider rejected its own tool call and ended the turn. This is usually temporary — please try again.",
+    cta: "none",
   },
   // Errors we synthesize — carry our own text (no provider string to relay).
   [AgentErrorCode.NO_MODEL_CONFIGURED]: {

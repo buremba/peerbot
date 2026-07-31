@@ -70,7 +70,6 @@ describe("isDirectPackageInstallCommand", () => {
   // Should NOT detect (false positive guard).
   // Note: "brew list" IS detected (brew prefix matches) — intentionally conservative.
   // Note: "apt-get update" IS detected (apt-get prefix matches) — intentionally conservative.
-  // Note: "echo npm install" IS detected via regex (embedded npm install) — intentionally conservative.
   const allowed = [
     "",
     "   ",
@@ -106,9 +105,10 @@ describe("isDirectPackageInstallCommand", () => {
     expect(isDirectPackageInstallCommand("apt-get update")).toBe(true);
   });
 
-  test("echo npm install IS detected (regex matches embedded npm install)", () => {
-    // The DIRECT_PACKAGE_INSTALL_PATTERNS match npm install anywhere in the command
-    expect(isDirectPackageInstallCommand("echo npm install")).toBe(true);
+  test("echo npm install is NOT detected — echo consumes it as data (#2279)", () => {
+    expect(isDirectPackageInstallCommand("echo npm install")).toBe(false);
+    // …but only within echo's own command.
+    expect(isDirectPackageInstallCommand("echo hi | npm install")).toBe(true);
   });
 });
 

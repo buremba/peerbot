@@ -27,7 +27,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { type DbClient, getDb, pgBigintArray } from "../db/client";
 import { mergeEntityState } from "../entity-resolution/merge-state";
-import type { ResolutionEvidence } from "../entity-resolution/policy";
+import {
+	RESOLUTION_FINGERPRINT_VERSION,
+	type ResolutionEvidence,
+} from "../entity-resolution/policy";
 import { assertResolutionFingerprintCurrent } from "../entity-resolution/staleness";
 import logger from "./logger";
 
@@ -112,6 +115,9 @@ export async function applyMergeGroupInTransaction(
 			winnerId: params.winnerId,
 			loserIds,
 			expectedFingerprint: params.expectedResolutionFingerprint,
+			// Computed by this process moments ago, so it is current by
+			// construction — never a stored digest from an older format.
+			expectedVersion: RESOLUTION_FINGERPRINT_VERSION,
 		});
 	}
 

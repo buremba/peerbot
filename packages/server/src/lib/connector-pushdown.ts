@@ -14,7 +14,7 @@ import { getDb } from '../db/client';
 import { dbEgressConfig } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
-import { resolveExecutionAuth } from '../utils/execution-context';
+import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 
 interface ConnectorQueryParams {
   /** The ACL gate — tenant + principal. Its `organizationId`/`principal` drive
@@ -50,7 +50,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     ? sql``
     : sql`${sql.unsafe(compileConnectionRowVisibility(p.scope, 'connections'))}`;
   const connRows = await sql`
-    SELECT id, connector_key, auth_profile_id, app_auth_profile_id
+    SELECT id, connector_key, auth_profile_id, app_auth_profile_id, config
     FROM connections
     WHERE organization_id = ${p.scope.organizationId}
       AND slug = ${p.connectionSlug}
@@ -67,6 +67,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     connector_key: string;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
+    config: Record<string, unknown> | null;
   };
 
   // Execution-time cloud gate: blocking connection CREATION isn't enough — an
@@ -94,6 +95,8 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       mode: 'query',
       feedKey: p.feedKey ?? null,
       query: p.query,
+      // Same merge as feed-sync / worker poll: connection.config under
+      // credentials + caller overrides (any connector-level config).
       // ONLY the connection's own credentials reach ctx.config — deliberately NOT
       // the gateway's process.env, so a connection missing DATABASE_URL fails
       // cleanly instead of falling back to Lobu's own DB. The egress policy is the
@@ -103,8 +106,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       // Injected LAST so neither caller config nor credentials can override this
       // security control.
       config: {
-        ...connectionCredentials,
-        ...(p.config ?? {}),
+        ...mergeExecutionConfig(conn.config, connectionCredentials, p.config),
         ...dbEgressConfig(),
       },
       env: {},
@@ -175,7 +177,8 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   const feedRows = (await sql.unsafe(
     `SELECT f.id, f.feed_key, f.config, f.virtual,
             c.id AS connection_id, c.connector_key,
-            c.auth_profile_id, c.app_auth_profile_id
+            c.auth_profile_id, c.app_auth_profile_id,
+            COALESCE(c.config, '{}'::jsonb) AS connection_config
      FROM feeds f
      JOIN connections c ON c.id = f.connection_id
      WHERE f.id = $1
@@ -196,6 +199,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     connector_key: string;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
+    connection_config: Record<string, unknown>;
   }>;
 
   if (feedRows.length === 0) {
@@ -227,12 +231,11 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
     logMessage: 'Failed to resolve virtual feed read credentials',
   });
 
-  // Same credential/egress discipline as runConnectorQuery: only the
-  // connection's own credentials reach ctx.config, with the egress policy
-  // injected LAST so neither config nor credentials can override it.
+  // Same merge order as feed-sync / worker poll:
+  // connection.config → credentials → feed config → egress.
+  // Feed-level keys win so a feed can override connection-level settings.
   const config = {
-    ...connectionCredentials,
-    ...feedConfig,
+    ...mergeExecutionConfig(feed.connection_config, connectionCredentials, feedConfig),
     ...dbEgressConfig(),
   };
 

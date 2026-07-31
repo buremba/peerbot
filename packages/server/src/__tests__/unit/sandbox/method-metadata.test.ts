@@ -341,7 +341,7 @@ describe("method-metadata", () => {
 			["classifiers.classify", ["classifier_slug: string", "'llm' | 'user'"]],
 			[
 				"classifiers.create",
-				["behavior_id: string", "attribute_values", "examples: string[]"],
+				["behavior_id?: string", "attribute_values", "examples: string[]"],
 			],
 		];
 		for (const [path, fragments] of expectations) {
@@ -360,9 +360,7 @@ describe("method-metadata", () => {
 		);
 	});
 
-	it("exposes authProfiles.get at read tier (it returns sanitized data only)", () => {
-		// The handler serializes via serializeAuthProfile — no raw credentials or
-		// auth_data — so hiding it from query_sdk was an access-tier mismatch.
+	it("advertises authProfiles.get at the tier manage_auth_profiles enforces (read)", () => {
 		expect(METHOD_METADATA["authProfiles.get"].access).toBe("read");
 		// Credential-bearing siblings stay gated.
 		expect(METHOD_METADATA["authProfiles.create"].access).toBe("write");

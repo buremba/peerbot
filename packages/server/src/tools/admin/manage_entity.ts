@@ -39,7 +39,10 @@ import {
 } from "../../authz/entity-policy";
 import { discoverWorkspaceResolutionGroups } from "../../entity-resolution/discovery";
 import { loadLiveEntityIdentities } from "../../entity-resolution/identities";
-import { assessEntityResolution } from "../../entity-resolution/policy";
+import {
+	assessEntityResolution,
+	RESOLUTION_FINGERPRINT_VERSION,
+} from "../../entity-resolution/policy";
 import { wasResolutionRejected } from "../../entity-resolution/rejection";
 import { getDb, pgBigintArray, pgTextArray } from "../../db/client";
 import type { Env } from "../../index";
@@ -749,24 +752,30 @@ async function handleMerge(
 				},
 			};
 		}
-		const queued = await proposeEntityMerge(ctx, {
-			entity_ids: loserIds,
-			winner_entity_id: winnerId,
-			evidence: resolution.evidence,
-			watcher_id:
-				ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
-			window_id: ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
-			source_run_id: ctx.actingRunId ?? null,
-			policy_hash: resolution.policyHash,
-			resolution_fingerprint: resolution.fingerprint,
-			attribution,
-			reason: resolution.reason,
-			// The proposer's own words, kept strictly separate from `reason` (the
-			// machine-computed policy verdict). Displayed as a claim attributed to
-			// whoever proposed the merge — it is never evidence and never affects
-			// the auto-merge decision, which is recomputed server-side above.
-			proposer_rationale: args.merge_rationale?.trim() || null,
-		});
+		const queued = await proposeEntityMerge(
+			ctx,
+			{
+				entity_ids: loserIds,
+				winner_entity_id: winnerId,
+				evidence: resolution.evidence,
+				watcher_id:
+					ctx.actingWatcherId ?? args.behavior_source?.behavior_id ?? null,
+				window_id:
+					ctx.actingWindowId ?? args.behavior_source?.window_id ?? null,
+				source_run_id: ctx.actingRunId ?? null,
+				policy_hash: resolution.policyHash,
+				resolution_fingerprint: resolution.fingerprint,
+				resolution_fingerprint_version: RESOLUTION_FINGERPRINT_VERSION,
+				attribution,
+				reason: resolution.reason,
+				// The proposer's own words, kept strictly separate from `reason` (the
+				// machine-computed policy verdict). Displayed as a claim attributed to
+				// whoever proposed the merge — it is never evidence and never affects
+				// the auto-merge decision, which is recomputed server-side above.
+				proposer_rationale: args.merge_rationale?.trim() || null,
+			},
+			resolution.resolutionKeys,
+		);
 		return {
 			action: "merge",
 			approval_queued: true,

@@ -40,6 +40,14 @@ export interface WorkerTokenClaimsArgs {
 	 * signed for the same reason — see WorkerTokenData.deniedDomains.
 	 */
 	deniedDomains?: string[];
+	/**
+	 * The agent's resolved nix package set (`nixConfig.packages`, already unioned
+	 * with connector-contributed tooling). Signed for the same reason as the
+	 * domain lists: every entry reaches a package-install command line inside the
+	 * sandbox, so the worker must not be able to name it — see
+	 * WorkerTokenData.nixPackages.
+	 */
+	nixPackages?: string[];
 }
 
 /**
@@ -73,6 +81,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 	sandboxId?: string;
 	allowedDomains?: string[];
 	deniedDomains?: string[];
+	nixPackages?: string[];
 } {
 	// Provider comes solely from the conversation's pinned sandbox; there is
 	// no deployment-wide env-var fallback. Undefined → local just-bash.
@@ -106,6 +115,15 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 		deniedDomains:
 			args.deniedDomains && args.deniedDomains.length > 0
 				? args.deniedDomains
+				: undefined,
+		// Same non-empty-only shape rule as the domain lists. Not gated on
+		// `runtimeProviderId`: a conversation's pin is resolved per turn and can
+		// change between the mint and the exec, and only the runtime route reads
+		// this claim anyway — the local just-bash path wraps the worker spawn in
+		// nix-shell and ignores it.
+		nixPackages:
+			args.nixPackages && args.nixPackages.length > 0
+				? args.nixPackages
 				: undefined,
 	};
 }

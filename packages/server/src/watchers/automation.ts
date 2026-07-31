@@ -28,6 +28,10 @@ import { isUniqueViolation } from "../utils/pg-errors";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import { computePendingWindow } from "../utils/window-utils";
 import {
+	advanceScheduleAfterTerminalFailure,
+	advanceWatcherSchedule,
+} from "./schedule-cursor";
+import {
 	findWindowIdForRun,
 	markWatcherRunCompleted,
 	resolveWatcherRunsByMessageIds,
@@ -336,69 +340,26 @@ async function markWatcherRunFailedIdempotent(
 	runId: number,
 	message: string
 ): Promise<void> {
-	const failedRows = await sql`
-    UPDATE runs
-    SET status = 'failed',
-        completed_at = current_timestamp,
-        error_message = ${message}
-    WHERE id = ${runId}
-      AND status IN ('running', 'claimed', 'pending')
-    RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
-  `;
-	// Advance next_run_at on terminal failure too — otherwise a permanently
-	// broken scheduled/manual run re-materializes + re-dispatches every minute.
-	// Event delivery is independent of the cron cursor and must not skip its next
-	// scheduled activation.
-	if (failedRows[0]?.dispatch_source !== "event") {
-		await advanceWatcherSchedule(
-			sql,
-			failedRows[0]?.watcher_id as number | undefined
+	await sql.begin(async (tx) => {
+		const [failed] = await tx<{
+			watcher_id: string | number | null;
+			dispatch_source: string | null;
+		}>`
+      UPDATE runs
+      SET status = 'failed',
+          completed_at = current_timestamp,
+          error_message = ${message}
+      WHERE id = ${runId}
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      RETURNING watcher_id, approved_input->>'dispatch_source' AS dispatch_source
+    `;
+		if (!failed) return;
+		await advanceScheduleAfterTerminalFailure(
+			tx,
+			failed.watcher_id == null ? null : Number(failed.watcher_id),
+			failed.dispatch_source
 		);
-	}
-}
-
-/**
- * Move a watcher's `next_run_at` forward to the next cron tick after now.
- * Reused by:
- *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
- *   - client.behaviors.completeWindow on successful completion
- *   - the device-side `/api/workers/me/runs/:id/complete-behavior` endpoint
- *
- * Idempotent: the target is always `nextRunAt(schedule, now)`, so duplicate
- * completions and manually-triggered runs converge to the same upcoming tick.
- * (Basing it on `max(now, next_run_at)` instead compounded the schedule: each
- * manual trigger's completion pushed an already-future `next_run_at` one more
- * tick out, so N manual runs silently skipped N cron slots.)
- *
- * Pass either the singleton `sql` client or a transaction handle from
- * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
- * watchers (manual-only) are no-ops. Read failures are logged and swallowed —
- * a missed schedule tick is preferable to failing the surrounding write.
- */
-export async function advanceWatcherSchedule(
-	sql: DbClient,
-	watcherId: number | undefined
-): Promise<void> {
-	if (watcherId === undefined || watcherId === null) return;
-	try {
-		const rows = await sql`
-      SELECT schedule, timezone
-      FROM watchers
-      WHERE id = ${watcherId}
-      LIMIT 1
-    `;
-		const schedule = (rows[0]?.schedule as string | null) ?? null;
-		const timezone = (rows[0]?.timezone as string | null) ?? null;
-		if (!schedule) return;
-		await sql`
-      UPDATE watchers
-      SET next_run_at = ${nextRunAt(schedule, new Date(), timezone)}::timestamptz,
-          updated_at = NOW()
-      WHERE id = ${watcherId}
-    `;
-	} catch (err) {
-		logger.warn(`[watchers] failed to advance next_run_at: ${err}`);
-	}
+	});
 }
 
 export async function getWatcherRunInfo(
@@ -440,7 +401,8 @@ export async function reconcileWatcherRuns(
 	// canvas_state so it never matches tab_event/tab_snapshot BROWSER rows
 	// carrying run_id.
 	const rows = await sql`
-    SELECT r.id, COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
+    SELECT r.id, r.dispatched_message_id,
+           COALESCE((ww.metadata->>'root_event_id')::bigint, ww.id) AS window_id
     FROM runs r
     JOIN events ww
       ON ww.run_id = r.id
@@ -456,8 +418,13 @@ export async function reconcileWatcherRuns(
 	for (const row of rows) {
 		const runId = Number((row as { id: unknown }).id);
 		const windowId = Number((row as { window_id: unknown }).window_id);
+		const fallbackModel =
+			typeof (row as { dispatched_message_id?: unknown })
+				.dispatched_message_id === "string"
+				? "lobu-agent"
+				: undefined;
 
-		await markWatcherRunCompleted(sql, runId, windowId);
+		await markWatcherRunCompleted(sql, runId, windowId, fallbackModel);
 		reconciled++;
 	}
 
@@ -877,7 +844,18 @@ export async function materializeDueWatcherRuns(
 			);
 			// Don't leave next_run_at in the past — that would re-select this watcher
 			// on every 60s tick. Push it forward per the watcher's cron schedule.
-			await advanceWatcherSchedule(sql, watcher.id);
+			// An unparseable schedule parks itself and does not throw; this catch
+			// exists for DATABASE errors, which would otherwise escape a hook that
+			// materializeDueItems does not guard and abort the tick for every org.
+			try {
+				await advanceWatcherSchedule(sql, watcher.id);
+			} catch (advanceError) {
+				logger.error(
+					{ error: advanceError, watcherId: watcher.id },
+					"[watcher-automation] Failed to advance Behavior schedule after materialization error"
+				);
+				// Leaving the cursor due lets a later tick retry.
+			}
 		},
 	});
 
@@ -980,6 +958,11 @@ export function buildDispatchMessage(params: {
 	payload: WatcherRunPayload;
 	behaviorInstructions?: string;
 }): string {
+	const behaviorInstructions =
+		typeof params.behaviorInstructions === "string" &&
+		params.behaviorInstructions.trim().length > 0
+			? params.behaviorInstructions
+			: undefined;
 	if (
 		params.payload.dispatch_source === "event" &&
 		params.payload.trigger_execution !== "window"
@@ -997,8 +980,7 @@ export function buildDispatchMessage(params: {
 			`Result delivery: ${params.payload.trigger_output ?? "silent"}`,
 			"",
 			"Behavior instructions:",
-			params.behaviorInstructions?.trim() ||
-				"Interpret and handle the incoming event.",
+			behaviorInstructions || "Interpret and handle the incoming event.",
 			"",
 			"Incoming event(s):",
 			JSON.stringify(signals, null, 2),
@@ -1030,9 +1012,13 @@ export function buildDispatchMessage(params: {
 			? [`Pinned template version id: ${params.payload.version_id}`]
 			: []),
 		"",
+		"Behavior instructions:",
+		behaviorInstructions ||
+			"Analyze the window's content and extract findings per the extraction schema.",
+		"",
 		"Required steps:",
 		`1. Call query_sdk with a script that runs client.knowledge.read({ behavior_id: ${params.watcherId}, since: "${readKnowledgeSince}", until: "${readKnowledgeUntil}"${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }).`,
-		"2. Analyze the returned payload using prompt_rendered and extraction_schema.",
+		"2. Follow the Behavior instructions above against the returned payload — content, sources, entities, extraction_schema, reactions_guidance, past_reactions, and past_feedback. If page.has_more is true and you need more evidence, call knowledge.read again with page.next_cursor as before_occurred_at/before_id.",
 		`3. Call run_sdk with a script that runs client.behaviors.completeWindow({ window_token, extracted_data, behavior_run_id: ${params.runId}${params.payload.version_id != null ? `, template_version_id: ${params.payload.version_id}` : ""} }) using the window_token from step 1.`,
 		"4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:",
 		JSON.stringify(
@@ -1047,7 +1033,7 @@ export function buildDispatchMessage(params: {
 			2
 		),
 		"",
-		"Analyze every source result in the knowledge-read payload's `sources` field, even when its `content` array is empty.",
+		"Analyze every source array in the knowledge-read payload's `sources` field, even when the top-level `content` array is empty.",
 		"Treat the Behavior as having no data only when `content` and every array in `sources` are empty. In that case, do not fabricate results.",
 	].join("\n");
 }
@@ -1263,7 +1249,10 @@ async function dispatchWatcherRun(
 		return "failed";
 	}
 
-	// Already-produced window for this exact run (e.g. retry after crash).
+	// Already-produced window for this exact run (e.g. retry after crash, or an
+	// external complete_window whose tx committed the canvas but lost the status
+	// update). No provenance stamp: the window can predate this dispatch, so
+	// being claimed for the platform agent does NOT prove the agent produced it.
 	const existingWindowId = await findWindowIdForRun(sql, run.id);
 	if (existingWindowId) {
 		await markWatcherRunCompleted(sql, run.id, existingWindowId);

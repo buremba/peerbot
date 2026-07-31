@@ -10,6 +10,10 @@
 import type { DbClient } from '../db/client';
 import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
+import {
+  claimBehaviorCooldown,
+  lockBehaviorForActivation,
+} from '../behaviors/cooldown';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -240,11 +244,51 @@ async function resolveActiveConnectorVersion(
 }
 
 /**
- * Create a pending sync run for a feed (within an existing client/tx). Returns
- * the run ID, or null if skipped — a duplicate active sync run, or an
- * unresolvable orphan feed that was soft-deleted (see softDeleteOrphanFeed).
+ * Why no sync run was queued. The reasons differ in remedy — `already_active`
+ * resolves itself when the current run finishes, while the others never will
+ * (the two connector reasons also retire the feed) — so callers that surface
+ * a skip to a human must render the specific reason, not a catch-all.
  */
-async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<number | null> {
+export type SyncRunSkipReason =
+  | 'already_active'
+  | 'feed_not_found'
+  | 'cloud_restricted'
+  | 'connector_uninstalled'
+  | 'connector_version_unrunnable';
+
+export type CreateSyncRunResult =
+  | { ok: true; runId: number }
+  | { ok: false; reason: SyncRunSkipReason };
+
+/** Operator-facing sentence per cause. Kept beside the reasons so a new reason
+ *  cannot be added without deciding what a human should be told. */
+export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
+  switch (reason) {
+    case 'already_active':
+      return 'Sync already pending or running for this feed';
+    case 'feed_not_found':
+      return 'Feed not found';
+    case 'cloud_restricted':
+      return 'This connector cannot run on Lobu Cloud yet, so no sync was queued';
+    case 'connector_uninstalled':
+      return 'The connector is no longer installed in this workspace; the feed has been retired';
+    case 'connector_version_unrunnable':
+      return 'The connector version has no runnable code; the feed has been retired';
+  }
+}
+
+/**
+ * Create a pending sync run for a feed (within an existing client/tx). Skips
+ * with a `SyncRunSkipReason` instead of queueing when a run is already active,
+ * the feed is missing or cloud-restricted, or the connector resolves to
+ * nothing runnable — the connector cases also soft-delete the feed (see
+ * softDeleteOrphanFeed).
+ */
+async function createSyncRunWithClient(
+  sql: DbClient,
+  feedId: number,
+  dryRun = false
+): Promise<CreateSyncRunResult> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`
     SELECT id FROM runs
@@ -258,7 +302,7 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
     logger.info(
       `[queue] Skipping run creation for feed ${feedId} - already has pending/running run`
     );
-    return null;
+    return { ok: false, reason: 'already_active' };
   }
 
   // Get feed details (including pinned_version)
@@ -271,7 +315,7 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   `;
   if (feedRows.length === 0) {
     logger.warn(`[queue] Feed ${feedId} not found`);
-    return null;
+    return { ok: false, reason: 'feed_not_found' };
   }
   const feed = feedRows[0] as {
     organization_id: string;
@@ -293,7 +337,7 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       { feedId, connector_key: feed.connector_key },
       '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE'
     );
-    return null;
+    return { ok: false, reason: 'cloud_restricted' };
   }
 
   // Resolve connector version: pinned_version → connector_definitions.version,
@@ -316,7 +360,7 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
         feed,
         'no active connector_definition for (connector_key, org).'
       );
-      return null;
+      return { ok: false, reason: 'connector_uninstalled' };
     }
     if (resolved.reason === 'no-version') {
       throw new Error(
@@ -334,7 +378,7 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       feed,
       `no compiled code and no bundled source for version '${resolved.version}'.`
     );
-    return null;
+    return { ok: false, reason: 'connector_version_unrunnable' };
   }
   const connectorVersion = resolved.version;
 
@@ -343,7 +387,26 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   const nextRunAt = feed.schedule
     ? nextRunAtFromCron(feed.schedule, new Date(), feed.timezone)
     : null;
-  const inserted = await sql`
+  // A dry run inserts the run row and stops there. The sibling `UPDATE feeds`
+  // below is a real side effect — it stamps `last_sync_status = 'pending'`,
+  // clears `last_error`, and rolls `next_run_at` forward to the next cron slot.
+  // Letting a dry run do that would move the feed's schedule and overwrite the
+  // recorded outcome of the last REAL sync, which is exactly the state a dry
+  // run exists to leave untouched.
+  const inserted = dryRun
+    ? await sql`
+    INSERT INTO runs (
+      organization_id, run_type, feed_id, connection_id,
+      connector_key, connector_version, status, approval_status, created_at,
+      dry_run
+    ) VALUES (
+      ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
+      ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
+      true
+    )
+    RETURNING id
+  `
+    : await sql`
     WITH inserted AS (
       INSERT INTO runs (
         organization_id, run_type, feed_id, connection_id,
@@ -368,26 +431,35 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
   logger.info(
     `[queue] Created sync run ${runId} for feed ${feedId} (${feed.connector_key}, version=${connectorVersion})`
   );
-  return runId;
+  return { ok: true, runId };
 }
 
 export async function createSyncRun(
   feedId: number,
   _env: Env,
-  db?: DbClient
-): Promise<number | null> {
+  db?: DbClient,
+  // Defaults false so all four existing call sites (connect/routes, app-install,
+  // check-due-feeds, manage_feeds) keep persisting. Only an explicit opt-in is
+  // dry — a flag that defaulted the other way would silently stop real syncs.
+  opts?: { dryRun?: boolean }
+): Promise<CreateSyncRunResult> {
   const sql = db ?? getDb();
+  const dryRun = opts?.dryRun === true;
 
   try {
     if (db) {
-      return await createSyncRunWithClient(sql, feedId);
+      return await createSyncRunWithClient(sql, feedId, dryRun);
     }
 
-    return await sql.begin(async (tx) => createSyncRunWithClient(tx, feedId));
+    return await sql.begin(async (tx) =>
+      createSyncRunWithClient(tx, feedId, dryRun)
+    );
   } catch (error) {
     if (isUniqueViolation(error, 'idx_runs_active_sync_per_feed')) {
       logger.info(`[queue] Skipping run creation for feed ${feedId} - duplicate active sync run`);
-      return null;
+      // Lost the race against a concurrent trigger — indistinguishable, from
+      // here, from having found that run on the way in.
+      return { ok: false, reason: 'already_active' };
     }
     logger.error({ error }, `[queue] Failed to create sync run for feed ${feedId}`);
     throw error;
@@ -593,12 +665,29 @@ export async function createWatcherRun(
   }
 }
 
-export interface BehaviorEventRunResult {
+/** An activation that produced (or joined) a durable run. */
+export interface BehaviorEventRunQueued {
   runId: number;
   status: string;
   created: boolean;
   disposition: 'queued' | 'coalesced' | 'duplicate';
 }
+
+/**
+ * An activation refused by the Behavior's `min_cooldown_seconds` window. No
+ * run exists, so there is no id to dispatch — the distinct shape stops callers
+ * treating a suppressed activation as a queued one.
+ */
+export interface BehaviorEventRunSuppressed {
+  runId: null;
+  status: 'suppressed';
+  created: false;
+  disposition: 'cooldown';
+}
+
+export type BehaviorEventRunResult =
+  | BehaviorEventRunQueued
+  | BehaviorEventRunSuppressed;
 
 /**
  * Durably materialize a normalized connector signal as a Behavior run. A
@@ -619,12 +708,7 @@ export async function createBehaviorEventRun(
 ): Promise<BehaviorEventRunResult> {
   const sql = db ?? getDb();
   const execute = async (tx: DbClient): Promise<BehaviorEventRunResult> => {
-    await tx`
-      SELECT pg_advisory_xact_lock(
-        hashtext('behavior_event_run'),
-        ${params.watcherId}
-      )
-    `;
+    await lockBehaviorForActivation(tx, params.watcherId);
 
     const duplicate = await tx`
       SELECT id, status
@@ -708,6 +792,22 @@ export async function createBehaviorEventRun(
           };
         }
       }
+    }
+
+    // Only a genuinely NEW firing consumes the operator's cooldown window.
+    // Everything above this line either returned an existing run (a duplicate
+    // delivery) or folded the signal into one already pending (coalesce) —
+    // neither starts the Behavior again, so neither should count against
+    // `min_cooldown_seconds`. We hold the per-Behavior advisory lock, so the
+    // read-and-consume inside this claim cannot interleave with another
+    // replica handling a concurrent delivery.
+    if (!(await claimBehaviorCooldown(tx, params.watcherId))) {
+      return {
+        runId: null,
+        status: 'suppressed',
+        created: false,
+        disposition: 'cooldown',
+      };
     }
 
     const versionRows = await tx`

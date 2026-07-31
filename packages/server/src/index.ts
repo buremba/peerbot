@@ -63,6 +63,7 @@ import {
 	getMaxReservedLocks,
 	getReservedLockCount,
 } from "./gateway/orchestration/deployment-manager";
+import { REST_TOOL_GET_ROUTES } from "./http/rest-tool-routes";
 import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
@@ -109,6 +110,7 @@ import {
 	restHealth,
 	restListTools,
 	restSearchKnowledge,
+	restToolAction,
 	restToolProxy,
 	restUpdateContentClassification,
 } from "./rest-api";
@@ -1225,48 +1227,30 @@ app.get(
 // V1 Integration Platform REST Routes
 // ============================================
 
+// Read-only proxies (connections list/get, runs, available actions) are
+// registered from `REST_TOOL_GET_ROUTES` so the `(tool, action)` the public-org
+// middleware checks is the one the handler actually runs.
+for (const route of REST_TOOL_GET_ROUTES) {
+	app.get(route.routePath, mcpAuth, async (c) =>
+		restToolAction(c, route.tool, route.action, route.args(c))
+	);
+}
+
 // Connections
-app.get("/api/:orgSlug/connections", mcpAuth, async (c) => {
-	return restToolProxy(c, "manage_connections", {
-		action: "list",
-		...c.req.query(),
-	});
-});
 app.post("/api/:orgSlug/connections", mcpAuth, async (c) => {
 	const body = await c.req.json();
-	return restToolProxy(c, "manage_connections", { action: "create", ...body });
-});
-app.get("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
-	return restToolProxy(c, "manage_connections", {
-		action: "get",
-		connection_id: Number(c.req.param("id")),
-	});
+	return restToolAction(c, "manage_connections", "create", body);
 });
 app.delete("/api/:orgSlug/connections/:id", mcpAuth, async (c) => {
-	return restToolProxy(c, "manage_connections", {
-		action: "delete",
+	return restToolAction(c, "manage_connections", "delete", {
 		connection_id: Number(c.req.param("id")),
-	});
-});
-
-// Runs
-app.get("/api/:orgSlug/runs", mcpAuth, async (c) => {
-	return restToolProxy(c, "manage_operations", {
-		action: "list_runs",
-		...c.req.query(),
 	});
 });
 
 // Actions
-app.get("/api/:orgSlug/actions/available", mcpAuth, async (c) => {
-	return restToolProxy(c, "manage_operations", {
-		action: "list_available",
-		...c.req.query(),
-	});
-});
 app.post("/api/:orgSlug/actions/execute", mcpAuth, async (c) => {
 	const body = await c.req.json();
-	return restToolProxy(c, "manage_operations", { action: "execute", ...body });
+	return restToolAction(c, "manage_operations", "execute", body);
 });
 
 function serializeEntityApprovalPolicy(policy: EntityApprovalPolicy) {

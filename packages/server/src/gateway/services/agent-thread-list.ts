@@ -163,8 +163,20 @@ export async function listAgentThreads(args: {
 	/** "user" (default): only the requesting user's app threads. "all": every
 	 *  conversation for the agent across platforms (Slack, Telegram, …). */
 	scope?: "user" | "all";
+	/**
+	 * Does the requester have admin access to this agent/org? Only consulted for
+	 * DM conversations that the normal channel-membership path cannot admit.
+	 * Defaults to false so a caller that forgets to pass it fails closed.
+	 */
+	isAdmin?: boolean;
 }): Promise<AgentThreadSummary[]> {
-	const { agentId, organizationId, userId, scope = "user" } = args;
+	const {
+		agentId,
+		organizationId,
+		userId,
+		scope = "user",
+		isAdmin = false,
+	} = args;
 	// No org → no tenant scope → nothing to list from the (org-keyed) entity.
 	if (!organizationId) return [];
 
@@ -174,10 +186,14 @@ export async function listAgentThreads(args: {
 	// single listing source. This replaces the old
 	// `DISTINCT ON (conversation_id) FROM agent_transcript_snapshot` derive path
 	// AND the workspace-directory scan.
+	//
+	// This is an end-user feed, so "all" means "mine plus the channels I may
+	// read" — `shared`, never the store's `admin`. Admin listing is
+	// `manage_conversations`, which checks a role first.
 	const rows = await listConversations({
 		organizationId,
 		agentId,
-		scope,
+		scope: scope === "all" ? "shared" : "user",
 		userId,
 	});
 
@@ -225,7 +241,16 @@ export async function listAgentThreads(args: {
 			// is safe; the same-channel-across-two-workspaces (Grid) case is likewise
 			// handled by isConversationVisible failing closed on team ambiguity.
 			if (byKey.has(row.conversationId)) continue;
-			if (channelVis && !isConversationVisible(row.conversationId, channelVis)) {
+			// Some DMs are explicitly bound (for example Preview `/link`) and must
+			// keep the existing channel-fence path. Admin access is the safe bypass
+			// for an unbound DM, whose correspondent cannot be mapped portably to a
+			// Lobu user. `isDirect` null (unknown) also keeps the channel fence and
+			// stays fail-closed.
+			if (
+				!(row.isDirect === true && isAdmin) &&
+				channelVis &&
+				!isConversationVisible(row.conversationId, channelVis)
+			) {
 				continue;
 			}
 			byKey.set(row.conversationId, {
@@ -242,42 +267,39 @@ export async function listAgentThreads(args: {
 		}
 	}
 
-	// Watcher activity stays DERIVED from transcript snapshots — one entry per
-	// WATCHER (not per run), its latest run time + name, so the activity panel
-	// can route to the watcher's page. Watcher runs deliberately get no
-	// `conversations` row (their id is globally unique and downstream correlation
-	// relies on the raw `..._watcher_<id>_run_<id>` shape).
+	// Behavior activity comes from bounded `watchers` config rather than
+	// aggregating append-only transcript history. A Behavior is not a conversation,
+	// so it keeps the existing `watcher_<id>` route key without a `conversations`
+	// row. Reading status and name live also drops archived rows immediately.
 	if (scope === "all") {
 		const sql = getDb();
-		const watcherRows = await sql<{
-			watcher_id: number;
+		const behaviorRows = await sql<{
+			id: number;
 			name: string | null;
-			last_at: Date;
+			last_run_completed_at: Date;
 		}>`
-      SELECT w.id AS watcher_id, w.name, mx.last_at
-      FROM (
-        SELECT (regexp_match(conversation_id, '_watcher_([0-9]+)_run_'))[1]::int AS watcher_id,
-               max(created_at) AS last_at
-        FROM public.agent_transcript_snapshot
-        WHERE organization_id = ${organizationId}
-          AND agent_id = ${agentId}
-          AND terminal_status = 'completed'
-          AND conversation_id LIKE '%\\_watcher\\_%\\_run\\_%'
-        GROUP BY 1
-      ) mx
-      JOIN public.watchers w ON w.id = mx.watcher_id
+      SELECT id, name, last_run_completed_at
+      FROM public.watchers
+      WHERE organization_id = ${organizationId}
+        AND agent_id = ${agentId}
+        AND status = 'active'
+        AND last_run_completed_at IS NOT NULL
+      ORDER BY last_run_completed_at DESC
     `;
-		for (const row of watcherRows) {
-			const key = `watcher_${row.watcher_id}`;
-			const at = row.last_at.getTime();
+		for (const row of behaviorRows) {
+			// `watcher_<id>` is the key the panel has always rendered and routed on.
+			const key = `watcher_${row.id}`;
+			const at = row.last_run_completed_at.getTime();
 			byKey.set(key, {
 				id: key,
-				title: row.name ?? `Behavior ${row.watcher_id}`,
+				title: row.name ?? `Behavior ${row.id}`,
+				// Preserves the derived contract: a Behavior entry represents latest
+				// activity, so both timestamps track the last completed run.
 				createdAt: at,
 				updatedAt: at,
 				platform: "behavior",
 				conversationId: key,
-				behaviorId: row.watcher_id,
+				behaviorId: row.id,
 			});
 		}
 	}

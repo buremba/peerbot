@@ -44,6 +44,11 @@ describe('requiresOwnerAdmin', () => {
   it('should require admin for manage_classifiers mutating actions', () => {
     expect(requiresOwnerAdmin('manage_classifiers', { action: 'create' }, false)).toBe(true);
     expect(requiresOwnerAdmin('manage_classifiers', { action: 'classify' }, false)).toBe(true);
+    // `apply` writes event_classifications in bulk. The pinned access-matrix
+    // fixture would also catch a regression, but it is a snapshot — this states
+    // the requirement directly, and names the tier a reader should expect.
+    expect(requiresOwnerAdmin('manage_classifiers', { action: 'apply' }, false)).toBe(true);
+    expect(isPublicReadable('manage_classifiers', { action: 'apply' })).toBe(false);
   });
 
   it('should require admin for manage_operations execute; approve/reject are write-tier (handler enforces admin-or-run-owner)', () => {
@@ -82,10 +87,14 @@ describe('requiresOwnerAdmin', () => {
     );
   });
 
-  it('should require admin for manage_auth_profiles sensitive actions', () => {
+  it('should allow public auth profile metadata reads and require admin for sensitive actions', () => {
     expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'get_auth_profile' }, false)).toBe(
-      true
+      false
     );
+    expect(
+      getRequiredAccessLevel('manage_auth_profiles', { action: 'get_auth_profile' }, false)
+    ).toBe('read');
+    expect(isPublicReadable('manage_auth_profiles', { action: 'get_auth_profile' })).toBe(true);
     expect(requiresOwnerAdmin('manage_auth_profiles', { action: 'test_auth_profile' }, false)).toBe(
       true
     );
@@ -707,19 +716,19 @@ query_sql: read ?=read
 run_sdk: write ?=write
 manage_entity: create=write update=write list=read+public get=read+public delete=admin link=write unlink=write update_link=write list_links=read+public merge=admin resolve_duplicates=admin unmerge=admin ?=read
 manage_entity_schema: list=read+public get=read+public create=admin update=admin delete=admin audit=read+public add_rule=admin remove_rule=admin list_rules=read+public ?=read
-manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin get_connector_source=admin validate_connector_source=admin update_connector_source=admin rollback_connector_version=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin update_connector_default_repair_agent=admin set_channel_about=admin ?=read
+manage_connections: list_connector_groups=read+public list=read+public get=read+public create=write connect=admin update=write apply_chat_connection=admin delete=admin reauthenticate=write test=admin install_connector=admin uninstall_connector=admin get_connector_source=admin validate_connector_source=admin update_connector_source=admin rollback_connector_version=admin toggle_connector_login=admin update_connector_auth=admin update_connector_default_config=admin set_channel_about=admin ?=read
 manage_catalog: list_catalog=read+public list_installed=read+public ?=read
 manage_agents: list=read+public get=read+public create=admin update=admin delete=admin set_system_agent=admin ?=read
 manage_conversations: list=read get=read send=write ?=read
 manage_feeds: list_feeds=read+public read_feed=read+public read_feeds=read+public create_feed=admin update_feed=admin delete_feed=admin trigger_feed=admin ?=read
-manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=admin test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
+manage_auth_profiles: list_auth_profiles=read+public get_auth_profile=read+public test_auth_profile=admin create_auth_profile=write update_auth_profile=write delete_auth_profile=admin set_default_auth_profile=admin ?=read
 manage_operations: list_available=read+public execute=admin list_runs=read+public get_run=read+public list_activity=read+public approve=write reject=write approve_batch=write reject_batch=write ?=read
 notify: send=admin ?=admin
 manage_schedules: create=admin list=admin update=admin pause=admin cancel=admin ?=admin
 manage_behaviors: create=admin list=read+public update=admin create_version=admin complete_window=write trigger=admin delete=admin set_reaction_script=admin get_versions=read+public get_version_details=read+public get_component_reference=read+public submit_feedback=admin get_feedback=read+public list_promoted=read create_from_version=admin ?=read
 get_behavior: read+public ?=read+public
 read_knowledge: read+public ?=read+public
-manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin ?=read
+manage_classifiers: create=admin list=read+public generate_embeddings=admin delete=admin classify=admin apply=admin ?=read
 manage_view_templates: set=admin get=read+public rollback=admin remove_tab=admin clear=admin ?=read
 list_organizations: read ?=read
 list_metrics: read ?=read

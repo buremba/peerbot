@@ -744,7 +744,12 @@ export async function autoProvisionGithubIssueFeeds(params: {
 	const sql = getDb();
 	const enqueue =
 		params.enqueueSyncRun ??
-		((feedId: number) => createSyncRun(feedId, {} as never, sql));
+		(async (feedId: number) => {
+			const created = await createSyncRun(feedId, {} as never, sql);
+			// Callers here only record run ids; the skip reason is already logged
+			// by createSyncRun and this path has no surface to report it on.
+			return created.ok ? created.runId : null;
+		});
 
 	for (const repo of repos) {
 		// Create the issues feed for this repo, DB-enforced idempotent on

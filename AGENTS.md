@@ -11,6 +11,7 @@
 - One branch = one concern (not one file). Tangential task → commit/push/open current work, then branch fresh from `main`. Split only for genuinely independent concerns or an unreviewable diff.
 - **Multi-replica correctness is mandatory.** Never put shared required state in an in-memory Map/singleton another replica must read or mutate. If a feature relies on cross-pod visibility, use Postgres-mediated state/signal.
 - **`events` is append-only.** Never `DELETE FROM events`; tombstone/supersede instead.
+- **Request paths never aggregate history.** No `GROUP BY`, `DISTINCT ON`, per-row `regexp_*`, or leading-wildcard `LIKE` over an append-only / run-history table (`events`, `agent_transcript_snapshot`, `session_calls`, …) on a user-facing read path. History only grows, so read-time aggregation cost grows with it while the answer stays bounded. Materialize the row or counter at WRITE time and read it back by index; run the one-time aggregation in a migration, never per request. Aggregating bounded config tables (`connections`, `watchers`, `agent_users`) is fine.
 - **Never bulk-delete prod `organization` rows**, including zero-activity ones — empty-looking orgs are frequently real human signups. Surface them one at a time for confirmation.
 - **Workers never receive real credentials.** They may receive only placeholders/proxied access. The only exceptions are device-pinned connectors and short-lived provider-derived credential leases (see `packages/server/AGENTS.md`); a durable stored credential is never one of them.
 - Default to static `import`. New dynamic imports require measured cost justification here or in the package AGENTS plus a rationale comment at the call site. Tests may dynamically import after mocks.
@@ -21,6 +22,8 @@
 - The agent-facing product name is **Behavior**; `watcher` is internal engine/DB vocabulary. It must not appear in MCP tool schemas/names/descriptions, ClientSDK discovery metadata, or the connector-sdk public reaction contract — `make pre-pr` fails on it. Internal identifiers (`actingWatcherId`, table/column names, comments) are fine.
 - `make review-fix` is the unposted fixer pass and runs BEFORE the first `make review`; verify its diff and commit it. Never iterate `make review` as a find-fix loop — each posted round costs a review + CI cycle.
 - Fix the class, not the instance: on the first hit, grep every other instance and fix in one pass — a diff-scoped reviewer only ever finds the next one. Same root cause twice = stop reviewing, grep-enumerate. A class-wide fix is in scope for the branch that found it and does not count as scope creep.
+- **Fail closed on durable dispatch/delivery state.** When a durable coordination or delivery operation fails, its caller must not reinterpret the error as proceed/deliver/skip. Propagate a retry, defer, or terminal-failure outcome with a visible log; if the operation may already have succeeded, reconcile idempotently before retrying. Treat lock timeouts, pool errors, and ambiguous or expired rows as failures, not as "nothing changed."
+- **Coordination design brake.** A change that needs a second lock, a second retry/deferral budget, or a prose termination argument to explain why it halts is patching a misplaced check — stop and re-derive where the decision belongs before adding mechanism. Find the chokepoint that already serializes the action (e.g. worker dispatch is serialized by `job-router` on the worker-SSE-owner pod) and put the check there; prefer deleting the state transition over coordinating it, and reuse queue-native retry over hand-rolled hold/requeue.
 - **Stage by explicit path; never commit the whole tree of a worktree that hosted other work.** A commit is a snapshot — stale file copies silently revert already-merged PRs. After commit/rebase, `git diff --name-only origin/main...HEAD` must equal the task's intended file list; extra files = stop. Verify a "reverts merged work" review finding by diff direction against `origin/main`, never dismiss it as merge-base noise.
 
 ## Ship a change
@@ -33,6 +36,7 @@
 7. `git push -u origin <branch>` → `gh pr create` (fill `.github/pull_request_template.md`; conventional-commit title, e.g. `fix(server): …`).
 8. `make review` **once** on the settled HEAD. It posts the `pi-review` status, which is a REQUIRED check.
 9. Merge squash once CI is green: `gh pr merge <n> --squash --admin`. Never `--admin` past a check that has not reported.
+10. Prod-visible surface? Verify it live after rollout. Set a self-rescheduling `ScheduleWakeup` (~1500s) carrying the rollout gate: poll the deployed SHA, then `git merge-base --is-ancestor "$MERGE_SHA" "$DEPLOYED_SHA"` with `MERGE_SHA=$(gh pr view <n> --json mergeCommit --jq .mergeCommit.oid)`. Two ways this gate silently never opens — **gate on the squash commit, not your branch head** (a squash merge writes a new commit with no ancestry link to the branch, so the branch head exits 1 forever: PR #2280 has identical trees and still fails), and **keep that argument order** (merge commit first; reversed, it accepts a stale deploy). Run the live check when it lands, and write the result back to memory.
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.
@@ -48,6 +52,7 @@
 - Do repetitive multi-file edits (renames, signature changes, import rewrites) inline or with one script. Reserve subagents for read-only breadth or genuinely isolated parallel work.
 - Before adding an env var, grep for the one the codebase already reads. Do not rename existing vars to a "cleaner" convention unasked.
 - Deleting code needs structural evidence (dangling import, completed migration, superseded impl). Low prod usage is not a delete signal; trace the workflow, not just the import graph — docs and help text are load-bearing too.
+- **Absence is never proven by a grep on a working tree.** To prove code does *not* exist, run `git fetch -q origin && git grep <pattern> origin/main` — the fetch is load-bearing, `origin/main` itself goes stale. Applies to every existence check, including the deletion-evidence rule above.
 - Slack link pasted (`slack.com/archives/…?thread_ts=`) → run `scripts/slack-thread-viewer.js "<link>"` first.
 - To drive the user's real logged-in browser, use the paired Owletto extension — recipe in `docs/BROWSER_TESTING.md`. Do **not** assume CDP/browser-auth is required.
 - Unsure in planning → ask before making conflicting or irreversible choices. Mid-execution, block on a question only for irreversible/destructive actions or decisions that are genuinely the user's; for reversible choices with a clear recommended option, take it and flag the choice in your summary.
@@ -56,4 +61,5 @@
 - Never poll in the foreground (`sleep`/`until`/`while` wait loops, repeated `tail`). Run long waits (dev-server boot, CI, deploys) in the background and act on the completion notification.
 - Prefer DOM reads (`get_page_text`, `read_page`, `javascript_tool`) over screenshots; screenshot only when visual layout itself is under test. Screenshots are the #1 context-bloat source.
 - Read a file before editing it, and re-read it after any external change (a fixer pass, another agent, a rebase). Blind edits fail and cost a retry round-trip.
+- Read PR status compactly: `gh pr view <n> --json number,title,isDraft,mergeStateStatus,reviewDecision` plus `gh pr checks <n> --required`. Never `--json statusCheckRollup` — measured on PR 2280 it is 7520 bytes against 861, 8.7x larger and less legible.
 - Batch narrow fixes into one commit, verified once at the end of the batch — not per fix. It never justifies skipping a reproducer or a correctness-critical test. For a one-line or config-only change, take one CI snapshot and move on.

@@ -1,6 +1,43 @@
 import { type DbClient, pgBigintArray } from "../db/client";
 import { loadLiveEntityIdentities } from "./identities";
-import { assessEntityResolution } from "./policy";
+import {
+	assessEntityResolution,
+	type EntityResolutionAssessment,
+	RESOLUTION_FINGERPRINT_VERSION,
+} from "./policy";
+
+/**
+ * Why a reviewed merge could not be applied against its stored fingerprint.
+ *
+ * `changed` means the workspace moved under the reviewer: same hash inputs,
+ * different values. The proposal is genuinely stale.
+ *
+ * `incomparable` means the stored digest has no known current version, so it
+ * cannot be compared at all. Nothing about the entities necessarily changed —
+ * treating this as staleness makes the proposal permanently unapprovable,
+ * because every retry recomputes the same mismatch.
+ */
+type ResolutionFingerprintFailure = "changed" | "incomparable";
+
+export class ResolutionFingerprintError extends Error {
+	readonly failure: ResolutionFingerprintFailure;
+	/** The freshly computed assessment, so a caller can refresh without redoing the work. */
+	readonly assessment: EntityResolutionAssessment;
+
+	constructor(
+		failure: ResolutionFingerprintFailure,
+		assessment: EntityResolutionAssessment,
+	) {
+		super(
+			failure === "incomparable"
+				? "Merge evidence was recorded without a known current resolution format"
+				: "Merge evidence or resolution policy changed after review was requested",
+		);
+		this.name = "ResolutionFingerprintError";
+		this.failure = failure;
+		this.assessment = assessment;
+	}
+}
 
 /** Lock and re-evaluate a reviewed merge immediately before applying it. */
 export async function assertResolutionFingerprintCurrent(
@@ -10,8 +47,15 @@ export async function assertResolutionFingerprintCurrent(
 		winnerId: number;
 		loserIds: number[];
 		expectedFingerprint: string;
+		/**
+		 * Which format produced `expectedFingerprint`. Required, and deliberately
+		 * without a default: a live fingerprint computed in this process is current
+		 * by construction, while an unstamped stored proposal has unknown provenance.
+		 * Guessing a version could silently accept incomparable evidence.
+		 */
+		expectedVersion: number | null;
 	},
-): Promise<void> {
+): Promise<EntityResolutionAssessment> {
 	const ids = [...input.loserIds, input.winnerId].sort((a, b) => a - b);
 	const rows = await db<{
 		id: number;
@@ -62,9 +106,25 @@ export async function assertResolutionFingerprintCurrent(
 			identities: identities.get(loserId) ?? [],
 		})),
 	});
-	if (assessment.fingerprint !== input.expectedFingerprint) {
+	// A newer stamp must fail closed during a rolling deploy rather than being
+	// downgraded by an older replica.
+	if (
+		input.expectedVersion !== null &&
+		input.expectedVersion > RESOLUTION_FINGERPRINT_VERSION
+	) {
 		throw new Error(
-			"Merge evidence or resolution policy changed after review was requested",
+			"Merge evidence was recorded under a newer resolution format and cannot be verified by this server",
 		);
 	}
+	// Exact equality is safe even for an unstamped or older proposal. The version
+	// is needed only to interpret a mismatch: missing/older inputs are
+	// incomparable, while a current-version mismatch proves drift.
+	if (assessment.fingerprint === input.expectedFingerprint) return assessment;
+	if (
+		input.expectedVersion === null ||
+		input.expectedVersion < RESOLUTION_FINGERPRINT_VERSION
+	) {
+		throw new ResolutionFingerprintError("incomparable", assessment);
+	}
+	throw new ResolutionFingerprintError("changed", assessment);
 }

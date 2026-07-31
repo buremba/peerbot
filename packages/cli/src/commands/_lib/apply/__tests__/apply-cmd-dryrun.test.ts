@@ -209,7 +209,6 @@ export default defineConfig({
   behaviors: [defineBehavior({
     agent,
     slug: "review-pr",
-    prompt: "Review it",
     triggers: [{
       kind: "event",
       connector_key: "github",

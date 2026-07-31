@@ -15,6 +15,7 @@ import logger from '../utils/logger';
 import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
+import { retryPendingFeedAutoPausedSignals } from '../behaviors/platform-events';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
 import {
@@ -199,11 +200,15 @@ function registerMaintenanceTasks(
 
   // Connector health alerter — surfaces connectors that have silently died
   // (every feed failing, an active connection collecting nothing, or a feed
-  // that stopped syncing for days) which the per-feed repair-agent can't catch
+  // that stopped syncing for days) which per-feed auto-pause alone can't catch
   // (it only fires when a worker actually runs). Single-claimant per tick;
   // alerts fire on the transition into unhealthy via a Postgres-mediated marker
   // (connections.unhealthy_alerted_at), and ride the existing pino→Sentry→Slack
-  // path — no new alerting infra. Read-only over connections/feeds otherwise.
+  // path — no new alerting infra.
+  //
+  // Also redelivers feed.auto_paused signals if activation was lost after a
+  // hard pause (idempotent delivery_id). Remediation Behaviors come from the
+  // Behavior catalog — not auto-created watchers.
   scheduler.register(
     'connector-health-alert',
     async () => {
@@ -218,6 +223,22 @@ function registerMaintenanceTasks(
           },
           '[task] connector-health-alert swept'
         );
+      }
+
+      try {
+        const retry = await retryPendingFeedAutoPausedSignals({ limit: 50 });
+        if (retry.attempted > 0 || retry.errors > 0) {
+          logger.info(
+            {
+              scanned: retry.scanned,
+              attempted: retry.attempted,
+              errors: retry.errors,
+            },
+            '[task] feed.auto_paused redelivery tick'
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, '[task] feed.auto_paused redelivery failed');
       }
     },
     { cron: '*/15 * * * *' }

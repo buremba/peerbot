@@ -27,12 +27,13 @@ import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
 import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
-import type {
-  IMessageQueue,
-  JobHandler,
-  QueueJob,
-  QueueOptions,
-  QueueStats,
+import {
+  isDeferralError,
+  type IMessageQueue,
+  type JobHandler,
+  type QueueJob,
+  type QueueOptions,
+  type QueueStats,
 } from "./types.js";
 
 const logger = createLogger("runs-queue");
@@ -646,15 +647,25 @@ export class RunsQueue implements IMessageQueue {
       await worker.handler(job);
       await this.markCompleted(claimed.runId);
     } catch (err) {
-      const nextAttempt = claimed.attempts + 1;
-      if (nextAttempt >= claimed.maxAttempts) {
-        await this.markFailed(claimed.runId, err);
-      } else {
+      if (isDeferralError(err)) {
+        // Waiting, not failing — reschedule without consuming an attempt
+        // (see isDeferralError in types.ts for the contract).
         await this.scheduleRetry(
           claimed.runId,
-          nextAttempt,
+          claimed.attempts,
           claimed.retryDelaySeconds,
         );
+      } else {
+        const nextAttempt = claimed.attempts + 1;
+        if (nextAttempt >= claimed.maxAttempts) {
+          await this.markFailed(claimed.runId, err);
+        } else {
+          await this.scheduleRetry(
+            claimed.runId,
+            nextAttempt,
+            claimed.retryDelaySeconds,
+          );
+        }
       }
     } finally {
       clearInterval(heartbeat);

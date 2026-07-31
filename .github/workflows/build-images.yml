@@ -53,10 +53,19 @@ env:
   # memory), so main-branch pushes build amd64 only. This dropped the
   # build-app step from ~25min to ~8min AND fixed the disk-full failure
   # mode (~14GB GHA runner couldn't hold both arch Playwright/Chrome
-  # downloads + image layers + buildx cache). The workflow_dispatch
-  # `platforms` input lets you rebuild multi-arch on demand if a dev
-  # machine needs the arm64 image, without slowing every prod deploy.
-  BUILD_PLATFORMS: ${{ inputs.platforms || 'linux/amd64' }}
+  # downloads + image layers + buildx cache).
+  #
+  # Releases are the exception: the tagged images are what self-hosters
+  # pull, and a chunk of them are on arm64 (Apple Silicon, Ampere, Graviton).
+  # Until this, `inputs.platforms` was only populated on workflow_dispatch,
+  # so every published release fell through to amd64-only and ARM operators
+  # silently ran the whole stack — Chromium included — under emulation.
+  # Releases are rare and not latency-sensitive, so they absorb the longer
+  # multi-arch build; main pushes stay fast.
+  BUILD_PLATFORMS: >-
+    ${{ inputs.platforms
+        || (github.event_name == 'release' && 'linux/amd64,linux/arm64')
+        || 'linux/amd64' }}
 
 jobs:
   generate-tag:
@@ -109,7 +118,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       - name: Build worker image (amd64, load, no push)
         uses: useblacksmith/build-push-action@v2
@@ -159,7 +168,7 @@ jobs:
         uses: docker/setup-qemu-action@v4
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       - name: Log in to Container Registry
         uses: docker/login-action@v4
@@ -204,6 +213,61 @@ jobs:
             https://api.github.com/user/packages/container/lobu-app/visibility \
             -d '{"visibility":"public"}' || true
 
+  # App-image smoke. Deliberately runs AFTER build-app has pushed, not before.
+  #
+  # `connector-parity-smoke` gates the push because a broken worker must never
+  # reach the registry. This one is the opposite shape on purpose: it needs the
+  # pushed tag to exist so it can smoke the EXACT artifact Flux will roll out,
+  # rather than a rebuild that could differ. So it cannot block the rollout —
+  # but it does fail the workflow, which reddens main and is what stops a
+  # release being cut on a broken image.
+  #
+  # Nothing else runs the app image. build-images only builds it, and CI's
+  # suites run from source. That gap shipped #2231 (no `lobu` on PATH in the
+  # image) and #2183 (app image serving 404s for its own assets) — both with
+  # every check green.
+  app-image-smoke:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: [generate-tag, build-app]
+    if: needs.generate-tag.outputs.should_publish == 'true'
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lobu_app_smoke
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_app_smoke
+    steps:
+      # Only the smoke script is used from the checkout; the image under test
+      # comes from the registry.
+      - uses: actions/checkout@v7
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke the pushed app image
+        run: |
+          chmod +x scripts/app-image-smoke.sh
+          scripts/app-image-smoke.sh \
+            "${REGISTRY}/${IMAGE_NAME_APP}:${{ needs.generate-tag.outputs.tag }}"
+
   build-worker:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     # Gate the worker push (and transitively the app push, which `needs:
@@ -222,7 +286,7 @@ jobs:
         uses: docker/setup-qemu-action@v4
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       - name: Log in to Container Registry
         uses: docker/login-action@v4
@@ -278,7 +342,7 @@ jobs:
         uses: docker/setup-qemu-action@v4
 
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@v2
 
       - name: Log in to Container Registry
         uses: docker/login-action@v4
@@ -329,9 +393,12 @@ jobs:
   # `slack-devops` Provider uses (devops channel) so cluster-side and CI-side
   # deploy failures land in one place. Webhook lives in the SLACK_DEPLOY_WEBHOOK_URL
   # repo secret; if unset the curl is skipped, never failing the job.
+  # app-image-smoke is in `needs` too: it runs after the tag is already pushed,
+  # so when it fails Flux may already be rolling a broken image — exactly the
+  # case that must ping, not just redden the workflow.
   notify-failure:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app]
+    needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app, app-image-smoke]
     if: >-
       failure()
       && needs.generate-tag.outputs.should_publish == 'true'
@@ -356,6 +423,6 @@ jobs:
           # First line of commit/release summary only, JSON-escaped via jq.
           first_line=$(printf '%s' "$RUN_SUMMARY" | head -n1)
           payload=$(jq -nc \
-            --arg text "<@U09513HH1N1> :rotating_light: build-images failed on \`${REF_NAME}\` — sibling image tags may be incomplete. <${RUN_URL}|run> · <${COMMIT_URL}|${SHA_SHORT:0:7}> by ${ACTOR}\n> ${first_line}" \
+            --arg text "<@U09513HH1N1> :rotating_light: build-images failed on \`${REF_NAME}\` — sibling image tags may be incomplete, or the pushed app image failed its smoke. <${RUN_URL}|run> · <${COMMIT_URL}|${SHA_SHORT:0:7}> by ${ACTOR}\n> ${first_line}" \
             '{text: $text}')
           curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

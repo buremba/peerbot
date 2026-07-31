@@ -92,9 +92,8 @@ export interface ConversationMessage {
 }
 
 // Agent-settings nested types (NetworkConfig, NixConfig, ToolsConfig,
-// SkillConfig, SkillsConfig, AgentInlineGuardrail, ThinkingLevel,
-// SkillPreToolGuardrail) now live in ./contracts/agent-settings.ts as the
-// single TypeBox-schema source (Static<typeof ...>). They are re-exported
+// SkillConfig, SkillsConfig, AgentInlineGuardrail, ThinkingLevel) now live in
+// ./contracts/agent-settings.ts as the single TypeBox-schema source (Static<typeof ...>). They are re-exported
 // from there at the bottom of this file so the @lobu/core public surface and
 // core-internal imports keep resolving. The hand-written duplicates that
 // lived here were structurally identical but a separate drift surface.
@@ -118,16 +117,15 @@ export interface McpOAuthConfig {
   resource?: string;
 }
 
-// SkillConfig and SkillPreToolGuardrail now come from
-// ./contracts/agent-settings (re-exported at the bottom). The hand-written
-// duplicates that lived here were structurally identical but a separate drift
+// SkillConfig now comes from ./contracts/agent-settings (re-exported at the
+// bottom). The hand-written duplicates that lived here were structurally
+// identical but a separate drift
 // surface; removed when the schema became the single source.
 
 /**
  * An operator-authored custom guardrail stored on an agent (`AgentSettings.
- * guardrailsInline`). Unlike skill-declared guardrails (pre-tool only), the
- * operator owns the agent so a custom guardrail may run at any stage. Each one
- * is an inline LLM judge: the `policy` is evaluated by `model` (defaulting to
+ * guardrailsInline`). The operator owns the agent, so a custom guardrail may
+ * run at any stage. Each one is an inline LLM judge: the `policy` is evaluated by `model` (defaulting to
  * the judge default) and trips when the judge denies.
  *
  * `name` is operator-given and must be unique across the agent's guardrails
@@ -203,6 +201,8 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 export interface InstructionContext {
   userId: string;
   agentId: string;
+  /** Signed chat connection id for connection-scoped instruction lookups. */
+  connectionId?: string;
   /**
    * Owning org of the agent. An agent id can exist in multiple orgs (PK is
    * `(organization_id, id)`), so instruction providers must scope their
@@ -286,9 +286,9 @@ export interface ThreadResponsePayload {
    */
   toolsUsed?: string[];
   /**
-   * Raw error message. For provider errors this is relayed verbatim as the
-   * user-facing body (the provider's own text already says the useful thing,
-   * e.g. the quota reset time); `errorCode` only selects the CTA link.
+   * Raw error message. When provider context is available, the gateway labels
+   * the source and unwraps the common JSON message envelope without rewording
+   * the provider's sentence; `errorCode` selects the CTA link.
    */
   error?: string;
   errorCode?: string;
@@ -413,7 +413,6 @@ export type {
   NetworkConfig,
   NixConfig,
   SkillConfig,
-  SkillPreToolGuardrail,
   SkillsConfig,
   ThinkingLevel,
   ToolsConfig,

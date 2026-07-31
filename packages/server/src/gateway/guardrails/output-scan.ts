@@ -72,7 +72,6 @@ export async function runOutputGuardrailScan(
     });
     const resolved = resolveAgentGuardrails(
       settings ?? { guardrails: [] },
-      (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
       registry,
       { inline: enabledInlineGuardrails(settings) }
     );
@@ -171,7 +170,6 @@ export class OutputGuardrailScanner {
       });
       const resolved = resolveAgentGuardrails(
         settings ?? { guardrails: [] },
-        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );
@@ -214,7 +212,6 @@ export class OutputGuardrailScanner {
       });
       const resolved = resolveAgentGuardrails(
         settings ?? { guardrails: [] },
-        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
         this.registry!,
         { inline: enabledInlineGuardrails(settings) }
       );

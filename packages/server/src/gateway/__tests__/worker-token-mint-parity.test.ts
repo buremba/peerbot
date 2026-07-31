@@ -153,6 +153,28 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     }
   });
 
+  test("PARITY: both mints carry the nix package claim", () => {
+    // The asymmetry this closes: #2243 signed the connector's DOMAINS on both
+    // mints but not its PACKAGES, so a remote-runtime agent got an
+    // authenticated `gh` that was never installed. A mint that drops this claim
+    // reproduces exactly that.
+    const packageArgs = {
+      ...baseArgs,
+      allowedDomains: ["api.github.com"],
+      nixPackages: ["gh"],
+    };
+    const runJob = verifyWorkerToken(
+      buildRunJobToken({ ...packageArgs, runId: 7 }) as string
+    );
+    const deployment = verifyWorkerToken(
+      buildDeploymentWorkerToken(packageArgs)
+    );
+
+    for (const decoded of [runJob, deployment]) {
+      expect(decoded?.nixPackages).toEqual(["gh"]);
+    }
+  });
+
   test("the shipped bug reproduces: a chat token WITHOUT connectionId is rejected", () => {
     // Mint via the real path but with no connectionId in platformMetadata —
     // this is the state MessageConsumer produced before #1274.

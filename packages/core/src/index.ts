@@ -118,7 +118,6 @@ export type {
   RegistryEntry,
   SessionContext,
   SkillConfig,
-  SkillPreToolGuardrail,
   SkillsConfig,
   SuggestedPrompt,
   ThinkingLevel,

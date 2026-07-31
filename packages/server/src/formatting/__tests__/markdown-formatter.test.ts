@@ -278,6 +278,49 @@ describe('formatToolResult', () => {
       const md = formatToolResult('read_knowledge', result);
       expect(md).toContain('0 total');
     });
+
+    it('keeps structured Behavior context visible when window content is empty', () => {
+      const result = {
+        content: [],
+        total: 0,
+        page: { offset: 0, limit: 50, has_more: false },
+        window_token: 'window-token',
+        window_start: '2026-07-15T00:00:00.000Z',
+        window_end: '2026-07-16T00:00:00.000Z',
+        entities: [
+          {
+            id: 7,
+            name: 'Acme',
+            type: 'company',
+            metadata: { stage: 'seed' },
+            field_controls: { stage: { note: 'confirmed by user' } },
+          },
+        ],
+        sources: {
+          task_list: [{ id: 11, action: 'Send the report', status: 'backlog' }],
+          empty_source: [],
+        },
+        reactions_guidance: 'Notify only for actionable changes.',
+        past_reactions: '## Past Reactions\n- Recent reaction: sent one notification.',
+        past_feedback:
+          '## Past Corrections from User Feedback\n- Recent feedback: avoid duplicate alerts.',
+      };
+
+      const md = formatToolResult('read_knowledge', result);
+      expect(md).toContain('Bound Entities (1)');
+      expect(md).toContain('Acme');
+      expect(md).toContain('Named Sources');
+      expect(md).toContain('task_list (1)');
+      expect(md).toContain('Send the report');
+      expect(md).toContain('empty_source (0)');
+      expect(md).toContain('Notify only for actionable changes.');
+      expect(md).toContain('Recent reaction: sent one notification.');
+      expect(md).toContain('Recent feedback: avoid duplicate alerts.');
+      expect(md.match(/^#{2,3} Past Reactions$/gm)).toHaveLength(1);
+      expect(md.match(/^#{2,3} Past (?:Feedback|Corrections from User Feedback)$/gm)).toHaveLength(
+        1
+      );
+    });
   });
 
   describe('unknown tool', () => {

@@ -262,6 +262,158 @@ describe("executePlan — BYO chat connection dependencies", () => {
   });
 });
 
+describe("executePlan — atomic Behavior triggers+prompt update", () => {
+  test("sends simultaneous prompt+trigger drift through createBehaviorVersion only", async () => {
+    const desired = {
+      slug: "digest",
+      agent: "triage",
+      prompt: "Now scheduled digest instructions.",
+      triggers: [{ kind: "schedule" as const, cron: "0 9 * * *" }],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.watchers = [desired];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "watcher",
+          verb: "update",
+          id: desired.slug,
+          desired,
+          changedFields: ["triggers", "prompt"],
+          versionBoundFields: ["prompt"],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [
+        {
+          slug: "digest",
+          behavior_id: "42",
+          agent_id: "triage",
+          prompt: "",
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "slack",
+              event_types: ["message.created"],
+              execution: "turn",
+            },
+          ],
+        },
+      ],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const updateBehavior = mock(async () => ({}));
+    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const client = {
+      updateBehavior,
+      createBehaviorVersion,
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    // Must not split triggers onto update (would fail the instruction rule
+    // against the empty current prompt before create_version lands).
+    expect(updateBehavior).not.toHaveBeenCalled();
+    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
+    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
+      behavior_id: "42",
+      prompt: "Now scheduled digest instructions.",
+      triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+    });
+  });
+
+  test("sends simultaneous skills+trigger drift through createBehaviorVersion only", async () => {
+    const desired = {
+      slug: "skills-digest",
+      agent: "triage",
+      prompt: "",
+      skillSnapshots: [
+        { name: "digest-runbook", content: "Produce the scheduled digest." },
+      ],
+      triggers: [{ kind: "schedule" as const, cron: "0 9 * * *" }],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.watchers = [desired];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "watcher",
+          verb: "update",
+          id: desired.slug,
+          desired,
+          changedFields: ["triggers", "skills"],
+          versionBoundFields: ["skills"],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [
+        {
+          slug: desired.slug,
+          behavior_id: "43",
+          agent_id: "triage",
+          prompt: "",
+          skills: null,
+          triggers: [
+            {
+              kind: "event",
+              connector_key: "slack",
+              event_types: ["message.created"],
+              execution: "turn",
+            },
+          ],
+        },
+      ],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const updateBehavior = mock(async () => ({}));
+    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const client = {
+      updateBehavior,
+      createBehaviorVersion,
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(updateBehavior).not.toHaveBeenCalled();
+    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
+    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
+      behavior_id: "43",
+      skills: desired.skillSnapshots,
+      triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
+    });
+  });
+});
+
 describe("normalizeConnectionConfigScope — feed-scoped keys demote to feeds", () => {
   // A connector whose `search_query`/`lookback_days` are feed-scoped (declared
   // on the `stories` feed), with one genuinely connection-scoped key (`region`).

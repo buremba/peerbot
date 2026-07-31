@@ -27,7 +27,6 @@ export const OWNER_ROUTE_SEGMENTS = [
   "activity",
   "agents",
   "connectors",
-  "devices",
   "memory",
   "members",
   "settings",
@@ -53,6 +52,9 @@ export const REMOVED_OWNER_SEGMENTS = [
   "environments",
   "infrastructure",
   "inference-providers",
+  // Removed 2026-07-31 by the connect-surface merge: the devices page folded
+  // into /connectors (per-device detail lives at /connectors/device/{id}).
+  "devices",
 ] as const;
 
 /**
@@ -153,3 +155,35 @@ export const SANDBOX_ROW_KEY_PREFIX = "sandbox:";
  * runtime registry (`listGatewayRuntimeProviderIds`).
  */
 export const SANDBOX_PROVIDER_KEY_PREFIX = "sandbox-provider:";
+
+/**
+ * Path segments under `/connectors/` that are real routes, not connector keys:
+ * `/connectors/device/{id}`, `/connectors/client/{id}`, `/connectors/app/{id}`,
+ * plus the static `create` flow and `deployments` pages.
+ *
+ * Model providers and sandboxes are namespaced INTO the `$connectorKey` param
+ * with a `prefix:` because they share that one detail route. Devices, clients
+ * and first-party apps get their own static segments instead — readable URLs
+ * with no percent-encoded colon — which means a connector may not claim these
+ * keys: `/connectors/device/42` would resolve to the device route, and the
+ * connection page it was meant to open would be unreachable. Enforced at
+ * install time by `validateConnectorMetadata`.
+ */
+export const CONNECTOR_SUBROUTE_SEGMENTS = [
+  "device",
+  "client",
+  "app",
+  "create",
+  "deployments",
+] as const;
+
+/**
+ * Whether a connector key would be shadowed by a `/connectors/*` subroute.
+ * Compared lowercased: the router matches static segments case-insensitively
+ * (no `caseSensitive` option is set), so `Device` is shadowed like `device`.
+ */
+export function isReservedConnectorKey(key: string): boolean {
+  return (CONNECTOR_SUBROUTE_SEGMENTS as readonly string[]).includes(
+    key.toLowerCase()
+  );
+}

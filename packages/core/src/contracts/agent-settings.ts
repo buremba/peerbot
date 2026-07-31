@@ -116,17 +116,6 @@ const ThinkingLevelSchema = Type.Union([
 ]);
 export type ThinkingLevel = Static<typeof ThinkingLevelSchema>;
 
-export const SkillPreToolGuardrailSchema = Type.Union([
-  Type.Object({ kind: Type.Literal("builtin"), name: Type.String() }),
-  Type.Object({
-    kind: Type.Literal("judge"),
-    policy: Type.String(),
-    tools: Type.Optional(Type.Array(Type.String())),
-    model: Type.Optional(Type.String()),
-  }),
-]);
-export type SkillPreToolGuardrail = Static<typeof SkillPreToolGuardrailSchema>;
-
 export const SkillConfigSchema = Type.Object({
   repo: Type.String(),
   name: Type.String(),
@@ -135,16 +124,13 @@ export const SkillConfigSchema = Type.Object({
   enabled: Type.Boolean(),
   system: Type.Optional(Type.Boolean()),
   content: Type.Optional(Type.String()),
-  contentFetchedAt: Type.Optional(Type.Number()),
-  nixPackages: Type.Optional(Type.Array(Type.String())),
-  providers: Type.Optional(Type.Array(Type.String())),
+  // No `nixPackages`: a skill is instruction text, and generic tooling lives on
+  // the agent's `nixConfig` (issue #2320). Stored rows written before the field
+  // was dropped still validate — `Type.Object` admits unknown keys — and every
+  // reader has ignored the value since #2324, so a legacy entry simply stops
+  // round-tripping through the editor the first time an agent's skills are saved.
   modelPreference: Type.Optional(Type.String()),
   thinkingLevel: Type.Optional(ThinkingLevelSchema),
-  guardrails: Type.Optional(
-    Type.Object({
-      "pre-tool": Type.Optional(Type.Array(SkillPreToolGuardrailSchema)),
-    })
-  ),
 });
 export type SkillConfig = Static<typeof SkillConfigSchema>;
 

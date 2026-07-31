@@ -7,7 +7,7 @@
 
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { DbClient } from '../../db/client';
-import { pgTextArray } from '../../db/client';
+import { pgTextArray, parsePgTextArray } from '../../db/client';
 import { recordLifecycleEvent } from '../../utils/insert-event';
 import type { OAuthClient, OAuthClientMetadata, StoredOAuthClient } from './types';
 import { generateClientId, generateClientSecret } from './utils';
@@ -369,19 +369,24 @@ export class OAuthClientsStore {
       client_secret_expires_at: stored.client_secret_expires_at
         ? Math.floor(new Date(stored.client_secret_expires_at).getTime() / 1000)
         : undefined,
-      redirect_uris: stored.redirect_uris,
+      // `text[]` columns arrive as the raw literal `{a,b}` because the pool
+      // runs `fetch_types: false`. Parse at this boundary — it is the single
+      // read path for both getClient() and listClientsByOrganization(), and
+      // callers do membership tests (`redirect_uris.includes(...)`) that
+      // silently degrade to substring matching against a string.
+      redirect_uris: parsePgTextArray(stored.redirect_uris),
       token_endpoint_auth_method:
         (stored.token_endpoint_auth_method as
           | 'none'
           | 'client_secret_post'
           | 'client_secret_basic') || 'none',
-      grant_types: stored.grant_types,
-      response_types: stored.response_types,
+      grant_types: parsePgTextArray(stored.grant_types),
+      response_types: parsePgTextArray(stored.response_types),
       client_name: stored.client_name || undefined,
       client_uri: stored.client_uri || undefined,
       logo_uri: stored.logo_uri || undefined,
       scope: stored.scope || undefined,
-      contacts: stored.contacts || undefined,
+      contacts: stored.contacts ? parsePgTextArray(stored.contacts) : undefined,
       tos_uri: stored.tos_uri || undefined,
       policy_uri: stored.policy_uri || undefined,
       software_id: stored.software_id || undefined,

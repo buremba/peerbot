@@ -28,7 +28,9 @@ const rmMock = mock(async (remotePath: string) => {
 const writeFilesMock = mock(async () => undefined);
 const readFileToBufferMock = mock(async () => null);
 const runCommandMock = mock(async (params: { args?: string[] }) => {
-  const command = params.args?.[1] ?? "";
+  // args = ["-lc", <wrapper script>, "lobu-exec", <cwd>, <command>] — the
+  // submitted command is the last positional, not the script at index 1.
+  const command = params.args?.[4] ?? "";
   let stdout = "command stdout\n";
   let exitCode = 0;
   if (command.includes("echo remote output > output.txt")) {
@@ -92,6 +94,28 @@ const readSandboxSecretSpy = spyOn(
 // registers the Vercel provider. The @vercel/sandbox mock above is installed
 // first so the provider module binds to it.
 const { createRuntimeRoutes } = await import("../routes/internal/runtime.js");
+const { execArgv } = (await import("../runtime/providers/vercel.js")).__testOnly;
+const { registerGatewayRuntimeProvider } = await import(
+  "../runtime/registry.js"
+);
+
+/**
+ * A provider that has no `ensurePackages`. `ensurePackages` is optional on the
+ * contract precisely so "this backend cannot provision" is expressible; the
+ * route must degrade rather than throw on a provider that omits it.
+ */
+const noProvisionExecMock = mock(async () => ({
+  stdout: "no-provision stdout\n",
+  stderr: "",
+  exitCode: 0,
+  meta: { name: "no-provision" },
+}));
+registerGatewayRuntimeProvider({
+  id: "noprovision",
+  credentialFields: [],
+  canSelfAuth: () => true,
+  exec: noProvisionExecMock,
+});
 
 const originalEnv = {
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
@@ -119,6 +143,8 @@ function token(
     runtimeProviderId?: string;
     sandboxId?: string;
     allowedDomains?: string[];
+    deniedDomains?: string[];
+    nixPackages?: string[];
   } = {}
 ): string {
   return generateWorkerToken("user-1", "conv-1", "deploy-1", {
@@ -130,7 +156,22 @@ function token(
     runtimeProviderId: options.runtimeProviderId,
     sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
+    deniedDomains: options.deniedDomains,
+    nixPackages: options.nixPackages,
   });
+}
+
+/**
+ * The bash script of the Nth runCommand call.
+ *
+ * Two argv shapes reach the sandbox: provisioning runs a plain
+ * `["-lc", <script>]`, while the agent's own command goes through `execArgv`,
+ * which passes the cwd and the command as positionals after a fixed wrapper
+ * script. In both cases the script under test is the LAST argv entry.
+ */
+function commandScript(index: number): string {
+  const args = runCommandMock.mock.calls[index]?.[0]?.args;
+  return args?.[args.length - 1] ?? "";
 }
 
 function setVercelSystemCreds(): void {
@@ -165,6 +206,7 @@ afterEach(async () => {
   readFileToBufferMock.mockClear();
   rmMock.mockClear();
   updateMock.mockClear();
+  noProvisionExecMock.mockClear();
   await fs.rm(path.resolve("workspaces", "verceltestagent"), {
     recursive: true,
     force: true,
@@ -173,6 +215,134 @@ afterEach(async () => {
 
 afterAll(() => {
   readSandboxSecretSpy.mockRestore();
+});
+
+describe("createRuntimeRoutes — infrastructure failures", () => {
+  /**
+   * A provider fault must not be reported as the agent's command failing.
+   * Previously a 429 was flattened to a 500 whose message went to the command's
+   * own stdout with exit 1, so the agent rewrote a correct command and retried
+   * into an already-throttled endpoint.
+   */
+  function apiError(status: number): Error & { response: { status: number } } {
+    // Shape of the Vercel SDK's APIError: message carries the status as text,
+    // and the real status hangs off `response`.
+    const error = new Error(
+      `Status code ${status} is not ok`
+    ) as Error & { response: { status: number } };
+    error.response = { status };
+    return error;
+  }
+
+  test("a throttled provision surfaces 429 + retryable, not a command failure", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    // Provisioning precedes dispatch, so the command provably never ran.
+    expect(body.outcome).toBe("not_started");
+    expect(String(body.error)).toContain("provision sandbox");
+    // The command must never have run.
+    expect(runCommandMock).not.toHaveBeenCalled();
+  });
+
+  test("a non-retryable provider fault surfaces 503 + retryable false", async () => {
+    setVercelSystemCreds();
+    getOrCreateMock.mockImplementationOnce(async () => {
+      throw apiError(403);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(false);
+    // Not retryable AND never ran — the two facts are independent.
+    expect(body.outcome).toBe("not_started");
+  });
+
+  test("a log-fetch failure AFTER the command ran is not retryable", async () => {
+    // The dangerous case: runCommand succeeded, so the command's side effects
+    // already happened. Claiming it "did not run" and inviting a retry would
+    // duplicate them.
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => {
+        throw apiError(429);
+      },
+      stderr: async () => "",
+    }));
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "curl -X POST https://api.github.com/x" }),
+    });
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    // Not retryable, despite the underlying 429 — the command already ran.
+    expect(body.retryable).toBe(false);
+    expect(body.outcome).toBe("completed");
+    expect(res.status).toBe(503);
+    expect(String(body.error)).toContain("MAY have completed");
+    expect(String(body.error)).not.toContain("did not run");
+  });
+
+  test("a transport failure during the command is infrastructure, not exit 1", async () => {
+    setVercelSystemCreds();
+    runCommandMock.mockImplementationOnce(async () => {
+      throw apiError(429);
+    });
+    const router = createRuntimeRoutes();
+
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({ agentId: "verceltestagent", runtimeProviderId: "vercel" })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "echo hello" }),
+    });
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.kind).toBe("infrastructure");
+    expect(body.retryable).toBe(true);
+    // Dispatch can reject after the command has already started, so this must
+    // never report "not_started" — that would invite an unsafe retry.
+    expect(body.outcome).toBe("unknown");
+    expect(String(body.error)).toContain("run command");
+  });
 });
 
 describe("createRuntimeRoutes", () => {
@@ -499,15 +669,359 @@ describe("createRuntimeRoutes", () => {
       keepLastSnapshots: { count: 1, deleteEvicted: true },
     });
     expect(remoteFiles.has("/vercel/sandbox/stale.txt")).toBe(true);
+    // The cwd is established BY the command, not by a `cwd` option paired with a
+    // separate `fs.mkdir()`. That mkdir was a real command execution in the SDK,
+    // so it doubled the command-API rate and got the sandbox rate-limited.
     expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({
       cmd: "/bin/bash",
-      args: ["-lc", "pwd"],
-      cwd: "/vercel/sandbox/nested",
+      // cwd and command are positional args, never interpolated. Asserted via
+      // the provider's own builder so this cannot drift from production.
+      args: execArgv("/vercel/sandbox/nested", "pwd"),
       timeoutMs: 1_000,
     });
+    expect(runCommandMock.mock.calls[0]?.[0]).not.toHaveProperty("cwd");
+    // The regression this guards: one exec must cost exactly one execution.
+    expect(mkdirMock).not.toHaveBeenCalled();
     expect(writeFilesMock).not.toHaveBeenCalled();
     expect(readFileToBufferMock).not.toHaveBeenCalled();
     expect(rmMock).not.toHaveBeenCalled();
+  });
+
+  test("ignores a body-supplied nix package list and uses the signed token claim", async () => {
+    // The security invariant for packages, mirroring the egress one above: the
+    // worker is the sandbox-ee, so it must not be able to name its own package
+    // set. Every entry becomes a `nix profile install` argument.
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          // The gateway-signed package set for this agent.
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      // A compromised worker tries to install something its org never declared.
+      body: JSON.stringify({
+        command: "gh --version",
+        workspaceDir,
+        nixPackages: ["curl", "socat"],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // Provisioning ran for the TOKEN's set only.
+    const provision = commandScript(0);
+    expect(provision).toContain("#gh\"");
+    expect(provision).not.toContain("socat");
+    expect(provision).not.toContain("#curl\"");
+    // The response reports what was actually provisioned.
+    expect((await res.json()).sandbox.packages).toMatchObject({
+      installed: ["gh"],
+      failed: [],
+    });
+  });
+
+  test("provisions the signed packages before the command and puts them on PATH", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh auth status", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runCommandMock).toHaveBeenCalledTimes(2);
+    // `fs.mkdir({ recursive: true })` is itself a sandbox command in the real
+    // SDK. The fixed workspace root already exists, so provisioning must not
+    // spend a third command (the rate-limit regression this provider avoids).
+    expect(mkdirMock).not.toHaveBeenCalled();
+    // Ordering matters: install first, then the agent's command.
+    expect(commandScript(0)).toContain("nix profile install");
+    expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });
+    expect(commandScript(1)).toBe(
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh auth status'
+    );
+    // The nix substituters must be in the policy the sandbox was created with,
+    // or the install hangs against deny-by-default.
+    expect(getOrCreateMock.mock.calls[0]?.[0]).toMatchObject({
+      networkPolicy: {
+        allow: [
+          "github.com",
+          "cache.nixos.org",
+          "channels.nixos.org",
+          "releases.nixos.org",
+        ],
+      },
+    });
+    // Provisioning and exec resolve the sandbox separately; both must ask for
+    // the SAME policy. A divergence would make `getOrCreate` reconcile — i.e.
+    // update the sandbox — on literally every command.
+    expect(getOrCreateMock.mock.calls[1]?.[0]?.networkPolicy).toEqual(
+      getOrCreateMock.mock.calls[0]?.[0]?.networkPolicy
+    );
+  });
+
+  test("does not touch PATH or the network policy when the claim has no packages", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "pwd", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runCommandMock).toHaveBeenCalledTimes(1);
+    expect(commandScript(0)).toBe("pwd");
+    // An agent that provisions nothing keeps exactly the operator's policy.
+    expect(getOrCreateMock.mock.calls[0]?.[0]).toMatchObject({
+      networkPolicy: { allow: ["github.com"] },
+    });
+    expect((await res.json()).sandbox).not.toHaveProperty("packages");
+  });
+
+  test("fails provisioning immediately when the signed denylist blocks a Nix host", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 75,
+      stdout: async () => "",
+      stderr: async () => "",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          deniedDomains: ["cache.nixos.org"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sandbox.packages).toMatchObject({
+      installed: [],
+      failed: ["gh"],
+      cached: false,
+    });
+    expect(body.sandbox.packages.error).toContain(
+      "Nix package hosts are blocked"
+    );
+    // The known policy conflict must not burn the five-minute provisioning
+    // timeout. The first command is a local profile probe (no curl/Nix
+    // install), followed by the agent's command.
+    expect(runCommandMock).toHaveBeenCalledTimes(2);
+    expect(commandScript(0)).not.toContain("curl");
+    expect(commandScript(0)).toContain("exit 75");
+    expect(commandScript(1)).toBe("gh --version");
+  });
+
+  test("reuses an exact cached package set even when Nix hosts are denied", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => "lobu-packages: cached\n",
+      stderr: async () => "",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          deniedDomains: ["cache.nixos.org"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).sandbox.packages).toEqual({
+      installed: ["gh"],
+      failed: [],
+      cached: true,
+    });
+    expect(commandScript(1)).toBe(
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh --version'
+    );
+    // The cached-profile selector relinks `profile` and rewrites the marker
+    // inside a NIX_HOME the provision path created as root. Running it
+    // unprivileged fails on permissions, so this recovery path — the ONLY way
+    // a denied-host sandbox gets its packages — needs the same sudo the
+    // installer uses.
+    expect(runCommandMock.mock.calls[0]?.[0]).toMatchObject({ sudo: true });
+  });
+
+  test("drops a package name the nix validator rejects before it reaches a command line", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          // A hostile declaration that somehow reached the mint: only `gh`
+          // survives validation.
+          nixPackages: ["gh", "x; touch /tmp/pwn", "$(id)"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    const provision = commandScript(0);
+    expect(provision).toContain("#gh\"");
+    expect(provision).not.toContain("touch /tmp/pwn");
+    expect(provision).not.toContain("$(id)");
+    expect((await res.json()).sandbox.packages.installed).toEqual(["gh"]);
+  });
+
+  test("degrades honestly when provisioning fails instead of failing the turn", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 1,
+      stdout: async () => "",
+      stderr: async () => "nix: substituter unreachable",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    // The turn still runs — a missing CLI must not take the agent down.
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sandbox.packages).toMatchObject({
+      installed: [],
+      failed: ["gh"],
+      cached: false,
+    });
+    // ...and it says so rather than pretending the tool is there.
+    expect(body.sandbox.packages.error).toContain("exited 1");
+    expect(runCommandMock).toHaveBeenCalledTimes(2);
+    // A failed install must not expose an older profile left in the persistent
+    // sandbox. The command runs with the base-image PATH only.
+    expect(commandScript(1)).toBe("gh --version");
+  });
+
+  test("reports a marker-file hit as cached without reinstalling", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+    // The provisioning script short-circuits on a marker match; the sandbox
+    // filesystem — not gateway memory — is what remembers, so another replica
+    // handling the next message reaches the same conclusion.
+    runCommandMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      stdout: async () => "lobu-packages: cached\n",
+      stderr: async () => "",
+    }));
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          allowedDomains: ["github.com"],
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).sandbox.packages).toMatchObject({
+      installed: ["gh"],
+      cached: true,
+    });
+    // A cache hit is a SUCCESS — the profile is real, so PATH must expose it.
+    expect(commandScript(1)).toBe(
+      'export PATH="/opt/lobu-nix/profiles/fb2b7fce0940161406a6aa3e4d8b4aa6/bin:$PATH"\ngh --version'
+    );
+  });
+
+  test("a provider that cannot provision degrades instead of throwing", async () => {
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "noprovision",
+          nixPackages: ["gh"],
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "gh --version", workspaceDir }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(noProvisionExecMock).toHaveBeenCalledTimes(1);
+    const packages = (await res.json()).sandbox.packages;
+    // Honest degradation: the tool is absent AND the result says why.
+    expect(packages).toMatchObject({ installed: [], failed: ["gh"] });
+    expect(packages.error).toContain("does not support package provisioning");
   });
 
   test("remote deletes do not mutate local workspace files", async () => {

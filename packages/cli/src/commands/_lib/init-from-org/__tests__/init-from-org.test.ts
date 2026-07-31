@@ -99,6 +99,18 @@ function fullOrgRoutes(): Record<
       preApprovedTools: ["/mcp/gmail/tools/send_email"],
       guardrails: ["secret-scan"],
       nixConfig: { packages: ["jq", "ffmpeg"] },
+      skillsConfig: {
+        skills: [
+          {
+            repo: "local/account-brief",
+            name: "account-brief",
+            description: "Prepare an account brief.",
+            content: "Summarize the account.",
+            enabled: true,
+            nixPackages: ["legacy-skill-package"],
+          },
+        ],
+      },
       soulMd: "Be concise.",
       identityMd: "You are sales.",
       updatedAt: 0,
@@ -124,6 +136,12 @@ function fullOrgRoutes(): Record<
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",
+          skills: [
+            {
+              name: "account-brief",
+              content: "Summarize the account.",
+            },
+          ],
           schedule: "0 */12 * * *",
           triggers: [
             {
@@ -290,6 +308,12 @@ describe("lobu init --from-org", () => {
         "utf-8"
       )
     ).toContain("client.knowledge.save");
+    const skillSource = readFileSync(
+      join(dir, "agents", "sales", "skills", "account-brief", "SKILL.md"),
+      "utf-8"
+    );
+    expect(skillSource).toContain("Summarize the account.");
+    expect(skillSource).not.toContain("nixPackages");
     expect(readFileSync(join(dir, ".env.example"), "utf-8")).toContain(
       "ANTHROPIC_API_KEY="
     );
@@ -330,6 +354,9 @@ describe("lobu init --from-org", () => {
     });
     expect(agent?.settings.guardrails).toEqual(["secret-scan"]);
     expect(agent?.settings.nixConfig?.packages).toEqual(["jq", "ffmpeg"]);
+    expect(agent?.settings.skillsConfig?.skills[0]).not.toHaveProperty(
+      "nixPackages"
+    );
     expect(agent?.settings.soulMd).toBe("Be concise.");
     expect(agent?.settings.identityMd).toBe("You are sales.");
     // Secret resolves from env to the real value (write-only placeholder filled).
@@ -362,7 +389,13 @@ describe("lobu init --from-org", () => {
     expect(w?.slug).toBe("account-health");
     expect(w?.agent).toBe("sales");
     expect(w?.name).toBe("Account health");
+    // The task statement and matching pinned skill both round-trip without
+    // rehoming either one into the other.
     expect(w?.prompt).toBe("Poll CRM data.");
+    expect(w?.skills).toEqual(["account-brief"]);
+    expect(w?.skillSnapshots).toEqual([
+      { name: "account-brief", content: "Summarize the account." },
+    ]);
     expect(w?.triggers?.[0]).toMatchObject({
       kind: "event",
       connector_key: "github",

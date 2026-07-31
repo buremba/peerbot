@@ -94,4 +94,79 @@ if grep -Eiq 'herdr|CLAUDE_REVIEW_HERDR' "$review_script"; then
   fail "review.sh must not reference Herdr (inline-only reviewer)"
 fi
 
+# review-fix.sh is the selector's other consumer (step 5 of "Ship a change").
+# Unlike review.sh it posts no status, so when it was hard-wired to codex
+# (`command -v codex || exit 1`) a codex outage silently skipped the whole
+# fixer pass, with nothing anywhere to record that a quality pass never ran.
+# Pin the structure that regressed: the shared selector, an invocation arm per
+# CLI, the model allowlist, and the write tools that make the claude arm a
+# fixer rather than a review whose findings go nowhere.
+review_fix_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review-fix.sh"
+grep -Fq '. "$SCRIPT_DIR/lib/review-reviewer.sh"' "$review_fix_script" ||
+  fail "review-fix.sh must source the shared reviewer lib"
+grep -Fq 'FIXER_CLI="$(review_select_reviewer' "$review_fix_script" ||
+  fail "review-fix.sh must pick its CLI through review_select_reviewer"
+grep -Fq 'review_validate_claude_model "$CLAUDE_REVIEW_MODEL"' "$review_fix_script" ||
+  fail "review-fix.sh must fail closed on disallowed Claude fixer models"
+grep -Fq 'codex exec' "$review_fix_script" ||
+  fail "review-fix.sh must keep its codex invocation arm"
+grep -Fq 'claude -p' "$review_fix_script" ||
+  fail "review-fix.sh must keep its claude invocation arm"
+grep -Eq -- '--tools [^[:space:]]*Edit[^[:space:]]*Write' "$review_fix_script" ||
+  fail "review-fix.sh claude arm must carry the Edit/Write tools that make it a fixer"
+if grep -Fq 'command -v codex >/dev/null' "$review_fix_script"; then
+  fail "review-fix.sh must not gate every run on codex being installed"
+fi
+
 echo "review reviewer selection tests passed"
+
+# --- pi-review gate matrix -------------------------------------------------
+# Extract the verdict→status block from review.sh and evaluate it directly, so
+# the gate SET is asserted behaviourally rather than by grepping for a line.
+# behavior_change_risk is reported in the headline but must never fail the
+# status; every defect/quality axis must still fail it.
+gate_block="$(sed -n '/^HEADLINE="bug_free /,/^fi$/p' "$review_script")"
+[ -n "$gate_block" ] ||
+  fail "could not extract the pi-review gate block from review.sh"
+
+# usage: run_gate BUG_FREE BUGS SLOP SIMPLICITY TESTS_ADEQUATE RISK BLOCKERS
+run_gate() {
+  BUG_FREE="$1" BUGS="$2" SLOP="$3" SIMPLICITY="$4" TESTS_ADEQUATE="$5" \
+  RISK="$6" BLOCKER_COUNT="$7" \
+  PI_REVIEW_MIN_BUG_FREE=80 PI_REVIEW_MAX_SLOP=15 PI_REVIEW_MIN_SIMPLICITY=70 \
+  bash -c "$gate_block"'
+printf "%s|%s\n" "$STATUS_STATE" "$STATUS_DESCRIPTION"'
+}
+
+# A high-risk verdict that is otherwise clean must SUCCEED, and must still
+# surface the tier in the description so a human can weigh it.
+clean_high_risk="$(run_gate 88 0 0 95 true high 0)"
+case "$clean_high_risk" in
+  success\|*) ;;
+  *) fail "high risk must not fail the status (got: $clean_high_risk)" ;;
+esac
+case "$clean_high_risk" in
+  *"risk high"*) ;;
+  *) fail "headline must report the risk tier (got: $clean_high_risk)" ;;
+esac
+
+# Every defect/quality axis must still gate. Guards the removal from widening
+# past behavior_change_risk.
+assert_gate_fails() {
+  local label="$1" result="$2" expected="$3"
+  case "$result" in
+    failure\|*) ;;
+    *) fail "$label must fail the status (got: $result)" ;;
+  esac
+  case "$result" in
+    *"$expected"*) ;;
+    *) fail "$label must report '$expected' (got: $result)" ;;
+  esac
+}
+
+assert_gate_fails "low bug_free"   "$(run_gate 70 0 0 95 true none 0)"  "bug_free<80"
+assert_gate_fails "bugs>0"         "$(run_gate 88 1 0 95 true none 0)"  "bugs>0"
+assert_gate_fails "high slop"      "$(run_gate 88 0 20 95 true none 0)" "slop>15"
+assert_gate_fails "low simplicity" "$(run_gate 88 0 0 50 true none 0)"  "simplicity<70"
+assert_gate_fails "blockers"       "$(run_gate 88 0 0 95 true none 2)"  "blockers>0"
+assert_gate_fails "tests"          "$(run_gate 88 0 0 95 false none 0)" "tests inadequate"

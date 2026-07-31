@@ -59,6 +59,36 @@ interface CalendarCheckpoint {
   last_sync_at?: string;
 }
 
+/**
+ * Does this events.list failure mean "the syncToken itself is no longer
+ * usable" (as opposed to "your credentials are wrong")?
+ *
+ * Two shapes qualify:
+ *  - 410 GONE — Google's documented signal that an incremental sync token has
+ *    expired or been invalidated.
+ *  - 403 with `insufficientPermissions` / `ACCESS_TOKEN_SCOPE_INSUFFICIENT` —
+ *    a token minted under a *previous* grant. Google validates the syncToken
+ *    against the grant that produced it, so re-authorizing the connection with
+ *    the same scopes leaves the old token permanently rejected even though the
+ *    live credentials are fine.
+ *
+ * In both cases the recovery is identical and is what Google documents: drop
+ * the token and perform a full resync.
+ *
+ * A genuinely-missing scope produces the *same* 403 body, so this predicate
+ * cannot distinguish them on its own — the caller resolves the ambiguity by
+ * retrying exactly once without the token. If the scope really is missing the
+ * full sync fails the same way and that error propagates, which is why the
+ * retry is bounded to a single attempt and never becomes a resync loop.
+ */
+function isSyncTokenRejection(status: number, body: string): boolean {
+  if (status === 410) return true;
+  if (status !== 403) return false;
+  return (
+    body.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || body.includes('insufficientPermissions')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Connector
 // ---------------------------------------------------------------------------
@@ -251,7 +281,11 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       if (result) {
         return this.buildResult(result.events, result.nextSyncToken, result.events.length);
       }
-      // syncToken invalid (410) -- fall through to full sync
+      // The stored token was rejected (see isSyncTokenRejection). Fall through
+      // to a full sync exactly once — no retry loop. The full sync below either
+      // succeeds and overwrites the checkpoint with a token minted under the
+      // current grant, or throws (the scope is genuinely missing) and the error
+      // reaches the run record instead of being swallowed.
     }
 
     // Full sync
@@ -365,9 +399,10 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   ): Promise<{ events: EventEnvelope[]; nextSyncToken?: string } | null> {
     const events: EventEnvelope[] = [];
     let nextSyncToken: string | undefined;
-    // 410 Gone means the syncToken is expired — abort and let the caller fall
-    // through to a full sync. Signalled out of the generator via this flag.
-    let syncTokenExpired = false;
+    // The stored syncToken was rejected (410 expired, or 403 because it was
+    // minted under a superseded grant) — abort and let the caller drop it and
+    // fall through to a full sync. Signalled out of the generator via this flag.
+    let syncTokenRejected = false;
 
     // Same hard ceiling as the full-sync path — defensive only.
     const MAX_PAGES = 200;
@@ -387,15 +422,13 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
         const response = await http.raw(url);
 
-        if (response.status === 410) {
-          syncTokenExpired = true;
-          return { items: [], nextCursor: undefined };
-        }
-
         if (!response.ok) {
-          throw new Error(
-            `Calendar events.list error (${response.status}): ${await response.text()}`
-          );
+          const body = await response.text();
+          if (isSyncTokenRejection(response.status, body)) {
+            syncTokenRejected = true;
+            return { items: [], nextCursor: undefined };
+          }
+          throw new Error(`Calendar events.list error (${response.status}): ${body}`);
         }
 
         const data = (await response.json()) as CalendarEventListResponse;
@@ -413,7 +446,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       }
     }
 
-    if (syncTokenExpired) return null;
+    if (syncTokenRejected) return null;
 
     return { events, nextSyncToken };
   }
@@ -637,6 +670,10 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     // Sort events by occurred_at descending
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
+    // Built fresh rather than spread over the previous checkpoint: the whole
+    // object replaces the stored one, so a run that recovered from a rejected
+    // token cannot leave that token behind. When the sync produced no new token
+    // the key is absent, and the next run correctly starts from a full sync.
     const newCheckpoint: CalendarCheckpoint = {
       ...(syncToken ? { sync_token: syncToken } : {}),
       last_sync_at: new Date().toISOString(),
@@ -653,7 +690,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
   // Auth-aware client (Bearer + retry/backoff on transient 429/5xx). Built per
   // token so each sync/action uses its own credentials. `.raw()` preserves the
-  // existing `response.ok`/status-code branching (e.g. 410 sync-token expiry).
+  // existing `response.ok`/status-code branching (e.g. sync-token rejection).
   private client(token: string): HttpClient {
     return createHttpClient({ token, errorPrefix: 'Calendar API' });
   }

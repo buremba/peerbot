@@ -176,6 +176,43 @@ describe("GitHubInstallationTokenProvider.mintToken", () => {
     expect(exchange.calls).toBe(1);
   });
 
+  test("re-mints when the resolved App identity changes", async () => {
+    let calls = 0;
+    const provider = new GitHubInstallationTokenProvider({
+      env: {
+        APP_A_ID: "111",
+        APP_A_KEY: privateKey,
+        APP_B_ID: "222",
+        APP_B_KEY: privateKey,
+      },
+      fetchImpl: (async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({
+            token: `ghs_app_${calls}`,
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }) as unknown as typeof fetch,
+      cache: new InMemoryInstallationTokenCache(),
+    });
+    const install = makeInstall({
+      metadata: { appIdKey: "APP_A_ID", privateKeyKey: "APP_A_KEY" },
+    });
+
+    expect((await provider.mintToken(install)).token).toBe("ghs_app_1");
+    expect(
+      (
+        await provider.mintToken({
+          ...install,
+          metadata: { appIdKey: "APP_B_ID", privateKeyKey: "APP_B_KEY" },
+        })
+      ).token
+    ).toBe("ghs_app_2");
+    expect(calls).toBe(2);
+  });
+
   test("re-mints when the cached token is inside the refresh window", async () => {
     let nextExpiry = new Date(Date.now() + 30_000).toISOString(); // < 60s skew
     const calls: number[] = [];
@@ -233,6 +270,19 @@ describe("GitHubInstallationTokenProvider.mintToken", () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof fetch;
     const provider = new GitHubInstallationTokenProvider({ env, fetchImpl: impl });
+    await expect(provider.mintToken(makeInstall())).rejects.toMatchObject({
+      reason: "exchange_failed",
+    });
+  });
+
+  test("unparseable expires_at → exchange_failed", async () => {
+    const provider = new GitHubInstallationTokenProvider({
+      env,
+      fetchImpl: mockExchange({
+        token: "ghs_bad_expiry",
+        expires_at: "not-a-date",
+      }).impl,
+    });
     await expect(provider.mintToken(makeInstall())).rejects.toMatchObject({
       reason: "exchange_failed",
     });
@@ -312,5 +362,19 @@ describe("InMemoryInstallationTokenCache", () => {
     const cache = new InMemoryInstallationTokenCache();
     cache.set("k", { token: "t", expiresAt: "not-a-date" });
     expect(cache.get("k")).toBeNull();
+  });
+
+  test("a minTtlMs miss does not evict the entry for default-skew callers", () => {
+    const cache = new InMemoryInstallationTokenCache({ refreshSkewMs: 60_000 });
+    cache.set("k", {
+      token: "t",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    // A lease demands a longer runway than this entry has left: it misses...
+    expect(cache.get("k", 600_000)).toBeNull();
+    // ...but the entry is still serviceable to the egress proxy, so a lease
+    // mint must not have thrown away a token with 5 minutes of life left.
+    expect(cache.get("k")?.token).toBe("t");
+    expect(cache.size()).toBe(1);
   });
 });

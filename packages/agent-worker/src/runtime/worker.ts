@@ -51,7 +51,6 @@ export {
   buildRunContextBlock,
   estimatePromptTokenCost,
   LOBU_DEFAULT_IDENTITY,
-  replaceBasePromptIdentity,
   resolveAgentIdentity,
   resolveMemoryFlushConfig,
 } from "./session-runner";
@@ -170,8 +169,8 @@ export class LobuAgentWorker implements WorkerExecutor {
     // (#1266). The manager becomes the single source of truth: the transport's
     // POSTs read it via fetchWithRefresh, and it's mirrored into
     // process.env.WORKER_TOKEN for the env-readers (session-context, snapshot
-    // hydrate/clear, the audio hint). The spawnHook still strips WORKER_TOKEN by
-    // KEY from agent bash, so mutating the env value is safe.
+    // hydrate/clear, the audio hint). The agent env allowlist excludes
+    // WORKER_TOKEN, so mutating the worker's own env value is safe.
     adoptWorkerToken(this.config.runJobToken);
     // Timer-driven proactive refresh: renew the token before it hard-expires
     // even if this turn makes NO gateway call (the >2h single-turn case — an

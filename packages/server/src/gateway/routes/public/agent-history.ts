@@ -30,7 +30,10 @@ import {
 	readThreadMessages,
 	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
+import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
+import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
+import { findConversationById } from "../../services/conversations-store.js";
 import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
 import {
 	createOwnershipResolver,
@@ -420,6 +423,7 @@ export function createAgentHistoryRoutes(deps: {
 		agentId: string;
 		organizationId: string | undefined;
 		userId: string;
+		isAdmin: boolean;
 	} | null> {
 		const session = await verifySettingsSession(c);
 		if (!session) return null;
@@ -431,10 +435,12 @@ export function createAgentHistoryRoutes(deps: {
 		// Apply the resolver's admin bypass and agent-binding restriction before
 		// selecting a tenant from the ambient request.
 		if (session.isAdmin) {
+			if (!ambientOrgId) return null;
 			return {
 				agentId,
-				organizationId: ambientOrgId ?? undefined,
+				organizationId: ambientOrgId,
 				userId,
+				isAdmin: true,
 			};
 		}
 		if (session.agentId && session.agentId !== agentId) return null;
@@ -453,17 +459,33 @@ export function createAgentHistoryRoutes(deps: {
 			const authorized =
 				ownsHere || (await canUseSystemAgent(agentId, ambientOrgId, userId));
 			if (authorized) {
-				return { agentId, organizationId: ambientOrgId, userId };
+				return {
+					agentId,
+					organizationId: ambientOrgId,
+					userId,
+					isAdmin: false,
+				};
 			}
 			return null;
 		}
 
+		// History DB reads and worker/file fallbacks all require a proven tenant.
+		// Metadata can be org-less here, so resolve the tenant independently from
+		// the authoritative per-org owner mapping.
 		const result = await resolveOwnership(session, agentId);
 		if (!result.authorized) return null;
+		const ownerOrganizations =
+			await deps.userAgentsStore?.findAgentOrganizations(
+				result.ownerPlatform ?? session.platform,
+				result.ownerUserId ?? userId,
+				agentId,
+			);
+		if (ownerOrganizations?.length !== 1) return null;
 		return {
 			agentId,
-			organizationId: resolveOrgId(result.organizationId) ?? undefined,
+			organizationId: ownerOrganizations[0],
 			userId,
+			isAdmin: false,
 		};
 	}
 
@@ -483,6 +505,12 @@ export function createAgentHistoryRoutes(deps: {
 		organizationId: string;
 		userId: string;
 		allowNotGraphed: boolean;
+		/**
+		 * Platform admin. Distinct from `allowNotGraphed`, which an agent OWNER
+		 * also gets: owning an agent must not confer read access to every user's
+		 * private conversation with it.
+		 */
+		isAdmin: boolean;
 	} | null> {
 		const session = await verifySettingsSession(c);
 		if (!session) return null;
@@ -504,6 +532,7 @@ export function createAgentHistoryRoutes(deps: {
 				organizationId: ambientOrgId,
 				userId,
 				allowNotGraphed: true,
+				isAdmin: true,
 			};
 		}
 		if (session.agentId && session.agentId !== agentId) return null;
@@ -521,6 +550,7 @@ export function createAgentHistoryRoutes(deps: {
 				organizationId: ambientOrgId,
 				userId,
 				allowNotGraphed: true,
+				isAdmin: false,
 			};
 		}
 
@@ -553,6 +583,7 @@ export function createAgentHistoryRoutes(deps: {
 				organizationId: ambientOrgId,
 				userId,
 				allowNotGraphed: true,
+				isAdmin: false,
 			};
 		}
 
@@ -561,6 +592,7 @@ export function createAgentHistoryRoutes(deps: {
 			organizationId: ambientOrgId,
 			userId,
 			allowNotGraphed: false,
+			isAdmin: false,
 		};
 	}
 
@@ -615,11 +647,22 @@ export function createAgentHistoryRoutes(deps: {
 		// `?scope=all` widens the list to every conversation for the agent across
 		// platforms (Slack, Telegram, …), not just the requesting user's threads.
 		const listScope = c.req.query("scope") === "all" ? "all" : "user";
+		// DM conversations gate on explicit admin access, not channel membership.
+		// Resolve the org-role half only for the widened list; the existing
+		// platform-admin bypass is already carried on the authorized scope.
+		const isAdmin =
+			listScope === "all" && scope.organizationId
+				? scope.isAdmin ||
+					isAdminOrOwnerRole(
+						await getCachedMembershipRole(scope.organizationId, scope.userId),
+					)
+				: false;
 		const threads = await listAgentThreads({
 			agentId: scope.agentId,
 			organizationId: scope.organizationId,
 			userId: scope.userId,
 			scope: listScope,
+			isAdmin,
 		});
 		return c.json({ threads });
 	});
@@ -770,8 +813,13 @@ export function createAgentHistoryRoutes(deps: {
 		return c.json({ ...data, interactions });
 	});
 
-	// Read a PLATFORM conversation (e.g. `slack:{channel}:{ts}`) read-only by its
-	// raw conversation id. The id carries colons, so it's URL-encoded in the path.
+	// Read ANY conversation the listing handed out, by its STORED id.
+	//
+	// The fence comes from the `conversations` row, not from the shape of the id.
+	// Previously this route accepted only `{platform}:{...}` ids and the owned
+	// read path re-derived its id from the caller's own userId — which meant an
+	// owned conversation could be listed and then never opened, because no
+	// handler accepted the id the listing returned.
 	app.get("/conversations/:conversationId/messages", async (c) => {
 		const scope = await getAuthorizedPlatformConversationScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
@@ -779,23 +827,58 @@ export function createAgentHistoryRoutes(deps: {
 		const conversationId = decodeURIComponent(
 			c.req.param("conversationId") || ""
 		);
-		// Platform conversation ids are `{platform}:{...}` — alnum/._:- only.
+		// Platform ids carry colons; owned ids are underscore-delimited. Both are
+		// alnum plus `._:-`, so one charset covers them without implying a shape.
 		if (!conversationId || !/^[a-zA-Z0-9._:-]+$/.test(conversationId)) {
 			return errorResponse(c, "Invalid conversation id", 400);
 		}
 
-		// ACL: the requester must be able to read this conversation's channel —
-		// the same per-agent fence ∩ per-user channel gate the listing applies.
-		// Fail closed (404, not 403) so an unauthorized id is indistinguishable
-		// from a non-existent one.
-		const channelVis = await resolveChannelVisibility(getDb(), {
+		// Fail closed (404, not 403) throughout, so an unauthorized id is
+		// indistinguishable from a non-existent one.
+		// A row is the only thing that can prove a conversation is OWNED. Platform
+		// transcripts are readable without one — federated channel ACL admits a
+		// non-owner org member whose access comes from the channel, not from a
+		// conversations row — so a miss falls through to the channel gate rather
+		// than 404ing, which is what the row-mandatory version got wrong.
+		const row = await findConversationById({
 			organizationId: scope.organizationId,
 			agentId: scope.agentId,
-			userId: scope.userId,
-			allowNotGraphed: scope.allowNotGraphed,
+			conversationId,
 		});
-		if (!isConversationVisible(conversationId, channelVis)) {
-			return errorResponse(c, "Conversation not found", 404);
+
+		if (row?.kind === "owned") {
+			// An owned conversation belongs to the user who started it. Admins keep
+			// the bypass the scope resolver already granted them.
+			if (!scope.isAdmin && row.userId !== scope.userId) {
+				return errorResponse(c, "Conversation not found", 404);
+			}
+		} else {
+			let bypassChannelFence = false;
+			if (row?.isDirect === true) {
+				// Same DM rule the listing applies: explicit admin access can open
+				// an unbound DM. A non-admin still takes the normal channel fence so
+				// explicitly bound DMs (for example Preview `/link`) remain readable.
+				bypassChannelFence =
+					scope.isAdmin ||
+					isAdminOrOwnerRole(
+						await getCachedMembershipRole(scope.organizationId, scope.userId),
+					);
+			}
+			if (!bypassChannelFence) {
+				// Platform conversations stay behind the per-agent fence ∩ per-user
+				// channel gate. The channel segment is still parsed out of the id: the
+				// `conversations` row carries no channel column, so there is nothing
+				// else to read it from.
+				const channelVis = await resolveChannelVisibility(getDb(), {
+					organizationId: scope.organizationId,
+					agentId: scope.agentId,
+					userId: scope.userId,
+					allowNotGraphed: scope.allowNotGraphed,
+				});
+				if (!isConversationVisible(conversationId, channelVis)) {
+					return errorResponse(c, "Conversation not found", 404);
+				}
+			}
 		}
 
 		const cursor = c.req.query("cursor") || "";

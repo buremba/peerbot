@@ -106,3 +106,33 @@ describe("catalog/merge", () => {
 		expect(merged[1]?.detail.installed).toBe(false);
 	});
 });
+
+// Platform event injection for the installed-connector UI is owned by
+// listOrgInstalled (withPlatformBehaviorEvents). Unit coverage for the pure
+// merge helper lives next to platform-event-catalog.
+import {
+	PLATFORM_EVENT_FEED_AUTO_PAUSED,
+	withPlatformBehaviorEvents,
+} from "../../behaviors/platform-event-catalog";
+
+describe("withPlatformBehaviorEvents (installed UI surface)", () => {
+	it("exposes feed.auto_paused alongside connector-declared events", () => {
+		const merged = withPlatformBehaviorEvents([
+			{ key: "message.created", label: "A message is sent" },
+		]);
+		expect(merged.map((e) => e.key)).toEqual([
+			"message.created",
+			PLATFORM_EVENT_FEED_AUTO_PAUSED,
+		]);
+	});
+
+	it("does not duplicate when the connector already declares the platform event", () => {
+		const merged = withPlatformBehaviorEvents([
+			{ key: PLATFORM_EVENT_FEED_AUTO_PAUSED },
+			{ key: "message.created" },
+		]);
+		expect(
+			merged.filter((e) => e.key === PLATFORM_EVENT_FEED_AUTO_PAUSED),
+		).toHaveLength(1);
+	});
+});

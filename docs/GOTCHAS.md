@@ -19,6 +19,8 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | `could not create shared memory segment: No space left on device` | Testing |
 | A mock that works alone but not in the suite | Testing |
 | A server that is "healthy" suspiciously fast | Testing |
+| `gh run view --log-failed` printing nothing | CI triage |
+| `grep` finding nothing in a CI log you can read | CI triage |
 | `codex exec` / `pi -p` hanging at 0% CPU | Shell & CLI |
 | `unexpected EOF while looking for matching '` | Shell & CLI |
 | `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH` | Browser & connectors |
@@ -81,6 +83,14 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 **A scratch server that is "healthy" before the fresh initdb and migration logs appear is probably an orphan.** A cold embedded boot runs `initdb` as a subprocess, so a genuinely fresh server logs it; instant health means you reached a server that was already running. Confirm with the data dir rather than the clock — `<dir>/.lobu/pgdata/PG_VERSION` should exist and be newly created. Kill orphans by port, not name — `pkill -f "lobu run --port"` never matches, because the real cmdline is `node .../server.bundle.mjs`. Confirm what you are about to kill first (`lsof -iTCP:<port> -sTCP:LISTEN`, check it is the expected `server.bundle.mjs`), then `lsof -tiTCP:<port> -sTCP:LISTEN | xargs kill`. Reserve `-9` for a process that ignores the polite signal.
 
 **Isolating a benchmark/scratch server:** pass `DATABASE_URL="file:///tmp/<dir>"` — the embedded runtime creates `<dir>/.lobu/pgdata`. The runtime reads `DATABASE_URL`; `lobu run` maps `LOBU_DATA_DIR` into it only when `DATABASE_URL` is absent. Without either, `lobu run` defaults to the shared `~/.lobu/pgdata`.
+
+## CI triage
+
+**Fetch a failing job's log exactly once, to a file:** `gh run view --job <id> --log | sed 's/^[^Z]*Z //' > /tmp/ci-<id>.log`, then search the file with `grep -a '<pattern>' /tmp/ci-<id>.log`. Refetching is the single most repeated waste in CI triage — 21 sessions have re-pulled the same log 170 times, one of them hitting the same job 9 times in 105 seconds.
+
+**Use `--log`, not `--log-failed`.** `--log-failed` is empty for any failure that is not a failed test step — `check-drift` and `publish-packages` both print nothing — and that empty result is what forces the second fetch.
+
+**`grep` needs `-a`, and the lines are prefixed.** Job logs are timestamped and ANSI-coloured, so grep treats them as binary and the prefix defeats anchored patterns. The `sed 's/^[^Z]*Z //'` in the fetch above strips the prefix once, at save time; `-a` is still needed for the ANSI bytes that remain.
 
 ## Shell & CLI
 

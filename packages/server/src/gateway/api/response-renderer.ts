@@ -11,6 +11,7 @@ import {
   type SuggestedPrompt,
   toAgentErrorCode,
 } from "@lobu/core";
+import { labelProviderErrorBody } from "../../utils/url-builder.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
@@ -168,12 +169,8 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Pick the body the same way every surface does: our catalog text for
-    // errors we synthesize (worker/config), else the provider's OWN message
-    // relayed verbatim (it already says the useful thing, e.g. the quota reset
-    // time). The structured `errorCode` is forwarded so the frontend can build
-    // the CTA button (this SSE surface lacks the org/agent ids to resolve the
-    // URL itself).
+    // This SSE surface forwards the context so the frontend can build the CTA,
+    // but it lacks the org/agent ids needed to resolve the URL itself.
     const code = toAgentErrorCode(payload.errorCode);
     const spec = code ? AGENT_ERRORS[code] : undefined;
     if (spec?.silent) {
@@ -184,7 +181,9 @@ export class ApiResponseRenderer implements ResponseRenderer {
       });
       return;
     }
-    const errorText = spec?.message ?? payload.error;
+    const errorText =
+      spec?.message ??
+      labelProviderErrorBody(payload.error, payload.errorContext?.provider);
 
     const errorEvent = {
       type: "error",

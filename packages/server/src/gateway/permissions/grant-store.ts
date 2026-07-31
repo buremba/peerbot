@@ -6,11 +6,7 @@ import {
   type GrantKind,
 } from "@lobu/core";
 import { getDb, pgTextArray } from "../../db/client.js";
-import {
-  orgScope,
-  requireOrgId,
-  resolveOrgId,
-} from "../../lobu/stores/org-context.js";
+import { orgScope, requireOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("grant-store");
 
@@ -126,7 +122,7 @@ export class GrantStore {
   ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
-    const orgId = resolveOrgId(organizationId);
+    const orgId = requireOrgId(organizationId, "GrantStore.hasGrant");
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
@@ -174,7 +170,7 @@ export class GrantStore {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const candidates = buildGrantCandidates(pattern, kind);
-    const orgId = resolveOrgId(organizationId);
+    const orgId = requireOrgId(organizationId, "GrantStore.isDenied");
 
     const sql = getDb();
     try {
@@ -205,7 +201,7 @@ export class GrantStore {
    */
   async listGrants(agentId: string, organizationId?: string): Promise<Grant[]> {
     const sql = getDb();
-    const orgId = resolveOrgId(organizationId);
+    const orgId = requireOrgId(organizationId, "GrantStore.listGrants");
     try {
       const rows = await sql<GrantRow>`
         SELECT pattern, kind, granted_at, expires_at, denied
@@ -239,7 +235,7 @@ export class GrantStore {
   ): Promise<void> {
     const candidates = getDomainGrantCandidates(pattern);
     const kind = inferGrantKind(pattern);
-    const orgId = resolveOrgId(organizationId);
+    const orgId = requireOrgId(organizationId, "GrantStore.revoke");
     const sql = getDb();
     await sql`
       DELETE FROM grants

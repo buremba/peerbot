@@ -8,10 +8,11 @@ import { join, resolve } from "node:path";
  * `google.gmail`, so generated configs failed `lobu apply` with
  * "connector ... is not installed in the org".
  *
- * The catalog source of truth is the first `key:` literal in each connector
- * definition under packages/connectors/src (filenames use underscores, keys
- * use dots). Helper modules can also contain `key:` fields, so only files that
- * declare a ConnectorDefinition are catalog entries.
+ * The catalog source of truth is the `key:` literal that opens each
+ * `definition: ConnectorDefinition = {` under packages/connectors/src
+ * (filenames use underscores, keys use dots). Module-level maps and payload
+ * shapes also contain `key:` fields, so the match must be anchored to the
+ * definition rather than taking the file's first `key:`.
  */
 
 const TEMPLATE_PATH = resolve(import.meta.dir, "../templates/AGENTS.md.tmpl");
@@ -23,7 +24,9 @@ function catalogKeys(): Set<string> {
     if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
     const source = readFileSync(join(CONNECTORS_SRC_DIR, file), "utf-8");
     if (!source.includes("ConnectorDefinition")) continue;
-    const match = source.match(/key:\s*["']([^"']+)["']/);
+    const match = source.match(
+      /definition:\s*ConnectorDefinition\s*=\s*\{\s*key:\s*["']([^"']+)["']/
+    );
     if (match) keys.add(match[1]);
   }
   return keys;

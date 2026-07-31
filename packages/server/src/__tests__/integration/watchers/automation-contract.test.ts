@@ -22,13 +22,13 @@ import { generateWindowToken } from "../../../utils/jwt";
 import { computePendingWindow } from "../../../utils/window-utils";
 import { handleBehaviorMode } from "../../../tools/get_content/behavior-mode";
 import {
-	advanceWatcherSchedule,
 	dispatchPendingWatcherRuns,
 	materializeDueWatcherRuns,
 	reconcileWatcherRuns,
 	runWatcherAutomationTick,
 	sweepStaleWatcherRuns,
 } from "../../../watchers/automation";
+import { advanceWatcherSchedule } from "../../../watchers/schedule-cursor";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createCanvasWindow,
@@ -91,7 +91,7 @@ async function createAutomatedWatcher() {
 		entity_id: entity.id,
 		slug: "automation-watcher",
 		name: "Automation Watcher",
-		prompt: "Summarize content for {{entities}}.",
+		prompt: "Summarize content for the bound entities.",
 		triggers: [
 			{
 				kind: "schedule",
@@ -198,7 +198,7 @@ describe("watcher automation contract", () => {
 			runIds: [queued.runId],
 		});
 		const [run] = await sql`
-      SELECT status, window_id
+      SELECT status, window_id, model_used
       FROM runs
       WHERE id = ${queued.runId}
     `;
@@ -206,6 +206,7 @@ describe("watcher automation contract", () => {
 		expect(result.reconciled).toBe(1);
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(windowRootId);
+		expect(String(run.model_used)).toBe("external-client");
 	});
 
 	it("completes a queued watcher run from complete_window provenance", async () => {
@@ -236,7 +237,10 @@ describe("watcher automation contract", () => {
 
 		await sql`
       UPDATE runs
-      SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`}
+      SET status = 'running',
+          claimed_at = NOW(),
+          claimed_by = ${`lobu:${agent.agentId}`},
+          dispatched_message_id = 'msg-complete-window-provenance'
       WHERE id = ${queued.runId}
     `;
 
@@ -246,23 +250,36 @@ describe("watcher automation contract", () => {
 			dbClient,
 			{
 				organizationId: workspace.org.id,
-				sourceConversationId: `${agent.agentId}_watcher_${watcherId}_run_${queued.runId}`,
+				userId: null,
 			}
 		)) as {
 			window_token: string;
 			window_start: string;
 			window_end: string;
+			entities?: Array<{
+				id: number;
+				name: string;
+				type: string;
+				metadata: Record<string, unknown>;
+			}>;
 		};
 		expect(content.window_start).toBe(windowStart.toISOString());
 		expect(content.window_end).toBe(windowEnd.toISOString());
-		const [promptStampedRun] =
+		expect(content.entities).toEqual([
+			expect.objectContaining({
+				id: entityId,
+				name: "Automation Entity",
+				type: "brand",
+			}),
+		]);
+		// Prompts are literal text delivered via the dispatch message; the read
+		// path no longer stamps a rendered prompt onto the run.
+		const [unstampedRun] =
 			await sql`SELECT run_metadata FROM runs WHERE id = ${queued.runId}`;
 		expect(
-			String(
-				(promptStampedRun.run_metadata as Record<string, unknown>)
-					.prompt_rendered
-			)
-		).toContain("Summarize content for Automation Entity.");
+			(unstampedRun.run_metadata as Record<string, unknown> | null)
+				?.prompt_rendered
+		).toBeUndefined();
 
 		const completion = (await api.behaviors.completeWindow({
 			behavior_id: String(watcherId),
@@ -278,7 +295,7 @@ describe("watcher automation contract", () => {
 		})) as { action: string; window_id: number };
 
 		const [run] = await sql`
-      SELECT status, window_id, run_metadata
+      SELECT status, window_id, model_used, run_metadata
       FROM runs
       WHERE id = ${queued.runId}
     `;
@@ -286,9 +303,12 @@ describe("watcher automation contract", () => {
 		expect(completion.action).toBe("complete_window");
 		expect(String(run.status)).toBe("completed");
 		expect(Number(run.window_id)).toBe(completion.window_id);
+		expect(String(run.model_used)).toBe("lobu-agent");
+		// The forged prompt_rendered from the completion payload must be
+		// stripped — that key is reserved for historical server-stamped runs.
 		expect(
-			String((run.run_metadata as Record<string, unknown>).prompt_rendered)
-		).toContain("Summarize content for Automation Entity.");
+			(run.run_metadata as Record<string, unknown>).prompt_rendered
+		).toBeUndefined();
 		expect((run.run_metadata as Record<string, unknown>).executor).toBe(
 			"lobu-agent"
 		);
@@ -926,9 +946,53 @@ describe("watcher automation contract", () => {
 				ok: boolean;
 				status: string;
 				error?: string;
+				nudge?: string;
+				reason_code?: string;
+				attempt?: number;
+				max_attempts?: number;
 			};
-			expect(json.status).toBe("failed");
-			expect(String(json.error)).toMatch(/completeWindow/);
+			// Default finalize_nudges budget is 1 → first miss is a device-held resume
+			// (run stays running/claimed so the Mac can re-spawn).
+			expect(json.status).toBe("resume");
+			expect(json.reason_code).toBe("missing_complete_window");
+			expect(json.attempt).toBe(1);
+			expect(String(json.nudge ?? json.error ?? "")).toMatch(/completeWindow/i);
+			expect(String(json.nudge ?? json.error ?? "")).toContain("behavior_id");
+			expect(String(json.nudge ?? json.error ?? "")).not.toContain("watcher_id");
+
+			const [runAfterResume] = await sql`
+        SELECT status, error_message, window_id, output_tail,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(runAfterResume.status)).toBe("running");
+			expect(Number(runAfterResume.finalize_nudge_count)).toBe(1);
+			expect(runAfterResume.window_id).toBeNull();
+			expect(String(runAfterResume.output_tail)).toContain("nothing to report");
+
+			// Second clean exit with no window exhausts the budget → terminal fail.
+			const response2 = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "still nothing",
+						duration_ms: 10,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(response2.status).toBe(200);
+			const json2 = (await response2.json()) as {
+				ok: boolean;
+				status: string;
+				error?: string;
+				reason_code?: string;
+			};
+			expect(json2.status).toBe("failed");
+			expect(json2.reason_code).toBe("missing_complete_window");
+			expect(String(json2.error)).toMatch(/completeWindow/);
 
 			const [run] = await sql`
         SELECT status, error_message, window_id, output_tail FROM runs WHERE id = ${queued.runId}
@@ -936,8 +1000,6 @@ describe("watcher automation contract", () => {
 			expect(String(run.status)).toBe("failed");
 			expect(String(run.error_message)).toMatch(/completeWindow/);
 			expect(run.window_id).toBeNull();
-			// The stdout tail is stashed for diagnosis.
-			expect(String(run.output_tail)).toContain("nothing to report");
 
 			const windows = await sql`
         SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
@@ -952,6 +1014,223 @@ describe("watcher automation contract", () => {
 				? new Date(after.next_run_at as string).getTime()
 				: 0;
 			expect(afterMs).toBeGreaterThan(beforeMs);
+		});
+
+		// Ambiguous delivery: the resume commits server-side but the device never
+		// sees the response, so it retries the SAME exit report. Replaying it must
+		// re-serve the grant it already earned — inferring a fresh attempt from the
+		// stored count instead would burn the budget and fail the run one spawn
+		// early, which is the delivery error being reinterpreted as work.
+		it("replays the granted resume instead of consuming a second finalize attempt", async () => {
+			const { sql, dbClient, workspace, watcherId, agent } =
+				await createAutomatedWatcher();
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
+			const { windowStart, windowEnd } = await computePendingWindow(
+				dbClient,
+				watcherId,
+				granularity
+			);
+			const queued = await createWatcherRun({
+				organizationId: workspace.org.id,
+				watcherId,
+				agentId: agent.agentId,
+				windowStart: windowStart.toISOString(),
+				windowEnd: windowEnd.toISOString(),
+				dispatchSource: "scheduled",
+				deviceWorkerId: "66666666-6666-6666-6666-666666666666",
+				agentKind: "claude-code",
+			});
+			const workerId = "mac-device-replay-test";
+			await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+			const report = {
+				worker_id: workerId,
+				output: "exited without finalizing",
+				duration_ms: 25,
+				exit_code: 0,
+				exit_reason: "ok",
+				// First spawn runs under finalize_nudge_count = 0.
+				finalize_attempt: 0,
+			};
+
+			const granted = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: report }
+			);
+			expect(granted.status).toBe(200);
+			const grantedJson = (await granted.json()) as {
+				status: string;
+				attempt?: number;
+				nudge?: string;
+			};
+			expect(grantedJson.status).toBe("resume");
+			expect(grantedJson.attempt).toBe(1);
+
+			// Byte-identical replay of the same report — the device's retry after a
+			// lost response.
+			const replay = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: report }
+			);
+			expect(replay.status).toBe(200);
+			const replayJson = (await replay.json()) as {
+				status: string;
+				attempt?: number;
+				reason_code?: string;
+				idempotent?: boolean;
+				nudge?: string;
+			};
+			expect(replayJson.status).toBe("resume");
+			expect(replayJson.reason_code).toBe("missing_complete_window");
+			expect(replayJson.attempt).toBe(1);
+			expect(replayJson.idempotent).toBe(true);
+			// The re-served nudge has to be usable, not just a status echo — the
+			// device feeds it straight into the re-spawned prompt.
+			expect(replayJson.nudge).toBe(grantedJson.nudge);
+
+			const [afterReplay] = await sql`
+        SELECT status,
+               approved_input->>'finalize_nudge_count' AS finalize_nudge_count
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(afterReplay.status)).toBe("running");
+			// The replay consumed nothing: still exactly one granted resume.
+			expect(Number(afterReplay.finalize_nudge_count)).toBe(1);
+
+			// The genuinely-new spawn reports attempt 1 and exhausts the budget.
+			const terminal = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{ body: { ...report, finalize_attempt: 1 } }
+			);
+			expect(terminal.status).toBe(200);
+			expect(((await terminal.json()) as { status: string }).status).toBe(
+				"failed"
+			);
+		});
+
+		// Event turns have no completeWindow step — the agent's reply IS the work.
+		// A clean device exit therefore completes the run rather than failing it,
+		// and must not mint a window.
+		it("completes an event-turn Behavior on a clean device exit", async () => {
+			const { sql, dbClient, workspace, watcherId, agent } =
+				await createAutomatedWatcher();
+			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
+			const { windowStart, windowEnd } = await computePendingWindow(
+				dbClient,
+				watcherId,
+				granularity
+			);
+			const queued = await createWatcherRun({
+				organizationId: workspace.org.id,
+				watcherId,
+				agentId: agent.agentId,
+				windowStart: windowStart.toISOString(),
+				windowEnd: windowEnd.toISOString(),
+				dispatchSource: "scheduled",
+				deviceWorkerId: "77777777-7777-7777-7777-777777777777",
+				agentKind: "claude-code",
+			});
+			const workerId = "mac-device-turn-test";
+			await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId},
+            approved_input = jsonb_set(
+              COALESCE(approved_input, '{}'::jsonb),
+              '{trigger_execution}', '"turn"'::jsonb
+            )
+        WHERE id = ${queued.runId}
+      `;
+
+			// Token-auth workers are trusted at the HTTP authorization layer, so the
+			// terminal SQL transition itself must still enforce the run claim.
+			const wrongWorker = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: "different-device",
+						output: "late reply from a worker that lost the claim",
+						duration_ms: 30,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(wrongWorker.status).toBe(200);
+			expect(
+				(await wrongWorker.json()) as {
+					status: string;
+					idempotent?: boolean;
+				}
+			).toMatchObject({ status: "running", idempotent: true });
+			const [afterWrongWorker] = await sql`
+        SELECT status, claimed_by FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(afterWrongWorker.status)).toBe("running");
+			expect(String(afterWrongWorker.claimed_by)).toBe(workerId);
+
+			const response = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "replied in the thread",
+						duration_ms: 40,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as {
+				status: string;
+				reason_code?: string;
+				window_id?: number | null;
+			};
+			expect(json.status).toBe("completed");
+			expect(json.reason_code).toBe("event_turn");
+			expect(json.window_id).toBeNull();
+
+			const [run] = await sql`
+        SELECT status, window_id, exit_reason, model_used,
+               run_metadata->>'execution_time_ms' AS execution_time_ms
+        FROM runs WHERE id = ${queued.runId}
+      `;
+			expect(String(run.status)).toBe("completed");
+			expect(run.window_id).toBeNull();
+			expect(String(run.exit_reason)).toBe("ok");
+			expect(String(run.model_used)).toBe("device-cli:claude-code");
+			expect(Number(run.execution_time_ms)).toBe(40);
+
+			// No completeWindow happened, so no canvas may be minted.
+			const windows = await sql`
+        SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
+      `;
+			expect(windows).toHaveLength(0);
+
+			// A duplicate report is a no-op ack, not a second completion.
+			const dupe = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "replied in the thread",
+						duration_ms: 40,
+						exit_code: 0,
+						exit_reason: "ok",
+					},
+				}
+			);
+			expect(dupe.status).toBe(200);
+			const dupeJson = (await dupe.json()) as {
+				status: string;
+				idempotent?: boolean;
+			};
+			expect(dupeJson.status).toBe("completed");
+			expect(dupeJson.idempotent).toBe(true);
 		});
 
 		it("complete-behavior endpoint marks the run failed when error is supplied", async () => {
@@ -1052,8 +1331,8 @@ describe("watcher automation contract", () => {
 
 		// Pi review #1: schedule must advance on every terminal exit report or
 		// the scheduler re-fires the watcher every tick forever. This run never
-		// calls complete_window, so the report fails it — next_run_at must
-		// still move.
+		// calls complete_window, so once the finalize_nudges budget is spent the
+		// report fails it — next_run_at must still move.
 		it("advances watchers.next_run_at on a terminal exit report", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
@@ -1086,6 +1365,28 @@ describe("watcher automation contract", () => {
         SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
         WHERE id = ${queued.runId}
       `;
+
+			// Default finalize_nudges budget is 1, so the first missing-window report
+			// is a device-held resume — non-terminal, and it must NOT advance the
+			// cursor. Only the budget-exhausted report below is terminal.
+			const resume = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: {
+						worker_id: workerId,
+						output: "agent exited without completing",
+						duration_ms: 5,
+					},
+				}
+			);
+			expect(resume.status).toBe(200);
+			expect(((await resume.json()) as { status: string }).status).toBe("resume");
+			const [afterResume] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+			expect(new Date(afterResume.next_run_at as string).getTime()).toBe(
+				beforeNextRun ? new Date(beforeNextRun).getTime() : 0
+			);
 
 			const response = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
@@ -1147,7 +1448,18 @@ describe("watcher automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
-			// First report fails the run (no complete_window happened).
+			// Drain the finalize_nudges budget (default 1) so the next report is
+			// terminal: the first missing-window exit is a device-held resume.
+			const resume = await post(
+				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
+				{
+					body: { worker_id: workerId, output: "resume exit", duration_ms: 10 },
+				}
+			);
+			expect(resume.status).toBe(200);
+			expect(((await resume.json()) as { status: string }).status).toBe("resume");
+
+			// First report past the budget fails the run (no complete_window happened).
 			const first = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
@@ -1605,7 +1917,7 @@ describe("watcher automation contract", () => {
 				entity_id: entityB.id,
 				slug: "tick-watcher-b",
 				name: "Tick Watcher B",
-				prompt: "Summarize content for {{entities}}.",
+				prompt: "Summarize content for the bound entities.",
 				triggers: [
 					{
 						kind: "schedule",

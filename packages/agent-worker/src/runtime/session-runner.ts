@@ -20,7 +20,7 @@ import {
   type CreateAgentSessionResult,
   createAgentSession,
   ModelRegistry,
-  type SessionManager,
+  SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { ProgressUpdate, SessionExecutionResult } from "../core/types";
@@ -40,6 +40,11 @@ import {
   registerDynamicProvider,
   resolveModelRef,
 } from "./model-resolver";
+import { createLobuResourceLoader } from "./pi-resources";
+import {
+  createLobuSystemPromptRenderer,
+  type LobuSystemPromptRenderer,
+} from "./system-prompt";
 import {
   createPluginLogger,
   createRuntimePluginHost,
@@ -49,6 +54,7 @@ import { resetSessionForProviderChange } from "./provider-session";
 import { buildRuntimeShellInstructions } from "./runtime-shell-instructions";
 import { checkSandboxLeak } from "./sandbox-leak";
 import {
+  type AgentInstructionLayers,
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "./session-context";
@@ -67,7 +73,7 @@ const logger = createLogger("worker");
 /**
  * Built-in tool names that Lobu rebuilds itself (via createLobuTools).
  * These carry the security-sensitive behavior — most importantly the bash
- * spawnHook that strips SENSITIVE_WORKER_ENV_KEYS and the embedded
+ * spawnHook that builds the env from the worker allowlist and the embedded
  * BashOperations that route MCP/just-bash through the gateway. They must be
  * the instances the agent actually runs.
  */
@@ -88,9 +94,9 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * Background: pi's `createAgentSession({ tools })` uses the `tools` option only
  * to derive the active tool NAMES — it rebuilds the underlying built-in tools
  * internally via `createAllTools(cwd, { bash: { commandPrefix } })`, whose bash
- * uses `getShellEnv()` = `{ ...process.env }` with no env strip and no custom
+ * uses `getShellEnv()` = `{ ...process.env }` with no env filter and no custom
  * BashOperations. That silently discards the worker's hardened bash (the
- * spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and the embedded
+ * spawnHook that builds an allowlisted agent environment and the embedded
  * BashOperations), so the agent's general bash would inherit the worker's real
  * gateway credentials.
  *
@@ -100,7 +106,12 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * preserving every other aspect of `createAgentSession` (model resolution,
  * session restore, image blocking, extension/custom-tool wiring).
  */
-type BuildAgentSessionOptions = CreateAgentSessionOptions & {
+type BuildAgentSessionOptions = Omit<
+  CreateAgentSessionOptions,
+  "resourceLoader"
+> & {
+  /** Resource isolation is a Lobu invariant, not a caller override. */
+  resourceLoader?: never;
   /**
    * Lobu's hardened built-in tool instances (read/bash/edit/write/…). pi's
    * `createAgentSession` only takes built-in NAMES via `options.tools` and
@@ -109,13 +120,47 @@ type BuildAgentSessionOptions = CreateAgentSessionOptions & {
    * the same names in `options.tools` so they're active in the first place.
    */
   builtinOverrides?: AgentTool<any>[];
+  /**
+   * Renders the Lobu system prompt. Installed through the resource loader
+   * (which owns both the base prompt and the `before_agent_start` handler that
+   * reinstalls it each turn), because pi offers no system-prompt option on
+   * `createAgentSession` and resets `agent.state.systemPrompt` on every
+   * `prompt()` call.
+   *
+   * Optional for low-level session tests that exercise isolated pi mechanics.
+   * Production must always pass it.
+   */
+  renderSystemPrompt?: LobuSystemPromptRenderer;
 };
 
 export async function buildAgentSession({
   builtinOverrides,
+  renderSystemPrompt,
   ...options
 }: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
-  const result = await createAgentSession(options);
+  // Pi's defaults persist under ~/.pi and discover resources/config from cwd.
+  // Lobu supplies explicit production state; keep every fallback in memory so
+  // a worker session never depends on host or agent-writable workspace files.
+  const cwd = options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd();
+  const settingsManager = options.settingsManager ?? SettingsManager.inMemory();
+  const sessionManager = options.sessionManager ?? SessionManager.inMemory(cwd);
+  const authStorage =
+    options.authStorage ??
+    options.modelRegistry?.authStorage ??
+    AuthStorage.inMemory();
+  const modelRegistry =
+    options.modelRegistry ?? ModelRegistry.inMemory(authStorage);
+  const resourceLoader = createLobuResourceLoader(renderSystemPrompt);
+
+  const result = await createAgentSession({
+    ...options,
+    cwd,
+    settingsManager,
+    sessionManager,
+    authStorage,
+    modelRegistry,
+    resourceLoader,
+  });
   const { session } = result;
 
   const lobuBuiltins = new Map<string, AgentTool<any>>();
@@ -290,47 +335,15 @@ export function getLatestAssistantText(
 }
 
 // ---------------------------------------------------------------------------
-// System-prompt identity replacement
+// Agent identity
 // ---------------------------------------------------------------------------
 
 /**
- * Pi-coding-agent's buildSystemPrompt() (in `@mariozechner/pi-coding-agent`)
- * always opens the system prompt with this exact sentence. Lobu agents can
- * override their identity via IDENTITY.md, but unless we strip out this
- * opener the model sees two competing role declarations and tends to favour
- * "expert coding assistant" because it appears first.
+ * Fallback identity used when every configured instruction layer is empty.
+ * Without this the document would open with nothing describing the agent at
+ * all, and the model falls back on describing the runtime it can see.
  *
- * This helper substitutes the opener with the agent's identity and keeps the
- * rest of the base prompt (tools list, guidelines, docs paths, cwd) intact.
- *
- * If the upstream package ever changes the opener wording, this becomes a
- * no-op and `replaced === original`. In that case we fall back to prepending
- * the identity with a small framing note so identity still wins ordering.
- */
-const PI_CODING_AGENT_OPENER_RE =
-  /^You are an expert coding assistant operating inside pi, a coding agent harness\.[^\n]*/;
-
-export function replaceBasePromptIdentity(
-  basePrompt: string,
-  identity: string
-): string {
-  if (PI_CODING_AGENT_OPENER_RE.test(basePrompt)) {
-    return basePrompt.replace(PI_CODING_AGENT_OPENER_RE, identity);
-  }
-  // Upstream wording drifted — prepend identity with a framing note rather
-  // than silently letting the upstream opener win.
-  return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
-}
-
-/**
- * Fallback identity used when an agent ships no IDENTITY.md (i.e.
- * `context.agentInstructions` is empty). Without this, the pi-coding-agent
- * opener wins and the agent introduces itself as "an expert coding assistant
- * operating inside pi, a coding agent harness" — leaking harness internals and
- * mis-describing what a Lobu agent actually is.
- *
- * A custom IDENTITY.md still fully overrides this; it only applies when the
- * agent has declared no identity of its own.
+ * Any configured identity, soul, or user layer overrides this fallback.
  *
  * The capabilities section is grounded in what every Lobu agent has by
  * construction (shared memory, connectors, actions, channel presence) rather
@@ -356,15 +369,37 @@ export const LOBU_DEFAULT_IDENTITY = `You are a Lobu agent — a persistent, mem
 Introduce yourself in terms of who you help and what you can do for them — concretely and specifically to this organization — not in terms of the software you are running on.`;
 
 /**
- * Resolve the identity to inject: the agent's own IDENTITY.md when present,
- * otherwise the Lobu default persona. Returns a non-empty string, so the pi
- * opener is always replaced and never reaches the model verbatim.
+ * Compose configured layers in their existing prompt order. The worker owns
+ * this step because prompt placement is a worker concern.
+ *
+ * `unconfiguredNotice` replaces the whole block rather than appending to it:
+ * the gateway only sets it when all three sources are blank.
+ */
+function composeAgentInstructions(layers: AgentInstructionLayers): string {
+  const sections: string[] = [];
+  if (layers.identityMd.trim()) {
+    sections.push(`## Agent Identity\n\n${layers.identityMd.trim()}`);
+  }
+  if (layers.soulMd.trim()) {
+    sections.push(`## Agent Instructions\n\n${layers.soulMd.trim()}`);
+  }
+  if (layers.userMd.trim()) {
+    sections.push(`## User Context\n\n${layers.userMd.trim()}`);
+  }
+  const composed = sections.join("\n\n");
+  return composed || layers.unconfiguredNotice;
+}
+
+/**
+ * Resolve the identity the system prompt opens with: the agent's own configured
+ * instructions when present, otherwise the Lobu default persona. Always returns
+ * a non-empty string, so the document never opens with a blank role.
  */
 export function resolveAgentIdentity(
-  agentInstructions: string | undefined
+  layers: AgentInstructionLayers | undefined
 ): string {
-  const trimmed = agentInstructions?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : LOBU_DEFAULT_IDENTITY;
+  const composed = layers ? composeAgentInstructions(layers).trim() : "";
+  return composed.length > 0 ? composed : LOBU_DEFAULT_IDENTITY;
 }
 
 /**
@@ -384,6 +419,10 @@ export function buildRunContextBlock(input: {
   platform: string | undefined;
   channelId: string | undefined;
   platformMetadata: unknown;
+  agentId?: string | undefined;
+  conversationId?: string | undefined;
+  /** Public HTTP(S) origin for user-openable Lobu links. */
+  webOrigin?: string | undefined;
 }): string {
   // The web chat gets no block. This context exists to disambiguate WHICH
   // conversation a run came from when several are possible (a Slack channel, a
@@ -429,12 +468,24 @@ export function buildRunContextBlock(input: {
   const thread = str(md.responseThreadId);
   // Opportunistic: rendered only if the gateway ever plumbs a link through.
   const url = str(md.conversationUrl) ?? str(md.permalink);
+  // Identity of this run. These are the worker's own trusted values, not
+  // platform metadata — but they still go through `str`, because the block's
+  // contract is that no field can forge a line.
+  const agent = str(input.agentId);
+  const conversation = str(input.conversationId);
+  const origin = str(input.webOrigin);
 
   const lines: string[] = [];
   if (platform) lines.push(`- Platform: ${platform}`);
   if (channel) lines.push(`- Channel: ${channel}`);
-  if (thread) lines.push(`- Thread: ${thread}`);
+  // On a platform with no real threading (Telegram, most DMs) the thread id is
+  // the channel id, and rendering both spends a line of every turn restating
+  // the previous one. Only a thread that actually narrows the channel earns it.
+  if (thread && thread !== channel) lines.push(`- Thread: ${thread}`);
   if (sender) lines.push(`- Triggered by: ${sender}`);
+  if (agent) lines.push(`- Agent: ${agent}`);
+  if (conversation) lines.push(`- Conversation: ${conversation}`);
+  if (origin) lines.push(`- Lobu: ${origin}`);
   if (url) lines.push(`- Link: ${url}`);
 
   if (lines.length === 0) return "";
@@ -753,6 +804,7 @@ export async function runAISession(
     defaultProviderSlug: pc.defaultProviderSlug,
     installedProviderRoutes: pc.installedProviderRoutes,
     allowInstalledProviderOverride: rawOptions.behaviorModelOverride === true,
+    defaultProviderServesModel: pc.defaultProviderServesModel,
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
@@ -1050,7 +1102,7 @@ export async function runAISession(
     });
   // The bash tool returned here carries the FULL hardened policy by construction
   // (prefix allow/deny + gateway-access + package-install blocks, plus
-  // credential-strip), and the `!`-bash intercept reuses the same guards (via
+  // environment allowlist), and the `!`-bash intercept reuses the same guards (via
   // enforceBashPreflight) rather than a second raw path. The filter then removes
   // bash entirely when the agent policy disallows it (strict / disallowedTools).
   const tools = createLobuTools(workspaceDir, {
@@ -1238,19 +1290,30 @@ user references earlier discussion or you need prior context.`);
     sessionKey,
   });
 
+  // The Lobu system prompt for this run. Handed to the session so pi installs
+  // it as the base prompt AND reinstalls it before every turn; nothing here
+  // reads or rewrites pi's own prompt text.
+  const renderSystemPrompt = createLobuSystemPromptRenderer({
+    identity: resolveAgentIdentity(context.agentLayers),
+    gatewayInstructions: finalInstructionsUpdated,
+    cwd: workspaceDir,
+  });
+
   try {
     const createdSession = await buildAgentSession({
       cwd: workspaceDir,
       model,
+      renderSystemPrompt,
       // pi's createAgentSession() uses `tools` only to derive active tool
       // names and rebuilds the base tools internally (bash via getShellEnv()
       // = {...process.env}, no env strip, no embedded BashOperations).
       // buildAgentSession() swaps those rebuilt built-ins back to these
       // Lobu instances (via `builtinOverrides`) after construction so the
-      // agent's bash actually runs with the spawnHook that strips
-      // WORKER_TOKEN/DISPATCHER_URL and with the embedded BashOperations + tool
-      // policy wired in above. `tools` (names) activates exactly this set;
-      // `builtinOverrides` supplies the instances the swap installs.
+      // agent's bash actually runs with the spawnHook that replaces the
+      // inherited environment with the `buildAgentEnv` allowlist and with the
+      // embedded BashOperations + tool policy wired in above. `tools` (names)
+      // activates exactly this set; `builtinOverrides` supplies the instances
+      // the swap installs.
       // Wrap built-ins with the synchronous runaway guard so the per-turn
       // tool-call cap and identical-call guard bound bash/read/edit/write
       // too. The guard runs inside execute (before the tool body), so the
@@ -1286,25 +1349,6 @@ user references earlier discussion or you need prior context.`);
     turnController.attachAbort(() => {
       createdSession.session.agent.abort();
     });
-
-    // Pi-coding-agent's base prompt opens with "You are an expert coding
-    // assistant operating inside pi, a coding agent harness…" — that anchor
-    // overrides any IDENTITY.md the agent ships with. Replace just that
-    // opener with the agent's real identity (or the lobu default) so the
-    // tools/guidelines/cwd footer below it still applies, but the role on
-    // top is the one we actually want.
-    const basePrompt = session.systemPrompt;
-    // Resolve the identity from the agent's IDENTITY.md, falling back to the
-    // Lobu default persona when the agent declares none. Either way we replace
-    // the pi opener so it never reaches the model verbatim.
-    const identity = resolveAgentIdentity(context.agentInstructions);
-    const finalSystemPrompt = [
-      replaceBasePromptIdentity(basePrompt, identity),
-      finalInstructionsUpdated,
-    ]
-      .filter(Boolean)
-      .join("\n\n---\n\n");
-    session.agent.state.systemPrompt = finalSystemPrompt;
 
     let resolveTurnDone: (() => void) | null = null;
     let turnNonce = 0;
@@ -1603,7 +1647,7 @@ user references earlier discussion or you need prior context.`);
     // command runs through the SAME hardened path the agent's own bash tool uses
     // (enforceBashPreflight → the pinned embeddedBashOps), so it inherits the
     // prefix policy, gateway-access block, package-install block, and
-    // credential-strip; it crosses no boundary the agent couldn't already. pi's
+    // environment allowlist; it crosses no boundary the agent couldn't already. pi's
     // `executeBash` records a `bashExecution` transcript entry synchronously and
     // honors `excludeFromContext` (the `!!` form).
     const bangBash = readBangBashCommand(platformMetadata);
@@ -1737,6 +1781,12 @@ user references earlier discussion or you need prior context.`);
       platform,
       channelId,
       platformMetadata,
+      agentId,
+      conversationId,
+      // The gateway's configured PUBLIC origin, not DISPATCHER_URL: the worker
+      // reaches the gateway over an internal cluster address, so deriving the
+      // link origin from it would hand the agent a host no user can open.
+      webOrigin: context.webOrigin,
     });
 
     const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${runContext ? `${runContext}\n\n` : ""}${userPrompt}`;

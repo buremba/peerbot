@@ -18,6 +18,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { executeClassificationQuery } from '../../../utils/classification-query';
+import { getConfiguredEmbeddingModel } from '../../../utils/embeddings';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEvent, createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
@@ -41,9 +42,13 @@ async function seedFacet(opts: {
   fallbackValue: string | null;
 }): Promise<number> {
   const sql = getTestDb();
+  // Stamped, because the engine drops label vectors whose model is not the
+  // configured one — an unstamped fixture models a row that cannot exist after
+  // the 20260731150000 backfill, and would silently test nothing.
+  const embedding_model = getConfiguredEmbeddingModel();
   const attributeValues = {
-    positive: { embedding: basisVector(opts.positiveSlot) },
-    negative: { embedding: basisVector(opts.negativeSlot) },
+    positive: { embedding: basisVector(opts.positiveSlot), embedding_model },
+    negative: { embedding: basisVector(opts.negativeSlot), embedding_model },
   };
   const [row] = (await sql`
     INSERT INTO classify_facet (

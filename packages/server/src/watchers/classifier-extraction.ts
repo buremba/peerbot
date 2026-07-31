@@ -17,6 +17,7 @@ import {
 import type { Env } from "../index";
 import {
 	generateEmbeddings,
+	getConfiguredEmbeddingModel,
 	isValidEmbedding,
 	validateEmbeddingsService,
 } from "../utils/embeddings";
@@ -116,6 +117,13 @@ interface AttributeValue {
 	description: string;
 	examples: string[];
 	embedding?: number[] | null;
+	/**
+	 * Which model produced `embedding`. Set whenever a vector is stored, and
+	 * read by the classification engine, which drops any label vector not
+	 * matching the configured model rather than cosine-comparing across two
+	 * incompatible spaces. Absent means "unknown provenance" → treated as stale.
+	 */
+	embedding_model?: string | null;
 	parent?: Record<string, string>; // { "parent-slug": "parent-value" }
 }
 
@@ -280,8 +288,15 @@ function normalizeValue(
 	let bestMatch: string | null = null;
 	let bestSimilarity = 0;
 
+	const configuredModel = getConfiguredEmbeddingModel();
 	for (const [existing, config] of Object.entries(existingValues)) {
 		if (!hasValidEmbedding(config.embedding)) continue;
+		// Same cross-space hazard as the classification engine, one step earlier:
+		// `newEmbedding` came from the configured model, so an existing value
+		// embedded under a different one cannot be compared against it. Skipping
+		// degrades to exact string match for that pair — a spurious NEW value at
+		// worst, never a wrong auto-merge into an unrelated label.
+		if (config.embedding_model !== configuredModel) continue;
 
 		const similarity = cosineSimilarity(newEmbedding, config.embedding);
 		if (similarity > bestSimilarity) {
@@ -314,16 +329,35 @@ function ensureEmbedding(
 	workerEmbedding?: number[],
 ): AttributeValue {
 	if (hasValidEmbedding(workerEmbedding)) {
-		return { ...config, embedding: workerEmbedding };
+		// Stamped with the configured model, not with something the worker
+		// reported: `getConfiguredEmbeddingModel()` reads the same EMBEDDINGS_MODEL
+		// env var the worker and the embeddings service read, so it is the only
+		// provenance available here. If a worker were ever pinned to a different
+		// model this stamp would be wrong — but it would have been silently
+		// wrong-and-unlabelled before, and the engine now has something to check.
+		return {
+			...config,
+			embedding: workerEmbedding,
+			embedding_model: getConfiguredEmbeddingModel(),
+		};
 	}
 
 	if (hasValidEmbedding(config.embedding)) {
-		return config;
+		// Adopt an unstamped vector at the configured model — the same rule
+		// hydrateAttributeEmbeddings applies, for the same reason: the configured
+		// model is the only provenance available. A foreign stamp is preserved
+		// as-is; this path never destroys a vector, the engine just won't use it
+		// until generate_embeddings re-embeds it.
+		return {
+			...config,
+			embedding_model: config.embedding_model ?? getConfiguredEmbeddingModel(),
+		};
 	}
 
 	// No embedding available — store without embedding, similarity matching
-	// will fall back to exact string match for this value.
-	return { ...config, embedding: null };
+	// will fall back to exact string match for this value. Clear any stamp with
+	// it so a stamp never outlives the vector it describes.
+	return { ...config, embedding: null, embedding_model: null };
 }
 
 // ============================================

@@ -112,6 +112,12 @@ export const ManageClassifiersSchema = Type.Object({
         "[generate_embeddings] Force regenerate existing embeddings (default: false)",
     })
   ),
+  embedding_model: Type.Optional(
+    Type.String({
+      description:
+        "[create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.",
+    })
+  ),
 
   // Manual classification fields
   content_id: Type.Optional(

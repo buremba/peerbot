@@ -9,7 +9,7 @@
 
 import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
-import { configuredEmbeddingModelSqlLiteral, getConfiguredEmbeddingModel } from './embeddings';
+import { embeddingModelSqlLiteral, resolveEmbeddingModel } from './embeddings';
 import logger from './logger';
 
 /**
@@ -113,6 +113,22 @@ interface ClassificationQueryOptions {
    * For mode='content_ids': Specific content IDs to classify
    */
   content_ids?: number[];
+
+  /**
+   * Embedding model to classify in. Defaults to the deployment's configured
+   * model. Scopes BOTH sides of every cosine comparison — the event vectors
+   * joined from `event_embeddings` and the label vectors read from
+   * `classify_facet.attribute_values` — so the two can never be drawn from
+   * different spaces.
+   *
+   * A model with no vectors yields no matches rather than an error: the event
+   * join finds nothing and the templates are all filtered out. That is the
+   * correct read of "this corpus is not embedded under that model", but it is
+   * indistinguishable from "nothing matched" at this layer, so agent-facing
+   * callers must report the emptiness themselves (see `manage_classifiers`'
+   * `not_embedded` skip reason).
+   */
+  embeddingModel?: string;
 }
 
 // ── Internal types for intermediate data ───────────────────────────────
@@ -176,7 +192,8 @@ interface ClassifierVersionLookup {
 
 async function fetchTargetContent(
   sql: DbClient,
-  options: ClassificationQueryOptions
+  options: ClassificationQueryOptions,
+  embeddingModel: string
 ): Promise<TargetContent[]> {
   const { mode, enabledClassifiers } = options;
 
@@ -196,8 +213,8 @@ async function fetchTargetContent(
   // current_event_records no longer carries an embedding (multi-vector). For
   // classification the representative chunk_index=0 vector (lead content) stands
   // in for "the event's embedding" — same semantics as the pre-chunking single
-  // vector. Scoped to the configured model so we never compare across spaces.
-  const embModel = configuredEmbeddingModelSqlLiteral();
+  // vector. Scoped to the requested model so we never compare across spaces.
+  const embModel = embeddingModelSqlLiteral(embeddingModel);
   const repEmbeddingJoins = `LEFT JOIN event_embeddings fe ON fe.event_id = f.id AND fe.chunk_index = 0 AND fe.embedding_model = ${embModel}
        LEFT JOIN event_embeddings pe ON pe.event_id = parent.id AND pe.chunk_index = 0 AND pe.embedding_model = ${embModel}`;
 
@@ -308,7 +325,8 @@ async function fetchClassifierTemplates(
   sql: DbClient,
   enabledClassifiers: string[],
   targetContent: TargetContent[],
-  organizationId: string
+  organizationId: string,
+  embeddingModel: string
 ): Promise<ClassifierTemplate[]> {
   if (targetContent.length === 0) return [];
 
@@ -341,7 +359,6 @@ async function fetchClassifierTemplates(
 
   // Expand attribute_values JSON into individual templates in TypeScript
   const templates: ClassifierTemplate[] = [];
-  const configuredModel = getConfiguredEmbeddingModel();
   let staleTemplates = 0;
 
   for (const row of rows) {
@@ -366,15 +383,19 @@ async function fetchClassifierTemplates(
       if (!embeddingArr) continue;
 
       // The event side of this comparison is model-scoped (fetchTargetContent
-      // joins event_embeddings ON embedding_model = the configured model), so
-      // the label side must be too. Cosine across two different 768-dim spaces
-      // returns a confident-looking number instead of an error, which is the
-      // whole hazard: without this guard an EMBEDDINGS_MODEL swap keeps
+      // joins event_embeddings ON embedding_model = the SAME `embeddingModel`
+      // passed here), so the label side must be too. Cosine across two different
+      // 768-dim spaces returns a confident-looking number instead of an error,
+      // which is the whole hazard: without this guard a model swap keeps
       // classifying and silently assigns wrong labels.
+      //
+      // Both sides take the model from one resolved value in
+      // executeClassificationQuery — deliberately not re-read from config here,
+      // because two independent reads is exactly how the two sides drift apart.
       //
       // Dropped rather than compared, and counted so the operator sees a real
       // reason instead of a bare "No classifier templates found".
-      if (attrObj.embedding_model !== configuredModel) {
+      if (attrObj.embedding_model !== embeddingModel) {
         staleTemplates++;
         continue;
       }
@@ -397,11 +418,11 @@ async function fetchClassifierTemplates(
       {
         staleTemplates,
         usableTemplates: templates.length,
-        configuredModel,
+        embeddingModel,
         classifiers: enabledClassifiers,
       },
       '[Classification Query] Dropped label vectors embedded by a different model — ' +
-        'run manage_classifiers generate_embeddings to re-embed them under the configured model'
+        'run manage_classifiers generate_embeddings to re-embed them under this model'
     );
   }
 
@@ -657,13 +678,18 @@ export async function executeClassificationQuery(
     return [];
   }
 
+  // Resolved ONCE and passed to both fetches. Event vectors and label vectors
+  // are the two sides of every cosine below; resolving the model separately per
+  // side is how they would come to disagree.
+  const embeddingModel = resolveEmbeddingModel(options.embeddingModel);
+
   try {
     const sql = getDb();
 
     // Step 1: Fetch target content with embeddings
-    const targetContent = await fetchTargetContent(sql, options);
+    const targetContent = await fetchTargetContent(sql, options, embeddingModel);
     if (targetContent.length === 0) {
-      logger.info({ mode }, '[Classification Query] No target content to classify');
+      logger.info({ mode, embeddingModel }, '[Classification Query] No target content to classify');
       return [];
     }
 
@@ -672,7 +698,8 @@ export async function executeClassificationQuery(
       sql,
       enabledClassifiers,
       targetContent,
-      options.organizationId
+      options.organizationId,
+      embeddingModel
     );
     if (templates.length === 0) {
       logger.info({ mode }, '[Classification Query] No classifier templates found');

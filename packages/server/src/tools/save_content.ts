@@ -16,7 +16,7 @@ import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
-import { needsEmbeddingSql } from '../utils/embeddings';
+import { getConfiguredEmbeddingModel, needsEmbeddingSql } from '../utils/embeddings';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import {
@@ -496,7 +496,7 @@ async function saveContentImpl(
   // row is already searchable — reporting a hardcoded 'pending' would be wrong.
   const savedId = Number(row.id);
   const [readiness] = await sql`
-    SELECT ${sql.unsafe(needsEmbeddingSql('e'))} AS needs_embedding
+    SELECT ${sql.unsafe(needsEmbeddingSql('e', getConfiguredEmbeddingModel()))} AS needs_embedding
     FROM events e WHERE e.id = ${savedId}
   `;
   const searchable = readiness ? !readiness.needs_embedding : false;

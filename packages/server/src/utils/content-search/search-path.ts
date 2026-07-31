@@ -6,7 +6,7 @@ import type { Env } from '../../index';
 import { type DbClient, pgTextArray } from '../../db/client';
 import { buildConnectionFilter, buildFeedFilter, buildOrderByClause, buildRunFilter } from '../content-query-filters';
 import { parseDateAlias, toEndOfDay } from '../date-aliases';
-import { configuredEmbeddingModelSqlLiteral, generateEmbeddings } from '../embeddings';
+import { embeddingModelSqlLiteral, generateEmbeddings, resolveEmbeddingModel } from '../embeddings';
 import { toVectorLiteral } from '../entity-management';
 import logger from '../logger';
 import { validateNumericId } from '../sql-validation';
@@ -49,12 +49,17 @@ export async function searchContentBySingleQuery(
   const fetchLimit = useDateFeed ? limit + 1 : limit;
   const trimmedQuery = queryText.trim();
 
+  // One resolution for both the query vector and the stored vectors it is ranked
+  // against — see `modelScopeFor` below. Resolving per side is how a query
+  // embedded by one model comes to be compared against another's rows.
+  const embeddingModel = resolveEmbeddingModel();
+
   let queryEmbedding: number[] | null = options.query_embedding?.length
     ? options.query_embedding
     : null;
   if (!queryEmbedding && env?.EMBEDDINGS_SERVICE_URL) {
     try {
-      const embeddings = await generateEmbeddings([trimmedQuery], env);
+      const embeddings = await generateEmbeddings([trimmedQuery], env, embeddingModel);
       queryEmbedding = embeddings[0] ?? null;
     } catch (err) {
       logger.warn(
@@ -187,14 +192,14 @@ export async function searchContentBySingleQuery(
   const vecParam = vectorParamIdx ? `$${vectorParamIdx}::vector` : 'NULL::vector';
   const minSimilarityParam = `$${minSimilarityParamIdx}::numeric`;
   // Vector-space integrity: only compare against rows stamped with the EXACT
-  // model this deployment is configured for. A NULL stamp (legacy row written
-  // before stamping) is NOT comparable — its true model is unknown, so comparing
-  // it against the configured query vector could mix incompatible spaces. Such
+  // model the query vector above was produced under. A NULL stamp (legacy row
+  // written before stamping) is NOT comparable — its true model is unknown, so
+  // comparing it against the query vector could mix incompatible spaces. Such
   // rows are excluded from vector ranking until the backfill restamps them (see
-  // trigger-embed-backfill, which treats NULL as stale). The model is server
-  // config, inlined as a validated literal (`<alias>` substituted per CTE).
-  const configuredModelLiteral = configuredEmbeddingModelSqlLiteral();
-  const modelScopeFor = (alias: string) => `${alias}.embedding_model = ${configuredModelLiteral}`;
+  // trigger-embed-backfill, which treats NULL as stale). Inlined as a validated
+  // literal (`<alias>` substituted per CTE).
+  const modelLiteral = embeddingModelSqlLiteral(embeddingModel);
+  const modelScopeFor = (alias: string) => `${alias}.embedding_model = ${modelLiteral}`;
   // Best-chunk-per-event similarity (multi-vector). current_event_records no
   // longer carries an embedding (an event has N chunk vectors, not one), so
   // vector scoring correlates into event_embeddings and takes the closest chunk
@@ -204,7 +209,7 @@ export async function searchContentBySingleQuery(
   // the single place the chunk→event collapse lives; both query paths use it.
   const bestChunkSimExpr = (alias: string) =>
     `(SELECT MAX(1 - (emb.embedding <=> ${vecParam})) FROM event_embeddings emb
-      WHERE emb.event_id = ${alias}.id AND emb.embedding_model = ${configuredModelLiteral})`;
+      WHERE emb.event_id = ${alias}.id AND emb.embedding_model = ${modelLiteral})`;
   const matchCondition = hasEmbedding
     ? `(${textMatchExpr} OR (${bestChunkSimExpr('f')}) >= ${minSimilarityParam})`
     : textMatchExpr;

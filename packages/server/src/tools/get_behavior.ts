@@ -8,6 +8,7 @@
 
 import {
   addBehaviorPeriod,
+  alignToBehaviorWindowStart,
   getFinerBehaviorGranularities,
   inferBehaviorGranularityFromSchedule,
   type BehaviorTimeGranularity,
@@ -949,8 +950,28 @@ async function getBehaviorImpl(
       let windowEnd: Date;
 
       if (latestEnd) {
-        // Continue from where we left off.
-        windowStart = new Date(latestEnd);
+        // Continue from the period AFTER the last one, aligned. Same rule as
+        // `computePendingWindow` (utils/window-utils), which is what actually
+        // dispatches — this is only the preview of it, and a preview that
+        // disagrees with the dispatcher tells the agent one period and hands it
+        // another. Aligning matters because `window_end` is not reliably an
+        // exclusive boundary: agents write windows through `complete_window`
+        // and prod holds both conventions, so `new Date(latestEnd)` could start
+        // the preview at `…T23:59:59.999Z`.
+        const latestEndDate = new Date(latestEnd);
+        windowStart = alignToBehaviorWindowStart(latestEndDate, timeGranularity);
+        if (windowStart < latestEndDate) {
+          windowStart = addBehaviorPeriod(windowStart, timeGranularity);
+        }
+        // The dispatcher's clamp, too: when the last window IS the current
+        // period, `computePendingWindow` re-dispatches the current period
+        // (superseding its head) rather than minting a future one. Without
+        // this the preview advertises tomorrow while the dispatcher hands
+        // out today.
+        const alignedNow = alignToBehaviorWindowStart(now, timeGranularity);
+        if (windowStart > alignedNow) {
+          windowStart = alignedNow;
+        }
       } else {
         // No windows yet — find the earliest unprocessed event for this
         // entity. Unbounded by occurred_at: pi review (#481) flagged that
@@ -965,16 +986,19 @@ async function getBehaviorImpl(
           [args.behavior_id, ...entityLinkParams]
         );
         const earliest = earliestResult[0]?.earliest as string | null;
-        windowStart = earliest ? new Date(earliest) : now;
+        // Aligned too: an arbitrary event timestamp would preview a window
+        // starting mid-period, which is not a period the dispatcher can emit.
+        windowStart = alignToBehaviorWindowStart(
+          earliest ? new Date(earliest) : now,
+          timeGranularity
+        );
       }
 
-      // Calculate window end based on granularity
+      // A full period, never truncated at `now`. Truncating made the preview
+      // disagree with what `computePendingWindow` actually dispatches (it always
+      // emits a whole period), and a partial end is not a window any run can be
+      // given.
       windowEnd = addBehaviorPeriod(windowStart, timeGranularity);
-
-      // Don't go past now
-      if (windowEnd > now) {
-        windowEnd = now;
-      }
 
       nextWindow = {
         start: windowStart.toISOString(),

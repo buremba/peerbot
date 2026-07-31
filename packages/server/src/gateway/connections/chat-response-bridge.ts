@@ -50,10 +50,6 @@ import {
   type PlatformResponseStrategy,
   type StreamState,
 } from "./platform-strategies/index.js";
-import {
-  appendMarkdownFooter,
-  buildConversationFooterUrl,
-} from "./lobu-answer-link.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 
 const logger = createLogger("chat-response-bridge");
@@ -426,39 +422,43 @@ export class ChatResponseBridge implements ResponseRenderer {
       }
     }
 
-    // Completion-time enrichment is safe only for post-once strategies. Their
-    // terminal payload is the delivery contract under N>1 replicas, so the
-    // footer travels with the same authoritative finalText as the answer.
-    // Live-streaming strategies have already posted their iterator on whichever
-    // replica claimed the deltas; enriching the terminal payload would not
-    // change the platform message, and re-posting would duplicate it.
-    let deliveryPayload = payload;
-    if (
-      !blockedAtCompletion &&
-      strategy.deliversAtCompletion &&
-      payload.finalText?.trim()
-    ) {
-      const footerUrl = await buildConversationFooterUrl({
-        organizationId: this.resolveOrganizationId(payload, ctx),
-        agentId: this.resolveAgentId(payload, ctx) ?? undefined,
-        conversationId: payload.conversationId,
-        publicGatewayUrl: this.manager.getPublicGatewayUrl(),
-      });
-      if (footerUrl) {
-        deliveryPayload = {
-          ...payload,
-          finalText: appendMarkdownFooter(payload.finalText, footerUrl),
-        };
-      }
+    // The agent already answered IN this conversation during the turn (it
+    // called `send_message` on the conversation it was replying to, and the
+    // send route matched that target against the run's own conversation from
+    // the signed worker token). The user has read that message; `finalText` is
+    // then a report about it, and delivering it too is the double-post.
+    //
+    // Stamped by the worker on the terminal row, so it is replica-safe for the
+    // same reason `finalText` is: the completion is self-contained and any pod
+    // can act on it. Absent (older worker, or nothing posted in-band) means
+    // deliver — this suppresses only on a positive signal, never on silence.
+    const suppressedByInBandReply = payload.repliedInBand === true;
+    if (suppressedByInBandReply) {
+      logger.info(
+        {
+          connectionId,
+          channelId,
+          conversationId: payload.conversationId,
+        },
+        "Agent replied in-band this turn — skipping terminal reply delivery"
+      );
     }
 
-    if (!blockedAtCompletion && (stream || canDeliverFromFinalText)) {
+    if (
+      !blockedAtCompletion &&
+      !suppressedByInBandReply &&
+      (stream || canDeliverFromFinalText)
+    ) {
       await strategy.handleCompletion({
         ctx,
-        payload: deliveryPayload,
+        payload,
         stream: stream ?? null,
       });
-    } else if (!blockedAtCompletion && deliverWithheldFinalText) {
+    } else if (
+      !blockedAtCompletion &&
+      !suppressedByInBandReply &&
+      deliverWithheldFinalText
+    ) {
       // Post the scanned finalText directly — the live-streaming strategy can't
       // deliver it stream-less, and nothing was streamed (deltas withheld).
       await this.postToPayloadTarget(

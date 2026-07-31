@@ -555,6 +555,14 @@ export class LobuAgentWorker implements WorkerExecutor {
       userPrompt,
       customInstructions,
       onProgress,
+      // `send_message` answered in the conversation this run is replying to.
+      // Latch it on the transport so the terminal completion carries the fact
+      // and the gateway skips delivering `finalText` as a second message.
+      onInBandReplyDelivered: () => {
+        if (this.workerTransport instanceof HttpWorkerTransport) {
+          this.workerTransport.recordInBandReply();
+        }
+      },
       agentOptions: this.config.agentOptions,
       sessionKey: this.config.sessionKey,
       channelId: this.config.channelId,

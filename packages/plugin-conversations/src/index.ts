@@ -13,6 +13,12 @@ import { Type } from "@sinclair/typebox";
 
 export interface ConversationPluginParams extends GatewayParams {
   onAskUserPosted: () => void;
+  /**
+   * `send_message` posted into the conversation that triggered this run, so the
+   * turn's terminal reply must not be delivered a second time. Optional so a
+   * non-chat host (CLI) can compose the plugin without the chat transport.
+   */
+  onInBandReplyDelivered?: () => void;
 }
 
 export async function askUserQuestion(
@@ -174,7 +180,8 @@ export async function readConversation(
 
 export async function sendMessage(
   gateway: GatewayParams,
-  args: { target: string; text: string }
+  args: { target: string; text: string },
+  hooks?: { onDeliveredInBand?: () => void }
 ): Promise<TextResult> {
   return withErrorHandling("send_message", async () => {
     if (!args.target || !args.text?.trim()) {
@@ -185,6 +192,7 @@ export async function sendMessage(
     const { data, error } = await gatewayFetch<{
       messageId: string | null;
       thread?: string;
+      deliveredInBand?: boolean;
     }>(
       gateway,
       "/internal/conversations/send",
@@ -195,6 +203,17 @@ export async function sendMessage(
     const threadNote = data!.thread
       ? ` To reply in this message's thread later, send to target="${data!.thread}".`
       : "";
+
+    // The post landed in the conversation this run is already replying to, so
+    // the user has read it. Tell the gateway to drop the terminal reply (it
+    // would arrive as a second message), and tell the model so it does not
+    // spend its final answer narrating what it just said.
+    if (data!.deliveredInBand) {
+      hooks?.onDeliveredInBand?.();
+      return textResult(
+        `Message sent.${threadNote} This posted into the conversation you are already replying to, so the user has now seen it — your reply for this turn is DONE. Do not repeat or summarize it in your final answer, and do not send it again.`
+      );
+    }
     return textResult(`Message sent.${threadNote}`);
   });
 }
@@ -301,7 +320,10 @@ export function createConversationTools(params: ConversationPluginParams) {
         target: Type.String({ description: "Conversation or thread handle" }),
         text: Type.String({ description: "Message text in markdown" }),
       }),
-      run: (args) => sendMessage(gateway, args),
+      run: (args) =>
+        sendMessage(gateway, args, {
+          onDeliveredInBand: params.onInBandReplyDelivered,
+        }),
     }),
     defineGatewayTool({
       name: "react",

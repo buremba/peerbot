@@ -12,6 +12,7 @@ interface RuntimePluginParams extends GatewayParams {
   workspaceDir: string;
   onCustomEvent: (name: string, data: Record<string, unknown>) => Promise<void>;
   onAskUserPosted: () => void;
+  onInBandReplyDelivered?: () => void;
   includeMcpTools: boolean;
   mcpTools: Record<string, McpToolDef[]>;
   mcpStatus: Array<{

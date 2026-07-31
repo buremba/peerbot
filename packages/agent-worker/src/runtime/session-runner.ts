@@ -518,6 +518,12 @@ interface RunAISessionParams {
   userPrompt: string;
   customInstructions: string;
   onProgress: (update: ProgressUpdate) => Promise<void>;
+  /**
+   * `send_message` posted into the conversation that triggered this run. The
+   * caller stamps the terminal completion so the gateway skips delivering the
+   * reply a second time.
+   */
+  onInBandReplyDelivered?: () => void;
 
   // Worker config fields needed by the session
   agentOptions: string;
@@ -1221,6 +1227,7 @@ user references earlier discussion or you need prior context.`);
         "ask-user",
         "ask_user posted — ending the turn so the model can't re-post."
       ),
+    onInBandReplyDelivered: params.onInBandReplyDelivered,
     includeMcpTools: mcpExposure !== "cli",
     mcpTools: context.mcpTools,
     mcpStatus: context.mcpStatus,

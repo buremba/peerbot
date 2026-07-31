@@ -286,6 +286,16 @@ export interface ThreadResponsePayload {
    */
   toolsUsed?: string[];
   /**
+   * The agent already posted its answer into THIS conversation during the turn
+   * (via the `send_message` conversation tool), so `finalText` is a report
+   * about a message the user has already read. Renderers must not deliver the
+   * terminal reply when this is set — doing so is the double-message.
+   *
+   * Set only on the COMPLETION row, never on an error row: an error is not a
+   * duplicate of the reply and must always surface.
+   */
+  repliedInBand?: boolean;
+  /**
    * Raw error message. When provider context is available, the gateway labels
    * the source and unwraps the common JSON message envelope without rewording
    * the provider's sentence; `errorCode` selects the CTA link.

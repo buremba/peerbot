@@ -7,6 +7,10 @@ import {
   threadHandleForMessage,
   type AddressableTarget,
 } from "../../conversations/authorization.js";
+import {
+  conversationRefsMatch,
+  parseConversationRef,
+} from "../../conversations/conversation-ref.js";
 import { getChatInstanceManager } from "../../../lobu/gateway.js";
 import {
   captureChannelMessage,
@@ -238,9 +242,23 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       const threadHandle = threadRoot
         ? threadHandleForMessage(target, threadRoot)
         : undefined;
+      // Did this post land in the very conversation that triggered the run?
+      // If so the user has ALREADY read the agent's answer, and the terminal
+      // `finalText` the worker is about to emit is a report about it — posting
+      // that too is the double-message. The comparison can only happen here:
+      // the model holds an opaque handle, and only this route has resolved it
+      // to concrete channel/thread coordinates. The worker's own conversation
+      // comes from its signed token, so the model cannot spoof a match to
+      // silence its own reply.
+      const deliveredInBand = conversationRefsMatch(
+        { channelKey: target.channelKey, ...(threadId ? { threadId } : {}) },
+        parseConversationRef(worker.conversationId)
+      );
+
       return c.json({
         messageId: sent.messageId || null,
         thread: threadHandle,
+        deliveredInBand,
       });
     } catch (error) {
       logger.error(`send conversation failed: ${String(error)}`);

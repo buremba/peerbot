@@ -9,7 +9,7 @@
 
 import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
-import { configuredEmbeddingModelSqlLiteral } from './embeddings';
+import { configuredEmbeddingModelSqlLiteral, getConfiguredEmbeddingModel } from './embeddings';
 import logger from './logger';
 
 /**
@@ -341,6 +341,8 @@ async function fetchClassifierTemplates(
 
   // Expand attribute_values JSON into individual templates in TypeScript
   const templates: ClassifierTemplate[] = [];
+  const configuredModel = getConfiguredEmbeddingModel();
+  let staleTemplates = 0;
 
   for (const row of rows) {
     // Scope check: classifier must be global (empty entity_ids) OR overlap with target content entity_ids
@@ -363,6 +365,20 @@ async function fetchClassifierTemplates(
       const embeddingArr = attrObj.embedding as number[] | undefined;
       if (!embeddingArr) continue;
 
+      // The event side of this comparison is model-scoped (fetchTargetContent
+      // joins event_embeddings ON embedding_model = the configured model), so
+      // the label side must be too. Cosine across two different 768-dim spaces
+      // returns a confident-looking number instead of an error, which is the
+      // whole hazard: without this guard an EMBEDDINGS_MODEL swap keeps
+      // classifying and silently assigns wrong labels.
+      //
+      // Dropped rather than compared, and counted so the operator sees a real
+      // reason instead of a bare "No classifier templates found".
+      if (attrObj.embedding_model !== configuredModel) {
+        staleTemplates++;
+        continue;
+      }
+
       const parentMapping = attrObj.parent as Record<string, string> | undefined;
 
       templates.push({
@@ -374,6 +390,19 @@ async function fetchClassifierTemplates(
         template_embedding: embeddingArr,
       });
     }
+  }
+
+  if (staleTemplates > 0) {
+    logger.warn(
+      {
+        staleTemplates,
+        usableTemplates: templates.length,
+        configuredModel,
+        classifiers: enabledClassifiers,
+      },
+      '[Classification Query] Dropped label vectors embedded by a different model — ' +
+        'run manage_classifiers generate_embeddings to re-embed them under the configured model'
+    );
   }
 
   return templates;

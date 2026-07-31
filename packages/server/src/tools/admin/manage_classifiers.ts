@@ -42,40 +42,99 @@ export { ManageClassifiersResultSchema, ManageClassifiersSchema };
 // Typeers
 // ============================================
 
+/**
+ * Generate any missing or stale label vectors and stamp each with the model
+ * that produced it.
+ *
+ * A label vector lives inside `attribute_values[value].embedding` and is cosine-
+ * compared against `event_embeddings.embedding`. Event vectors are model-scoped
+ * on every path that touches them (search, the classification engine, the
+ * backfill's staleness predicate) precisely because vectors from different
+ * models are NOT comparable even at equal dimensionality. Label vectors had no
+ * stamp at all, so they were the one side of that comparison that a model swap
+ * left behind: cosine over two incompatible 768-dim spaces returns a plausible
+ * number rather than an error, so classification would keep "working" and
+ * quietly assign wrong labels.
+ *
+ * A stale stamp is therefore treated exactly like a missing embedding —
+ * regenerate it — which also means the existing `EMBEDDINGS_MODEL` swap
+ * procedure repairs classifiers by itself instead of needing a manual
+ * `force_regenerate` sweep nobody would remember to run.
+ */
 async function hydrateAttributeEmbeddings(
   attributeValues: Record<
     string,
-    { description: string; examples: string[]; embedding?: number[] | null }
+    {
+      description: string;
+      examples: string[];
+      embedding?: number[] | null;
+      embedding_model?: string | null;
+    }
   >,
   env: Env,
   options: { forceRegenerate?: boolean } = {}
 ): Promise<{
   attributeValues: Record<
     string,
-    { description: string; examples: string[]; embedding?: number[] }
+    {
+      description: string;
+      examples: string[];
+      embedding?: number[];
+      embedding_model?: string;
+    }
   >;
   generatedCount: number;
 }> {
-  const updated: Record<string, { description: string; examples: string[]; embedding?: number[] }> =
-    {};
+  const configuredModel = getConfiguredEmbeddingModel();
+  const updated: Record<
+    string,
+    {
+      description: string;
+      examples: string[];
+      embedding?: number[];
+      embedding_model?: string;
+    }
+  > = {};
   const valuesToEmbed: string[] = [];
 
   for (const [value, config] of Object.entries(attributeValues)) {
     const hasEmbedding = isValidEmbedding(config.embedding ?? null);
-    if (!hasEmbedding || options.forceRegenerate) {
+    // A DIFFERENT stamp means stale — regenerate. A MISSING stamp does not:
+    // this function also runs on `create`, where the vector was just handed to
+    // us by a caller running this same deployment, and where discarding it
+    // would both throw away supplied input and force a live embeddings-service
+    // round-trip on a path that never needed one. So an unstamped vector is
+    // adopted at the configured model — the identical assumption
+    // `ensureEmbedding` already makes for worker-supplied vectors, since the
+    // configured model is the only provenance available either way.
+    //
+    // That is safe rather than optimistic because genuinely legacy rows do not
+    // survive to be read here: the backfill migration stamps all 208 of them at
+    // deploy, deriving the value from event_embeddings.
+    const isForeignModel =
+      config.embedding_model != null && config.embedding_model !== configuredModel;
+    const reusable = hasEmbedding && !isForeignModel;
+    if (!reusable || options.forceRegenerate) {
       valuesToEmbed.push(value);
     }
     updated[value] = {
       description: config.description,
       examples: config.examples,
-      embedding: hasEmbedding ? (config.embedding as number[]) : undefined,
+      // Vector and stamp move together — never carry a vector past its stamp,
+      // and never leave a stamp describing a vector that is no longer there.
+      embedding: reusable ? (config.embedding as number[]) : undefined,
+      embedding_model: reusable ? configuredModel : undefined,
     };
   }
 
   if (valuesToEmbed.length > 0) {
     const embeddings = await generateEmbeddingsViaService(valuesToEmbed, env);
     valuesToEmbed.forEach((value, index) => {
-      updated[value] = { ...updated[value], embedding: embeddings[index] };
+      updated[value] = {
+        ...updated[value],
+        embedding: embeddings[index],
+        embedding_model: configuredModel,
+      };
     });
   }
 

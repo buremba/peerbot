@@ -66,9 +66,12 @@ describe('manage_classifiers apply — skip reasons', () => {
 
     // positive == basis 0, negative == basis 1, threshold 0.5, NO fallback — so
     // an event on basis 7 is orthogonal to both and genuinely scores below.
+    // Stamped: the engine drops label vectors whose model is not the configured
+    // one, so an unstamped fixture would make this suite pass vacuously.
+    const labelModel = getConfiguredEmbeddingModel();
     const attributeValues = {
-      positive: { embedding: basisVector(0) },
-      negative: { embedding: basisVector(1) },
+      positive: { embedding: basisVector(0), embedding_model: labelModel },
+      negative: { embedding: basisVector(1), embedding_model: labelModel },
     };
     // Seeded in the CALLER's org only. The other org deliberately has no
     // classifier: its event must be excluded by the org filter, not by failing
@@ -232,7 +235,7 @@ describe('manage_classifiers apply — skip reasons', () => {
       ) VALUES (
         ${org.id}, 'behavior-owned', 'behavior owned', 'behavior-owned', 'active', ${user.id},
         ${behavior.id}, NULL, 0.5, NULL,
-        ${JSON.stringify({ positive: { embedding: basisVector(0) } })}::jsonb
+        ${JSON.stringify({ positive: { embedding: basisVector(0), embedding_model: getConfiguredEmbeddingModel() } })}::jsonb
       )
     `;
 

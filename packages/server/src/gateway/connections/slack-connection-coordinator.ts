@@ -365,13 +365,16 @@ export class SlackConnectionCoordinator {
    * team_id (url_verification challenges, events with no extractable team).
    *
    * Only the hosted shared-app / preview connection is a safe default: it is
-   * explicitly marked `settings.previewMode === true` and belongs to no
-   * specific tenant. Everything else is tenant-owned — a team-scoped row
-   * obviously so, but ALSO a plain org-owned row with empty metadata (a BYO
-   * connection created without an OAuth install never gets a `metadata.teamId`,
-   * yet still carries that org's bot token). Forwarding an unmatched-team
-   * webhook to any tenant-owned row would let one tenant's bot act on (and
-   * reply with its own bot token to) another tenant's Slack traffic.
+   * explicitly marked `settings.previewMode === true`, with a global unique
+   * index guaranteeing one such connection per platform. Its real workspace id
+   * may be persisted for scoped delivery and ACL checks; the explicit marker,
+   * not missing identity, distinguishes it from tenant-owned bots. Everything
+   * else is tenant-owned — a team-scoped row obviously so, but ALSO a plain
+   * org-owned row with empty metadata (a BYO connection created without an
+   * OAuth install never gets a `metadata.teamId`, yet still carries that org's
+   * bot token). Forwarding an unmatched-team webhook to any tenant-owned row
+   * would let one tenant's bot act on (and reply with its own bot token to)
+   * another tenant's Slack traffic.
    * `listSlackConnections()` is platform-scoped only (the public `/api/v1/app-webhooks/slack`
    * route carries no org context, so the store's per-tenant predicate doesn't
    * apply) — so we must require the explicit preview marker and otherwise fail
@@ -382,9 +385,7 @@ export class SlackConnectionCoordinator {
     const connections = await this.deps.listSlackConnections();
     return (
       connections.find(
-        (connection) =>
-          connection.settings?.previewMode === true &&
-          !connection.metadata?.teamId
+        (connection) => connection.settings?.previewMode === true
       ) || null
     );
   }

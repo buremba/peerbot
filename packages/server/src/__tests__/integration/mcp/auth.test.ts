@@ -9,6 +9,11 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
+import {
+  buildRunJobToken,
+  BUILDER_ADMIN_TOOLS,
+  resolveBuilderAdminGrant,
+} from '../../../gateway/orchestration/message-consumer';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -22,6 +27,7 @@ import {
   createTestPAT,
   createTestSession,
   createTestUser,
+  linkSlackIdentityInGraph,
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
 import { del, get, mcpListTools, mcpRequest, mcpToolsCall, post } from '../../setup/test-helpers';
@@ -970,6 +976,116 @@ describe('MCP Authentication', () => {
   });
 
   describe('Scoped /mcp/{slug} membership-role resolution', () => {
+    it('accepts a Slack builder token by its resolved Lobu admin actor', async () => {
+      const builderOrg = await createTestOrganization({ name: 'Slack Builder Direct Auth' });
+      const owner = await createTestUser({});
+      await addUserToOrganization(owner.id, builderOrg.id, 'owner');
+      const builder = await createTestAgent({
+        organizationId: builderOrg.id,
+        agentId: 'lobu-builder-direct-auth',
+        ownerUserId: owner.id,
+      });
+      await getTestDb()`
+        UPDATE organization
+        SET system_agent_id = ${builder.agentId}
+        WHERE id = ${builderOrg.id}
+      `;
+      await linkSlackIdentityInGraph({
+        organizationId: builderOrg.id,
+        userId: owner.id,
+        teamId: 'T_BUILDER',
+        slackUserId: 'U_SLACK_PLATFORM_ID',
+      });
+      const adminGrant = await resolveBuilderAdminGrant({
+        agentId: builder.agentId,
+        organizationId: builderOrg.id,
+        userId: 'U_SLACK_PLATFORM_ID',
+        platform: 'slack',
+        teamId: 'T_BUILDER',
+      });
+      expect(adminGrant).toEqual({
+        tools: [...BUILDER_ADMIN_TOOLS],
+        actorUserId: owner.id,
+      });
+
+      const token = buildRunJobToken({
+        userId: 'U_SLACK_PLATFORM_ID',
+        conversationId: 'slack:D_BUILDER',
+        deploymentName: 'lobu-worker-slack-builder',
+        channelId: 'slack:D_BUILDER',
+        teamId: 'T_BUILDER',
+        agentId: builder.agentId,
+        organizationId: builderOrg.id,
+        platform: 'slack',
+        platformMetadata: {},
+        runId: 1,
+        messageId: 'slack-message-1',
+        adminGrant,
+      });
+      const directHeaders = { 'x-lobu-memory-direct-auth': '1' };
+
+      const init = await post(`/mcp/${builderOrg.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 'builder-init',
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'lobu-worker-test', version: '1.0' },
+          },
+        },
+        headers: directHeaders,
+        token,
+      });
+
+      expect(init.status).toBe(200);
+      const sessionId = init.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+
+      const initialized = await post(`/mcp/${builderOrg.slug}`, {
+        body: { jsonrpc: '2.0', method: 'notifications/initialized' },
+        headers: { ...directHeaders, 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(initialized.status).toBe(202);
+
+      const listed = await post(`/mcp/${builderOrg.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 'builder-tools',
+          method: 'tools/list',
+          params: {},
+        },
+        headers: { ...directHeaders, 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(listed.status).toBe(200);
+      const body = await listed.json();
+      const names = body.result.tools.map((tool: { name: string }) => tool.name);
+      expect(names).toContain('search_sdk');
+      expect(names).toContain('run_sdk');
+
+      const executed = await post(`/mcp/${builderOrg.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 'builder-run-sdk',
+          method: 'tools/call',
+          params: {
+            name: 'run_sdk',
+            arguments: {
+              script:
+                'export default async (_ctx, client) => { const out = await client.agents.list(); return { ids: out.agents.map((agent) => agent.id) }; }',
+            },
+          },
+        },
+        headers: { ...directHeaders, 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(executed.status).toBe(200);
+      expect(JSON.stringify(await executed.json())).toContain(builder.agentId);
+    });
+
     // Regression: scoped sessions derived org from the URL slug and user from
     // the token but never looked up the caller's membership row, so `memberRole`
     // stayed null even for an owner — role-gated actions wrongly denied real

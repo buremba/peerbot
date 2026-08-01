@@ -893,6 +893,7 @@ export class WorkerGateway {
         // Preserve the builder admin-tool allowlist across refresh — otherwise a
         // long system-agent turn loses its admin grant when the token rotates.
         adminTools: tokenData.adminTools,
+        adminActorUserId: tokenData.adminActorUserId,
         // Preserve the runtime selection — otherwise a remote-runtime worker's
         // bash starts failing (the generic route 404s with no provider claim)
         // after the token rotates mid-turn.

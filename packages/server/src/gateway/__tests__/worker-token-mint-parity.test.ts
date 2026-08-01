@@ -175,6 +175,21 @@ describe("worker-token mint parity (real mint, not generateWorkerToken)", () => 
     }
   });
 
+  test("run token carries the builder allowlist with its resolved auth actor", () => {
+    const token = buildRunJobToken({
+      ...baseArgs,
+      runId: 7,
+      adminGrant: {
+        tools: ["manage_agents"],
+        actorUserId: "auth-user-1",
+      },
+    });
+    const decoded = verifyWorkerToken(token);
+    expect(decoded?.userId).toBe("U_USER");
+    expect(decoded?.adminTools).toEqual(["manage_agents"]);
+    expect(decoded?.adminActorUserId).toBe("auth-user-1");
+  });
+
   test("the shipped bug reproduces: a chat token WITHOUT connectionId is rejected", () => {
     // Mint via the real path but with no connectionId in platformMetadata —
     // this is the state MessageConsumer produced before #1274.

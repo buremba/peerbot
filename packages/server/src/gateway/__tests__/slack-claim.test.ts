@@ -293,7 +293,7 @@ describe("slackClaimProvider.bind", () => {
 
 /**
  * Post-claim identity linking. This is a PRIVILEGE-GRANTING write: the rows it
- * writes are what `resolveBuilderAdminTools` later reads to hand a Slack `U…`
+ * writes are what `resolveBuilderAdminGrant` later reads to hand a Slack `U…`
  * the org's Builder admin tools. The invariant under test is that `bind` links
  * ONLY identities the claimer has already proven (via Slack OIDC / `/lobu link`),
  * and stamps the install's tenant key ONLY when the claimer is provably the

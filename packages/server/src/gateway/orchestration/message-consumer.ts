@@ -69,7 +69,7 @@ const logger = createLogger("orchestrator");
  */
 /**
  * Internal admin tools the org's builder agent may call from its worker. The
- * grant rides the per-run worker token (set in `resolveBuilderAdminTools` only
+ * grant rides the per-run worker token (set in `resolveBuilderAdminGrant` only
  * for the system agent on an owner/admin-initiated turn) and is enforced
  * tool-by-tool at the execute gate. Keep this in lockstep with the gate's
  * exact-name check in `tools/execute.ts`.
@@ -83,15 +83,23 @@ export const BUILDER_ADMIN_TOOLS = [
   "manage_entity",
 ] as const;
 
+/** Builder admin allowlist paired with the Lobu auth user it was resolved for. */
+export interface BuilderAdminGrant {
+  tools: string[];
+  /** Lobu auth user resolved from the turn's platform principal. */
+  actorUserId: string;
+}
+
 /**
  * Decide whether THIS turn's worker token should carry the builder admin-tool
- * grant. Returns the allowlist only when the target agent is the org's system
- * agent (`organization.system_agent_id`) AND the human sending the message is an
- * org owner/admin. Fails closed (returns undefined) on any lookup error — a
- * missing grant just means the model can't see/call the admin tools, never an
- * over-grant. One indexed query (org PK + member join); runs per turn.
+ * grant. Returns the allowlist and resolved Lobu auth actor only when the target
+ * agent is the org's system agent (`organization.system_agent_id`) AND the
+ * human sending the message is an org owner/admin. Fails closed (returns
+ * undefined) on any lookup error — a missing grant just means the model can't
+ * see/call the admin tools, never an over-grant. One indexed query (org PK +
+ * member join); runs per turn.
  */
-export async function resolveBuilderAdminTools(args: {
+export async function resolveBuilderAdminGrant(args: {
   agentId?: string;
   organizationId?: string;
   userId?: string;
@@ -116,7 +124,7 @@ export async function resolveBuilderAdminTools(args: {
    * cross-team unique-user collapse.
    */
   alternateTeamId?: string;
-}): Promise<string[] | undefined> {
+}): Promise<BuilderAdminGrant | undefined> {
   if (!args.agentId || !args.organizationId || !args.userId) return undefined;
   try {
     // Map a platform user id to its linked Lobu user before the member join.
@@ -154,11 +162,11 @@ export async function resolveBuilderAdminTools(args: {
     const row = rows[0];
     if (!row || row.system_agent_id !== args.agentId) return undefined;
     if (row.role !== "owner" && row.role !== "admin") return undefined;
-    return [...BUILDER_ADMIN_TOOLS];
+    return { tools: [...BUILDER_ADMIN_TOOLS], actorUserId: lobuUserId };
   } catch (err) {
     logger.warn(
       { err, organizationId: args.organizationId, agentId: args.agentId },
-      "resolveBuilderAdminTools failed; minting without admin grant"
+      "resolveBuilderAdminGrant failed; minting without admin grant"
     );
     return undefined;
   }
@@ -241,11 +249,11 @@ export function buildRunJobToken(args: {
    */
   messageId: string;
   /**
-   * Builder admin-tool allowlist for this turn (system agent + owner/admin
-   * initiator only). Carried in the encrypted token and enforced at the
-   * execute gate; undefined for every normal agent/turn.
+   * Builder admin-tool allowlist + resolved auth actor for this turn (system
+   * agent + owner/admin initiator only). Carried in the encrypted token and
+   * enforced at the execute gate; undefined for every normal agent/turn.
    */
-  adminTools?: string[];
+  adminGrant?: BuilderAdminGrant;
   /**
    * Resolved runtime provider + sandbox for this conversation (from its
    * pinned sandbox). Stamped into the token so the generic runtime route
@@ -265,7 +273,8 @@ export function buildRunJobToken(args: {
     args.conversationId,
     args.deploymentName,
     {
-      adminTools: args.adminTools,
+      adminTools: args.adminGrant?.tools,
+      adminActorUserId: args.adminGrant?.actorUserId,
       // PRIMARY auth → shared routing claims (channelId, teamId, platform,
       // agentId, organizationId, connectionId, source) are minted via
       // `buildWorkerTokenClaims`, kept in lockstep with the deployment-token
@@ -536,7 +545,7 @@ export class MessageConsumer {
           routingTeamId: data.teamId,
           platformMetadata: data.platformMetadata,
         });
-      const adminTools = await resolveBuilderAdminTools({
+      const adminGrant = await resolveBuilderAdminGrant({
         agentId: data.agentId,
         organizationId: data.organizationId,
         userId: data.userId,
@@ -602,7 +611,7 @@ export class MessageConsumer {
         // marker for THIS turn (deploymentName:messageId) rather than any live
         // turn on the deployment.
         messageId: data.messageId,
-        adminTools,
+        adminGrant,
         runtimeProviderId: runtimeSelection.runtimeProviderId,
         sandboxId: runtimeSelection.sandboxId,
         // Egress allow/deny lists as signed claims (kept in lockstep with the

@@ -1,5 +1,5 @@
 /**
- * WI-0.2: resolveBuilderAdminTools must resolve a PLATFORM user id (e.g. Slack
+ * WI-0.2: resolveBuilderAdminGrant must resolve a PLATFORM user id (e.g. Slack
  * `U…`) to its linked Lobu member before the member-role lookup.
  *
  * On a chat-platform run the worker's `userId` is the platform id, NOT a Lobu
@@ -16,7 +16,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BUILDER_ADMIN_TOOLS,
-  resolveBuilderAdminTools,
+  resolveBuilderAdminGrant,
 } from '../../../gateway/orchestration/message-consumer';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -64,7 +64,7 @@ async function seedOwnerBuilder(): Promise<{
   return { orgId: org.id, userId: user.id, systemAgentId: agent.agentId };
 }
 
-describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', () => {
+describe('resolveBuilderAdminGrant — platform identity resolution (WI-0.2)', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
@@ -78,7 +78,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       lobuUserId: userId,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       // A Slack run carries the raw platform id, NOT the Lobu user id.
@@ -87,14 +87,17 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       teamId: SLACK_TEAM,
     });
 
-    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+    expect(granted).toEqual({
+      tools: [...BUILDER_ADMIN_TOOLS],
+      actorUserId: userId,
+    });
   });
 
   it('withholds the grant for a Slack run whose platform id is not linked to any member', async () => {
     const { orgId, systemAgentId } = await seedOwnerBuilder();
     // No linkSlackIdentity → the platform id resolves to no Lobu user.
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,
@@ -118,7 +121,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       lobuUserId: other.id,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,
@@ -132,14 +135,17 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
   it('grants builder tools for a web/session run using userId directly (no identity lookup)', async () => {
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     // platform 'api' → userId is already the Lobu user id, used directly.
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId,
       platform: 'api',
     });
 
-    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+    expect(granted).toEqual({
+      tools: [...BUILDER_ADMIN_TOOLS],
+      actorUserId: userId,
+    });
   });
 
   it('withholds the grant for a member who is not owner/admin', async () => {
@@ -155,7 +161,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       lobuUserId: user.id,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: agent.agentId,
       organizationId: org.id,
       userId: SLACK_USER,
@@ -178,7 +184,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       lobuUserId: userId,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,
@@ -187,7 +193,10 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       alternateTeamId: 'E_ENTERPRISE',
     });
 
-    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+    expect(granted).toEqual({
+      tools: [...BUILDER_ADMIN_TOOLS],
+      actorUserId: userId,
+    });
   });
 
   it('does not grant when only an unrelated team has the link (no alternate)', async () => {
@@ -199,7 +208,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
       lobuUserId: userId,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,

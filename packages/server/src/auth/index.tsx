@@ -20,7 +20,6 @@ import {
 	passwordResetSubject,
 } from "../email/templates/password-reset";
 import { WelcomeEmail, welcomeSubject } from "../email/templates/welcome";
-import { connectorCapabilityRegistry } from "../identity/capability-registry";
 import type { Env } from "../index";
 import { notifyInvitationReceived } from "../notifications/triggers";
 import { recordLifecycleEvent } from "../utils/insert-event";
@@ -46,21 +45,6 @@ import {
 	resolveRequestOrganizationId,
 } from "./config";
 import { findExistingPersonalOrg } from "./personal-org-provisioning";
-// Side-effect imports: each connector self-registers on load, so the
-// registry is fully populated before any auth hook can fire. Add a new
-// import here when adding a connector under `../identity/connectors/`.
-import "../identity/connectors/google";
-
-if (connectorCapabilityRegistry.size() === 0) {
-	throw new Error(
-		"identity connector registry is empty — check side-effect imports in auth/index.tsx",
-	);
-}
-
-import {
-	scheduleIdentityIngest,
-	scheduleIdentityTombstoneOnAccountDelete,
-} from "../identity/auth-hook";
 import { persistLoginSlackIdentity } from "./subject-identities";
 
 function gravatarUrl(email: string): string {
@@ -160,18 +144,6 @@ export async function createAuth(
 			clientSecret,
 			...(row.loginScopes.length > 0 && { scope: row.loginScopes }),
 		};
-	}
-
-	// Warn for any enabled social provider that has no identity-engine
-	// connector. Sign-in still works; facts simply aren't ingested. Connectors
-	// are loaded statically at the top of the file, so the registry is
-	// guaranteed populated by the time we reach this check.
-	for (const provider of Object.keys(socialProviders)) {
-		if (!connectorCapabilityRegistry.emitter(provider.trim().toLowerCase())) {
-			console.warn(
-				`[Auth] Social provider "${provider}" is enabled but has no identity connector — facts will not be ingested for sign-ins via this provider.`,
-			);
-		}
 	}
 
 	const trustedOriginSet = new Set<string>([
@@ -889,8 +861,6 @@ export async function createAuth(
 								error,
 							);
 						}
-						// Identity engine ingest. Fire-and-forget; sign-in never blocks.
-						scheduleIdentityIngest(accountSummary);
 						// Slack sign-in: collapse the workspace member onto this $member by
 						// stamping their team-scoped slack_user_id. Fire-and-forget.
 						void persistLoginSlackIdentity(accountSummary);
@@ -930,21 +900,8 @@ export async function createAuth(
 								error,
 							);
 						}
-						scheduleIdentityIngest(accountSummary);
 						// Slack re-link / token refresh: keep the slack_user_id stamped.
 						void persistLoginSlackIdentity(accountSummary);
-					},
-				},
-				delete: {
-					after: async (account) => {
-						// Unlinking an OAuth account must tombstone every fact we ever
-						// ingested under it so derivations get revoked. Without this hook
-						// disconnected providers keep producing reads forever.
-						scheduleIdentityTombstoneOnAccountDelete({
-							id: account.id,
-							userId: account.userId,
-							providerId: account.providerId,
-						});
 					},
 				},
 			},

@@ -548,7 +548,8 @@ export interface FeedDefinition {
       /**
        * Generic event attribution declarations. New connector work should model
        * "who authored / what resource this event belongs to / what it is about"
-       * here, and model durable cross-connector identity as ConnectorFact(s).
+       * here. Durable cross-connector identity is expressed as entity
+       * identities (see `identities` on the entity-link rule), not as facts.
        */
       attributions?: EventAttributionRule[];
     }

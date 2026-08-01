@@ -22,7 +22,7 @@ import {
 	createTestOrganization,
 	createTestUser,
 } from "../../__tests__/setup/test-fixtures";
-import { resolveMemberOrgsForUser } from "../../identity/auth-hook";
+import { resolveMemberOrgsForUser } from "../../identity/member-orgs";
 import type { PersistLoginSlackIdentityDeps } from "../subject-identities";
 import {
 	persistLoginSlackIdentity,

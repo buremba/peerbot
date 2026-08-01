@@ -59,7 +59,7 @@ export const IDENTITY_NAMESPACE_REGISTRY = [
     eventRecallIndexed: false,
     uniquePerOrg: false,
     notes:
-      "Derived from the person's email fact (the part after @); the engine emits it, connectors never supply it directly. Many people share a domain (not unique-per-org) and it isn't a recall key — its sole job is powering domain-keyed auto_create_when rules (e.g. works_at → company.domain).",
+      "A person's email domain (the part after @). Many people share a domain, so it is not unique-per-org and is not a recall key — it only ever narrows a candidate set (e.g. everyone at company.domain). Nothing derives it automatically: a connector that wants it must declare it on an entity-link rule like any other identity.",
   },
   {
     namespace: IDENTITY.PHONE,

@@ -55,6 +55,7 @@ import {
 const ORG = "test-org-fanout";
 const CONN = "conn-slack-fanout";
 const USER = "U_FANOUT";
+const CHANNEL = "slack:D095";
 
 /**
  * Poll `check` until it returns true or `timeoutMs` elapses, throwing on
@@ -134,7 +135,11 @@ function makeChat(threadPost: ReturnType<typeof mock>) {
   return {
     onAction: mock((_handler: any) => undefined),
     // DM path: conversationId === channelId → bridge calls chat.channel().
-    channel: mock((_key: string) => ({ post: threadPost })),
+    // Worker-token routing carries the canonical platform-prefixed channel id.
+    // The Chat SDK expects that exact key; a double prefix is unroutable.
+    channel: mock((key: string) =>
+      key === CHANNEL ? { post: threadPost } : null
+    ),
     getAdapter: mock((_platform: string) => null),
     createThread: null,
   };
@@ -159,8 +164,8 @@ const slackQuestion: PostedQuestion = {
   id: "q_fanout_1",
   userId: USER,
   // DM: conversationId === channelId so resolveThread takes the channel path.
-  conversationId: "D095",
-  channelId: "D095",
+  conversationId: CHANNEL,
+  channelId: CHANNEL,
   teamId: "T1",
   connectionId: CONN,
   platform: "slack",

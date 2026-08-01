@@ -47,6 +47,8 @@ describe("durable replay preserves every signed claim", () => {
     source: "chat",
     runId: 7,
     messageId: "m1",
+    adminTools: ["manage_agents"],
+    adminActorUserId: "auth-user-1",
     runtimeProviderId: "vercel",
     sandboxId: "sb1",
     allowedDomains: ["api.github.com"],
@@ -93,6 +95,8 @@ describe("durable replay preserves every signed claim", () => {
     const persisted = bound[1];
     expect(persisted?.allowedDomains).toEqual(["api.github.com"]);
     expect(persisted?.nixPackages).toEqual(["gh"]);
+    expect(persisted?.adminTools).toEqual(["manage_agents"]);
+    expect(persisted?.adminActorUserId).toBe("auth-user-1");
   });
 
   test("attachFreshRunJobToken carries nixPackages across a replay remint", () => {
@@ -108,5 +112,7 @@ describe("durable replay preserves every signed claim", () => {
     // installed — the asymmetry this branch exists to close.
     expect(decoded?.allowedDomains).toEqual(["api.github.com"]);
     expect(decoded?.nixPackages).toEqual(["gh"]);
+    expect(decoded?.adminTools).toEqual(["manage_agents"]);
+    expect(decoded?.adminActorUserId).toBe("auth-user-1");
   });
 });

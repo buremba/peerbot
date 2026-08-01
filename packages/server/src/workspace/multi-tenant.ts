@@ -304,14 +304,24 @@ export class MultiTenantProvider implements WorkspaceProvider {
         );
       }
       // For a builder admin turn (per-run token carries `adminTools`), attribute
-      // the call to the verified per-turn admin (`tokenData.userId`, bound to the
-      // authenticated owner/admin at session create) rather than the agent's
+      // the call to the verified Lobu auth subject (`adminActorUserId`, carried
+      // separately from the platform-scoped `userId`) rather than the agent's
       // provisioning owner — so the role check and audit reflect the actual
       // actor. Non-builder worker direct-auth keeps the agent-owner attribution.
       const isBuilderAdminTurn = !!tokenData.adminTools?.length;
-      const directAuthUserId = isBuilderAdminTurn
-        ? tokenData.userId
-        : (agentRows[0]?.owner_user_id as string | undefined) ?? tokenData.userId;
+      if (isBuilderAdminTurn && !tokenData.adminActorUserId) {
+        return c.json(
+          { error: 'invalid_token', error_description: 'Worker token missing builder admin actor' },
+          401,
+          {
+            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+          }
+        );
+      }
+      const directAuthUserId =
+        tokenData.adminActorUserId ??
+        (agentRows[0]?.owner_user_id as string | undefined) ??
+        tokenData.userId;
       const roleRows = await sql`
         SELECT role
         FROM "member"

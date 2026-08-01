@@ -13,13 +13,13 @@
  *
  * These tests drive `resolveGrantTeamKeys` (the extracted derivation) against a
  * real `connections` row and then feed its output into
- * `resolveBuilderAdminTools`, so the two halves are exercised as they compose
+ * `resolveBuilderAdminGrant`, so the two halves are exercised as they compose
  * at dispatch time.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BUILDER_ADMIN_TOOLS,
-  resolveBuilderAdminTools,
+  resolveBuilderAdminGrant,
   resolveGrantTeamKeys,
 } from '../../../gateway/orchestration/message-consumer';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -106,7 +106,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
       alternateTeamId: ENTERPRISE_TEAM,
     });
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,
@@ -114,7 +114,10 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
       teamId: keys.teamId,
       alternateTeamId: keys.alternateTeamId,
     });
-    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+    expect(granted).toEqual({
+      tools: [...BUILDER_ADMIN_TOOLS],
+      actorUserId: userId,
+    });
   });
 
   it('prefers platformMetadata.teamId over the routing key', async () => {
@@ -130,7 +133,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
     });
     expect(keys.teamId).toBe(WORKSPACE_TEAM);
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,
@@ -138,7 +141,10 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
       teamId: keys.teamId,
       alternateTeamId: keys.alternateTeamId,
     });
-    expect(granted).toEqual([...BUILDER_ADMIN_TOOLS]);
+    expect(granted).toEqual({
+      tools: [...BUILDER_ADMIN_TOOLS],
+      actorUserId: userId,
+    });
   });
 
   it('omits the alternate when the connection tenant equals the event team', async () => {
@@ -179,7 +185,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
     // Fail closed: a paused install must not supply a privilege key.
     expect(keys.alternateTeamId).toBeUndefined();
 
-    const granted = await resolveBuilderAdminTools({
+    const granted = await resolveBuilderAdminGrant({
       agentId: systemAgentId,
       organizationId: orgId,
       userId: SLACK_USER,

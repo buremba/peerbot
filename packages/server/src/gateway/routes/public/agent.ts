@@ -906,7 +906,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     const authUserId = c.get("authContext")?.userId;
     // System-agent sessions bind to the AUTHENTICATED owner/admin, never the
     // client-supplied panel userId — the builder admin-tool grant
-    // (resolveBuilderAdminTools) keys on this run's userId, so trusting a
+    // (resolveBuilderAdminGrant) keys on this run's userId, so trusting a
     // client value would let any caller name an admin to mint the grant.
     const userId = behaviorIntent
       ? // Internal correlation key: the `..._watcher_<id>_run_<id>` conversationId

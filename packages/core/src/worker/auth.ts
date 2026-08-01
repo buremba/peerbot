@@ -77,11 +77,17 @@ export interface WorkerTokenData {
    * Per-turn allowlist of internal admin tool NAMES this token may call.
    * Set ONLY for the org's builder/system agent (id === organization.
    * system_agent_id) when the human driving the turn is an org owner/admin
-   * (see `resolveBuilderAdminTools`). Enforced exact-name at the execute gate
+   * (see `resolveBuilderAdminGrant`). Enforced exact-name at the execute gate
    * (`tools/execute.ts`); absent for every normal agent/turn, so a forged or
    * normal token grants no admin access.
    */
   adminTools?: string[];
+  /**
+   * Lobu auth user authorized for {@link adminTools}. Chat turns keep the
+   * platform principal in `userId`, so direct MCP auth must not reinterpret a
+   * Slack/Telegram id as a `member.userId`. Present iff `adminTools` is present.
+   */
+  adminActorUserId?: string;
   /**
    * Selected runtime-provider id (e.g. "vercel"), resolved from the agent's
    * environment at token-mint time. The generic `/internal/runtime/exec` route
@@ -157,6 +163,8 @@ export interface WorkerTokenOptions {
    * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
    */
   adminTools?: string[];
+  /** Lobu auth user bound to the builder admin grant. */
+  adminActorUserId?: string;
   /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
   runtimeProviderId?: string;
   /** Selected sandbox id backing the runtime credential. See WorkerTokenData.sandboxId. */
@@ -201,6 +209,7 @@ function generateToken(
     runId: options.runId,
     messageId: options.messageId,
     adminTools: options.adminTools,
+    adminActorUserId: options.adminActorUserId,
     runtimeProviderId: options.runtimeProviderId,
     sandboxId: options.sandboxId,
     allowedDomains: options.allowedDomains,
@@ -332,11 +341,36 @@ function verifyToken(
     if (data.adminTools !== undefined) {
       if (
         !Array.isArray(data.adminTools) ||
+        data.adminTools.length === 0 ||
         !data.adminTools.every((t) => typeof t === "string")
       ) {
-        logger.error("Worker token rejected: adminTools must be a string[]");
+        logger.error(
+          "Worker token rejected: adminTools must be a non-empty string[]"
+        );
         return null;
       }
+    }
+    // The builder grant is an inseparable pair: the allowlist limits WHAT may
+    // run and the resolved auth subject says WHO authorized it. Accepting one
+    // without the other either makes the grant unusable or tempts callers to
+    // reinterpret the platform-scoped `userId` as an auth user again.
+    if (
+      (data.adminTools === undefined) !==
+      (data.adminActorUserId === undefined)
+    ) {
+      logger.error(
+        "Worker token rejected: adminTools and adminActorUserId must be set together"
+      );
+      return null;
+    }
+    if (
+      data.adminActorUserId !== undefined &&
+      (typeof data.adminActorUserId !== "string" || !data.adminActorUserId)
+    ) {
+      logger.error(
+        "Worker token rejected: adminActorUserId must be a non-empty string"
+      );
+      return null;
     }
     // `runtimeProviderId` / `sandboxId` are optional but, when present, the
     // runtime route trusts them to pick a provider + vault credential. A forged

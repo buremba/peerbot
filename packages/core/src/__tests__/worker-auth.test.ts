@@ -99,6 +99,39 @@ describe("worker auth token", () => {
     expect(d.traceId).toBe("trace-zzz");
   });
 
+  test("round-trips a builder admin grant with its distinct auth actor", () => {
+    const token = generateWorkerToken("U_SLACK", "conv", "deploy", {
+      channelId: "C1",
+      platform: "slack",
+      adminTools: ["manage_agents"],
+      adminActorUserId: "auth-user-1",
+    });
+    const d = verifyWorkerToken(token) as WorkerTokenData;
+    expect(d.userId).toBe("U_SLACK");
+    expect(d.adminTools).toEqual(["manage_agents"]);
+    expect(d.adminActorUserId).toBe("auth-user-1");
+  });
+
+  test("rejects a partial builder admin grant", () => {
+    for (const partial of [
+      { adminTools: ["manage_agents"] },
+      { adminActorUserId: "auth-user-1" },
+      { adminTools: [], adminActorUserId: "auth-user-1" },
+    ]) {
+      const token = encrypt(
+        JSON.stringify({
+          userId: "U_SLACK",
+          conversationId: "conv",
+          channelId: "C1",
+          deploymentName: "deploy",
+          timestamp: Date.now(),
+          ...partial,
+        })
+      );
+      expect(verifyWorkerToken(token)).toBeNull();
+    }
+  });
+
   test("two tokens generated for the same input differ (random IV)", () => {
     const t1 = generateWorkerToken("u", "c", "d", { channelId: "ch" });
     const t2 = generateWorkerToken("u", "c", "d", { channelId: "ch" });

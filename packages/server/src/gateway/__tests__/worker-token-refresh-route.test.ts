@@ -112,7 +112,11 @@ async function postRefresh(token: string) {
 
 const DEPLOYMENT = "lobu-worker-agent-1";
 
-function mintToken(opts: { runId?: number; messageId?: string }): string {
+function mintToken(opts: {
+  runId?: number;
+  messageId?: string;
+  adminGrant?: boolean;
+}): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
     agentId: "agent-1",
@@ -122,6 +126,12 @@ function mintToken(opts: { runId?: number; messageId?: string }): string {
     source: "watcher-run",
     runId: opts.runId,
     messageId: opts.messageId,
+    ...(opts.adminGrant
+      ? {
+          adminTools: ["manage_agents"],
+          adminActorUserId: "auth-user-1",
+        }
+      : {}),
     allowedDomains: ["api.example.com"],
     deniedDomains: ["evil.example.com"],
     nixPackages: ["gh"],
@@ -143,7 +153,11 @@ function armLiveTurn(messageId = "m1"): Promise<void> {
 describe("POST /worker/token/refresh", () => {
   test("mints a fresh token while THIS turn is live", async () => {
     await armLiveTurn("m1");
-    const original = mintToken({ runId: 42, messageId: "m1" });
+    const original = mintToken({
+      runId: 42,
+      messageId: "m1",
+      adminGrant: true,
+    });
 
     const res = await postRefresh(original);
     expect(res.status).toBe(200);
@@ -163,6 +177,8 @@ describe("POST /worker/token/refresh", () => {
     expect(data!.source).toBe("watcher-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");
+    expect(data!.adminTools).toEqual(["manage_agents"]);
+    expect(data!.adminActorUserId).toBe("auth-user-1");
     // Egress claims must BOTH survive refresh — dropping allowedDomains
     // breaks the sandbox network (deny-all), dropping deniedDomains
     // silently re-opens denied hosts on remote runtimes.

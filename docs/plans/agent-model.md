@@ -145,7 +145,7 @@ Four conditions, **one mechanism** (suspend → resume on signal):
   the scheduler re‑invokes it with a synthetic prompt. Durability rides
   `scheduled_jobs` leasing (multi‑replica safe). **Works today** —
   `manage_schedules(wake_agent)` is a real admin tool, grantable to a worker via
-  the per‑run token (`BUILDER_ADMIN_TOOLS` / `resolveBuilderAdminTools`).
+  the per‑run token (`BUILDER_ADMIN_TOOLS` / `resolveBuilderAdminGrant`).
 - **Event waits** → a detector (schedule tick / connector ingest) resumes the **suspended
   run**, not a fresh behavior. This is the one genuinely‑new mechanism (§5).
 

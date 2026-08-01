@@ -288,4 +288,59 @@ describe('access graph member resolution', () => {
     expect(edgeFroms).toEqual([holder.id]);
     expect(await livePersons(org.id)).toHaveLength(1);
   });
+
+  it('does not grant a recycled SECONDARY holder the edge when the PRIMARY owner is soft-deleted', async () => {
+    const { org, user } = await seedOrg('Dead Primary Live Secondary Org');
+    const gh = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      slug: CONN,
+      created_by: user.id,
+    });
+
+    // The member's PRIMARY claim is owned by an entity that was ordinarily
+    // deleted — the entity is soft-deleted but its identity row stays live and
+    // still points at it, so the identifier is taken but resolves to nothing.
+    const dead = await createTestEntity({
+      organization_id: org.id,
+      entity_type: 'person',
+      name: 'Deleted Real Account',
+      created_by: user.id,
+    });
+    await addIdentity(org.id, dead.id, 'github_user_id', '501');
+    const sql = getTestDb();
+    await sql`
+      UPDATE entities SET deleted_at = current_timestamp
+      WHERE id = ${dead.id} AND organization_id = ${org.id}
+    `;
+
+    // A DIFFERENT, live person holds the recycled SECONDARY claim.
+    const recycled = await createTestEntity({
+      organization_id: org.id,
+      entity_type: 'person',
+      name: 'Recycled Login Holder',
+      created_by: user.id,
+    });
+    await addIdentity(org.id, recycled.id, 'github_login', 'octocat');
+
+    await buildGraph({
+      organizationId: org.id,
+      connectionId: String(gh.id),
+      repos: [
+        {
+          fullName: 'acme/widgets',
+          collaborators: [{ id: 501, login: 'octocat' }],
+        },
+      ],
+    });
+
+    // Both resolution sites must honour the tier rule. The fast path defers to
+    // the create engine (primary present but unmatched), and the create engine's
+    // orphan-recovery re-resolution must NOT union the secondary hit — a
+    // tier-blind union sees exactly one live hit and adopts the recycled-login
+    // holder, handing them the dead account's channel access.
+    const edgeFroms = await memberOfFromIds(org.id);
+    expect(edgeFroms).not.toContain(recycled.id);
+    expect(edgeFroms).not.toContain(dead.id);
+  });
 });

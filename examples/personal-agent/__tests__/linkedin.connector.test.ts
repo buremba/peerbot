@@ -1276,6 +1276,38 @@ describe("LinkedInConnector home_feed", () => {
     expect(res.metadata.object_all_supported).toBe(true);
   });
 
+  test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
+    const scrollMaxes: number[] = [];
+    const dispatcher = {
+      dispatch: async (_action: string, input: Record<string, unknown>) => {
+        scrollMaxes.push(
+          (input.scrape_config as { scroll: { max: number } }).scroll.max
+        );
+        return {
+          tab_id: 1,
+          cs_scrape: true,
+          result: { loggedIn: true, rows: [] },
+        };
+      },
+    };
+    const connector = new LinkedInConnector();
+    const realRandom = Math.random;
+    // Force mid-range pick: min + floor(0.5 * (max-min+1)) = 6 + floor(2.5) = 8
+    Math.random = () => 0.5;
+    try {
+      const res = await connector.sync({
+        feedKey: "home_feed",
+        config: { min_scrolls: 6, max_scrolls: 10 },
+        checkpoint: {},
+        sessionState: { chrome_dispatcher: dispatcher },
+      });
+      expect(scrollMaxes).toEqual([8]);
+      expect(res.metadata.scrolls_this_run).toBe(8);
+    } finally {
+      Math.random = realRandom;
+    }
+  });
+
   test("throws a clear error when not logged into LinkedIn", async () => {
     const dispatcher = {
       dispatch: async () => ({ result: { loggedIn: false, rows: [] } }),
@@ -1741,7 +1773,7 @@ describe("prepare_comment helpers", () => {
       { required: ["post_url"] },
       { required: ["activity_id"] },
     ]);
-    expect(c.definition.version).toBe("3.3.0");
+    expect(c.definition.version).toBe("3.4.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
 

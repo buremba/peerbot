@@ -1,5 +1,18 @@
 # Changelog
 
+## [14.10.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.9.0...lobu-v14.10.0) (2026-08-01)
+
+
+### Features
+
+* **server:** let a caller choose the embedding model instead of one global ([#2409](https://github.com/lobu-ai/lobu/issues/2409)) ([28945fe](https://github.com/lobu-ai/lobu/commit/28945fec6f073451267047596d082d1ae2e5dc01))
+
+
+### Bug Fixes
+
+* **server:** resolve ACL members safely — skip deleted entities, fail closed on ambiguity ([#2411](https://github.com/lobu-ai/lobu/issues/2411)) ([d1d862c](https://github.com/lobu-ai/lobu/commit/d1d862cf958be9d94056c4485c60db29b2062091))
+* **server:** roll Behavior windows forward instead of re-completing the same period ([#2412](https://github.com/lobu-ai/lobu/issues/2412)) ([ef554e2](https://github.com/lobu-ai/lobu/commit/ef554e24d3be8135e6c84186ac72683884039045))
+
 ## [14.9.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.8.0...lobu-v14.9.0) (2026-07-31)
 
 

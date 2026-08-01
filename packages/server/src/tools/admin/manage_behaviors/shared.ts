@@ -18,7 +18,11 @@ import {
   extractSkillNamesFromPromptTokens,
 } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
-import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behaviors';
+import { Value } from '@sinclair/typebox/value';
+import {
+  BehaviorKeyingConfigSchema,
+  normalizeBehaviorTags,
+} from '@lobu/core/contracts/tools/manage-behaviors';
 
 // ============================================
 // Types
@@ -450,6 +454,33 @@ export async function assertAgentExists(
  * that derivation CAN see is never rejected here — checking existence only, as
  * a type legitimately may carry no metadata_schema yet.
  */
+/**
+ * Shape-check a CALLER-SUPPLIED keying_config after parseJsonInput. An
+ * object-typed input is already validated by the tool schema, but the wire
+ * contract also accepts a pre-serialized JSON string (see the keying_config
+ * union in ManageBehaviorsSchema), which passes validation as Type.String and
+ * would otherwise store any shape. Never call this on stored/inherited
+ * configs — rows written before the contract existed must stay loadable.
+ */
+export function assertKeyingConfigShape(
+  keyingConfig: Record<string, unknown> | null | undefined
+): void {
+  if (keyingConfig == null) return;
+  if (Value.Check(BehaviorKeyingConfigSchema, keyingConfig)) return;
+  // Dedupe by path — TypeBox emits both `Expected required property` and
+  // `Expected <type>` for one missing field (same as validate-args).
+  const seen = new Set<string>();
+  const errs: string[] = [];
+  for (const e of Value.Errors(BehaviorKeyingConfigSchema, keyingConfig)) {
+    const path = e.path || '/';
+    if (seen.has(path)) continue;
+    seen.add(path);
+    errs.push(`${path}: ${e.message}`);
+    if (errs.length >= 3) break;
+  }
+  throw new ToolUserError(`Invalid keying_config: ${errs.join('; ')}`, 400);
+}
+
 export async function assertKeyingConfigEntityTypeExists(
   sql: DbClient,
   organizationId: string,

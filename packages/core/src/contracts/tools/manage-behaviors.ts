@@ -115,9 +115,11 @@ export type BehaviorSource = Static<typeof BehaviorSourceSchema>;
  * Setting this is what binds a Behavior to an entity type, and that binding
  * drives THREE things at once: the extraction schema handed to the agent, the
  * `complete_window` validation of `extracted_data`, and the promotion of each
- * keyed row into an entity. A field name that does not match here fails silently
- * — the derive returns null and all three are skipped — so the shape is declared
- * rather than left as free-form JSON.
+ * keyed row into an entity. Under a free-form JSON contract a mistyped field
+ * name failed silently — an unresolvable entity_path or entity_type skips
+ * schema derivation and promotion, and a wrong key_fields name yields empty
+ * keys and promotes nothing — so the shape is declared rather than left as
+ * free-form JSON.
  */
 export const BehaviorKeyingConfigSchema = Type.Object({
   entity_path: Type.String({
@@ -139,7 +141,7 @@ export const BehaviorKeyingConfigSchema = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        "Entity-type slug the keyed rows are promoted into. Must match the stored slug EXACTLY — entity-type creation slugifies (`social_signal` becomes `social-signal`), and a near-miss silently disables validation and promotion. Omit to derive a slug from the last segment of entity_path.",
+        "Entity-type slug the keyed rows are promoted into. Pass the STORED slug — entity-type creation slugifies (`social_signal` is stored as `social-signal`); a slug that resolves to no type is rejected at create with 422. Omit to derive one from the last segment of entity_path (slugified and singularized: `analysis.results.problems` → `problem`); a derived slug is not checked at create, and if it resolves to no type at run time, promotion is silently skipped.",
     })
   ),
   name_fields: Type.Optional(
@@ -416,10 +418,19 @@ export const ManageBehaviorsSchema = Type.Object(
       })
     ),
     keying_config: Type.Optional(
-      Type.Composite([BehaviorKeyingConfigSchema], {
-        description:
-          "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity.",
-      })
+      Type.Union(
+        [
+          // Callers may pass a pre-serialized JSON string (parsed by
+          // parseJsonInput, then shape-checked against
+          // BehaviorKeyingConfigSchema) or the object directly.
+          Type.String(),
+          BehaviorKeyingConfigSchema,
+        ],
+        {
+          description:
+            "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity.",
+        }
+      )
     ),
     classifiers: Type.Optional(
       Type.Union(

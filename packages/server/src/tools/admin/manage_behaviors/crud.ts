@@ -29,6 +29,7 @@ import {
 import {
   assertAgentExists,
   assertKeyingConfigEntityTypeExists,
+  assertKeyingConfigShape,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
@@ -122,6 +123,9 @@ export async function handleCreate(
 
   // Parse JSON inputs
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
+  // String inputs pass the wire union unparsed — enforce the declared shape
+  // here so both input forms meet the same contract.
+  assertKeyingConfigShape(keyingConfig);
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
 
   // Build sources array. Sources are authored two ways and merged here:

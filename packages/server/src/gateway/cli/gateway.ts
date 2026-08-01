@@ -341,7 +341,18 @@ export function createGatewayApp(
               pending.mcpId,
               pending.toolName,
               pending.args,
-              { organizationId: pending.organizationId },
+              {
+                organizationId: pending.organizationId,
+                conversationId: pending.conversationId,
+                channelId: pending.channelId,
+                teamId: pending.teamId,
+                connectionId: pending.connectionId,
+                platform: pending.platform,
+                source: pending.source,
+                adminTools: pending.adminTools,
+                adminActorUserId: pending.adminActorUserId,
+                deploymentName: pending.deploymentName,
+              },
             );
             return { success: true, result } as any;
           }

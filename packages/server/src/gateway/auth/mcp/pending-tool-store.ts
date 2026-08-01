@@ -20,6 +20,13 @@ export interface PendingToolInvocation {
   conversationId?: string;
   teamId?: string;
   connectionId?: string;
+  platform?: string;
+  source?: string;
+  /** Preserve the signed per-turn builder admin limit across approval resume. */
+  adminTools?: string[];
+  /** Canonical Lobu user bound to adminTools; present iff adminTools is present. */
+  adminActorUserId?: string;
+  deploymentName?: string;
 }
 
 export async function storePendingTool(

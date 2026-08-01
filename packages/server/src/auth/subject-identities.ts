@@ -441,9 +441,21 @@ export async function stampSlackIdentityForUser(
 	slackUserId: string,
 ): Promise<void> {
 	const combined = normalizeSlackUserId(teamId, slackUserId);
-	if (!combined) return;
+	if (!combined) {
+		log.debug(
+			{ userId },
+			"slack-identity: missing team_id or user id — skipping slack_user_id stamp",
+		);
+		return;
+	}
 	const memberOrgs = await resolveMemberOrgsForUser(userId);
-	if (memberOrgs.length === 0) return;
+	if (memberOrgs.length === 0) {
+		log.debug(
+			{ userId },
+			"slack-identity: no tenant $member yet — skipping slack_user_id stamp",
+		);
+		return;
+	}
 	const sql = getDb();
 	for (const org of memberOrgs) {
 		const outcome = await adoptSlackIdentityOntoMember(
@@ -456,7 +468,11 @@ export async function stampSlackIdentityForUser(
 			// A different `$member` in this org already holds this Slack id. Two
 			// humans cannot share one workspace account — never silently reassign.
 			log.warn(
-				{ userId, organizationId: org.tenantOrganizationId, identifier: combined },
+				{
+					userId,
+					organizationId: org.tenantOrganizationId,
+					memberEntityId: org.memberEntityId,
+				},
 				"slack-identity: slack_user_id already claimed by a different $member — leaving it alone",
 			);
 		}

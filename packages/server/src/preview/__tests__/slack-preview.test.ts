@@ -1,4 +1,8 @@
 import { CommandRegistry } from "@lobu/core";
+import {
+  SLACK_IDENTITY,
+  normalizeSlackUserId,
+} from "@lobu/connectors/slack-identity";
 import type { Context } from "hono";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { cleanupTestDatabase } from "../../__tests__/setup/test-db.js";
@@ -616,6 +620,19 @@ describe("chat-user identity + codeless re-link by agent id", () => {
     // identity authorizes Slack approval clicks and the in-chat builder-admin
     // grant — so redemption must establish none. Identity comes only from
     // Slack sign-in / the install claim, neither of which ran here.
+    //
+    // Assert on the ROW, not just the resolver: `resolveChatUserIdentity` also
+    // returns null for an identity with no live `auth_user_id` link, so it
+    // would stay green even if redemption wrote an orphan `slack_user_id`.
+    const stamped = await getDb()<{ n: number }>`
+      SELECT count(*)::int AS n
+      FROM entity_identities
+      WHERE organization_id = ${idOrgId}
+        AND namespace = ${SLACK_IDENTITY.USER_ID}
+        AND identifier = ${normalizeSlackUserId(ID_TEAM, SLACK_USER)}
+        AND deleted_at IS NULL
+    `;
+    expect(stamped[0].n).toBe(0);
     expect(
       await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER),
     ).toBeNull();

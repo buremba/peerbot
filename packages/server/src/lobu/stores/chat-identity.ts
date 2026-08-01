@@ -97,7 +97,7 @@ export async function resolveSlackUserIdForUser(
 	// LIKE metacharacters so the prefix matches literally.
 	const likePrefix = prefix.replace(/([\\%_])/g, "\\$1");
 	const rows = await getDb()<{ identifier: string }>`
-    SELECT slack_ei.identifier
+    SELECT DISTINCT slack_ei.identifier
     FROM entity_identities auth_ei
     JOIN entities e
       ON e.id = auth_ei.entity_id
@@ -113,9 +113,14 @@ export async function resolveSlackUserIdForUser(
       AND auth_ei.source_connector = 'auth:signup'
       AND auth_ei.deleted_at IS NULL
       AND slack_ei.identifier LIKE ${`${likePrefix}%`}
-    LIMIT 1
+    LIMIT 2
   `;
-	const identifier = rows[0]?.identifier;
-	if (!identifier) return null;
-	return identifier.slice(prefix.length) || null;
+	// FAILS CLOSED on ambiguity, exactly like `resolveChatUserIdentity`. The
+	// stamps are org-scoped rows and are never deleted when superseded, so a user
+	// who joins a second org, or whose Slack account id changes inside one
+	// workspace, can hold two DISTINCT ids under the same `TEAM:` prefix. The
+	// caller uses this as a DM recipient — picking arbitrarily sends the owner DM
+	// to a stale Slack user and loses it silently.
+	if (rows.length !== 1) return null;
+	return rows[0].identifier.slice(prefix.length) || null;
 }

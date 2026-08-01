@@ -28,6 +28,7 @@
 -- `git grep chat_user_identities origin/main` is confined to this table's own
 -- readers, all of which are repointed in this change.
 
+-- squawk-ignore ban-drop-table -- the point of this migration; every reader is repointed at entity_identities in this change
 DROP TABLE IF EXISTS chat_user_identities;
 
 -- migrate:down

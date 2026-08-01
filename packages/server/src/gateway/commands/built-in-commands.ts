@@ -160,8 +160,9 @@ export function registerBuiltInCommands(
   // is reached as the `link` subcommand — not a bare `/link`.)
   registry.register({
     name: "link",
-    description:
-      "Link this chat to a Lobu agent — `<code>` from `lobu run`, or `<agentId>` if you connected this Slack workspace to Lobu",
+    // `/help` renders this on every platform, so it stays code-only; the
+    // Slack-only `<agentId>` shortcut is surfaced by `agentIdHint` below.
+    description: "Link this chat to a Lobu agent with a `<code>` from `lobu run`",
     handler: async (ctx: CommandContext) => {
       const arg = ctx.args.trim();
       const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";

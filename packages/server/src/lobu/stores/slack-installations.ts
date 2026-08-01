@@ -421,7 +421,7 @@ export async function getSlackInstallByTeamId(
  * each with its own install; the enterprise id alone can't say which one a
  * sibling-workspace event belongs to, so this resolves ONLY when exactly one
  * active install exists for the enterprise (see
- * {@link AppInstallationStore.resolveActiveByEnterprise}). Ambiguous (2+) or none
+ * {@link AppInstallationStore.resolveSoleActiveByMetadata}). Ambiguous (2+) or none
  * ⇒ null, and the caller falls through to the pending / default paths exactly as
  * the team-id miss does.
  */
@@ -439,13 +439,12 @@ export async function getSlackInstallByEnterpriseId(
 }
 
 /**
- * Resolve the ORG-WIDE (Grid) install for an enterprise: the single active
- * install with `is_enterprise_install=true` for this `enterprise_id`. Slack
- * permits exactly ONE org-wide install per enterprise, so this is unambiguous
- * even when per-workspace installs of sibling teams also exist under the same
- * enterprise — unlike {@link getSlackInstallByEnterpriseId}, which gives up on
- * 2+ matches. This is the routing key that lets one enterprise install serve
- * every sibling workspace's events, replacing the sole-active workaround.
+ * Resolve the ORG-WIDE (Grid) install for an enterprise. Slack permits exactly
+ * one org-wide app installation per enterprise. Lobu may retain both a
+ * historical T-keyed row and its canonical E-keyed alias during a tenant-key
+ * transition; when every alias belongs to one Lobu org, the store selects the
+ * newest. Aliases spanning Lobu orgs still fail closed. This is the routing key
+ * that lets one enterprise install serve every sibling workspace's events.
  */
 export async function getSlackEnterpriseInstall(
   store: AppInstallationStore,
@@ -659,7 +658,9 @@ export async function markSlackInstallStopped(
  * Resolves the affected install WITHOUT assuming the event carries a team id:
  *   - when `team_id` is present, the exact per-workspace install;
  *   - otherwise, the ORG-WIDE install keyed on `enterprise_id` (a Grid org-wide
- *     uninstall often carries only the enterprise id, no team id).
+ *     uninstall often carries only the enterprise id, no team id) — plus every
+ *     same-org T/E-keyed alias of it, since aliases share the invalidated token
+ *     (see {@link getSlackEnterpriseInstall}).
  * A per-workspace uninstall thus stops only that workspace's row; a sibling's
  * separately-installed row (matched by its own team id) is untouched. Returns the
  * external ids that were stopped (may be empty — an already-inactive or unknown
@@ -675,7 +676,25 @@ export async function revokeSlackInstallsForUninstall(
     if (byTeam) toStop.set(byTeam.id, byTeam);
   } else if (tenant.enterpriseId) {
     const orgWide = await getSlackEnterpriseInstall(store, tenant.enterpriseId);
-    if (orgWide) toStop.set(orgWide.id, orgWide);
+    if (orgWide) {
+      toStop.set(orgWide.id, orgWide);
+      // Same-org T/E-keyed aliases are ONE Slack org-wide installation sharing
+      // the token this uninstall just invalidated. Stop every alias — stopping
+      // only the resolved (newest) row would leave the stale alias active, and
+      // the resolver would then route sibling events to the dead token.
+      const orgRows = await store.listByProviderAndOrg(
+        SLACK_PROVIDER,
+        orgWide.organizationId
+      );
+      for (const raw of orgRows) {
+        if (raw.status !== "active") continue;
+        if (raw.providerAppId !== SLACK_PROVIDER_APP_ID) continue;
+        if (raw.metadata.enterprise_id !== tenant.enterpriseId) continue;
+        if (raw.metadata.is_enterprise_install !== true) continue;
+        const alias = toSlackRow(raw);
+        if (alias) toStop.set(alias.id, alias);
+      }
+    }
   }
   for (const id of toStop.keys()) {
     await markSlackInstallStopped(store, id);

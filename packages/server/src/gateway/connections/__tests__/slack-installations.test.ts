@@ -614,6 +614,107 @@ describe("Grid install-model routing (per-workspace + org-wide enterprise)", () 
     expect(routed?.id).toBe(orgWide.id);
   });
 
+  test("same-org T/E aliases route to the newest org-wide install", async () => {
+    const { store, secretStore, slack } = build();
+    const ENT = "E_ALIAS";
+    await seedAgentRow("alias-agent", { organizationId: "org-alias" });
+    await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias",
+      "T_ALIAS_HOME",
+      {
+        botToken: "xoxb-old-alias",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+    const canonical = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias",
+      ENT,
+      {
+        botToken: "xoxb-current-alias",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+
+    expect((await slack.getSlackEnterpriseInstall(store, ENT))?.id).toBe(
+      canonical.id,
+    );
+  });
+
+  test("enterprise uninstall stops EVERY same-org org-wide alias, not just the newest", async () => {
+    // The uninstall invalidated the ONE token both alias rows share. Stopping
+    // only the resolved (newest) alias would leave the stale one active — and
+    // then resolvable — so sibling events would route to the dead token.
+    const { store, secretStore, slack } = build();
+    const ENT = "E_UNINSTALL_ALIAS";
+    await seedAgentRow("alias-agent", { organizationId: "org-alias" });
+    const older = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias",
+      "T_ALIAS_HOME",
+      {
+        botToken: "xoxb-old-alias",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+    const canonical = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias",
+      ENT,
+      {
+        botToken: "xoxb-current-alias",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+
+    const stopped = await slack.revokeSlackInstallsForUninstall(store, {
+      enterpriseId: ENT,
+    });
+
+    expect(new Set(stopped)).toEqual(new Set([older.id, canonical.id]));
+    expect(await slack.getSlackEnterpriseInstall(store, ENT)).toBeNull();
+  });
+
+  test("org-wide aliases spanning Lobu orgs still fail closed", async () => {
+    const { store, secretStore, slack } = build();
+    const ENT = "E_CROSS_ORG_ALIAS";
+    await seedAgentRow("alias-a", { organizationId: "org-alias-a" });
+    await seedAgentRow("alias-b", { organizationId: "org-alias-b" });
+    await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias-a",
+      "T_ALIAS_A",
+      {
+        botToken: "xoxb-alias-a",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+    await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-alias-b",
+      "T_ALIAS_B",
+      {
+        botToken: "xoxb-alias-b",
+        enterpriseId: ENT,
+        isEnterpriseInstall: true,
+      },
+    );
+
+    expect(await slack.getSlackEnterpriseInstall(store, ENT)).toBeNull();
+  });
+
   test("sole per-workspace Grid install still routes by enterprise_id (no org-wide install)", async () => {
     // A Grid enterprise with exactly ONE (non-org-wide) install: the legacy
     // sole-active fallback must keep working, and the org-wide resolver returns

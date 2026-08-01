@@ -2,7 +2,6 @@ import { createHash, randomInt } from "node:crypto";
 import { slugify } from "@lobu/core";
 import type { Context } from "hono";
 import { getDb } from "../db/client";
-import { linkChatUserIdentity } from "../lobu/stores/chat-identity";
 import { maybeSendSlackWorkspaceWelcome } from "../gateway/connections/slack-connection-coordinator";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import { SecretStoreRegistry } from "../gateway/secrets";
@@ -281,9 +280,7 @@ async function upsertBinding(
  * Platform-agnostic: the caller supplies the `platform`, the canonical
  * `channelId` form that platform's message handler looks bindings up by (for
  * Slack: `canonicalSlackChannelId`), the workspace/`teamId` if the platform has
- * one, the resolved `surfaceType` (dm vs channel), and — when available — the
- * sender's platform user id, which is recorded against the code-minter's Lobu
- * account in `chat_user_identities` so later links can skip the code.
+ * one, and the resolved `surfaceType` (dm vs channel).
  */
 export async function consumePreviewClaim(args: {
 	code: string;
@@ -292,8 +289,6 @@ export async function consumePreviewClaim(args: {
 	teamId?: string;
 	channelId: string;
 	surfaceType: SurfaceType;
-	/** Sender's platform user id (e.g. Slack `U…`), if known. */
-	platformUserId?: string;
 	/** Runtime connection id handling the command. Required for a
 	 * connection-scoped claim; hosted preview claims intentionally omit it. */
 	connectionId?: string;
@@ -306,7 +301,6 @@ export async function consumePreviewClaim(args: {
 		teamId,
 		channelId,
 		surfaceType,
-		platformUserId,
 		connectionId,
 		connectionOrganizationId,
 	} = args;
@@ -371,30 +365,13 @@ export async function consumePreviewClaim(args: {
 			claim.createdBy,
 		);
 
-		// The code was minted by an authenticated `lobu run` and is ASSUMED to be
-		// redeemed by the same person. Record the chat-platform → Lobu-user link so
-		// they can re-bind chats with `/lobu link <agentId>` without a fresh code.
-		//
-		// SECURITY: this mapping is also what authorizes Slack approval-button
-		// clicks (interaction-bridge resolveSlackActionReviewer), so a claim code
-		// is effectively a credential for the minter's account — never paste one
-		// in a shared channel. Two guards here: (1) an already-linked Slack user
-		// is NEVER silently re-bound to a different Lobu account by a later code;
-		// (2) the approval path additionally requires the mapped user to be an
-		// org admin/owner. Real identity proof (Slack OAuth / email match) is a
-		// follow-up.
-		if (claim.createdBy && platformUserId) {
-			await linkChatUserIdentity(
-				{
-					platform,
-					teamId,
-					platformUserId,
-					lobuUserId: claim.createdBy,
-				},
-				tx,
-			);
-		}
-
+		// Redemption binds the chat and NOTHING ELSE — deliberately no
+		// chat-platform → Lobu-user identity. A claim code is paste-able and does
+		// not prove the redeemer is the minter, while a `chat_user_identities`
+		// row authorizes Slack approval clicks (`interaction-bridge`
+		// resolveSlackActionReviewer) and the in-chat builder-admin grant.
+		// Identity is established only by the Slack install claim
+		// (slack-claim.ts), which links identities proven via Slack sign-in.
 		return {
 			status: "bound" as const,
 			agentId: claim.agentId,

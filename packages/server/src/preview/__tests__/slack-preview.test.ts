@@ -13,7 +13,10 @@ import {
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
-import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
+import {
+  linkChatUserIdentity,
+  resolveChatUserIdentity,
+} from "../../lobu/stores/chat-identity.js";
 import {
   bindChatToAgentForOwner,
   bindChatToPreviewAgent,
@@ -37,8 +40,9 @@ const CLAIM_SLACK_CONNECTION = "claim-slack";
 const CLAIM_TELEGRAM_CONNECTION = "claim-telegram";
 
 let ORG_ID = "";
-// A real `user` row — `consumePreviewClaim` records `chat_user_identities`
-// (FK → "user"), so the claim's `createdBy` must be an actual user.
+// A real `user` row — the binding attributes the chat Behavior's `created_by`
+// from the claim's `createdBy`, resolved against `"user"`, so it must be an
+// actual user.
 let USER_ID = "";
 
 async function clearChatBehaviors(): Promise<void> {
@@ -337,9 +341,9 @@ describe("Slack Preview claims + channel Behaviors", () => {
     });
     expect((rows[0] as { agent_id: string }).agent_id).toBe(AGENT_ID);
 
-    // After a successful link this user's identity is recorded, so a non-code
-    // arg is treated as an agent id — an unknown one surfaces the friendly
-    // "no agent" message, no throw.
+    // Redeeming a code does NOT record who this Slack user is — a code is not
+    // identity proof. So the codeless `<agentId>` shortcut stays unavailable
+    // and the arg is reported as a bad code rather than resolved as an agent.
     const replies2: string[] = [];
     await registry.tryHandle("link", {
       userId: "U1",
@@ -354,7 +358,8 @@ describe("Slack Preview claims + channel Behaviors", () => {
         replies2.push(text);
       },
     });
-    expect(replies2.join("\n")).toMatch(/no agent `demo-agent-BADBAD`/i);
+    expect(replies2.join("\n")).not.toMatch(/no agent `demo-agent-BADBAD`/i);
+    expect(replies2.join("\n")).toMatch(/invalid or expired/i);
   });
 });
 
@@ -602,25 +607,24 @@ describe("chat-user identity + codeless re-link by agent id", () => {
       teamId: ID_TEAM,
       channelId: canonicalSlackChannelId(channelId),
       surfaceType: "dm",
-      platformUserId: SLACK_USER,
       connectionId: ID_CONNECTION,
       connectionOrganizationId: idOrgId,
     });
   }
 
-  test("consuming a code records the chat-user → Lobu-user identity", async () => {
+  test("consuming a code binds the chat but records NO chat-user identity", async () => {
     const bound = await mintAndConsume(ID_AGENT, "D900");
     expect(bound).toMatchObject({ status: "bound", agentId: ID_AGENT });
 
+    // A pasted code does not prove the redeemer is the minter, and the
+    // identity row authorizes Slack approval clicks and the in-chat
+    // builder-admin grant — so redemption must record none.
     const rows = await getDb()`
       SELECT lobu_user_id FROM chat_user_identities
       WHERE platform = 'slack' AND team_id = ${ID_TEAM} AND platform_user_id = ${SLACK_USER}
     `;
-    expect(rows).toHaveLength(1);
-    expect((rows[0] as { lobu_user_id: string }).lobu_user_id).toBe(lobuUserId);
-
-    expect(await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER)).toBe(lobuUserId);
-    expect(await resolveChatUserIdentity("slack", ID_TEAM, "U_NOBODY")).toBeNull();
+    expect(rows).toHaveLength(0);
+    expect(await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER)).toBeNull();
   });
 
   test("bindChatToAgentForOwner re-binds to an agent in the user's org, refuses others", async () => {
@@ -655,8 +659,16 @@ describe("chat-user identity + codeless re-link by agent id", () => {
   });
 
   test("/lobu link <agentId> re-binds without a code once the user has linked here", async () => {
-    // First, a real link establishes the identity.
+    // The identity must come from a real Slack install claim, NOT from
+    // redeeming a preview code — redemption deliberately records none. Seed it
+    // the way the install-claim path does so the codeless shortcut is covered.
     await mintAndConsume(ID_AGENT, "D903");
+    await linkChatUserIdentity({
+      platform: "slack",
+      teamId: ID_TEAM,
+      platformUserId: SLACK_USER,
+      lobuUserId,
+    });
 
     const registry = new CommandRegistry();
     registerBuiltInCommands(registry, { agentSettingsStore: {} as never });

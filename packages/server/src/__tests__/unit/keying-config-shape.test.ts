@@ -22,9 +22,12 @@ describe('assertKeyingConfigShape', () => {
     ).not.toThrow();
   });
 
-  it('treats null/undefined as "not supplied" so inherited configs are untouched', () => {
-    expect(() => assertKeyingConfigShape(null)).not.toThrow();
+  it('treats undefined as "not supplied" so inherited configs are untouched', () => {
     expect(() => assertKeyingConfigShape(undefined)).not.toThrow();
+  });
+
+  it('rejects null — a serialized JSON `null` is supplied input, not omission', () => {
+    expect(() => assertKeyingConfigShape(null)).toThrow(/Invalid keying_config/);
   });
 
   it('rejects a missing required field', () => {

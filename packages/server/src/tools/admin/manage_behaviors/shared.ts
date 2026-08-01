@@ -445,11 +445,13 @@ export async function assertAgentExists(
  * union in ManageBehaviorsSchema), which passes validation as Type.String and
  * would otherwise store any shape. Never call this on stored/inherited
  * configs — rows written before the contract existed must stay loadable.
+ *
+ * Only `undefined` counts as omitted: the tool contract has no null member, so
+ * a serialized JSON `null` string is a caller-supplied value and is rejected
+ * rather than silently inheriting the previous version's config.
  */
-export function assertKeyingConfigShape(
-  keyingConfig: Record<string, unknown> | null | undefined
-): void {
-  if (keyingConfig == null) return;
+export function assertKeyingConfigShape(keyingConfig: unknown): void {
+  if (keyingConfig === undefined) return;
   if (Value.Check(BehaviorKeyingConfigSchema, keyingConfig)) return;
   // Dedupe by path — TypeBox emits both `Expected required property` and
   // `Expected <type>` for one missing field (same as validate-args).

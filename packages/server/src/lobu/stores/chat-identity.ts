@@ -55,7 +55,7 @@ export async function resolveChatUserIdentity(
  * is a deliberate operation that must delete the old row first.
  *
  * Pass a transaction handle as `sql` to link atomically with a surrounding
- * write (e.g. the link-claim path); omit it to run on the pooled connection.
+ * write; omit it to run on the pooled connection.
  */
 export async function linkChatUserIdentity(
 	opts: {

@@ -161,13 +161,20 @@ export function registerBuiltInCommands(
   registry.register({
     name: "link",
     description:
-      "Link this chat to a Lobu agent — `<code>` from `lobu run`, or `<agentId>` once you've linked here before",
+      "Link this chat to a Lobu agent — `<code>` from `lobu run`, or `<agentId>` if you connected this Slack workspace to Lobu",
     handler: async (ctx: CommandContext) => {
       const arg = ctx.args.trim();
       const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";
+      // The codeless `<agentId>` shortcut needs a `chat_user_identities` row,
+      // and only the Slack install claim writes those — so it never applies on
+      // other platforms. Don't promise it there.
+      const agentIdHint =
+        ctx.platform === "slack"
+          ? " (If you connected this workspace to Lobu, `/lobu link <agentId>` works too.)"
+          : "";
       if (!arg) {
         await ctx.reply(
-					`Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent. (Once you've linked here once, \`${cmd} <agentId>\` works too.)`,
+					`Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent.${agentIdHint}`,
         );
         return;
       }
@@ -184,7 +191,6 @@ export function registerBuiltInCommands(
         teamId: ctx.teamId,
         channelId,
         surfaceType,
-        platformUserId: ctx.userId,
 				connectionId: ctx.connectionId,
 				connectionOrganizationId: ctx.organizationId,
       });
@@ -205,8 +211,11 @@ export function registerBuiltInCommands(
           );
           return;
         case "not_found": {
-          // Not a valid code — but if this user has linked here before, treat
-          // the arg as an agent id and re-bind directly (no fresh code needed).
+          // Not a valid code — but if we already know who this chat user is,
+          // treat the arg as an agent id and re-bind directly (no fresh code
+          // needed). Identity comes only from the Slack install claim
+          // (slack-claim.ts), never from redeeming a code: the same mapping
+          // authorizes Slack approvals, so a pasted code must not mint it.
           const lobuUserId = await resolveChatUserIdentity(
             ctx.platform,
             ctx.teamId,
@@ -234,7 +243,7 @@ export function registerBuiltInCommands(
             return;
           }
           await ctx.reply(
-						"That link code is invalid or expired. Run `lobu run` again to get a fresh one.",
+						`That link code is invalid or expired. Run \`lobu run\` again to get a fresh one.${agentIdHint}`,
           );
           return;
         }

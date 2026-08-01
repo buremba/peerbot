@@ -435,7 +435,13 @@ export class SlackConnectionCoordinator {
         }
         return response;
       }
+    }
 
+    // Enterprise Grid interactive payloads can omit `team` entirely and carry
+    // only the enterprise id. Keep BYO routing team-scoped above, but allow the
+    // managed-install and pending-install paths to resolve that org-wide key.
+    const installTenantId = teamId ?? enterpriseId;
+    if (installTenantId) {
       // 2) An OAuth-installed workspace (the "Add to Slack" path). The install
       //    is an `app_installations` row (provider=slack), not a BYO `connections` chat row;
       //    the manager hydrates an agentless Slack instance from it (the
@@ -455,7 +461,7 @@ export class SlackConnectionCoordinator {
       //     Grid enterprise that has exactly one (non-org-wide) install and no
       //     org-wide one; still by enterprise_id, but only when unambiguous.
       const installation =
-        (await getSlackInstallByTeamId(store, teamId)) ??
+        (teamId ? await getSlackInstallByTeamId(store, teamId) : null) ??
         (enterpriseId
           ? ((await getSlackEnterpriseInstall(store, enterpriseId)) ??
             (await getSlackInstallByEnterpriseId(store, enterpriseId)))
@@ -477,7 +483,10 @@ export class SlackConnectionCoordinator {
       // 3) A workspace that installed Lobu but hasn't been CLAIMED into a Lobu
       //    org yet (a `pending` install). Don't silently drop their messages —
       //    reply with the connect link so a workspace admin can finish setup.
-      const pending = await resolveSlackPendingByTenant(teamId, enterpriseId);
+      const pending = await resolveSlackPendingByTenant(
+        installTenantId,
+        enterpriseId,
+      );
       if (pending) {
         return await this.replyUnclaimedWorkspace(
           pending.botToken,

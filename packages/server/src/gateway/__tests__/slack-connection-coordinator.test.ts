@@ -532,6 +532,56 @@ describe("SlackConnectionCoordinator", () => {
     expect(forwarded).toEqual([seeded.id]);
   });
 
+  test("Grid: an enterprise-only interactive payload routes to the org-wide install", async () => {
+    const forwarded: Array<{ connectionId: string; body: string }> = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "E-GRID",
+      {
+        botToken: "xoxb-grid-wide",
+        enterpriseId: "E-GRID",
+        isEnterpriseInstall: true,
+      },
+    );
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        forwardWebhook: mock(async (connectionId: string, request: Request) => {
+          forwarded.push({ connectionId, body: await request.text() });
+          return new Response("ok");
+        }),
+      }),
+    );
+
+    // Org-wide Grid block_actions payloads may omit `team` entirely. The
+    // enterprise id is still authoritative and must reach the already-selected
+    // managed connection instead of the adapter's tokenless OAuth fallback.
+    const payload = {
+      type: "block_actions",
+      team: null,
+      enterprise: { id: "E-GRID", name: "Acme Grid" },
+      user: { id: "U-ACTOR" },
+      actions: [{ action_id: "tool:req-grid:1h", value: "1h" }],
+    };
+    const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/actions", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual([{ connectionId: seeded.id, body }]);
+  });
+
   test("Grid: the enterprise fallback is exact — a foreign enterprise id misses", async () => {
     // The fallback must not leak across Grids: an install for E-GRID must NOT be
     // returned when resolving a different enterprise id.

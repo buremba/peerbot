@@ -561,7 +561,7 @@ function diffWatcher(
   }
   if (
     desired.keyingConfig !== undefined &&
-    !deepEqual(desired.keyingConfig, remote.keying_config ?? {})
+    !deepEqual(desired.keyingConfig, remote.keying_config ?? null)
   ) {
     versionBound.push("keying_config");
   }

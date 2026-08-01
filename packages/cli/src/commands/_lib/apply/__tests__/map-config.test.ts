@@ -190,6 +190,21 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
+  test("preserves explicit null keying so apply can untype a Behavior", () => {
+    const agent = defineAgent({ id: "radar" });
+    const behavior = defineBehavior({
+      agent,
+      slug: "social-radar",
+      prompt: "Rank social posts.",
+      keyingConfig: null,
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [agent], behaviors: [behavior] })
+    );
+
+    expect(state.watchers[0]?.keyingConfig).toBeNull();
+  });
+
   test("BYO chat connection carries credentialMode + resolves secret config", () => {
     const slack = defineConnection({
       slug: "team-slack",

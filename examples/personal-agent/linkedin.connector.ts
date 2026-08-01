@@ -336,6 +336,10 @@ interface HomeFeedRow {
    * heuristic when present.
    */
   author_control_label?: string;
+  /** Exact post permalink when the rendered card exposes a feed/update anchor. */
+  post_url?: string;
+  /** Rendered identifier containing LinkedIn's stable shareId / ugcPostId. */
+  post_identity?: string;
   /** Every profile/company anchor in the card, each with its accessible name. */
   links?: HomeFeedLink[];
 }
@@ -380,6 +384,21 @@ const HOME_FEED_SCRAPE_CONFIG = {
       selector: 'button[aria-label*="control menu for post by"]',
       take: "attr",
       attr: "aria-label",
+    },
+    post_url: {
+      // The opaque componentkey cannot be converted back into an activity id,
+      // so capture a canonical link while the real rendered DOM is available.
+      selector: 'a[href*="/feed/update/"]',
+      take: "attr",
+      attr: "href",
+    },
+    post_identity: {
+      // Current feed cards embed the durable id in a translatable-commentary
+      // element id even when every visible anchor points back to /feed/.
+      selector:
+        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
+      take: "attr",
+      attr: "id",
     },
     links: {
       // Every profile/company anchor with its accessible name, so
@@ -635,10 +654,11 @@ export function isHomeFeedNoise(body: string): boolean {
 }
 
 /**
- * Map cs_scrape home-feed rows to event envelopes. The componentkey token is
- * not a numeric activity id, so there is no /feed/update permalink — source_url
- * stays at /feed/. Home-feed posts expose no reliable timestamp, so the caller
- * stamps occurred_at with the sync time.
+ * Map cs_scrape home-feed rows to event envelopes. Prefer a /feed/update anchor
+ * or stable activity id embedded in the card DOM; otherwise source_url falls
+ * back to /feed/.
+ * Home-feed posts expose no reliable timestamp, so the caller stamps
+ * occurred_at with the sync time.
  */
 export function buildHomeFeedEvents(
   rows: HomeFeedRow[],
@@ -710,6 +730,13 @@ export function buildHomeFeedEvents(
       metadata.author_profile_url = profileUrlFor(authorSlug);
     }
 
+    const embeddedActivityId = row.post_identity?.match(
+      /(?:shareId|ugcPostId)=(\d{6,})|urn:li:activity:(\d{6,})/i
+    );
+    const postUrl = normalizeLinkedInPostUrl(
+      row.post_url ?? embeddedActivityId?.[1] ?? embeddedActivityId?.[2] ?? ""
+    );
+
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,
@@ -717,9 +744,7 @@ export function buildHomeFeedEvents(
       // Feed posts expose no reliable timestamp; use the sync time.
       occurred_at: occurredAt,
       origin_type: "post",
-      // Token id is NOT a numeric activity id, so we cannot build a
-      // urn:li:activity permalink — link to the feed itself.
-      source_url: "https://www.linkedin.com/feed/",
+      source_url: postUrl ?? "https://www.linkedin.com/feed/",
       metadata,
     });
   }

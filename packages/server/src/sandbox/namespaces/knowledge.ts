@@ -34,6 +34,13 @@ export interface KnowledgeSaveInput {
 	metadata?: Record<string, unknown>;
 	title?: string;
 	slug?: string;
+	author?: string;
+	payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
+	source_url?: string;
+	parent_event_id?: number;
+	idempotency_key?: string;
+	occurred_at?: string;
+	behavior_source?: { behavior_id: number; window_id: number };
 }
 
 export interface KnowledgeReadInput {

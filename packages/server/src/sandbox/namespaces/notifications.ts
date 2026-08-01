@@ -33,6 +33,8 @@ export interface NotificationsSendInput {
 	recipients?: "admins" | "all" | string[];
 	/** Relative URL the notification links to (e.g. `/acme/entities`). */
 	resource_url?: string;
+	/** Stable producer key used to collapse retried sends. */
+	idempotency_key?: string;
 	/** Deliver only through this specific bot connection (its id). */
 	connection_id?: string;
 	/** Arbitrary JSON payload appended to the body as formatted JSON. */

@@ -911,7 +911,7 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
-    keying_config?: Record<string, unknown>;
+    keying_config?: Record<string, unknown> | null;
     classifiers?: unknown[];
   }): Promise<{ behavior_id?: string }> {
     const { body } = await this.request<{ behavior_id?: string }>(
@@ -1020,7 +1020,7 @@ export class ApplyClient {
     prompt?: string;
     skills?: Array<{ name: string; content: string }>;
     sources?: BehaviorSource[];
-    keying_config?: Record<string, unknown>;
+    keying_config?: Record<string, unknown> | null;
     classifiers?: unknown[];
     reactions_guidance?: string;
     change_notes?: string;

@@ -643,8 +643,13 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     // whole job is its skills, and for event-turn Behaviors with neither.
     prompt: watcher.prompt ?? "",
     ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
-    ...(watcher.keyingConfig
-      ? { keyingConfig: normalizeKeyingConfig(watcher.keyingConfig) }
+    ...(watcher.keyingConfig !== undefined
+      ? {
+          keyingConfig:
+            watcher.keyingConfig === null
+              ? null
+              : normalizeKeyingConfig(watcher.keyingConfig),
+        }
       : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),

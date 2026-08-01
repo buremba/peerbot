@@ -43,6 +43,14 @@ const SendAction = Type.Object({
   resource_url: Type.Optional(
     Type.String({ description: 'Relative URL to link the notification to (e.g. /acme/entities)' })
   ),
+  idempotency_key: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 300,
+      description:
+        'Stable producer key. Repeating a send with the same key returns success without creating or delivering a duplicate.',
+    })
+  ),
   connection_id: Type.Optional(
     Type.String({
       description:
@@ -160,21 +168,24 @@ async function handleSend(
     if (rows.length > 0) canvasEntityIds = [Number(rows[0].entity_id)];
   }
 
-  await createNotificationForUsers(userIds, {
+  const notification = await createNotificationForUsers(userIds, {
     organizationId: ctx.organizationId,
     type: 'agent_message',
     title: args.title,
     body,
     resourceUrl: args.resource_url ?? null,
+    idempotencyKey: args.idempotency_key ?? null,
     connectionId: args.connection_id ?? null,
     card: (args.card as CardElement | undefined) ?? null,
     entityIds: canvasEntityIds,
   });
 
-  emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });
+  if (notification.created) {
+    emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });
+  }
 
   // Track watcher reaction if attribution source is provided
-  if (args.behavior_source) {
+  if (notification.created && args.behavior_source) {
     await trackWatcherReaction({
       organizationId: ctx.organizationId,
       watcherId: args.behavior_source.behavior_id,

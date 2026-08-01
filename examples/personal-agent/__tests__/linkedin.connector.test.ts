@@ -142,6 +142,44 @@ describe("filterPostsSinceCheckpoint", () => {
 });
 
 describe("buildHomeFeedEvents", () => {
+  test("uses the scraped post permalink when LinkedIn exposes one", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_url:
+            "/feed/update/urn:li:activity:7345678901234567890?utm_source=feed",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(event.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7345678901234567890"
+    );
+  });
+
+  test("builds a permalink from the share id embedded in current feed cards", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_identity:
+            "translatable-commentary-ContentUrnShareUrn(shareUrn=ShareUrn(shareId=7485276857911828480))",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(event.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:activity:7485276857911828480"
+    );
+  });
+
   test("maps a token-id row to li_home_<token> with /feed/ source_url", () => {
     const occurredAt = new Date("2026-05-29T12:00:00.000Z");
     const events = buildHomeFeedEvents(

@@ -7,6 +7,7 @@ import { ENTITY_CHANGE_ACTION_KEYS } from "../../tools/admin/entity-field-approv
 import { manageOperations } from "../../tools/admin/manage_operations.js";
 import type { ToolContext } from "../../tools/registry.js";
 import {
+	pairAdminGrant,
   type PendingToolInvocation,
 	takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
@@ -1151,8 +1152,7 @@ export function registerActionHandlers(
 							connectionId: pending.connectionId,
 							platform: pending.platform,
 							source: pending.source,
-							adminTools: pending.adminTools,
-							adminActorUserId: pending.adminActorUserId,
+							...pairAdminGrant(pending.adminTools, pending.adminActorUserId),
 							deploymentName: pending.deploymentName,
 						},
           );

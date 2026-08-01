@@ -9,7 +9,7 @@ import { getDb } from "../../../db/client.js";
 
 const SCOPE = "pending-tool";
 
-export interface PendingToolInvocation {
+interface PendingToolInvocationFields {
   mcpId: string;
   toolName: string;
   args: Record<string, unknown>;
@@ -22,11 +22,41 @@ export interface PendingToolInvocation {
   connectionId?: string;
   platform?: string;
   source?: string;
-  /** Preserve the signed per-turn builder admin limit across approval resume. */
-  adminTools?: string[];
-  /** Canonical Lobu user bound to adminTools; present iff adminTools is present. */
-  adminActorUserId?: string;
   deploymentName?: string;
+}
+
+/**
+ * The signed per-turn builder admin limit and the canonical Lobu actor it is
+ * bound to, preserved across approval resume. Modeled as a PAIR, not two
+ * independent optional fields: the resumed call mints a worker token carrying
+ * this allowlist, so an allowlist with no verified actor must never be
+ * constructible or round-trippable as valid.
+ */
+export type PendingAdminGrant =
+  | { adminTools: string[]; adminActorUserId: string }
+  | { adminTools?: undefined; adminActorUserId?: undefined };
+
+export type PendingToolInvocation = PendingToolInvocationFields &
+  PendingAdminGrant;
+
+/**
+ * Fail closed on an unpaired admin grant: drop the tier entirely rather than
+ * defaulting an actor. A legacy or tampered payload carrying an allowlist with
+ * no actor (or an actor with no allowlist) resumes as a plain, non-admin call.
+ */
+export function pairAdminGrant(
+  adminTools: string[] | undefined,
+  adminActorUserId: string | undefined,
+): PendingAdminGrant {
+  if (!adminTools?.length || !adminActorUserId) return {};
+  return { adminTools, adminActorUserId };
+}
+
+function withPairedAdminGrant(
+  payload: PendingToolInvocation,
+): PendingToolInvocation {
+  const { adminTools, adminActorUserId, ...rest } = payload;
+  return { ...rest, ...pairAdminGrant(adminTools, adminActorUserId) };
 }
 
 export async function storePendingTool(
@@ -76,7 +106,7 @@ export async function listPendingToolsForConversation(
   `;
 	return rows.map((r) => {
 		const row = r as { id: string; payload: PendingToolInvocation };
-		return { ...row.payload, requestId: row.id };
+		return { ...withPairedAdminGrant(row.payload), requestId: row.id };
 	});
 }
 
@@ -98,7 +128,8 @@ export async function takePendingTool(
     RETURNING payload
   `;
   if (rows.length === 0) return null;
-	return (rows[0] as { payload: PendingToolInvocation }).payload ?? null;
+	const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
+	return payload ? withPairedAdminGrant(payload) : null;
 }
 
 /** Active tool approvals belonging to this Behavior run's agent session. */

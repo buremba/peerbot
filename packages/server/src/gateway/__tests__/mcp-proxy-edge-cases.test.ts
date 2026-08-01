@@ -24,6 +24,7 @@ import {
 import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
+import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
@@ -1222,6 +1223,58 @@ describe("executeToolDirect", () => {
       adminActorUserId: "approving-user",
       deploymentName: "lobu-builder",
     });
+  });
+
+  test("approved internal execution drops an admin allowlist that has no canonical actor", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    let requestHeaders = new Headers();
+
+    globalThis.fetch = async (_input, init) => {
+      requestHeaders = new Headers(init?.headers);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "approved" }], isError: false },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      // Legacy/tampered pending row: allowlist with no verified actor. The
+      // paired type forbids constructing this, so the cast reproduces what a
+      // persisted payload can still deserialize into.
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+        adminTools: ["run_sdk"],
+      } as DirectToolExecutionOptions,
+    );
+
+    expect(result.isError).toBe(false);
+    const authorization = requestHeaders.get("authorization");
+    const token = verifyWorkerToken(authorization?.slice("Bearer ".length) ?? "");
+    // Minting the unpaired claims produces a token the verifier rejects
+    // outright (401 on resume); pairing drops the admin tier and the resumed
+    // call still authenticates as a plain, non-admin worker.
+    expect(token).not.toBeNull();
+    expect(token?.userId).toBe("approving-user");
+    expect(token?.adminTools).toBeUndefined();
+    expect(token?.adminActorUserId).toBeUndefined();
   });
 
   test("executes tool directly and returns result", async () => {

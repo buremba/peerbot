@@ -439,22 +439,6 @@ export async function assertAgentExists(
 }
 
 /**
- * Resolve `keying_config.entity_type` against the org before it is persisted.
- *
- * An entity-typed Behavior derives its whole output contract from the named
- * type's `metadata_schema`. When the type does not exist,
- * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
- * extraction validation entirely — so a typo does not fail loudly, it silently
- * VOIDS the contract the Behavior was created to enforce. Its sibling
- * `entity_id` is already existence-checked at create, so validating here makes
- * the pair consistent.
- *
- * Uses the same tenant-first-then-public-catalog visibility rule as
- * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
- * that derivation CAN see is never rejected here — checking existence only, as
- * a type legitimately may carry no metadata_schema yet.
- */
-/**
  * Shape-check a CALLER-SUPPLIED keying_config after parseJsonInput. An
  * object-typed input is already validated by the tool schema, but the wire
  * contract also accepts a pre-serialized JSON string (see the keying_config
@@ -481,6 +465,22 @@ export function assertKeyingConfigShape(
   throw new ToolUserError(`Invalid keying_config: ${errs.join('; ')}`, 400);
 }
 
+/**
+ * Resolve `keying_config.entity_type` against the org before it is persisted.
+ *
+ * An entity-typed Behavior derives its whole output contract from the named
+ * type's `metadata_schema`. When the type does not exist,
+ * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
+ * extraction validation entirely — so a typo does not fail loudly, it silently
+ * VOIDS the contract the Behavior was created to enforce. Its sibling
+ * `entity_id` is already existence-checked at create, so validating here makes
+ * the pair consistent.
+ *
+ * Uses the same tenant-first-then-public-catalog visibility rule as
+ * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
+ * that derivation CAN see is never rejected here — checking existence only, as
+ * a type legitimately may carry no metadata_schema yet.
+ */
 export async function assertKeyingConfigEntityTypeExists(
   sql: DbClient,
   organizationId: string,

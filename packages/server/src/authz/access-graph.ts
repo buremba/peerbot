@@ -156,28 +156,79 @@ async function resolveMembers(
   for (const [namespace, values] of valuesByNamespace) {
     const list = [...values];
     if (list.length === 0) continue;
+    // The JOIN is load-bearing: an ordinary entity delete soft-deletes the
+    // ENTITY but leaves its `entity_identities` rows live, still pointing at
+    // it (only a merge or sign-in adoption repoints them). Matching on the
+    // identity alone therefore resolves onto a dead entity, writes `member_of`
+    // to it, and never mints a replacement — so the member silently vanishes
+    // from the audience of every channel they are in. `lookupMatches` in
+    // entity-link-upsert already joins for this reason; this matcher did not.
     const rows = await sql<{ identifier: string; entity_id: number }>`
-			SELECT identifier, entity_id
-			FROM entity_identities
-			WHERE organization_id = ${orgId}
-			  AND namespace = ${namespace}
-			  AND identifier = ANY(${pgTextArray(list)}::text[])
-			  AND deleted_at IS NULL
+			SELECT ei.identifier, ei.entity_id
+			FROM entity_identities ei
+			JOIN entities e ON e.id = ei.entity_id
+			WHERE ei.organization_id = ${orgId}
+			  AND ei.namespace = ${namespace}
+			  AND ei.identifier = ANY(${pgTextArray(list)}::text[])
+			  AND ei.deleted_at IS NULL
+			  AND e.deleted_at IS NULL
 		`;
     for (const r of rows) {
       existing.set(`${namespace}|${String(r.identifier)}`, Number(r.entity_id));
     }
   }
 
+  // Which entity a member's claims resolve to follows the tier semantics the
+  // create path below (`resolveEventAttributionsForItems`) already implements —
+  // see `primary` in connector-types.ts. Stopping at the first array hit made
+  // the answer depend on the order a connector pushed its identities, and
+  // `member_of` is a read ACL, so that was a mis-grant waiting to happen: a
+  // stale or recycled secondary claim (an old email, a reused login) would hand
+  // one person another person's channel access. A PRESENT primary identity —
+  // the source's stable per-account key — therefore governs alone and never
+  // falls through to a secondary match: a fresh primary means a distinct
+  // account even when a recycled secondary still points at the old person.
+  // This fast path only claims a member when its answer matches what the
+  // create-path engine would decide; every other case (primary present but
+  // unmatched, a same-tier conflict) falls through to `toCreate`, where that
+  // engine mints a new entity keyed on the primary or refuses the ambiguous
+  // match outright (no edge — fail closed) with its 'merge candidate' warning.
+  const primaryNamespaces = new Set(
+    memberIdentities.filter((s) => s.primary).map((s) => s.namespace)
+  );
   const toCreate: AccessMember[] = [];
   for (const m of members) {
-    let hit: number | undefined;
+    const primaryHits = new Set<number>();
+    const secondaryHits = new Set<number>();
+    let primaryPresent = false;
     for (const id of m.identities) {
+      if (!id.value) continue;
+      const isPrimary = primaryNamespaces.has(id.namespace);
+      if (isPrimary) primaryPresent = true;
       const found = existing.get(`${id.namespace}|${id.value}`);
-      if (found !== undefined) {
-        hit = found;
-        break;
+      if (found === undefined) continue;
+      (isPrimary ? primaryHits : secondaryHits).add(found);
+    }
+    let hit: number | undefined;
+    if (primaryPresent) {
+      if (primaryHits.size === 1) {
+        hit = [...primaryHits][0];
+        const overridden = [...secondaryHits].filter((id) => id !== hit);
+        if (overridden.length > 0) {
+          logger.warn(
+            {
+              organization_id: orgId,
+              connector_key: connectorKey,
+              member_key: m.key,
+              resolved_to: hit,
+              overridden_entity_ids: overridden,
+            },
+            'access-graph: member matched multiple entities — resolved via the primary identity'
+          );
+        }
       }
+    } else if (secondaryHits.size === 1) {
+      hit = [...secondaryHits][0];
     }
     if (hit !== undefined) byKey.set(m.key, hit);
     else toCreate.push(m);

@@ -28,8 +28,11 @@ export const ACL_RESOURCE_TYPE = {
 
 /**
  * A claim that identifies a member, e.g. `{namespace:'slack_user_id', primary:true}`.
- * The engine collapses a member onto any existing entity carrying ANY of their
- * identities; `primary` ones additionally govern creation.
+ * The engine collapses a member onto an existing entity of any type carrying
+ * their identities, with `primary` (the source's stable per-account key)
+ * governing: a present primary matches alone and never falls through to a
+ * secondary claim, and creation keys on it. Without a primary, secondary
+ * claims match equal-weight; a same-tier conflict resolves nobody.
  */
 export interface AccessIdentitySpec {
   namespace: string;

@@ -369,6 +369,45 @@ async function lookupMatches(
   return out;
 }
 
+/**
+ * Resolve a link's identities onto at most one entity, honouring identity tiers.
+ *
+ * A present `primary` identity (immutable, e.g. `github_user_id`) is
+ * authoritative: it governs even when it matches nothing (a new account), so a
+ * stale non-primary like a reused `github_login` can't merge a fresh account
+ * into the old person. Without a primary, identities match equal-weight (the
+ * cross-channel behavior whatsapp/email rely on).
+ *
+ * This is the single definition of that rule. It is deliberately shared by both
+ * resolution sites: the ordinary lookup AND the orphan-recovery re-resolution
+ * after a lost auto-create race. Those two used to carry separate copies and the
+ * recovery copy was tier-blind, which mis-resolved whenever a primary's owner
+ * was soft-deleted while a live entity held a recycled secondary claim — the
+ * link landed on the recycled-claim holder. `member_of` is a read ACL, so that
+ * handed one person another person's channel access.
+ *
+ * Returns the entity id when exactly one candidate survives, `null` when
+ * nothing matched at the governing tier, and `'ambiguous'` when several
+ * entities tied there — callers must fail closed on `'ambiguous'` and never
+ * pick one.
+ */
+function resolveIdentityTier(
+  identities: ResolvedIdentity[],
+  matches: Map<string, number>
+): number | null | 'ambiguous' {
+  const primaries = identities.filter((i) => i.primary);
+  // A present primary governs alone; otherwise every identity votes equally.
+  const governing = primaries.length > 0 ? primaries : identities;
+  const hits = new Set<number>();
+  for (const id of governing) {
+    const h = matches.get(`${id.namespace}\u0000${id.identifier}`);
+    if (h !== undefined) hits.add(h);
+  }
+  if (hits.size > 1) return 'ambiguous';
+  if (hits.size === 1) return [...hits][0];
+  return null;
+}
+
 async function createEntityWithIdentities(
   sql: DbClient,
   params: {
@@ -743,42 +782,15 @@ async function resolveLinksByKind(
     });
 
     for (const { index, item, link } of entries) {
-      // A present `primary` identity (immutable, e.g. github_user_id) is
-      // authoritative: it governs even when it matches nothing (a new account),
-      // so a stale non-primary like a reused github_login can't merge it into the
-      // old person. Without a primary, identities match equal-weight (the
-      // cross-channel behavior whatsapp/email rely on).
-      let entityId: number | null = null;
+      // Tier semantics are defined once in `resolveIdentityTier` and shared
+      // with the orphan-recovery re-resolution below. A present primary that
+      // matched nothing resolves to null here on purpose: the create path then
+      // mints a new entity keyed on it instead of absorbing a stale
+      // secondary's owner.
+      const tier = resolveIdentityTier(link.identities, matches);
+      const ambiguous = tier === 'ambiguous';
+      let entityId: number | null = ambiguous ? null : tier;
       let isCreate = false;
-      let ambiguous = false;
-      const hitFor = (id: { namespace: string; identifier: string }) =>
-        matches.get(`${id.namespace}\u0000${id.identifier}`);
-      const primaries = link.identities.filter((i) => i.primary);
-      if (primaries.length > 0) {
-        const primaryHits = new Set<number>();
-        for (const id of primaries) {
-          const h = hitFor(id);
-          if (h !== undefined) primaryHits.add(h);
-        }
-        if (primaryHits.size > 1) {
-          ambiguous = true;
-        } else if (primaryHits.size === 1) {
-          entityId = [...primaryHits][0];
-        }
-        // size 0 = present-but-unmatched → leave null so a new entity is created.
-      } else {
-        // No primary present → union all identity hits equal-weight.
-        const resolved = new Set<number>();
-        for (const id of link.identities) {
-          const h = hitFor(id);
-          if (h !== undefined) resolved.add(h);
-        }
-        if (resolved.size > 1) {
-          ambiguous = true;
-        } else if (resolved.size === 1) {
-          entityId = [...resolved][0];
-        }
-      }
 
       if (ambiguous) {
         logger.warn(
@@ -861,20 +873,23 @@ async function resolveLinksByKind(
             orgId: params.orgId,
             identities: [link.identities],
           });
-          const winnerIds = new Set<number>();
-          for (const id of link.identities) {
-            const h = winner.get(`${id.namespace}\u0000${id.identifier}`);
-            if (h !== undefined) winnerIds.add(h);
-          }
-          if (winnerIds.size === 1) {
-            entityId = [...winnerIds][0];
+          // Re-resolve through the SAME tier rule as the ordinary lookup. A
+          // tier-blind union here mis-resolved when the primary's owner was
+          // soft-deleted (so the primary matched nothing) while a live entity
+          // still held a recycled secondary claim: the union saw exactly one
+          // hit and adopted the recycled-claim holder. `member_of` is a read
+          // ACL, so that granted one person another person's channel access.
+          // Unmatched-primary and ambiguous both leave entityId null → skip,
+          // which fails closed (no edge) rather than guessing an owner.
+          const winnerTier = resolveIdentityTier(link.identities, winner);
+          if (typeof winnerTier === 'number') {
+            entityId = winnerTier;
             for (const id of link.identities) {
               if (winner.get(`${id.namespace}\u0000${id.identifier}`) === entityId) {
                 attached.push({ namespace: id.namespace, identifier: id.identifier });
               }
             }
           }
-          // size !== 1 (gone/ambiguous) → leave entityId null; skip.
         }
       }
 

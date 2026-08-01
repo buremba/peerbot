@@ -181,6 +181,32 @@ describe("owner-routed approvals — DM delivery tier selection", () => {
 		expect(await resolveOwnerDmTarget(orgId, stranger.id)).toBeNull();
 	});
 
+	it("FAILS CLOSED when one user holds two Slack ids under the same team", async () => {
+		// The stamps are org-scoped rows and are never deleted when superseded, so
+		// a user in two orgs — or whose Slack account id changed inside one
+		// workspace — can hold two DISTINCT ids under the same `TEAM:` prefix.
+		// The caller uses this as a DM RECIPIENT, so picking arbitrarily would
+		// send the owner DM to a stale Slack account and lose it silently.
+		const twin = await createTestUser({ name: "Two Workspaces One Team" });
+		await addUserToOrganization(twin.id, orgId, "member");
+		const otherOrg = await createTestOrganization({ name: "Second Org" });
+		await addUserToOrganization(twin.id, otherOrg.id, "member");
+		await linkSlackIdentityInGraph({
+			organizationId: orgId,
+			userId: twin.id,
+			teamId: "TDUPTEAM",
+			slackUserId: "U-FIRST",
+		});
+		await linkSlackIdentityInGraph({
+			organizationId: otherOrg.id,
+			userId: twin.id,
+			teamId: "TDUPTEAM",
+			slackUserId: "U-SECOND",
+		});
+
+		expect(await resolveSlackUserIdForUser(twin.id, "TDUPTEAM")).toBeNull();
+	});
+
 	it("matches the team prefix literally — `_` in a team id is not a LIKE wildcard", async () => {
 		// `_` is legal in a team id AND a single-char LIKE wildcard, so an
 		// unescaped prefix `T_DMOWNER:%` would also match `TXDMOWNER:…` and hand

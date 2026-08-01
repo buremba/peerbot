@@ -449,9 +449,29 @@ export async function assertAgentExists(
  * Only `undefined` counts as omitted: the tool contract has no null member, so
  * a serialized JSON `null` string is a caller-supplied value and is rejected
  * rather than silently inheriting the previous version's config.
+ *
+ * Unknown keys are rejected HERE rather than via `additionalProperties: false`
+ * on the shared schema. A misspelled OPTIONAL field (`nameFields`, `entityType`)
+ * satisfies every required field, so the schema alone accepts it and the caller
+ * silently loses the display-name or entity-type binding — the exact silent-void
+ * failure this contract exists to stop. The schema stays open because it is also
+ * `get_behavior`'s output shape, where a legacy stored config with extra keys
+ * must still round-trip; this guard only ever sees caller input.
  */
 export function assertKeyingConfigShape(keyingConfig: unknown): void {
   if (keyingConfig === undefined) return;
+  if (keyingConfig !== null && typeof keyingConfig === 'object' && !Array.isArray(keyingConfig)) {
+    const unknown = Object.keys(keyingConfig).filter(
+      (key) => !(key in BehaviorKeyingConfigSchema.properties)
+    );
+    if (unknown.length > 0) {
+      const allowed = Object.keys(BehaviorKeyingConfigSchema.properties).join(', ');
+      throw new ToolUserError(
+        `Invalid keying_config: unknown field(s) ${unknown.slice(0, 3).join(', ')}. Allowed: ${allowed}.`,
+        400
+      );
+    }
+  }
   if (Value.Check(BehaviorKeyingConfigSchema, keyingConfig)) return;
   // Dedupe by path — TypeBox emits both `Expected required property` and
   // `Expected <type>` for one missing field (same as validate-args).

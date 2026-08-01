@@ -24,6 +24,7 @@ type MessagingClientRecord = {
 	externalUrl: string | null;
 	linkedUserName: null;
 	linkedUserEmail: null;
+	linkedUserEntitySlug: null;
 	details: {
 		connectionId: string | null;
 		description: string | null;
@@ -147,6 +148,7 @@ async function listMessagingClients(options: {
 			externalUrl: externalUrlForMessagingIdentity(platform, row.user_id),
 			linkedUserName: null,
 			linkedUserEmail: null,
+			linkedUserEntitySlug: null,
 			details: {
 				connectionId: null,
 				description: null,
@@ -206,6 +208,37 @@ routes.get("/", mcpAuth, async (c) => {
 			}
 		}
 
+		const memberEntitySlugs = new Map<string, string>();
+		const ownerUserIds = [
+			...new Set(
+				oauthClients
+					.map((client) => client.owner_user_id)
+					.filter((userId): userId is string => Boolean(userId)),
+			),
+		];
+		if (ownerUserIds.length > 0) {
+			const rows = await sql`
+        SELECT ei.identifier AS user_id, e.slug
+        FROM entity_identities ei
+        JOIN entities e
+          ON e.id = ei.entity_id
+         AND e.organization_id = ei.organization_id
+         AND e.deleted_at IS NULL
+        JOIN entity_types et
+          ON et.id = e.entity_type_id
+         AND et.organization_id = e.organization_id
+         AND et.slug = '$member'
+        WHERE ei.organization_id = ${organizationId}
+          AND ei.namespace = 'auth_user_id'
+          AND ei.source_connector = 'auth:signup'
+          AND ei.deleted_at IS NULL
+          AND ei.identifier = ANY(${pgTextArray(ownerUserIds)}::text[])
+      `;
+			for (const row of rows as Array<{ user_id: string; slug: string }>) {
+				memberEntitySlugs.set(row.user_id, row.slug);
+			}
+		}
+
 		const mcpClients = oauthClients
 			.map((client) => {
 				const metadata = asRecord(client.metadata);
@@ -231,6 +264,9 @@ routes.get("/", mcpAuth, async (c) => {
 				const drivenBy = asNonEmptyString(clientInfo?.name);
 				const title = registeredName || drivenBy;
 				const softwareId = asNonEmptyString(client.software_id);
+				const linkedMemberSlug = client.owner_user_id
+					? memberEntitySlugs.get(client.owner_user_id)
+					: null;
 
 				return {
 					id: client.client_id,
@@ -266,6 +302,7 @@ routes.get("/", mcpAuth, async (c) => {
 							: null,
 					linkedUserName: client.user_name ?? null,
 					linkedUserEmail: client.user_email ?? null,
+					linkedUserEntitySlug: linkedMemberSlug ?? null,
 					details: {
 						softwareVersion: client.software_version ?? null,
 						redirectUris: client.redirect_uris,

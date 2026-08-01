@@ -6,6 +6,7 @@
  * capability.)
  */
 
+import { stripPlatformPrefix } from "../../channels/bound-channels.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { SlackInstructionProvider } from "../slack-instruction-provider.js";
 import { isSlackConfig } from "../types.js";
@@ -28,14 +29,17 @@ function createSlackFileHandler(
     channelId: string,
     conversationId?: string
   ): { channel: string; threadTs?: string } => {
+    // Token-bound worker channel ids are canonical (`slack:D0123`); strip so
+    // the fallbacks below can't rebuild a double-prefixed key.
+    const nativeChannel = stripPlatformPrefix("slack", channelId);
     if (conversationId?.startsWith("slack:")) {
       const [, channel, threadTs] = conversationId.split(":");
       return {
-        channel: channel || channelId,
+        channel: channel || nativeChannel,
         threadTs: threadTs && threadTs !== "" ? threadTs : undefined,
       };
     }
-    return { channel: channelId };
+    return { channel: nativeChannel };
   };
 
   return {

@@ -6,6 +6,7 @@
 
 import { createLogger } from "@lobu/core";
 import type { Readable } from "node:stream";
+import { stripPlatformPrefix } from "../../channels/bound-channels.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import type { ChatPlatformInstance, PlatformRoutingInfo } from "./types.js";
 
@@ -100,7 +101,11 @@ export async function resolveChatTarget(
   }
 ): Promise<any | null> {
   const { channelId, conversationId, responseThreadId, currentMessage } = opts;
-  const channelKey = `${platform}:${channelId}`;
+  // Worker/session routing uses canonical platform-prefixed channel ids, while
+  // a few direct platform callers still pass the raw id. Chat SDK channel keys
+  // are canonical, so normalize idempotently instead of producing an
+  // unroutable value such as `slack:slack:D0123`.
+  const channelKey = `${platform}:${stripPlatformPrefix(platform, channelId)}`;
 
   // If we have a full thread ID (e.g. telegram:{chatId}:{topicId}), use
   // createThread so the response lands in the correct forum topic.
@@ -231,7 +236,9 @@ export function createChatSdkFileHandler(
         instance,
         {
           threadId: options.threadTs,
-          channelKey: `${platform}:${options.channelId}`,
+          // Same idempotent normalization as resolveChatTarget: token-bound
+          // worker channel ids are already canonical platform-prefixed.
+          channelKey: `${platform}:${stripPlatformPrefix(platform, options.channelId)}`,
         },
         {
           raw: options.initialComment || "",

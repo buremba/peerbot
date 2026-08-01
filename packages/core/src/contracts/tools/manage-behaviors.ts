@@ -109,6 +109,49 @@ export const BehaviorSourceSchema = Type.Object({
 });
 export type BehaviorSource = Static<typeof BehaviorSourceSchema>;
 
+/**
+ * Stable-key + promotion config for a Behavior's extracted rows.
+ *
+ * Setting this is what binds a Behavior to an entity type, and that binding
+ * drives THREE things at once: the extraction schema handed to the agent, the
+ * `complete_window` validation of `extracted_data`, and the promotion of each
+ * keyed row into an entity. A field name that does not match here fails silently
+ * — the derive returns null and all three are skipped — so the shape is declared
+ * rather than left as free-form JSON.
+ */
+export const BehaviorKeyingConfigSchema = Type.Object({
+  entity_path: Type.String({
+    minLength: 1,
+    description:
+      "Dotted path to the array of extracted rows inside extracted_data (e.g. `items`, `analysis.results.problems`).",
+  }),
+  key_fields: Type.Array(Type.String({ minLength: 1 }), {
+    minItems: 1,
+    description:
+      "Fields whose values compose each row's stable key. Pick values that do NOT change between runs — the key is the entity's identity across windows.",
+  }),
+  key_output_field: Type.String({
+    minLength: 1,
+    description:
+      "Field the computed stable key is stamped onto. The agent must not emit it; it is excluded from the entity's synced fields.",
+  }),
+  entity_type: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        "Entity-type slug the keyed rows are promoted into. Must match the stored slug EXACTLY — entity-type creation slugifies (`social_signal` becomes `social-signal`), and a near-miss silently disables validation and promotion. Omit to derive a slug from the last segment of entity_path.",
+    })
+  ),
+  name_fields: Type.Optional(
+    Type.Array(Type.String({ minLength: 1 }), {
+      minItems: 1,
+      description:
+        "Fields used to build the entity's human-readable display name. Defaults to key_fields, which is usually wrong when the key is an opaque id — identity wants a value that never changes, a name wants one a person can read.",
+    })
+  ),
+});
+export type BehaviorKeyingConfig = Static<typeof BehaviorKeyingConfigSchema>;
+
 export const BehaviorExecutionConfigSchema = Type.Object(
   {
     timeout_seconds: Type.Optional(
@@ -373,9 +416,9 @@ export const ManageBehaviorsSchema = Type.Object(
       })
     ),
     keying_config: Type.Optional(
-      Type.Any({
+      Type.Composite([BehaviorKeyingConfigSchema], {
         description:
-          "[create/create_version] Config for stable key generation across windows.",
+          "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity.",
       })
     ),
     classifiers: Type.Optional(

@@ -141,8 +141,9 @@ function makeAppInstallationStore(): TrackedAppStore {
 					r.metadata[key] === value &&
 					r.metadata[flagKey] === true,
 			);
-			// Unambiguous only — 2+ matches ⇒ null (see resolveActiveByMetadataFlag).
-			return matches.length === 1 ? matches[0] : null;
+			matches.sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id);
+			const organizationIds = new Set(matches.map((r) => r.organizationId));
+			return organizationIds.size === 1 ? (matches[0] ?? null) : null;
 		},
 		getByTenantAndOrg: async (key: any, org: string) => {
       const matches = rows.filter(
@@ -580,6 +581,64 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([{ connectionId: seeded.id, body }]);
+  });
+
+  test("Grid: an enterprise-only action routes the newest same-org install alias", async () => {
+    const forwarded: string[] = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T-GRID-HOME",
+      {
+        botToken: "xoxb-old-alias",
+        enterpriseId: "E-GRID",
+        isEnterpriseInstall: true,
+      },
+    );
+    const canonical = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "E-GRID",
+      {
+        botToken: "xoxb-current-alias",
+        enterpriseId: "E-GRID",
+        isEnterpriseInstall: true,
+      },
+    );
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [],
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
+      }),
+    );
+
+    const body = new URLSearchParams({
+      payload: JSON.stringify({
+        type: "block_actions",
+        team: null,
+        enterprise: { id: "E-GRID" },
+        actions: [{ action_id: "tool:req-grid-alias:1h", value: "1h" }],
+      }),
+    }).toString();
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/actions", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual([canonical.id]);
   });
 
   test("Grid: the enterprise fallback is exact — a foreign enterprise id misses", async () => {

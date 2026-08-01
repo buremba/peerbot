@@ -193,18 +193,20 @@ export interface AppInstallationStore {
   ): Promise<AppInstallationRow | null>;
 
   /**
-   * Resolve the SOLE active install for a provider app whose `metadata[key]`
-   * equals `value` AND whose `metadata[flagKey]` is boolean `true` — unambiguous
-   * only. Distinct from {@link resolveSoleActiveByMetadata}: it filters to rows
-   * carrying a truthy flag, so a match survives even when OTHER (non-flagged)
-   * installs share the same `value`.
+   * Resolve an active install for a provider app whose `metadata[key]` equals
+   * `value` AND whose `metadata[flagKey]` is boolean `true`. Distinct from
+   * {@link resolveSoleActiveByMetadata}: it filters to rows carrying a truthy
+   * flag, so a match survives even when OTHER (non-flagged) installs share the
+   * same `value`.
    *
    * Its Slack consumer routes a Grid ORG-WIDE install (`is_enterprise_install`)
    * by `enterprise_id`: Slack allows exactly one org-wide install per enterprise,
    * so this is unambiguous EVEN WHEN per-workspace installs of sibling teams also
    * exist under the same enterprise — which is precisely the case
    * {@link resolveSoleActiveByMetadata} could not handle (it saw 2+ and gave up).
-   * Returns null when none match or, defensively, when 2+ flagged rows match.
+   * Multiple flagged aliases owned by the SAME organization are one authority
+   * boundary, so return the most recently updated row. Multiple organizations
+   * remain ambiguous and fail closed with null.
    */
   resolveActiveByMetadataFlag(
     provider: string,
@@ -497,8 +499,10 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
       const sql = getDb();
       // Match active installs where metadata[key] = value AND metadata[flagKey]
       // is JSON boolean true. `key`/`flagKey` are bound as `->>` / `->` operands,
-      // never spliced into SQL. LIMIT 2 detects (defensively) an impossible
-      // duplicate org-wide install; Slack guarantees at most one per enterprise.
+      // never spliced into SQL. Historical tenant-key transitions can leave a
+      // T-keyed and E-keyed alias for one Slack org-wide installation. They are
+      // safe to coalesce only inside one Lobu org; aliases spanning orgs remain
+      // ambiguous and fail closed. app_installations is bounded config state.
       const rows = await sql`
         SELECT * FROM app_installations
         WHERE provider = ${provider}
@@ -506,9 +510,13 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
           AND status = 'active'
           AND metadata ->> ${key} = ${value}
           AND (metadata -> ${flagKey}) = 'true'::jsonb
-        LIMIT 2
+        ORDER BY updated_at DESC, id DESC
       `;
-      return rows.length === 1 ? rowToInstallation(rows[0]) : null;
+      if (rows.length === 0) return null;
+      const organizationIds = new Set(
+        rows.map((row) => row.organization_id as string),
+      );
+      return organizationIds.size === 1 ? rowToInstallation(rows[0]) : null;
     },
 
     async getById(id) {

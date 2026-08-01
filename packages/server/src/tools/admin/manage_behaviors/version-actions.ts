@@ -13,6 +13,7 @@ import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
   assertKeyingConfigEntityTypeExists,
+  assertKeyingConfigShape,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
@@ -124,8 +125,15 @@ export async function handleCreateVersion(
     [] as Array<{ name: string; content: string }>
   );
   const skills = args.skills !== undefined ? args.skills : storedSkills;
+  // Shape-check ONLY the caller-supplied value (string inputs pass the wire
+  // union unparsed); the inherited stored config may predate the contract.
+  const callerKeyingConfig = parseJsonInput<Record<string, unknown>>(
+    args.keying_config,
+    'keying_config'
+  );
+  assertKeyingConfigShape(callerKeyingConfig);
   const keyingConfig =
-    parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
+    callerKeyingConfig ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
   const classifiers =
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??

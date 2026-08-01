@@ -177,16 +177,24 @@ function resolveEntityTypeSlug(config: KeyingConfig): string {
 }
 
 /**
- * Build a human-readable entity name from the configured key fields' RAW values
- * (not the slugified key). Falls back to the stable key when no field carries a
- * value.
+ * Build a human-readable entity name from RAW field values (not the slugified
+ * key). Falls back to the stable key when no field carries a value.
+ *
+ * Prefers `name_fields` and falls back to `key_fields`. The two are separate on
+ * purpose: a stable key must never change between runs, so it is usually an
+ * opaque id (`li_home_DijYQ…`), which makes a terrible display name. Keying on
+ * the readable field instead would tie the entity's identity to a value that can
+ * be edited upstream — a renamed author would orphan the entity and promote a
+ * duplicate.
  */
-function buildEntityName(
+export function buildEntityName(
   entityRecord: Record<string, unknown>,
   config: KeyingConfig,
   stableKey: string
 ): string {
-  const parts = config.key_fields
+  const nameFields =
+    config.name_fields && config.name_fields.length > 0 ? config.name_fields : config.key_fields;
+  const parts = nameFields
     .map((field) => entityRecord[field])
     .filter((v): v is string | number => v !== null && v !== undefined && String(v).trim().length > 0)
     .map((v) => String(v).trim());

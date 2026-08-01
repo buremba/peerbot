@@ -13,6 +13,8 @@ import {
   type BehaviorTrigger,
   BehaviorSourceSchema,
   type BehaviorSource,
+  BehaviorKeyingConfigSchema,
+  type BehaviorKeyingConfig,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 
 type WatcherSource = BehaviorSource;
@@ -79,24 +81,12 @@ export type WatcherWindow = Static<typeof WatcherWindowSchema>;
 // ============================================
 
 /**
- * Configuration for computing stable entity keys.
- * Used to generate deterministic keys for merging entities across windows.
+ * Configuration for computing stable entity keys, and for promoting each keyed
+ * row into an entity. Declared in `@lobu/core` so the MCP tool contract and the
+ * server-side readers cannot drift.
  */
-export const KeyingConfigSchema = Type.Object({
-  entity_path: Type.String(),
-  key_fields: Type.Array(Type.String()),
-  key_output_field: Type.String(),
-  /**
-   * Entity-type slug the keyed rows are promoted into (P2 phase 1). When
-   * omitted, promotion derives a slug from the last segment of `entity_path`
-   * (e.g. `analysis.results.problems` → `problem`). The type must already
-   * exist in the watcher's org (or the public catalog); if it can't be
-   * resolved, promotion is skipped for this window rather than failing the
-   * completion.
-   */
-  entity_type: Type.Optional(Type.String()),
-});
-export type KeyingConfig = Static<typeof KeyingConfigSchema>;
+export const KeyingConfigSchema = BehaviorKeyingConfigSchema;
+export type KeyingConfig = BehaviorKeyingConfig;
 
 // ============================================
 // Version Info (for listing available versions)

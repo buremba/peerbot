@@ -18,7 +18,11 @@ import {
   extractSkillNamesFromPromptTokens,
 } from '../../../watchers/source-refs';
 import type { ToolContext } from '../../registry';
-import { normalizeBehaviorTags } from '@lobu/core/contracts/tools/manage-behaviors';
+import { Value } from '@sinclair/typebox/value';
+import {
+  BehaviorKeyingConfigSchema,
+  normalizeBehaviorTags,
+} from '@lobu/core/contracts/tools/manage-behaviors';
 
 // ============================================
 // Types
@@ -432,6 +436,57 @@ export async function assertAgentExists(
   if (rows.length === 0) {
     throw new ToolUserError(`Agent "${agentId}" not found`, 404);
   }
+}
+
+/**
+ * Shape-check a CALLER-SUPPLIED keying_config after parseJsonInput. An
+ * object-typed input is already validated by the tool schema, but the wire
+ * contract also accepts a pre-serialized JSON string (see the keying_config
+ * union in ManageBehaviorsSchema), which passes validation as Type.String and
+ * would otherwise store any shape. Never call this on stored/inherited
+ * configs — rows written before the contract existed must stay loadable.
+ *
+ * Only `undefined` counts as omitted: the tool contract has no null member, so
+ * a serialized JSON `null` string is a caller-supplied value and is rejected
+ * rather than silently inheriting the previous version's config.
+ *
+ * Unknown keys are rejected HERE rather than via `additionalProperties: false`
+ * on the shared schema. A misspelled OPTIONAL field (`nameFields`, `entityType`)
+ * satisfies every required field, so the schema alone accepts it and the caller
+ * silently loses the display-name or entity-type binding — the exact silent-void
+ * failure this contract exists to stop. The schema stays open because it is also
+ * `get_behavior`'s output shape, where a legacy stored config with extra keys
+ * must still round-trip; this guard only ever sees caller input.
+ */
+export function assertKeyingConfigShape(keyingConfig: unknown): void {
+  if (keyingConfig === undefined) return;
+  if (keyingConfig !== null && typeof keyingConfig === 'object' && !Array.isArray(keyingConfig)) {
+    // `Object.hasOwn`, not `in`: `in` walks Object.prototype, so prototype-named
+    // own keys (`constructor`, `toString`, `__proto__`) would pass as declared.
+    const unknown = Object.keys(keyingConfig).filter(
+      (key) => !Object.hasOwn(BehaviorKeyingConfigSchema.properties, key)
+    );
+    if (unknown.length > 0) {
+      const allowed = Object.keys(BehaviorKeyingConfigSchema.properties).join(', ');
+      throw new ToolUserError(
+        `Invalid keying_config: unknown field(s) ${unknown.slice(0, 3).join(', ')}. Allowed: ${allowed}.`,
+        400
+      );
+    }
+  }
+  if (Value.Check(BehaviorKeyingConfigSchema, keyingConfig)) return;
+  // Dedupe by path — TypeBox emits both `Expected required property` and
+  // `Expected <type>` for one missing field (same as validate-args).
+  const seen = new Set<string>();
+  const errs: string[] = [];
+  for (const e of Value.Errors(BehaviorKeyingConfigSchema, keyingConfig)) {
+    const path = e.path || '/';
+    if (seen.has(path)) continue;
+    seen.add(path);
+    errs.push(`${path}: ${e.message}`);
+    if (errs.length >= 3) break;
+  }
+  throw new ToolUserError(`Invalid keying_config: ${errs.join('; ')}`, 400);
 }
 
 /**

@@ -202,8 +202,9 @@ interface SlackAppHomeDeps {
   /**
    * Resolves the viewing Slack user's personal notification inbox, or null when
    * they have no linked Lobu identity. `teamId` scopes the lookup to the
-   * correct Slack workspace (empty string for hosted-preview connections, which
-   * write identity rows with team_id=''). Read-only; failures degrade to no inbox.
+   * correct Slack workspace and is always a real workspace id — a connection
+   * without one is not looked up at all, since a Slack `U…` is only unique
+   * within a workspace. Read-only; failures degrade to no inbox.
    */
   resolveUserInbox?: (
     slackUserId: string,

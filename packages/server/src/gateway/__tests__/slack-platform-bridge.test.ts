@@ -260,16 +260,20 @@ describe("Slack platform bridge", () => {
         { title: "No link", url: null, isRead: true },
       ],
     }));
-    registerSlackAppHome(h.chat, connection(), {
-      publicGatewayUrl: "https://gw.example/",
-      resolveUserInbox,
-    });
+    registerSlackAppHome(
+      h.chat,
+      connection({ metadata: { botUsername: "Lobster", teamId: "T_HOME" } }),
+      {
+        publicGatewayUrl: "https://gw.example/",
+        resolveUserInbox,
+      }
+    );
     const publishHomeView = mock(async () => undefined);
     await h.open("U123", publishHomeView);
 
-    // resolveUserInbox is called with (slackUserId, teamId). The connection()
-    // helper has no metadata.teamId, so teamId falls back to '' (preview/unknown).
-    expect(resolveUserInbox).toHaveBeenCalledWith("U123", "");
+    // resolveUserInbox is called with (slackUserId, teamId) — always the
+    // connection's real workspace, never an unscoped lookup.
+    expect(resolveUserInbox).toHaveBeenCalledWith("U123", "T_HOME");
     const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
     expect(text).toContain("Notifications");
     expect(text).toContain("2 unread");
@@ -295,6 +299,20 @@ describe("Slack platform bridge", () => {
     // Must be scoped to the connection's workspace — a different workspace's
     // identity row with the same platform_user_id must NOT be returned.
     expect(resolveUserInbox).toHaveBeenCalledWith("U123", "T_WORKSPACE");
+  });
+
+  test("skips the inbox lookup entirely when the connection has no team_id", async () => {
+    const h = makeHomeChat();
+    const resolveUserInbox = mock(async () => null);
+    // A connection with no workspace cannot be scoped, and Slack `U…` ids are
+    // unique per workspace — so resolve nothing rather than an unscoped inbox.
+    registerSlackAppHome(h.chat, connection(), {
+      publicGatewayUrl: "https://gw.example/",
+      resolveUserInbox,
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    expect(resolveUserInbox).not.toHaveBeenCalled();
   });
 
   test("omits the notifications section when the user has no linked inbox", async () => {
@@ -330,7 +348,10 @@ describe("Slack platform bridge", () => {
     const h = makeHomeChat();
     registerSlackAppHome(
       h.chat,
-      connection({ settings: { previewMode: true } }),
+      connection({
+        metadata: { botUsername: "Lobster", teamId: "T_PREVIEW" },
+        settings: { previewMode: true },
+      }),
       {
         publicGatewayUrl: "https://gw.example",
         resolveUserInbox: mock(async () => ({

@@ -61,6 +61,16 @@ describe('assertKeyingConfigShape', () => {
     );
   });
 
+  // `key in properties` walks Object.prototype, so these names would read as
+  // declared fields. They arrive as real own keys via JSON.parse.
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'rejects the prototype-named key %s',
+    (key) => {
+      const parsed = JSON.parse(JSON.stringify({ ...valid, [key]: 'x' }));
+      expect(() => assertKeyingConfigShape(parsed)).toThrow(/unknown field/);
+    }
+  );
+
   it('lists the allowed fields when it rejects an unknown one', () => {
     expect(() => assertKeyingConfigShape({ ...valid, nope: 1 })).toThrow(/Allowed: .*name_fields/);
   });

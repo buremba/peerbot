@@ -461,8 +461,10 @@ export async function assertAgentExists(
 export function assertKeyingConfigShape(keyingConfig: unknown): void {
   if (keyingConfig === undefined) return;
   if (keyingConfig !== null && typeof keyingConfig === 'object' && !Array.isArray(keyingConfig)) {
+    // `Object.hasOwn`, not `in`: `in` walks Object.prototype, so prototype-named
+    // own keys (`constructor`, `toString`, `__proto__`) would pass as declared.
     const unknown = Object.keys(keyingConfig).filter(
-      (key) => !(key in BehaviorKeyingConfigSchema.properties)
+      (key) => !Object.hasOwn(BehaviorKeyingConfigSchema.properties, key)
     );
     if (unknown.length > 0) {
       const allowed = Object.keys(BehaviorKeyingConfigSchema.properties).join(', ');

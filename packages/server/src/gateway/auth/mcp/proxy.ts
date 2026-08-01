@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	createLogger,
+	generateWorkerToken,
 	getErrorMessage,
 	type GuardrailRegistry,
 	runGuardrailInstances,
@@ -35,6 +36,19 @@ import { McpUpstreamClient } from "./proxy-upstream.js";
 import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 
 const logger = createLogger("mcp-proxy");
+
+export interface DirectToolExecutionOptions {
+	organizationId: string;
+	conversationId?: string;
+	channelId?: string;
+	teamId?: string;
+	connectionId?: string;
+	platform?: string;
+	source?: string;
+	adminTools?: string[];
+	adminActorUserId?: string;
+	deploymentName?: string;
+}
 
 export class McpProxy {
 	// Tool-approval cards may sit in-thread for a long time before the user
@@ -106,7 +120,7 @@ export class McpProxy {
 		mcpId: string,
 		toolName: string,
 		args: Record<string, unknown>,
-		options: { organizationId: string },
+		options: DirectToolExecutionOptions,
 	): Promise<{
 		content: Array<{ type: string; text: string }>;
 		isError: boolean;
@@ -118,7 +132,7 @@ export class McpProxy {
 				mcpId,
 				toolName,
 				args,
-				options.organizationId,
+				options,
 			),
 		);
 	}
@@ -129,11 +143,12 @@ export class McpProxy {
 		mcpId: string,
 		toolName: string,
 		args: Record<string, unknown>,
-		organizationId: string,
+		options: DirectToolExecutionOptions,
 	): Promise<{
 		content: Array<{ type: string; text: string }>;
 		isError: boolean;
 	}> {
+		const { organizationId } = options;
 		const httpServer = await this.configService.getHttpServer(
 			mcpId,
 			agentId,
@@ -145,8 +160,34 @@ export class McpProxy {
 				isError: true,
 			};
 		}
+		let directAuthToken: string | undefined;
+		if (httpServer.internal) {
+			if (!options.conversationId || !options.channelId) {
+				return {
+					content: [{ type: "text", text: "Approved tool execution is missing signed routing context" }],
+					isError: true,
+				};
+			}
+			directAuthToken = generateWorkerToken(
+				userId,
+				options.conversationId,
+				options.deploymentName ?? `tool-approval:${agentId}`,
+				{
+					channelId: options.channelId,
+					teamId: options.teamId,
+					agentId,
+					organizationId,
+					connectionId: options.connectionId,
+					platform: options.platform,
+					source: options.source,
+					adminTools: options.adminTools,
+					adminActorUserId: options.adminActorUserId,
+				},
+			);
+		}
 
 		const scopeKey = computeScopeKey(userId);
+		const sessionKey = buildSessionKey(agentId, mcpId, scopeKey);
 
 		const jsonRpcBody = JSON.stringify({
 			jsonrpc: "2.0",
@@ -156,14 +197,43 @@ export class McpProxy {
 		});
 
 		try {
-			const response = await this.upstream.sendUpstreamRequest(
-				httpServer,
-				agentId,
-				mcpId,
-				"POST",
-				jsonRpcBody,
-				scopeKey,
-			);
+			// Approval webhooks can land on a different gateway replica than the
+			// blocked call. Upstream MCP sessions are intentionally replica-local,
+			// so initialize on this replica before resuming the tool.
+			if (!this.upstream.getSession(sessionKey)) {
+				await this.upstream.reinitializeSession(
+					httpServer,
+					agentId,
+					mcpId,
+					scopeKey,
+					directAuthToken,
+				);
+			}
+
+			const sendToolCall = () =>
+				this.upstream.sendUpstreamRequest(
+					httpServer,
+					agentId,
+					mcpId,
+					"POST",
+					jsonRpcBody,
+					scopeKey,
+					directAuthToken,
+				);
+			let response = await sendToolCall();
+			if (response.status === 404) {
+				await response.body?.cancel().catch(() => {
+					/* noop */
+				});
+				await this.upstream.reinitializeSession(
+					httpServer,
+					agentId,
+					mcpId,
+					scopeKey,
+					directAuthToken,
+				);
+				response = await sendToolCall();
+			}
 
 			if (!response.ok) {
 				const text = await response.text();
@@ -178,14 +248,39 @@ export class McpProxy {
 				};
 			}
 
-			const json = (await parseJsonRpcResponse(response)) as {
+			let json = (await parseJsonRpcResponse(response)) as {
 				result?: {
 					content?: Array<{ type: string; text: string }>;
 					isError?: boolean;
 				};
 				content?: Array<{ type: string; text: string }>;
 				isError?: boolean;
+				error?: { code?: number; message?: string };
 			};
+			if (json.error && /not initialized|session not found/i.test(json.error.message ?? "")) {
+				await this.upstream.reinitializeSession(
+					httpServer,
+					agentId,
+					mcpId,
+					scopeKey,
+					directAuthToken,
+				);
+				response = await sendToolCall();
+				if (!response.ok) {
+					const text = await response.text();
+					return {
+						content: [{ type: "text", text: `Tool call failed: ${response.status} ${text}` }],
+						isError: true,
+					};
+				}
+				json = (await parseJsonRpcResponse(response)) as typeof json;
+			}
+			if (json.error) {
+				return {
+					content: [{ type: "text", text: json.error.message ?? JSON.stringify(json.error) }],
+					isError: true,
+				};
+			}
 			const result = json.result || json;
 			return {
 				content: result.content || [
@@ -586,6 +681,11 @@ export class McpProxy {
 				conversationId: tokenData.conversationId || "",
 				teamId: tokenData.teamId,
 				connectionId: tokenData.connectionId,
+				platform: tokenData.platform,
+				source: tokenData.source,
+				adminTools: tokenData.adminTools,
+				adminActorUserId: tokenData.adminActorUserId,
+				deploymentName: tokenData.deploymentName,
 			},
 			this.PENDING_TOOL_TTL,
 		).catch((err: unknown) =>

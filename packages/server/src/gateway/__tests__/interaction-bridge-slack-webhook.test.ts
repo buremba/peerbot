@@ -111,8 +111,17 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
       toolName: "create_issue",
       args: { title: "from slack" },
       agentId: "agent-1",
-      userId: "user-1",
-			organizationId: "org-1",
+      userId: "U_SLACK",
+      organizationId: "org-1",
+      conversationId: "slack:dm:123",
+      channelId: "slack:D123",
+      teamId: "T123",
+      connectionId: "432",
+      platform: "slack",
+      source: "chat",
+      adminTools: ["run_sdk"],
+      adminActorUserId: "auth-user-1",
+      deploymentName: "lobu-builder",
     };
     await storePendingTool("req-slack-1", pending, 24 * 60 * 60);
 
@@ -154,6 +163,25 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
     expect(agentId).toBe("agent-1");
     expect(pattern).toBe("/mcp/github/tools/create_issue");
     expect(h.executeToolDirect).toHaveBeenCalledTimes(1);
+    expect(h.executeToolDirect.mock.calls[0]).toEqual([
+      "agent-1",
+      "U_SLACK",
+      "github",
+      "create_issue",
+      { title: "from slack" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+        teamId: "T123",
+        connectionId: "432",
+        platform: "slack",
+        source: "chat",
+        adminTools: ["run_sdk"],
+        adminActorUserId: "auth-user-1",
+        deploymentName: "lobu-builder",
+      },
+    ]);
     expect(h.postMessage).toHaveBeenCalled();
   });
 

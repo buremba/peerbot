@@ -21,8 +21,9 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
@@ -521,6 +522,63 @@ describe("tool registry collision — same tool name on two MCPs", () => {
 // ---------------------------------------------------------------------------
 
 describe("tool approval — onToolBlocked and wildcard grants", () => {
+  test("durable approval preserves the signed direct-auth claims", async () => {
+    const toolCache = new McpToolCache();
+    const grantStore = new GrantStore();
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, { toolCache, grantStore });
+    let requestId = "";
+    proxy.onToolBlocked = async (id) => {
+      requestId = id;
+    };
+    orgContext.run({ organizationId: "test-org" }, () => {
+      toolCache.set("lobu-memory", [{ name: "run_sdk" }], "agent1");
+    });
+    const token = generateWorkerToken("U_SLACK", "slack:dm:123", "lobu-builder", {
+      channelId: "slack:D123",
+      teamId: "T123",
+      agentId: "agent1",
+      organizationId: "test-org",
+      connectionId: "432",
+      platform: "slack",
+      source: "chat",
+      adminTools: ["run_sdk"],
+      adminActorUserId: "auth-user-1",
+    });
+
+    const response = await proxy.getApp().request("/lobu-memory/tools/run_sdk", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ script: "return client.agents.list({})" }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(requestId).toStartWith("ta_");
+    expect(await takePendingTool(requestId)).toMatchObject({
+      userId: "U_SLACK",
+      agentId: "agent1",
+      organizationId: "test-org",
+      conversationId: "slack:dm:123",
+      channelId: "slack:D123",
+      teamId: "T123",
+      connectionId: "432",
+      platform: "slack",
+      source: "chat",
+      adminTools: ["run_sdk"],
+      adminActorUserId: "auth-user-1",
+      deploymentName: "lobu-builder",
+    });
+  });
+
   test("onToolBlocked fires once; subsequent blocked-no-channel when no handler", async () => {
     const toolCache = new McpToolCache();
     const grantStore = new GrantStore();
@@ -885,6 +943,287 @@ describe("concurrent tool calls", () => {
 // ---------------------------------------------------------------------------
 
 describe("executeToolDirect", () => {
+  test("approved internal execution initializes a missing replica-local MCP session before the tool call", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    const requestHeaders: Headers[] = [];
+    let toolCalls = 0;
+
+    globalThis.fetch = async (_input, init) => {
+      requestHeaders.push(new Headers(init?.headers));
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === "initialize") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Mcp-Session-Id": "session-1" },
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      toolCalls++;
+      const initialized = new Headers(init?.headers).get("mcp-session-id") === "session-1";
+      return new Response(
+        JSON.stringify(
+          initialized
+            ? {
+                jsonrpc: "2.0",
+                id: 1,
+                result: { content: [{ type: "text", text: "approved" }], isError: false },
+              }
+            : { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "Server not initialized" } },
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+        adminTools: ["run_sdk"],
+        adminActorUserId: "approving-user",
+      },
+    );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "approved" }],
+      isError: false,
+    });
+    expect(toolCalls).toBe(1);
+    expect(requestHeaders).toHaveLength(3);
+    for (const headers of requestHeaders) {
+      expect(headers.get("authorization")).toMatch(/^Bearer /);
+      expect(headers.get("x-lobu-memory-direct-auth")).toBe("1");
+    }
+  });
+
+  test("approved execution re-initializes and retries once when the cached session went stale mid-call", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    let initCount = 0;
+    let toolCalls = 0;
+
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === "initialize") {
+        initCount++;
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Mcp-Session-Id": `session-${initCount}` },
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      toolCalls++;
+      // The first session the upstream handed out is already gone by the time
+      // the tool call arrives — only the re-initialized session succeeds.
+      const sessionId = new Headers(init?.headers).get("mcp-session-id");
+      return new Response(
+        JSON.stringify(
+          sessionId === "session-2"
+            ? {
+                jsonrpc: "2.0",
+                id: 1,
+                result: { content: [{ type: "text", text: "approved" }], isError: false },
+              }
+            : { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "Session not found" } },
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+      },
+    );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "approved" }],
+      isError: false,
+    });
+    expect(initCount).toBe(2);
+    expect(toolCalls).toBe(2);
+  });
+
+  test("approved execution re-initializes and retries once on an upstream 404 (unknown session)", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    let initCount = 0;
+    let toolCalls = 0;
+
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      if (body.method === "initialize") {
+        initCount++;
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Mcp-Session-Id": `session-${initCount}` },
+        });
+      }
+      if (body.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      toolCalls++;
+      const sessionId = new Headers(init?.headers).get("mcp-session-id");
+      if (sessionId !== "session-2") {
+        return new Response("Session not found", { status: 404 });
+      }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "approved" }], isError: false },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+      },
+    );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "approved" }],
+      isError: false,
+    });
+    expect(initCount).toBe(2);
+    expect(toolCalls).toBe(2);
+  });
+
+  test("refuses internal execution when the pending row lacks signed routing context", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    let fetched = false;
+    globalThis.fetch = async () => {
+      fetched = true;
+      return new Response("unreachable", { status: 500 });
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      { organizationId: "org-1", conversationId: "slack:dm:123" },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("missing signed routing context");
+    expect(fetched).toBe(false);
+  });
+
+  test("approved internal tool execution authenticates with a fresh scoped worker token", async () => {
+    const configSource = createConfigSource({
+      "lobu-memory": {
+        id: "lobu-memory",
+        upstreamUrl: "http://lobu.internal/acme/mcp",
+        internal: true,
+      },
+    });
+    const proxy = new McpProxy(configSource, {});
+    let requestHeaders = new Headers();
+
+    globalThis.fetch = async (_input, init) => {
+      requestHeaders = new Headers(init?.headers);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "approved" }], isError: false },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    };
+
+    const result = await proxy.executeToolDirect(
+      "agent1",
+      "approving-user",
+      "lobu-memory",
+      "run_sdk",
+      { script: "return client.agents.list({})" },
+      {
+        organizationId: "org-1",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+        connectionId: "432",
+        platform: "slack",
+        source: "chat",
+        adminTools: ["run_sdk"],
+        adminActorUserId: "approving-user",
+        deploymentName: "lobu-builder",
+      },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(requestHeaders.get("x-lobu-memory-direct-auth")).toBe("1");
+    const authorization = requestHeaders.get("authorization");
+    expect(authorization).toMatch(/^Bearer /);
+    const token = verifyWorkerToken(authorization?.slice("Bearer ".length) ?? "");
+    expect(token).toMatchObject({
+      userId: "approving-user",
+      agentId: "agent1",
+      organizationId: "org-1",
+      conversationId: "slack:dm:123",
+      channelId: "slack:D123",
+      connectionId: "432",
+      platform: "slack",
+      source: "chat",
+      adminTools: ["run_sdk"],
+      adminActorUserId: "approving-user",
+      deploymentName: "lobu-builder",
+    });
+  });
+
   test("executes tool directly and returns result", async () => {
     const configSource = createConfigSource({
       "direct-mcp": {

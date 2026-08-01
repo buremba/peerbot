@@ -10,6 +10,7 @@ import {
   type PendingToolInvocation,
 	takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
+import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
 import type {
   InteractionService,
   PostedLinkButton,
@@ -39,7 +40,7 @@ type ExecuteToolDirectFn = (
   mcpId: string,
   toolName: string,
 	args: Record<string, unknown>,
-	options: { organizationId: string },
+	options: DirectToolExecutionOptions,
 ) => Promise<{
   content: Array<{ type: string; text: string }>;
   isError: boolean;
@@ -1142,7 +1143,18 @@ export function registerActionHandlers(
             pending.mcpId,
             pending.toolName,
 						pending.args,
-						{ organizationId },
+						{
+							organizationId,
+							conversationId: pending.conversationId,
+							channelId: pending.channelId,
+							teamId: pending.teamId,
+							connectionId: pending.connectionId,
+							platform: pending.platform,
+							source: pending.source,
+							adminTools: pending.adminTools,
+							adminActorUserId: pending.adminActorUserId,
+							deploymentName: pending.deploymentName,
+						},
           );
 
           const resultText = result.content.map((c) => c.text).join("\n");

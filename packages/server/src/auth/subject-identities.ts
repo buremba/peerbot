@@ -12,7 +12,7 @@ import { getDb } from "../db/client";
 import {
 	type ResolvedTenantMember,
 	resolveMemberOrgsForUser,
-} from "../identity/auth-hook";
+} from "../identity/member-orgs";
 import logger from "../utils/logger";
 import {
 	ensureMemberEntity,

@@ -32,10 +32,6 @@
         "default": "./dist/nix-package.js"
       }
     },
-    "./identity-types": {
-      "types": "./dist/identity-types.d.ts",
-      "import": "./dist/identity-types.js"
-    },
     "./identity-namespaces": {
       "types": "./dist/identity-namespaces.d.ts",
       "import": "./dist/identity-namespaces.js"

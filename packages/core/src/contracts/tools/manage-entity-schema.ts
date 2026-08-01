@@ -4,25 +4,6 @@ import { type Static, Type } from "@sinclair/typebox";
 // Typebox Schema
 // ============================================
 
-export const AutoCreateWhenRuleInputSchema = Type.Object(
-  {
-    sourceNamespace: Type.String({ minLength: 1 }),
-    targetField: Type.String({ minLength: 1 }),
-    assuranceRequired: Type.Union([
-      Type.Literal("oauth_verified_admin_role"),
-      Type.Literal("oauth_verified"),
-      Type.Literal("cookie_session"),
-      Type.Literal("self_attested"),
-    ]),
-    matchStrategy: Type.Union([
-      Type.Literal("unique_only"),
-      Type.Literal("all_matches"),
-    ]),
-    notes: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false }
-);
-
 /** Derived-entity backing: a read-only SQL view. */
 export const BackingInputSchema = Type.Object(
   {
@@ -176,14 +157,6 @@ export const ManageEntitySchemaSchema = Type.Object({
       description: "[relationship_type: create/update] Status. Default active.",
     })
   ),
-  auto_create_when: Type.Optional(
-    Type.Array(AutoCreateWhenRuleInputSchema, {
-      maxItems: 16,
-      description:
-        "[relationship_type: create/update] Identity-engine auto-derivation rules stored on relationship_type.metadata.autoCreateWhen",
-    })
-  ),
-
   // Rule fields (relationship_type only)
   source_entity_type_slug: Type.Optional(
     Type.String({

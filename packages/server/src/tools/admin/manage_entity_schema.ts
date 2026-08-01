@@ -19,7 +19,6 @@ import {
   type RelationshipTypeRuleRow,
   type ViewTemplateTab,
 } from '@lobu/core/contracts/tools/manage-entity-schema';
-import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
 import { validateEntityMetrics } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../../db/client';
 import { recordToolConfigChange } from './helpers/config-audit';
@@ -31,7 +30,6 @@ import {
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
-import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import {
   countEntitiesOfType,
@@ -872,28 +870,6 @@ async function resolveInverseType(
   return { id: Number(rows[0].id), ownedByCaller: Boolean(rows[0].owned) };
 }
 
-function buildRelationshipIdentityMetadata(
-  rules: AutoCreateWhenRule[] | undefined,
-  existingMetadata: unknown,
-): Record<string, unknown> | null | undefined {
-  if (rules === undefined) return undefined;
-  const existing =
-    existingMetadata && typeof existingMetadata === 'object' && !Array.isArray(existingMetadata)
-      ? (existingMetadata as Record<string, unknown>)
-      : {};
-  const nextHash = ruleHashFor(rules);
-  const priorHash = typeof existing.ruleHash === 'string' ? existing.ruleHash : null;
-  const priorVersion =
-    typeof existing.ruleVersion === 'number' && Number.isFinite(existing.ruleVersion)
-      ? existing.ruleVersion
-      : 0;
-  const nextVersion = priorHash === nextHash ? Math.max(priorVersion, 1) : priorVersion + 1;
-  return {
-    ...existing,
-    ...compileRulesMetadata(rules, nextVersion),
-  };
-}
-
 // ============================================
 // Relationship Type Action Handlers
 // ============================================
@@ -1025,8 +1001,6 @@ async function rtHandleCreate(
     inverseOwnedByCaller = inverse.ownedByCaller;
   }
 
-  const identityMetadata = buildRelationshipIdentityMetadata(args.auto_create_when, null);
-
   let inserted: unknown[];
   try {
     inserted = await sql`
@@ -1041,7 +1015,7 @@ async function rtHandleCreate(
       ${ctx.organizationId},
       ${ctx.userId},
       ${args.metadata_schema ? sql.json(args.metadata_schema) : null},
-      ${identityMetadata ? sql.json(identityMetadata) : null},
+      null,
       ${args.is_symmetric ?? false},
       ${inverseTypeId},
       ${args.status ?? 'active'},
@@ -1132,14 +1106,6 @@ async function rtHandleUpdate(
     }
   }
 
-  const currentMetadataRows = await sql<{ metadata: unknown }>`
-    SELECT metadata FROM entity_relationship_types WHERE id = ${typeId} LIMIT 1
-  `;
-  const identityMetadata = buildRelationshipIdentityMetadata(
-    args.auto_create_when,
-    currentMetadataRows[0]?.metadata ?? null
-  );
-
   await sql`
     UPDATE entity_relationship_types SET
       name = COALESCE(${args.name ?? null}, name),
@@ -1150,10 +1116,6 @@ async function rtHandleUpdate(
       metadata_schema = CASE
         WHEN ${args.metadata_schema !== undefined} THEN ${args.metadata_schema ? sql.json(args.metadata_schema) : null}
         ELSE metadata_schema
-      END,
-      metadata = CASE
-        WHEN ${identityMetadata !== undefined} THEN ${identityMetadata ? sql.json(identityMetadata) : null}
-        ELSE metadata
       END,
       inverse_type_id = CASE
         WHEN ${inverseTypeId !== undefined} THEN ${inverseTypeId ?? null}
@@ -1179,7 +1141,6 @@ async function rtHandleUpdate(
     ...(args.name !== undefined ? ['name'] : []),
     ...(args.description !== undefined ? ['description'] : []),
     ...(args.metadata_schema !== undefined ? ['metadata_schema'] : []),
-    ...(args.auto_create_when !== undefined ? ['auto_create_when'] : []),
     ...(args.inverse_type_slug !== undefined ? ['inverse_type_id'] : []),
     ...(args.status !== undefined ? ['status'] : []),
   ];

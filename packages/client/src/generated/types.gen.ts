@@ -1400,20 +1400,6 @@ export type ManageEntitySchemaData = {
      */
     status?: "active" | "archived";
     /**
-     * [relationship_type: create/update] Identity-engine auto-derivation rules stored on relationship_type.metadata.autoCreateWhen
-     */
-    auto_create_when?: Array<{
-      sourceNamespace: string;
-      targetField: string;
-      assuranceRequired:
-        | "oauth_verified_admin_role"
-        | "oauth_verified"
-        | "cookie_session"
-        | "self_attested";
-      matchStrategy: "unique_only" | "all_matches";
-      notes?: string;
-    }>;
-    /**
      * [relationship_type: add_rule] Source entity type slug
      */
     source_entity_type_slug?: string;

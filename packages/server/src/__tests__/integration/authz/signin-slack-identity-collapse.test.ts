@@ -25,7 +25,7 @@ import {
 	slackChannelsToResources,
 } from "@lobu/connectors/slack-identity";
 import { buildAccessGraph } from "../../../authz/access-graph";
-import { resolveMemberOrgsForUser } from "../../../identity/auth-hook";
+import { resolveMemberOrgsForUser } from "../../../identity/member-orgs";
 import { clearEntityLinkRulesCache } from "../../../utils/entity-link-upsert";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";

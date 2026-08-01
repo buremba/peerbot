@@ -12,6 +12,7 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
+import { resolveSlackUserIdForUser } from "../../../lobu/stores/chat-identity";
 import { resolveOwnerDmTarget } from "../../../notifications/service";
 import { proposeEntityFieldChange } from "../../../tools/admin/entity-field-approval";
 import type { ToolContext } from "../../../tools/registry";
@@ -25,6 +26,7 @@ import {
 	createTestOrganization,
 	createTestUser,
 	insertChatConnectionRow,
+	linkSlackIdentityInGraph,
 } from "../../setup/test-fixtures";
 
 const TEAM_ID = "T-OWNERROUTE";
@@ -163,11 +165,12 @@ describe("owner-routed approvals — DM delivery tier selection", () => {
 	});
 
 	it("picks the owner's Slack identity in the connected workspace", async () => {
-		const sql = getTestDb();
-		await sql`
-      INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id)
-      VALUES ('slack', ${TEAM_ID}, 'U-DMOWNER', ${owner.id})
-    `;
+		await linkSlackIdentityInGraph({
+			organizationId: orgId,
+			userId: owner.id,
+			teamId: TEAM_ID,
+			slackUserId: "U-DMOWNER",
+		});
 		const target = await resolveOwnerDmTarget(orgId, owner.id);
 		expect(target).toEqual({ connectionId, slackUserId: "U-DMOWNER" });
 	});
@@ -176,5 +179,49 @@ describe("owner-routed approvals — DM delivery tier selection", () => {
 		const stranger = await createTestUser({ name: "No Identity" });
 		await addUserToOrganization(stranger.id, orgId, "member");
 		expect(await resolveOwnerDmTarget(orgId, stranger.id)).toBeNull();
+	});
+
+	it("FAILS CLOSED when one user holds two Slack ids under the same team", async () => {
+		// The stamps are org-scoped rows and are never deleted when superseded, so
+		// a user in two orgs — or whose Slack account id changed inside one
+		// workspace — can hold two DISTINCT ids under the same `TEAM:` prefix.
+		// The caller uses this as a DM RECIPIENT, so picking arbitrarily would
+		// send the owner DM to a stale Slack account and lose it silently.
+		const twin = await createTestUser({ name: "Two Workspaces One Team" });
+		await addUserToOrganization(twin.id, orgId, "member");
+		const otherOrg = await createTestOrganization({ name: "Second Org" });
+		await addUserToOrganization(twin.id, otherOrg.id, "member");
+		await linkSlackIdentityInGraph({
+			organizationId: orgId,
+			userId: twin.id,
+			teamId: "TDUPTEAM",
+			slackUserId: "U-FIRST",
+		});
+		await linkSlackIdentityInGraph({
+			organizationId: otherOrg.id,
+			userId: twin.id,
+			teamId: "TDUPTEAM",
+			slackUserId: "U-SECOND",
+		});
+
+		expect(await resolveSlackUserIdForUser(twin.id, "TDUPTEAM")).toBeNull();
+	});
+
+	it("matches the team prefix literally — `_` in a team id is not a LIKE wildcard", async () => {
+		// `_` is legal in a team id AND a single-char LIKE wildcard, so an
+		// unescaped prefix `T_DMOWNER:%` would also match `TXDMOWNER:…` and hand
+		// back a user id from the wrong workspace.
+		const roamer = await createTestUser({ name: "Wildcard Roamer" });
+		await addUserToOrganization(roamer.id, orgId, "member");
+		await linkSlackIdentityInGraph({
+			organizationId: orgId,
+			userId: roamer.id,
+			teamId: "TXDMOWNER",
+			slackUserId: "U-ROAMER",
+		});
+		expect(await resolveSlackUserIdForUser(roamer.id, "TXDMOWNER")).toBe(
+			"U-ROAMER",
+		);
+		expect(await resolveSlackUserIdForUser(roamer.id, "T_DMOWNER")).toBeNull();
 	});
 });

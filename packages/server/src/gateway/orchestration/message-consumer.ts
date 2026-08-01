@@ -120,9 +120,9 @@ export async function resolveBuilderAdminTools(args: {
   if (!args.agentId || !args.organizationId || !args.userId) return undefined;
   try {
     // Map a platform user id to its linked Lobu user before the member join.
-    // resolveChatUserIdentity is workspace-scoped (keyed on the PK
-    // platform+team_id+platform_user_id) and returns null when the id isn't
-    // linked, so a grant is only ever made for a linked, known user.
+    // resolveChatUserIdentity is workspace-scoped (the identity key is the
+    // composite TEAM:USER) and returns null when the id isn't linked, so a
+    // grant is only ever made for a linked, known user.
     const platform = args.platform;
     const isChatPlatform =
       platform != null && platform !== "api" && platform !== "";

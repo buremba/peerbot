@@ -6,6 +6,7 @@ import {
   createTestEntity,
   createTestOrganization,
   createTestUser,
+  linkSlackIdentityInGraph,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
 import { proposeEntityFieldChange } from "../../tools/admin/entity-field-approval.js";
@@ -266,10 +267,12 @@ describe("Slack block_actions → run-approval entity_field_change (Tier B)", ()
     const org = await createTestOrganization({ name: "Run Approval Webhook Org" });
     const admin = await createTestUser({ name: "Admin Reviewer" });
     await addUserToOrganization(admin.id, org.id, "admin");
-    await getDb()`
-      INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id)
-      VALUES ('slack', ${TEAM_ID}, 'U-ADMIN-RA', ${admin.id})
-    `;
+    await linkSlackIdentityInGraph({
+      organizationId: org.id,
+      userId: admin.id,
+      teamId: TEAM_ID,
+      slackUserId: "U-ADMIN-RA",
+    });
 
     const entity = await createTestEntity({
       name: "Payment Gateway Latency",

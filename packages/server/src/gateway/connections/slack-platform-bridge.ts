@@ -202,8 +202,9 @@ interface SlackAppHomeDeps {
   /**
    * Resolves the viewing Slack user's personal notification inbox, or null when
    * they have no linked Lobu identity. `teamId` scopes the lookup to the
-   * correct Slack workspace (empty string for hosted-preview connections, which
-   * write identity rows with team_id=''). Read-only; failures degrade to no inbox.
+   * correct Slack workspace and is always a real workspace id — a connection
+   * without one is not looked up at all, since a Slack `U…` is only unique
+   * within a workspace. Read-only; failures degrade to no inbox.
    */
   resolveUserInbox?: (
     slackUserId: string,
@@ -404,17 +405,20 @@ async function buildSlackHomeBlocks(
     { type: "divider" },
   ];
 
-  // Personal notifications, for users who've linked a Lobu identity (both
-  // preview and BYO connections). Scoped by teamId to prevent cross-workspace
-  // leaks when platform_user_id collides across Slack workspaces. Preview
-  // connections write identity rows with team_id='', so we pass '' there.
+  // Personal notifications, for users who've linked a Lobu identity. Scoped by
+  // teamId to prevent cross-workspace leaks when platform_user_id collides
+  // across Slack workspaces — Slack `U…` ids are unique per workspace, not
+  // globally. A connection with no team cannot be scoped, so it resolves no
+  // inbox rather than an unscoped one. (This used to fall back to `''`, which
+  // matched the rows preview-code redemption wrote with an empty team; that
+  // writer is gone and identity is now always workspace-scoped.)
   const teamId =
     typeof connection.metadata?.teamId === "string"
       ? connection.metadata.teamId
-      : "";
+      : null;
   let inbox: SlackHomeInbox | null = null;
   try {
-    inbox = (await deps.resolveUserInbox?.(userId, teamId)) ?? null;
+    inbox = teamId ? ((await deps.resolveUserInbox?.(userId, teamId)) ?? null) : null;
   } catch (error) {
     logger.warn(
       { error, userId },

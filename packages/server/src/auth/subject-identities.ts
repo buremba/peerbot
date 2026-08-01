@@ -420,3 +420,61 @@ export async function persistLoginSlackIdentity(
 		);
 	}
 }
+
+/**
+ * Stamp a workspace-scoped Slack identity onto a user's `$member` in every org
+ * they belong to, idempotently and failing closed on conflict.
+ *
+ * This is the same write `persistLoginSlackIdentity` performs, exposed for the
+ * install-claim path. That path needs it for a key OAuth alone cannot supply:
+ * on Slack Grid the install row is keyed by the ENTERPRISE id (`E…`) while a
+ * sign-in only ever proves the WORKSPACE id (`T…`), and inbound events may
+ * carry either. Without the enterprise stamp the `E…` lookup resolves nothing
+ * and the installer silently loses Builder admin tools.
+ *
+ * Refuses to write an unscoped id: `normalizeSlackUserId` returns null without
+ * a team, and two workspaces can share a bare `U…`.
+ */
+export async function stampSlackIdentityForUser(
+	userId: string,
+	teamId: string | null | undefined,
+	slackUserId: string,
+): Promise<void> {
+	const combined = normalizeSlackUserId(teamId, slackUserId);
+	if (!combined) {
+		log.debug(
+			{ userId },
+			"slack-identity: missing team_id or user id — skipping slack_user_id stamp",
+		);
+		return;
+	}
+	const memberOrgs = await resolveMemberOrgsForUser(userId);
+	if (memberOrgs.length === 0) {
+		log.debug(
+			{ userId },
+			"slack-identity: no tenant $member yet — skipping slack_user_id stamp",
+		);
+		return;
+	}
+	const sql = getDb();
+	for (const org of memberOrgs) {
+		const outcome = await adoptSlackIdentityOntoMember(
+			sql,
+			org.tenantOrganizationId,
+			org.memberEntityId,
+			combined,
+		);
+		if (outcome === "conflict") {
+			// A different `$member` in this org already holds this Slack id. Two
+			// humans cannot share one workspace account — never silently reassign.
+			log.warn(
+				{
+					userId,
+					organizationId: org.tenantOrganizationId,
+					memberEntityId: org.memberEntityId,
+				},
+				"slack-identity: slack_user_id already claimed by a different $member — leaving it alone",
+			);
+		}
+	}
+}

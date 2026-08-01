@@ -2,7 +2,7 @@
  * `resolveActiveChatConnectionTenant` — the second identity key used by the
  * Builder admin-tool grant.
  *
- * Slack Grid keys `chat_user_identities` on the enterprise `E…` while inbound
+ * Slack Grid keys the linked Slack identity on the enterprise `E…` while inbound
  * events carry the workspace `T…`, so the grant path resolves a connection's
  * `external_tenant_id` and retries the identity lookup under it. That makes this
  * read PRIVILEGE-ADJACENT: a row returned here widens an authz lookup, so the

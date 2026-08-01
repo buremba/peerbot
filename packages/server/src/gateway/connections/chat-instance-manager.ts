@@ -29,6 +29,7 @@ import {
   resolveSecretValue,
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import { ChatIdentityInstructionProvider } from "./chat-identity-instruction-provider.js";
 import { configsEqual } from "./config-equal.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
@@ -171,11 +172,10 @@ const SLACK_HOME_NOTIFICATION_LIMIT = 5;
  * The viewing Slack user's personal notification inbox for the App Home tab.
  *
  * `app_home_opened` carries no team_id, so the team_id must come from the
- * connection's own metadata. For workspace installs this is the real Slack team
- * id; for the hosted-preview connection (no OAuth, single workspace) it is the
- * empty string, which is how the preview path writes identity rows. Scoping by
- * team_id prevents a platform_user_id collision across workspaces from leaking
- * one workspace user's inbox onto another. Returns null when the user has no
+ * connection's own metadata (the caller skips this entirely for a connection
+ * without one — identity is always workspace-scoped now). Scoping by team_id
+ * prevents a platform_user_id collision across workspaces from leaking one
+ * workspace user's inbox onto another. Returns null when the user has no
  * linked identity — the home tab then shows the setup prompt instead.
  * Notifications are the user's own, so they span all their orgs; `resource_url`
  * already carries each item's org slug for the deep link.
@@ -186,13 +186,12 @@ export async function resolveSlackHomeUserInbox(
 ): Promise<SlackHomeInbox | null> {
   try {
     const db = getDb();
-    const idRows = (await db`
-      SELECT lobu_user_id FROM chat_user_identities
-      WHERE platform = 'slack' AND team_id = ${teamId} AND platform_user_id = ${slackUserId}
-      LIMIT 2
-    `) as unknown as { lobu_user_id: string }[];
-    if (idRows.length !== 1) return null;
-    const lobuUserId = idRows[0].lobu_user_id;
+    const lobuUserId = await resolveChatUserIdentity(
+      "slack",
+      teamId,
+      slackUserId,
+    );
+    if (!lobuUserId) return null;
 
     const [itemRows, unreadRows, orgRows] = await Promise.all([
       db`

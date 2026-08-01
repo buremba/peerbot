@@ -39,23 +39,24 @@ import {
   createTestEvent,
   createTestOrganization,
   createTestUser,
+  linkSlackIdentityInGraph,
 } from '../../setup/test-fixtures';
 
 const COLLIDING_SLACK_USER_ID = 'U_COLLIDE';
 
-/** Link a Slack (team_id, platform_user_id) → Lobu user, as the link/preview path does. */
+/** Link a Slack (team, user) → Lobu user, as Slack sign-in does. */
 async function linkSlackIdentity(opts: {
+  organizationId: string;
   teamId: string;
   platformUserId: string;
   lobuUserId: string;
 }): Promise<void> {
-  const sql = getTestDb();
-  await sql`
-    INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
-    VALUES ('slack', ${opts.teamId}, ${opts.platformUserId}, ${opts.lobuUserId}, now())
-    ON CONFLICT (platform, team_id, platform_user_id)
-      DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
-  `;
+  await linkSlackIdentityInGraph({
+    organizationId: opts.organizationId,
+    userId: opts.lobuUserId,
+    teamId: opts.teamId,
+    slackUserId: opts.platformUserId,
+  });
 }
 
 /** Deliver one notification (events row + notification_targets row) to a user. */
@@ -93,6 +94,7 @@ async function seedWorkspaceUser(opts: {
   const user = await createTestUser();
   await addUserToOrganization(user.id, org.id, 'owner');
   await linkSlackIdentity({
+    organizationId: org.id,
     teamId: opts.teamId,
     platformUserId: COLLIDING_SLACK_USER_ID,
     lobuUserId: user.id,
@@ -143,30 +145,6 @@ describe('resolveSlackHomeUserInbox team_id scoping (cross-workspace isolation)'
     expect(inboxB!.orgSlug).toBe(b.orgSlug);
     expect(inboxB!.items.map((i) => i.title)).toEqual(['B-notif']);
     expect(inboxB!.items.map((i) => i.title)).not.toContain('A-notif');
-  });
-
-  it('resolves the hosted-preview path via the empty team_id', async () => {
-    // The preview connection writes identity rows with team_id=''. A colliding
-    // workspace identity (team_id='T_OTHER') for the same Slack user must not
-    // bleed into the preview ('') lookup.
-    const preview = await seedWorkspaceUser({
-      teamId: '',
-      orgSlug: 'preview-org',
-      notifTitle: 'preview-notif',
-      resourceUrl: '/preview-org/items/9',
-    });
-    await seedWorkspaceUser({
-      teamId: 'T_OTHER',
-      orgSlug: 'other-org',
-      notifTitle: 'other-notif',
-      resourceUrl: '/other-org/items/9',
-    });
-
-    const inbox = await resolveSlackHomeUserInbox(COLLIDING_SLACK_USER_ID, '');
-    expect(inbox).not.toBeNull();
-    expect(inbox!.orgSlug).toBe(preview.orgSlug);
-    expect(inbox!.items.map((i) => i.title)).toEqual(['preview-notif']);
-    expect(inbox!.items.map((i) => i.title)).not.toContain('other-notif');
   });
 
   it('returns null when no identity matches the (team_id, user) pair', async () => {

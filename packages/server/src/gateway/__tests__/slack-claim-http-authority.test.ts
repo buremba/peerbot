@@ -11,6 +11,7 @@ import {
 const USER_ID = "claim-user";
 const TEAM_ID = "T-CLAIM";
 const SLACK_USER_ID = "U-ADMIN";
+const ORG_ID = "org-1";
 
 beforeAll(async () => {
   await ensureDbForGatewayTests();
@@ -29,11 +30,57 @@ beforeEach(async () => {
   `;
 }, 30_000);
 
+/**
+ * Seed the claimer's workspace-scoped Slack identity the way Slack sign-in
+ * does: a `$member` entity carrying both `auth_user_id` and the composite
+ * `TEAM:USER` `slack_user_id`. `resolveClaimingUserSlackIdentities` reads this
+ * graph shape, so seeding anything less would pass here and fail in production.
+ */
 async function linkSlackUser(teamId: string): Promise<void> {
-  await getDb()`
-    INSERT INTO chat_user_identities (
-      platform, team_id, platform_user_id, lobu_user_id, updated_at
-    ) VALUES ('slack', ${teamId}, ${SLACK_USER_ID}, ${USER_ID}, now())
+  const sql = getDb();
+  await sql`
+    INSERT INTO organization (id, name, slug, "createdAt")
+    VALUES (${ORG_ID}, 'Acme', 'acme', now())
+    ON CONFLICT (id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
+    VALUES (${`m-${USER_ID}`}, ${ORG_ID}, ${USER_ID}, 'owner', now())
+    ON CONFLICT (id) DO NOTHING
+  `;
+  const types = await sql<{ id: number }>`
+    INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+    VALUES (${ORG_ID}, '$member', 'Member', now(), now())
+    ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+    DO UPDATE SET updated_at = now()
+    RETURNING id
+  `;
+  const entities = await sql<{ id: number }>`
+    INSERT INTO entities (
+      name, slug, organization_id, created_by, entity_type_id, created_at, updated_at
+    ) VALUES (
+      'Claim User', ${`member-${USER_ID}`}, ${ORG_ID}, ${USER_ID}, ${types[0].id}, now(), now()
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `;
+  let entityId = entities[0]?.id;
+  if (entityId === undefined) {
+    const existing = await sql<{ id: number }>`
+      SELECT id FROM entities
+      WHERE organization_id = ${ORG_ID} AND slug = ${`member-${USER_ID}`}
+      LIMIT 1
+    `;
+    entityId = existing[0].id;
+  }
+  await sql`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector
+    ) VALUES
+      (${ORG_ID}, ${entityId}, 'auth_user_id', ${USER_ID}, 'auth:signup'),
+      (${ORG_ID}, ${entityId}, 'slack_user_id', ${`${teamId.toUpperCase()}:${SLACK_USER_ID.toUpperCase()}`}, 'auth:signup')
+    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    DO NOTHING
   `;
 }
 
@@ -51,7 +98,7 @@ function claimProvider(usersInfo: ReturnType<typeof mock>) {
     })),
     resolveActiveOrgSlug: mock(async () => null),
     resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
-    linkChatUserIdentity: mock(async () => {}),
+    stampSlackIdentityForUser: mock(async () => {}),
     usersInfo,
     claim: mock(async () => ({ installationId: "unused" })),
   });

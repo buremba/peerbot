@@ -6,7 +6,7 @@
  * user id. Before the fix the `member.userId = ${userId}` join never matched, so
  * an org owner driving the builder/system agent from Slack silently lost the
  * admin-tool grant. The fix maps platform id → lobu user via
- * `chat_user_identities` first (collision-safe: an ambiguous link grants
+ * the workspace-scoped Slack identity first (collision-safe: an ambiguous link grants
  * nothing).
  *
  * Red→green: with `platform:'slack'` the grant only lands once the resolver maps
@@ -22,6 +22,7 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestAgent,
+  linkSlackIdentityInGraph,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -30,16 +31,17 @@ const SLACK_TEAM = 'T_WI02';
 const SLACK_USER = 'U_WI02';
 
 async function linkSlackIdentity(opts: {
+  organizationId: string;
   teamId: string;
   platformUserId: string;
   lobuUserId: string;
 }): Promise<void> {
-  await getTestDb()`
-    INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
-    VALUES ('slack', ${opts.teamId}, ${opts.platformUserId}, ${opts.lobuUserId}, now())
-    ON CONFLICT (platform, team_id, platform_user_id)
-      DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
-  `;
+  await linkSlackIdentityInGraph({
+    organizationId: opts.organizationId,
+    userId: opts.lobuUserId,
+    teamId: opts.teamId,
+    slackUserId: opts.platformUserId,
+  });
 }
 
 /** Point org.system_agent_id at an agent (the builder gate requires the match). */
@@ -70,6 +72,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
   it('grants builder tools for a Slack run once the platform id maps to the owner', async () => {
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await linkSlackIdentity({
+      organizationId: orgId,
       teamId: SLACK_TEAM,
       platformUserId: SLACK_USER,
       lobuUserId: userId,
@@ -109,6 +112,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
     // The resolver is team-scoped, so resolving for SLACK_TEAM finds no link and
     // the owner of the OTHER workspace can't ride this org's builder grant.
     await linkSlackIdentity({
+      organizationId: orgId,
       teamId: 'T_OTHER',
       platformUserId: SLACK_USER,
       lobuUserId: other.id,
@@ -145,6 +149,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
     const agent = await createTestAgent({ organizationId: org.id });
     await setSystemAgent(org.id, agent.agentId);
     await linkSlackIdentity({
+      organizationId: org.id,
       teamId: SLACK_TEAM,
       platformUserId: SLACK_USER,
       lobuUserId: user.id,
@@ -162,11 +167,12 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
   });
 
   it('grants via alternateTeamId when the link is under the enterprise key (Grid E… vs T…)', async () => {
-    // Managed enterprise installs key chat_user_identities on E…; inbound
+    // Managed enterprise installs key the identity on E…; inbound
     // events carry the workspace T…. Callers pass connection external_tenant_id
     // as alternateTeamId — exact team-scoped, not a global U… collapse.
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await linkSlackIdentity({
+      organizationId: orgId,
       teamId: 'E_ENTERPRISE',
       platformUserId: SLACK_USER,
       lobuUserId: userId,
@@ -187,6 +193,7 @@ describe('resolveBuilderAdminTools — platform identity resolution (WI-0.2)', (
   it('does not grant when only an unrelated team has the link (no alternate)', async () => {
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await linkSlackIdentity({
+      organizationId: orgId,
       teamId: 'E_ENTERPRISE',
       platformUserId: SLACK_USER,
       lobuUserId: userId,

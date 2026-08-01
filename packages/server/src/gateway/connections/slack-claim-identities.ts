@@ -4,9 +4,9 @@ import { getDb, type DbClient } from "../../db/client.js";
 
 /**
  * Resolve all of the signed-in user's Slack identities as team/user pairs.
- * The entity graph and Better Auth account are OAuth-backed sources; the direct
- * chat-user mapping is written by the one-time `/lobu link` flow. The provider
- * guard consumes these pairs before org selection, exact-team scopes ordinary
+ * Both sources are OAuth-backed: the entity graph (stamped on sign-in and by
+ * the install claim) and the Better Auth account row. The provider guard
+ * consumes these pairs before org selection, exact-team scopes ordinary
  * workspace claims, and separately restricts bare-user matches to Grid.
  */
 export async function resolveClaimingUserSlackIdentities(
@@ -57,25 +57,13 @@ export async function resolveClaimingUserSlackIdentities(
     })
     .filter((x): x is { teamId: string; slackUserId: string } => x !== null);
 
-  // `/lobu link` records a direct, immutable Slack workspace-user → Lobu-user
-  // association here. This is the canonical identity used by Slack interaction
-  // and message routing, and it may exist even when the entity graph was never
-  // populated and the linked Better Auth account predates a stored id_token.
-  // Preserve both dimensions: authorizeSlackClaim will accept this only for the
-  // pending install's exact team, then still require Slack's live admin/owner
-  // verdict for the linked U… id. A link in another workspace grants nothing.
-  const linkedRows = (await sql`
-    SELECT team_id, platform_user_id
-    FROM chat_user_identities
-    WHERE platform = 'slack' AND lobu_user_id = ${userId}
-  `) as Array<{ team_id: string; platform_user_id: string }>;
-  const fromLinkedChatUsers = linkedRows.map((row) => ({
-    teamId: row.team_id.toUpperCase(),
-    slackUserId: row.platform_user_id.toUpperCase(),
-  }));
-
+  // `fromGraph` above IS the third source that used to be read from
+  // `chat_user_identities`: sign-in stamps the same workspace-scoped
+  // `TEAM:USER` key onto the user's `$member`, so reading the table as well
+  // only ever returned rows the graph already had. `fromAccounts` still covers
+  // the account-without-a-graph-stamp case.
   const seen = new Set<string>();
-  return [...fromGraph, ...fromAccounts, ...fromLinkedChatUsers].filter((x) => {
+  return [...fromGraph, ...fromAccounts].filter((x) => {
     const key = `${x.teamId}:${x.slackUserId}`;
     if (seen.has(key)) return false;
     seen.add(key);

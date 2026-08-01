@@ -91,6 +91,15 @@ const HEAL_MIGRATIONS = [
         ON connector_versions (id)
     `,
 	},
+	{
+		// Inline heal + build before retiring the weaker preview-slot index.
+		files: ["20260801150000_preview_connection_workspace_scope.sql"],
+		index: "uniq_preview_connection_per_platform_all",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS uniq_preview_connection_per_platform_all
+        ON connections (id)
+    `,
+	},
 ] as const;
 
 function resolveMigrationsDir(): string {

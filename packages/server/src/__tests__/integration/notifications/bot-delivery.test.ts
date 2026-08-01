@@ -237,7 +237,7 @@ describe("resolveBotDeliveryTargets", () => {
 			agentId: "concierge",
 			connectionId: "preview-conn",
       settings: { previewMode: true },
-      metadata: {}, // hosted preview invariant: no teamId
+      metadata: {}, // legacy tenantless hosted connection: serves all its bindings
     });
     await seedBinding({
       organizationId: tenantOrg.id, // binding lives in the TENANT org, not the conn's org
@@ -307,31 +307,59 @@ describe("resolveBotDeliveryTargets", () => {
     expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([]);
   });
 
-	it("cross-org guardrail: a previewMode connection WITH metadata.teamId is not used cross-org", async () => {
-    const hostOrg = await createTestOrganization();
-    const tenantOrg = await createTestOrganization();
+	it("cross-org: delivers through a previewMode connection when its workspace matches the binding", async () => {
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
 		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
 		await createTestAgent({
 			organizationId: tenantOrg.id,
 			agentId: "food-ordering",
 		});
 
-    await seedSlackConnection({
-      organizationId: hostOrg.id,
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
 			agentId: "concierge",
 			connectionId: "preview-conn",
-      settings: { previewMode: true },
-			metadata: { teamId: "T_HOST" }, // a real workspace-bound install, not the hosted preview
-    });
-    await seedBinding({
-      organizationId: tenantOrg.id,
+			settings: { previewMode: true },
+			metadata: { teamId: "T_HOST" },
+		});
+		await seedBinding({
+			organizationId: tenantOrg.id,
 			agentId: "food-ordering",
 			connectionId: "preview-conn",
 			channelId: "slack:C0LUNCH",
-    });
+			teamId: "T_HOST",
+		});
 
-    expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([]);
-  });
+		expect(await resolveBotDeliveryTargets(tenantOrg.id)).toHaveLength(1);
+	});
+
+	it("cross-org guardrail: does not deliver a previewMode binding from another workspace", async () => {
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
+		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
+		await createTestAgent({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+		});
+
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
+			agentId: "concierge",
+			connectionId: "preview-conn",
+			settings: { previewMode: true },
+			metadata: { teamId: "T_HOST" },
+		});
+		await seedBinding({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+			connectionId: "preview-conn",
+			channelId: "slack:C0LUNCH",
+			teamId: "T_OTHER",
+		});
+
+		expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([]);
+	});
 
 	it("does not double-deliver when the org owns its own connection on that channel", async () => {
     const hostOrg = await createTestOrganization();

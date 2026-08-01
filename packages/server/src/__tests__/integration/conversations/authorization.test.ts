@@ -170,7 +170,7 @@ describe("conversation authorization", () => {
 			agentId: "concierge",
 			connectionId: "preview-conn",
       settings: { previewMode: true },
-      metadata: {}, // hosted-preview invariant: no teamId
+      metadata: {}, // legacy tenantless hosted connection: serves all its bindings
     });
 		await seedBinding({
 			organizationId: tenantOrg.id,
@@ -218,57 +218,88 @@ describe("conversation authorization", () => {
   });
 
 	it("invariant: a SECOND preview connection per platform is rejected (single hosted bot owns the slot)", async () => {
-    const hostOrg = await createTestOrganization();
-    const tenantOrg = await createTestOrganization();
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
 		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
 		await createTestAgent({ organizationId: tenantOrg.id, agentId: "sneaky" });
-    await seedSlackConnection({
-      organizationId: hostOrg.id,
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
 			agentId: "concierge",
 			connectionId: "preview-1",
-      settings: { previewMode: true },
-      metadata: {},
-    });
-    // A tenant trying to stand up a competing team-less preview connection (the
-    // cross-org hijack vector) must hit the partial unique index and fail.
-    await expect(
-      seedSlackConnection({
-        organizationId: tenantOrg.id,
+			settings: { previewMode: true },
+			metadata: { teamId: "T_ONE" },
+		});
+		// A tenant trying to stand up a competing preview connection (the cross-org
+		// hijack vector) must hit the partial unique index even when both rows carry
+		// real workspace ids.
+		await expect(
+			seedSlackConnection({
+				organizationId: tenantOrg.id,
 				agentId: "sneaky",
 				connectionId: "preview-2",
-        settings: { previewMode: true },
-        metadata: {},
+				settings: { previewMode: true },
+				metadata: { teamId: "T_TWO" },
 			}),
-    ).rejects.toThrow();
-  });
+		).rejects.toThrow();
+	});
 
-	it("cross-org guardrail: a previewMode connection WITH a teamId is never borrowed", async () => {
-    const hostOrg = await createTestOrganization();
-    const tenantOrg = await createTestOrganization();
+	it("cross-org: resolves a previewMode binding when its workspace matches the connection", async () => {
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
 		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
 		await createTestAgent({
 			organizationId: tenantOrg.id,
 			agentId: "food-ordering",
 		});
 
-    await seedSlackConnection({
-      organizationId: hostOrg.id,
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
 			agentId: "concierge",
 			connectionId: "preview-conn",
-      settings: { previewMode: true },
-			metadata: { teamId: "T_REAL" }, // not a hosted preview bot
+			settings: { previewMode: true },
+			metadata: { teamId: "T_REAL" },
 		});
 		await seedBinding({
 			organizationId: tenantOrg.id,
 			agentId: "food-ordering",
 			connectionId: "preview-conn",
 			channelId: "slack:C0LUNCH",
-    });
+			teamId: "T_REAL",
+		});
+
+		expect(
+			await resolveAddressableTargets("food-ordering", tenantOrg.id),
+		).toHaveLength(1);
+	});
+
+	it("cross-org guardrail: rejects a previewMode binding from another workspace", async () => {
+		const hostOrg = await createTestOrganization();
+		const tenantOrg = await createTestOrganization();
+		await createTestAgent({ organizationId: hostOrg.id, agentId: "concierge" });
+		await createTestAgent({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+		});
+
+		await seedSlackConnection({
+			organizationId: hostOrg.id,
+			agentId: "concierge",
+			connectionId: "preview-conn",
+			settings: { previewMode: true },
+			metadata: { teamId: "T_HOST" },
+		});
+		await seedBinding({
+			organizationId: tenantOrg.id,
+			agentId: "food-ordering",
+			connectionId: "preview-conn",
+			channelId: "slack:C0LUNCH",
+			teamId: "T_OTHER",
+		});
 
 		expect(
 			await resolveAddressableTargets("food-ordering", tenantOrg.id),
 		).toEqual([]);
-  });
+	});
 
   // --- Tenant-escape + revocation ---
 

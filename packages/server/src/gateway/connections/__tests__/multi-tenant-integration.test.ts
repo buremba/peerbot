@@ -179,7 +179,8 @@ describe("multi-tenant gateway/connections — Slack routing isolation", () => {
         organizationId: "org-shared",
         config: { platform: "slack", botToken: "xoxb-preview" },
         settings: { allowGroups: true, previewMode: true },
-        // No teamId → the hosted shared-app / preview connection.
+        // The previewMode marker (not teamId absence) makes this the hosted
+        // shared-app / preview connection; legacy rows carry no teamId.
         metadata: {},
         status: "active",
         createdAt: Date.now(),
@@ -187,7 +188,7 @@ describe("multi-tenant gateway/connections — Slack routing isolation", () => {
       });
     });
     // A team-scoped tenant row coexists; the fallback must still pick the
-    // non-team-scoped preview row, not the tenant row.
+    // preview row, not the tenant row.
     await seedSlackConnection(connectionStore, orgContext, {
       orgId: "org-A",
       agentId: "agent-A",

@@ -13,22 +13,22 @@
  *   (B) hosted-preview cross-org: a binding under THIS org served by the shared
  *       preview connection (which lives in a DIFFERENT org under a placeholder
  *       agent). A `/lobu link <code>` writes the binding under the linking org,
- *       so it never matches branch A's (org, agent) join. Gated HARD to
- *       previewMode connections with no `metadata.teamId` (the hosted-bot
- *       invariant) and NOT joined on agent_id, so a normal tenant bot is never
- *       borrowed cross-org. A NOT EXISTS skips channels the org/agent already
- *       owns via branch A (no double-resolve / double-post).
+ *       so it never matches branch A's (org, agent) join. Gated HARD to the
+ *       single previewMode connection per platform and, when that connection is
+ *       workspace-scoped, to bindings from the same workspace. It is NOT joined
+ *       on agent_id, so the hosted connection's placeholder agent does not hide
+ *       tenant bindings. A NOT EXISTS skips channels the org/agent already owns
+ *       via branch A (no double-resolve / double-post).
  *
  * `agentId` (optional) scopes BOTH branches to one agent — set for the
  * conversation tools (an agent may only address ITS OWN bindings), omitted for
  * org-wide notification delivery. `connectionId` (optional) narrows to a single
  * connection (used by targeted notify).
  *
- * Single-workspace assumption: with one hosted preview connection per platform
- * today, (B) matches on platform alone. When a second hosted workspace appears,
- * persist its team id and add `AND pc.settings->>'hostedWorkspaceTeamId' =
- * b.team_id` so a binding only resolves the connection installed in its
- * workspace (channel ids are workspace-scoped, not global).
+ * The preview connection's first-class tenant id is useful routing scope, not a
+ * reason to disable hosted delivery. A legacy tenantless preview connection may
+ * serve all of its bindings; a workspace-scoped one serves only matching team
+ * bindings because channel ids are workspace-scoped, not global.
  */
 import type { DbClient } from "../../db/client.js";
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
@@ -94,7 +94,8 @@ export async function resolveBoundChannelRows(
 
         -- (B) hosted-preview cross-org: this org's (agent's) bindings via the
         -- shared preview connection. NO agent_id join on the preview conn; gated
-        -- to previewMode + no teamId so a normal bot is never borrowed.
+        -- to the single previewMode connection per platform and, when scoped,
+        -- the same workspace as the binding.
         SELECT
           b.runtime_connection_id AS id,
           b.platform, b.channel_id, b.team_id, b.created_at
@@ -103,7 +104,10 @@ export async function resolveBoundChannelRows(
           AND b.connection_status = 'active'
           AND b.credential_mode IS NOT NULL
           AND b.preview_mode
-          AND b.connection_team_id IS NULL
+          AND (
+            b.connection_team_id IS NULL
+            OR b.team_id = b.connection_team_id
+          )
           ${agentFilterB}
           ${connFilterB}
           -- Skip channels the org/agent already owns via branch A.

@@ -87,17 +87,14 @@ interface BotDeliveryTarget {
  *       `(org, agent)` JOIN misses it on BOTH columns and proactive
  *       notifications silently drop. This branch resolves the org's bindings
  *       through the shared preview connection, mirroring the inbound
- *       concrete-connection routing. It is gated HARD to previewMode
- *       connections with no `metadata.teamId` (the hosted-bot invariant, same as
- *       `getDefaultConnection`) and is NOT joined on `agent_id`, so a normal
- *       tenant bot can never be used to deliver cross-org.
+ *       concrete-connection routing. It is gated HARD to the single previewMode
+ *       connection per platform and, when that connection is workspace-scoped,
+ *       to bindings from the same workspace. It is NOT joined on `agent_id`, so
+ *       the hosted connection's placeholder agent does not hide tenant bindings.
  *
- * Single-workspace assumption: with exactly one hosted preview connection per
- * platform today, (B) matches on platform alone. When a second hosted workspace
- * appears, persist its Slack team id (e.g. `settings.hostedWorkspaceTeamId`) and
- * add `AND ac.settings->>'hostedWorkspaceTeamId' = b.team_id` so a subscription only
- * resolves the connection actually installed in its workspace (Slack channel ids
- * are workspace-scoped, not global).
+ * A legacy tenantless hosted connection can serve all of its bindings. A
+ * workspace-scoped hosted connection serves only bindings carrying that same
+ * team id, so channel ids cannot collide across workspaces.
  *
  * Exported for testing the delivery path against a real DB.
  */

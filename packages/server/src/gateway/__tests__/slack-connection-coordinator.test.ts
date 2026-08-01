@@ -849,7 +849,7 @@ describe("SlackConnectionCoordinator", () => {
           return new Response(`${connectionId}:${await request.text()}`);
         }),
         // The shared/hosted connection is the only safe no-team-match default:
-        // it is explicitly previewMode and carries no teamId.
+        // the explicit previewMode marker (unique per platform) identifies it.
         listSlackConnections: async () => [
           createSlackConnection(
             "conn-default",
@@ -895,9 +895,9 @@ describe("SlackConnectionCoordinator", () => {
           createSlackConnection("conn-tenant", { teamId: "T1" }),
           createSlackConnection(
             "conn-preview",
+            { teamId: "T_HOST" },
             {},
-            {},
-						{ allowGroups: true, previewMode: true },
+            { allowGroups: true, previewMode: true },
           ),
         ],
 			}),

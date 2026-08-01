@@ -25,6 +25,9 @@
 --   * Not restricted to public-catalog orgs: the admin tool could write these
 --     keys on any org's relationship type, so the sweep has to cover all rows.
 --     Guarded by a `?|` existence test so untouched rows are not rewritten.
+--   * The engine's three now-dead partial indexes are dropped in the three
+--     follow-up transaction:false migrations — the squawk gate requires index
+--     DDL to be CONCURRENTLY, which needs its own single-statement migration.
 
 UPDATE entity_relationship_types
 SET metadata = metadata - 'autoCreateWhen' - 'ruleVersion' - 'ruleHash',

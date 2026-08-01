@@ -29,7 +29,7 @@ vi.mock("@sentry/node", () => ({
 
 vi.mock("../utils/logger", () => {
 	// Recursive `child` is required because several modules (e.g.
-	// identity/connectors/google.ts) call `logger.child(...)` at module-load
+	// auth/subject-identities.ts) call `logger.child(...)` at module-load
 	// time. Match pino's interface so any caller's `.info / .warn / .error /
 	// .child` works without instrumentation.
 	const make = (): Record<string, unknown> => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildEntityName } from '../promote-keyed-entities';
+import { buildEntityName } from '../../utils/promote-keyed-entities';
 import type { KeyingConfig } from '../../types/watchers';
 
 const base: KeyingConfig = {

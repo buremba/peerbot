@@ -28,6 +28,7 @@ import {
 } from "./pending-interaction-store.js";
 import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 
 const logger = createLogger("chat-interaction-bridge");
 
@@ -129,8 +130,8 @@ function actionEventTeamId(
 
 /**
  * Map the clicking Slack user to a Lobu member allowed to decide this run:
- * exactly ONE chat_user_identities row for (team, platform user) that joins to
- * an org member, AND that member is an admin/owner OR the run's recorded field
+ * exactly ONE workspace-scoped Slack identity for (team, platform user) that
+ * joins to an org member, AND that member is an admin/owner OR the run's recorded field
  * owner (`ownerUserId`). A non-admin member who is not the owner resolves null,
  * same as an unverified account.
  */
@@ -144,20 +145,18 @@ async function resolveSlackActionReviewer(params: {
 	if (connection.platform !== "slack") return null;
 	if (!connection.organizationId || !platformUserId || teamId == null)
 		return null;
+	const userId = await resolveChatUserIdentity("slack", teamId, platformUserId);
+	if (!userId) return null;
 	const sql = getDb();
-	const rows = await sql<{ user_id: string; role: string }>`
-    SELECT c.lobu_user_id AS user_id, m.role
-    FROM chat_user_identities c
-    JOIN "member" m
-      ON m."userId" = c.lobu_user_id
-     AND m."organizationId" = ${connection.organizationId}
-    WHERE c.platform = 'slack'
-      AND c.team_id = ${teamId}
-      AND c.platform_user_id = ${platformUserId}
+	const rows = await sql<{ role: string }>`
+    SELECT m.role
+    FROM "member" m
+    WHERE m."userId" = ${userId}
+      AND m."organizationId" = ${connection.organizationId}
     LIMIT 2
   `;
 	if (rows.length !== 1) return null;
-	const { user_id: userId, role } = rows[0];
+	const { role } = rows[0];
 	const isAdmin = role === "admin" || role === "owner";
 	const isOwner = ownerUserId != null && userId === ownerUserId;
 	if (!isAdmin && !isOwner) return null;

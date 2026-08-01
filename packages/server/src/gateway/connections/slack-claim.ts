@@ -56,17 +56,16 @@ export interface SlackClaimProviderDeps {
     userId: string,
   ): Promise<Array<{ teamId: string; slackUserId: string }>>;
   /**
-   * Persist a `(platform, team_id, platform_user_id) → lobu_user_id` link. The
-   * store fails closed on re-binding an already-linked key to a DIFFERENT user
-   * (see `linkChatUserIdentity`), so a forged call cannot take over an identity.
-   * Injected so `bind`'s post-claim linking is testable without a live DB.
+   * Stamp a workspace-scoped Slack identity onto the user's `$member` in each
+   * of their orgs. Fails closed when another `$member` already holds the id, so
+   * a forged call cannot take over an identity. Injected so `bind`'s post-claim
+   * linking is testable without a live DB.
    */
-  linkChatUserIdentity(opts: {
-    platform: string;
-    teamId?: string;
-    platformUserId: string;
-    lobuUserId: string;
-  }): Promise<void>;
+  stampSlackIdentityForUser(
+    userId: string,
+    teamId: string | null | undefined,
+    slackUserId: string,
+  ): Promise<void>;
   /** `users.info` admin/owner flags for the claimer. */
   usersInfo: SlackWebApi["usersInfo"];
   /**
@@ -180,26 +179,22 @@ export function slackClaimProvider(
         // later event team ids that match the install row still resolve.
         try {
           const identities = await deps.resolveClaimerSlackIdentities(userId);
-          // Persist only identities with a proven team scope. Older Better Auth
+          // Stamp only identities with a proven team scope. Older Better Auth
           // accounts without an id_token resolve with an empty team; their bare
           // user proof is useful for Grid installer matching below but must not
-          // create an unscoped chat identity.
+          // create an unscoped identity — two workspaces can share a `U…`.
           //
-          // Keys are CANONICALIZED to uppercase. The entity-graph source yields
-          // the raw `team:user` identifier, and `resolveChatUserIdentity` is an
-          // exact SQL match with no folding — a row stored as `t-claim/u-…`
-          // could never serve an inbound Slack event carrying `T-CLAIM/U-…`,
-          // so the claimer would silently lose Builder admin tools. Writing
-          // canonical keys also keeps this loop consistent with the
-          // case-insensitive installer checks below.
+          // Most of these are already in the graph (sign-in stamps them). This
+          // loop is idempotent and heals the case where a Better Auth account
+          // exists but the sign-in stamp never landed — e.g. the user had no
+          // `$member` yet when they first signed in.
           for (const id of identities) {
             if (!id.teamId) continue;
-            await deps.linkChatUserIdentity({
-              platform: "slack",
-              teamId: id.teamId.toUpperCase(),
-              platformUserId: id.slackUserId.toUpperCase(),
-              lobuUserId: userId,
-            });
+            await deps.stampSlackIdentityForUser(
+              userId,
+              id.teamId,
+              id.slackUserId,
+            );
           }
           // Ensure the install's tenant key (T… or Grid E…) is linked ONLY when
           // the claimer is proven to be the installer, without rewriting the
@@ -227,12 +222,7 @@ export function slackClaimProvider(
             !installIdentityAlreadyLinked &&
             pending.installerUserId
           ) {
-            await deps.linkChatUserIdentity({
-              platform: "slack",
-              teamId: installTeam,
-              platformUserId: installer,
-              lobuUserId: userId,
-            });
+            await deps.stampSlackIdentityForUser(userId, installTeam, installer);
           }
         } catch (err) {
           // Swallow — claim already committed; identity can be healed later.

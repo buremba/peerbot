@@ -9,14 +9,12 @@ import {
   createTestOrganization,
   createTestUser,
   insertChatConnectionRow,
+  linkSlackIdentityInGraph,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
-import {
-  linkChatUserIdentity,
-  resolveChatUserIdentity,
-} from "../../lobu/stores/chat-identity.js";
+import { resolveChatUserIdentity } from "../../lobu/stores/chat-identity.js";
 import {
   bindChatToAgentForOwner,
   bindChatToPreviewAgent,
@@ -146,7 +144,6 @@ describe("Slack Preview claims + channel Behaviors", () => {
   beforeEach(async () => {
     const sql = getDb();
     await clearChatBehaviors();
-    await sql`DELETE FROM chat_user_identities`;
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
@@ -590,7 +587,6 @@ describe("chat-user identity + codeless re-link by agent id", () => {
   beforeEach(async () => {
     const sql = getDb();
     await clearChatBehaviors();
-    await sql`DELETE FROM chat_user_identities`;
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
@@ -616,15 +612,13 @@ describe("chat-user identity + codeless re-link by agent id", () => {
     const bound = await mintAndConsume(ID_AGENT, "D900");
     expect(bound).toMatchObject({ status: "bound", agentId: ID_AGENT });
 
-    // A pasted code does not prove the redeemer is the minter, and the
-    // identity row authorizes Slack approval clicks and the in-chat
-    // builder-admin grant — so redemption must record none.
-    const rows = await getDb()`
-      SELECT lobu_user_id FROM chat_user_identities
-      WHERE platform = 'slack' AND team_id = ${ID_TEAM} AND platform_user_id = ${SLACK_USER}
-    `;
-    expect(rows).toHaveLength(0);
-    expect(await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER)).toBeNull();
+    // A pasted code does not prove the redeemer is the minter, and chat
+    // identity authorizes Slack approval clicks and the in-chat builder-admin
+    // grant — so redemption must establish none. Identity comes only from
+    // Slack sign-in / the install claim, neither of which ran here.
+    expect(
+      await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER),
+    ).toBeNull();
   });
 
   test("bindChatToAgentForOwner re-binds to an agent in the user's org, refuses others", async () => {
@@ -659,15 +653,15 @@ describe("chat-user identity + codeless re-link by agent id", () => {
   });
 
   test("/lobu link <agentId> re-binds without a code once the user has linked here", async () => {
-    // The identity must come from a real Slack install claim, NOT from
-    // redeeming a preview code — redemption deliberately records none. Seed it
-    // the way the install-claim path does so the codeless shortcut is covered.
+    // The identity must come from a real Slack sign-in / install claim, NOT
+    // from redeeming a preview code — redemption deliberately records none.
+    // Seed the graph the way those paths do so the shortcut stays covered.
     await mintAndConsume(ID_AGENT, "D903");
-    await linkChatUserIdentity({
-      platform: "slack",
+    await linkSlackIdentityInGraph({
+      organizationId: idOrgId,
+      userId: lobuUserId,
       teamId: ID_TEAM,
-      platformUserId: SLACK_USER,
-      lobuUserId,
+      slackUserId: SLACK_USER,
     });
 
     const registry = new CommandRegistry();

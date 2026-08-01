@@ -58,7 +58,6 @@ import { slackClaimProvider } from "./gateway/connections/slack-claim";
 import { resolveClaimingUserSlackIdentities } from "./gateway/connections/slack-claim-identities";
 import { autoLinkBuilderAndWelcome } from "./gateway/connections/slack-claim-onboarding";
 import { createSlackWebApi } from "./gateway/connections/slack-web";
-import { linkChatUserIdentity } from "./lobu/stores/chat-identity";
 import {
 	getMaxReservedLocks,
 	getReservedLockCount,
@@ -948,6 +947,7 @@ app.post("/api/workers/complete-action", completeActionRun);
 // Bridge that lets connector-worker fleets dispatch chrome connector actions
 // against a paired Owletto extension. See dispatch-chrome-action.ts.
 import { dispatchChromeAction } from "./worker-api/dispatch-chrome-action";
+import { stampSlackIdentityForUser } from "./auth/subject-identities";
 
 app.post("/api/workers/dispatch-chrome-action", dispatchChromeAction);
 app.post("/api/workers/complete-embeddings", completeEmbeddings);
@@ -2510,7 +2510,7 @@ function buildSlackClaimProvider(): ClaimProvider {
 				: null;
 		},
 		resolveClaimerSlackIdentities: resolveClaimingUserSlackIdentities,
-		linkChatUserIdentity,
+		stampSlackIdentityForUser,
 		usersInfo: (botToken, uid) => createSlackWebApi().usersInfo(botToken, uid),
 		claim: async (pending, organizationId, confirmMove) => {
 			const core = getLobuCoreServices();

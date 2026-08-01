@@ -6,6 +6,7 @@
  */
 
 import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
+import { normalizeSlackUserId } from '@lobu/connectors/slack-identity';
 import { serializeSigned } from 'hono/utils/cookie';
 import { hashClientSecret } from '../../auth/oauth/clients';
 import { slugify } from '@lobu/core';
@@ -14,6 +15,7 @@ import { pgBigintArray, pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
 import { getConfiguredEmbeddingModel } from '../../utils/embeddings';
 import type { ToolContext } from '../../tools/registry';
+import { provisionMemberAndCoreIdentities } from '../../auth/subject-identities';
 import { getTestDb } from './test-db';
 
 const TEST_SYSTEM_ORG_ID = 'default';
@@ -952,4 +954,49 @@ export async function createCanvasWindow(options: {
   }
 
   return windowId;
+}
+
+/**
+ * Link a Slack workspace user to a Lobu user the way production does: provision
+ * the user's `$member` in the org (which writes the `auth_user_id` identity)
+ * and stamp the workspace-scoped `TEAM:USER` `slack_user_id` identity onto it.
+ *
+ * This replaces seeding the old `chat_user_identities` table. Going through the
+ * real provisioning call matters — the resolver joins `slack_user_id` to
+ * `auth_user_id` with `source_connector = 'auth:signup'`, so a hand-rolled
+ * INSERT that skipped that would pass while production failed.
+ */
+export async function linkSlackIdentityInGraph(opts: {
+  organizationId: string;
+  userId: string;
+  teamId: string;
+  slackUserId: string;
+}): Promise<void> {
+  const sql = getTestDb();
+  const users = await sql<{ email: string | null }>`
+    SELECT email FROM "user" WHERE id = ${opts.userId} LIMIT 1
+  `;
+  const email = users[0]?.email;
+  if (!email) throw new Error(`no user row for ${opts.userId}`);
+
+  const { memberEntityId } = await provisionMemberAndCoreIdentities(
+    opts.organizationId,
+    { userId: opts.userId, email }
+  );
+
+  const identifier = normalizeSlackUserId(opts.teamId, opts.slackUserId);
+  if (!identifier) {
+    throw new Error(
+      `unnormalizable Slack identity: ${opts.teamId}/${opts.slackUserId}`
+    );
+  }
+  await sql`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector
+    ) VALUES (
+      ${opts.organizationId}, ${memberEntityId}, 'slack_user_id', ${identifier}, 'auth:signup'
+    )
+    ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+    DO NOTHING
+  `;
 }

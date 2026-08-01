@@ -29,6 +29,7 @@ import {
   createTestOrganization,
   createTestUser,
   insertChatConnectionRow,
+  linkSlackIdentityInGraph,
 } from '../../setup/test-fixtures';
 
 const WORKSPACE_TEAM = 'T_WORKSPACE';
@@ -37,13 +38,17 @@ const SLACK_USER = 'U_COMPOSE';
 /** A BYO runtime connection id — stored under slug `agentconn-<id>`. */
 const BYO_CONNECTION_ID = 'conn-compose-1';
 
-async function linkSlackIdentity(teamId: string, lobuUserId: string): Promise<void> {
-  await getTestDb()`
-    INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
-    VALUES ('slack', ${teamId}, ${SLACK_USER}, ${lobuUserId}, now())
-    ON CONFLICT (platform, team_id, platform_user_id)
-      DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
-  `;
+async function linkSlackIdentity(
+  organizationId: string,
+  teamId: string,
+  lobuUserId: string
+): Promise<void> {
+  await linkSlackIdentityInGraph({
+    organizationId,
+    userId: lobuUserId,
+    teamId,
+    slackUserId: SLACK_USER,
+  });
 }
 
 async function seedOwnerBuilder(): Promise<{
@@ -81,7 +86,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await seedGridConnection(orgId);
     // The identity is linked under the Grid E… key, while the event carries T….
-    await linkSlackIdentity(ENTERPRISE_TEAM, userId);
+    await linkSlackIdentity(orgId, ENTERPRISE_TEAM, userId);
 
     const keys = await resolveGrantTeamKeys({
       platform: 'slack',
@@ -115,7 +120,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
   it('prefers platformMetadata.teamId over the routing key', async () => {
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     // Linked under the real workspace id; the routing key is the string 'slack'.
-    await linkSlackIdentity(WORKSPACE_TEAM, userId);
+    await linkSlackIdentity(orgId, WORKSPACE_TEAM, userId);
 
     const keys = await resolveGrantTeamKeys({
       platform: 'slack',
@@ -161,7 +166,7 @@ describe('Builder admin grant — payload metadata → tenant → grant composit
   it('withholds the alternate — and the grant — when the install is paused', async () => {
     const { orgId, userId, systemAgentId } = await seedOwnerBuilder();
     await seedGridConnection(orgId, 'paused');
-    await linkSlackIdentity(ENTERPRISE_TEAM, userId);
+    await linkSlackIdentity(orgId, ENTERPRISE_TEAM, userId);
 
     const keys = await resolveGrantTeamKeys({
       platform: 'slack',

@@ -3,6 +3,7 @@ import { getDb, pgTextArray } from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import logger from "../utils/logger";
+import { resolveSlackUserIdForUser } from "../lobu/stores/chat-identity.js";
 
 interface CreateNotificationParams {
 	organizationId: string;
@@ -27,7 +28,7 @@ interface CreateNotificationParams {
 	/**
 	 * Lobu user who owns the change under review (field-change approvals).
 	 * When set, bot delivery tries the owner's Slack DM FIRST — resolved via
-	 * chat_user_identities against a connected workspace — and only falls back
+	 * the owner's workspace-scoped Slack identity — and only falls back
 	 * to the configured-target/org-wide channel chain when the owner has no
 	 * Slack identity or the DM fails. In-app inbox targeting is unaffected.
 	 */
@@ -158,8 +159,8 @@ export async function resolveBotDeliveryTargets(
 /**
  * Owner-routed delivery target: the Slack identity of `ownerUserId` in a
  * workspace one of the org's bot connections lives in. Reverse-looks-up
- * chat_user_identities (platform='slack', team matching the connection's
- * binding team) per candidate connection, most-recently-bound first via
+ * the workspace-scoped Slack identity on the owner's `$member` (team matching
+ * the connection's binding team) per candidate connection, most-recently-bound first via
  * resolveBotDeliveryTargets order. Null when the owner has no Slack identity in
  * any connected workspace — the caller falls back to channel delivery.
  * Exported for testing the tier-selection logic against a real DB.
@@ -173,25 +174,18 @@ export async function resolveOwnerDmTarget(
 		organizationId,
 		connectionId ?? null,
 	);
-	const sql = getDb();
 	const seen = new Set<string>();
 	for (const target of targets) {
 		if (target.platform !== "slack" || target.teamId == null) continue;
 		const key = `${target.connectionId}:${target.teamId}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		const rows = await sql<{ platform_user_id: string }>`
-      SELECT platform_user_id FROM chat_user_identities
-      WHERE platform = 'slack'
-        AND team_id = ${target.teamId}
-        AND lobu_user_id = ${ownerUserId}
-      LIMIT 1
-    `;
-		if (rows[0]?.platform_user_id) {
-			return {
-				connectionId: target.connectionId,
-				slackUserId: rows[0].platform_user_id,
-			};
+		const slackUserId = await resolveSlackUserIdForUser(
+			ownerUserId,
+			target.teamId,
+		);
+		if (slackUserId) {
+			return { connectionId: target.connectionId, slackUserId };
 		}
 	}
 	return null;

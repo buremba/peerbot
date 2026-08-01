@@ -16,6 +16,7 @@ import { ClaimMoveBlockedError } from "../connections/connection-claim.js";
 import { slackClaimProvider } from "../connections/slack-claim.js";
 import type { SlackClaimProviderDeps } from "../connections/slack-claim.js";
 import type { SlackPendingInstall } from "../../lobu/stores/slack-installations.js";
+import { normalizeSlackUserId } from "@lobu/connectors/slack-identity";
 
 const TEAM = "T-CLAIM";
 
@@ -38,10 +39,10 @@ function pendingInstall(
 function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
   deps: SlackClaimProviderDeps;
   claim: ReturnType<typeof mock>;
-  linkChatUserIdentity: ReturnType<typeof mock>;
+  stampSlackIdentityForUser: ReturnType<typeof mock>;
 } {
   const claim = mock(async () => ({ installationId: "slackinst-bound" }));
-  const linkChatUserIdentity = mock(async () => {});
+  const stampSlackIdentityForUser = mock(async () => {});
   const deps: SlackClaimProviderDeps = {
     resolvePending: mock(async () => pendingInstall()),
     resolveActiveOrgSlug: mock(async () => null),
@@ -49,22 +50,23 @@ function makeDeps(overrides: Partial<SlackClaimProviderDeps> = {}): {
     resolveClaimerSlackIdentities: mock(async () => [
       { teamId: TEAM, slackUserId: "U-ADMIN" },
     ]),
-    linkChatUserIdentity,
+    stampSlackIdentityForUser,
     usersInfo: mock(async () => ({ isAdmin: true, isOwner: false })),
     claim,
     ...overrides,
   };
-  return { deps, claim, linkChatUserIdentity };
+  return { deps, claim, stampSlackIdentityForUser };
 }
 
 /** The `{teamId, platformUserId}` pairs a bind linked, for order-free asserts. */
 function linkedPairs(
   linkMock: ReturnType<typeof mock>,
 ): Array<{ teamId: string | undefined; platformUserId: string }> {
-  return linkMock.mock.calls.map((c) => {
-    const opts = c[0] as { teamId?: string; platformUserId: string };
-    return { teamId: opts.teamId, platformUserId: opts.platformUserId };
-  });
+  // stampSlackIdentityForUser(userId, teamId, slackUserId) — positional.
+  return linkMock.mock.calls.map((c) => ({
+    teamId: c[1] as string | undefined,
+    platformUserId: c[2] as string,
+  }));
 }
 
 describe("slackClaimProvider.authorize", () => {
@@ -299,7 +301,7 @@ describe("slackClaimProvider.bind", () => {
  */
 describe("slackClaimProvider.bind — identity linking", () => {
   test("links every team-scoped identity the claimer signed in with", async () => {
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: TEAM, slackUserId: "U-ADMIN" },
         { teamId: "T-OTHER", slackUserId: "U-ELSEWHERE" },
@@ -311,18 +313,18 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+    expect(linkedPairs(stampSlackIdentityForUser)).toEqual([
       { teamId: TEAM, platformUserId: "U-ADMIN" },
       { teamId: "T-OTHER", platformUserId: "U-ELSEWHERE" },
     ]);
     // Every link is written for the CLAIMING user, never a third party.
-    for (const call of linkChatUserIdentity.mock.calls) {
-      expect((call[0] as { lobuUserId: string }).lobuUserId).toBe("user-1");
+    for (const call of stampSlackIdentityForUser.mock.calls) {
+      expect(call[0] as string).toBe("user-1");
     }
   });
 
   test("does not persist an unscoped identity from an account without an id_token", async () => {
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: "", slackUserId: "U-ADMIN" },
       ]),
@@ -333,14 +335,14 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkChatUserIdentity).not.toHaveBeenCalled();
+    expect(stampSlackIdentityForUser).not.toHaveBeenCalled();
   });
 
   test("does NOT link the installer's U… when a different admin claims a plain workspace", async () => {
     // The takeover case: U-ADMIN claims an install performed by U-INSTALLER on
     // a plain workspace. Linking the installer id here would hand U-ADMIN the
     // installer's identity — and Builder admin tools on that U….
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: TEAM, slackUserId: "U-ADMIN" },
       ]),
@@ -351,18 +353,18 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+    expect(linkedPairs(stampSlackIdentityForUser)).toEqual([
       { teamId: TEAM, platformUserId: "U-ADMIN" },
     ]);
     expect(
-      linkedPairs(linkChatUserIdentity).some(
+      linkedPairs(stampSlackIdentityForUser).some(
         (p) => p.platformUserId === "U-INSTALLER",
       ),
     ).toBe(false);
   });
 
   test("stamps the install team key when the claimer IS the installer (plain: same team + same U…)", async () => {
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: TEAM, slackUserId: "U-INSTALLER" },
       ]),
@@ -373,17 +375,17 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkedPairs(linkChatUserIdentity)).toContainEqual({
+    expect(linkedPairs(stampSlackIdentityForUser)).toContainEqual({
       teamId: TEAM,
       platformUserId: "U-INSTALLER",
     });
-    expect(linkChatUserIdentity).toHaveBeenCalledTimes(1);
+    expect(stampSlackIdentityForUser).toHaveBeenCalledTimes(1);
   });
 
   test("plain workspace: matching U… on a DIFFERENT team does not stamp the install key", async () => {
     // Plain-workspace `U…` ids are workspace-LOCAL, so the same U… on another
     // team is a different human. Only same-team + same-U counts.
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: "T-OTHER", slackUserId: "U-INSTALLER" },
       ]),
@@ -394,17 +396,17 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkedPairs(linkChatUserIdentity)).toEqual([
+    expect(linkedPairs(stampSlackIdentityForUser)).toEqual([
       { teamId: "T-OTHER", platformUserId: "U-INSTALLER" },
     ]);
     // No row under the INSTALL's team — that would be the collision takeover.
     expect(
-      linkedPairs(linkChatUserIdentity).some((p) => p.teamId === TEAM),
+      linkedPairs(stampSlackIdentityForUser).some((p) => p.teamId === TEAM),
     ).toBe(false);
   });
 
   test("Grid: matching U… on any team DOES stamp the install key (U is enterprise-global)", async () => {
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: "T-OTHER", slackUserId: "U-INSTALLER" },
       ]),
@@ -419,7 +421,7 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkedPairs(linkChatUserIdentity)).toContainEqual({
+    expect(linkedPairs(stampSlackIdentityForUser)).toContainEqual({
       teamId: TEAM,
       platformUserId: "U-INSTALLER",
     });
@@ -433,7 +435,7 @@ describe("slackClaimProvider.bind — identity linking", () => {
     // the claimed installer silently loses Builder admin tools. Worse, the
     // case-insensitive already-linked check would suppress the canonical
     // write, so the uppercase row never gets created either.
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => [
         { teamId: "t-claim", slackUserId: "u-installer" },
       ]),
@@ -444,22 +446,20 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    const pairs = linkedPairs(linkChatUserIdentity);
-    // The canonical uppercase key MUST exist — it's what inbound events use.
-    expect(pairs).toContainEqual({
-      teamId: TEAM,
-      platformUserId: "U-INSTALLER",
-    });
-    // And no raw-case row should be persisted alongside it.
-    expect(
-      pairs.some(
-        (p) => p.teamId === "t-claim" || p.platformUserId === "u-installer",
-      ),
-    ).toBe(false);
+    // Canonicalization is `stampSlackIdentityForUser`'s job (it runs every
+    // write through `normalizeSlackUserId`), so assert the KEY that reaches the
+    // graph rather than the raw arguments — that is what an inbound event
+    // matches against.
+    const keys = linkedPairs(stampSlackIdentityForUser).map((p) =>
+      normalizeSlackUserId(p.teamId, p.platformUserId),
+    );
+    expect(keys).toContain(`${TEAM}:U-INSTALLER`);
+    // And no raw-case key survives normalization.
+    expect(keys.some((k) => k !== k?.toUpperCase())).toBe(false);
   });
 
   test("a claimer with no proven identities links nothing", async () => {
-    const { deps, linkChatUserIdentity } = makeDeps({
+    const { deps, stampSlackIdentityForUser } = makeDeps({
       resolveClaimerSlackIdentities: mock(async () => []),
     });
     await slackClaimProvider(deps).bind(
@@ -468,14 +468,14 @@ describe("slackClaimProvider.bind — identity linking", () => {
       "user-1",
       false,
     );
-    expect(linkChatUserIdentity).not.toHaveBeenCalled();
+    expect(stampSlackIdentityForUser).not.toHaveBeenCalled();
   });
 
   test("a link failure is swallowed — the claim still returns its bindingId", async () => {
     // The claim is already committed when linking runs; a link error must not
     // fail the bind the user is waiting on. Identity can be healed later.
     const { deps } = makeDeps({
-      linkChatUserIdentity: mock(async () => {
+      stampSlackIdentityForUser: mock(async () => {
         throw new Error("db down");
       }),
     });

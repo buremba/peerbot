@@ -367,7 +367,7 @@ export async function consumePreviewClaim(args: {
 
 		// Redemption binds the chat and NOTHING ELSE — deliberately no
 		// chat-platform → Lobu-user identity. A claim code is paste-able and does
-		// not prove the redeemer is the minter, while a `chat_user_identities`
+		// not prove the redeemer is the minter, while a chat-user identity
 		// row authorizes Slack approval clicks (`interaction-bridge`
 		// resolveSlackActionReviewer) and the in-chat builder-admin grant.
 		// Identity is established only by the Slack install claim

@@ -12,6 +12,7 @@ import {
   createTestEntity,
   createTestOrganization,
   createTestUser,
+  linkSlackIdentityInGraph,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
 import { proposeEntityFieldChange } from "../../tools/admin/entity-field-approval.js";
@@ -83,10 +84,12 @@ async function seedApprovalFixture(): Promise<Fixture> {
     ["U-OTHER", other.id],
   ];
   for (const [slackId, lobuId] of identities) {
-    await sql`
-      INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id)
-      VALUES ('slack', ${TEAM_ID}, ${slackId}, ${lobuId})
-    `;
+    await linkSlackIdentityInGraph({
+      organizationId: org.id,
+      userId: lobuId,
+      teamId: TEAM_ID,
+      slackUserId: slackId,
+    });
   }
 
   const entity = await createTestEntity({

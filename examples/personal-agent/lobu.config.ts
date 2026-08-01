@@ -892,7 +892,7 @@ const linkedinConnection = defineConnection({
         ].map((feed) => ({ feed, config: { takeout_dir: linkedinTakeoutDir } }))
       : []),
     // Live Chrome-extension feed (no company_url needed).
-    { feed: "home_feed", config: { max_scrolls: 8 } },
+    { feed: "home_feed", config: { min_scrolls: 6, max_scrolls: 10 } },
   ],
 });
 

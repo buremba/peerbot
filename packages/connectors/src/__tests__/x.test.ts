@@ -710,4 +710,66 @@ describe("XConnector home_feed", () => {
 		};
 		await expect(connector.sync(ctx)).rejects.toThrow(/Not logged into X/);
 	});
+
+	test("home_feed configSchema accepts min_scrolls + max_scrolls", () => {
+		const props = new XConnector().definition.feeds.home_feed.configSchema
+			.properties as Record<string, { type?: string }>;
+		expect(props.max_scrolls?.type).toBe("integer");
+		expect(props.min_scrolls?.type).toBe("integer");
+	});
+
+	test("min_scrolls/max_scrolls pick a scroll budget in range each run", async () => {
+		const scrollMaxes: number[] = [];
+		const dispatcher = {
+			dispatch: async (_action: string, input: Record<string, unknown>) => {
+				scrollMaxes.push(
+					(input.scrape_config as { scroll: { max: number } }).scroll.max,
+				);
+				return {
+					tab_id: 1,
+					cs_scrape: true,
+					result: { loggedIn: true, rows: [] },
+				};
+			},
+		};
+		const connector = new XConnector();
+		const realRandom = Math.random;
+		// Force mid-range pick: min + floor(0.5 * (max-min+1)) = 8 + floor(2.5) = 10
+		Math.random = () => 0.5;
+		try {
+			await connector.sync({
+				feedKey: "home_feed",
+				config: { min_scrolls: 8, max_scrolls: 12 },
+				checkpoint: {},
+				sessionState: { chrome_dispatcher: dispatcher },
+			});
+		} finally {
+			Math.random = realRandom;
+		}
+		expect(scrollMaxes).toEqual([10]);
+	});
+
+	test("omitting min_scrolls keeps a fixed max_scrolls budget", async () => {
+		const scrollMaxes: number[] = [];
+		const dispatcher = {
+			dispatch: async (_action: string, input: Record<string, unknown>) => {
+				scrollMaxes.push(
+					(input.scrape_config as { scroll: { max: number } }).scroll.max,
+				);
+				return {
+					tab_id: 1,
+					cs_scrape: true,
+					result: { loggedIn: true, rows: [] },
+				};
+			},
+		};
+		const connector = new XConnector();
+		await connector.sync({
+			feedKey: "home_feed",
+			config: { max_scrolls: 7 },
+			checkpoint: {},
+			sessionState: { chrome_dispatcher: dispatcher },
+		});
+		expect(scrollMaxes).toEqual([7]);
+	});
 });

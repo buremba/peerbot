@@ -99,6 +99,7 @@ interface LinkedInCheckpoint {
 interface LinkedInConfig extends LocalTakeoutConfig {
   company_url?: string;
   max_scrolls?: number;
+  min_scrolls?: number;
 }
 
 interface LinkedInPost {
@@ -2045,10 +2046,32 @@ const homeFeedConfigSchema = {
       minimum: 1,
       maximum: 30,
       default: 8,
-      description: "Maximum scroll iterations for the home feed (default: 8)",
+      description:
+        "Maximum scroll iterations for the home feed (default: 8). Upper end of the range when min_scrolls is set.",
+    },
+    min_scrolls: {
+      type: "integer",
+      minimum: 1,
+      maximum: 30,
+      description:
+        "Optional lower bound. When set below max_scrolls, each sync picks a uniform random scroll count in [min_scrolls, max_scrolls].",
     },
   },
 };
+
+/** Per-run scroll budget: fixed max_scrolls, or uniform [min_scrolls, max_scrolls]. */
+function readHomeScrollBudget(config: {
+  max_scrolls?: number;
+  min_scrolls?: number;
+}): number {
+  const max = Math.max(1, Math.min(30, Number(config.max_scrolls ?? 8) || 8));
+  if (config.min_scrolls === undefined || config.min_scrolls === null) {
+    return max;
+  }
+  const min = Math.max(1, Math.min(max, Number(config.min_scrolls) || 1));
+  if (min >= max) return max;
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
 
 const jobsConfigSchema = {
   type: "object",
@@ -2096,7 +2119,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.3.0",
+    version: "3.4.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2625,7 +2648,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     // debugger stops the personalized feed from rendering) and takes no
     // company_url — it always reads linkedin.com/feed/.
     if (feedKey === "home_feed") {
-      const homeScrolls = config.max_scrolls ?? 8;
+      const homeScrolls = readHomeScrollBudget(config);
       return this.syncHomeFeed(
         homeScrolls,
         checkpoint,
@@ -2694,6 +2717,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
       metadata: {
         items_found: events.length,
         items_scraped: rows.length,
+        scrolls_this_run: maxScrolls,
         backend: "extension-cs-scrape",
         object_all_supported: objectAllSupported,
       },

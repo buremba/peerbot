@@ -25,6 +25,12 @@ let isHomeFeedNoise: any;
 let parseBrowserDmResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let XConnector: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let normalizeXPostUrl: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let isReplySubmitLabel: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let prepareXReply: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
@@ -38,6 +44,9 @@ beforeAll(async () => {
 	parseUsernameFromStatusPath = mod.parseUsernameFromStatusPath;
 	isHomeFeedNoise = mod.isHomeFeedNoise;
 	XConnector = mod.default;
+	normalizeXPostUrl = mod.normalizeXPostUrl;
+	isReplySubmitLabel = mod.isReplySubmitLabel;
+	prepareXReply = mod.prepareXReply;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -771,5 +780,194 @@ describe("XConnector home_feed", () => {
 			sessionState: { chrome_dispatcher: dispatcher },
 		});
 		expect(scrollMaxes).toEqual([7]);
+	});
+});
+
+// ── prepare_reply ───────────────────────────────────────────────
+//
+// X ignores ?text= on every intent/compose URL, so typing into the composer is
+// the only handoff that exists. These tests pin the two properties that matter:
+// the draft lands verbatim, and nothing ever submits it.
+
+/** A dispatcher that plays back a healthy x.com post page. */
+function stagingDispatcher(
+	overrides: {
+		composerName?: string;
+		stagedText?: string;
+		currentUrl?: string;
+	} = {},
+) {
+	const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+	let typedText = "";
+	const dispatcher = {
+		dispatch: async (action: string, input: Record<string, unknown>) => {
+			calls.push({ action, input });
+			switch (action) {
+				case "navigate":
+					return {
+						tab_id: 42,
+						current_url: overrides.currentUrl ?? (input.url as string),
+					};
+				case "wait_for_selector":
+					return { found: true };
+				case "get_accessibility_tree":
+					return {
+						document_epoch: 3,
+						tree: [
+							{ ref_id: 29, role: "button", name: "5 Replies. Reply" },
+							{
+								ref_id: 36,
+								role: "textbox",
+								name: overrides.composerName ?? "Post text",
+							},
+						],
+					};
+				case "type_ref":
+					typedText = input.text as string;
+					return { ok: true };
+				case "evaluate":
+					return {
+						value: {
+							staged_text: overrides.stagedText ?? typedText,
+							composer_present: true,
+							submit_enabled: true,
+						},
+					};
+				default:
+					return { ok: true };
+			}
+		},
+	};
+	return { dispatcher, calls };
+}
+
+describe("normalizeXPostUrl", () => {
+	test("accepts a bare numeric tweet id (the origin_id on X events)", () => {
+		expect(normalizeXPostUrl("2083959735481716957")).toBe(
+			"https://x.com/i/web/status/2083959735481716957",
+		);
+	});
+
+	test("preserves the handle from a canonical permalink", () => {
+		expect(
+			normalizeXPostUrl("https://x.com/boristane/status/2083959735481716957"),
+		).toBe("https://x.com/boristane/status/2083959735481716957");
+	});
+
+	test("rewrites twitter.com to x.com", () => {
+		expect(
+			normalizeXPostUrl("https://twitter.com/paulg/status/2083929305630089297"),
+		).toBe("https://x.com/paulg/status/2083929305630089297");
+	});
+
+	test("rejects a non-status URL rather than navigating somewhere arbitrary", () => {
+		expect(normalizeXPostUrl("https://x.com/home")).toBeNull();
+		expect(normalizeXPostUrl("https://evil.example/status/123456")).toBeNull();
+		expect(normalizeXPostUrl("")).toBeNull();
+	});
+});
+
+describe("isReplySubmitLabel", () => {
+	test("matches the controls that would publish", () => {
+		for (const label of ["Reply", "Post", "Post all", "Tweet", "send"]) {
+			expect(isReplySubmitLabel(label)).toBe(true);
+		}
+	});
+
+	test("does not match the composer or unrelated chrome", () => {
+		for (const label of ["Post text", "5 Replies. Reply", "Reply to thread", ""]) {
+			expect(isReplySubmitLabel(label)).toBe(false);
+		}
+	});
+});
+
+describe("prepareXReply", () => {
+	test("stages the draft verbatim and never submits", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		const body =
+			"nintendo didn't lose because they had principles — they bet on cartridges";
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.submitted).toBe(false);
+		expect(result.staged_text).toBe(body);
+		expect(result.tweet_url).toBe(
+			"https://x.com/i/web/status/2083959735481716957",
+		);
+
+		const typed = calls.find((c) => c.action === "type_ref");
+		expect(typed?.input.text).toBe(body);
+		expect(typed?.input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
+
+		// The only click is the one that focuses the composer.
+		const clicks = calls.filter((c) => c.action === "click_ref");
+		expect(clicks).toHaveLength(1);
+		expect(clicks[0].input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
+		// The guard token is stripped before reaching the extension.
+		expect(clicks[0].input.allowed_click).toBeUndefined();
+	});
+
+	test("errors instead of typing when no textbox is on the page", async () => {
+		const { dispatcher } = stagingDispatcher();
+		await expect(
+			prepareXReply(
+				{
+					dispatch: async (action, input) => {
+						if (action === "get_accessibility_tree") {
+							return { document_epoch: 1, tree: [] };
+						}
+						return dispatcher.dispatch(action, input);
+					},
+				},
+				{ tweetUrl: "2083959735481716957", body: "hi" },
+			),
+		).rejects.toThrow(/could not locate the reply composer/);
+	});
+
+	test("refuses when the located node is a submit control", async () => {
+		const { dispatcher } = stagingDispatcher({ composerName: "Reply" });
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "hi",
+			}),
+		).rejects.toThrow(/refusing to click/);
+	});
+
+	test("fails loudly when the composer content does not match the draft", async () => {
+		const { dispatcher } = stagingDispatcher({ stagedText: "half a dr" });
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "half a draft that got truncated",
+			}),
+		).rejects.toThrow(/does not match the draft/);
+	});
+
+	test("rejects a body over X's length limit before touching the browser", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "x".repeat(281),
+			}),
+		).rejects.toThrow(/over X's 280 limit/);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("reports the auth wall instead of typing into a logged-out page", async () => {
+		const { dispatcher } = stagingDispatcher({
+			currentUrl: "https://x.com/i/flow/login",
+		});
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "hi",
+			}),
+		).rejects.toThrow(/Not logged into X/);
 	});
 });

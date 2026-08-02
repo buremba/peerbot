@@ -28,6 +28,8 @@
  */
 
 import {
+	type ActionContext,
+	type ActionResult,
 	type ChromeActionDispatcher,
 	type ConnectorDefinition,
 	type EventAttributionRule,
@@ -800,7 +802,9 @@ export function finalizeSyncResult(
 // /api/workers/dispatch-chrome-action bridge and out to the paired Owletto
 // extension. When no extension is online in the connection's org, the bridge
 // returns `failed` and the dispatcher throws — we surface that verbatim.
-function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
+function requireExtensionDispatcher(ctx: {
+	sessionState?: Record<string, unknown> | null;
+}): ChromeActionDispatcher {
 	const handle = (
 		ctx.sessionState as Record<string, unknown> | null | undefined
 	)?.chrome_dispatcher as ChromeActionDispatcher | undefined;
@@ -1856,6 +1860,269 @@ const dmMetadataSchema = {
 	},
 };
 
+// ── prepare_reply handoff (browser stage, human submits) ───────
+//
+// Mirrors `linkedin.prepare_comment`. There is deliberately no URL-based path:
+// X ignores the `?text=` prefill parameter on /intent/post, /intent/tweet and
+// /compose/post alike, with and without `in_reply_to` (verified 2026-08-02
+// against the signed-in app). The only way to put text in X's composer is to
+// type it, so this drives the paired Owletto Chrome and stops before submit.
+
+/** Max length X accepts in a single non-premium post. */
+const X_REPLY_MAX_LENGTH = 280;
+
+export interface PrepareReplyResult {
+	prepared: boolean;
+	tab_id?: number;
+	tweet_url: string;
+	body: string;
+	method: "type_ref";
+	staged_text?: string;
+	submitted: false;
+	message: string;
+}
+
+/**
+ * Normalize a tweet reference into an x.com status permalink. Accepts a full
+ * x.com/twitter.com status URL, a bare numeric tweet id, or the `i/web/status`
+ * form. Returns null when nothing addressable can be derived — callers must
+ * treat that as an error rather than navigating somewhere arbitrary.
+ */
+export function normalizeXPostUrl(raw: string): string | null {
+	const value = raw.trim();
+	if (!value) return null;
+
+	if (/^\d{6,}$/.test(value)) {
+		return `https://x.com/i/web/status/${value}`;
+	}
+
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return null;
+	}
+	const host = parsed.hostname.replace(/^www\./, "");
+	if (host !== "x.com" && host !== "twitter.com") return null;
+
+	const statusId = parsed.pathname.match(/\/status(?:es)?\/(\d{6,})/);
+	if (!statusId) return null;
+	// Preserve the handle when present — x.com/i/web/status/<id> redirects, and
+	// the canonical form is friendlier in the handoff banner and logs.
+	const handle = parsed.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
+	return handle
+		? `https://x.com/${handle[1]}/status/${statusId[1]}`
+		: `https://x.com/i/web/status/${statusId[1]}`;
+}
+
+/** URLs X bounces signed-out sessions to. */
+export function isXAuthWall(url: string | undefined): boolean {
+	if (!url) return false;
+	const lower = url.toLowerCase();
+	return (
+		lower.includes("/i/flow/login") ||
+		lower.includes("/login") ||
+		lower.includes("/account/access") ||
+		lower.includes("/i/flow/signup")
+	);
+}
+
+/** Labels that would *submit* a reply. prepare_reply must never click these. */
+export function isReplySubmitLabel(name: string | undefined | null): boolean {
+	if (!name) return false;
+	const n = name.replace(/\s+/g, " ").trim();
+	return /^(reply|post|post all|tweet|send)$/i.test(n);
+}
+
+interface XA11yNode {
+	ref_id: number;
+	role?: string;
+	name?: string;
+}
+
+/**
+ * Read back what actually landed in the composer. Returns the staged text and
+ * whether anything got submitted, so the caller can fail loudly instead of
+ * reporting a staged draft that is not there.
+ */
+function buildReadComposerExpression(): string {
+	return `(async () => {
+  const box = document.querySelector('[data-testid="tweetTextarea_0"]');
+  const btn = document.querySelector('[data-testid="tweetButtonInline"]')
+    || document.querySelector('[data-testid="tweetButton"]');
+  return {
+    staged_text: box ? box.innerText.replace(/\\n+$/, "") : null,
+    composer_present: !!box,
+    submit_enabled: btn ? btn.getAttribute("aria-disabled") !== "true" : null,
+  };
+})()`;
+}
+
+/**
+ * Stage a reply draft on an X post in the paired Chrome: navigate → focus the
+ * reply composer → type the draft. Then stop.
+ *
+ * HARD RULE — never auto-post:
+ *  - never click Reply / Post / Send
+ *  - never press Enter / Cmd+Enter after typing
+ *  - only focus the composer and type
+ * The human must click Reply themselves.
+ */
+export async function prepareXReply(
+	dispatcher: ChromeActionDispatcher,
+	opts: {
+		tweetUrl: string;
+		body: string;
+		focus?: boolean;
+	},
+): Promise<PrepareReplyResult> {
+	const body = opts.body.trim();
+	if (!body) {
+		throw new Error("prepare_reply: body must be non-empty");
+	}
+	if (body.length > X_REPLY_MAX_LENGTH) {
+		throw new Error(
+			`prepare_reply: body is ${body.length} characters, over X's ${X_REPLY_MAX_LENGTH} limit`,
+		);
+	}
+	const tweetUrl = normalizeXPostUrl(opts.tweetUrl);
+	if (!tweetUrl) {
+		throw new Error(
+			`prepare_reply: invalid tweet_url / tweet_id: ${JSON.stringify(opts.tweetUrl)}`,
+		);
+	}
+
+	// Refuse accidental submit clicks through the chrome dispatcher. Only the
+	// one click that focuses the composer is allowed through.
+	const safeDispatch: ChromeActionDispatcher = {
+		dispatch: async (action_key, action_input) => {
+			if (action_key === "click_ref") {
+				if (action_input.allowed_click !== "reply_open") {
+					throw new Error(
+						"prepare_reply: blocked click_ref — only focusing the reply composer is allowed (never Reply/Post)",
+					);
+				}
+			}
+			const input = { ...action_input };
+			delete input.allowed_click;
+			return dispatcher.dispatch(action_key, input);
+		},
+	};
+
+	const nav = await safeDispatch.dispatch<{
+		tab_id?: number;
+		current_url?: string;
+	}>("navigate", {
+		url: tweetUrl,
+		open_in_new_tab: true,
+		wait_for_load: true,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const tabId = nav.tab_id;
+	if (typeof tabId !== "number") {
+		throw new Error("prepare_reply: navigate did not return tab_id");
+	}
+	if (isXAuthWall(nav.current_url)) {
+		throw new Error(
+			`Not logged into X (landed on ${nav.current_url}). Sign in in the paired Chrome profile, then retry.`,
+		);
+	}
+
+	// `wait_for_load` fires long before the SPA paints — the document reports
+	// readyState "complete" with an empty body. Wait on the composer itself.
+	await safeDispatch.dispatch("wait_for_selector", {
+		tab_id: tabId,
+		selector: '[data-testid="tweetTextarea_0"]',
+		timeout_ms: 15000,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
+	const tree = await safeDispatch.dispatch<{
+		tree?: XA11yNode[];
+		document_epoch?: number;
+	}>("get_accessibility_tree", {
+		tab_id: tabId,
+		filter: "interactive",
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const nodes = Array.isArray(tree.tree) ? tree.tree : [];
+	// X labels the reply box "Post text" today. Prefer that, but fall back to the
+	// first textbox so a relabel degrades instead of breaking — the submit-label
+	// check below is what keeps the fallback safe.
+	const textboxes = nodes.filter((n) => n.role === "textbox");
+	const composer =
+		textboxes.find((n) => /post text/i.test(n.name ?? "")) ?? textboxes[0];
+	if (!composer || typeof tree.document_epoch !== "number") {
+		throw new Error(
+			"prepare_reply: could not locate the reply composer in the accessibility tree",
+		);
+	}
+	// Belt and braces: the a11y name is X's, not ours. If a relabelled node ever
+	// matches the textbox lookup, refuse rather than click a submit control.
+	if (isReplySubmitLabel(composer.name)) {
+		throw new Error(
+			`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
+		);
+	}
+	// The ref is only valid for this tab + document snapshot.
+	const ref = { ref_id: composer.ref_id, document_epoch: tree.document_epoch };
+
+	await safeDispatch.dispatch("click_ref", {
+		tab_id: tabId,
+		ref,
+		allowed_click: "reply_open",
+	});
+	await safeDispatch.dispatch("type_ref", {
+		tab_id: tabId,
+		ref,
+		text: body,
+		clear_first: true,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
+	const read = await safeDispatch.dispatch<{
+		value?: {
+			staged_text?: string | null;
+			composer_present?: boolean;
+			submit_enabled?: boolean | null;
+		};
+	}>("evaluate", {
+		tab_id: tabId,
+		expression: buildReadComposerExpression(),
+		await_promise: true,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const staged = read.value?.staged_text?.trim() ?? "";
+	if (staged !== body) {
+		throw new Error(
+			`prepare_reply: composer content does not match the draft (staged ${staged.length} chars, expected ${body.length}). Nothing was submitted.`,
+		);
+	}
+
+	if (opts.focus !== false) {
+		try {
+			await safeDispatch.dispatch("focus_tab", {
+				tab_id: tabId,
+				draw_attention: true,
+				allowed_origins: X_ALLOWED_ORIGINS,
+			});
+		} catch {
+			// Focus is best-effort; the draft is still staged.
+		}
+	}
+
+	return {
+		prepared: true,
+		tab_id: tabId,
+		tweet_url: tweetUrl,
+		body,
+		method: "type_ref",
+		staged_text: staged,
+		submitted: false,
+		message: `Reply draft staged on ${tweetUrl}. Review and click Reply yourself — Lobu never submits.`,
+	};
+}
+
 // ── Connector ──────────────────────────────────────────────────
 
 export default class XConnector extends ConnectorRuntime {
@@ -1864,7 +2131,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.4.0",
+		version: "3.5.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -2020,7 +2287,96 @@ export default class XConnector extends ConnectorRuntime {
 				},
 			},
 		},
+		actions: {
+			prepare_reply: {
+				key: "prepare_reply",
+				kind: "write",
+				name: "Prepare reply",
+				description:
+					"Stage a reply draft on an X post in the paired Chrome browser (open post, focus the reply composer, type the draft). NEVER submits — the human must click Reply. No auto-post path exists. There is no URL that can prefill X's composer, so this is the only way to hand a draft over.",
+				annotations: {
+					destructiveHint: false,
+					idempotentHint: false,
+					openWorldHint: true,
+				},
+				inputSchema: {
+					type: "object",
+					required: ["body"],
+					anyOf: [{ required: ["tweet_url"] }, { required: ["tweet_id"] }],
+					properties: {
+						body: {
+							type: "string",
+							minLength: 1,
+							maxLength: X_REPLY_MAX_LENGTH,
+							description:
+								"Draft reply text. Left in the composer for the user to edit/send.",
+						},
+						tweet_url: {
+							type: "string",
+							description:
+								'Post URL, e.g. "https://x.com/someone/status/2083959735481716957". twitter.com URLs are accepted.',
+						},
+						tweet_id: {
+							type: "string",
+							description:
+								"Numeric post id when tweet_url is omitted (this is the `origin_id` on X timeline events).",
+						},
+						focus: {
+							type: "boolean",
+							description:
+								"Bring the staged tab to the foreground (default true).",
+						},
+					},
+				},
+				outputSchema: {
+					type: "object",
+					properties: {
+						body: { type: "string" },
+						method: { type: "string" },
+						tab_id: { type: "integer" },
+						message: { type: "string" },
+						prepared: { type: "boolean" },
+						submitted: { type: "boolean" },
+						tweet_url: { type: "string" },
+						staged_text: { type: "string" },
+					},
+				},
+				requiresApproval: true,
+			},
+		},
 	};
+
+	async execute(ctx: ActionContext): Promise<ActionResult> {
+		try {
+			if (ctx.actionKey !== "prepare_reply") {
+				return { success: false, error: `Unknown action: ${ctx.actionKey}` };
+			}
+			const body =
+				typeof ctx.input.body === "string" ? ctx.input.body.trim() : "";
+			if (!body) {
+				return { success: false, error: "body is required" };
+			}
+			const tweetRef =
+				(typeof ctx.input.tweet_url === "string" &&
+					ctx.input.tweet_url.trim()) ||
+				(typeof ctx.input.tweet_id === "string" && ctx.input.tweet_id.trim()) ||
+				"";
+			if (!tweetRef) {
+				return { success: false, error: "tweet_url or tweet_id is required" };
+			}
+			const output = await prepareXReply(requireExtensionDispatcher(ctx), {
+				tweetUrl: tweetRef,
+				body,
+				focus: ctx.input.focus !== false,
+			});
+			return { success: true, output: { ...output } };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
 
 	async sync(ctx: SyncContext): Promise<SyncResult> {
 		const config = ctx.config as Record<string, unknown>;

@@ -3,6 +3,12 @@ import { REDACTED_SENTINEL } from '@lobu/core';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
+import {
+  captureRequestSnapshot,
+  KNOWN_SECRET_SHAPE_RE,
+  persistRequestSnapshot,
+  REQUEST_SNAPSHOT_TOOLS,
+} from './invocation-snapshot';
 import { getTool, type ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
@@ -42,7 +48,8 @@ function redactSensitiveText(value: string): string {
   return value
     .replace(HEADER_CREDENTIAL_RE, (_match, key: string) => `${key}=[redacted]`)
     .replace(AUTH_SCHEME_RE, (_match, scheme: string) => `${scheme} [redacted]`)
-    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`);
+    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`)
+    .replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
 }
 
 function redactPreview(value: string): string {
@@ -52,7 +59,7 @@ function redactPreview(value: string): string {
 }
 
 /**
- * Generic audit entries persist the SHAPE of a call, never its content.
+ * Generic audit summaries persist the SHAPE of a call, never its content.
  * Nothing caller-controlled survives: values are sentineled except
  * booleans/nulls (provably structural — one bit), and property NAMES are kept
  * only when the tool's own input schema declares them at the top level —
@@ -189,9 +196,13 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
     };
   }
 
-  // Browser-session and anonymous reads would generate an event per page view;
-  // only externally authenticated calls belong in the client activity ledger.
-  if (params.ctx.tokenType !== 'oauth' && params.ctx.tokenType !== 'pat') {
+  // Browser-session and anonymous generic reads stay out of Activity. Power
+  // tools are retained because their invocation history is the audit product.
+  if (
+    !REQUEST_SNAPSHOT_TOOLS.has(params.toolName) &&
+    params.ctx.tokenType !== 'oauth' &&
+    params.ctx.tokenType !== 'pat'
+  ) {
     return null;
   }
   // The preview and hash are built from the SANITIZED args: every string leaf
@@ -227,8 +238,10 @@ export async function recordToolInvocationAudit(
   try {
     const payload = buildPayload(params);
     if (!payload) return;
+    const snapshot = captureRequestSnapshot(params);
+    if (snapshot) Object.assign(payload, snapshot.fields);
     const success = payload.success === true;
-    await insertEvent({
+    const event = await insertEvent({
       entityIds: [],
       organizationId: params.ctx.organizationId,
       originId: `tool_invocation:${params.toolName}:${Date.now()}:${randomUUID()}`,
@@ -248,6 +261,9 @@ export async function recordToolInvocationAudit(
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,
     });
+    if (snapshot?.body) {
+      await persistRequestSnapshot({ eventId: event.id, body: snapshot.body });
+    }
   } catch (auditError) {
     logger.warn(
       { err: auditError, toolName: params.toolName },

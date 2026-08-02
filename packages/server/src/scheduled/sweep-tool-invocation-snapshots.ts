@@ -10,36 +10,52 @@
  * append-only by invariant, so a body stored inside it could never expire; here
  * a plain DELETE ages them out and no event row is modified or removed.
  *
- * Bounded per tick so one run can never hold a long transaction over a table
- * that also serves reads; the job runs daily and a backlog drains across ticks.
+ * Each DELETE is bounded so one statement can never hold a long transaction
+ * over a table that also serves reads. The tick then loops until a batch comes
+ * back short — a single bounded statement per day would only keep up while
+ * captures stayed under one batch/day, and above that rate the expired backlog
+ * would grow without bound and bodies would outlive the retention horizon.
+ * The total-work cap is the backstop: it bounds one tick's runtime, and what it
+ * leaves behind is picked up by the next tick.
  */
 
 import { getDb } from '../db/client';
 import logger from '../utils/logger';
 
 export const SNAPSHOT_RETENTION_DAYS = 30;
-const MAX_DELETES_PER_TICK = 20_000;
+const MAX_DELETES_PER_BATCH = 20_000;
+const MAX_DELETES_PER_TICK = 1_000_000;
 
 export async function sweepToolInvocationSnapshots(
   retentionDays = SNAPSHOT_RETENTION_DAYS
 ): Promise<{ deleted: number }> {
   const sql = getDb();
-  const deleted = await sql<{ event_id: string }>`
-    DELETE FROM tool_invocation_snapshots
-    WHERE event_id IN (
-      SELECT event_id
-      FROM tool_invocation_snapshots
-      WHERE created_at < now() - make_interval(days => ${retentionDays})
-      ORDER BY created_at
-      LIMIT ${MAX_DELETES_PER_TICK}
-    )
-    RETURNING event_id
-  `;
-  if (deleted.length > 0) {
+  let total = 0;
+  let batches = 0;
+  while (total < MAX_DELETES_PER_TICK) {
+    const batchLimit = Math.min(MAX_DELETES_PER_BATCH, MAX_DELETES_PER_TICK - total);
+    const deleted = await sql<{ event_id: string }>`
+      DELETE FROM tool_invocation_snapshots
+      WHERE event_id IN (
+        SELECT event_id
+        FROM tool_invocation_snapshots
+        WHERE created_at < now() - make_interval(days => ${retentionDays})
+        ORDER BY created_at
+        LIMIT ${batchLimit}
+      )
+      RETURNING event_id
+    `;
+    total += deleted.length;
+    batches++;
+    // Short batch means the expired set is drained; anything created after this
+    // point is inside the retention horizon and not this tick's work.
+    if (deleted.length < batchLimit) break;
+  }
+  if (total > 0) {
     logger.info(
-      { deleted: deleted.length, retentionDays },
+      { deleted: total, batches, retentionDays, capped: total >= MAX_DELETES_PER_TICK },
       'Swept expired tool invocation snapshot bodies'
     );
   }
-  return { deleted: deleted.length };
+  return { deleted: total };
 }

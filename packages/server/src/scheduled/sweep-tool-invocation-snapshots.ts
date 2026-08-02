@@ -22,7 +22,7 @@
 import { getDb } from '../db/client';
 import logger from '../utils/logger';
 
-export const SNAPSHOT_RETENTION_DAYS = 30;
+const SNAPSHOT_RETENTION_DAYS = 30;
 const MAX_DELETES_PER_BATCH = 20_000;
 const MAX_DELETES_PER_TICK = 1_000_000;
 
@@ -34,7 +34,10 @@ export async function sweepToolInvocationSnapshots(
   let batches = 0;
   while (total < MAX_DELETES_PER_TICK) {
     const batchLimit = Math.min(MAX_DELETES_PER_BATCH, MAX_DELETES_PER_TICK - total);
-    const deleted = await sql<{ event_id: string }>`
+    // No RETURNING: postgres.js fills `count` from the command tag, so the row
+    // ids never cross the wire. With a million-row tick cap that is the
+    // difference between counting and shipping a million ids to count them.
+    const deleted = await sql`
       DELETE FROM tool_invocation_snapshots
       WHERE event_id IN (
         SELECT event_id
@@ -43,13 +46,12 @@ export async function sweepToolInvocationSnapshots(
         ORDER BY created_at
         LIMIT ${batchLimit}
       )
-      RETURNING event_id
     `;
-    total += deleted.length;
+    total += deleted.count;
     batches++;
     // Short batch means the expired set is drained; anything created after this
     // point is inside the retention horizon and not this tick's work.
-    if (deleted.length < batchLimit) break;
+    if (deleted.count < batchLimit) break;
   }
   if (total > 0) {
     logger.info(

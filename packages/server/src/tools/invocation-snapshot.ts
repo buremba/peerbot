@@ -70,9 +70,9 @@ export interface ToolInvocationSnapshot {
 }
 
 /** What the audit row carries so a reader knows whether to offer the body. */
-export type SnapshotStatus = 'complete' | 'too_large' | 'error';
+type SnapshotStatus = 'complete' | 'too_large' | 'error';
 
-export interface SnapshotCapture {
+interface SnapshotCapture {
   /** Summary fields to merge into the audit event's payload_data. */
   fields: Record<string, unknown>;
   /** Encrypted body to persist once the event id is known; null when there is none. */

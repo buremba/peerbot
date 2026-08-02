@@ -460,16 +460,13 @@ export async function restGetToolInvocationSnapshot(
 	if (!rawEventId || !/^\d+$/.test(rawEventId)) {
 		return c.json({ error: "Not found" }, 404);
 	}
-	let eventId: string;
-	try {
-		const parsed = BigInt(rawEventId);
-		if (parsed <= 0n || parsed > 9_223_372_036_854_775_807n) {
-			return c.json({ error: "Not found" }, 404);
-		}
-		eventId = parsed.toString();
-	} catch {
+	// The `^\d+$` guard above already makes BigInt() total here, so the only
+	// remaining question is whether the value fits the bigint `events.id`.
+	const parsed = BigInt(rawEventId);
+	if (parsed <= 0n || parsed > 9_223_372_036_854_775_807n) {
 		return c.json({ error: "Not found" }, 404);
 	}
+	const eventId = parsed.toString();
 	const authCtx = extractAuthContext(c);
 	if (
 		!authCtx.organizationId ||

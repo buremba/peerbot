@@ -548,6 +548,7 @@ async function resolveTargetBrowserWorker(
     SELECT dw.id
     FROM connections con
     JOIN device_workers dw ON dw.id = con.device_worker_id
+      AND dw.organization_id = con.organization_id
     WHERE con.id = ${targetId}
       AND con.organization_id = ${organizationId}
       AND con.connector_key = 'chrome'

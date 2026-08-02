@@ -1116,7 +1116,7 @@ describe("prepare_reply browser targeting", () => {
 		}
 	});
 
-	test("never leaks the routing key to the extension as a click argument", async () => {
+	test("never leaks the internal allowed_click guard token to the extension", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 
 		await prepareXReply(dispatcher, {

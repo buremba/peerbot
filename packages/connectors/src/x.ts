@@ -1887,6 +1887,11 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
  * Which browser should show the staged draft: the per-call input wins, then the
  * connection's configured default. Null means "no opinion" — the dispatcher
  * falls back to the scrape pin (previous behaviour).
+ *
+ * `config.interactive_browser_connection_id` is honoured if a connection row
+ * carries it, but no connection config schema declares it, so it is not
+ * user-selectable today; `browser_connection_id` on the call is the supported
+ * way to name a browser.
  */
 export function resolveTargetBrowserConnectionId(
 	input: Record<string, unknown>,
@@ -2581,7 +2586,7 @@ export default class XConnector extends ConnectorRuntime {
 						browser_connection_id: {
 							type: "integer",
 							description:
-								"Chrome connection to open the draft in, when you want a different browser than this connection's configured default (config.interactive_browser_connection_id). Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline.",
+								"Chrome connection to open the draft in. Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline. This is the only configurable way to pick a browser: the connection-level fallback (config.interactive_browser_connection_id) is honoured when present but is not exposed in any connection config schema, so it is not selectable in the UI.",
 						},
 					},
 				},

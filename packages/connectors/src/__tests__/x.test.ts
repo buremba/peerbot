@@ -31,6 +31,14 @@ let normalizeXPostUrl: any;
 let isReplySubmitLabel: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let prepareXReply: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let resolveTargetBrowserConnectionId: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let TARGET_BROWSER_CONNECTION_INPUT_KEY: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let truncateHandoffReason: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let buildInjectHandoffBannerExpression: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
@@ -47,6 +55,11 @@ beforeAll(async () => {
 	normalizeXPostUrl = mod.normalizeXPostUrl;
 	isReplySubmitLabel = mod.isReplySubmitLabel;
 	prepareXReply = mod.prepareXReply;
+	resolveTargetBrowserConnectionId = mod.resolveTargetBrowserConnectionId;
+	truncateHandoffReason = mod.truncateHandoffReason;
+	buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
+	TARGET_BROWSER_CONNECTION_INPUT_KEY =
+		mod.TARGET_BROWSER_CONNECTION_INPUT_KEY;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -881,6 +894,31 @@ describe("isReplySubmitLabel", () => {
 	});
 });
 
+describe("prepare_reply action contract", () => {
+	// This is a deliberate design decision, not an oversight. Publishing is
+	// guarded by X's own Reply button, which a human must click and this action
+	// cannot. A Lobu approval gate would only guard "opens a tab and types",
+	// while forcing the user to approve a draft before seeing it in context —
+	// which defeats the whole review-and-iterate workflow. Do not flip this back
+	// without re-reading the comment at the definition site.
+	test("does not require Lobu approval — the staged tab is the approval", () => {
+		const action = new XConnector().definition.actions.prepare_reply;
+		expect(action.requiresApproval).toBe(false);
+		expect(action.kind).toBe("write");
+	});
+
+	test("accepts either tweet_url or tweet_id, and always a body", () => {
+		const schema = new XConnector().definition.actions.prepare_reply.inputSchema;
+		expect(schema.required).toEqual(["body"]);
+		expect(schema.anyOf).toEqual([
+			{ required: ["tweet_url"] },
+			{ required: ["tweet_id"] },
+		]);
+		// No maxLength: X's weighted count makes a code-unit cap wrong.
+		expect(schema.properties.body.maxLength).toBeUndefined();
+	});
+});
+
 describe("prepareXReply", () => {
 	test("stages the draft verbatim and never submits", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
@@ -1039,5 +1077,185 @@ describe("prepareXReply", () => {
 				body: "hi",
 			}),
 		).rejects.toThrow(/Not logged into X/);
+	});
+});
+
+// The draft is only useful in the browser the human is actually sitting at. The
+// connection's own pin points at whichever machine runs the timeline cron, so
+// without an explicit target the tab opens where nobody is looking.
+describe("prepare_reply browser targeting", () => {
+	test("stamps the target browser on EVERY dispatch, not just navigate", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "staged where I can see it",
+			targetBrowserConnectionId: 432,
+		});
+
+		expect(calls.length).toBeGreaterThan(1);
+		// A dispatch that loses the target mid-sequence would act on a different
+		// browser than the one the tab was opened in.
+		for (const call of calls) {
+			expect(call.input[TARGET_BROWSER_CONNECTION_INPUT_KEY]).toBe(432);
+		}
+	});
+
+	test("omits the key entirely when no target is given, preserving scrape-pin routing", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "no opinion about the browser",
+		});
+
+		for (const call of calls) {
+			expect(call.input).not.toHaveProperty(
+				TARGET_BROWSER_CONNECTION_INPUT_KEY,
+			);
+		}
+	});
+
+	test("never leaks the routing key to the extension as a click argument", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "check the click payload",
+			targetBrowserConnectionId: 432,
+		});
+
+		const click = calls.find((c) => c.action === "click_ref");
+		expect(click).toBeDefined();
+		// allowed_click is the internal guard token and must still be stripped.
+		expect(click?.input).not.toHaveProperty("allowed_click");
+	});
+
+	test("per-call browser_connection_id beats the connection default", () => {
+		expect(
+			resolveTargetBrowserConnectionId(
+				{ browser_connection_id: 432 },
+				{ interactive_browser_connection_id: 369 },
+			),
+		).toBe(432);
+	});
+
+	test("falls back to the connection's configured browser", () => {
+		expect(
+			resolveTargetBrowserConnectionId(
+				{},
+				{ interactive_browser_connection_id: 432 },
+			),
+		).toBe(432);
+	});
+
+	test("returns null when neither is set, so the scrape pin still wins", () => {
+		expect(resolveTargetBrowserConnectionId({}, {})).toBeNull();
+	});
+
+	test("accepts a numeric string — JSON config round-trips ids as strings", () => {
+		expect(
+			resolveTargetBrowserConnectionId(
+				{},
+				{ interactive_browser_connection_id: "432" },
+			),
+		).toBe(432);
+	});
+
+	test("rejects a non-id rather than silently ignoring it and using the wrong browser", () => {
+		expect(() =>
+			resolveTargetBrowserConnectionId({ browser_connection_id: "macbook" }, {}),
+		).toThrow(/positive integer chrome connection id/);
+		expect(() =>
+			resolveTargetBrowserConnectionId({ browser_connection_id: 0 }, {}),
+		).toThrow(/positive integer chrome connection id/);
+	});
+});
+
+// A draft with no reason attached is just text in a box — the "why" is most of
+// what you need to accept, edit or bin it. linkedin.prepare_comment already
+// injects this banner; X did not.
+describe("prepare_reply handoff banner", () => {
+	test("injects the reason above the composer", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "he is asking exactly the question your event-sourcing post answers",
+		});
+
+		const banner = calls.find(
+			(c) =>
+				c.action === "evaluate" &&
+				String(c.input.expression).includes("lobu-handoff-banner"),
+		);
+		expect(banner).toBeDefined();
+		expect(String(banner?.input.expression)).toContain(
+			"event-sourcing post answers",
+		);
+		expect(result.reason_preview).toContain("event-sourcing");
+	});
+
+	test("banner:false suppresses injection entirely", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "some reason",
+			banner: false,
+		});
+
+		expect(
+			calls.some((c) =>
+				String(c.input.expression ?? "").includes("lobu-handoff-banner"),
+			),
+		).toBe(false);
+		expect(result.banner_shown).toBe(false);
+	});
+
+	test("a failed banner never fails the staged draft", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const inner = dispatcher.dispatch;
+		dispatcher.dispatch = async (
+			action: string,
+			input: Record<string, unknown>,
+		) => {
+			if (
+				action === "evaluate" &&
+				String(input.expression).includes("lobu-handoff-banner")
+			) {
+				throw new Error("X re-rendered the composer");
+			}
+			return inner(action, input);
+		};
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "some reason",
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.banner_shown).toBe(false);
+	});
+
+	test("truncates a long reason so the banner cannot swallow the page", () => {
+		const long = "x".repeat(400);
+		const out = truncateHandoffReason(long);
+		expect(out).toHaveLength(120);
+		expect(out.endsWith("…")).toBe(true);
+		expect(truncateHandoffReason("   ")).toBeUndefined();
+		expect(truncateHandoffReason(null)).toBeUndefined();
+	});
+
+	test("escapes the reason as a JS literal — an apostrophe must not break the script", () => {
+		const expr = buildInjectHandoffBannerExpression({
+			reason: `it's a "quoted" </script> case`,
+		});
+		// JSON.stringify is what makes this safe; assert the raw text never
+		// lands unescaped in the emitted source.
+		expect(expr).toContain(JSON.stringify(`it's a "quoted" </script> case`));
 	});
 });

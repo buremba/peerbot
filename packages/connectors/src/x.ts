@@ -2064,6 +2064,11 @@ export interface PrepareReplyResult {
 	submit_blocked: boolean;
 	/** Whether the in-page handoff banner was injected. */
 	banner_shown?: boolean;
+	/**
+	 * Whether the tab was handed to the user. False means the extension has no
+	 * release_tab (older build) and the reaper will close the draft in ~5 min.
+	 */
+	released?: boolean;
 	/** Truncated reason shown on the banner (if any). */
 	reason_preview?: string;
 	message: string;
@@ -2226,16 +2231,6 @@ export async function prepareXReply(
 		url: tweetUrl,
 		open_in_new_tab: true,
 		wait_for_load: true,
-		// Exempt this tab from the extension's 5-minute scratch-tab reaper.
-		// Without it the reaper force-closes the draft (measured: staged
-		// 23:45:09, gone by 23:52:28) while this action still reports
-		// prepared: true — the loss is invisible from here. A staged draft is
-		// finished work handed to a person, not an orphaned scrape tab, so it
-		// gets STAGED_DRAFT_TAB_TTL_MS instead.
-		//
-		// Requires the Owletto extension to understand `staged_draft`; older
-		// builds ignore the flag and fall back to the 5-minute TTL.
-		staged_draft: true,
 		focus: opts.focus !== false,
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
@@ -2360,6 +2355,26 @@ export async function prepareXReply(
 		}
 	}
 
+	// Hand the tab to the human. Until this point it is an extension-owned
+	// scratch tab, which the reaper force-closes after ~5 minutes — with the
+	// draft in it, while this function still returns prepared: true (measured
+	// 2026-08-02: staged 23:45:09, gone by 23:52:28). Released, it is an
+	// ordinary user tab the reaper ignores.
+	//
+	// Deliberately last, after the staged-text check: a run that fails earlier
+	// leaves the tab owned, and a tab with no draft in it SHOULD be reaped.
+	let released = false;
+	try {
+		await safeDispatch.dispatch("release_tab", { tab_id: tabId });
+		released = true;
+	} catch {
+		// Older extension builds have no release_tab. The draft is staged and
+		// correct; it will just be reaped on the old 5-minute timer. Reported
+		// as `released` so the caller can tell a durable draft from a doomed one
+		// instead of trusting prepared: true — the exact blind spot that let
+		// this bug survive.
+	}
+
 	// X's own verdict, not ours. Still `prepared: true` — the draft IS in the
 	// composer and the human is about to look at it, so trimming it there beats
 	// throwing away work over a limit we cannot compute correctly.
@@ -2373,6 +2388,7 @@ export async function prepareXReply(
 		method: "type_ref",
 		staged_text: staged,
 		banner_shown: bannerShown,
+		released,
 		...(reasonPreview ? { reason_preview: reasonPreview } : {}),
 		submitted: false,
 		submit_blocked: submitBlocked,
@@ -2390,7 +2406,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.9.0",
+		version: "3.10.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -2614,6 +2630,7 @@ export default class XConnector extends ConnectorRuntime {
 						staged_text: { type: "string" },
 						submit_blocked: { type: "boolean" },
 						banner_shown: { type: "boolean" },
+						released: { type: "boolean" },
 						reason_preview: { type: "string" },
 					},
 				},

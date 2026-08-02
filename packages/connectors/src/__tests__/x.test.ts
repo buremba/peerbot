@@ -1187,15 +1187,68 @@ describe("prepare_reply tab survival", () => {
 
 		const nav = calls.find((c) => c.action === "navigate");
 		expect(nav).toBeDefined();
-		// Without this the extension's reaper force-closes the draft after 5
-		// minutes and the action still reports prepared: true.
-		expect(nav?.input.staged_draft).toBe(true);
 		// Focused, or X does not paint the composer and staging fails outright
 		// with "could not locate the reply composer".
 		expect(nav?.input.focus).toBe(true);
 		// NOT persistent: the sticky anchor survives the reaper too, but it
 		// opens its own window and X would not render the composer in it.
 		expect(nav?.input.persistent).toBeUndefined();
+
+		// The tab must be handed to the user, or the reaper closes the draft.
+		const release = calls.find((c) => c.action === "release_tab");
+		expect(release).toBeDefined();
+		expect(release?.input.tab_id).toBe(42);
+	});
+
+	test("releases only AFTER the draft is verified in the composer", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "check the ordering",
+		});
+		const order = calls.map((c) => c.action);
+		// A tab released before the check would be un-reapable AND empty if the
+		// draft never landed.
+		expect(order.indexOf("release_tab")).toBeGreaterThan(
+			order.lastIndexOf("type_ref"),
+		);
+		expect(order.indexOf("release_tab")).toBeGreaterThan(
+			order.indexOf("evaluate"),
+		);
+	});
+
+	test("leaves the tab owned when staging fails, so the reaper still collects it", async () => {
+		const { dispatcher, calls } = stagingDispatcher({
+			stagedText: "something else entirely",
+		});
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "the draft",
+			}),
+		).rejects.toThrow(/does not match the draft/);
+		expect(calls.some((c) => c.action === "release_tab")).toBe(false);
+	});
+
+	test("reports released:false rather than failing when the extension has no release_tab", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const inner = dispatcher.dispatch;
+		dispatcher.dispatch = async (
+			action: string,
+			input: Record<string, unknown>,
+		) => {
+			if (action === "release_tab") throw new Error("unknown tool");
+			return inner(action, input);
+		};
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "old extension build",
+		});
+		// Still staged and usable — just doomed on the 5-minute timer, and the
+		// caller can now SEE that instead of trusting prepared: true.
+		expect(result.prepared).toBe(true);
+		expect(result.released).toBe(false);
 	});
 
 	test("does not stamp holder_agent_id / holder_thread_id", async () => {

@@ -75,6 +75,7 @@ describe("bundled connector lifecycle matrix", () => {
 			github: 6,
 			"google.calendar": 4,
 			"google.gmail": 5,
+			x: 1,
 			youtube: 5,
 		});
 

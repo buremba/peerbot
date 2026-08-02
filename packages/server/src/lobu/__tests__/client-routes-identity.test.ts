@@ -58,6 +58,14 @@ async function seed(): Promise<void> {
     VALUES (${ORG}, ${ORG}, ${ORG})
     ON CONFLICT (id) DO NOTHING
   `;
+  const { ensureMemberEntity } = await import('../../utils/member-entity.js');
+  await ensureMemberEntity({
+    organizationId: ORG,
+    userId: USER,
+    name: 'Owner',
+    email: 'owner@test',
+    role: 'owner',
+  });
 
   // Registered as "Owletto for Mac" but every session reports `claude-code`,
   // because the Mac app drives its MCP connection through the Claude Code SDK.
@@ -104,6 +112,7 @@ interface ListedClient {
   id: string;
   title: string | null;
   drivenBy: string | null;
+  linkedUserEntitySlug: string | null;
 }
 
 async function listClients(): Promise<Map<string, ListedClient>> {
@@ -139,6 +148,12 @@ describe('MCP client identity', () => {
 
     expect(clients.get(MAC_CLIENT)?.drivenBy).toBe('claude-code');
     expect(clients.get(CHATGPT_CLIENT)?.drivenBy).toBe('openai-mcp');
+  });
+
+  test('links the granting user to their workspace member entity', async () => {
+    const clients = await listClients();
+
+    expect(clients.get(CHATGPT_CLIENT)?.linkedUserEntitySlug).toBe('owner');
   });
 
   test('no client is classified as first-party by its self-asserted name', async () => {

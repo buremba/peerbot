@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   __resetEncryptionKeyCacheForTests,
   decrypt,
+  decryptBytes,
   encrypt,
+  encryptBytes,
+  encryptionKeyFingerprint,
 } from "../utils/encryption";
 
 describe("encryption", () => {
@@ -105,5 +108,61 @@ describe("encryption", () => {
     expect(() => encrypt("utf8 key test")).toThrow(
       "base64 or hex encoded 32-byte key"
     );
+  });
+
+  describe("binary payloads (encryptBytes / decryptBytes)", () => {
+    test("round-trips arbitrary bytes, including non-utf8", () => {
+      const payload = Buffer.from([0x00, 0xff, 0x1f, 0x8b, 0x80, 0xfe, 0x7f]);
+      expect(decryptBytes(encryptBytes(payload))).toEqual(payload);
+    });
+
+    test("round-trips empty input — IV+tag with no ciphertext is valid", () => {
+      // The encryption of zero bytes is exactly IV(12)+tag(16). A `<=` length
+      // guard would reject its own output here.
+      expect(decryptBytes(encryptBytes(Buffer.alloc(0))).length).toBe(0);
+    });
+
+    test("emits one base64 string, not the hex triple `encrypt` uses", () => {
+      const out = encryptBytes(Buffer.from("payload"));
+      expect(out).not.toContain(":");
+      expect(out).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+    });
+
+    test("rejects a flipped authentication tag", () => {
+      const raw = Buffer.from(encryptBytes(Buffer.from("tamper me")), "base64");
+      raw[12] ^= 0xff; // first byte of the GCM tag
+      expect(() => decryptBytes(raw.toString("base64"))).toThrow();
+    });
+
+    test("rejects a truncated payload", () => {
+      expect(() => decryptBytes(Buffer.alloc(27).toString("base64"))).toThrow(
+        "Invalid encrypted format"
+      );
+    });
+
+    test("does not decrypt under a different key", () => {
+      const sealed = encryptBytes(Buffer.from("bound to a key"));
+      process.env.ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+      __resetEncryptionKeyCacheForTests();
+      expect(() => decryptBytes(sealed)).toThrow();
+    });
+  });
+
+  describe("encryptionKeyFingerprint", () => {
+    test("is stable for a key and differs across keys", () => {
+      const first = encryptionKeyFingerprint();
+      expect(encryptionKeyFingerprint()).toBe(first);
+
+      process.env.ENCRYPTION_KEY = Buffer.alloc(32, 3).toString("base64");
+      __resetEncryptionKeyCacheForTests();
+      expect(encryptionKeyFingerprint()).not.toBe(first);
+    });
+
+    test("is a short digest, never the key material itself", () => {
+      const key = process.env.ENCRYPTION_KEY as string;
+      const fingerprint = encryptionKeyFingerprint();
+      expect(fingerprint).toMatch(/^[0-9a-f]{16}$/);
+      expect(key).not.toContain(fingerprint);
+    });
   });
 });

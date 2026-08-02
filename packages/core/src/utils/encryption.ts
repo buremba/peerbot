@@ -163,8 +163,9 @@ export function encryptBytes(bytes: Buffer): string {
 /** Inverse of {@link encryptBytes}. Throws on a truncated or tampered payload. */
 export function decryptBytes(payload: string): Buffer {
   const raw = Buffer.from(payload, "base64");
-  // 12-byte IV + 16-byte GCM tag; anything shorter cannot carry both.
-  if (raw.length <= IV_LENGTH + 16) throw new Error("Invalid encrypted format");
+  // 12-byte IV + 16-byte GCM tag. EXACTLY that length is the valid encryption
+  // of empty input, so only a SHORTER payload is malformed.
+  if (raw.length < IV_LENGTH + 16) throw new Error("Invalid encrypted format");
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     getEncryptionKey(),

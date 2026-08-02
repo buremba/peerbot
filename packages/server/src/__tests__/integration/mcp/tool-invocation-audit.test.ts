@@ -450,6 +450,48 @@ describe('tool invocation audit coverage', () => {
     expect(script).toContain('return secret;');
   });
 
+  it('redacts credential-SHAPED literals carried on a thrown Error', async () => {
+    // The `Error` branch of the walker lifts `name`/`message`/`code` off the
+    // instance directly, so it is the one path to a string that skips the
+    // primitive case. A provider error routinely echoes the credential it was
+    // handed — it must be redacted exactly like any other leaf.
+    const error = Object.assign(
+      new Error(
+        'auth failed for sk-live-AAAABBBBCCCCDDDD at https://user:pw@api.example.com ' +
+          '(jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3OCJ9.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1g)'
+      ),
+      { code: 'AKIAIOSFODNN7EXAMPLE' }
+    );
+    await recordToolInvocationAudit({
+      toolName: 'run_sdk',
+      args: { script: 'return 1;' },
+      error,
+      durationMs: 1,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+    const row = await latestAuditRow(orgId, 'run_sdk');
+    const snapshot = await readSnapshot(row!, orgId, ownerId);
+    const thrown = snapshot.response as Record<string, unknown>;
+    expect(thrown.name).toBe('Error');
+    expect(thrown.code).toBe('[redacted]');
+    const message = String(thrown.message);
+    expect(message).not.toContain('sk-live-AAAABBBBCCCCDDDD');
+    expect(message).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(message).not.toContain('user:pw@');
+    // Nothing leaks through the read route either, whatever the field.
+    expect(JSON.stringify(snapshot)).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    // The prose around the literals survives — this is redaction, not erasure.
+    expect(message).toContain('auth failed for');
+  });
+
   it('captures nothing for a tool outside SNAPSHOT_TOOLS', async () => {
     expect(
       await captureSnapshot({

@@ -100,23 +100,27 @@ export type SnapshotReadResult =
   | { status: 'too_large'; bytes: number }
   | { status: 'forbidden' | 'not_found' | 'unavailable' };
 
+/** The single redaction applied to every string a snapshot keeps, wherever it
+ *  sits in the tree — a leaf, or a field lifted off an `Error`. */
+function redactString(value: string): string {
+  return redactUriCredentials(value).replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
+}
+
 /**
- * Recursively rebuild `value` as JSON-safe data with secret-keyed leaves and
- * URI credentials removed.
+ * Recursively rebuild `value` as JSON-safe data with secret-keyed leaves, URI
+ * credentials, and credential-shaped literals removed.
  *
- * Note what this does NOT do: pattern-match free text for credential-shaped
- * substrings. An earlier revision did, and it corrupted the very artifact the
- * snapshot exists to preserve — `SELECT id, secret FROM t` came back as
+ * Note what this does NOT do: consume the token FOLLOWING a credential word.
+ * An earlier revision did, and it corrupted the very artifact the snapshot
+ * exists to preserve — `SELECT id, secret FROM t` came back as
  * `secret [redacted] t`, and `const token = await auth()` as
  * `token=[redacted] auth()`. For SQL and JavaScript, which is all this module
- * ever sees, those words are ordinary vocabulary. Key-scoped redaction is
- * precise; text-scoped redaction on code is not, and an unreadable snapshot
- * has no audit value at all.
+ * ever sees, those words are ordinary vocabulary. Key-scoped and shape-scoped
+ * redaction are precise; word-adjacent redaction on code is not, and an
+ * unreadable snapshot has no audit value at all.
  */
 function redactDeep(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (typeof value === 'string') {
-    return redactUriCredentials(value).replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
-  }
+  if (typeof value === 'string') return redactString(value);
   if (value === null || typeof value === 'boolean' || typeof value === 'number') {
     return value;
   }
@@ -128,10 +132,14 @@ function redactDeep(value: unknown, seen = new WeakSet<object>()): unknown {
   }
   if (value instanceof Error) {
     const error = value as Error & { code?: unknown };
+    // Every string here goes through the same redaction as any other leaf: a
+    // thrown provider error routinely echoes the credential it was handed back
+    // in its message (or its `code`), and this branch is the one path that
+    // reaches a string without passing through the primitive case above.
     return {
-      name: error.name,
-      message: redactUriCredentials(error.message),
-      ...(typeof error.code === 'string' ? { code: error.code } : {}),
+      name: redactString(error.name),
+      message: redactString(error.message),
+      ...(typeof error.code === 'string' ? { code: redactString(error.code) } : {}),
     };
   }
   if (Array.isArray(value)) {

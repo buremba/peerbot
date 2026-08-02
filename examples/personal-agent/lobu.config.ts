@@ -7,6 +7,7 @@ import {
   defineConnection,
   defineEntityType,
   defineRelationshipType,
+  reactionFromFile,
 } from "@lobu/cli/config";
 import type GoogleTakeoutConnector from "./google-takeout.connector.ts";
 import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
@@ -16,6 +17,7 @@ import type SpotifyConnector from "./spotify.connector.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
 import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
+import type SocialInterestRadarReaction from "./social-interest-radar.reaction.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -925,7 +927,161 @@ const mentions = defineRelationshipType({
   description: "Auto-discovered content reference",
 });
 
+const voiceProfile = defineEntityType({
+  key: "voice-profile",
+  name: "Voice profile",
+  description:
+    "How the member sounds (mode=voice) or what they engage with (mode=taste) on one channel. Human analogue of agent identity/soul.",
+  metadata: { icon: "🎙️", color: "#F59E0B" },
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["voice", "taste"],
+      "x-table-label": "Mode",
+      "x-table-column": true,
+    },
+    channel: {
+      type: "string",
+      enum: ["core", "x", "linkedin", "reddit", "instagram"],
+      "x-table-label": "Channel",
+      "x-table-column": true,
+    },
+    summary: { type: "string" },
+    themes: { type: "array", items: { type: "string" } },
+    prefers: { type: "array", items: { type: "string" } },
+    avoids: { type: "array", items: { type: "string" } },
+    confidence: {
+      type: "string",
+      enum: ["low", "medium", "high"],
+      "x-table-label": "Confidence",
+      "x-table-column": true,
+    },
+    evidence_count: {
+      type: "number",
+      "x-table-label": "Evidence",
+      "x-table-column": true,
+    },
+    evidence_from: { type: "string", format: "date" },
+    evidence_to: { type: "string", format: "date" },
+    sample_event_ids: { type: "array", items: { type: "number" } },
+    profile_key: { type: "string" },
+  },
+});
+
+// Deprecated compatibility declaration. The radar now writes threaded events
+// with keyingConfig: null, but prune must retain this type while historical
+// social-signal entity rows still exist. Remove it only through an explicit
+// data migration; it is not part of the active output path.
+const socialSignal = defineEntityType({
+  key: "social-signal",
+  name: "Social Signal",
+  description:
+    "Deprecated historical entity rows from the former Social Interest Radar output path.",
+  metadata: { icon: "radar" },
+  properties: {
+    platform: {
+      type: "string",
+      enum: ["x", "linkedin"],
+      description: "Source platform",
+    },
+    author: {
+      type: "string",
+      minLength: 1,
+      description: 'Post author (never "unknown")',
+    },
+    snippet: { type: "string", description: "Excerpt of the post" },
+    why: {
+      type: "string",
+      minLength: 1,
+      description: "Why this matches taste — specific to this item",
+    },
+    priority: { type: "string", enum: ["high", "normal", "low"] },
+    source_origin_id: {
+      type: "string",
+      description: "Stable events.origin_id of the source post",
+    },
+    source_event_id: {
+      type: "integer",
+      description: "Originating event id (unstable across re-sync)",
+    },
+    suggested_action: { type: "string", description: "Concrete next step" },
+  },
+  required: ["platform", "author", "why", "priority", "source_origin_id"],
+});
+
 // ── Behaviors (must be declared under prune or apply deletes them) ─
+
+const voiceProfileSynthesis = defineBehavior({
+  agent: personalAgent,
+  slug: "voice-profile-synth-v2",
+  name: "Voice profile synthesis",
+  tags: ["voice", "identity", "social"],
+  triggers: [
+    { kind: "schedule", cron: "40 6 * * 1", skip_if_unchanged: false },
+  ],
+  notification: { channel: "canvas", priority: "low" },
+  minCooldownSeconds: 3600,
+  keyingConfig: {
+    entityType: "voice-profile",
+    entityPath: "profiles",
+    keyFields: ["channel", "mode"],
+    keyOutputField: "profile_key",
+  },
+  sources: {
+    authored_recent:
+      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 400) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 40 AND occurred_at > now() - interval '21 days' AND ((connector_key = 'twitter.takeout' AND origin_type IN ('reply','tweet')) OR (connector_key = 'x' AND origin_type IN ('tweet','reply') AND lower(coalesce(metadata->>'author_handle','')) = 'buremba') OR (connector_key IN ('linkedin','linkedin.takeout') AND origin_type = 'message')) ORDER BY occurred_at DESC LIMIT 200",
+    engaged_recent:
+      "SELECT id, occurred_at, connector_key, origin_type, left(payload_text, 300) AS payload_text, metadata FROM events WHERE payload_text IS NOT NULL AND length(payload_text) >= 20 AND occurred_at > now() - interval '21 days' AND ((connector_key IN ('x','twitter.takeout') AND origin_type IN ('liked_tweet','bookmark')) OR (connector_key = 'instagram.takeout' AND origin_type IN ('like','saved','comment'))) ORDER BY occurred_at DESC LIMIT 200",
+    existing_profiles: {
+      context: true,
+      query:
+        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type = 'voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
+    },
+  },
+  prompt:
+    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","profile_key","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
+  reactionsGuidance:
+    "ALWAYS re-emit every existing_profiles row (same channel/mode/profile_key). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
+});
+
+const socialInterestRadar = defineBehavior({
+  agent: personalAgent,
+  slug: "social-interest-radar-v2",
+  name: "Social interest radar (X + LinkedIn)",
+  tags: ["social", "x", "linkedin", "notifications"],
+  triggers: [
+    { kind: "schedule", cron: "25 * * * *", skip_if_unchanged: false },
+  ],
+  notification: { channel: "both", priority: "normal" },
+  minCooldownSeconds: 1800,
+  keyingConfig: null,
+  sources: {
+    recent_social:
+      "SELECT id, origin_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
+    already_emitted: {
+      context: true,
+      query:
+        "SELECT id, metadata->>'source_origin_id' AS source_origin_id FROM events WHERE semantic_type = 'social_signal' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
+    },
+    voice_profiles: {
+      context: true,
+      query:
+        "SELECT NULL::bigint AS id, v.name, v.metadata, v.updated_at FROM entities v WHERE v.entity_type='voice-profile' AND v.deleted_at IS NULL ORDER BY v.updated_at DESC LIMIT 20",
+    },
+    known_people: {
+      context: true,
+      query:
+        "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40",
+    },
+  },
+  prompt:
+    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Read LinkedIn authors from metadata.author and X authors from metadata.author_handle. Never use "unknown" when an author field exists. For each item, copy the source row\'s id to source_event_id and origin_id to source_origin_id, explain a specific why, and give a concrete suggested_action. Prefer posts not present in already_emitted. Return only the extracted data required by the reaction schema; the deterministic reaction persists threaded replies and sends the notification.',
+  reactionsGuidance:
+    "Rank with voice profiles. The deterministic reaction owns reply-event persistence, retry deduplication, and notification delivery.",
+  reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
+    "./social-interest-radar.reaction.ts"
+  ),
+});
 
 const hourlyTaskCollaborator = defineBehavior({
   agent: personalAgent,
@@ -1013,9 +1169,16 @@ export default defineConfig({
     trip,
     goal,
     learning,
+    voiceProfile,
+    socialSignal,
   ],
   relationships: [worksAt, memberOf, mentions],
-  behaviors: [hourlyTaskCollaborator, duplicateEntityResolution],
+  behaviors: [
+    hourlyTaskCollaborator,
+    duplicateEntityResolution,
+    voiceProfileSynthesis,
+    socialInterestRadar,
+  ],
   connections: [
     midasConnection,
     revolutConnection,

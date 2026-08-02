@@ -111,4 +111,109 @@ describe('saveContent > occurred_at default', () => {
     `;
     expect(new Date(row.occurred_at as string).toISOString()).toBe(explicit);
   });
+
+  it('stores a first-class reply edge and inherits the source URL', async () => {
+    const parent = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'Original LinkedIn post.',
+        semantic_type: 'note',
+        source_url: 'https://www.linkedin.com/feed/update/urn:li:activity:123',
+        metadata: {},
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+
+    const reply = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'This matters because it is a concrete agent-infrastructure signal.',
+        semantic_type: 'note',
+        parent_event_id: parent.id,
+        metadata: {},
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+
+    const sql = getTestDb();
+    const [row] = await sql`
+      SELECT child.origin_parent_id, parent.origin_id AS expected_parent_origin_id,
+             child.source_url
+      FROM events child
+      JOIN events parent ON parent.id = ${parent.id}
+      WHERE child.id = ${reply.id}
+    `;
+    expect(row.origin_parent_id).toBe(row.expected_parent_origin_id);
+    expect(row.source_url).toBe(
+      'https://www.linkedin.com/feed/update/urn:li:activity:123'
+    );
+  });
+
+  it('returns the original event for a repeated idempotency key', async () => {
+    const input = {
+      entity_ids: [entityId],
+      content: 'A retry-safe Behavior reply.',
+      semantic_type: 'note',
+      idempotency_key: 'behavior:71:source:stable-post-1',
+      metadata: { source_origin_id: 'stable-post-1' },
+    } as never;
+
+    const results = (await Promise.all(
+      Array.from({ length: 6 }, () => saveContent(input, {} as never, ctx()))
+    )) as Array<{ id: number }>;
+
+    expect(new Set(results.map((result) => result.id)).size).toBe(1);
+    const sql = getTestDb();
+    const [count] = await sql`
+      SELECT count(*)::int AS n
+      FROM events
+      WHERE organization_id = ${org.id}
+        AND metadata->>'_lobu_idempotency_key' = 'behavior:71:source:stable-post-1'
+    `;
+    expect(Number(count.n)).toBe(1);
+  });
+
+  it('does not let caller metadata set the reserved idempotency key', async () => {
+    const metadata = {
+      source_origin_id: 'caller-authored-post',
+      _lobu_idempotency_key: 'caller-controlled-key',
+    };
+
+    const first = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'First event with caller-authored metadata.',
+        semantic_type: 'note',
+        metadata,
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+    const second = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'Second event with the same caller-authored metadata.',
+        semantic_type: 'note',
+        metadata,
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+
+    expect(second.id).not.toBe(first.id);
+    const sql = getTestDb();
+    const rows = await sql`
+      SELECT metadata
+      FROM events
+      WHERE id IN (${first.id}, ${second.id})
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.metadata)).toEqual([
+      { source_origin_id: 'caller-authored-post' },
+      { source_origin_id: 'caller-authored-post' },
+    ]);
+  });
 });

@@ -247,6 +247,7 @@ export type {
   EntityUpdateInput,
   KnowledgeReadInput,
   KnowledgeSaveInput,
+  KnowledgeSaveResult,
   KnowledgeSearchInput,
   NotificationsSendInput,
 } from './reaction-client-types.js';

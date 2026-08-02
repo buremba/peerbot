@@ -11,7 +11,7 @@ import { normalizeAuthUserId, normalizeEmail } from '@lobu/connector-sdk/identit
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
-import { getDb } from '../db/client';
+import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
 import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
@@ -26,6 +26,7 @@ import {
 } from '../utils/org-guidance';
 import { ensureMemberEntityType } from '../utils/member-entity-type';
 import { requireWriteAccess } from '../utils/organization-access';
+import { isUniqueViolation } from '../utils/pg-errors';
 import { validateTemplateHandlers } from '../utils/validate-json-template';
 import { trackWatcherReaction } from '../utils/watcher-reactions';
 import { isSystemContext } from './access-control';
@@ -53,6 +54,36 @@ function isSupersededByUniqueViolation(error: unknown): boolean {
     err.constraint_name === 'idx_events_superseded_by' ||
     (typeof err.message === 'string' && err.message.includes('idx_events_superseded_by'))
   );
+}
+
+async function findIdempotentEvent(
+  sql: DbClient,
+  organizationId: string,
+  idempotencyKey: string
+): Promise<
+  | (Awaited<ReturnType<typeof insertEvent>> & { metadata: Record<string, unknown> })
+  | undefined
+> {
+  const rows = await sql`
+    SELECT id, entity_ids, origin_id, title, semantic_type, created_at, metadata
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND metadata ? '_lobu_idempotency_key'
+      AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
+    LIMIT 1
+  `;
+  if (rows.length === 0) return undefined;
+  const row = rows[0];
+  return {
+    id: Number(row.id),
+    entity_ids: parsePgNumberArray(row.entity_ids),
+    origin_id: String(row.origin_id ?? ''),
+    title: row.title == null ? null : String(row.title),
+    semantic_type: String(row.semantic_type),
+    created_at: String(row.created_at),
+    change: 'unchanged',
+    metadata: (row.metadata ?? {}) as Record<string, unknown>,
+  };
 }
 
 // ============================================
@@ -113,6 +144,21 @@ export const SaveContentSchema = Type.Object({
   source_url: Type.Optional(
     Type.String({ description: 'URL of the original source for this content.' })
   ),
+  parent_event_id: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        'Event this content answers. The saved event is threaded under the source and inherits its source_url when one is not supplied.',
+    })
+  ),
+  idempotency_key: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 300,
+      description:
+        'Stable producer key. Repeating a save with the same key returns the original event instead of appending a duplicate.',
+    })
+  ),
   occurred_at: Type.Optional(
     Type.String({
       description: 'When the event actually happened (ISO 8601). Defaults to now if omitted.',
@@ -169,6 +215,10 @@ interface SaveContentResult {
   indexing_status: 'pending' | 'completed';
   /** Convenience mirror of `indexing_status === 'completed'`. */
   searchable: boolean;
+  /** True only for the call that appended the event; false on an idempotent replay. */
+  created: boolean;
+  /** Metadata on the durable event (the original metadata on an idempotent replay). */
+  metadata: Record<string, unknown>;
   exact_read: { method: 'client.knowledge.read'; content_ids: [number] };
 }
 
@@ -403,55 +453,133 @@ async function saveContentImpl(
     }
   }
 
+  // 5b. Resolve the source event for a first-class reply. `origin_parent_id`
+  // stores the source's stable external origin, so the child continues to
+  // thread under the current source row even when a connector re-sync
+  // supersedes the exact event id the Behavior originally read.
+  let parentOriginId: string | null = null;
+  let parentSourceUrl: string | null = null;
+  if (args.parent_event_id !== undefined) {
+    const parentRows = await sql`
+      SELECT origin_id, source_url
+      FROM events
+      WHERE id = ${args.parent_event_id}
+        AND organization_id = ${ctx.organizationId}
+      LIMIT 1
+    `;
+    if (parentRows.length === 0) {
+      throw new ToolUserError(
+        `Cannot reply to event ${args.parent_event_id}: not found in this organization`,
+        404
+      );
+    }
+    parentOriginId = String(parentRows[0].origin_id ?? '');
+    if (!parentOriginId) {
+      throw new ToolUserError(
+        `Cannot reply to event ${args.parent_event_id}: source has no origin id`,
+        422
+      );
+    }
+    parentSourceUrl = parentRows[0].source_url ? String(parentRows[0].source_url) : null;
+  }
+
   // 6. Insert into events
   const externalId = `uc_${crypto.randomUUID()}`;
 
+  // Reserved delivery metadata is added only after the caller-authored event
+  // metadata passes its event-kind schema. It is platform bookkeeping, not a
+  // domain field the entity type needs to declare. Strip it from caller
+  // metadata unconditionally. A key smuggled in that way (e.g. metadata copied
+  // forward from a prior KnowledgeSaveResult) would land on the row without
+  // going through the preflight read or the unique-violation reconciliation,
+  // surfacing a raw Postgres conflict on collision.
+  const callerMetadata: Record<string, unknown> = { ...(args.metadata ?? {}) };
+  delete callerMetadata._lobu_idempotency_key;
+  const eventMetadata: Record<string, unknown> = {
+    ...callerMetadata,
+    ...(args.idempotency_key ? { _lobu_idempotency_key: args.idempotency_key } : {}),
+  };
+
   let row: Awaited<ReturnType<typeof insertEvent>>;
-  try {
-    row = await insertEvent({
-      entityIds: finalEntityIds,
-      organizationId: ctx.organizationId,
-      originId: externalId,
-      title: args.title,
-      payloadType,
-      content: args.content ?? null,
-      payloadData: args.payload_data,
-      payloadTemplate: args.payload_template ?? null,
-      attachments: args.attachments,
-      authorName: args.author,
-      sourceUrl: args.source_url ?? null,
-      // The schema promises "Defaults to now if omitted" — honor it. A NULL
-      // occurred_at makes the event invisible to watcher windows (window
-      // content filters on occurred_at within [window_start, window_end)).
-      occurredAt: args.occurred_at ?? new Date().toISOString(),
-      semanticType,
-      metadata: args.metadata,
-      createdBy: ctx.userId,
-      clientId: ctx.clientId,
-      supersedesEventId: args.supersedes_event_id ?? null,
-    });
-  } catch (error) {
-    // The "already superseded?" SELECT above is non-atomic: two concurrent
-    // supersedes of the same target both pass the read, both INSERT, and the
-    // loser hits the partial unique index idx_events_superseded_by with a raw
-    // 23505. The unique index protects the invariant (no data loss) — surface
-    // it as a clean 409 user error instead of a raw DB error + Sentry alert.
-    if (
-      args.supersedes_event_id &&
-      isSupersededByUniqueViolation(error)
-    ) {
+  let inserted = true;
+  let persistedMetadata = eventMetadata;
+  const prior = args.idempotency_key
+    ? await findIdempotentEvent(sql, ctx.organizationId, args.idempotency_key)
+    : undefined;
+  if (prior) {
+    if (prior.semantic_type !== semanticType) {
       throw new ToolUserError(
-        `Cannot supersede event ${args.supersedes_event_id}: already superseded by a concurrent write`,
+        `Idempotency key '${args.idempotency_key}' already belongs to semantic type '${prior.semantic_type}'`,
         409
       );
     }
-    throw error;
+    row = prior;
+    inserted = false;
+    persistedMetadata = prior.metadata;
+  } else {
+    try {
+      row = await insertEvent({
+        entityIds: finalEntityIds,
+        organizationId: ctx.organizationId,
+        originId: externalId,
+        title: args.title,
+        payloadType,
+        content: args.content ?? null,
+        payloadData: args.payload_data,
+        payloadTemplate: args.payload_template ?? null,
+        attachments: args.attachments,
+        authorName: args.author,
+        sourceUrl: args.source_url ?? parentSourceUrl,
+        // The schema promises "Defaults to now if omitted" — honor it. A NULL
+        // occurred_at makes the event invisible to watcher windows (window
+        // content filters on occurred_at within [window_start, window_end)).
+        occurredAt: args.occurred_at ?? new Date().toISOString(),
+        semanticType,
+        metadata: eventMetadata,
+        parentOriginId,
+        createdBy: ctx.userId,
+        clientId: ctx.clientId,
+        supersedesEventId: args.supersedes_event_id ?? null,
+      });
+    } catch (error) {
+      // Two replicas may race after the preflight read. The unique index is the
+      // lock; the loser resolves and returns the winner's durable event.
+      if (
+        args.idempotency_key &&
+        isUniqueViolation(error, 'idx_events_org_idempotency_key')
+      ) {
+        const winner = await findIdempotentEvent(
+          sql,
+          ctx.organizationId,
+          args.idempotency_key
+        );
+        if (!winner) throw error;
+        if (winner.semantic_type !== semanticType) {
+          throw new ToolUserError(
+            `Idempotency key '${args.idempotency_key}' already belongs to semantic type '${winner.semantic_type}'`,
+            409
+          );
+        }
+        row = winner;
+        inserted = false;
+        persistedMetadata = winner.metadata;
+      } else if (args.supersedes_event_id && isSupersededByUniqueViolation(error)) {
+        // The "already superseded?" SELECT above is non-atomic: two concurrent
+        // supersedes can both pass the read. Surface the index conflict cleanly.
+        throw new ToolUserError(
+          `Cannot supersede event ${args.supersedes_event_id}: already superseded by a concurrent write`,
+          409
+        );
+      } else {
+        throw error;
+      }
+    }
   }
 
   // 6b. Auto-link: scan content for entity name mentions.
   // Awaited so the background work doesn't outlive the tool call and reject
   // into an unhandled promise after the DB pool has been torn down.
-  if (finalEntityIds.length > 0) {
+  if (inserted && finalEntityIds.length > 0) {
     await autoLinkEvent({
       eventId: Number(row.id),
       entityIds: finalEntityIds,
@@ -469,12 +597,13 @@ async function saveContentImpl(
       entity_ids: finalEntityIds,
       semantic_type: semanticType,
       supersedes: args.supersedes_event_id,
+      idempotent_replay: !inserted,
     },
-    'Content saved via save_memory'
+    inserted ? 'Content saved via save_memory' : 'Content save replay returned existing event'
   );
 
   // Track watcher reaction if attribution source is provided
-  if (args.behavior_source) {
+  if (inserted && args.behavior_source) {
     await trackWatcherReaction({
       organizationId: ctx.organizationId,
       watcherId: args.behavior_source.behavior_id,
@@ -511,13 +640,15 @@ async function saveContentImpl(
     durable_at: String(row.created_at),
     indexing_status: searchable ? 'completed' : 'pending',
     searchable,
-		// `knowledge.read` takes `content_ids` (array) — a singular `content_id`
-		// is rejected as an unknown argument, so the self-documenting hint must
-		// use the exact shape the reader accepts.
-		exact_read: {
-			method: 'client.knowledge.read',
-			content_ids: [savedId],
-		},
+    created: inserted,
+    metadata: persistedMetadata,
+    // `knowledge.read` takes `content_ids` (array) — a singular `content_id`
+    // is rejected as an unknown argument, so the self-documenting hint must
+    // use the exact shape the reader accepts.
+    exact_read: {
+      method: 'client.knowledge.read',
+      content_ids: [savedId],
+    },
   };
   if (args.supersedes_event_id) {
     result.supersedes_event_id = args.supersedes_event_id;

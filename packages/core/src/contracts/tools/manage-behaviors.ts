@@ -425,10 +425,11 @@ export const ManageBehaviorsSchema = Type.Object(
           // BehaviorKeyingConfigSchema) or the object directly.
           Type.String(),
           BehaviorKeyingConfigSchema,
+          Type.Null(),
         ],
         {
           description:
-            "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity.",
+            "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity. Pass null on create_version to remove an existing binding and make the Behavior reaction-only.",
         }
       )
     ),

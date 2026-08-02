@@ -40,6 +40,15 @@ export interface KnowledgeSaveInput {
   metadata?: Record<string, unknown>;
   title?: string;
   slug?: string;
+  author?: string;
+  payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
+  source_url?: string;
+  /** Event this content answers; stored as a durable thread edge. */
+  parent_event_id?: number;
+  /** Stable producer key used to collapse reaction retries. */
+  idempotency_key?: string;
+  occurred_at?: string;
+  behavior_source?: { behavior_id: number; window_id: number };
 }
 
 export interface KnowledgeReadInput {
@@ -50,6 +59,12 @@ export interface KnowledgeReadInput {
   until?: string;
   limit?: number;
   entity_ids?: number[];
+}
+
+export interface KnowledgeSaveResult {
+  id: number;
+  created: boolean;
+  metadata: Record<string, unknown>;
 }
 
 // ── Entities ─────────────────────────────────────────────────────────────────
@@ -107,6 +122,8 @@ export interface NotificationsSendInput {
   recipients?: "admins" | "all" | string[];
   /** Relative URL the notification links to (e.g. `/acme/entities`). */
   resource_url?: string;
+  /** Stable producer key used to collapse retried sends. */
+  idempotency_key?: string;
   /** Deliver only through this specific bot connection (its id). */
   connection_id?: string;
   /** Arbitrary JSON payload appended to the body as formatted JSON. */
@@ -129,7 +146,7 @@ export interface NotificationsSendInput {
 export interface ReactionClient {
   knowledge: {
     search(input: KnowledgeSearchInput): Promise<unknown>;
-    save(input: KnowledgeSaveInput): Promise<unknown>;
+    save(input: KnowledgeSaveInput): Promise<KnowledgeSaveResult>;
     read(input: KnowledgeReadInput): Promise<unknown>;
     delete(input: number | { event_id?: number; event_ids?: number[]; reason?: string }): Promise<unknown>;
   };

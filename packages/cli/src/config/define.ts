@@ -446,7 +446,7 @@ export interface Behavior {
     keyFields?: string[];
     keyOutputField?: string;
     [k: string]: unknown;
-  };
+  } | null;
   /**
    * Named SQL data sources. Value is either a query string or
    * `{ query, context? }` — `context: true` marks a context-only source

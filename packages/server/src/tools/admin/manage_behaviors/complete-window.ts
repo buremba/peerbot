@@ -716,9 +716,10 @@ export async function handleCompleteWindow(
   const watcherMetaRows = await watcherMetaSql`
     SELECT w.reaction_script_compiled, w.entity_ids,
            w.organization_id, w.current_version_id,
-           w.name,
+           w.name, o.slug AS organization_slug,
            wv.version as watcher_version
     FROM watchers w
+    JOIN organization o ON o.id = w.organization_id
     LEFT JOIN watcher_versions wv ON w.current_version_id = wv.id
     WHERE w.id = ${result.behavior_id}
   `;
@@ -779,6 +780,7 @@ export async function handleCompleteWindow(
           version: Number(row.watcher_version ?? 1),
         },
         organization_id: orgId,
+        organization_slug: String(row.organization_slug),
       };
 
       const MAX_ATTEMPTS = 3;

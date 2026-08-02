@@ -19,6 +19,8 @@ interface CreateNotificationParams {
 	resourceType?: string | null;
 	resourceId?: string | null;
 	resourceUrl?: string | null;
+	/** Stable producer key used to collapse retried notification sends. */
+	idempotencyKey?: string | null;
 	/** When set, deliver only through this specific bot connection */
 	connectionId?: string | null;
 	/** When set, deliver only to this Behavior-subscribed channel. */
@@ -293,8 +295,8 @@ async function deliverToBotConnections(
 export async function createNotificationForUsers(
 	userIds: string[],
 	params: Omit<CreateNotificationParams, "userId">,
-): Promise<void> {
-	if (userIds.length === 0) return;
+): Promise<{ created: boolean }> {
+	if (userIds.length === 0) return { created: false };
 	const sql = getDb();
 
 	// fetch_types:false safe: entity_ids is a `{n,...}` literal (or NULL) cast to
@@ -304,7 +306,7 @@ export async function createNotificationForUsers(
 			? `{${params.entityIds.join(",")}}`
 			: null;
 
-	await sql.begin(async (tx) => {
+	const created = await sql.begin(async (tx) => {
 		const inserted = (await tx`
       INSERT INTO events
         (organization_id, entity_ids, title, payload_text, payload_type, semantic_type,
@@ -322,12 +324,18 @@ export async function createNotificationForUsers(
 					resource_type: params.resourceType ?? null,
 					resource_id: params.resourceId ?? null,
 					resource_url: params.resourceUrl ?? null,
+					...(params.idempotencyKey
+						? { _lobu_idempotency_key: params.idempotencyKey }
+						: {}),
 				})}
       )
+      ON CONFLICT (organization_id, (metadata->>'_lobu_idempotency_key'))
+        WHERE metadata ? '_lobu_idempotency_key'
+      DO NOTHING
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 		const eventId = inserted[0]?.id;
-		if (!eventId) return;
+		if (!eventId) return false;
 
 		await tx`
       INSERT INTO notification_targets (event_id, user_id)
@@ -335,7 +343,9 @@ export async function createNotificationForUsers(
       FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid)
       ON CONFLICT DO NOTHING
     `;
+		return true;
 	});
+	if (!created) return { created: false };
 
 	// Deliver to bot connections (fire-and-forget). The bot delivery targets
 	// the org's connection default channels and is identical for every user in
@@ -346,6 +356,7 @@ export async function createNotificationForUsers(
 			"[Notifications] Failed to deliver to bot connections",
 		),
 	);
+	return { created: true };
 }
 
 export async function listNotifications(opts: {

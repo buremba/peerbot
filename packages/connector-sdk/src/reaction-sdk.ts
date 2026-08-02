@@ -43,4 +43,6 @@ export interface ReactionContext {
   };
   /** Organization context */
   organization_id: string;
+  /** Stable workspace slug for relative app permalinks. */
+  organization_slug: string;
 }

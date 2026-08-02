@@ -133,8 +133,13 @@ export async function handleCreateVersion(
   );
   assertKeyingConfigShape(callerKeyingConfig);
   const keyingConfig =
-    callerKeyingConfig ??
-    normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
+    args.keying_config === null
+      ? null
+      : (callerKeyingConfig ??
+        normalizeStoredJsonField(
+          prev.keying_config,
+          undefined as Record<string, unknown> | undefined
+        ));
   const classifiers =
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);

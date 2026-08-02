@@ -521,6 +521,39 @@ describe("apply diff — watchers", () => {
     ).toEqual(["prompt"]);
   });
 
+  test("explicit null keying clears a remote entity binding", () => {
+    const desired = buildState([], {
+      watchers: [{ ...desiredWatcher, keyingConfig: null }],
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          keying_config: {
+            entity_type: "social-signal",
+            entity_path: "items",
+            key_fields: ["source_origin_id"],
+            key_output_field: "stable_key",
+          },
+        },
+      ],
+    };
+
+    const row = computeDiff(desired, remote).rows.find(
+      (candidate) => candidate.kind === "watcher"
+    );
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("keying_config");
+    expect(
+      (row as { versionBoundFields?: string[] }).versionBoundFields
+    ).toContain("keying_config");
+  });
+
   test("reaction_script declared → always re-pushed (idempotent)", () => {
     const desired = buildState([], {
       watchers: [

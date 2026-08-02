@@ -8,7 +8,12 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { resolveBotDeliveryTargets } from "../../../notifications/service";
+import {
+	createNotificationForUsers,
+	resolveBotDeliveryTargets,
+} from "../../../notifications/service";
+import { notify } from "../../../tools/admin/notify";
+import type { ToolContext } from "../../../tools/registry";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestBehaviorSubscription } from "../../setup/behavior-subscriptions";
 import {
@@ -124,6 +129,70 @@ describe("resolveBotDeliveryTargets", () => {
 				teamId: "T_TEST",
 			},
 		]);
+	});
+
+	it("deduplicates a retried notification by idempotency key", async () => {
+		const org = await createTestOrganization();
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const params = {
+			organizationId: org.id,
+			type: "agent_message" as const,
+			title: "Social signal",
+			body: "A retry-safe Behavior notification.",
+			resourceUrl: `/${org.slug}/memory?content_ids=42`,
+			idempotencyKey: "behavior:71:run:9001:notification",
+		};
+
+		await Promise.all(
+			Array.from({ length: 6 }, () =>
+				createNotificationForUsers([user.id], params as never),
+			),
+		);
+
+		const sql = getTestDb();
+		const [events] = await sql`
+			SELECT count(*)::int AS n
+			FROM events
+			WHERE organization_id = ${org.id}
+			  AND semantic_type = 'notification'
+			  AND metadata->>'_lobu_idempotency_key' = ${params.idempotencyKey}
+		`;
+		const [targets] = await sql`
+			SELECT count(*)::int AS n
+			FROM notification_targets nt
+			JOIN events e ON e.id = nt.event_id
+			WHERE e.organization_id = ${org.id}
+			  AND e.metadata->>'_lobu_idempotency_key' = ${params.idempotencyKey}
+		`;
+		expect(Number(events.n)).toBe(1);
+		expect(Number(targets.n)).toBe(1);
+	});
+
+	it("reports zero notified recipients when notify deduplicates a retry", async () => {
+		const org = await createTestOrganization();
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const ctx = {
+			organizationId: org.id,
+			userId: user.id,
+			memberRole: "owner",
+			isAuthenticated: true,
+			tokenType: "oauth",
+			scopedToOrg: false,
+			allowCrossOrg: true,
+			scopes: ["mcp:admin"],
+			sourceContext: null,
+		} as ToolContext;
+		const args = {
+			action: "send" as const,
+			title: "Social signal",
+			body: "A retry-safe Behavior notification.",
+			idempotency_key: "behavior:71:run:9002:notification",
+		};
+
+		expect(await notify(args, {} as never, ctx)).toEqual({ notified_count: 1 });
+		expect(await notify(args, {} as never, ctx)).toEqual({ notified_count: 0 });
 	});
 
 	it("returns nothing for a connection with no binding", async () => {

@@ -2,23 +2,17 @@
  * Tool-invocation snapshots: the exact redacted request/response of a call,
  * retained under encryption and served only to the caller or an admin/owner.
  *
- * This module is the WHOLE feature — capture, encode, persist, authorize,
- * decode. The audit ledger (`tools/audit.ts`) records the SHAPE of every call
- * and knows only that a snapshot may exist; it never handles a body.
+ * Capture, encode, persist, authorize, decode. The audit ledger
+ * (`tools/audit.ts`) records the SHAPE of every call and knows only that a
+ * snapshot may exist; it never handles a body.
  *
- * Two design constraints shape everything here:
- *
- * SCOPE. Snapshots are limited to {@link SNAPSHOT_TOOLS} — the three tools
- * whose invocation history is itself the audit product (a script, a SQL
- * statement, and what they returned). This is not a size optimisation, it is
- * the security boundary. The generic audit branch deliberately persists NO
- * caller-controlled content, and the tools that dominate audit volume in prod
- * (`manage_connections`, `manage_operations` — 94% of rows) take raw
- * credentials as ARGUMENTS. Redacting those correctly needs the connector's
- * own schema-declared secret keys (see `utils/connection-config-redaction.ts`,
- * which calls the keyname denylist a "backstop" precisely because it is not
- * sufficient alone). Rather than reimplement that layer here, those tools are
- * simply out of scope.
+ * SCOPE is the security boundary, not a size optimisation. The tools that
+ * dominate audit volume (`manage_connections`, `manage_operations`) take raw
+ * credentials as ARGUMENTS, and redacting those needs the connector's
+ * schema-declared secret keys — `utils/connection-config-redaction.ts` calls
+ * the keyname denylist a "backstop" precisely because it is not sufficient
+ * alone. Rather than reimplement that layer here, those tools are out of
+ * scope: {@link SNAPSHOT_TOOLS} only.
  *
  * STORAGE. Bodies live in `tool_invocation_snapshots`, never in
  * `events.payload_data` — rationale in that table's migration.
@@ -60,17 +54,13 @@ export const SNAPSHOT_TOOLS: ReadonlySet<string> = new Set([
  * Credential-SHAPED literals, matched on the value's own structure.
  *
  * `isSecretKey` only fires on a denylisted KEY, so a token pasted as a bare
- * literal INSIDE a script or SQL string — where the enclosing key is `script`
- * or `sql` — would otherwise ride into the body verbatim.
- *
- * Shape-matched, never word-adjacent: this matches the credential itself, not
- * the token following the word `secret`. That distinction is the whole reason
- * the adjacency rule was reverted (see redactDeep), and it is why this one is
- * safe on code and SQL. Shared with the audit preview in `./audit` so the two
- * redaction paths cannot drift.
+ * literal inside a `script`/`sql` string would otherwise ride in verbatim.
+ * Shape-matched, never word-adjacent — that distinction is why this is safe on
+ * code where the reverted adjacency rule was not (see redactDeep). Shared with
+ * the audit preview so the two redaction paths cannot drift.
  */
 export const KNOWN_SECRET_SHAPE_RE =
-  /\b(?:sk-[a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
+  /\b(?:sk[-_][a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
 
 /** Plaintext ceiling. Past this the invocation is marked, never truncated —
  *  a half-recorded request is worse than an honest "too large". */

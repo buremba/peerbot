@@ -32,12 +32,8 @@ interface AuditRow {
   metadata: Record<string, unknown>;
 }
 
-/**
- * Read a row's snapshot the way the route does. Asserts along the way that the
- * BODY never rides on the event itself — that separation is the whole reason
- * the ciphertext lives in `tool_invocation_snapshots`, so it is worth
- * re-checking at every call site rather than once.
- */
+/** Read a row's snapshot the way the route does, re-asserting at every call
+ *  site that the body never rides on the event itself. */
 async function readSnapshot(
   row: AuditRow,
   orgId: string,
@@ -313,12 +309,9 @@ describe('tool invocation audit coverage', () => {
   });
 
   it('preserves SQL and script text verbatim — credential WORDS are not credentials', async () => {
-    // Regression: a free-text rule that consumed the token after
-    // token/secret/credential/password/key rewrote `SELECT id, secret FROM t`
-    // to `secret [redacted] t` and `const token = await auth()` to
-    // `token=[redacted] auth()`. SQL and JavaScript are the only things this
-    // module ever snapshots, and those words are ordinary vocabulary in both —
-    // a corrupted body has no audit value, so key-scoped redaction only.
+    // Regression: a word-adjacency rule rewrote `SELECT id, secret FROM t` to
+    // `secret [redacted] t`. Those words are ordinary vocabulary in SQL and JS,
+    // which is all this module snapshots.
     const sql = "SELECT id, secret FROM events WHERE title = 'the token bucket'";
     const result = (await executeTool(
       'query_sql',
@@ -354,12 +347,9 @@ describe('tool invocation audit coverage', () => {
   });
 
   it('reports a body encrypted under a different key as unavailable, not an error', async () => {
-    // A rotated ENCRYPTION_KEY (or a boot under
-    // LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1, which mints a random one each
-    // time) leaves undecryptable bodies behind. That is an expected end of
-    // life, so it must read like any other absent body rather than throwing
-    // and turning every historical row into a 500. The seeded fingerprint
-    // never matches the live key, which is exactly the post-rotation state.
+    // A rotated (or ephemeral) ENCRYPTION_KEY leaves undecryptable bodies
+    // behind. Expected end of life, so it must read like any other absent body
+    // rather than 500ing. The seeded fingerprint never matches the live key.
     const eventId = await seedAuditRowWithBody(orgId, ownerId, 'probe_key_rotation');
 
     expect(
@@ -406,17 +396,15 @@ describe('tool invocation audit coverage', () => {
   });
 
   it('redacts credential-SHAPED literals pasted inside script/SQL text', async () => {
-    // `isSecretKey` only fires on a denylisted KEY. A key pasted as a bare
-    // literal INSIDE the script or SQL string sits under `script`/`sql`, which
-    // are not secret key names — so without a shape check it rides into the
-    // body verbatim. Shape-matched on the value, so this cannot reintroduce the
-    // word-adjacency corruption the module header documents.
+    // `isSecretKey` only fires on a denylisted KEY, and `script`/`sql` are not
+    // secret key names — without a shape check the literal rides in verbatim.
     const capture = await captureSnapshot({
       toolName: 'run_sdk',
       args: {
         script:
           'await fetch(u, { headers: { Authorization: "Bearer sk-live-AAAABBBBCCCCDDDD" } });\n' +
-          '// rotate ghp_ABCDEFGHIJKLMNOPQRST and xoxb-1111-2222-abcdefghij',
+          '// rotate ghp_ABCDEFGHIJKLMNOPQRST, xoxb-1111-2222-abcdefghij,\n' +
+          '// and sk_live_ABCDEFGHIJKLMNOP',
       },
       result: { ok: true },
     });
@@ -424,6 +412,8 @@ describe('tool invocation audit coverage', () => {
     expect(request).not.toContain('sk-live-AAAABBBBCCCCDDDD');
     expect(request).not.toContain('ghp_ABCDEFGHIJKLMNOPQRST');
     expect(request).not.toContain('xoxb-1111-2222-abcdefghij');
+    // Stripe uses an underscore separator; OpenAI a dash. Both are `sk`.
+    expect(request).not.toContain('sk_live_ABCDEFGHIJKLMNOP');
 
     // And the surrounding code is still intact — redaction replaced the
     // literals, not the statement around them.
@@ -621,11 +611,9 @@ describe('tool invocation audit coverage', () => {
       'must-not-reach-the-audit-log'
     );
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
-    // `manage_connections` takes RAW connector config as arguments — its
-    // create/update path receives plaintext secrets whose keys are declared per
-    // connector (`options_schema`), not by the global keyname denylist this
-    // module applies. It is therefore deliberately out of snapshot scope: no
-    // body is captured, so there is nothing for the denylist to miss.
+    // `manage_connections` takes RAW connector config as arguments, whose
+    // secret keys are declared per connector rather than by the global
+    // denylist — hence out of snapshot scope entirely.
     expect(row!.payload_data).not.toHaveProperty('snapshot_status');
     expect(
       await readSnapshotForCaller({

@@ -2226,6 +2226,17 @@ export async function prepareXReply(
 		url: tweetUrl,
 		open_in_new_tab: true,
 		wait_for_load: true,
+		// Exempt this tab from the extension's 5-minute scratch-tab reaper.
+		// Without it the reaper force-closes the draft (measured: staged
+		// 23:45:09, gone by 23:52:28) while this action still reports
+		// prepared: true — the loss is invisible from here. A staged draft is
+		// finished work handed to a person, not an orphaned scrape tab, so it
+		// gets STAGED_DRAFT_TAB_TTL_MS instead.
+		//
+		// Requires the Owletto extension to understand `staged_draft`; older
+		// builds ignore the flag and fall back to the 5-minute TTL.
+		staged_draft: true,
+		focus: opts.focus !== false,
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	const tabId = nav.tab_id;
@@ -2379,7 +2390,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.7.0",
+		version: "3.9.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

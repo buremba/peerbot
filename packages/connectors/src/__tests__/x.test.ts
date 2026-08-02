@@ -1172,6 +1172,49 @@ describe("prepare_reply browser targeting", () => {
 	});
 });
 
+// The staged tab must outlive the run. Without persistent:true the extension
+// treats it as an owned scratch tab and the reaper force-closes it after 5
+// minutes — the draft vanishes while the run still reports prepared:true, so
+// nothing at runtime reveals the bug. This test is the only guard.
+describe("prepare_reply tab survival", () => {
+	test("navigates with persistent:true so the reaper cannot close the draft", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "must still be here in an hour",
+		});
+
+		const nav = calls.find((c) => c.action === "navigate");
+		expect(nav).toBeDefined();
+		// Without this the extension's reaper force-closes the draft after 5
+		// minutes and the action still reports prepared: true.
+		expect(nav?.input.staged_draft).toBe(true);
+		// Focused, or X does not paint the composer and staging fails outright
+		// with "could not locate the reply composer".
+		expect(nav?.input.focus).toBe(true);
+		// NOT persistent: the sticky anchor survives the reaper too, but it
+		// opens its own window and X would not render the composer in it.
+		expect(nav?.input.persistent).toBeUndefined();
+	});
+
+	test("does not stamp holder_agent_id / holder_thread_id", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+		});
+
+		// Those stamps buy a 30-min TTL but drive the sidepanel's conversation
+		// deep-link; faking them to win a TTL would break the sidepanel.
+		for (const call of calls) {
+			expect(call.input).not.toHaveProperty("holder_agent_id");
+			expect(call.input).not.toHaveProperty("holder_thread_id");
+		}
+	});
+});
+
 // A draft with no reason attached is just text in a box — the "why" is most of
 // what you need to accept, edit or bin it. linkedin.prepare_comment already
 // injects this banner; X did not.

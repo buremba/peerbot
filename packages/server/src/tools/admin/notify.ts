@@ -198,5 +198,5 @@ async function handleSend(
     });
   }
 
-  return { notified_count: userIds.length };
+  return { notified_count: notification.created ? userIds.length : 0 };
 }

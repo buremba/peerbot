@@ -174,4 +174,46 @@ describe('saveContent > occurred_at default', () => {
     `;
     expect(Number(count.n)).toBe(1);
   });
+
+  it('does not let caller metadata set the reserved idempotency key', async () => {
+    const metadata = {
+      source_origin_id: 'caller-authored-post',
+      _lobu_idempotency_key: 'caller-controlled-key',
+    };
+
+    const first = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'First event with caller-authored metadata.',
+        semantic_type: 'note',
+        metadata,
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+    const second = (await saveContent(
+      {
+        entity_ids: [entityId],
+        content: 'Second event with the same caller-authored metadata.',
+        semantic_type: 'note',
+        metadata,
+      } as never,
+      {} as never,
+      ctx()
+    )) as { id: number };
+
+    expect(second.id).not.toBe(first.id);
+    const sql = getTestDb();
+    const rows = await sql`
+      SELECT metadata
+      FROM events
+      WHERE id IN (${first.id}, ${second.id})
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.metadata)).toEqual([
+      { source_origin_id: 'caller-authored-post' },
+      { source_origin_id: 'caller-authored-post' },
+    ]);
+  });
 });

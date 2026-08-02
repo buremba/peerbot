@@ -493,8 +493,8 @@ async function saveContentImpl(
   // forward from a prior KnowledgeSaveResult) would land on the row without
   // going through the preflight read or the unique-violation reconciliation,
   // surfacing a raw Postgres conflict on collision.
-  const { _lobu_idempotency_key: _reservedIdempotencyKey, ...callerMetadata } =
-    args.metadata ?? {};
+  const callerMetadata: Record<string, unknown> = { ...(args.metadata ?? {}) };
+  delete callerMetadata._lobu_idempotency_key;
   const eventMetadata: Record<string, unknown> = {
     ...callerMetadata,
     ...(args.idempotency_key ? { _lobu_idempotency_key: args.idempotency_key } : {}),

@@ -3,15 +3,14 @@ import { REDACTED_SENTINEL } from '@lobu/core';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
-import {
-  captureRequestSnapshot,
-  KNOWN_SECRET_SHAPE_RE,
-  persistRequestSnapshot,
-  REQUEST_SNAPSHOT_TOOLS,
-} from './invocation-snapshot';
 import { getTool, type ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
+// These tools retain their exact request on the audit event. Other tools
+// retain only the sanitized summary below.
+const REQUEST_EVENT_TOOLS = new Set(['run_sdk', 'query_sdk', 'query_sql']);
+const KNOWN_SECRET_SHAPE_RE =
+  /\b(?:sk[-_][a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
 // Redaction principle: consume the COMPLETE credential. Over-consumption is
 // fine (previews are display-only; identity comes from the hash of the
 // redacted form), partial redaction is not — a stop at the first space,
@@ -199,7 +198,7 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   // Browser-session and anonymous generic reads stay out of Activity. Power
   // tools are retained because their invocation history is the audit product.
   if (
-    !REQUEST_SNAPSHOT_TOOLS.has(params.toolName) &&
+    !REQUEST_EVENT_TOOLS.has(params.toolName) &&
     params.ctx.tokenType !== 'oauth' &&
     params.ctx.tokenType !== 'pat'
   ) {
@@ -209,8 +208,8 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
   // becomes the sentinel unless its key is a known structural discriminator.
   // A raw or pattern-redacted serialization would persist free-text values
   // (and an unsalted credential-derived digest) whenever a secret hides in a
-  // shape no pattern enumerates — the ledger records the call's shape, never
-  // its content.
+  // shape no pattern enumerates. These two fields record only the call shape;
+  // request-bearing tools additionally retain their exact args below.
   const sanitizedArgsJson = JSON.stringify(
     sanitizeArgLeaves(params.args ?? {}, schemaPropertyNames(params.toolName), true)
   );
@@ -238,10 +237,12 @@ export async function recordToolInvocationAudit(
   try {
     const payload = buildPayload(params);
     if (!payload) return;
-    const snapshot = captureRequestSnapshot(params);
-    if (snapshot) Object.assign(payload, snapshot.fields);
+    // Verbatim by contract, append-only and org-scoped like the containing event.
+    if (REQUEST_EVENT_TOOLS.has(params.toolName)) {
+      payload.request = params.args;
+    }
     const success = payload.success === true;
-    const event = await insertEvent({
+    await insertEvent({
       entityIds: [],
       organizationId: params.ctx.organizationId,
       originId: `tool_invocation:${params.toolName}:${Date.now()}:${randomUUID()}`,
@@ -261,9 +262,6 @@ export async function recordToolInvocationAudit(
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,
     });
-    if (snapshot?.body) {
-      await persistRequestSnapshot({ eventId: event.id, body: snapshot.body });
-    }
   } catch (auditError) {
     logger.warn(
       { err: auditError, toolName: params.toolName },

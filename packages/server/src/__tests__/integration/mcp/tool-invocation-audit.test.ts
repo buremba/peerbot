@@ -1,14 +1,10 @@
 import { createHash } from 'node:crypto';
 import { REDACTED_SENTINEL } from '@lobu/core';
-import { Hono } from 'hono';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SCOPE_CHECK_NOT_APPLICABLE } from '../../../auth/tool-access';
 import { recordToolInvocationAudit } from '../../../tools/audit';
-import { readRequestSnapshotForCaller } from '../../../tools/invocation-snapshot';
-import { sweepToolInvocationSnapshots } from '../../../scheduled/sweep-tool-invocation-snapshots';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
-import { restGetToolInvocationRequest } from '../../../rest-api';
 import { type AuthContext, executeTool } from '../../../tools/execute';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
@@ -110,7 +106,7 @@ describe('tool invocation audit coverage', () => {
     expect(row!.payload_data.args_preview_redacted).not.toContain('audit coverage probe');
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
     expect(row!.payload_data).not.toHaveProperty('content');
-    expect(row!.payload_data).not.toHaveProperty('snapshot_status');
+    expect(row!.payload_data).not.toHaveProperty('request');
     expect(row!.metadata.mcp_session_id).toBe(sessionId);
   });
 
@@ -126,56 +122,21 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     expect(row!.payload_data.org_slug).toBe(orgSlug);
-    const read = await readRequestSnapshotForCaller({
-      eventId: String(row!.id),
-      organizationId: orgId,
-      userId: ownerId,
-      memberRole: 'owner',
+    expect(row!.payload_data.request).toEqual({
+      sql: 'SELECT id FROM events',
+      sort_by: 'id',
+      limit: 1,
+      org_slug: orgSlug,
     });
-    expect(read).toEqual({
-      status: 'ok',
-      request: {
-        sql: 'SELECT id FROM events',
-        sort_by: 'id',
-        limit: 1,
-        org_slug: orgSlug,
-      },
-    });
-    expect(read).not.toHaveProperty('response');
+    expect(row!.payload_data).not.toHaveProperty('response');
     expect(row!.metadata).toHaveProperty('mcp_session_id', null);
   });
 
-  it('gates request reads to the caller or a workspace admin', async () => {
+  it('makes the exact request available through the event itself', async () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     const eventId = String(row!.id);
 
-    expect(
-      await readRequestSnapshotForCaller({
-        eventId,
-        organizationId: orgId,
-        userId: ownerId,
-        memberRole: 'member',
-      })
-    ).toMatchObject({ status: 'ok' });
-    expect(
-      await readRequestSnapshotForCaller({
-        eventId,
-        organizationId: orgId,
-        userId: 'another-user',
-        memberRole: 'member',
-      })
-    ).toEqual({ status: 'forbidden' });
-    expect(
-      await readRequestSnapshotForCaller({
-        eventId,
-        organizationId: orgId,
-        userId: 'another-user',
-        memberRole: 'admin',
-      })
-    ).toMatchObject({ status: 'ok' });
-
-    expect(row!.payload_data).not.toHaveProperty('snapshot_ciphertext');
     const sqlResult = (await executeTool(
       'query_sql',
       {
@@ -185,69 +146,41 @@ describe('tool invocation audit coverage', () => {
       {} as Env,
       authCtxFor('session')
     )) as { rows: Array<{ payload_data: Record<string, unknown> }> };
-    expect(sqlResult.rows[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
+    expect(sqlResult.rows[0].payload_data.request).toEqual({
+      sql: 'SELECT id FROM events',
+      sort_by: 'id',
+      limit: 1,
+      org_slug: orgSlug,
+    });
   });
 
-  it('redacts request secrets without rewriting ordinary SQL vocabulary', async () => {
+  it('retains the exact request while the preview keeps its redaction policy', async () => {
     const sql = "SELECT id, secret FROM events WHERE title = 'the token bucket'";
     await recordToolInvocationAudit({
       toolName: 'query_sql',
       args: {
         sql: `${sql}; -- sk_live_ABCDEFGHIJKLMNOP`,
-        api_key: 'sk-live-must-not-survive',
+        api_key: 'sk-live-STORED-VERBATIM',
       },
       result: { rows: [] },
       durationMs: 1,
       ctx: authCtxFor('pat') as never,
     });
 
+    // `request` is verbatim by contract — it is the reconstruction surface.
     const row = await latestAuditRow(orgId, 'query_sql');
-    const read = await readRequestSnapshotForCaller({
-      eventId: String(row!.id),
-      organizationId: orgId,
-      userId: ownerId,
-      memberRole: 'owner',
+    expect(row!.payload_data.request).toEqual({
+      sql: `${sql}; -- sk_live_ABCDEFGHIJKLMNOP`,
+      api_key: 'sk-live-STORED-VERBATIM',
     });
-    expect(read.status).toBe('ok');
-    if (read.status !== 'ok') return;
-    const request = read.request as Record<string, unknown>;
-    expect(request.sql).toContain(sql);
-    expect(request.sql).not.toContain('sk_live_ABCDEFGHIJKLMNOP');
-    expect(request.api_key).toBe(REDACTED_SENTINEL);
-  });
 
-  it('serves the request route to a session but rejects an unscoped token', async () => {
-    const row = await latestAuditRow(orgId, 'query_sql');
-    expect(row).not.toBeNull();
-    const makeApp = (unscoped: boolean) => {
-      const app = new Hono<{ Bindings: Env }>();
-      app.use('*', async (c, next) => {
-        c.set('organizationId', orgId);
-        c.set('memberRole', 'owner');
-        c.set('mcpIsAuthenticated', true);
-        c.set('session', unscoped ? null : ({ userId: ownerId } as never));
-        c.set(
-          'mcpAuthInfo',
-          unscoped
-            ? ({
-                tokenType: 'access_token',
-                userId: ownerId,
-                organizationId: orgId,
-                scopes: [],
-              } as never)
-            : null
-        );
-        await next();
-      });
-      app.get('/:eventId', restGetToolInvocationRequest);
-      return app;
-    };
-
-    const allowed = await makeApp(false).request(`/${row!.id}`);
-    expect(allowed.status).toBe(200);
-    expect(await allowed.json()).toMatchObject({ status: 'ok' });
-    expect((await makeApp(true).request(`/${row!.id}`)).status).toBe(404);
-    expect((await makeApp(false).request('/999999999999999999999999')).status).toBe(404);
+    // The DISPLAY preview on the same row is unaffected by that contract: it
+    // still drops secret shapes, and still leaves ordinary SQL vocabulary
+    // (`secret`, `token`) intact rather than mangling the statement.
+    const preview = row!.payload_data.sql_preview_redacted as string;
+    expect(preview).toContain(sql);
+    expect(preview).not.toContain('sk_live_ABCDEFGHIJKLMNOP');
+    expect(preview).toContain('[redacted]');
   });
 
   it('does NOT write generic audit rows for browser-session tool calls', async () => {
@@ -289,13 +222,7 @@ describe('tool invocation audit coverage', () => {
     expect(result.success).toBe(true);
 
     const row = await latestAuditRow(orgId, 'query_sdk');
-    const read = await readRequestSnapshotForCaller({
-      eventId: String(row!.id),
-      organizationId: orgId,
-      userId: ownerId,
-      memberRole: 'owner',
-    });
-    expect(read).toEqual({ status: 'ok', request: { script } });
+    expect(row!.payload_data.request).toEqual({ script });
   });
 
   it('audits a failed generic call with the error captured', async () => {
@@ -413,41 +340,17 @@ describe('tool invocation audit coverage', () => {
     }
   );
 
-  it('marks oversized requests and expires retained bodies without deleting audit rows', async () => {
+  it('retains large requests directly on their audit event', async () => {
+    const script = 'x'.repeat(300 * 1024);
     await recordToolInvocationAudit({
       toolName: 'run_sdk',
-      args: { script: 'x'.repeat(300 * 1024) },
+      args: { script },
       result: { success: true },
       durationMs: 1,
       ctx: authCtxFor('pat') as never,
     });
-    const oversized = await latestAuditRow(orgId, 'run_sdk');
-    expect(oversized!.payload_data.snapshot_status).toBe('too_large');
-
-    await recordToolInvocationAudit({
-      toolName: 'query_sql',
-      args: { sql: 'SELECT 1' },
-      result: { rows: [] },
-      durationMs: 1,
-      ctx: authCtxFor('pat') as never,
-    });
-    const retained = await latestAuditRow(orgId, 'query_sql');
-    const db = getDb();
-    await db`
-      UPDATE tool_invocation_snapshots
-      SET created_at = now() - interval '31 days'
-      WHERE event_id = ${retained!.id}
-    `;
-    expect((await sweepToolInvocationSnapshots()).deleted).toBeGreaterThan(0);
-    expect(
-      await readRequestSnapshotForCaller({
-        eventId: String(retained!.id),
-        organizationId: orgId,
-        userId: ownerId,
-        memberRole: 'owner',
-      })
-    ).toEqual({ status: 'unavailable' });
-    expect(await db`SELECT id FROM events WHERE id = ${retained!.id}`).toHaveLength(1);
+    const row = await latestAuditRow(orgId, 'run_sdk');
+    expect(row!.payload_data.request).toEqual({ script });
   });
 
   it('fully redacts secrets embedded in NON-secret string fields (quoted values, Basic auth, comma-delimited)', async () => {

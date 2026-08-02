@@ -148,7 +148,9 @@ function redactDeep(value: unknown, seen = new WeakSet<object>()): unknown {
     seen.delete(value);
     return result;
   }
-  return String(value);
+  // Functions and symbols. `String(fn)` is its SOURCE, so this stringification
+  // reaches a string like any leaf and gets the same redaction.
+  return redactString(String(value));
 }
 
 /**

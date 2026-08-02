@@ -38,11 +38,8 @@ routes.get("/", mcpAuth, async (c) => {
 				e.client_id,
 				e.created_by,
 				e.metadata->>'agent_id' AS agent_id,
-				e.metadata->>'tool_name' AS tool_name,
-				COALESCE(
-					(e.metadata->>'success')::boolean,
-					(e.payload_data->>'success')::boolean
-				) AS success,
+				e.payload_data->>'tool_name' AS tool_name,
+				(e.payload_data->>'success')::boolean AS success,
 				e.occurred_at
 			FROM events e
 			WHERE e.organization_id = ${organizationId}

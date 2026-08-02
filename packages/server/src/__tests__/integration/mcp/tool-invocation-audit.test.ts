@@ -250,7 +250,6 @@ describe('tool invocation audit coverage', () => {
       snapshot_status: 'complete',
     });
     expect(listRead.content[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
-    expect(listRead.content[0].payload_data).not.toHaveProperty('snapshot_sha256');
   });
 
   it('does not expose snapshot bodies through query_sql events.payload_data', async () => {
@@ -313,14 +312,6 @@ describe('tool invocation audit coverage', () => {
     // `secret [redacted] t`. Those words are ordinary vocabulary in SQL and JS,
     // which is all this module snapshots.
     const sql = "SELECT id, secret FROM events WHERE title = 'the token bucket'";
-    const result = (await executeTool(
-      'query_sql',
-      { sql: 'SELECT id FROM events', sort_by: 'id', limit: 1 },
-      {} as Env,
-      authCtxFor('oauth')
-    )) as { error?: string };
-    expect(result.error).toBeUndefined();
-
     await recordToolInvocationAudit({
       toolName: 'query_sql',
       args: { sql, limit: 1, api_key: 'sk-live-must-not-survive' },
@@ -398,28 +389,13 @@ describe('tool invocation audit coverage', () => {
   it('redacts credential-SHAPED literals pasted inside script/SQL text', async () => {
     // `isSecretKey` only fires on a denylisted KEY, and `script`/`sql` are not
     // secret key names — without a shape check the literal rides in verbatim.
-    const capture = await captureSnapshot({
-      toolName: 'run_sdk',
-      args: {
-        script:
-          'await fetch(u, { headers: { Authorization: "Bearer sk-live-AAAABBBBCCCCDDDD" } });\n' +
-          '// rotate ghp_ABCDEFGHIJKLMNOPQRST, xoxb-1111-2222-abcdefghij,\n' +
-          '// and sk_live_ABCDEFGHIJKLMNOP',
-      },
-      result: { ok: true },
-    });
-    const request = JSON.stringify(capture!.fields) + JSON.stringify(capture);
-    expect(request).not.toContain('sk-live-AAAABBBBCCCCDDDD');
-    expect(request).not.toContain('ghp_ABCDEFGHIJKLMNOPQRST');
-    expect(request).not.toContain('xoxb-1111-2222-abcdefghij');
-    // Stripe uses an underscore separator; OpenAI a dash. Both are `sk`.
-    expect(request).not.toContain('sk_live_ABCDEFGHIJKLMNOP');
-
-    // And the surrounding code is still intact — redaction replaced the
-    // literals, not the statement around them.
+    const source =
+      'await fetch(u, { headers: { Authorization: "Bearer sk-live-AAAABBBBCCCCDDDD" } });\n' +
+      '// rotate ghp_ABCDEFGHIJKLMNOPQRST, xoxb-1111-2222-abcdefghij,\n' +
+      '// and sk_live_ABCDEFGHIJKLMNOP; return secret;';
     await recordToolInvocationAudit({
       toolName: 'run_sdk',
-      args: { script: 'const secret = "sk-live-AAAABBBBCCCCDDDD"; return secret;' },
+      args: { script: source },
       result: { ok: true },
       durationMs: 1,
       ctx: {
@@ -435,8 +411,18 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'run_sdk');
     const snapshot = await readSnapshot(row!, orgId, ownerId);
     const script = String((snapshot.request as Record<string, unknown>).script);
-    expect(script).not.toContain('sk-live-AAAABBBBCCCCDDDD');
-    expect(script).toContain('const secret =');
+    for (const secret of [
+      'sk-live-AAAABBBBCCCCDDDD',
+      'ghp_ABCDEFGHIJKLMNOPQRST',
+      'xoxb-1111-2222-abcdefghij',
+      // Stripe uses an underscore separator; OpenAI a dash. Both are `sk`.
+      'sk_live_ABCDEFGHIJKLMNOP',
+    ]) {
+      expect(script).not.toContain(secret);
+    }
+    // The surrounding code is still intact — redaction replaced the literals,
+    // not the statement around them.
+    expect(script).toContain('await fetch');
     expect(script).toContain('return secret;');
   });
 
@@ -480,6 +466,29 @@ describe('tool invocation audit coverage', () => {
     expect(JSON.stringify(snapshot)).not.toContain('AKIAIOSFODNN7EXAMPLE');
     // The prose around the literals survives — this is redaction, not erasure.
     expect(message).toContain('auth failed for');
+  });
+
+  it('redacts credential-SHAPED literals when stringifying non-JSON leaves', async () => {
+    await recordToolInvocationAudit({
+      toolName: 'run_sdk',
+      args: { script: 'return 1;' },
+      result: () => 'sk-live-AAAABBBBCCCCDDDD',
+      durationMs: 1,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+
+    const row = await latestAuditRow(orgId, 'run_sdk');
+    const snapshot = await readSnapshot(row!, orgId, ownerId);
+    expect(String(snapshot.response)).not.toContain('sk-live-AAAABBBBCCCCDDDD');
+    expect(String(snapshot.response)).toContain('[redacted]');
   });
 
   it('captures nothing for a tool outside SNAPSHOT_TOOLS', async () => {

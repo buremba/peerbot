@@ -62,7 +62,7 @@ function redactPreview(value: string): string {
 /**
  * Generic audit summaries persist the SHAPE of a call, never its content.
  * The separately encrypted snapshot retains redacted business values and is
- * only exposed through the creator/admin direct-read path above.
+ * only exposed through the creator/admin read in `invocation-snapshot.ts`.
  * Nothing caller-controlled survives: values are sentineled except
  * booleans/nulls (provably structural — one bit), and property NAMES are kept
  * only when the tool's own input schema declares them at the top level —
@@ -268,8 +268,9 @@ export async function recordToolInvocationAudit(
         token_type: params.ctx.tokenType,
         agent_id: params.ctx.agentId ?? null,
         mcp_session_id: params.ctx.mcpSessionId ?? null,
+        // The same id the failed call handed back to the caller in its error
+        // envelope (`utils/errors.ts`), so a reported id resolves to its row.
         call_id: callId,
-        success,
       },
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,

@@ -1,14 +1,9 @@
 /**
  * Tool-invocation snapshot retention sweep.
  *
- * Snapshot bodies are a debugging/audit convenience with a short useful life:
- * you open one to see what a script or query actually did, days after the fact
- * at most. The audit LEDGER — who called what, when, whether it succeeded, the
- * arg hash — is permanent and lives on `events`, untouched by this job.
- *
- * That split is the whole reason bodies are a separate relation. `events` is
- * append-only by invariant, so a body stored inside it could never expire; here
- * a plain DELETE ages them out and no event row is modified or removed.
+ * Bodies are a short-lived debugging convenience; the audit LEDGER on `events`
+ * is permanent and untouched by this job. Only the side table is swept, which
+ * is what keeps this compatible with the append-only invariant.
  *
  * Each DELETE is bounded so one statement can never hold a long transaction
  * over a table that also serves reads. The tick then loops until a batch comes

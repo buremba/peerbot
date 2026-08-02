@@ -20,12 +20,8 @@
  * sufficient alone). Rather than reimplement that layer here, those tools are
  * simply out of scope.
  *
- * STORAGE. Bodies live in `tool_invocation_snapshots`, not in
- * `events.payload_data`. `events` is append-only and already ~12GB; a body
- * parked in it could never be aged out, and every generic content read would
- * need its own strip to avoid serving multi-megabyte ciphertext. A separate
- * relation makes both problems disappear: retention is an ordinary DELETE, and
- * no content path can surface a body because no content path joins this table.
+ * STORAGE. Bodies live in `tool_invocation_snapshots`, never in
+ * `events.payload_data` — rationale in that table's migration.
  */
 
 import { promisify } from 'node:util';
@@ -80,7 +76,7 @@ export const KNOWN_SECRET_SHAPE_RE =
  *  a half-recorded request is worse than an honest "too large". */
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
-export interface ToolInvocationSnapshot {
+interface ToolInvocationSnapshot {
   request: unknown;
   response: unknown;
 }
@@ -95,7 +91,7 @@ interface SnapshotCapture {
   body: string | null;
 }
 
-export type SnapshotReadResult =
+type SnapshotReadResult =
   | { status: 'ok'; snapshot: ToolInvocationSnapshot }
   | { status: 'too_large'; bytes: number }
   | { status: 'forbidden' | 'not_found' | 'unavailable' };
@@ -168,9 +164,8 @@ function redactDeep(value: unknown, seen = new WeakSet<object>()): unknown {
 /**
  * Build the snapshot for one invocation, or `null` when the tool is out of
  * scope. Never throws: a capture failure degrades to `snapshot_status: 'error'`
- * so the audit row itself still lands. (Coupling the cheap, near-guaranteed
- * ledger row to this expensive, failure-prone one would mean a single oversized
- * `run_sdk` return silently erases the audit record of that call.)
+ * so the audit row still lands — otherwise one oversized `run_sdk` return would
+ * silently erase the audit record of that call.
  */
 export async function captureSnapshot(params: {
   toolName: string;
@@ -213,10 +208,10 @@ function snapshotFields(
 }
 
 /**
- * Persist a captured body against its now-known event id. Best effort by
- * design: the audit event is already durable, and a missing row reads back as
- * `unavailable` — the read path never trusts the event's own status claim, so
- * a failure here cannot produce a lie, only an absence.
+ * Persist a captured body against its now-known event id. Best effort: the
+ * event is already durable, and the read path resolves the body from this table
+ * rather than the event's status claim, so a failure here is an absence, never
+ * a wrong answer.
  */
 export async function persistSnapshotBody(
   eventId: number,
@@ -238,11 +233,9 @@ export async function persistSnapshotBody(
 }
 
 /**
- * Read one snapshot for a caller.
- *
- * Every denial — wrong org, non-creator, absent body, stale key — is reported
- * distinctly here and collapsed to a single 404 by the route, so the HTTP
- * surface is not an existence oracle while the caller-side logs stay diagnostic.
+ * Read one snapshot for a caller. Denials are distinct here (wrong org,
+ * non-creator, absent body, stale key) and collapsed to one 404 by the route,
+ * so the HTTP surface is not an existence oracle.
  */
 export async function readSnapshotForCaller(params: {
   eventId: string;

@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   publish-packages:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
     env:

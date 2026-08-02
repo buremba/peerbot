@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release-please:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
     outputs:
@@ -42,7 +42,7 @@ jobs:
   publish:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       # Delegate the actual publish to publish-packages.yml so there's

@@ -909,6 +909,31 @@ describe("prepareXReply", () => {
 		expect(clicks[0].input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
 		// The guard token is stripped before reaching the extension.
 		expect(clicks[0].input.allowed_click).toBeUndefined();
+		// The composer click is origin-guarded like every other dispatch here —
+		// X is an SPA and can navigate away between the wait and the click.
+		expect(clicks[0].input.allowed_origins).toEqual([
+			"x.com",
+			"*.x.com",
+			"twitter.com",
+			"*.twitter.com",
+		]);
+	});
+
+	// X normalizes the composer content, so an NFD draft reads back as NFC. That
+	// is the same text, not a staging failure.
+	test("accepts a draft that X re-composes to NFC", async () => {
+		const body = "cafe\u0301 chess \u1E9B\u0323";
+		const { dispatcher } = stagingDispatcher({
+			stagedText: body.normalize("NFC"),
+		});
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.submitted).toBe(false);
 	});
 
 	test("errors instead of typing when no textbox is on the page", async () => {

@@ -2076,6 +2076,7 @@ export async function prepareXReply(
 		tab_id: tabId,
 		ref,
 		allowed_click: "reply_open",
+		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	await safeDispatch.dispatch("type_ref", {
 		tab_id: tabId,
@@ -2098,7 +2099,10 @@ export async function prepareXReply(
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	const staged = read.value?.staged_text?.trim() ?? "";
-	if (staged !== body) {
+	// Compare in NFC: X normalizes the composer content, so a draft handed to us
+	// in NFD comes back re-composed and would fail a raw `!==` even though it is
+	// staged exactly as asked.
+	if (staged.normalize("NFC") !== body.normalize("NFC")) {
 		throw new Error(
 			`prepare_reply: composer content does not match the draft (staged ${staged.length} chars, expected ${body.length}). Nothing was submitted.`,
 		);

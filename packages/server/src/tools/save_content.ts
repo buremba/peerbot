@@ -488,9 +488,15 @@ async function saveContentImpl(
 
   // Reserved delivery metadata is added only after the caller-authored event
   // metadata passes its event-kind schema. It is platform bookkeeping, not a
-  // domain field the entity type needs to declare.
+  // domain field the entity type needs to declare. Strip it from caller
+  // metadata unconditionally. A key smuggled in that way (e.g. metadata copied
+  // forward from a prior KnowledgeSaveResult) would land on the row without
+  // going through the preflight read or the unique-violation reconciliation,
+  // surfacing a raw Postgres conflict on collision.
+  const { _lobu_idempotency_key: _reservedIdempotencyKey, ...callerMetadata } =
+    args.metadata ?? {};
   const eventMetadata: Record<string, unknown> = {
-    ...(args.metadata ?? {}),
+    ...callerMetadata,
     ...(args.idempotency_key ? { _lobu_idempotency_key: args.idempotency_key } : {}),
   };
 

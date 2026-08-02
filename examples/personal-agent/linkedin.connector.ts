@@ -731,11 +731,19 @@ export function buildHomeFeedEvents(
       metadata.author_profile_url = profileUrlFor(authorSlug);
     }
 
-    const embeddedActivityId = row.post_identity?.match(
-      /(?:shareId|ugcPostId)=(\d{6,})|urn:li:activity:(\d{6,})/i
+    // Keep the identifier in its own URN namespace. share/ugcPost ids are not
+    // activity ids, so relabelling a bare `shareId=` digit string as
+    // `urn:li:activity:` can build a permalink to an unrelated post.
+    const embeddedUrn = row.post_identity?.match(
+      /(?:(shareId|ugcPostId)=|urn:li:(activity|share|ugcPost):)(\d{6,})/i
+    );
+    const embeddedId = embeddedUrn?.[3];
+    const embeddedNamespace = linkedInUrnNamespace(
+      embeddedUrn?.[1] ?? embeddedUrn?.[2] ?? ""
     );
     const postUrl = normalizeLinkedInPostUrl(
-      row.post_url ?? embeddedActivityId?.[1] ?? embeddedActivityId?.[2] ?? ""
+      row.post_url ??
+        (embeddedId ? `urn:li:${embeddedNamespace}:${embeddedId}` : "")
     );
 
     events.push({
@@ -811,9 +819,21 @@ type PrepareCommentResult = {
 };
 
 /**
+ * Canonical casing for the LinkedIn URN namespace an id came from. share and
+ * ugcPost ids live in different id spaces than activity ids, so the namespace
+ * has to survive normalization; /feed/update/ resolves all three.
+ */
+function linkedInUrnNamespace(token: string): "activity" | "share" | "ugcPost" {
+  const normalized = token.toLowerCase();
+  if (normalized === "shareid" || normalized === "share") return "share";
+  if (normalized === "ugcpostid" || normalized === "ugcpost") return "ugcPost";
+  return "activity";
+}
+
+/**
  * Normalize a post URL or activity id into a linkedin.com update URL.
- * Accepts full URLs, `urn:li:activity:…`, bare activity digits, or
- * `/feed/update/…` paths.
+ * Accepts full URLs, `urn:li:activity:…` / `urn:li:share:…` /
+ * `urn:li:ugcPost:…`, bare activity digits, or `/feed/update/…` paths.
  */
 export function normalizeLinkedInPostUrl(input: string): string | null {
   const raw = input.trim();
@@ -825,10 +845,12 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
     return `https://www.linkedin.com/feed/update/urn:li:activity:${bareId}`;
   }
 
-  // urn:li:activity:123 or activity:123
-  const urnMatch = raw.match(/(?:urn:li:)?activity:(\d{6,})/i);
+  // urn:li:activity:123, urn:li:share:123, urn:li:ugcPost:123, or the bare
+  // `activity:123` shorthand.
+  const urnMatch = raw.match(/(?:urn:li:)?(activity|share|ugcPost):(\d{6,})/i);
   if (urnMatch && !raw.includes("://") && !raw.startsWith("/")) {
-    return `https://www.linkedin.com/feed/update/urn:li:activity:${urnMatch[1]}`;
+    const ns = linkedInUrnNamespace(urnMatch[1] ?? "");
+    return `https://www.linkedin.com/feed/update/urn:li:${ns}:${urnMatch[2] ?? ""}`;
   }
 
   try {
@@ -846,12 +868,14 @@ export function normalizeLinkedInPostUrl(input: string): string | null {
     if (host !== "linkedin.com" && !host.endsWith(".linkedin.com")) {
       return null;
     }
-    // Prefer canonical feed/update URLs when we can extract an activity id.
-    const activityId = `${u.pathname}${u.search}`.match(
-      /(?:urn(?::|%3A)li(?::|%3A))?activity(?::|%3A|-)(\d{6,})/i
-    )?.[1];
-    if (activityId) {
-      return `https://www.linkedin.com/feed/update/urn:li:activity:${activityId}`;
+    // Prefer canonical feed/update URLs when we can extract a post id, keeping
+    // whichever URN namespace the source URL used.
+    const urnInUrl = `${u.pathname}${u.search}`.match(
+      /(?:urn(?::|%3A)li(?::|%3A))?(activity|share|ugcPost)(?::|%3A|-)(\d{6,})/i
+    );
+    if (urnInUrl) {
+      const ns = linkedInUrnNamespace(urnInUrl[1] ?? "");
+      return `https://www.linkedin.com/feed/update/urn:li:${ns}:${urnInUrl[2] ?? ""}`;
     }
     return null;
   } catch {

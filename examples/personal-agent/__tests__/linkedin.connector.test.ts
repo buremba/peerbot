@@ -175,8 +175,27 @@ describe("buildHomeFeedEvents", () => {
       new Date("2026-08-01T12:00:00.000Z")
     );
 
+    // A shareId is not an activity id; keep the source URN namespace.
     expect(event.source_url).toBe(
-      "https://www.linkedin.com/feed/update/urn:li:activity:7485276857911828480"
+      "https://www.linkedin.com/feed/update/urn:li:share:7485276857911828480"
+    );
+  });
+
+  test("keeps the ugcPost namespace for ugcPostId feed cards", () => {
+    const [event] = buildHomeFeedEvents(
+      [
+        {
+          id: "opaque_component_key",
+          body: "Feed post Ada Lovelace • 1st A durable agents post with enough body text",
+          author: "Ada Lovelace",
+          post_identity: "urn:li:ugcPost:7485276857911828481",
+        },
+      ],
+      new Date("2026-08-01T12:00:00.000Z")
+    );
+
+    expect(event.source_url).toBe(
+      "https://www.linkedin.com/feed/update/urn:li:ugcPost:7485276857911828481"
     );
   });
 

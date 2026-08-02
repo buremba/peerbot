@@ -336,18 +336,6 @@ export const RateLimitPresets = {
       'Device email rate limit exceeded. Maximum 10 confirmation emails per hour.',
   } as RateLimitConfig,
 
-  /**
-   * Tool-invocation snapshot reads: 60/minute per user. Each one gunzips and
-   * decrypts up to a 2MiB body, so this is a CPU bound, not an abuse bound —
-   * generous for any UI that expands cards, tight enough that a scripted sweep
-   * can't monopolise the pod.
-   */
-  TOOL_INVOCATION_SNAPSHOT_PER_USER_MINUTE: {
-    limit: 60,
-    windowSeconds: 60,
-    errorMessage: 'Too many snapshot reads. Try again shortly.',
-  } as RateLimitConfig,
-
   /** Invitation preview lookup: 5/minute per IP (unauthenticated) */
   INVITATION_PREVIEW_PER_IP_MINUTE: {
     limit: 5,

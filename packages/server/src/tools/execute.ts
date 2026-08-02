@@ -293,7 +293,6 @@ export async function executeTool(
       result,
       durationMs: Date.now() - startTime,
       ctx: toolContext,
-      callId,
     });
     return result;
   } catch (error) {
@@ -308,7 +307,6 @@ export async function executeTool(
       error,
       durationMs: Date.now() - startTime,
       ctx: toolContext,
-      callId,
     });
     throw error;
   }

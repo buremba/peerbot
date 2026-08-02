@@ -349,8 +349,7 @@ function registerMaintenanceTasks(
   );
 
   // Tool-invocation snapshot bodies past their retention horizon. The audit
-  // ledger on `events` is permanent and untouched; only the bulk request/
-  // response bodies expire. Daily, off-peak, distinct minute from the reapers.
+  // ledger on `events` is permanent and untouched; only request bodies expire.
   scheduler.register(
     'sweep-tool-invocation-snapshots',
     async () => {

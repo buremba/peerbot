@@ -22,8 +22,7 @@ import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
 import { manageBehaviors } from "./tools/admin/manage_behaviors";
-import { readSnapshotForCaller } from "./tools/invocation-snapshot";
-import { getRateLimiter, RateLimitPresets } from "./utils/rate-limiter";
+import { readRequestSnapshotForCaller } from "./tools/invocation-snapshot";
 import {
 	executeTool,
 	extractAuthContext,
@@ -453,7 +452,7 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 	}
 }
 
-export async function restGetToolInvocationSnapshot(
+export async function restGetToolInvocationRequest(
 	c: Context<{ Bindings: Env }>
 ) {
 	const rawEventId = c.req.param("eventId");
@@ -477,19 +476,8 @@ export async function restGetToolInvocationSnapshot(
 		return c.json({ error: "Not found" }, 404);
 	}
 
-	// Each read decompresses and decrypts up to a 2MiB body. That is cheap
-	// once and expensive in a loop, so bound it per user — an Activity page
-	// expanding a handful of cards stays well under, a scripted sweep does not.
-	const rateLimit = getRateLimiter().checkLimit(
-		`rate:tool-invocation-snapshot:${authCtx.organizationId}:${authCtx.userId}`,
-		RateLimitPresets.TOOL_INVOCATION_SNAPSHOT_PER_USER_MINUTE,
-	);
-	if (!rateLimit.allowed) {
-		return c.json({ error: rateLimit.errorMessage }, 429);
-	}
-
 	try {
-		const result = await readSnapshotForCaller({
+		const result = await readRequestSnapshotForCaller({
 			eventId,
 			organizationId: authCtx.organizationId,
 			userId: authCtx.userId,
@@ -507,9 +495,9 @@ export async function restGetToolInvocationSnapshot(
 	} catch (error) {
 		logger.error(
 			{ err: error, eventId, organizationId: authCtx.organizationId },
-			"Failed to read tool invocation snapshot"
+			"Failed to read tool invocation request"
 		);
-		return c.json({ error: "Snapshot could not be read" }, 500);
+		return c.json({ error: "Request could not be read" }, 500);
 	}
 }
 

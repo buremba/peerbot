@@ -4,10 +4,10 @@ import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
 import {
-  captureSnapshot,
+  captureRequestSnapshot,
   KNOWN_SECRET_SHAPE_RE,
-  persistSnapshotBody,
-  SNAPSHOT_TOOLS,
+  persistRequestSnapshot,
+  REQUEST_SNAPSHOT_TOOLS,
 } from './invocation-snapshot';
 import { getTool, type ToolContext } from './registry';
 
@@ -38,7 +38,6 @@ interface ToolInvocationAuditParams {
   error?: unknown;
   durationMs: number;
   ctx: ToolContext;
-  callId?: string;
 }
 
 function sha256(value: string): string {
@@ -61,8 +60,6 @@ function redactPreview(value: string): string {
 
 /**
  * Generic audit summaries persist the SHAPE of a call, never its content.
- * The separately encrypted snapshot retains redacted business values and is
- * only exposed through the creator/admin read in `invocation-snapshot.ts`.
  * Nothing caller-controlled survives: values are sentineled except
  * booleans/nulls (provably structural — one bit), and property NAMES are kept
  * only when the tool's own input schema declares them at the top level —
@@ -199,14 +196,10 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
     };
   }
 
-  // Browser-session and anonymous GENERIC reads would generate an event per
-  // page view, so they stay out of the client activity ledger. The power tools
-  // are the exception at every token type: their invocation history IS the
-  // audit product, which is the same reason they are the only tools that carry
-  // a snapshot. One list decides both (`SNAPSHOT_TOOLS`) so the two can't drift
-  // — run_sdk/query_sql already returned above; this is the query_sdk case.
+  // Browser-session and anonymous generic reads stay out of Activity. Power
+  // tools are retained because their invocation history is the audit product.
   if (
-    !SNAPSHOT_TOOLS.has(params.toolName) &&
+    !REQUEST_SNAPSHOT_TOOLS.has(params.toolName) &&
     params.ctx.tokenType !== 'oauth' &&
     params.ctx.tokenType !== 'pat'
   ) {
@@ -245,17 +238,13 @@ export async function recordToolInvocationAudit(
   try {
     const payload = buildPayload(params);
     if (!payload) return;
-    // Capture BEFORE the insert so the row's advertised status matches what was
-    // actually produced. `captureSnapshot` never throws and returns null for
-    // out-of-scope tools, so the ledger write below is unconditional.
-    const snapshot = await captureSnapshot(params);
+    const snapshot = captureRequestSnapshot(params);
     if (snapshot) Object.assign(payload, snapshot.fields);
     const success = payload.success === true;
-    const callId = params.callId ?? randomUUID();
     const event = await insertEvent({
       entityIds: [],
       organizationId: params.ctx.organizationId,
-      originId: `tool_invocation:${callId}`,
+      originId: `tool_invocation:${params.toolName}:${Date.now()}:${randomUUID()}`,
       title: `${params.toolName} ${success ? 'completed' : 'failed'}`,
       payloadType: 'empty',
       payloadData: payload,
@@ -268,17 +257,13 @@ export async function recordToolInvocationAudit(
         token_type: params.ctx.tokenType,
         agent_id: params.ctx.agentId ?? null,
         mcp_session_id: params.ctx.mcpSessionId ?? null,
-        // The same id the failed call handed back to the caller in its error
-        // envelope (`utils/errors.ts`), so a reported id resolves to its row.
-        call_id: callId,
       },
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,
     });
-    // Body last, keyed by the id the ledger row just took. Its failure is
-    // logged and dropped: the audit record is already durable, and a missing
-    // body reads back as `unavailable` rather than as a wrong answer.
-    if (snapshot?.body) await persistSnapshotBody(event.id, snapshot.body);
+    if (snapshot?.body) {
+      await persistRequestSnapshot({ eventId: event.id, body: snapshot.body });
+    }
   } catch (auditError) {
     logger.warn(
       { err: auditError, toolName: params.toolName },

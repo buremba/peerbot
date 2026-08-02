@@ -1,6 +1,6 @@
 -- migrate:up
 
--- Bulk request/response bodies for tool-invocation audit rows.
+-- Encrypted request arguments for tool-invocation audit rows.
 --
 -- Deliberately NOT a jsonb field on `events`. Three reasons, all structural:
 --
@@ -24,11 +24,7 @@
 -- already establishes.
 CREATE TABLE IF NOT EXISTS public.tool_invocation_snapshots (
   event_id bigint PRIMARY KEY REFERENCES public.events(id) ON DELETE CASCADE,
-  -- Fingerprint of the ENCRYPTION_KEY that produced `body`. A mismatch means
-  -- the key rotated (or the install booted with an ephemeral key): the read
-  -- path reports "unavailable" instead of throwing a decrypt error.
-  key_fingerprint text NOT NULL,
-  -- base64(iv || gcm_tag || aes-256-gcm(gzip(json))) — see encryptBytes.
+  -- AES-256-GCM encrypted JSON; decrypted only by the creator/admin endpoint.
   body text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );

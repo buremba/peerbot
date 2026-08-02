@@ -60,6 +60,22 @@ export const SNAPSHOT_TOOLS: ReadonlySet<string> = new Set([
   'query_sql',
 ]);
 
+/**
+ * Credential-SHAPED literals, matched on the value's own structure.
+ *
+ * `isSecretKey` only fires on a denylisted KEY, so a token pasted as a bare
+ * literal INSIDE a script or SQL string — where the enclosing key is `script`
+ * or `sql` — would otherwise ride into the body verbatim.
+ *
+ * Shape-matched, never word-adjacent: this matches the credential itself, not
+ * the token following the word `secret`. That distinction is the whole reason
+ * the adjacency rule was reverted (see redactDeep), and it is why this one is
+ * safe on code and SQL. Shared with the audit preview in `./audit` so the two
+ * redaction paths cannot drift.
+ */
+export const KNOWN_SECRET_SHAPE_RE =
+  /\b(?:sk-[a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
+
 /** Plaintext ceiling. Past this the invocation is marked, never truncated —
  *  a half-recorded request is worse than an honest "too large". */
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
@@ -98,7 +114,9 @@ export type SnapshotReadResult =
  * has no audit value at all.
  */
 function redactDeep(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (typeof value === 'string') return redactUriCredentials(value);
+  if (typeof value === 'string') {
+    return redactUriCredentials(value).replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
+  }
   if (value === null || typeof value === 'boolean' || typeof value === 'number') {
     return value;
   }

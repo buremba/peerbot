@@ -5,6 +5,7 @@ import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
 import {
   captureSnapshot,
+  KNOWN_SECRET_SHAPE_RE,
   persistSnapshotBody,
   SNAPSHOT_TOOLS,
 } from './invocation-snapshot';
@@ -29,12 +30,6 @@ const AUTH_SCHEME_RE =
 // included), otherwise an unquoted run that does not stop at commas.
 const SENSITIVE_ASSIGNMENT_RE =
   /(api[_-]?key|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
-// Credential-SHAPED literals, matched on the value's own structure rather than
-// on a neighbouring word. Safe on code and SQL: no ordinary identifier looks
-// like these. (A word-adjacency rule was tried and reverted — it rewrote
-// `SELECT id, secret FROM t` to `secret [redacted] t`.)
-const KNOWN_SECRET_SHAPE_RE =
-  /\b(?:sk-[a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
 
 interface ToolInvocationAuditParams {
   toolName: string;

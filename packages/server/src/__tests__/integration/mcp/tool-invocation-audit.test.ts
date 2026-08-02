@@ -405,6 +405,51 @@ describe('tool invocation audit coverage', () => {
     ).toEqual({ status: 'unavailable' });
   });
 
+  it('redacts credential-SHAPED literals pasted inside script/SQL text', async () => {
+    // `isSecretKey` only fires on a denylisted KEY. A key pasted as a bare
+    // literal INSIDE the script or SQL string sits under `script`/`sql`, which
+    // are not secret key names — so without a shape check it rides into the
+    // body verbatim. Shape-matched on the value, so this cannot reintroduce the
+    // word-adjacency corruption the module header documents.
+    const capture = await captureSnapshot({
+      toolName: 'run_sdk',
+      args: {
+        script:
+          'await fetch(u, { headers: { Authorization: "Bearer sk-live-AAAABBBBCCCCDDDD" } });\n' +
+          '// rotate ghp_ABCDEFGHIJKLMNOPQRST and xoxb-1111-2222-abcdefghij',
+      },
+      result: { ok: true },
+    });
+    const request = JSON.stringify(capture!.fields) + JSON.stringify(capture);
+    expect(request).not.toContain('sk-live-AAAABBBBCCCCDDDD');
+    expect(request).not.toContain('ghp_ABCDEFGHIJKLMNOPQRST');
+    expect(request).not.toContain('xoxb-1111-2222-abcdefghij');
+
+    // And the surrounding code is still intact — redaction replaced the
+    // literals, not the statement around them.
+    await recordToolInvocationAudit({
+      toolName: 'run_sdk',
+      args: { script: 'const secret = "sk-live-AAAABBBBCCCCDDDD"; return secret;' },
+      result: { ok: true },
+      durationMs: 1,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+    const row = await latestAuditRow(orgId, 'run_sdk');
+    const snapshot = await readSnapshot(row!, orgId, ownerId);
+    const script = String((snapshot.request as Record<string, unknown>).script);
+    expect(script).not.toContain('sk-live-AAAABBBBCCCCDDDD');
+    expect(script).toContain('const secret =');
+    expect(script).toContain('return secret;');
+  });
+
   it('captures nothing for a tool outside SNAPSHOT_TOOLS', async () => {
     expect(
       await captureSnapshot({

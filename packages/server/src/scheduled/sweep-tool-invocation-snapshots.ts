@@ -26,9 +26,7 @@ const SNAPSHOT_RETENTION_DAYS = 30;
 const MAX_DELETES_PER_BATCH = 20_000;
 const MAX_DELETES_PER_TICK = 1_000_000;
 
-export async function sweepToolInvocationSnapshots(
-  retentionDays = SNAPSHOT_RETENTION_DAYS
-): Promise<{ deleted: number }> {
+export async function sweepToolInvocationSnapshots(): Promise<{ deleted: number }> {
   const sql = getDb();
   let total = 0;
   let batches = 0;
@@ -42,7 +40,7 @@ export async function sweepToolInvocationSnapshots(
       WHERE event_id IN (
         SELECT event_id
         FROM tool_invocation_snapshots
-        WHERE created_at < now() - make_interval(days => ${retentionDays})
+        WHERE created_at < now() - make_interval(days => ${SNAPSHOT_RETENTION_DAYS})
         ORDER BY created_at
         LIMIT ${batchLimit}
       )
@@ -55,7 +53,7 @@ export async function sweepToolInvocationSnapshots(
   }
   if (total > 0) {
     logger.info(
-      { deleted: total, batches, retentionDays, capped: total >= MAX_DELETES_PER_TICK },
+      { deleted: total, batches, retentionDays: SNAPSHOT_RETENTION_DAYS, capped: total >= MAX_DELETES_PER_TICK },
       'Swept expired tool invocation snapshot bodies'
     );
   }

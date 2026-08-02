@@ -9,6 +9,7 @@ import { toJsonSafe } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import type { Context } from "hono";
 import {
+	hasRequiredMcpScope,
 	resolveMaxAccessLevel,
 	SCOPE_CHECK_NOT_APPLICABLE,
 } from "./auth/tool-access";
@@ -21,6 +22,7 @@ import type { Env } from "./index";
 import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
 import { manageBehaviors } from "./tools/admin/manage_behaviors";
+import { getToolInvocationSnapshotForCaller } from "./tools/audit";
 import {
 	executeTool,
 	extractAuthContext,
@@ -447,6 +449,58 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 	} catch (error) {
 		logger.error({ error }, "[REST API] Knowledge search error");
 		return c.json({ error: errorMessage(error) }, 400);
+	}
+}
+
+export async function restGetToolInvocationSnapshot(
+	c: Context<{ Bindings: Env }>
+) {
+	const rawEventId = c.req.param("eventId");
+	if (!rawEventId || !/^\d+$/.test(rawEventId)) {
+		return c.json({ error: "Not found" }, 404);
+	}
+	let eventId: string;
+	try {
+		const parsed = BigInt(rawEventId);
+		if (parsed <= 0n || parsed > 9_223_372_036_854_775_807n) {
+			return c.json({ error: "Not found" }, 404);
+		}
+		eventId = parsed.toString();
+	} catch {
+		return c.json({ error: "Not found" }, 404);
+	}
+	const authCtx = extractAuthContext(c);
+	if (
+		!authCtx.organizationId ||
+		!authCtx.userId ||
+		!authCtx.memberRole ||
+		!hasRequiredMcpScope("read", authCtx.scopes)
+	) {
+		return c.json({ error: "Not found" }, 404);
+	}
+
+	try {
+		const result = await getToolInvocationSnapshotForCaller({
+			eventId,
+			organizationId: authCtx.organizationId,
+			userId: authCtx.userId,
+			memberRole: authCtx.memberRole,
+		});
+		if (
+			result.status === "not_found" ||
+			result.status === "forbidden" ||
+			result.status === "unavailable"
+		) {
+			return c.json({ error: "Not found" }, 404);
+		}
+		c.header("Cache-Control", "private, no-store");
+		return c.json(result);
+	} catch (error) {
+		logger.error(
+			{ err: error, eventId, organizationId: authCtx.organizationId },
+			"Failed to read tool invocation snapshot"
+		);
+		return c.json({ error: "Snapshot could not be read" }, 500);
 	}
 }
 

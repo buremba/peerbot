@@ -106,6 +106,7 @@ import {
 	publicRestListConnectors,
 	publicRestSearchKnowledge,
 	restGetBehaviors,
+	restGetToolInvocationSnapshot,
 	restHealth,
 	restListTools,
 	restSearchKnowledge,
@@ -1098,6 +1099,11 @@ app.post(
 app.delete("/api/:orgSlug/notifications/:id", mcpAuth, restDeleteNotification);
 
 app.get("/api/:orgSlug/knowledge/search", mcpAuth, restSearchKnowledge);
+app.get(
+	"/api/:orgSlug/audit-events/:eventId/snapshot",
+	mcpAuth,
+	restGetToolInvocationSnapshot,
+);
 app.get("/api/:orgSlug/public/knowledge/search", publicRestSearchKnowledge);
 app.get("/api/:orgSlug/public/classifiers", publicRestListClassifiers);
 app.get("/api/:orgSlug/public/connectors", publicRestListConnectors);

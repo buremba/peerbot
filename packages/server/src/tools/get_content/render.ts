@@ -11,6 +11,7 @@ import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
+import { omitToolInvocationSnapshotBody } from '../../utils/audit-payload';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
 
@@ -128,6 +129,11 @@ export async function buildContentItems(opts: {
   const contentItems: ContentItem[] = rawContent.map((f) => {
     const metadata = parseJsonObject(f.metadata);
     const classifications = parseJsonObject(f.classifications);
+    const payloadData = omitToolInvocationSnapshotBody(
+      f.semantic_type,
+      f.origin_type,
+      parseJsonObject(f.payload_data)
+    );
 
     return {
       id: f.id,
@@ -138,7 +144,7 @@ export async function buildContentItems(opts: {
       origin_type: f.origin_type ?? null,
       payload_type: f.payload_type ?? 'text',
       payload_text: f.payload_text ?? '',
-      payload_data: parseJsonObject(f.payload_data),
+      payload_data: payloadData,
       payload_template: f.payload_template ? parseJsonObject(f.payload_template) : null,
       attachments: parseRecordArray(f.attachments),
       author_name: f.author_name ?? null,

@@ -65,7 +65,11 @@ function buildContentQuery(opts: {
       CASE WHEN ${a}.origin_parent_id IS NULL THEN 0 ELSE 1 END as depth,
       ${a}.origin_type,
       ${a}.payload_type,
-      ${a}.payload_data,
+      CASE
+        WHEN ${a}.semantic_type = 'audit' AND ${a}.origin_type = 'tool_invocation'
+        THEN ${a}.payload_data - 'snapshot_ciphertext' - 'snapshot_sha256'
+        ELSE ${a}.payload_data
+      END AS payload_data,
       ${a}.payload_template,
       ${a}.attachments,
       ${a}.score,

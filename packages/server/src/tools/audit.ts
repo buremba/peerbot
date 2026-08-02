@@ -1,11 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { REDACTED_SENTINEL } from '@lobu/core';
+import { gzipSync, gunzipSync } from 'node:zlib';
+import {
+  decrypt,
+  encrypt,
+  isSecretKey,
+  redactUriCredentials,
+  REDACTED_SENTINEL,
+} from '@lobu/core';
+import { getDb } from '../db/client';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
+import { isAdminOrOwnerRole } from './access-control';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
 import { getTool, type ToolContext } from './registry';
 
 const MAX_PREVIEW_CHARS = 500;
+const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+const SNAPSHOT_VERSION = 1;
 // Redaction principle: consume the COMPLETE credential. Over-consumption is
 // fine (previews are display-only; identity comes from the hash of the
 // redacted form), partial redaction is not — a stop at the first space,
@@ -24,6 +35,13 @@ const AUTH_SCHEME_RE =
 // included), otherwise an unquoted run that does not stop at commas.
 const SENSITIVE_ASSIGNMENT_RE =
   /(api[_-]?key|credential|password|private[_-]?key|secret|token)\s*["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s'"}]+)/gi;
+// Free text often carries credentials without an assignment delimiter
+// ("token is …", "--api-key …"). Consume the named value as well; an audit
+// snapshot should prefer an occasional false-positive over retaining a secret.
+const SENSITIVE_NAMED_VALUE_RE =
+  /(?:--)?\b(api[_-]?key|credential|password|private[_-]?key|secret|token)\b\s+(?:is\s+)?(?:"[^"]*"|'[^']*'|[^\s,;|]+)/gi;
+const KNOWN_SECRET_SHAPE_RE =
+  /\b(?:sk-[a-z0-9_-]{8,}|xox[baprs]-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9_]{12,}|AKIA[A-Z0-9]{16}|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})\b/gi;
 
 interface ToolInvocationAuditParams {
   toolName: string;
@@ -32,6 +50,12 @@ interface ToolInvocationAuditParams {
   error?: unknown;
   durationMs: number;
   ctx: ToolContext;
+  callId?: string;
+}
+
+export interface ToolInvocationSnapshot {
+  request: unknown;
+  response: unknown;
 }
 
 function sha256(value: string): string {
@@ -42,7 +66,9 @@ function redactSensitiveText(value: string): string {
   return value
     .replace(HEADER_CREDENTIAL_RE, (_match, key: string) => `${key}=[redacted]`)
     .replace(AUTH_SCHEME_RE, (_match, scheme: string) => `${scheme} [redacted]`)
-    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`);
+    .replace(SENSITIVE_ASSIGNMENT_RE, (_match, key: string) => `${key}=[redacted]`)
+    .replace(SENSITIVE_NAMED_VALUE_RE, (_match, key: string) => `${key} [redacted]`)
+    .replace(KNOWN_SECRET_SHAPE_RE, '[redacted]');
 }
 
 function redactPreview(value: string): string {
@@ -51,8 +77,170 @@ function redactPreview(value: string): string {
   return redactSensitiveText(value).slice(0, MAX_PREVIEW_CHARS);
 }
 
+function snapshotValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') {
+    return redactSensitiveText(redactUriCredentials(value));
+  }
+  if (
+    value === null ||
+    typeof value === 'boolean' ||
+    typeof value === 'number'
+  ) {
+    return value;
+  }
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'undefined') return null;
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) {
+    return {
+      type: value.constructor.name,
+      base64: Buffer.from(value).toString('base64'),
+    };
+  }
+  if (value instanceof Error) {
+    const error = value as Error & { code?: unknown };
+    return {
+      name: error.name,
+      message: redactSensitiveText(redactUriCredentials(error.message)),
+      ...(typeof error.code === 'string' ? { code: error.code } : {}),
+    };
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    const result = value.map((item) => snapshotValue(item, seen));
+    seen.delete(value);
+    return result;
+  }
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    const result: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      result[key] =
+        isSecretKey(key) && nested != null
+          ? REDACTED_SENTINEL
+          : snapshotValue(nested, seen);
+    }
+    seen.delete(value);
+    return result;
+  }
+  return String(value);
+}
+
+function buildSnapshotFields(params: ToolInvocationAuditParams): Record<string, unknown> {
+  const snapshot: ToolInvocationSnapshot = {
+    request: snapshotValue(params.args),
+    response: snapshotValue(params.error ?? params.result ?? null),
+  };
+  const serialized = JSON.stringify(snapshot);
+  const snapshotBytes = Buffer.byteLength(serialized);
+  const common = {
+    snapshot_version: SNAPSHOT_VERSION,
+    snapshot_sha256: sha256(serialized),
+    snapshot_bytes: snapshotBytes,
+  };
+  if (snapshotBytes > MAX_SNAPSHOT_BYTES) {
+    return { ...common, snapshot_status: 'too_large' };
+  }
+  const compressed = gzipSync(serialized).toString('base64');
+  return {
+    ...common,
+    snapshot_status: 'complete',
+    snapshot_encoding: 'aes-256-gcm+gzip+base64',
+    snapshot_ciphertext: encrypt(compressed),
+  };
+}
+
+/** Whether `payload` carries a snapshot body this build knows how to decode. */
+function isDecodableSnapshot(
+  payload: Record<string, unknown>
+): payload is Record<string, unknown> & { snapshot_ciphertext: string } {
+  return (
+    payload.snapshot_version === SNAPSHOT_VERSION &&
+    payload.snapshot_status === 'complete' &&
+    payload.snapshot_encoding === 'aes-256-gcm+gzip+base64' &&
+    typeof payload.snapshot_ciphertext === 'string'
+  );
+}
+
+export function decodeToolInvocationSnapshot(payload: Record<string, unknown>): ToolInvocationSnapshot {
+  if (!isDecodableSnapshot(payload)) {
+    throw new Error('Tool invocation snapshot is not available');
+  }
+  const compressed = Buffer.from(decrypt(payload.snapshot_ciphertext), 'base64');
+  const serialized = gunzipSync(compressed).toString('utf8');
+  if (sha256(serialized) !== payload.snapshot_sha256) {
+    throw new Error('Tool invocation snapshot integrity check failed');
+  }
+  return JSON.parse(serialized) as ToolInvocationSnapshot;
+}
+
+export type ToolInvocationSnapshotReadResult =
+  | { status: 'ok'; snapshot: ToolInvocationSnapshot }
+  | { status: 'too_large'; bytes: number; sha256: string | null }
+  | { status: 'forbidden' | 'not_found' | 'unavailable' };
+
+export async function getToolInvocationSnapshotForCaller(params: {
+  eventId: string;
+  organizationId: string;
+  userId: string | null;
+  memberRole: string | null;
+}): Promise<ToolInvocationSnapshotReadResult> {
+  const sql = getDb();
+  const rows = await sql<{
+    created_by: string | null;
+    payload_data: Record<string, unknown>;
+  }>`
+    SELECT created_by, payload_data
+    FROM events
+    WHERE id = ${params.eventId}
+      AND organization_id = ${params.organizationId}
+      AND semantic_type = ${AUDIT_SEMANTIC_TYPE}
+      AND origin_type = 'tool_invocation'
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return { status: 'not_found' };
+
+  const canRead =
+    isAdminOrOwnerRole(params.memberRole) ||
+    (params.memberRole != null &&
+      params.userId != null &&
+      row.created_by === params.userId);
+  if (!canRead) return { status: 'forbidden' };
+
+  // Audit events predate snapshots (and `buildSnapshotFields` can be extended
+  // with future statuses), so a row without a decodable body is an ordinary
+  // "nothing to serve" answer — not an error. Throwing here would turn every
+  // pre-existing audit row into a 500 on the read route.
+  if (row.payload_data.snapshot_status !== 'too_large' && !isDecodableSnapshot(row.payload_data)) {
+    return { status: 'unavailable' };
+  }
+
+  if (row.payload_data.snapshot_status === 'too_large') {
+    return {
+      status: 'too_large',
+      bytes:
+        typeof row.payload_data.snapshot_bytes === 'number'
+          ? row.payload_data.snapshot_bytes
+          : 0,
+      sha256:
+        typeof row.payload_data.snapshot_sha256 === 'string'
+          ? row.payload_data.snapshot_sha256
+          : null,
+    };
+  }
+  return {
+    status: 'ok',
+    snapshot: decodeToolInvocationSnapshot(row.payload_data),
+  };
+}
+
 /**
- * Generic audit entries persist the SHAPE of a call, never its content.
+ * Generic audit summaries persist the SHAPE of a call, never its content.
+ * The separately encrypted snapshot retains redacted business values and is
+ * only exposed through the creator/admin direct-read path above.
  * Nothing caller-controlled survives: values are sentineled except
  * booleans/nulls (provably structural — one bit), and property NAMES are kept
  * only when the tool's own input schema declares them at the top level —
@@ -189,9 +377,14 @@ function buildPayload(params: ToolInvocationAuditParams): Record<string, unknown
     };
   }
 
-  // Browser-session and anonymous reads would generate an event per page view;
-  // only externally authenticated calls belong in the client activity ledger.
-  if (params.ctx.tokenType !== 'oauth' && params.ctx.tokenType !== 'pat') {
+  // Browser-session and anonymous generic reads would generate an event per
+  // page view. query_sdk joins the run_sdk/query_sql branches handled above as
+  // an intentional exception: code/SQL invocation history is an audit product.
+  if (
+    params.toolName !== 'query_sdk' &&
+    params.ctx.tokenType !== 'oauth' &&
+    params.ctx.tokenType !== 'pat'
+  ) {
     return null;
   }
   // The preview and hash are built from the SANITIZED args: every string leaf
@@ -227,11 +420,13 @@ export async function recordToolInvocationAudit(
   try {
     const payload = buildPayload(params);
     if (!payload) return;
+    Object.assign(payload, buildSnapshotFields(params));
     const success = payload.success === true;
+    const callId = params.callId ?? randomUUID();
     await insertEvent({
       entityIds: [],
       organizationId: params.ctx.organizationId,
-      originId: `tool_invocation:${params.toolName}:${Date.now()}:${randomUUID()}`,
+      originId: `tool_invocation:${callId}`,
       title: `${params.toolName} ${success ? 'completed' : 'failed'}`,
       payloadType: 'empty',
       payloadData: payload,
@@ -244,6 +439,8 @@ export async function recordToolInvocationAudit(
         token_type: params.ctx.tokenType,
         agent_id: params.ctx.agentId ?? null,
         mcp_session_id: params.ctx.mcpSessionId ?? null,
+        call_id: callId,
+        success,
       },
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,

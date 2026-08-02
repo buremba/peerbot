@@ -1,11 +1,18 @@
 import { createHash } from 'node:crypto';
 import { REDACTED_SENTINEL } from '@lobu/core';
+import { Hono } from 'hono';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SCOPE_CHECK_NOT_APPLICABLE } from '../../../auth/tool-access';
-import { recordToolInvocationAudit } from '../../../tools/audit';
+import {
+  decodeToolInvocationSnapshot,
+  getToolInvocationSnapshotForCaller,
+  recordToolInvocationAudit,
+} from '../../../tools/audit';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
+import { restGetToolInvocationSnapshot } from '../../../rest-api';
 import { type AuthContext, executeTool } from '../../../tools/execute';
+import { getContent } from '../../../tools/get_content';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -16,16 +23,27 @@ import {
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
 import { ensureMcpSession, mcpToolsCall } from '../../setup/test-helpers';
+import { insertEvent } from '../../../utils/insert-event';
 
 interface AuditRow {
+  id: string | number;
   payload_data: Record<string, unknown>;
   metadata: Record<string, unknown>;
+}
+
+function decryptSnapshot(row: AuditRow): {
+  request: Record<string, unknown>;
+  response: unknown;
+} {
+  const ciphertext = row.payload_data.snapshot_ciphertext;
+  expect(ciphertext).toEqual(expect.any(String));
+  return decodeToolInvocationSnapshot(row.payload_data);
 }
 
 async function latestAuditRow(orgId: string, toolName: string): Promise<AuditRow | null> {
   const sql = getDb();
   const rows = await sql<AuditRow[]>`
-    SELECT payload_data, metadata
+    SELECT id, payload_data, metadata
     FROM events
     WHERE organization_id = ${orgId}
       AND semantic_type = 'audit'
@@ -105,7 +123,14 @@ describe('tool invocation audit coverage', () => {
     expect(row!.payload_data.args_preview_redacted).not.toContain('audit coverage probe');
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
     expect(row!.payload_data).not.toHaveProperty('content');
+    expect(row!.payload_data.snapshot_version).toBe(1);
+    expect(row!.payload_data.snapshot_status).toBe('complete');
+    expect(decryptSnapshot(row!).request).toMatchObject({
+      query: 'audit coverage probe',
+      limit: 1,
+    });
     expect(row!.metadata.mcp_session_id).toBe(sessionId);
+    expect(row!.metadata.call_id).toEqual(expect.any(String));
   });
 
   it('records the requested org_slug on query_sql audit rows', async () => {
@@ -120,7 +145,161 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     expect(row!.payload_data.org_slug).toBe(orgSlug);
+    const snapshot = decryptSnapshot(row!);
+    expect(snapshot.request).toEqual({
+      sql: 'SELECT id FROM events',
+      sort_by: 'id',
+      limit: 1,
+      org_slug: orgSlug,
+    });
+    expect(snapshot.response).toMatchObject({ rows: expect.any(Array) });
     expect(row!.metadata).toHaveProperty('mcp_session_id', null);
+  });
+
+  it('reads a snapshot by event id only for its creator or an admin', async () => {
+    const row = await latestAuditRow(orgId, 'query_sql');
+    expect(row).not.toBeNull();
+    const eventId = String(row!.id);
+
+    const creatorRead = await getToolInvocationSnapshotForCaller({
+      eventId,
+      organizationId: orgId,
+      userId: ownerId,
+      memberRole: 'member',
+    });
+    expect(creatorRead.status).toBe('ok');
+
+    const otherMemberRead = await getToolInvocationSnapshotForCaller({
+      eventId,
+      organizationId: orgId,
+      userId: 'another-user',
+      memberRole: 'member',
+    });
+    expect(otherMemberRead).toEqual({ status: 'forbidden' });
+
+    const adminRead = await getToolInvocationSnapshotForCaller({
+      eventId,
+      organizationId: orgId,
+      userId: 'another-user',
+      memberRole: 'admin',
+    });
+    expect(adminRead.status).toBe('ok');
+
+    const listRead = await getContent(
+      { content_ids: [Number(row!.id)] },
+      {} as Env,
+      {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'session',
+        scopedToOrg: true,
+        allowCrossOrg: false,
+      } as never
+    );
+    expect(listRead.content).toHaveLength(1);
+    expect(listRead.content[0].payload_data).toMatchObject({
+      snapshot_version: 1,
+      snapshot_status: 'complete',
+    });
+    expect(listRead.content[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
+    expect(listRead.content[0].payload_data).not.toHaveProperty('snapshot_sha256');
+  });
+
+  it('does not expose snapshot bodies through query_sql events.payload_data', async () => {
+    const result = (await executeTool(
+      'query_sql',
+      {
+        sql: `SELECT payload_data FROM events
+              WHERE payload_data->>'tool_name' = 'query_sql'
+                AND payload_data->>'snapshot_status' = 'complete'
+              ORDER BY id DESC`,
+        limit: 1,
+      },
+      {} as Env,
+      authCtxFor('session')
+    )) as { rows: Array<{ payload_data: Record<string, unknown> }> };
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].payload_data).toMatchObject({
+      snapshot_version: 1,
+      snapshot_status: 'complete',
+    });
+    expect(result.rows[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
+    expect(result.rows[0].payload_data).not.toHaveProperty('snapshot_sha256');
+  });
+
+  it('reports a snapshot-less audit row as unavailable instead of throwing', async () => {
+    // Audit rows written before snapshots shipped carry no snapshot fields.
+    // Decoding one throws, so the read path must recognise it up front —
+    // otherwise every pre-existing row 500s on the direct-read route.
+    await insertEvent({
+      entityIds: [],
+      organizationId: orgId,
+      originId: 'tool_invocation:legacy-no-snapshot',
+      title: 'legacy audit row',
+      payloadType: 'empty',
+      payloadData: { tool_name: 'probe_legacy_no_snapshot', success: true },
+      semanticType: 'audit',
+      originType: 'tool_invocation',
+      metadata: { category: 'audit', tool_name: 'probe_legacy_no_snapshot' },
+      createdBy: ownerId,
+      clientId: null,
+    });
+    const row = await latestAuditRow(orgId, 'probe_legacy_no_snapshot');
+    expect(row).not.toBeNull();
+    expect(row!.payload_data).not.toHaveProperty('snapshot_ciphertext');
+
+    const read = await getToolInvocationSnapshotForCaller({
+      eventId: String(row!.id),
+      organizationId: orgId,
+      userId: ownerId,
+      memberRole: 'owner',
+    });
+    expect(read).toEqual({ status: 'unavailable' });
+  });
+
+  it('serves the direct snapshot route to a session but rejects an unscoped token', async () => {
+    const row = await latestAuditRow(orgId, 'query_sql');
+    expect(row).not.toBeNull();
+
+    const makeApp = (oauthWithoutReadScope: boolean) => {
+      const app = new Hono<{ Bindings: Env }>();
+      app.use('*', async (c, next) => {
+        c.set('organizationId', orgId);
+        c.set('memberRole', 'owner');
+        c.set('mcpIsAuthenticated', true);
+        c.set(
+          'session',
+          oauthWithoutReadScope ? null : ({ userId: ownerId } as never)
+        );
+        c.set(
+          'mcpAuthInfo',
+          oauthWithoutReadScope
+            ? ({
+                tokenType: 'access_token',
+                userId: ownerId,
+                organizationId: orgId,
+                scopes: [],
+              } as never)
+            : null
+        );
+        await next();
+      });
+      app.get('/:eventId', restGetToolInvocationSnapshot);
+      return app;
+    };
+
+    const allowed = await makeApp(false).request(`/${row!.id}`);
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toMatchObject({ status: 'ok' });
+
+    const denied = await makeApp(true).request(`/${row!.id}`);
+    expect(denied.status).toBe(404);
+
+    const oversizedId = await makeApp(false).request('/999999999999999999999999');
+    expect(oversizedId.status).toBe(404);
   });
 
   it('does NOT write generic audit rows for browser-session tool calls', async () => {
@@ -151,6 +330,29 @@ describe('tool invocation audit coverage', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('still audits query_sdk for browser-session callers', async () => {
+    // Must be a real sandbox entrypoint: a bare `return` does not compile as an
+    // ES module, and a failed compile would leave `success: false` — asserting
+    // the snapshot against the live result would then pass either way.
+    const script = 'export default async () => ({ answer: 42 });';
+    const result = (await executeTool(
+      'query_sdk',
+      { script },
+      {} as Env,
+      authCtxFor('session')
+    )) as { success: boolean; return_value?: unknown };
+    expect(result.success).toBe(true);
+    expect(result.return_value).toEqual({ answer: 42 });
+
+    const row = await latestAuditRow(orgId, 'query_sdk');
+    expect(row).not.toBeNull();
+    expect(decryptSnapshot(row!).request).toEqual({ script });
+    expect(decryptSnapshot(row!).response).toMatchObject({
+      success: true,
+      return_value: { answer: 42 },
+    });
+  });
+
   it('audits a failed generic call with the error captured', async () => {
     await expect(
       executeTool(
@@ -169,6 +371,11 @@ describe('tool invocation audit coverage', () => {
       'must-not-reach-the-audit-log'
     );
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
+    const snapshot = decryptSnapshot(row!);
+    expect(snapshot.request).toMatchObject({
+      action: 'nope',
+      token: REDACTED_SENTINEL,
+    });
   });
 
   it('args_sha256 is computed over SANITIZED args — a secret value cannot be verified against the hash', async () => {
@@ -266,6 +473,30 @@ describe('tool invocation audit coverage', () => {
     }
   );
 
+  it('marks oversized snapshots without silently storing a truncated preview', async () => {
+    await recordToolInvocationAudit({
+      toolName: 'probe_oversized_snapshot',
+      args: { probe: true },
+      result: { blob: 'x'.repeat(2 * 1024 * 1024) },
+      durationMs: 1,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+
+    const row = await latestAuditRow(orgId, 'probe_oversized_snapshot');
+    expect(row).not.toBeNull();
+    expect(row!.payload_data.snapshot_status).toBe('too_large');
+    expect(row!.payload_data.snapshot_bytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(row!.payload_data).not.toHaveProperty('snapshot_ciphertext');
+  });
+
   it('fully redacts secrets embedded in NON-secret string fields (quoted values, Basic auth, comma-delimited)', async () => {
     // deepRedactSecrets only covers denylisted KEYS; secrets pasted into free
     // text (a note, a script arg) rely on the text patterns, which must consume
@@ -321,6 +552,22 @@ describe('tool invocation audit coverage', () => {
       'sk-live-abcdef',
     ]) {
       expect(preview).not.toContain(fragment);
+    }
+    const snapshot = JSON.stringify(decryptSnapshot(row!));
+    for (const fragment of [
+      'my secret value',
+      'dXNlcjpwYXNz',
+      'part2',
+      'mufasa',
+      'testrealm',
+      'dcd98b7102dd',
+      '6629fae49393',
+      'scar',
+      'abc9f8de77',
+      'sk-live-1234567890',
+      'sk-live-abcdef',
+    ]) {
+      expect(snapshot).not.toContain(fragment);
     }
   });
 

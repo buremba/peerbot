@@ -3,11 +3,12 @@ import { REDACTED_SENTINEL } from '@lobu/core';
 import { Hono } from 'hono';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SCOPE_CHECK_NOT_APPLICABLE } from '../../../auth/tool-access';
+import { recordToolInvocationAudit } from '../../../tools/audit';
 import {
-  decodeToolInvocationSnapshot,
-  getToolInvocationSnapshotForCaller,
-  recordToolInvocationAudit,
-} from '../../../tools/audit';
+  captureSnapshot,
+  readSnapshotForCaller,
+} from '../../../tools/invocation-snapshot';
+import { sweepToolInvocationSnapshots } from '../../../scheduled/sweep-tool-invocation-snapshots';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { restGetToolInvocationSnapshot } from '../../../rest-api';
@@ -31,13 +32,57 @@ interface AuditRow {
   metadata: Record<string, unknown>;
 }
 
-function decryptSnapshot(row: AuditRow): {
-  request: Record<string, unknown>;
-  response: unknown;
-} {
-  const ciphertext = row.payload_data.snapshot_ciphertext;
-  expect(ciphertext).toEqual(expect.any(String));
-  return decodeToolInvocationSnapshot(row.payload_data);
+/**
+ * Read a row's snapshot the way the route does. Asserts along the way that the
+ * BODY never rides on the event itself — that separation is the whole reason
+ * the ciphertext lives in `tool_invocation_snapshots`, so it is worth
+ * re-checking at every call site rather than once.
+ */
+async function readSnapshot(
+  row: AuditRow,
+  orgId: string,
+  userId: string
+): Promise<{ request: Record<string, unknown>; response: unknown }> {
+  expect(row.payload_data).not.toHaveProperty('snapshot_ciphertext');
+  expect(row.payload_data.snapshot_status).toBe('complete');
+  const read = await readSnapshotForCaller({
+    eventId: String(row.id),
+    organizationId: orgId,
+    userId,
+    memberRole: 'owner',
+  });
+  if (read.status !== 'ok') throw new Error(`expected ok, got ${read.status}`);
+  return read.snapshot as {
+    request: Record<string, unknown>;
+    response: unknown;
+  };
+}
+
+/** Create an audit event with its own snapshot body, isolated from other tests. */
+async function seedAuditRowWithBody(
+  orgId: string,
+  ownerId: string,
+  toolName: string,
+  body = 'probe-body'
+): Promise<number> {
+  const event = await insertEvent({
+    entityIds: [],
+    organizationId: orgId,
+    originId: `tool_invocation:${toolName}:${Math.random()}`,
+    title: `${toolName} completed`,
+    payloadType: 'empty',
+    payloadData: { tool_name: toolName, success: true, snapshot_status: 'complete' },
+    semanticType: 'audit',
+    originType: 'tool_invocation',
+    metadata: { category: 'audit', tool_name: toolName },
+    createdBy: ownerId,
+    clientId: null,
+  });
+  await getDb()`
+    INSERT INTO tool_invocation_snapshots (event_id, key_fingerprint, body)
+    VALUES (${event.id}, 'probe-fingerprint', ${body})
+  `;
+  return event.id;
 }
 
 async function latestAuditRow(orgId: string, toolName: string): Promise<AuditRow | null> {
@@ -123,12 +168,18 @@ describe('tool invocation audit coverage', () => {
     expect(row!.payload_data.args_preview_redacted).not.toContain('audit coverage probe');
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
     expect(row!.payload_data).not.toHaveProperty('content');
-    expect(row!.payload_data.snapshot_version).toBe(1);
-    expect(row!.payload_data.snapshot_status).toBe('complete');
-    expect(decryptSnapshot(row!).request).toMatchObject({
-      query: 'audit coverage probe',
-      limit: 1,
-    });
+    // Generic tools are OUT OF SCOPE for snapshots: the ledger keeps the call's
+    // shape and nothing else. `search_memory` args are user free text, so a
+    // body here would persist exactly the content the sentinel above removes.
+    expect(row!.payload_data).not.toHaveProperty('snapshot_status');
+    expect(
+      await readSnapshotForCaller({
+        eventId: String(row!.id),
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+      })
+    ).toEqual({ status: 'unavailable' });
     expect(row!.metadata.mcp_session_id).toBe(sessionId);
     expect(row!.metadata.call_id).toEqual(expect.any(String));
   });
@@ -145,7 +196,7 @@ describe('tool invocation audit coverage', () => {
     const row = await latestAuditRow(orgId, 'query_sql');
     expect(row).not.toBeNull();
     expect(row!.payload_data.org_slug).toBe(orgSlug);
-    const snapshot = decryptSnapshot(row!);
+    const snapshot = await readSnapshot(row!, orgId, ownerId);
     expect(snapshot.request).toEqual({
       sql: 'SELECT id FROM events',
       sort_by: 'id',
@@ -161,7 +212,7 @@ describe('tool invocation audit coverage', () => {
     expect(row).not.toBeNull();
     const eventId = String(row!.id);
 
-    const creatorRead = await getToolInvocationSnapshotForCaller({
+    const creatorRead = await readSnapshotForCaller({
       eventId,
       organizationId: orgId,
       userId: ownerId,
@@ -169,7 +220,7 @@ describe('tool invocation audit coverage', () => {
     });
     expect(creatorRead.status).toBe('ok');
 
-    const otherMemberRead = await getToolInvocationSnapshotForCaller({
+    const otherMemberRead = await readSnapshotForCaller({
       eventId,
       organizationId: orgId,
       userId: 'another-user',
@@ -177,7 +228,7 @@ describe('tool invocation audit coverage', () => {
     });
     expect(otherMemberRead).toEqual({ status: 'forbidden' });
 
-    const adminRead = await getToolInvocationSnapshotForCaller({
+    const adminRead = await readSnapshotForCaller({
       eventId,
       organizationId: orgId,
       userId: 'another-user',
@@ -200,7 +251,6 @@ describe('tool invocation audit coverage', () => {
     );
     expect(listRead.content).toHaveLength(1);
     expect(listRead.content[0].payload_data).toMatchObject({
-      snapshot_version: 1,
       snapshot_status: 'complete',
     });
     expect(listRead.content[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
@@ -223,17 +273,19 @@ describe('tool invocation audit coverage', () => {
 
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0].payload_data).toMatchObject({
-      snapshot_version: 1,
       snapshot_status: 'complete',
     });
+    // Structural, not filtered: the body lives in `tool_invocation_snapshots`,
+    // which no content path joins. This pins that it stays that way — a future
+    // change that moves it back into payload_data fails here rather than
+    // silently serving ciphertext through every generic read.
     expect(result.rows[0].payload_data).not.toHaveProperty('snapshot_ciphertext');
-    expect(result.rows[0].payload_data).not.toHaveProperty('snapshot_sha256');
   });
 
   it('reports a snapshot-less audit row as unavailable instead of throwing', async () => {
-    // Audit rows written before snapshots shipped carry no snapshot fields.
-    // Decoding one throws, so the read path must recognise it up front —
-    // otherwise every pre-existing row 500s on the direct-read route.
+    // Audit rows written before snapshots shipped have no row in the side
+    // table. That is the same answer as an out-of-scope tool, a failed capture
+    // and a swept body: `unavailable`, never a throw that 500s the route.
     await insertEvent({
       entityIds: [],
       organizationId: orgId,
@@ -251,13 +303,123 @@ describe('tool invocation audit coverage', () => {
     expect(row).not.toBeNull();
     expect(row!.payload_data).not.toHaveProperty('snapshot_ciphertext');
 
-    const read = await getToolInvocationSnapshotForCaller({
+    const read = await readSnapshotForCaller({
       eventId: String(row!.id),
       organizationId: orgId,
       userId: ownerId,
       memberRole: 'owner',
     });
     expect(read).toEqual({ status: 'unavailable' });
+  });
+
+  it('preserves SQL and script text verbatim — credential WORDS are not credentials', async () => {
+    // Regression: a free-text rule that consumed the token after
+    // token/secret/credential/password/key rewrote `SELECT id, secret FROM t`
+    // to `secret [redacted] t` and `const token = await auth()` to
+    // `token=[redacted] auth()`. SQL and JavaScript are the only things this
+    // module ever snapshots, and those words are ordinary vocabulary in both —
+    // a corrupted body has no audit value, so key-scoped redaction only.
+    const sql = "SELECT id, secret FROM events WHERE title = 'the token bucket'";
+    const result = (await executeTool(
+      'query_sql',
+      { sql: 'SELECT id FROM events', sort_by: 'id', limit: 1 },
+      {} as Env,
+      authCtxFor('oauth')
+    )) as { error?: string };
+    expect(result.error).toBeUndefined();
+
+    await recordToolInvocationAudit({
+      toolName: 'query_sql',
+      args: { sql, limit: 1, api_key: 'sk-live-must-not-survive' },
+      result: { rows: [] },
+      durationMs: 1,
+      ctx: {
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+        isAuthenticated: true,
+        tokenType: 'pat',
+        scopedToOrg: false,
+        allowCrossOrg: false,
+      } as never,
+    });
+
+    const row = await latestAuditRow(orgId, 'query_sql');
+    const snapshot = await readSnapshot(row!, orgId, ownerId);
+    // Exact, character for character.
+    expect(snapshot.request).toMatchObject({ sql });
+    // A denylisted KEY is still fully sentineled — precision, not permissiveness.
+    expect(snapshot.request.api_key).toBe(REDACTED_SENTINEL);
+    expect(JSON.stringify(snapshot)).not.toContain('sk-live-must-not-survive');
+  });
+
+  it('reports a body encrypted under a different key as unavailable, not an error', async () => {
+    // A rotated ENCRYPTION_KEY (or a boot under
+    // LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1, which mints a random one each
+    // time) leaves undecryptable bodies behind. That is an expected end of
+    // life, so it must read like any other absent body rather than throwing
+    // and turning every historical row into a 500. The seeded fingerprint
+    // never matches the live key, which is exactly the post-rotation state.
+    const eventId = await seedAuditRowWithBody(orgId, ownerId, 'probe_key_rotation');
+
+    expect(
+      await readSnapshotForCaller({
+        eventId: String(eventId),
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+      })
+    ).toEqual({ status: 'unavailable' });
+  });
+
+  it('sweeps bodies past the retention horizon while the audit row survives', async () => {
+    const eventId = await seedAuditRowWithBody(orgId, ownerId, 'probe_retention');
+    const sql = getDb();
+    await sql`
+      UPDATE tool_invocation_snapshots
+      SET created_at = now() - interval '400 days'
+      WHERE event_id = ${eventId}
+    `;
+
+    const { deleted } = await sweepToolInvocationSnapshots();
+    expect(deleted).toBeGreaterThan(0);
+
+    const bodies = await sql<{ event_id: string }>`
+      SELECT event_id FROM tool_invocation_snapshots WHERE event_id = ${eventId}
+    `;
+    expect(bodies).toHaveLength(0);
+    // Ledger row untouched. `events` is append-only; only the expiring artifact
+    // in the side table is removable, which is the point of the split.
+    const stillThere = await sql<{ id: string }>`
+      SELECT id FROM events WHERE id = ${eventId}
+    `;
+    expect(stillThere).toHaveLength(1);
+    // A swept body is indistinguishable from any other absence.
+    expect(
+      await readSnapshotForCaller({
+        eventId: String(eventId),
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+      })
+    ).toEqual({ status: 'unavailable' });
+  });
+
+  it('captures nothing for a tool outside SNAPSHOT_TOOLS', async () => {
+    expect(
+      await captureSnapshot({
+        toolName: 'manage_connections',
+        args: { action: 'create', config: { bot_user_oauth: 'xoxb-real' } },
+        result: { ok: true },
+      })
+    ).toBeNull();
+    const captured = await captureSnapshot({
+      toolName: 'query_sql',
+      args: { sql: 'SELECT 1' },
+      result: { rows: [] },
+    });
+    expect(captured?.fields.snapshot_status).toBe('complete');
+    expect(captured?.body).toEqual(expect.any(String));
   });
 
   it('serves the direct snapshot route to a session but rejects an unscoped token', async () => {
@@ -346,8 +508,9 @@ describe('tool invocation audit coverage', () => {
 
     const row = await latestAuditRow(orgId, 'query_sdk');
     expect(row).not.toBeNull();
-    expect(decryptSnapshot(row!).request).toEqual({ script });
-    expect(decryptSnapshot(row!).response).toMatchObject({
+    const sdkSnapshot = await readSnapshot(row!, orgId, ownerId);
+    expect(sdkSnapshot.request).toEqual({ script });
+    expect(sdkSnapshot.response).toMatchObject({
       success: true,
       return_value: { answer: 42 },
     });
@@ -371,11 +534,20 @@ describe('tool invocation audit coverage', () => {
       'must-not-reach-the-audit-log'
     );
     expect(row!.payload_data.args_preview_redacted).toContain(REDACTED_SENTINEL);
-    const snapshot = decryptSnapshot(row!);
-    expect(snapshot.request).toMatchObject({
-      action: 'nope',
-      token: REDACTED_SENTINEL,
-    });
+    // `manage_connections` takes RAW connector config as arguments — its
+    // create/update path receives plaintext secrets whose keys are declared per
+    // connector (`options_schema`), not by the global keyname denylist this
+    // module applies. It is therefore deliberately out of snapshot scope: no
+    // body is captured, so there is nothing for the denylist to miss.
+    expect(row!.payload_data).not.toHaveProperty('snapshot_status');
+    expect(
+      await readSnapshotForCaller({
+        eventId: String(row!.id),
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+      })
+    ).toEqual({ status: 'unavailable' });
   });
 
   it('args_sha256 is computed over SANITIZED args — a secret value cannot be verified against the hash', async () => {
@@ -475,8 +647,8 @@ describe('tool invocation audit coverage', () => {
 
   it('marks oversized snapshots without silently storing a truncated preview', async () => {
     await recordToolInvocationAudit({
-      toolName: 'probe_oversized_snapshot',
-      args: { probe: true },
+      toolName: 'run_sdk',
+      args: { script: 'export default async () => ({});' },
       result: { blob: 'x'.repeat(2 * 1024 * 1024) },
       durationMs: 1,
       ctx: {
@@ -490,11 +662,20 @@ describe('tool invocation audit coverage', () => {
       } as never,
     });
 
-    const row = await latestAuditRow(orgId, 'probe_oversized_snapshot');
+    const row = await latestAuditRow(orgId, 'run_sdk');
     expect(row).not.toBeNull();
     expect(row!.payload_data.snapshot_status).toBe('too_large');
     expect(row!.payload_data.snapshot_bytes).toBeGreaterThan(2 * 1024 * 1024);
-    expect(row!.payload_data).not.toHaveProperty('snapshot_ciphertext');
+    // Marked, not truncated: no body row is written at all, and the read path
+    // reports the size rather than serving a half-recorded request.
+    expect(
+      await readSnapshotForCaller({
+        eventId: String(row!.id),
+        organizationId: orgId,
+        userId: ownerId,
+        memberRole: 'owner',
+      })
+    ).toMatchObject({ status: 'too_large' });
   });
 
   it('fully redacts secrets embedded in NON-secret string fields (quoted values, Basic auth, comma-delimited)', async () => {
@@ -553,22 +734,7 @@ describe('tool invocation audit coverage', () => {
     ]) {
       expect(preview).not.toContain(fragment);
     }
-    const snapshot = JSON.stringify(decryptSnapshot(row!));
-    for (const fragment of [
-      'my secret value',
-      'dXNlcjpwYXNz',
-      'part2',
-      'mufasa',
-      'testrealm',
-      'dcd98b7102dd',
-      '6629fae49393',
-      'scar',
-      'abc9f8de77',
-      'sk-live-1234567890',
-      'sk-live-abcdef',
-    ]) {
-      expect(snapshot).not.toContain(fragment);
-    }
+    expect(row!.payload_data).not.toHaveProperty('snapshot_status');
   });
 
   it('query_sql preview redaction consumes complete credentials (the pattern path the generic sentinel does not cover)', async () => {

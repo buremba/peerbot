@@ -30,6 +30,7 @@ import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-installs';
 import { runExpirePendingApprovals } from './expire-pending-approvals';
+import { sweepToolInvocationSnapshots } from './sweep-tool-invocation-snapshots';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -345,6 +346,17 @@ function registerMaintenanceTasks(
       await runExpirePendingApprovals();
     },
     { cron: '31 3 * * *' },
+  );
+
+  // Tool-invocation snapshot bodies past their retention horizon. The audit
+  // ledger on `events` is permanent and untouched; only the bulk request/
+  // response bodies expire. Daily, off-peak, distinct minute from the reapers.
+  scheduler.register(
+    'sweep-tool-invocation-snapshots',
+    async () => {
+      await sweepToolInvocationSnapshots();
+    },
+    { cron: '43 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

@@ -74,13 +74,6 @@ describe('SAFE_COLUMN_DEFS', () => {
     expect(cols).not.toContain('"content_tsv"');
   });
 
-  it('should strip tool snapshot bodies from the queryable events projection', () => {
-    const cols = buildColumnList(SAFE_COLUMN_DEFS.get('events')!, 'ev', 'events');
-    expect(cols).toContain(`ev."payload_data" - 'snapshot_ciphertext' - 'snapshot_sha256'`);
-    expect(cols).toContain('as "payload_data"');
-    expect(cols).not.toMatch(/(?:^|, )ev\."payload_data"(?:,|$)/);
-  });
-
   it('should emit direct columns for behavior_versions', () => {
     const cols = colList('behavior_versions');
     expect(cols).toContain('"prompt"');

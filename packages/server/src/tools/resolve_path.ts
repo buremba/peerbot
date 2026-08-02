@@ -1118,9 +1118,8 @@ async function fetchRecentContent(
     FROM current_event_records ev
     LEFT JOIN connections cn ON cn.id = ev.connection_id
     WHERE ev.organization_id = $1
-      -- Internal ledger events are not recent workspace content. Keeping them
-      -- out also avoids moving encrypted audit snapshots through bootstrap.
-      AND ev.semantic_type NOT IN ('correction', 'audit')
+      -- Exclude null-shaped internal events (P1 corrections) from the recent-content list.
+      AND ev.semantic_type <> 'correction'
       ${entityFilter}
     ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
     LIMIT $2

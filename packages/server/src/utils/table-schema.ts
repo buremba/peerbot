@@ -340,59 +340,46 @@ export const QUERYABLE_SCHEMA = {
         'current_view_template_version_id'
       ),
     },
-    // events (excludes: embedding). Tool-invocation snapshot bodies are
-    // deliberately removed from payload_data at this SQL projection seam:
-    // query_sql and every custom data source read this CTE, and neither should
-    // bypass the creator/admin direct-read route or move multi-megabyte
-    // ciphertext through ordinary query results. Keep the bounded status/size
-    // metadata so callers can still tell that a snapshot exists.
+    // events (excludes: embedding)
     {
       name: 'events',
-      columns: [
-        ...cols(
-          'id',
-          'organization_id',
-          'entity_ids',
-          'origin_id',
-          'title',
-          'payload_type',
-          'payload_text'
-        ),
-        {
-          name: 'payload_data',
-          type: 'text',
-          expr: `$COL$ - 'snapshot_ciphertext' - 'snapshot_sha256'`,
-        },
-        ...cols(
-          'payload_template',
-          'attachments',
-          'author_name',
-          'source_url',
-          'occurred_at',
-          'score',
-          'metadata',
-          'created_at',
-          'origin_parent_id',
-          'origin_type',
-          'connector_key',
-          'connection_id',
-          'feed_key',
-          'feed_id',
-          'run_id',
-          'semantic_type',
-          'content_length',
-          'search_tsv',
-          'client_id',
-          'created_by',
-          'interaction_type',
-          'interaction_status',
-          'interaction_input_schema',
-          'interaction_input',
-          'interaction_output',
-          'interaction_error',
-          'supersedes_event_id'
-        ),
-      ],
+      columns: cols(
+        'id',
+        'organization_id',
+        'entity_ids',
+        'origin_id',
+        'title',
+        'payload_type',
+        'payload_text',
+        'payload_data',
+        'payload_template',
+        'attachments',
+        'author_name',
+        'source_url',
+        'occurred_at',
+        'score',
+        'metadata',
+        'created_at',
+        'origin_parent_id',
+        'origin_type',
+        'connector_key',
+        'connection_id',
+        'feed_key',
+        'feed_id',
+        'run_id',
+        'semantic_type',
+        'content_length',
+        'search_tsv',
+        'client_id',
+        'created_by',
+        'interaction_type',
+        'interaction_status',
+        'interaction_input_schema',
+        'interaction_input',
+        'interaction_output',
+        'interaction_error',
+        'supersedes_event_id'
+      ),
     },
     // connections (excludes: credentials; `config` is REDACTED, not excluded —
     // see redactedConfigColumn)

@@ -22,7 +22,6 @@ import { enforceRoleScopeAccess } from './access-control';
 import { recordToolInvocationAudit } from './audit';
 import { listOrganizations } from './organizations';
 import { getTool, type TokenType, type ToolContext, type ToolSourceContext } from './registry';
-import { validateToolArgs } from './validate-args';
 
 export interface AuthContext {
   organizationId: string | null;
@@ -211,10 +210,10 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
  * Execute a tool by name with access control and Sentry tracking.
  * Returns the raw tool result (caller decides formatting).
  *
- * Registered handlers remain wrapped with `withValidatedArgs` so direct REST
- * and sandbox SDK calls share the same validation. This boundary validates a
- * second time so audit snapshots capture the coerced request actually handed
- * to the handler instead of the caller's pre-validation object.
+ * Arg validation does NOT live here: every registered handler is wrapped
+ * with `withValidatedArgs` at its definition (`tools/validate-args.ts`), so
+ * direct REST calls and the sandbox SDK namespaces get the same coerce +
+ * validate behavior as this path (lobu#1137).
  */
 export async function executeTool(
   toolName: string,
@@ -235,7 +234,6 @@ export async function executeTool(
       // org when there is one; a session with no bound org has no ledger to
       // write into, and toToolContext would throw on it anyway.
       const startTime = Date.now();
-      const callId = randomUUID();
       const auditIfOrgBound = (outcome: { result?: unknown; error?: unknown }) =>
         authCtx.organizationId
           ? recordToolInvocationAudit({
@@ -244,7 +242,6 @@ export async function executeTool(
               ...outcome,
               durationMs: Date.now() - startTime,
               ctx: toToolContext(authCtx),
-              callId,
             })
           : Promise.resolve();
       try {
@@ -271,18 +268,11 @@ export async function executeTool(
   // background-run `run_id` (a bigint on the runs table) — this identifies a
   // single tool call so a failure can be traced across logs/audit/response.
   const callId = randomUUID();
-  let auditedArgs = args;
+
+  const runHandler = () =>
+    trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));
 
   try {
-    auditedArgs = validateToolArgs(
-      toolName,
-      tool.inputSchema,
-      args
-    ) as Record<string, unknown>;
-    const runHandler = () =>
-      trackMCPToolCall(toolName, auditedArgs, () =>
-        tool.handler(auditedArgs, env, toolContext)
-      );
     // Auto-retry (lobu#2051 Item 2): only transient thrown ToolErrors, and only
     // for read/test tools on the allowlist. Mutations and run_sdk are never
     // retried here — re-running them could double-write. Resolved failures from
@@ -299,7 +289,7 @@ export async function executeTool(
       : await runHandler();
     await recordToolInvocationAudit({
       toolName,
-      args: auditedArgs,
+      args,
       result,
       durationMs: Date.now() - startTime,
       ctx: toolContext,
@@ -314,7 +304,7 @@ export async function executeTool(
     }
     await recordToolInvocationAudit({
       toolName,
-      args: auditedArgs,
+      args,
       error,
       durationMs: Date.now() - startTime,
       ctx: toolContext,

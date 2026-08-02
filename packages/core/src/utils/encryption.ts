@@ -140,6 +140,61 @@ export function decrypt(text: string): string {
   return decrypted.toString("utf8");
 }
 
+/**
+ * Encrypt raw bytes using AES-256-GCM, returning ONE base64 string over
+ * `iv || tag || ciphertext`.
+ *
+ * The string-oriented {@link encrypt} above emits hex (2x) and only accepts
+ * utf8, so a binary payload has to be base64'd first — 2.67x expansion for
+ * something already compressed. Bulk artifacts (tool-invocation snapshots)
+ * use this instead: one encoding, 1.33x, no intermediate string.
+ *
+ * Base64 rather than a `bytea` column on purpose: the server's postgres.js
+ * runs with `fetch_types: false`, so a bytea round-trip comes back as an
+ * unparsed `\x…` string rather than a Buffer.
+ */
+export function encryptBytes(bytes: Buffer): string {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv("aes-256-gcm", getEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(bytes), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64");
+}
+
+/** Inverse of {@link encryptBytes}. Throws on a truncated or tampered payload. */
+export function decryptBytes(payload: string): Buffer {
+  const raw = Buffer.from(payload, "base64");
+  // 12-byte IV + 16-byte GCM tag; anything shorter cannot carry both.
+  if (raw.length <= IV_LENGTH + 16) throw new Error("Invalid encrypted format");
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    getEncryptionKey(),
+    raw.subarray(0, IV_LENGTH)
+  );
+  decipher.setAuthTag(raw.subarray(IV_LENGTH, IV_LENGTH + 16));
+  return Buffer.concat([
+    decipher.update(raw.subarray(IV_LENGTH + 16)),
+    decipher.final(),
+  ]);
+}
+
+/**
+ * Short stable fingerprint of the active ENCRYPTION_KEY.
+ *
+ * Stored alongside anything encrypted for long-term retention so a read can
+ * tell "this predates the current key" (answer: unavailable) apart from "this
+ * is corrupt" (answer: error). Without it a key rotation — or a boot under
+ * `LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1`, which mints a fresh random key each
+ * time — turns every historical row into a 500. A digest of the key is not the
+ * key: it leaks nothing usable and never varies for a given install.
+ */
+export function encryptionKeyFingerprint(): string {
+  return crypto
+    .createHash("sha256")
+    .update(getEncryptionKey())
+    .digest("hex")
+    .slice(0, 16);
+}
+
 /** Test-only: clear the memoized encryption key (e.g. after mutating ENCRYPTION_KEY). */
 export function __resetEncryptionKeyCacheForTests(): void {
   cachedKey = undefined;

@@ -63,11 +63,7 @@ const PARENT_ROOT_JOINS_SQL = `
       ) root ON true`;
 
 const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
-          f.connector_key as platform, f.origin_id, f.origin_parent_id, f.score, f.metadata, f.payload_type,
-          CASE WHEN f.semantic_type = 'audit' AND f.origin_type = 'tool_invocation'
-            THEN f.payload_data - 'snapshot_ciphertext' - 'snapshot_sha256'
-            ELSE f.payload_data END AS payload_data,
-          f.payload_template, f.attachments, f.origin_type,
+          f.connector_key as platform, f.origin_id, f.origin_parent_id, f.score, f.metadata, f.payload_type, f.payload_data, f.payload_template, f.attachments, f.origin_type,
           f.interaction_type, f.interaction_status, f.interaction_input_schema, f.interaction_input, f.interaction_output, f.interaction_error, f.supersedes_event_id`;
 
 const CLASSIFICATION_COLUMNS_SQL = `fcl_all.attribute_key as classifier_attribute_key,

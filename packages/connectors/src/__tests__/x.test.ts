@@ -795,6 +795,7 @@ function stagingDispatcher(
 		composerName?: string;
 		stagedText?: string;
 		currentUrl?: string;
+		submitEnabled?: boolean;
 	} = {},
 ) {
 	const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
@@ -829,8 +830,7 @@ function stagingDispatcher(
 					return {
 						value: {
 							staged_text: overrides.stagedText ?? typedText,
-							composer_present: true,
-							submit_enabled: true,
+							submit_enabled: overrides.submitEnabled ?? true,
 						},
 					};
 				default:
@@ -948,14 +948,59 @@ describe("prepareXReply", () => {
 		).rejects.toThrow(/does not match the draft/);
 	});
 
-	test("rejects a body over X's length limit before touching the browser", async () => {
+	// X counts a URL as 23 characters however long it really is, and NFC-
+	// normalizes first. A raw code-unit cap here would refuse to stage drafts X
+	// accepts, so there is deliberately no pre-flight length check.
+	test("stages a URL-bearing draft that exceeds 280 code units", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const url = `https://example.com/${"path/".repeat(60)}`;
+		const body = `worth a read ${url}`;
+		expect(body.length).toBeGreaterThan(280);
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.staged_text).toBe(body);
+		expect(result.submit_blocked).toBe(false);
+	});
+
+	test("stages a CJK draft rather than guessing at weighted length", async () => {
+		const { dispatcher } = stagingDispatcher();
+		// 200 CJK characters weigh 400 to X but are only 200 code units — the
+		// mirror image of the URL case, and equally not ours to adjudicate.
+		const body = "検".repeat(200);
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.staged_text).toBe(body);
+	});
+
+	test("reports X's own refusal via submit_blocked instead of guessing", async () => {
+		const { dispatcher } = stagingDispatcher({ submitEnabled: false });
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft X will not accept as written",
+		});
+
+		// Still staged — the human is looking at the tab and can trim it there.
+		expect(result.prepared).toBe(true);
+		expect(result.submit_blocked).toBe(true);
+		expect(result.message).toMatch(/Reply disabled/);
+	});
+
+	test("still rejects an empty body without touching the browser", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 		await expect(
-			prepareXReply(dispatcher, {
-				tweetUrl: "2083959735481716957",
-				body: "x".repeat(281),
-			}),
-		).rejects.toThrow(/over X's 280 limit/);
+			prepareXReply(dispatcher, { tweetUrl: "2083959735481716957", body: "   " }),
+		).rejects.toThrow(/must be non-empty/);
 		expect(calls).toHaveLength(0);
 	});
 

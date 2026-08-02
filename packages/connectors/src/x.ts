@@ -1868,9 +1868,6 @@ const dmMetadataSchema = {
 // against the signed-in app). The only way to put text in X's composer is to
 // type it, so this drives the paired Owletto Chrome and stops before submit.
 
-/** Max length X accepts in a single non-premium post. */
-const X_REPLY_MAX_LENGTH = 280;
-
 export interface PrepareReplyResult {
 	prepared: boolean;
 	tab_id?: number;
@@ -1879,6 +1876,8 @@ export interface PrepareReplyResult {
 	method: "type_ref";
 	staged_text?: string;
 	submitted: false;
+	/** X's own Reply button was disabled — it will not accept the draft as written. */
+	submit_blocked: boolean;
 	message: string;
 }
 
@@ -1941,9 +1940,14 @@ interface XA11yNode {
 }
 
 /**
- * Read back what actually landed in the composer. Returns the staged text and
- * whether anything got submitted, so the caller can fail loudly instead of
- * reporting a staged draft that is not there.
+ * Read back what actually landed in the composer, so the caller can fail loudly
+ * instead of reporting a staged draft that is not there.
+ *
+ * `submit_enabled` is X's own verdict on the draft. We never click the button —
+ * we read its `aria-disabled` because X disables it when the draft breaks a rule
+ * it enforces and we deliberately do not model, above all its weighted character
+ * count (URLs = 23 each, CJK/emoji = 2). With non-empty text in the box, a
+ * disabled button means X will not accept this draft as written.
  */
 function buildReadComposerExpression(): string {
 	return `(async () => {
@@ -1952,7 +1956,6 @@ function buildReadComposerExpression(): string {
     || document.querySelector('[data-testid="tweetButton"]');
   return {
     staged_text: box ? box.innerText.replace(/\\n+$/, "") : null,
-    composer_present: !!box,
     submit_enabled: btn ? btn.getAttribute("aria-disabled") !== "true" : null,
   };
 })()`;
@@ -1980,11 +1983,13 @@ export async function prepareXReply(
 	if (!body) {
 		throw new Error("prepare_reply: body must be non-empty");
 	}
-	if (body.length > X_REPLY_MAX_LENGTH) {
-		throw new Error(
-			`prepare_reply: body is ${body.length} characters, over X's ${X_REPLY_MAX_LENGTH} limit`,
-		);
-	}
+	// No length check here on purpose. X does not count UTF-16 code units: every
+	// URL counts as 23 regardless of its real length, CJK and emoji count 2, and
+	// the text is NFC-normalized first. A naive `body.length > 280` rejects
+	// drafts X would happily accept — one link is enough to blow past 280 code
+	// units while weighing 23. Rather than reimplement that spec (or vendor
+	// twitter-text) we let X's own composer be the authority and report back
+	// whether it will accept the draft, via `submit_blocked` below.
 	const tweetUrl = normalizeXPostUrl(opts.tweetUrl);
 	if (!tweetUrl) {
 		throw new Error(
@@ -2111,6 +2116,11 @@ export async function prepareXReply(
 		}
 	}
 
+	// X's own verdict, not ours. Still `prepared: true` — the draft IS in the
+	// composer and the human is about to look at it, so trimming it there beats
+	// throwing away work over a limit we cannot compute correctly.
+	const submitBlocked = read.value?.submit_enabled === false;
+
 	return {
 		prepared: true,
 		tab_id: tabId,
@@ -2119,7 +2129,10 @@ export async function prepareXReply(
 		method: "type_ref",
 		staged_text: staged,
 		submitted: false,
-		message: `Reply draft staged on ${tweetUrl}. Review and click Reply yourself — Lobu never submits.`,
+		submit_blocked: submitBlocked,
+		message: submitBlocked
+			? `Reply draft staged on ${tweetUrl}, but X has Reply disabled — most likely over its weighted character limit (URLs count 23, CJK/emoji count 2). Trim it in the tab, then click Reply yourself.`
+			: `Reply draft staged on ${tweetUrl}. Review and click Reply yourself — Lobu never submits.`,
 	};
 }
 
@@ -2307,9 +2320,8 @@ export default class XConnector extends ConnectorRuntime {
 						body: {
 							type: "string",
 							minLength: 1,
-							maxLength: X_REPLY_MAX_LENGTH,
 							description:
-								"Draft reply text. Left in the composer for the user to edit/send.",
+								"Draft reply text, left in the composer for the user to edit/send. Deliberately uncapped: X counts URLs as 23 and CJK/emoji as 2, so a code-unit cap here would reject drafts X accepts. The action reports X's own verdict as submit_blocked.",
 						},
 						tweet_url: {
 							type: "string",
@@ -2339,6 +2351,7 @@ export default class XConnector extends ConnectorRuntime {
 						submitted: { type: "boolean" },
 						tweet_url: { type: "string" },
 						staged_text: { type: "string" },
+						submit_blocked: { type: "boolean" },
 					},
 				},
 				requiresApproval: true,

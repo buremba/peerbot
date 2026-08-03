@@ -193,6 +193,13 @@ describe('client sessions activity route', () => {
     expect(alpha.agentId).toBe('session-agent');
     expect(alpha.firstCallAt).toBeLessThanOrEqual(alpha.lastCallAt);
     expect(alpha.pendingInteractionCount).toBe(1);
+    // `last_action` stores the raw tool name even when the tool declares an
+    // `annotations.title`; the route is the only place it gets formatted.
+    const [stored] = await getDb()<{ last_action: string }>`
+      SELECT last_action FROM mcp_client_conversations
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-alpha'
+    `;
+    expect(stored.last_action).toBe('query_sql');
     expect(alpha.lastAction).toBe('Query SQL');
 
     const beta = body.sessions.find((s) => s.sessionId === 'sess-beta')!;

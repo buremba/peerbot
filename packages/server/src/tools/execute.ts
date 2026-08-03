@@ -300,7 +300,6 @@ export async function executeTool(
     await recordMcpConversationActivity({
       ctx: toolContext,
       toolName,
-      actionLabel: tool.annotations?.title,
       failed: isSoftErrorResult(result),
     });
     return result;
@@ -320,7 +319,6 @@ export async function executeTool(
     await recordMcpConversationActivity({
       ctx: toolContext,
       toolName,
-      actionLabel: tool.annotations?.title,
       failed: true,
     });
     throw error;

@@ -16,24 +16,29 @@ function oauthClientId(ctx: ToolContext): string | null {
 }
 
 export function normalizeMcpConversationTitle(value: string): string {
-	return value
+	// Truncate by code point, not UTF-16 code unit: splitting an astral
+	// character (an emoji) leaves a lone surrogate that cannot be encoded as
+	// UTF-8, and the title write below would throw.
+	const cleaned = value
 		.replace(/[\u0000-\u001f\u007f]/g, " ")
 		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, MAX_TITLE_LENGTH);
+		.trim();
+	return [...cleaned].slice(0, MAX_TITLE_LENGTH).join("");
 }
 
 export async function recordMcpConversationActivity(args: {
 	ctx: ToolContext;
 	toolName: string;
-	actionLabel?: string;
 	failed: boolean;
 }): Promise<void> {
 	const identity = currentConversation(args.ctx);
 	if (!identity) return;
 	try {
 		const sql = getDb();
-		const label = args.actionLabel?.trim() || args.toolName;
+		// `last_action` stores the RAW tool name, the same contract the migration
+		// backfill writes. `displayAction` on the read path is the single
+		// formatting point, so live and backfilled rows always render alike.
+		const label = args.toolName;
 		const clientId = oauthClientId(args.ctx);
 		await sql`
       INSERT INTO public.mcp_client_conversations (

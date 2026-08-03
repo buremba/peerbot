@@ -40,4 +40,12 @@ describe("MCP conversation display context", () => {
 		expect(title).toHaveLength(200);
 		expect(title).not.toMatch(/[\n\r\t]/);
 	});
+
+	it("truncates on code points so an emoji is never split", () => {
+		const title = normalizeMcpConversationTitle(`${"x".repeat(199)}🚀tail`);
+		expect([...title]).toHaveLength(200);
+		// A code-unit slice here would keep a lone high surrogate, which cannot
+		// be encoded as UTF-8 for the title write.
+		expect(title.endsWith("🚀")).toBe(true);
+	});
 });

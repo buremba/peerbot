@@ -27,21 +27,37 @@ export interface KnowledgeSearchInput {
 	limit?: number;
 }
 
-export interface KnowledgeSaveInput {
+interface KnowledgeSaveBase {
 	entity_ids?: number[];
-	content?: string;
 	semantic_type: string;
 	metadata?: Record<string, unknown>;
 	title?: string;
 	slug?: string;
 	author?: string;
-	payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
+	payload_data?: Record<string, unknown>;
+	payload_template?: Record<string, unknown>;
+	attachments?: Array<Record<string, unknown>>;
 	source_url?: string;
 	parent_event_id?: number;
 	idempotency_key?: string;
 	occurred_at?: string;
 	behavior_source?: { behavior_id: number; window_id: number };
 }
+
+export type KnowledgeSaveInput =
+	| (KnowledgeSaveBase & {
+			payload_type?: "text" | "markdown";
+			content: string;
+	  })
+	| (KnowledgeSaveBase & {
+			payload_type: "json_template";
+			payload_template: Record<string, unknown>;
+			content?: string;
+	  })
+	| (KnowledgeSaveBase & {
+			payload_type: "media" | "empty";
+			content?: string;
+	  });
 
 export interface KnowledgeReadInput {
 	/** Fetch specific content events by id. */

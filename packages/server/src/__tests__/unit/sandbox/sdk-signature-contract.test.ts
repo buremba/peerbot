@@ -1,5 +1,13 @@
-import { beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	mock,
+} from "bun:test";
 import type { Env } from "../../../index";
+import type { KnowledgeSaveInput } from "../../../sandbox/namespaces/knowledge";
 import type { ToolContext } from "../../../tools/registry";
 
 const calls: Array<{ action: string; input?: Record<string, unknown> }> = [];
@@ -115,6 +123,34 @@ describe("ClientSDK object signature contract", () => {
 	beforeEach(() => {
 		calls.length = 0;
 		behaviorGets.length = 0;
+	});
+
+	it("keeps knowledge.save content requirements aligned with payload_type", () => {
+		const metadataOnly = {
+			semantic_type: "valuation",
+			payload_type: "empty",
+			metadata: { amount: 42 },
+		} satisfies KnowledgeSaveInput;
+		const text = {
+			semantic_type: "note",
+			content: "hello",
+		} satisfies KnowledgeSaveInput;
+		// @ts-expect-error The omitted payload_type defaults to text at runtime.
+		const missingDefaultText: KnowledgeSaveInput = {
+			semantic_type: "note",
+		};
+		// @ts-expect-error Explicit text and markdown payloads require content.
+		const missingExplicitText: KnowledgeSaveInput = {
+			semantic_type: "note",
+			payload_type: "text",
+		};
+
+		expect([
+			metadataOnly,
+			text,
+			missingDefaultText,
+			missingExplicitText,
+		]).toHaveLength(4);
 	});
 
 	it("forwards named id objects instead of treating them as positional ids", async () => {

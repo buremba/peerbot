@@ -810,6 +810,14 @@ export async function handleCreateFromVersion(
     name: string;
     query: string;
   }>;
+  const clonedOutputs = normalizeStoredJsonField(
+    version.outputs,
+    undefined as Record<string, unknown> | undefined
+  );
+  await assertOutputEntityTypesExist(sql, organizationId, clonedOutputs);
+  for (const entityId of entityIds) {
+    await assertOutputEventTypesExist(organizationId, clonedOutputs, [entityId]);
+  }
   if (clonedSources.length > 0) {
     for (const entityId of entityIds) {
       await assertWatcherSourcesResolve(sql, organizationId, clonedSources, [entityId]);
@@ -881,10 +889,7 @@ export async function handleCreateFromVersion(
         );
         assertBehaviorOutputsUseWindowExecution(
           (Array.isArray(cloneTriggers) ? cloneTriggers : []) as BehaviorTrigger[],
-          normalizeStoredJsonField(
-            version.outputs,
-            undefined as Record<string, unknown> | undefined
-          )
+          clonedOutputs
         );
         // `tags` is a text[] column read under fetch_types:false, so postgres.js
         // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),

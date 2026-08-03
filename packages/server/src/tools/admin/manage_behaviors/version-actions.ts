@@ -159,17 +159,24 @@ export async function handleCreateVersion(
   // planned (LIMIT 0) for bad columns/syntax. The watcher row carries the org +
   // entity_ids so {{entityId}} validates as it runs.
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
+  const siblingRows = await sql`
+    SELECT id, triggers, entity_ids
+    FROM watchers
+    WHERE watcher_group_id = ${groupId}
+  `;
   if (versionOrganizationId) {
     // Only validate CALLER-SUPPLIED outputs. An inherited value comes
     // from the stored previous version, and a metadata-only bump (name/schedule)
     // must not start failing because of a type that was already persisted.
     if (args.outputs !== undefined) {
       await assertOutputEntityTypesExist(sql, versionOrganizationId, outputs);
-      await assertOutputEventTypesExist(
-        versionOrganizationId,
-        outputs,
-        parsePgNumberArray(watcherRows[0].entity_ids)
-      );
+      for (const sibling of siblingRows) {
+        await assertOutputEventTypesExist(
+          versionOrganizationId,
+          outputs,
+          parsePgNumberArray(sibling.entity_ids)
+        );
+      }
     }
     await assertWatcherSourcesResolve(
       sql,
@@ -220,9 +227,6 @@ export async function handleCreateVersion(
   // final trigger set (the targeted row uses triggerWrite.triggers).
   const setAsCurrent = args.set_as_current !== false;
   if (setAsCurrent) {
-    const siblingRows = await sql`
-      SELECT id, triggers FROM watchers WHERE watcher_group_id = ${groupId}
-    `;
     for (const sibling of siblingRows) {
       const siblingTriggers =
         Number(sibling.id) === Number(args.behavior_id)

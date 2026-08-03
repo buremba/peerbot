@@ -193,6 +193,10 @@ jobs:
   # mock OpenAI-compatible provider (no provider key needed). A failure here
   # fails CI → the PR goes red. See scripts/sdk-e2e.sh.
   sdk-e2e:
+    # Keep deep, non-required smoke coverage out of the runner queue until the
+    # merge-critical checks finish. During a PR burst these jobs used slots
+    # while required integration shards remained queued for 10+ minutes.
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -238,6 +242,7 @@ jobs:
   # HOME and walks the whole command surface, asserting each runs or fails
   # gracefully. A failure here fails CI → the PR goes red. See scripts/cli-smoke.sh.
   cli-smoke:
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -591,7 +596,11 @@ jobs:
   integration:
     if: always()
     needs: [server-integration-vitest, server-integration-bun]
-    runs-on: ubuntu-24.04
+    # This compatibility context only evaluates two strings. Keep it on the
+    # lightweight runner image while older open PRs still require the legacy
+    # `integration` context; branch protection can move directly to the four
+    # worker contexts once those PRs refresh.
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Require every backend integration job
@@ -626,6 +635,12 @@ jobs:
 
       - name: Run biome lint check
         run: bun run lint
+
+      - name: Static security guards
+        # The former security-tests workflow duplicated unit/integration test
+        # execution in three extra jobs on every revision. Its one unique gate
+        # belongs here: format-lint is already required and has the checkout.
+        run: ./scripts/check-security-patterns.sh
 
       - name: Duplication gate (jscpd)
         run: bun run dupes
@@ -993,6 +1008,7 @@ jobs:
   # never matches. Use git diff against the PR base instead. On push events
   # (main) there's no PR object, so default to running the smoke job.
   mac-build-smoke-filter:
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.filter.outputs.run }}
@@ -1086,6 +1102,7 @@ jobs:
   # list, so we diff against the PR base. On push (main) there's no PR object,
   # so default to running.
   connector-parity-smoke-filter:
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.filter.outputs.run }}
@@ -1193,6 +1210,8 @@ jobs:
   # runner without a user session must not redden main. Read the summary, do
   # not gate on it. No checkout: the probe only inspects the runner itself.
   exec-sandbox-backend-probe:
+    if: github.event_name == 'push'
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
@@ -1254,6 +1273,7 @@ jobs:
   # so a future rebuild on a newer base can't silently reintroduce it. Cheap
   # enough (seconds, no deps) that it runs unfiltered.
   pgvector-glibc-floor:
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1286,3 +1306,13 @@ jobs:
             echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)."
             exit 1
           fi
+
+  # Dependency/secret/config scans remain available on every PR and main push,
+  # but they no longer compete with merge-critical checks for hosted slots.
+  # The reusable workflow retains its daily schedule for advisory drift.
+  supply-chain:
+    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/supply-chain.yml

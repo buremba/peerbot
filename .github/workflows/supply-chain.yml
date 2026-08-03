@@ -7,14 +7,13 @@ name: Supply chain
 # relevant job to a hard gate once it's clean.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
+  # PR and main-push scans are called by ci.yml only after required checks
+  # finish, so informational scans cannot starve the merge gate.
+  workflow_call:
   schedule:
     # Daily so newly-published advisories are caught between PRs.
     - cron: "13 6 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: supply-chain-${{ github.workflow }}-${{ github.ref }}

@@ -17,6 +17,12 @@ on:
 permissions:
   contents: read
 
+# A force-push or rebase makes an older PR result irrelevant. Cancel it before
+# it consumes a hosted slot; main and scheduled runs remain non-cancellable.
+concurrency:
+  group: submodule-drift-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   BOT_AUTHOR_EMAIL: fluxcd@lobu.ai
   BOT_SUBJECT: "chore: update images"

@@ -9,6 +9,10 @@ import { LOBU_SKILL_MARKDOWN } from "../lobu-skill.generated";
 // identically in prod and local dev. Guard against the generated constant
 // drifting from the source file.
 const skillPath = resolve(__dirname, "../../../../../skills/lobu/SKILL.md");
+const operatorSkillPath = resolve(
+  __dirname,
+  "../../../../../skills/lobu-operator/SKILL.md"
+);
 
 describe("lobu skill resource", () => {
   it("stays in sync with skills/lobu/SKILL.md", () => {
@@ -19,5 +23,51 @@ describe("lobu skill resource", () => {
   it("is non-empty and carries the skill frontmatter", () => {
     expect(LOBU_SKILL_MARKDOWN.length).toBeGreaterThan(0);
     expect(LOBU_SKILL_MARKDOWN).toContain("name: lobu");
+  });
+
+  it("keeps discovery metadata concise", () => {
+    const description = LOBU_SKILL_MARKDOWN.match(/^description: (.+)$/m)?.[1];
+
+    expect(description).toBeDefined();
+    expect(description?.length).toBeLessThanOrEqual(200);
+  });
+
+  it("teaches the agent-facing SDK connector lifecycle", () => {
+    expect(LOBU_SKILL_MARKDOWN).toContain("search_sdk");
+    expect(LOBU_SKILL_MARKDOWN).toContain("connections.connect");
+    expect(LOBU_SKILL_MARKDOWN).toContain("setup_required");
+    expect(LOBU_SKILL_MARKDOWN).toContain("feeds.create");
+    expect(LOBU_SKILL_MARKDOWN).toContain("feeds.trigger");
+    expect(LOBU_SKILL_MARKDOWN).toContain("operations.listAvailable");
+    expect(LOBU_SKILL_MARKDOWN).toContain("operations.execute");
+    expect(LOBU_SKILL_MARKDOWN).not.toContain("manage_connections");
+    expect(LOBU_SKILL_MARKDOWN).not.toContain("manage_feeds");
+  });
+
+  it("distinguishes semantic knowledge from structured entities", () => {
+    expect(LOBU_SKILL_MARKDOWN).toContain("knowledge.save");
+    expect(LOBU_SKILL_MARKDOWN).toContain("entities.create");
+    expect(LOBU_SKILL_MARKDOWN).toContain("Promise.allSettled");
+  });
+});
+
+describe("lobu operator skill", () => {
+  const operatorSkill = readFileSync(operatorSkillPath, "utf-8");
+
+  it("keeps discovery metadata concise", () => {
+    const description = operatorSkill.match(/^description: (.+)$/m)?.[1];
+
+    expect(description).toBeDefined();
+    expect(description?.length).toBeLessThanOrEqual(200);
+  });
+
+  it("indexes the required contributor workflow", () => {
+    expect(operatorSkill).toContain("make task-setup");
+    expect(operatorSkill).toContain("red→fix→green");
+    expect(operatorSkill).toContain("make pre-pr");
+    expect(operatorSkill).toContain("make review-fix");
+    expect(operatorSkill).toContain("git add -- <paths>");
+    expect(operatorSkill).toContain("make review");
+    expect(operatorSkill).toContain("gh pr merge");
   });
 });

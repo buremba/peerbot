@@ -23,11 +23,19 @@ const AUDIT_REQUEST_KEYS = ['request', 'request_status', 'request_bytes'] as con
  * A tool-invocation audit row retains the caller's VERBATIM request (see
  * `recordToolInvocationAudit`), which only its author or a workspace admin may
  * read. Content rows arrive with those keys still on `payload_data`, so this
- * strips them from EVERY audit item first — an unauthorized caller and an
- * unrecognized role leave them stripped — and puts them back only on the rows
- * whose `created_by` clears the gate. Authorship is the one thing the content
- * row does not carry, so it is the only thing re-read here; a failed re-read
- * rejects rather than serving a half-gated page.
+ * strips them from EVERY audit item first — list/search results never inline
+ * them, and an unauthorized caller or unrecognized role leaves them stripped.
+ * Explicit event-id reads put them back only on rows whose `created_by` clears
+ * the gate. Authorship is the one thing the content row does not carry, so it
+ * is the only thing re-read here; a failed re-read rejects rather than serving
+ * a half-gated page.
+ *
+ * The strip index maps an id to a LIST of entries, not one: an exact-id read
+ * expands the requested ids through `resolved_ids`, whose run arm and
+ * supersede-walk arm can each claim the same event under a different (and
+ * deliberately non-colliding) chain key, so the join emits that event twice and
+ * `buildContentItems` parses a SEPARATE payload object for each row. Keying one
+ * entry per id would restore only the last copy and leave the rest stripped.
  */
 export async function hydrateToolInvocationRequests(opts: {
   sql: DbClient;
@@ -35,12 +43,13 @@ export async function hydrateToolInvocationRequests(opts: {
   organizationId: string;
   userId: string | null;
   memberRole: string | null;
+  restoreRequests: boolean;
 }): Promise<void> {
-  const { sql, items, organizationId, userId, memberRole } = opts;
+  const { sql, items, organizationId, userId, memberRole, restoreRequests } = opts;
   const isAdmin = isAdminOrOwnerRole(memberRole);
   const stripped = new Map<
     number,
-    { payload: Record<string, unknown>; fields: Record<string, unknown> }
+    Array<{ payload: Record<string, unknown>; fields: Record<string, unknown> }>
   >();
 
   for (const item of items) {
@@ -54,10 +63,14 @@ export async function hydrateToolInvocationRequests(opts: {
       fields[key] = payload[key];
       delete payload[key];
     }
-    if (Object.keys(fields).length > 0) stripped.set(Number(item.id), { payload, fields });
+    if (Object.keys(fields).length === 0) continue;
+    const id = Number(item.id);
+    const entries = stripped.get(id) ?? [];
+    entries.push({ payload, fields });
+    stripped.set(id, entries);
   }
 
-  if (stripped.size === 0 || (!isAdmin && userId == null)) return;
+  if (!restoreRequests || stripped.size === 0 || (!isAdmin && userId == null)) return;
 
   const rows = await sql<{ id: number; created_by: string | null }>`
     SELECT id, created_by
@@ -70,8 +83,9 @@ export async function hydrateToolInvocationRequests(opts: {
 
   for (const row of rows) {
     if (!isAdmin && row.created_by !== userId) continue;
-    const entry = stripped.get(Number(row.id));
-    if (entry) Object.assign(entry.payload, entry.fields);
+    const entries = stripped.get(Number(row.id));
+    if (!entries) continue;
+    for (const entry of entries) Object.assign(entry.payload, entry.fields);
   }
 }
 

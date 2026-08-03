@@ -1,54 +1,66 @@
 ---
 name: lobu-operator
-description: Repo-specific operational skill for Lobu-managed agents working inside this repository. Covers dev workflow, build commands, validation, and repo constraints.
+description: Contribute safely to the Lobu monorepo: worktrees, package rules, red-to-green fixes, validation gates, SDK-first operations, PRs, and rollout checks.
 ---
 
 # Lobu Operator — Repo Guide
 
-`CLAUDE.md` includes the root `AGENTS.md`; package directories may have their own `AGENTS.md`. Those files are the source of truth. This skill is only a fast index.
+This is a fast index, not a replacement for repository instructions. Root `AGENTS.md` and the nearest package `AGENTS.md` are authoritative; `CLAUDE.md` includes the root rules for Claude sessions.
 
 ## Before You Act
 
-1. Read `CLAUDE.md` and root `AGENTS.md`.
-2. Before editing a package, read that package's nearest `AGENTS.md`.
-3. Read `lobu.config.ts` for workspace configuration when behavior/config matters.
-4. Inspect agent directories and enabled `skills/`; the layout is data-driven.
+1. Read root `AGENTS.md`, the touched package's nearest `AGENTS.md`, and the relevant `docs/GOTCHAS.md` section.
+2. Run `make task-setup NAME=<slug>` and work only in the resulting `.claude/worktrees/<slug>/` directory. Never switch branches or edit in the main checkout.
+3. Read `lobu.config.ts` when configuration or runtime behavior matters; inspect the active agent and skill directories because composition is data-driven.
+4. Reproduce a bug before changing code. Capture red→fix→green evidence and exercise every branch touched; a typecheck alone is not completion.
 
 ## Dev Workflow
 
 ```bash
-make task-setup NAME=<slug>  # create a worktree before editing
-./scripts/setup-dev.sh       # first-time setup
-make dev                     # gateway + workers + Vite on the worktree port
-make clean-workers           # kill orphaned worker subprocesses
+make task-setup NAME=<slug>
+cd .claude/worktrees/<slug>
+make dev                  # gateway + workers + Vite on the allocated port
+make clean-workers        # after agent-worker changes
 ```
 
-Prerequisites: Bun, supported Node per package engines, and Postgres+pgvector via `DATABASE_URL`. `make dev` uses the shared local Postgres; `make dev-embedded` uses embedded per-worktree Postgres. Production can run multiple app replicas, so server code must be multi-replica safe.
+Prerequisites are Bun, the supported Node version, and Postgres with pgvector via `DATABASE_URL`. `make dev` uses the shared local Postgres; `make dev-embedded` uses per-worktree embedded Postgres. Read `.env.local` for the allocated ports.
 
-## Validation
+## Correctness Invariants
 
-| Change | Command |
-| --- | --- |
-| `packages/{core,server,agent-worker,cli}/*` | `make build-packages` |
-| Broad TS check | `bun run typecheck` |
-| Any package source | `bun test packages/<pkg>/src` |
-| Lint / format | `bun run check` (or `check:fix`) |
+- Design for at least three replicas. Shared required state and cross-pod signals belong in Postgres, never a process-local singleton or `Map`.
+- `events` is append-only. Replace or hide records with superseding/tombstone events; never delete history.
+- User-facing reads must not aggregate growing history. Materialize bounded answers on writes and read them back by index.
+- Never bulk-delete production organizations. Treat apparently empty organizations as real signups requiring individual confirmation.
+- Workers receive placeholders/proxied access, device-pinned credentials, or short-lived provider-derived leases—never durable stored credentials.
+- Agent-facing vocabulary always says **Behavior**; engine-only vocabulary stays internal.
+- Durable dispatch and delivery failures fail closed. Retry, defer, or surface terminal failure; never reinterpret an ambiguous coordination error as permission to proceed.
 
-After editing `packages/agent-worker/*`, run `make clean-workers`.
+## Validate and Ship
 
-## Constraints
+Run focused tests while iterating, then the settled-diff gates in this order:
 
-- All rules in `CLAUDE.md`, root `AGENTS.md`, and nearest package `AGENTS.md` apply.
-- Package manager is **bun** — never npm/yarn/pnpm for repo work. Ignore `dist/`; work from source.
-- No backwards-compat shims unless explicitly requested. Zero hardcoding — behavior is data-driven.
+```bash
+make build-packages                 # before checks that consume workspace dist
+bun test <path>                     # focused unit test
+make test-unit                      # or make test-integration with DATABASE_URL
+make pre-pr                         # build, typecheck, knip, lint, surface naming
+make review-fix                     # unposted fixer pass; inspect its edits
+git add -- <paths>                  # explicit paths only, never -A
+git commit -m '<type>(<scope>): <summary>'
+git diff --name-only origin/main...HEAD
+git push -u origin <branch>
+gh pr create
+make review                         # once, on settled HEAD
+gh pr checks <number> --required
+gh pr merge <number> --squash --admin
+```
+
+Never bypass a check that has not reported. For a production-visible change, wait for deployment and prove the PR's squash merge commit is an ancestor of the deployed SHA before running the live check. Clean up the task worktree with `make task-clean` after merge.
 
 ## Data Integration & Knowledge Ingestion
 
-When importing data or integrating services with Lobu, adhere to these architectural patterns:
-
-- **Connectors & Feeds:** The preferred way to integrate live third-party data (e.g., Google Calendar, Slack). Instead of one-off static imports, use Connectors.
-- **Virtual Feeds & Federation:** For systems with high data velocity (like calendar events or email), map the live API endpoints directly into Lobu as Virtual Feeds rather than storing every event locally.
-- **`seed` Method:** Useful for isolated prototyping, but avoid it for bulk processing since it only saves one item at a time.
-- **`knowledge.save`:** The go-to SDK method for bulk historical streaming of schema-less, semantic, unstructured events (e.g., `video_watch`, `direct_message`, `note`). It automatically processes and maps meaning without needing strict schemas upfront.
-- **`entities.create` / `entities.update`:** Use these only for highly structured data that matches strict, predefined schemas (e.g., `person`, `company`). If bulk uploading, wrap in `Promise.allSettled` or chunked executions to handle conflicts smoothly.
-- **`run_sdk` (lobu memory exec):** The standard CLI tool to securely prototype and execute SDK interactions on the production knowledge graph in sandboxed JS chunks. Example usage: `lobu memory exec 'export default async (ctx, client) => { return await client.knowledge.save({semantic_type: "...", content: "...", metadata: {...}}); }'`.
+- Discover the current ClientSDK with `search_sdk`; use `query_sdk` for reads and `run_sdk` / `lobu memory exec` for writes.
+- Connectors plus feeds are the normal integration path. Use `connections.connect`, follow any `setup_required` continuation, then create and trigger a feed with `feeds.create` and `feeds.trigger`.
+- Find connector actions with `operations.listAvailable` and execute the returned target with `operations.execute`; do not guess operation or connection identifiers.
+- Use `knowledge.save` for schema-less semantic history and `entities.create` / `entities.update` for strict structured records. Chunk bulk work and use `Promise.allSettled` so conflicts are explicit.
+- `lobu memory seed` is suitable for small declarative YAML datasets, not large backfills.

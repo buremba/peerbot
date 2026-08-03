@@ -214,7 +214,8 @@ export default async (_ctx, client) => {
 			"await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
 	},
 	"entitySchema.updateType": {
-		summary: "Update an entity type.",
+		summary:
+			"Update an entity type. An event_kinds object replaces the entire registry; call getType and read-merge-write to preserve existing kinds. Use null to clear or omit to leave unchanged.",
 		access: "admin",
 	},
 	"entitySchema.deleteType": {
@@ -284,7 +285,8 @@ export default async (_ctx, client) => {
 };`,
 	},
 	"knowledge.save": {
-		summary: "Persist a knowledge event, optionally associated with entities.",
+		summary:
+			"Persist a knowledge event, optionally associated with entities. For metadata-backed structured rendering from an event kind, set payload_type: 'empty'; the default text payload bypasses that renderer.",
 		access: "write",
 		example:
 			"await client.knowledge.save({ entity_ids: [42], content: 'CEO confirmed Q4 revenue ...', semantic_type: 'fact' });",
@@ -367,6 +369,15 @@ export default async (_ctx, client) => {
 	"conversations.manage": {
 		summary: "Raw manage_conversations action wrapper. Prefer named methods.",
 		access: "write",
+	},
+	"conversations.setTitle": {
+		summary:
+			"Set display-only text for the current MCP host conversation. Source, icon, location, and navigation remain server-owned.",
+		access: "write",
+		signature:
+			"conversations.setTitle({ title: string }): Promise<{ title: string }>",
+		example:
+			"await client.conversations.setTitle({ title: 'Q3 launch research' });",
 	},
 	"conversations.list": {
 		summary:

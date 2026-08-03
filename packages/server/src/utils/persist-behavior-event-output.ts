@@ -25,6 +25,7 @@ export interface PersistBehaviorEventOutputParams {
   watcherId: number;
   organizationId: string;
   windowId: number;
+  canvasRevisionId: number;
   runId: number | null;
   boundEntityIds: number[];
   validContentIds: Set<number>;
@@ -67,7 +68,7 @@ export async function persistBehaviorEventOutput(
     seenIdempotencyKeys.add(draft.idempotency_key);
   }
   const inserted: InsertedEvent[] = [];
-  const producer = params.runId != null ? `run:${params.runId}` : `window:${params.windowId}`;
+  const producer = `canvas:${params.canvasRevisionId}`;
 
   for (let index = 0; index < params.rows.length; index++) {
     const draft = params.rows[index] as EventDraft;
@@ -138,6 +139,7 @@ export async function persistBehaviorEventOutput(
       behavior_id: params.watcherId,
       behavior_output: params.outputName,
       window_id: params.windowId,
+      window_revision_id: params.canvasRevisionId,
     };
     try {
       inserted.push(

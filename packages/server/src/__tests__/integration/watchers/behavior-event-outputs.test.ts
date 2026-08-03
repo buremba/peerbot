@@ -138,9 +138,9 @@ describe('Behavior event outputs', () => {
     });
     expect(observations.map((row) => Number(row.metadata.rank))).toEqual([1, 2]);
 
-    // A source-derived idempotency key is intentionally stronger than a run
-    // retry key: a later run that rediscovers the same post reuses the original
-    // event instead of appending a duplicate.
+    // A source-derived idempotency key is intentionally stronger than the
+    // Canvas-revision retry key: a later run that rediscovers the same post
+    // reuses the original event instead of appending a duplicate.
     const laterRun = await createWatcherRun({
       organizationId: workspace.org.id,
       watcherId,
@@ -158,6 +158,7 @@ describe('Behavior event outputs', () => {
         watcherId,
         organizationId: workspace.org.id,
         windowId: firstCompletion.window_id,
+        canvasRevisionId: firstCompletion.window_id,
         runId: laterRun.runId,
         boundEntityIds: [parent.id],
         validContentIds: new Set([source.id]),
@@ -181,6 +182,7 @@ describe('Behavior event outputs', () => {
           watcherId,
           organizationId: workspace.org.id,
           windowId: firstCompletion.window_id,
+          canvasRevisionId: firstCompletion.window_id,
           runId: laterRun.runId,
           boundEntityIds: [parent.id],
           validContentIds: new Set([source.id]),
@@ -189,5 +191,82 @@ describe('Behavior event outputs', () => {
         })
       )
     ).rejects.toThrow(/duplicate.*idempotency/i);
+  });
+
+  it('appends changed unkeyed output for a Canvas replacement and deduplicates its retry', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Behavior Event Replacement Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const parent = await createTestEntity({
+      name: 'Observed account',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'event-replacement-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      entity_id: parent.id,
+      slug: 'event-replacement-behavior',
+      prompt: 'Return one observation.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      outputs: { observations: { event: 'observation' } },
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherId}`;
+
+    const granularity = inferBehaviorGranularityFromSchedule('0 9 * * *');
+    const pending = await computePendingWindow(sql as unknown as DbClient, watcherId, granularity);
+    await createTestEvent({
+      entity_id: parent.id,
+      organization_id: workspace.org.id,
+      content: 'A source event for this window.',
+      occurred_at: new Date(pending.windowStart.getTime() + 60 * 60 * 1000),
+    });
+    const knowledge = (await api.knowledge.read({ behavior_id: watcherId })) as {
+      window_token: string;
+    };
+
+    const first = (await api.behaviors.completeWindow({
+      behavior_id: String(watcherId),
+      window_token: knowledge.window_token,
+      extracted_data: { observations: [{ content: 'First analysis.' }] },
+    })) as { window_id: number };
+    const replace = () =>
+      api.behaviors.completeWindow({
+        behavior_id: String(watcherId),
+        window_token: knowledge.window_token,
+        extracted_data: { observations: [{ content: 'Replacement analysis.' }] },
+        replace_existing: true,
+      });
+    const replacement = (await replace()) as { window_id: number };
+    expect(replacement.window_id).toBe(first.window_id);
+
+    await api.behaviors.completeWindow({
+      behavior_id: String(watcherId),
+      window_token: knowledge.window_token,
+      extracted_data: { observations: [{ content: 'Replacement analysis.' }] },
+    });
+
+    const outputs = await sql<{ content: string; revision_id: string }>`
+      SELECT payload_text AS content, metadata->>'window_revision_id' AS revision_id
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND metadata->>'behavior_output' = 'observations'
+      ORDER BY id
+    `;
+    expect(outputs.map((row) => row.content)).toEqual([
+      'First analysis.',
+      'Replacement analysis.',
+    ]);
+    expect(new Set(outputs.map((row) => row.revision_id)).size).toBe(2);
   });
 });

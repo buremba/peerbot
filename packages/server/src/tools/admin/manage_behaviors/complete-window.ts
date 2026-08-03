@@ -395,6 +395,7 @@ export async function handleCompleteWindow(
     // re-analysis states replace_existing explicitly.
     // ============================================
     let windowId!: number;
+    let canvasRevisionId!: number;
     let windowCreated = false;
     let headSuperseded = false;
     const canvasEntityId = await ensureCanvasEntity({
@@ -437,13 +438,14 @@ export async function handleCompleteWindow(
       // never create a second root and never overwrite a successful head. The
       // window identity is the existing chain root.
       windowId = existingHead.rootEventId;
+      canvasRevisionId = existingHead.id;
     } else if (existingHead && args.replace_existing) {
       // Supersede the current head, copying the root's period metadata. Loser of
       // a concurrent supersede hits idx_events_superseded_by → 23505 → 409. The
       // root id (window identity) never changes across a supersede.
       windowId = existingHead.rootEventId;
       try {
-        await insertEvent(
+        const replacement = await insertEvent(
           {
             entityIds: canvasEntityIds,
             organizationId: watcherOrgId,
@@ -463,6 +465,7 @@ export async function handleCompleteWindow(
           },
           { sql: tx }
         );
+        canvasRevisionId = Number(replacement.id);
       } catch (err) {
         if (isUniqueViolation(err, 'idx_events_superseded_by')) {
           throw new ToolUserError(
@@ -502,6 +505,7 @@ export async function handleCompleteWindow(
           { sql: tx }
         );
         windowId = Number(rootEvent.id);
+        canvasRevisionId = windowId;
         windowCreated = true;
         logger.info(
           `[complete_window] Created canvas window ${windowId} for watcher ${watcherId} (${window_start} - ${window_end})`
@@ -581,6 +585,7 @@ export async function handleCompleteWindow(
           watcherId: Number(watcherId),
           organizationId: watcherOrgId,
           windowId,
+          canvasRevisionId,
           runId: watcherRunId,
           boundEntityIds,
           validContentIds,

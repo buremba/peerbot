@@ -2373,16 +2373,14 @@ export async function prepareXReply(
 		}
 	}
 
-	if (opts.focus !== false) {
-		try {
-			await safeDispatch.dispatch("focus_tab", {
-				tab_id: tabId,
-				draw_attention: true,
-				allowed_origins: X_ALLOWED_ORIGINS,
-			});
-		} catch {
-			// Focus is best-effort; the draft is still staged.
-		}
+	try {
+		await safeDispatch.dispatch("focus_tab", {
+			tab_id: tabId,
+			draw_attention: true,
+			allowed_origins: X_ALLOWED_ORIGINS,
+		});
+	} catch {
+		// Focus is best-effort; the draft is still staged.
 	}
 
 	// Hand the tab to the human. Until this point it is an extension-owned

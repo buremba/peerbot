@@ -925,6 +925,10 @@ describe("isReplySubmitLabel", () => {
 });
 
 describe("prepare_reply action contract", () => {
+	test("pins the connector version for catalog upgrades", () => {
+		expect(new XConnector().definition.version).toBe("3.11.0");
+	});
+
 	// This is a deliberate design decision, not an oversight. Publishing is
 	// guarded by X's own Reply button, which a human must click and this action
 	// cannot. A Lobu approval gate would only guard "opens a tab and types",

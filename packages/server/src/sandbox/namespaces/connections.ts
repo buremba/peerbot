@@ -9,6 +9,7 @@
 
 import type {
 	ConnectionConnectInput,
+	ConnectionConnectManagedInput,
 	ConnectionCreateInput,
 	ConnectionUpdateInput,
 	GetConnectorSourceInput,
@@ -23,6 +24,7 @@ import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
 export type ConnectionsConnectInput = ConnectionConnectInput;
+export type ConnectionsConnectManagedInput = ConnectionConnectManagedInput;
 export type ConnectionsCreateInput = ConnectionCreateInput;
 export type ConnectionsUpdateInput = ConnectionUpdateInput;
 export type ConnectionsInstallConnectorInput = InstallConnectorInput;
@@ -43,6 +45,7 @@ export interface ConnectionsNamespace {
 	get(connection_id: number): Promise<unknown>;
 	create(input: ConnectionsCreateInput): Promise<unknown>;
 	connect(input: ConnectionsConnectInput): Promise<unknown>;
+	connectManaged(input: ConnectionsConnectManagedInput): Promise<unknown>;
 	update(input: ConnectionsUpdateInput): Promise<unknown>;
 	delete(connection_id: number): Promise<unknown>;
 	reauthenticate(connection_id: number): Promise<unknown>;
@@ -96,6 +99,8 @@ export function buildConnectionsNamespace(
 			}),
 		create: (input) => action("create", input),
 		connect: (input) => action("connect", input),
+		connectManaged: (input) =>
+			action("connect_managed", input, "connectManaged"),
 		update: (input) => action("update", input),
 		delete: async (connection_id) =>
 			action("delete", {

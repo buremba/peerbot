@@ -495,6 +495,32 @@ export const ConnectAction = Type.Object({
   ),
 });
 
+export const ConnectManagedAction = Type.Object({
+  action: Type.Literal("connect_managed", {
+    description:
+      "Connect through a managed OAuth offer advertised by a public Lobu org. Validates the live offer, enrolls the signed-in user in that org, and returns a provider consent URL. The resulting cloud connection is private, consent-only, and has no feeds.",
+  }),
+  managed_by_org: Type.String({
+    description:
+      "Public organization slug from organizations.list managed_auth metadata",
+  }),
+  connector_key: Type.String({
+    description: "Connector key advertised by that managed_auth offer",
+  }),
+  display_name: Type.Optional(
+    Type.String({ description: "Human-readable name for the consent grant" })
+  ),
+  slug: Type.Optional(
+    Type.String({ description: "Stable identifier for the consent grant" })
+  ),
+  config: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description:
+        "Non-secret connection config, such as requested optional scopes",
+    })
+  ),
+});
+
 export const ToggleConnectorLoginAction = Type.Object({
   action: Type.Literal("toggle_connector_login", {
     description:
@@ -932,6 +958,10 @@ export type ConnectionConnectInput = Omit<
   Static<typeof ConnectAction>,
   "action"
 >;
+export type ConnectionConnectManagedInput = Omit<
+  Static<typeof ConnectManagedAction>,
+  "action"
+>;
 export type ConnectionCreateInput = Omit<Static<typeof CreateAction>, "action">;
 export type ConnectionUpdateInput = Omit<Static<typeof UpdateAction>, "action">;
 export type InstallConnectorInput = Omit<
@@ -966,6 +996,7 @@ export type ConnectionsArgs =
   | Static<typeof GetAction>
   | Static<typeof CreateAction>
   | Static<typeof ConnectAction>
+  | Static<typeof ConnectManagedAction>
   | Static<typeof UpdateAction>
   | Static<typeof ApplyChatConnectionAction>
   | Static<typeof DeleteAction>

@@ -246,7 +246,7 @@ const INTERNAL_DISPATCH_TOOLS: ToolDefinition[] = [
   {
     name: 'list_organizations',
     description:
-      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. SDK alternative: client.organizations.list via `query_sdk` / `run_sdk`.',
+      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. Managed connector providers include structured managed_auth onboarding metadata. SDK alternative: client.organizations.list via `query_sdk` / `run_sdk`.',
     inputSchema: ListOrganizationsSchema,
     annotations: { ...READ_ONLY, title: 'List organizations' },
     handler: async () => {

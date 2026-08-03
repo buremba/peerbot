@@ -31,6 +31,7 @@ import {
 } from "./manage_connections/handlers/auth-actions";
 import { handleSetChannelAbout } from "./manage_connections/handlers/channel-about";
 import { handleConnect } from "./manage_connections/handlers/connect";
+import { handleConnectManaged } from "./manage_connections/handlers/connect-managed";
 import {
 	handleGetConnectorSource,
 	handleInstallConnector,
@@ -54,6 +55,7 @@ import {
 import {
 	ApplyChatConnectionAction,
 	ConnectAction,
+	ConnectManagedAction,
 	CreateAction,
 	DeleteAction,
 	GetAction,
@@ -87,6 +89,7 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 	get: action(GetAction, handleGet),
 	create: action(CreateAction, handleCreate),
 	connect: action(ConnectAction, handleConnect),
+	connect_managed: action(ConnectManagedAction, handleConnectManaged),
 	update: action(UpdateAction, handleUpdate),
 	apply_chat_connection: action(
 		ApplyChatConnectionAction,

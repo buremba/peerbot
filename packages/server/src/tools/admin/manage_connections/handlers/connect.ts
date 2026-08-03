@@ -68,6 +68,21 @@ export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	return handleConnectImpl(args, ctx, false);
+}
+
+export async function handleRequiredManagedConnect(
+	args: Extract<ConnectionsArgs, { action: "connect" }>,
+	ctx: ToolContext,
+): Promise<ManageConnectionsResult> {
+	return handleConnectImpl(args, ctx, true);
+}
+
+async function handleConnectImpl(
+	args: Extract<ConnectionsArgs, { action: "connect" }>,
+	ctx: ToolContext,
+	requireManaged: boolean,
+): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
 	const resumeCall = buildSafeConnectionResumeCall(
@@ -112,16 +127,22 @@ export async function handleConnect(
   // App install callback. Selection-aware: a connect that supplies an auth
   // profile / app profile / env creds / managedBy resolves to a different method
   // and is allowed through.
-  const appInstallGuard = await rejectUnboundAppInstallationCreate({
-    organizationId,
-    authSchema: connector.auth_schema,
-    config: args.config,
-    connectorKey: args.connector_key,
-    authProfileSlug: args.auth_profile_slug,
-    appAuthProfileSlug: args.app_auth_profile_slug,
-    gatewayBaseUrl: getGatewayBaseUrl(ctx),
-    setupUrl,
-  });
+  // connect_managed is already an explicit, live-validated OAuth selection.
+  // A connector may prefer app_installation for ordinary bare connects while
+  // still exposing OAuth as its first account-auth method; do not redirect the
+  // managed route into the app-install flow.
+  const appInstallGuard = requireManaged
+    ? null
+    : await rejectUnboundAppInstallationCreate({
+        organizationId,
+        authSchema: connector.auth_schema,
+        config: args.config,
+        connectorKey: args.connector_key,
+        authProfileSlug: args.auth_profile_slug,
+        appAuthProfileSlug: args.app_auth_profile_slug,
+        gatewayBaseUrl: getGatewayBaseUrl(ctx),
+        setupUrl,
+      });
   if (appInstallGuard) {
 		// Setup-required continuation: the App install callback creates the active
 		// connection itself, so do NOT instruct a retry of connect. The guard's
@@ -200,6 +221,7 @@ export async function handleConnect(
       AND c.connector_key = ${args.connector_key}
       AND c.status = 'pending_auth'
       AND c.deleted_at IS NULL
+			${requireManaged ? sql`AND c.config->>'consent_only' = 'true'` : sql``}
       ${explicitSlug ? sql`AND c.slug = ${explicitSlug}` : sql``}
       ${deviceBinding.deviceWorkerId ? sql`AND c.device_worker_id = ${deviceBinding.deviceWorkerId}` : sql``}
       ${userId ? sql`AND c.created_by = ${userId}` : sql``}
@@ -249,6 +271,7 @@ export async function handleConnect(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
     deviceWorkerId: deviceBinding.deviceWorkerId,
+    oauthAccountCreatedBy: requireManaged ? userId : undefined,
   });
 
   const hasNoAuth =
@@ -449,6 +472,12 @@ export async function handleConnect(
         provider: authSelection.oauthMethod.provider,
       })
     : false;
+	if (requireManaged && !isManagedConnect) {
+		return {
+			error:
+				"Managed OAuth is no longer available for this connector. Discover managed_auth offers again before retrying.",
+		};
+	}
   const connectionConfigToInsert =
     isManagedConnect || splitConfig.connectionConfig
       ? {

@@ -80,6 +80,8 @@ describe("HttpWorkerTransport finalText is authoritative", () => {
       "suggest_actions",
       "search_memory",
     ]);
+    expect(sentPayloads.at(-1)?.toolCallCount).toBe(3);
+    expect(sentPayloads.at(-1)?.lastToolName).toBe("search_memory");
   });
 
   test("divergent final: finalText is the full final, NOT partial+full", async () => {

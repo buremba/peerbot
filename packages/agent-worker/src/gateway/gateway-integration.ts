@@ -50,6 +50,9 @@ export class HttpWorkerTransport implements WorkerTransport {
    * tool without a separate durable ledger.
    */
   private toolsUsed = new Set<string>();
+  /** Exact call count and latest name; unlike toolsUsed, repeats are retained. */
+  private toolCallCount = 0;
+  private lastToolName?: string;
   /**
    * Latched when `send_message` posted into the conversation this turn is
    * replying to. Stamped on the terminal completion so the gateway skips
@@ -110,7 +113,10 @@ export class HttpWorkerTransport implements WorkerTransport {
   /** Record a tool name finished this turn (from `tool_execution_end`). */
   recordToolUsed(toolName: string): void {
     const name = toolName.trim();
-    if (name) this.toolsUsed.add(name);
+    if (!name) return;
+    this.toolsUsed.add(name);
+    this.toolCallCount += 1;
+    this.lastToolName = name;
   }
 
   /**
@@ -321,6 +327,8 @@ export class HttpWorkerTransport implements WorkerTransport {
       timestamp: Date.now(),
       originalMessageId: this.originalMessageTs,
       botResponseId: this.botResponseTs,
+      toolCallCount: this.toolCallCount,
+      ...(this.lastToolName ? { lastToolName: this.lastToolName } : {}),
       ...additionalFields,
     };
   }

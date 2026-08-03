@@ -36,6 +36,12 @@ export interface AgentThreadSummary {
 	platform: string;
 	/** Raw conversation id — used to read a platform conversation read-only. */
 	conversationId: string;
+	/** Latest turn's exact tool-call count, materialized at write time. */
+	callCount?: number;
+	/** Latest completed tool name in the current/latest turn. */
+	lastAction?: string | null;
+	/** Durable lease-backed running state. */
+	isRunning?: boolean;
 	/** Set on `platform: "behavior"` entries — routes to the behavior's page. */
 	behaviorId?: number;
 }
@@ -214,6 +220,14 @@ export async function listAgentThreads(args: {
 	for (const row of rows) {
 		const at = row.lastActivityAt.getTime();
 		const createdAt = row.createdAt.getTime();
+		const runtime = {
+			callCount: row.toolCallCount,
+			lastAction: row.lastToolName,
+			isRunning:
+				row.runningMessageId !== null &&
+				row.runningUntil !== null &&
+				row.runningUntil.getTime() > Date.now(),
+		};
 		if (row.kind === "owned") {
 			// Routable id is STORED (`thread_id`), never re-parsed out of the id
 			// string. The migration trigger also covers writes from an old server
@@ -229,6 +243,7 @@ export async function listAgentThreads(args: {
 				updatedAt: at,
 				platform: "web",
 				conversationId: row.conversationId,
+				...runtime,
 			});
 		} else if (row.kind === "platform") {
 			// One entry per conversationId — that's the whole identity of a platform
@@ -265,6 +280,7 @@ export async function listAgentThreads(args: {
 				// otherwise mislabel as "web".
 				platform: row.platform,
 				conversationId: row.conversationId,
+				...runtime,
 			});
 		}
 	}

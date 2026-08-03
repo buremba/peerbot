@@ -47,6 +47,7 @@ import { resolveActiveChatConnectionTenant } from "../../lobu/stores/connections
 import { getDb } from "../../db/client.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
+  beginConversationTurn,
   classifyConversation,
   isWatcherConversationId,
   resolveConversationLocationLabel,
@@ -764,6 +765,7 @@ export class MessageConsumer {
       // spurious error after a successful turn.
       await armTurnTimeout(this.queue, {
         messageId: data.messageId,
+        agentId: data.agentId,
         channelId: data.channelId,
         conversationId: effectiveConversationId,
         userId: data.userId,
@@ -772,6 +774,18 @@ export class MessageConsumer {
         deploymentName,
         organizationId: data.organizationId,
       });
+      // Only advertise Running after the durable timeout obligation exists. The
+      // worker is not deliverable until recordRunInput/sendToWorkerQueue below,
+      // so there is no completion race between this projection write and dispatch.
+      if (!isWatcherConversationId(effectiveConversationId)) {
+        await beginConversationTurn({
+          organizationId: data.organizationId,
+          agentId: data.agentId,
+          platform: data.platform,
+          conversationId: effectiveConversationId,
+          messageId: data.messageId,
+        });
+      }
 
       // EXACT-MODEL GATE (enqueue chokepoint — covers cold AND warm/resumed):
       // BOTH the cold and warm paths funnel through here before

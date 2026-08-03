@@ -16,8 +16,11 @@ import { listAgentThreads } from "../../gateway/services/agent-thread-list";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
 import {
 	classifyConversation,
+	beginConversationTurn,
+	completeConversationTurn,
 	isWatcherConversationId,
 	listConversations,
+	refreshConversationTurn,
 	resolveConversationLocationLabel,
 	upsertConversation,
 } from "../../gateway/services/conversations-store";
@@ -196,6 +199,110 @@ describe("conversations dual-write", () => {
 		expect(row).toHaveLength(1);
 		expect(row[0]?.platform).toBe("slack");
 		expect(row[0]?.locationLabel).toBe("#renamed-channel");
+	});
+
+	it("materializes one durable running generation and ignores an older completion", async () => {
+		const base = {
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: "slack:CRUNTIME:ts",
+			threadId: null,
+			kind: "platform" as const,
+			userId: null,
+			title: "runtime thread",
+			locationLabel: "#runtime",
+		};
+		await upsertConversation({
+			...base,
+			lastActivityAt: new Date("2026-08-03T10:00:00Z"),
+		});
+		await beginConversationTurn({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: base.conversationId,
+			messageId: "message-old",
+		});
+		await refreshConversationTurn({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: base.conversationId,
+			messageId: "message-old",
+			toolCallCount: 2,
+			lastToolName: "query_sql",
+		});
+
+		await upsertConversation({
+			...base,
+			lastActivityAt: new Date("2026-08-03T10:01:00Z"),
+		});
+		await beginConversationTurn({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: base.conversationId,
+			messageId: "message-new",
+		});
+		const sql = getTestDb();
+		await sql.begin(async (tx) => {
+			await completeConversationTurn(tx, {
+				organizationId: org,
+				agentId: AGENT,
+				platform: "slack",
+				conversationId: base.conversationId,
+				messageIds: ["message-old"],
+				toolCallCount: 2,
+				lastToolName: "query_sql",
+			});
+		});
+
+		let [row] = await sql<
+			{
+				running_message_id: string | null;
+				tool_call_count: number;
+				last_tool_name: string | null;
+				running_until: Date | null;
+			}[]
+		>`SELECT running_message_id, tool_call_count, last_tool_name, running_until
+		  FROM conversations
+		  WHERE organization_id = ${org} AND agent_id = ${AGENT}
+		    AND platform = 'slack' AND conversation_id = ${base.conversationId}`;
+		expect(row.running_message_id).toBe("message-new");
+		expect(row.tool_call_count).toBe(0);
+		expect(row.last_tool_name).toBeNull();
+		expect(row.running_until?.getTime()).toBeGreaterThan(Date.now());
+
+		await refreshConversationTurn({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: base.conversationId,
+			messageId: "message-new",
+			toolCallCount: 3,
+			lastToolName: "search_memory",
+		});
+		await sql.begin(async (tx) => {
+			await completeConversationTurn(tx, {
+				organizationId: org,
+				agentId: AGENT,
+				platform: "slack",
+				conversationId: base.conversationId,
+				messageIds: ["message-new"],
+				toolCallCount: 3,
+				lastToolName: "search_memory",
+			});
+		});
+		[row] = await sql`
+			SELECT running_message_id, tool_call_count, last_tool_name, running_until
+			FROM conversations
+			WHERE organization_id = ${org} AND agent_id = ${AGENT}
+			  AND platform = 'slack' AND conversation_id = ${base.conversationId}`;
+		expect(row.running_message_id).toBeNull();
+		expect(row.running_until).toBeNull();
+		expect(row.tool_call_count).toBe(3);
+		expect(row.last_tool_name).toBe("search_memory");
 	});
 
 	it("resolves channel and direct-message location labels", async () => {

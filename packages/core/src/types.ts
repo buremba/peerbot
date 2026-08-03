@@ -266,6 +266,8 @@ export interface ThreadResponsePayload {
    * hosted-preview turn, so tenant-scoped renderers must prefer this value.
    */
   organizationId?: string;
+  /** Agent identity rebuilt by the gateway from the signed worker token. */
+  agentId?: string;
   platform?: string; // Platform identifier (slack, whatsapp, api, etc.) for routing
   content?: string; // Used only for ephemeral messages (OAuth/auth flows)
   delta?: string;
@@ -285,6 +287,10 @@ export interface ThreadResponsePayload {
    * require-tool) can enforce "must call X this turn" without a second ledger.
    */
   toolsUsed?: string[];
+  /** Exact number of tool calls in this turn, including repeated tool names. */
+  toolCallCount?: number;
+  /** Most recently completed tool name in this turn. */
+  lastToolName?: string;
   /**
    * The agent already posted its answer into THIS conversation during the turn
    * (via the `send_message` conversation tool), so `finalText` is a report

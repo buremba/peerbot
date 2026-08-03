@@ -39,6 +39,7 @@ import {
 } from "../orchestration/turn-liveness.js";
 import type { InstructionService } from "../services/instruction-service.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { refreshConversationTurn } from "../services/conversations-store.js";
 import {
   type SSEWriter,
   WorkerConnectionManager,
@@ -390,6 +391,7 @@ export class WorkerGateway {
       // an absent connectionId must remove a body-supplied value rather than
       // turning a non-chat run into a cross-tenant Chat delivery.
       const tokenRouting = {
+        agentId: auth.tokenData.agentId,
         userId: auth.tokenData.userId,
         conversationId: auth.tokenData.conversationId,
         channelId: auth.tokenData.channelId,
@@ -500,6 +502,25 @@ export class WorkerGateway {
       // Best-effort, same as the ACK path.
       if (enrichedResponse.statusUpdate) {
         void extendTurnDeadlines(deploymentName);
+        const { organizationId, agentId, platform, conversationId, messageId } =
+          auth.tokenData;
+        if (organizationId && agentId && platform && conversationId && messageId) {
+          void refreshConversationTurn({
+            organizationId,
+            agentId,
+            platform,
+            conversationId,
+            messageId,
+            toolCallCount:
+              typeof enrichedResponse.toolCallCount === "number"
+                ? enrichedResponse.toolCallCount
+                : 0,
+            lastToolName:
+              typeof enrichedResponse.lastToolName === "string"
+                ? enrichedResponse.lastToolName
+                : null,
+          });
+        }
       }
 
       // Log for debugging

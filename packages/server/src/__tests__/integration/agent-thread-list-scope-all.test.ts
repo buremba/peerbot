@@ -173,6 +173,15 @@ describe("listAgentThreads scope=all", () => {
 				userId: null,
 			},
 		);
+		await sql`
+			UPDATE conversations
+			SET tool_call_count = 2,
+			    last_tool_name = 'query_sql',
+			    running_message_id = 'slack-running-message',
+			    running_until = now() + interval '5 minutes'
+			WHERE organization_id = ${org} AND agent_id = ${AGENT}
+			  AND platform = 'slack' AND conversation_id = ${SLACK_CONV}
+		`;
 		await insertSnapshot(
 			SLACK_UNBOUND_CONV,
 			"secret channel transcript",
@@ -378,6 +387,9 @@ describe("listAgentThreads scope=all", () => {
 		const slack = byPlatform.get("slack");
 		expect(slack?.id).toBe(SLACK_CONV);
 		expect(slack?.conversationId).toBe(SLACK_CONV);
+		expect(slack?.callCount).toBe(2);
+		expect(slack?.lastAction).toBe("query_sql");
+		expect(slack?.isRunning).toBe(true);
 
 		const behavior = byPlatform.get("behavior");
 		expect(behavior?.behaviorId).toBe(WATCHER_ID);

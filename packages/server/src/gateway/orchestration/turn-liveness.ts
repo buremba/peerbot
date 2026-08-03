@@ -49,6 +49,7 @@ import { intervals } from "../../config/intervals.js";
 import { getDb, type DbClient } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
+import { completeConversationTurn } from "../services/conversations-store.js";
 import { completeAgentRunInputs } from "./agent-run-input.js";
 
 const logger = createLogger("turn-liveness");
@@ -70,6 +71,7 @@ const THREAD_RESPONSE_CHANNEL = "runs_lobu:thread_response";
  *  stored as the marker's `action_input`. */
 export interface TurnRouting {
   messageId: string;
+  agentId?: string;
   channelId?: string;
   conversationId?: string;
   userId?: string;
@@ -473,6 +475,7 @@ function buildTerminalErrorPayload(
 ) {
   return {
     messageId: routing.messageId,
+    agentId: routing.agentId,
     channelId: routing.channelId,
     conversationId: routing.conversationId,
     userId: routing.userId,
@@ -488,15 +491,77 @@ function buildTerminalErrorPayload(
   };
 }
 
+function payloadString(
+  payload: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** Materialize terminal conversation state inside the terminal election tx. */
+async function materializeTerminalConversation(
+  tx: DbClient,
+  payloadValue: unknown,
+  fallbackOrganizationId: string | null
+): Promise<void> {
+  if (typeof payloadValue !== "object" || payloadValue === null) return;
+  const payload = payloadValue as Record<string, unknown>;
+  const metadata =
+    typeof payload.platformMetadata === "object" &&
+    payload.platformMetadata !== null &&
+    !Array.isArray(payload.platformMetadata)
+      ? (payload.platformMetadata as Record<string, unknown>)
+      : {};
+  const organizationId =
+    payloadString(payload, "organizationId") ?? fallbackOrganizationId ?? undefined;
+  const agentId =
+    payloadString(payload, "agentId") ?? payloadString(metadata, "agentId");
+  const platform = payloadString(payload, "platform");
+  const conversationId = payloadString(payload, "conversationId");
+  if (!organizationId || !agentId || !platform || !conversationId) return;
+
+  const messageIds = new Set<string>();
+  const messageId = payloadString(payload, "messageId");
+  if (messageId) messageIds.add(messageId);
+  if (Array.isArray(payload.processedMessageIds)) {
+    for (const id of payload.processedMessageIds) {
+      if (typeof id === "string" && id.length > 0) messageIds.add(id);
+    }
+  }
+  const toolsUsed = Array.isArray(payload.toolsUsed)
+    ? payload.toolsUsed.filter(
+        (tool): tool is string => typeof tool === "string" && tool.length > 0
+      )
+    : [];
+  const reportedCount = payload.toolCallCount;
+  const toolCallCount =
+    typeof reportedCount === "number" && Number.isFinite(reportedCount)
+      ? reportedCount
+      : toolsUsed.length;
+  await completeConversationTurn(tx, {
+    organizationId,
+    agentId,
+    platform,
+    conversationId,
+    messageIds: [...messageIds],
+    toolCallCount,
+    lastToolName:
+      payloadString(payload, "lastToolName") ?? toolsUsed.at(-1) ?? null,
+  });
+}
+
 /** Insert a terminal `thread_response{error}` for a turn, in the caller's tx. */
 async function enqueueTerminalError(
   tx: DbClient,
   routing: TurnRouting,
   code: AgentErrorCode
 ): Promise<void> {
-  await insertThreadResponseRow(
+  const payload = buildTerminalErrorPayload(routing, code);
+  await insertThreadResponseRow(tx, payload, routing.organizationId ?? null);
+  await materializeTerminalConversation(
     tx,
-    buildTerminalErrorPayload(routing, code),
+    payload,
     routing.organizationId ?? null
   );
   await completeAgentRunInputs(
@@ -588,6 +653,7 @@ export async function commitTerminalReply(
       messageIds
     );
     await insertThreadResponseRow(tx, replyPayload, organizationId);
+    await materializeTerminalConversation(tx, replyPayload, organizationId);
     return true;
   });
   if (emitted) await notifyThreadResponse();

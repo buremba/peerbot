@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { channelResourceIdentity } from "../../authz/channel-about.js";
-import { getDb } from "../../db/client.js";
+import { type DbClient, getDb, pgTextArray } from "../../db/client.js";
 
 const logger = createLogger("conversations-store");
 
@@ -11,6 +11,7 @@ export type ConversationKind = "owned" | "platform";
  *  stay derived from `agent_transcript_snapshot` (one sidebar entry per WATCHER,
  *  not per run) and must NEVER get a `conversations` row. */
 const WATCHER_CONVERSATION_ID = /_watcher_\d+_run_\d+$/;
+const CONVERSATION_RUNNING_LEASE_SECONDS = 90;
 
 export function isWatcherConversationId(conversationId: string): boolean {
 	return WATCHER_CONVERSATION_ID.test(conversationId);
@@ -123,6 +124,122 @@ export async function upsertConversation(
 	}
 }
 
+export interface ConversationTurnIdentity {
+	organizationId: string;
+	agentId: string;
+	/** Dispatch platform (`api` is normalized to stored `web`). */
+	platform: string;
+	conversationId: string;
+	messageId: string;
+}
+
+/** Mark an accepted turn running after its durable timeout marker is armed. */
+export async function beginConversationTurn(
+	row: ConversationTurnIdentity,
+): Promise<void> {
+	try {
+		const sql = getDb();
+		const storedPlatform = classifyConversation(row.platform).storedPlatform;
+		await sql`
+			UPDATE public.conversations
+			SET tool_call_count = 0,
+			    last_tool_name = NULL,
+			    running_message_id = ${row.messageId},
+			    running_until = now() + (${CONVERSATION_RUNNING_LEASE_SECONDS}::int * interval '1 second'),
+			    updated_at = now()
+			WHERE organization_id = ${row.organizationId}
+			  AND agent_id = ${row.agentId}
+			  AND platform = ${storedPlatform}
+			  AND conversation_id = ${row.conversationId}
+		`;
+	} catch (err) {
+		logger.warn(
+			{ err, conversationId: row.conversationId, messageId: row.messageId },
+			"conversation running state could not be started",
+		);
+	}
+}
+
+export interface ConversationTurnRuntime extends ConversationTurnIdentity {
+	toolCallCount: number;
+	lastToolName?: string | null;
+}
+
+/**
+ * Refresh one live turn's lease and monotonic tool metadata. The message id is
+ * a generation guard: stale progress from an older turn cannot mutate the
+ * latest row. Best-effort because display metadata must not fail a live turn.
+ */
+export async function refreshConversationTurn(
+	row: ConversationTurnRuntime,
+): Promise<void> {
+	try {
+		const sql = getDb();
+		const storedPlatform = classifyConversation(row.platform).storedPlatform;
+		const count = Math.max(0, Math.trunc(row.toolCallCount));
+		const lastToolName = row.lastToolName?.trim() || null;
+		await sql`
+			UPDATE public.conversations
+			SET tool_call_count = GREATEST(tool_call_count, ${count}),
+			    last_tool_name = CASE
+			      WHEN ${count} >= tool_call_count
+			      THEN COALESCE(${lastToolName}, last_tool_name)
+			      ELSE last_tool_name
+			    END,
+			    running_until = now() + (${CONVERSATION_RUNNING_LEASE_SECONDS}::int * interval '1 second'),
+			    updated_at = now()
+			WHERE organization_id = ${row.organizationId}
+			  AND agent_id = ${row.agentId}
+			  AND platform = ${storedPlatform}
+			  AND conversation_id = ${row.conversationId}
+			  AND running_message_id = ${row.messageId}
+		`;
+	} catch (err) {
+		logger.warn(
+			{ err, conversationId: row.conversationId, messageId: row.messageId },
+			"conversation runtime refresh failed",
+		);
+	}
+}
+
+export interface ConversationTurnCompletion {
+	organizationId: string;
+	agentId: string;
+	platform: string;
+	conversationId: string;
+	messageIds: string[];
+	toolCallCount: number;
+	lastToolName?: string | null;
+}
+
+/**
+ * Materialize terminal metadata inside the caller's first-writer-wins
+ * transaction. Only the current message generation can be cleared, so a late
+ * completion cannot make a newer turn look idle.
+ */
+export async function completeConversationTurn(
+	tx: DbClient,
+	row: ConversationTurnCompletion,
+): Promise<void> {
+	if (row.messageIds.length === 0) return;
+	const storedPlatform = classifyConversation(row.platform).storedPlatform;
+	const count = Math.max(0, Math.trunc(row.toolCallCount));
+	const lastToolName = row.lastToolName?.trim() || null;
+	await tx`
+		UPDATE public.conversations
+		SET tool_call_count = GREATEST(tool_call_count, ${count}),
+		    last_tool_name = COALESCE(${lastToolName}, last_tool_name),
+		    running_message_id = NULL,
+		    running_until = NULL,
+		    updated_at = now()
+		WHERE organization_id = ${row.organizationId}
+		  AND agent_id = ${row.agentId}
+		  AND platform = ${storedPlatform}
+		  AND conversation_id = ${row.conversationId}
+		  AND running_message_id = ANY(${pgTextArray(row.messageIds)}::text[])
+	`;
+}
+
 export interface ConversationListRow {
 	platform: string;
 	conversationId: string;
@@ -143,6 +260,10 @@ export interface ConversationListRow {
 	isDirect: boolean | null;
 	lastActivityAt: Date;
 	createdAt: Date;
+	toolCallCount: number;
+	lastToolName: string | null;
+	runningMessageId: string | null;
+	runningUntil: Date | null;
 }
 
 /**
@@ -218,9 +339,14 @@ export async function findConversationById(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
+		tool_call_count: string;
+		last_tool_name: string | null;
+		running_message_id: string | null;
+		running_until: Date | null;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
-           is_direct, last_activity_at, created_at
+           is_direct, last_activity_at, created_at, tool_call_count, last_tool_name,
+           running_message_id, running_until
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -241,6 +367,10 @@ export async function findConversationById(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
+		toolCallCount: Number(r.tool_call_count),
+		lastToolName: r.last_tool_name,
+		runningMessageId: r.running_message_id,
+		runningUntil: r.running_until,
 	};
 }
 
@@ -263,9 +393,14 @@ export async function getConversation(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
+		tool_call_count: string;
+		last_tool_name: string | null;
+		running_message_id: string | null;
+		running_until: Date | null;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
-           is_direct, last_activity_at, created_at
+           is_direct, last_activity_at, created_at, tool_call_count, last_tool_name,
+           running_message_id, running_until
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -287,6 +422,10 @@ export async function getConversation(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
+		toolCallCount: Number(r.tool_call_count),
+		lastToolName: r.last_tool_name,
+		runningMessageId: r.running_message_id,
+		runningUntil: r.running_until,
 	};
 }
 
@@ -389,9 +528,14 @@ export async function listConversations(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
+		tool_call_count: string;
+		last_tool_name: string | null;
+		running_message_id: string | null;
+		running_until: Date | null;
 	}>`
     SELECT platform, conversation_id, thread_id, kind, user_id, title, location_label,
-           is_direct, last_activity_at, created_at
+           is_direct, last_activity_at, created_at, tool_call_count, last_tool_name,
+           running_message_id, running_until
     FROM public.conversations
     WHERE organization_id = ${organizationId}
       AND agent_id = ${agentId}
@@ -423,5 +567,9 @@ export async function listConversations(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
+		toolCallCount: Number(r.tool_call_count),
+		lastToolName: r.last_tool_name,
+		runningMessageId: r.running_message_id,
+		runningUntil: r.running_until,
 	}));
 }

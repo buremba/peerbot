@@ -133,6 +133,21 @@ describe('client sessions activity route', () => {
     // stamp must continue to classify the retained activity afterward.
     await getDb()`DELETE FROM oauth_clients WHERE id = ${commandClientId}`;
 
+    // Agent workers use the internal `lobu-worker` PAT identity. Each worker
+    // MCP transport is an implementation detail of an agent turn, not a host
+    // conversation that belongs in Recent.
+    await recordCall('sess-worker', 'query_sdk', {
+      clientId: 'lobu-worker',
+      tokenType: 'pat',
+      agentId: 'personal-agent',
+    } as Partial<ToolContext>);
+    await db`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '30 minutes',
+        last_activity_at = now() - interval '30 minutes'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-worker'
+    `;
+
     // Cross-org session: must never appear for orgSlug.
     await recordCall('sess-foreign', 'search_memory', {
       organizationId: otherOrgId,
@@ -223,6 +238,7 @@ describe('client sessions activity route', () => {
     expect(ids).toEqual([
       'sess-command',
       'sess-beta',
+      'sess-worker',
       'sess-alpha',
       'sess-tool-cap',
       'sess-pat',
@@ -259,6 +275,11 @@ describe('client sessions activity route', () => {
     expect(command.clientId).toBeNull();
     expect(command.clientName).toBeNull();
 
+    const worker = body.sessions.find((s) => s.sessionId === 'sess-worker')!;
+    expect(worker.clientId).toBeNull();
+    expect(worker.clientName).toBeNull();
+    expect(worker.agentId).toBe('personal-agent');
+
     const capped = body.sessions.find((s) => s.sessionId === 'sess-tool-cap')!;
     expect(capped.tools).toHaveLength(8);
 
@@ -280,14 +301,17 @@ describe('client sessions activity route', () => {
     expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-command']);
   });
 
-  it('can exclude command-client sessions before applying the result limit', async () => {
+  it('can exclude command-client and internal worker sessions from conversations', async () => {
     const res = await get(
-      `/api/${orgSlug}/clients/sessions?conversation_only=true&limit=1`,
+      `/api/${orgSlug}/clients/sessions?conversation_only=true&limit=100`,
       { token }
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
-    expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-beta']);
+    const ids = body.sessions.map((session) => session.sessionId);
+    expect(ids).toContain('sess-beta');
+    expect(ids).not.toContain('sess-command');
+    expect(ids).not.toContain('sess-worker');
   });
 
   it('hides a title-only row and retains its title after the first tool call', async () => {

@@ -13,6 +13,7 @@ import type { Env } from "../index";
 const routes = new Hono<{ Bindings: Env }>();
 const ACTIVITY_WINDOW_DAYS = 14;
 const LOBU_COMMAND_CLIENT_SOFTWARE_ID = "lobu-cli";
+const LOBU_WORKER_CLIENT_IDENTITY = "lobu-worker";
 
 interface SessionRow {
 	conversation_id: string;
@@ -98,7 +99,10 @@ routes.get("/", mcpAuth, async (c) => {
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
       AND (
         NOT ${conversationOnly}
-        OR mc.client_software_id IS DISTINCT FROM ${LOBU_COMMAND_CLIENT_SOFTWARE_ID}
+        OR (
+          mc.client_software_id IS DISTINCT FROM ${LOBU_COMMAND_CLIENT_SOFTWARE_ID}
+          AND mc.client_identity IS DISTINCT FROM ${LOBU_WORKER_CLIENT_IDENTITY}
+        )
       )
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}
   `;

@@ -43,6 +43,8 @@ const AGENT_A = 'agent_score_path_a';
 const AGENT_B = 'agent_score_path_b';
 const BEHAVIOR_A = 910_001;
 const BEHAVIOR_B = 910_002;
+const QUOTED_SEMANTIC_TYPE = 'score"quoted';
+const BACKSLASH_SEMANTIC_TYPE = 'score\\backslash';
 
 async function registerClient(opts: {
   id: string;
@@ -68,6 +70,7 @@ async function insertAttributedEvent(opts: {
   title: string;
   clientId: string | null;
   agentId: string | null;
+  semanticType?: string;
   score: number;
   occurredAt: Date;
 }): Promise<number> {
@@ -85,7 +88,7 @@ async function insertAttributedEvent(opts: {
       ${opts.title},
       'text',
       ${opts.title},
-      'content',
+      ${opts.semanticType ?? 'content'},
       'test.connector',
       ${opts.clientId},
       ${sql.json(opts.agentId ? { agent_id: opts.agentId } : {})},
@@ -171,6 +174,28 @@ describe('getContent > score path honours forwarded filters', () => {
       score: 50,
       occurredAt: new Date(t0.getTime() + 2000),
     });
+    await insertAttributedEvent({
+      organizationId: org.id,
+      entityId,
+      connectionId: connection.id,
+      title: 'quoted semantic type',
+      clientId: null,
+      agentId: null,
+      semanticType: QUOTED_SEMANTIC_TYPE,
+      score: 40,
+      occurredAt: new Date(t0.getTime() + 3000),
+    });
+    await insertAttributedEvent({
+      organizationId: org.id,
+      entityId,
+      connectionId: connection.id,
+      title: 'backslash semantic type',
+      clientId: null,
+      agentId: null,
+      semanticType: BACKSLASH_SEMANTIC_TYPE,
+      score: 30,
+      occurredAt: new Date(t0.getTime() + 4000),
+    });
 
     const sql = getTestDb();
     await sql`
@@ -199,10 +224,30 @@ describe('getContent > score path honours forwarded filters', () => {
       ctx
     );
     expect(result.content.map((c) => c.title).sort()).toEqual([
+      'backslash semantic type',
       'chatgpt high score row',
       'cli low score row',
+      'quoted semantic type',
       'unattributed row',
     ]);
+  });
+
+  it('semantic_type preserves quotes and backslashes in PostgreSQL arrays', async () => {
+    const result = await getContent(
+      {
+        entity_id: entityId,
+        sort_by: 'score',
+        semantic_type: [QUOTED_SEMANTIC_TYPE, BACKSLASH_SEMANTIC_TYPE],
+        limit: 100,
+      } as never,
+      {} as never,
+      ctx
+    );
+    expect(result.content.map((c) => c.title).sort()).toEqual([
+      'backslash semantic type',
+      'quoted semantic type',
+    ]);
+    expect(result.total).toBe(2);
   });
 
   it('client_ids scopes score-sorted rows to that client', async () => {

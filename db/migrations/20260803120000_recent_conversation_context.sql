@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS public.mcp_client_conversations (
   title text,
   last_action text NOT NULL,
   tools jsonb NOT NULL DEFAULT '[]'::jsonb,
-  call_count integer NOT NULL DEFAULT 0,
-  failed_count integer NOT NULL DEFAULT 0,
+  call_count bigint NOT NULL DEFAULT 0,
+  failed_count bigint NOT NULL DEFAULT 0,
   first_activity_at timestamptz NOT NULL DEFAULT now(),
   last_activity_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -38,8 +38,8 @@ WITH calls AS (
     max(e.metadata->>'agent_id') AS agent_id,
     (array_agg(e.payload_data->>'tool_name' ORDER BY e.occurred_at DESC))[1] AS last_action,
     jsonb_agg(DISTINCT e.payload_data->>'tool_name') AS tools,
-    count(*)::integer AS call_count,
-    count(*) FILTER (WHERE (e.payload_data->>'success')::boolean IS NOT TRUE)::integer AS failed_count,
+    count(*) AS call_count,
+    count(*) FILTER (WHERE (e.payload_data->>'success')::boolean IS NOT TRUE) AS failed_count,
     min(e.occurred_at) AS first_activity_at,
     max(e.occurred_at) AS last_activity_at
   FROM public.events e

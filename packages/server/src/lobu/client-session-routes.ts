@@ -64,14 +64,18 @@ routes.get("/", mcpAuth, async (c) => {
     -- CTE rather than a correlated subquery so it is evaluated once, not once
     -- per returned conversation.
     WITH pending_interactions AS (
-      SELECT a.metadata->>'mcp_session_id' AS session_id,
+      SELECT mc.client_identity, mc.conversation_id,
         count(*)::integer AS pending_interaction_count
       FROM current_event_records a
+      JOIN public.mcp_client_conversations mc
+        ON mc.organization_id = a.organization_id
+        AND mc.transport_session_ids ? (a.metadata->>'mcp_session_id')
       WHERE a.organization_id = ${organizationId}
         AND a.interaction_type <> 'none'
         AND a.interaction_status = 'pending'
         AND a.metadata->>'mcp_session_id' IS NOT NULL
-      GROUP BY a.metadata->>'mcp_session_id'
+        AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
+      GROUP BY mc.client_identity, mc.conversation_id
     )
     SELECT mc.conversation_id, mc.client_id, oc.client_name, mc.user_id, mc.agent_id,
       mc.title, mc.last_action, mc.first_activity_at, mc.last_activity_at,
@@ -80,7 +84,8 @@ routes.get("/", mcpAuth, async (c) => {
       COALESCE(pi.pending_interaction_count, 0)::integer AS pending_interaction_count
     FROM public.mcp_client_conversations mc
     LEFT JOIN oauth_clients oc ON oc.id = mc.client_id
-    LEFT JOIN pending_interactions pi ON pi.session_id = mc.transport_session_id
+    LEFT JOIN pending_interactions pi
+      ON pi.client_identity = mc.client_identity AND pi.conversation_id = mc.conversation_id
     WHERE mc.organization_id = ${organizationId}
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}

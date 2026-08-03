@@ -155,6 +155,32 @@ describe('client sessions activity route', () => {
         last_activity_at = now() - interval '3 hours'
       WHERE organization_id = ${orgId} AND conversation_id = 'sess-pat'
     `;
+
+    // One host conversation can reconnect through multiple transport sessions.
+    // Pending approvals from an earlier transport must remain attached.
+    await recordCall('transport-old', 'search_memory', {
+      mcpConversationId: 'host-conversation',
+    });
+    await recordCall('transport-new', 'query_sql', {
+      mcpConversationId: 'host-conversation',
+    });
+    await insertEvent({
+      entityIds: [],
+      organizationId: orgId,
+      originId: 'host-conversation-approval',
+      title: 'Earlier transport approval',
+      semanticType: 'operation',
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+      clientId,
+      metadata: { mcp_session_id: 'transport-old' },
+    });
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '5 hours',
+        last_activity_at = now() - interval '4 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'host-conversation'
+    `;
   });
 
   it('lists recent sessions newest-first with counts, tools, client identity, and pending interactions', async () => {
@@ -178,7 +204,13 @@ describe('client sessions activity route', () => {
     };
 
     const ids = body.sessions.map((s) => s.sessionId);
-    expect(ids).toEqual(['sess-beta', 'sess-alpha', 'sess-tool-cap', 'sess-pat']);
+    expect(ids).toEqual([
+      'sess-beta',
+      'sess-alpha',
+      'sess-tool-cap',
+      'sess-pat',
+      'host-conversation',
+    ]);
     expect(ids).not.toContain('sess-foreign');
     expect(ids).not.toContain('sess-stale');
 
@@ -207,6 +239,10 @@ describe('client sessions activity route', () => {
     expect(pat.clientId).toBeNull();
     expect(pat.clientName).toBeNull();
     expect(pat.callCount).toBe(1);
+
+    const host = body.sessions.find((s) => s.sessionId === 'host-conversation')!;
+    expect(host.callCount).toBe(2);
+    expect(host.pendingInteractionCount).toBe(1);
   });
 
   it('honors the bounded result limit', async () => {

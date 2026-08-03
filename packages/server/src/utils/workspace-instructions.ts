@@ -15,9 +15,24 @@ function singleLine(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
-/** Translate stored legacy engine prose to the agent-facing product name. */
-function publicDescription(value: unknown): string {
-  return singleLine(value)
+const INTERNAL_BEHAVIOR_SCHEMA_FIELDS = new Set([
+  'acting_watcher_id',
+  'analyzed_by_watcher_id',
+  'exclude_watcher_id',
+  'source_watcher_id',
+  'watcher_id',
+  'watcher_ids',
+]);
+
+function isInternalBehaviorSchemaField(field: string): boolean {
+  return INTERNAL_BEHAVIOR_SCHEMA_FIELDS.has(field.toLowerCase());
+}
+
+/** Translate engine vocabulary only on known internal fields. */
+function publicFieldDescription(field: string, value: unknown): string {
+  const description = singleLine(value);
+  if (field.toLowerCase() !== 'window_id') return description;
+  return description
     .replace(/\bwatchers\b/gi, 'Behaviors')
     .replace(/\bwatcher\b/gi, 'Behavior');
 }
@@ -40,9 +55,12 @@ function renderSchemaFields(schema: unknown): string {
   }
   if (!props) return '';
   return Object.entries(props)
-    .filter(([field]) => !/watcher/i.test(field))
+    .filter(([field]) => !isInternalBehaviorSchemaField(field))
     .map(([field, def]) => {
-      const desc = publicDescription((def as Record<string, unknown> | null)?.description);
+      const desc = publicFieldDescription(
+        field,
+        (def as Record<string, unknown> | null)?.description
+      );
       return desc ? `${field} (${desc})` : field;
     })
     .join(', ');
@@ -80,7 +98,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
     ]);
 
     const entityTypeLines = entityTypeRows.map((et: any) => {
-      const desc = publicDescription(et.description);
+      const desc = singleLine(et.description);
       const fields = renderSchemaFields(et.metadata_schema);
       return `- ${et.slug} ("${et.name}")${desc ? ` — ${desc}` : ''}${fields ? ` — fields: ${fields}` : ''}`;
     });
@@ -96,7 +114,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       if (rt.is_symmetric) parts.push('symmetric');
       if (inverseSlug) parts.push(`inverse: ${inverseSlug}`);
       const meta = parts.length > 0 ? ` (${parts.join(', ')})` : '';
-      const desc = publicDescription(rt.description);
+      const desc = singleLine(rt.description);
       relTypeLines.push(`- ${slug}${meta}${desc ? ` — ${desc}` : ''}`);
     }
 
@@ -135,10 +153,10 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       if (kindEntries.length === 0) continue;
 
       const kindLines = kindEntries.map(([kind, def]) => {
-        const desc = publicDescription(def.description);
+        const desc = singleLine(def.description);
         const metaFields = def.metadataSchema?.properties
           ? Object.keys(def.metadataSchema.properties as Record<string, unknown>)
-              .filter((field) => !/watcher/i.test(field))
+              .filter((field) => !isInternalBehaviorSchemaField(field))
               .join(', ')
           : '';
         const parts = [desc, metaFields ? `metadata: ${metaFields}` : '']
@@ -207,7 +225,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
           localOps.length > 0
             ? localOps.join(', ')
             : 'operations via `client.operations.listAvailable()`';
-        const desc = publicDescription(conn.description);
+        const desc = singleLine(conn.description);
         sections.push(`- ${conn.key}${desc ? ` (${desc})` : ''}: ${detail}`);
       }
     }

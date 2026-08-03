@@ -89,20 +89,20 @@ describe('buildWorkspaceInstructions render fixes', () => {
       )
     `;
 
-    // Legacy engine vocabulary can still exist in stored, user-authored schemas.
-    // It must not leak through the public MCP tool descriptions: the agent-facing
-    // product name is Behavior, and raw internal field names are not actionable.
+    // Tenant-authored descriptions and similarly named fields are user data, while
+    // exact reserved engine fields are internal implementation details.
     await sql`
       INSERT INTO entity_types (slug, name, description, metadata_schema, organization_id)
       VALUES (
         'legacy-automation',
         'Legacy Automation',
-        'Created by a watcher',
+        'A club for bird watchers',
         ${sql.json({
           type: 'object',
           properties: {
             window_id: { type: 'number', description: 'Watcher window that produced it' },
             watcher_id: { type: 'number', description: 'Watcher that wrote it' },
+            watcher_count: { type: 'number', description: 'Number of bird watchers' },
           },
         })},
         ${org.id}
@@ -163,9 +163,10 @@ describe('buildWorkspaceInstructions render fixes', () => {
     expect(out).toContain('- legacy ("Legacy") — fields: sku, price (Unit price in EUR)');
   });
 
-  it('uses Behavior terminology and hides internal watcher fields in MCP instructions', async () => {
+  it('preserves tenant watcher language while hiding exact internal engine fields', async () => {
     const out = await buildWorkspaceInstructions(org.id);
-    expect(out).not.toMatch(/watchers?/i);
+    expect(out).toContain('A club for bird watchers');
+    expect(out).toContain('watcher_count (Number of bird watchers)');
     expect(out).not.toContain('watcher_id');
     expect(out).toContain('window_id (Behavior window that produced it)');
   });

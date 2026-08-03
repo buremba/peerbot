@@ -49,6 +49,8 @@ BREAKING CHANGE: RuntimeProviderCredentialResolver now returns
 
 `publish-packages.mjs` is idempotent (skips already-published packages), so re-running is safe.
 
+**Helm publish says the chart package is private** — GitHub does not expose a package-visibility update API. A package administrator must open the `charts/lobu` package settings once and change its visibility to **Public**. Organization owners have admin permission to organization packages. Re-run the failed Helm workflow afterward. The workflow verifies the live package visibility and fails closed; it never treats a private chart as a successful public release.
+
 **Bad build reached npm** — prefer deprecation over unpublish:
 ```bash
 npm deprecate '@lobu/core@<bad-version>' "broken build, use <good-version>"

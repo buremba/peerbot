@@ -14,12 +14,13 @@ worker_replicas=absent
 
 deployment_replicas() {
   deployment=$1
-  if ! "$kubectl_bin" --namespace "$namespace" get deployment "$deployment" >/dev/null 2>&1; then
+  replicas=$("$kubectl_bin" --namespace "$namespace" get deployment "$deployment" \
+    --ignore-not-found --output 'jsonpath={.spec.replicas}')
+  if [ -z "$replicas" ]; then
     printf 'absent'
     return
   fi
-  "$kubectl_bin" --namespace "$namespace" get deployment "$deployment" \
-    --output 'jsonpath={.spec.replicas}'
+  printf '%s' "$replicas"
 }
 
 restore_deployment() {

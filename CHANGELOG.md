@@ -1,5 +1,18 @@
 # Changelog
 
+## [14.12.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.11.0...lobu-v14.12.0) (2026-08-03)
+
+
+### Features
+
+* add durable Behavior outputs ([#2461](https://github.com/lobu-ai/lobu/issues/2461)) ([a1aa7f1](https://github.com/lobu-ai/lobu/commit/a1aa7f192898692fb346dc6574152d30011d8beb))
+* **server:** add managed auth onboarding ([#2470](https://github.com/lobu-ai/lobu/issues/2470)) ([861db9c](https://github.com/lobu-ai/lobu/commit/861db9ca3b23a1f28dbdb8b39f27a8f5924c44c4))
+
+
+### Bug Fixes
+
+* **ci:** fail closed on private Helm chart ([#2459](https://github.com/lobu-ai/lobu/issues/2459)) ([d69b897](https://github.com/lobu-ai/lobu/commit/d69b897cae4cb97da7d8b3c74472a25a069d8d47))
+
 ## [14.11.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.10.0...lobu-v14.11.0) (2026-08-03)
 
 

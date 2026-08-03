@@ -24,7 +24,66 @@ export function parseProviderQuotaResetAt(
 	if (!match) return null;
 
 	const [, date, hour, minute, second, milliseconds, rawZone] = match;
+	const [yearText, monthText, dayText] = date.split("-");
+	const year = Number(yearText);
+	const month = Number(monthText);
+	const day = Number(dayText);
+	const hourValue = Number(hour ?? "0");
+	const minuteValue = Number(minute ?? "0");
+	const secondValue = Number(second ?? "0");
+	const millisecondValue = Number(milliseconds ?? "0");
+	const daysInMonth = [
+		31,
+		year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,
+		31,
+		30,
+		31,
+		30,
+		31,
+		31,
+		30,
+		31,
+		30,
+		31,
+	][month - 1];
+	if (
+		!Number.isInteger(year) ||
+		!Number.isInteger(month) ||
+		month < 1 ||
+		month > 12 ||
+		!Number.isInteger(day) ||
+		day < 1 ||
+		daysInMonth === undefined ||
+		day > daysInMonth ||
+		!Number.isInteger(hourValue) ||
+		hourValue < 0 ||
+		hourValue > 23 ||
+		!Number.isInteger(minuteValue) ||
+		minuteValue < 0 ||
+		minuteValue > 59 ||
+		!Number.isInteger(secondValue) ||
+		secondValue < 0 ||
+		secondValue > 59 ||
+		!Number.isInteger(millisecondValue) ||
+		millisecondValue < 0 ||
+		millisecondValue > 999
+	) {
+		return null;
+	}
+
 	const normalizedZone = rawZone?.toUpperCase();
+	if (normalizedZone && normalizedZone !== "Z") {
+		const offsetHour = Number(normalizedZone.slice(1, 3));
+		const offsetMinute = Number(normalizedZone.slice(-2));
+		if (
+			!Number.isInteger(offsetHour) ||
+			offsetHour > 23 ||
+			!Number.isInteger(offsetMinute) ||
+			offsetMinute > 59
+		) {
+			return null;
+		}
+	}
 	const zone = normalizedZone
 		? normalizedZone === "Z" || normalizedZone.includes(":")
 			? normalizedZone

@@ -115,6 +115,21 @@ describe("provider quota reset parsing", () => {
       )?.toISOString()
     ).toBe("2026-07-31T12:01:00.000Z");
   });
+
+  it.each([
+    "2026-02-31",
+    "2026-07-31 24:00:00",
+    "2026-07-31 12:60:00",
+    "2026-07-31 12:00:60",
+    "2026-07-31 12:00:00+24:00",
+  ])("rejects invalid reset timestamp %s", (timestamp) => {
+    expect(
+      parseProviderQuotaResetAt(
+        `Your limit will reset at ${timestamp}`,
+        new Date("2026-01-01T00:00:00.000Z")
+      )
+    ).toBeNull();
+  });
 });
 
 describe("a terminally failed Behavior run advances next_run_at", () => {

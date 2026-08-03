@@ -38,24 +38,9 @@ typecheck:
 	fi
 	@echo "✅ Typecheck clean."
 
-# Build all TypeScript packages in dependency order
+# Build all TypeScript packages in dependency-aware parallel layers.
 build-packages:
-	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp pgvector-embedded connector-sdk client agent-worker embeddings connector-worker promptfoo-provider; do \
-		echo "   📦 Building packages/$$pkg..."; \
-		( cd packages/$$pkg && bun run build ) || exit $$?; \
-	done
-	@echo "   📦 Building packages/server bundle..."
-	@( cd packages/server && bun run build:server ) || exit $$?
-	@if [ -f packages/owletto/package.json ]; then \
-		echo "   📦 Building packages/owletto (web UI)..."; \
-		( cd packages/owletto && bun run build ) || exit $$?; \
-	else \
-		echo "   ⚠️  packages/owletto absent — CLI will ship headless (API only)"; \
-	fi
-	@echo "   📦 Building packages/cli..."
-	@( cd packages/cli && bun run build ) || exit $$?
-	@echo "✅ All packages built successfully!"
+	@node scripts/build-packages.mjs
 
 # Ensure packages/owletto is initialized; warn on drift but don't auto-fix
 # (drift may be active feature-branch work — clobbering it silently is worse than the warning).

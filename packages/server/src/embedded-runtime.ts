@@ -9,12 +9,22 @@
  * `server.ts` hands to the shared `createServerLifecycle()` spine.
  */
 
-import { fork } from "node:child_process";
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { execFileSync, fork } from "node:child_process";
+import {
+	chmodSync,
+	chownSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	symlinkSync,
+} from "node:fs";
+import type { Stats } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import {
@@ -158,6 +168,281 @@ function runningAsRoot(): boolean {
 	return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
+export interface EmbeddedPostgresIdentity {
+	uid: number;
+	gid: number;
+	groups: Set<number>;
+}
+
+export type IdentityCommand = (command: string, args: string[]) => string;
+
+const runIdentityCommand: IdentityCommand = (command, args) =>
+	execFileSync(command, args, {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+
+function parseIdentityNumber(value: string, label: string): number {
+	const parsed = Number.parseInt(value.trim(), 10);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) {
+		throw new Error(`Invalid ${label} returned for the postgres user: ${value}`);
+	}
+	return parsed;
+}
+
+function readPostgresIdentity(run: IdentityCommand): EmbeddedPostgresIdentity {
+	const uid = parseIdentityNumber(run("id", ["-u", "postgres"]), "uid");
+	const gid = parseIdentityNumber(run("id", ["-g", "postgres"]), "gid");
+	const groups = new Set(
+		run("id", ["-G", "postgres"])
+			.split(/\s+/)
+			.filter(Boolean)
+			.map((value) => parseIdentityNumber(value, "supplementary gid")),
+	);
+	groups.add(gid);
+	return { uid, gid, groups };
+}
+
+const ROOT_POSTGRES_IDENTITY_ERROR =
+	"The postgres OS user unexpectedly resolves to uid 0";
+
+function requireNonRootPostgresIdentity(
+	identity: EmbeddedPostgresIdentity,
+): EmbeddedPostgresIdentity {
+	if (identity.uid === 0) throw new Error(ROOT_POSTGRES_IDENTITY_ERROR);
+	return identity;
+}
+
+/**
+ * Resolve the non-root OS identity used by embedded-postgres, creating it on a
+ * fresh root-only Linux host before we need to grant it directory traversal.
+ *
+ * embedded-postgres performs the same groupadd/useradd bootstrap inside
+ * initialise(), but that is too late to establish narrowly-scoped access to
+ * its bundled binaries. Doing it here lets Lobu grant the postgres group (and
+ * only that group) execute access instead of making `/root` world-traversable.
+ */
+export function ensureEmbeddedPostgresIdentity(
+	run: IdentityCommand = runIdentityCommand,
+): EmbeddedPostgresIdentity {
+	try {
+		return requireNonRootPostgresIdentity(readPostgresIdentity(run));
+	} catch (initialError) {
+		if (
+			initialError instanceof Error &&
+			initialError.message === ROOT_POSTGRES_IDENTITY_ERROR
+		) {
+			throw initialError;
+		}
+		try {
+			// `-f` makes an already-existing group a success, including a race with
+			// another Lobu process performing the same first-boot bootstrap.
+			run("groupadd", ["-f", "postgres"]);
+			try {
+				run("useradd", ["-g", "postgres", "postgres"]);
+			} catch {
+				// A concurrent creator may have won after our first `id`; the read
+				// below is the authority and still fails closed if no user exists.
+			}
+			return requireNonRootPostgresIdentity(readPostgresIdentity(run));
+		} catch (cause) {
+			if (
+				cause instanceof Error &&
+				cause.message === ROOT_POSTGRES_IDENTITY_ERROR
+			) {
+				throw cause;
+			}
+			throw new Error(
+				"Root-mode embedded PostgreSQL requires a non-root 'postgres' OS user, " +
+					"but Lobu could not resolve or create it with groupadd/useradd.",
+				{ cause: cause ?? initialError },
+			);
+		}
+	}
+}
+
+export interface TraversalMutation {
+	chmod: typeof chmodSync;
+	chown: typeof chownSync;
+}
+
+interface TraversalGrant {
+	dir: string;
+	uid: number;
+	gid: number;
+	mode: number;
+	groupChanged: boolean;
+}
+
+export interface EmbeddedPgTraversalLease {
+	granted: string[];
+	restore: () => void;
+}
+
+function postgresCanTraverse(
+	stat: Stats,
+	identity: EmbeddedPostgresIdentity,
+): boolean {
+	if (stat.uid === identity.uid) return (stat.mode & 0o100) !== 0;
+	if (identity.groups.has(stat.gid)) return (stat.mode & 0o010) !== 0;
+	return (stat.mode & 0o001) !== 0;
+}
+
+function traversalModeGrant(
+	stat: Stats,
+	identity: EmbeddedPostgresIdentity,
+): { bit: number; groupChanged: boolean } {
+	if (stat.uid === identity.uid) return { bit: 0o100, groupChanged: false };
+	if (identity.groups.has(stat.gid)) {
+		return { bit: 0o010, groupChanged: false };
+	}
+	return { bit: 0o010, groupChanged: stat.gid !== identity.gid };
+}
+
+function restoreTraversalGrants(
+	grants: TraversalGrant[],
+	mutation: TraversalMutation,
+): void {
+	const failures: string[] = [];
+	for (const grant of [...grants].reverse()) {
+		try {
+			if (grant.groupChanged) {
+				// Strip the temporary group's permissions before returning ownership;
+				// otherwise the original group bits briefly apply to postgres.
+				mutation.chmod(grant.dir, grant.mode & ~0o070);
+				mutation.chown(grant.dir, grant.uid, grant.gid);
+			}
+			mutation.chmod(grant.dir, grant.mode);
+		} catch (err) {
+			failures.push(
+				`${grant.dir}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	if (failures.length > 0) {
+		throw new Error(
+			`Could not restore embedded PostgreSQL traversal permissions:\n${failures.join("\n")}`,
+		);
+	}
+}
+
+/**
+ * Make every lexical and resolved ancestor of `paths` traversable by the
+ * postgres OS identity that a root boot drops the embedded cluster to.
+ *
+ * With `createPostgresUser` (see `embeddedPgOptions`), embedded-postgres runs
+ * initdb/postgres setuid'd to a `postgres` user it creates. That child must be
+ * able to *traverse* each directory on the paths it touches, or the spawn dies
+ * with `EACCES` before exec — and the dependency's spawn has no `'error'`
+ * handler, so an unhandled `'error'` event takes down the whole process with
+ * the misleading `Emitted 'error' event on ChildProcess instance` crash. The
+ * realistic triggers, both seen on the landing-page quickstart:
+ *
+ *   - the native binaries live in the npx cache under `/root`, which is `0700`
+ *     on `node:` images, so `npx @lobu/cli` installs them exactly where the
+ *     dropped user cannot reach them;
+ *   - `<root>/.lobu` is created root-owned and stays `0700` under a `0077`
+ *     umask, so the child cannot traverse into the `pgdata` leaf (which
+ *     embedded-postgres chowns to it).
+ *
+ * Grant only the matching identity class traverse access (`u+x` when postgres
+ * owns the directory, otherwise `g+x`) on exactly the directories that lack
+ * it. When the directory's group must be temporarily changed to postgres, mask
+ * group read/write so the reassignment cannot expose directory contents. This
+ * avoids making `/root` or an arbitrary user-selected data ancestor
+ * traversable by every local account.
+ * The returned lease restores every original uid/gid/mode after PostgreSQL
+ * stops; a failed partial grant is rolled back before the error propagates. A
+ * SIGKILLed process cannot restore, and the grant then persists: the next boot
+ * sees the ancestor as already traversable, so it grants — and therefore
+ * records — nothing to undo. Root embedded mode is single-instance per host;
+ * two concurrent root processes could otherwise share an ancestor lease and
+ * let the first teardown revoke traversal from the second.
+ *
+ * Targets are made absolute before walking, so the documented `file://.` data
+ * root cannot stop at lexical `.`. Existing symlinks contribute both their
+ * lexical path and real target path, since the child must traverse both.
+ */
+export function ensureEmbeddedPgTraversal(
+	paths: string[],
+	identity: EmbeddedPostgresIdentity,
+	mutation: TraversalMutation = { chmod: chmodSync, chown: chownSync },
+): EmbeddedPgTraversalLease {
+	const grants: TraversalGrant[] = [];
+	const visited = new Set<string>();
+	let restored = false;
+	try {
+		for (const target of paths) {
+			const absolute = resolve(target);
+			if (!existsSync(absolute)) mkdirSync(absolute, { recursive: true });
+			const walks = new Set([absolute, realpathSync(absolute)]);
+			for (const walk of walks) {
+				for (let dir = walk; ; ) {
+					if (!visited.has(dir)) {
+						visited.add(dir);
+						const stat = lstatSync(dir);
+						if (stat.isDirectory() && !postgresCanTraverse(stat, identity)) {
+							const modeGrant = traversalModeGrant(stat, identity);
+							const grant: TraversalGrant = {
+								dir,
+								uid: stat.uid,
+								gid: stat.gid,
+								mode: stat.mode & 0o7777,
+								groupChanged: modeGrant.groupChanged,
+							};
+							grants.push(grant);
+							if (grant.groupChanged) {
+								// Remove the old group's permissions before assigning the
+								// postgres group, then add back traverse-only below.
+								mutation.chmod(dir, grant.mode & ~0o070);
+								mutation.chown(dir, stat.uid, identity.gid);
+							}
+							const grantedMode = grant.groupChanged
+								? (grant.mode & ~0o060) | modeGrant.bit
+								: grant.mode | modeGrant.bit;
+							mutation.chmod(dir, grantedMode);
+							const updated = lstatSync(dir);
+							if (!postgresCanTraverse(updated, identity)) {
+								throw new Error("permission update did not grant traversal");
+							}
+						}
+					}
+					const parent = dirname(dir);
+					if (parent === dir) break;
+					dir = parent;
+				}
+			}
+		}
+	} catch (cause) {
+		try {
+			restoreTraversalGrants(grants, mutation);
+		} catch (rollbackError) {
+			throw new AggregateError(
+				[cause, rollbackError],
+				"Embedded PostgreSQL traversal grant failed and could not be fully rolled back",
+			);
+		}
+		throw new Error(
+			"Could not grant the postgres OS user traversal to the embedded PostgreSQL binaries/data directory.",
+			{ cause },
+		);
+	}
+	if (grants.length > 0) {
+		logger.info(
+			{ dirs: grants.map(({ dir }) => dir), gid: identity.gid },
+			"Granted postgres identity traversal on embedded PostgreSQL ancestors",
+		);
+	}
+	return {
+		granted: grants.map(({ dir }) => dir),
+		restore: () => {
+			if (restored) return;
+			restoreTraversalGrants(grants, mutation);
+			restored = true;
+		},
+	};
+}
+
 /**
  * Ensure the @embedded-postgres platform binary's SONAME symlinks exist.
  *
@@ -236,38 +521,108 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 
 	const pgPort =
 		parseInt(process.env.LOBU_PG_PORT || "", 10) || (await findFreePort());
+
+	// Root mode drops the cluster to a `postgres` user (see runningAsRoot). Give
+	// only that OS identity traversal through restrictive binary/datadir ancestors;
+	// retain the lease for rollback on boot failure and restoration after stop.
+	const traversalLease = runningAsRoot()
+		? ensureEmbeddedPgTraversal(
+				[nativeDir, join(dataRoot, ".lobu")],
+				ensureEmbeddedPostgresIdentity(),
+			)
+		: null;
+	let exitRestore: (() => void) | null = null;
+	const restoreTraversal = () => {
+		if (!traversalLease) return;
+		// Restore BEFORE detaching the exit hook: the lifecycle wraps every
+		// teardown step in `safe()`, which swallows a throw, so the hook is the
+		// only retry left if this partially fails. `restore()` is idempotent once
+		// it succeeds, so keeping the hook attached on failure is safe.
+		traversalLease.restore();
+		if (exitRestore) {
+			process.off("exit", exitRestore);
+			exitRestore = null;
+		}
+	};
+	if (traversalLease) {
+		// Boot can still fail later in migrations/bootstrap, before the shared
+		// lifecycle registers signal teardown. `reportBootFailure()` exits
+		// synchronously, so retain a synchronous last-resort restoration hook.
+		exitRestore = () => {
+			try {
+				traversalLease.restore();
+			} catch (error) {
+				process.stderr.write(
+					`Failed to restore embedded PostgreSQL traversal permissions on exit: ${error instanceof Error ? error.message : String(error)}\n`,
+				);
+			}
+		};
+		process.once("exit", exitRestore);
+	}
 	const pg = new EmbeddedPostgres(embeddedPgOptions(pgDataDir, pgPort));
 
-	// initdb refuses a non-empty datadir; skip it when the cluster already
-	// exists so restarts reuse the same data instead of erroring.
-	if (!existsSync(join(pgDataDir, "PG_VERSION"))) {
-		logger.info({ pgDataDir }, "Initialising embedded PostgreSQL cluster");
-		await pg.initialise();
+	let embeddingsChild: Awaited<ReturnType<typeof startEmbeddings>> | null = null;
+	let postgresStarted = false;
+	try {
+		// initdb refuses a non-empty datadir; skip it when the cluster already
+		// exists so restarts reuse the same data instead of erroring.
+		if (!existsSync(join(pgDataDir, "PG_VERSION"))) {
+			logger.info({ pgDataDir }, "Initialising embedded PostgreSQL cluster");
+			await pg.initialise();
+		}
+		await pg.start();
+		postgresStarted = true;
+
+		const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${pgPort}/postgres?sslmode=disable`;
+		process.env.DATABASE_URL = databaseUrl;
+		logger.info({ port: pgPort }, "Embedded PostgreSQL ready");
+
+		embeddingsChild = await startEmbeddings();
+
+		return {
+			databaseUrl,
+			dataDir: pgDataDir,
+			databaseReadiness: () => runMigrations(databaseUrl),
+			// Install-operator + default-agent provisioning, shared with the
+			// external-DB `lobu run` path (see local-bootstrap.ts).
+			preListenHooks: buildLocalBootstrapHooks(databaseUrl),
+			// Runs after stopLobuGateway + closeDbSingleton so gateway connections
+			// release before the embeddings child + PG child are stopped. Restore
+			// ancestor ownership/modes only after postgres no longer needs them.
+			extraTeardown: [
+				() => {
+					embeddingsChild?.kill();
+				},
+				() => pg.stop(),
+				() => restoreTraversal(),
+			],
+		};
+	} catch (error) {
+		embeddingsChild?.kill();
+		const cleanupErrors: unknown[] = [];
+		// embedded-postgres leaves its process field set when start() rejects,
+		// even though the child has already closed. Calling stop() then waits for
+		// a second exit event that can never arrive and hangs boot cleanup forever.
+		if (postgresStarted) {
+			try {
+				await pg.stop();
+			} catch (cleanupError) {
+				cleanupErrors.push(cleanupError);
+			}
+		}
+		try {
+			restoreTraversal();
+		} catch (cleanupError) {
+			cleanupErrors.push(cleanupError);
+		}
+		if (cleanupErrors.length > 0) {
+			throw new AggregateError(
+				[error, ...cleanupErrors],
+				"Embedded PostgreSQL boot failed and cleanup was incomplete",
+			);
+		}
+		throw error;
 	}
-	await pg.start();
-
-	const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${pgPort}/postgres?sslmode=disable`;
-	process.env.DATABASE_URL = databaseUrl;
-	logger.info({ port: pgPort }, "Embedded PostgreSQL ready");
-
-	const embeddingsChild = await startEmbeddings();
-
-	return {
-		databaseUrl,
-		dataDir: pgDataDir,
-		databaseReadiness: () => runMigrations(databaseUrl),
-		// Install-operator + default-agent provisioning, shared with the
-		// external-DB `lobu run` path (see local-bootstrap.ts).
-		preListenHooks: buildLocalBootstrapHooks(databaseUrl),
-		// Runs after stopLobuGateway + closeDbSingleton so gateway connections
-		// release before the embeddings child + PG child are stopped.
-		extraTeardown: [
-			() => {
-				embeddingsChild?.kill();
-			},
-			() => pg.stop(),
-		],
-	};
 }
 
 /**

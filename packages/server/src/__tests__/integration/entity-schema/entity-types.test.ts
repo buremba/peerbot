@@ -75,14 +75,14 @@ describe('entity schema CRUD', () => {
             jsonTemplate: { type: 'card', children: [] },
           },
         },
-      } as never);
+      });
       const got = (await owner.entity_schema.getType('deal-ek')) as {
         entity_type?: { event_kinds?: Record<string, unknown> | null };
       };
       expect(got.entity_type?.event_kinds).toMatchObject({ valuation: { description: 'A snapshot' } });
 
       // Clearing via null must validate and wipe the column.
-      await owner.entity_schema.updateType({ slug: 'deal-ek', event_kinds: null } as never);
+      await owner.entity_schema.updateType({ slug: 'deal-ek', event_kinds: null });
       const cleared = (await owner.entity_schema.getType('deal-ek')) as {
         entity_type?: { event_kinds?: Record<string, unknown> | null };
       };

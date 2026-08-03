@@ -9,6 +9,7 @@ Read root `AGENTS.md` first. This package owns built-in Lobu connectors.
 - Compile happens on the CLI path (`lobu apply`). It runs `bun install --ignore-scripts` when bun is available, else `npm install --ignore-scripts` because Node ships npm.
 - `@lobu/connector-sdk` is externalized and provided by the runtime.
 - Keep connector behavior data-driven; avoid hardcoding account/workspace-specific values.
+- For the same source object across syncs, keep `origin_id` stable. Ingestion may supersede the prior event and allocate a new `events.id`; downstream cross-sync dedupe relies on `origin_id`, not the version-row id. Change `origin_id` only when the source identity genuinely changes.
 
 ## Validation
 - Validation: the root gates (`make pre-pr` + `make review`, see root `AGENTS.md`) plus targeted connector tests.

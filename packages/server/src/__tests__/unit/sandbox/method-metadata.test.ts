@@ -296,6 +296,15 @@ describe("method-metadata", () => {
 		expect(read.example ?? "").toContain("content_ids: [");
 	});
 
+	it("documents destructive event-kind replacement and structured-event rendering", () => {
+		expect(METHOD_METADATA["entitySchema.updateType"].summary).toContain(
+			"replaces the entire registry",
+		);
+		expect(METHOD_METADATA["knowledge.save"].summary).toContain(
+			"payload_type: 'empty'",
+		);
+	});
+
 	it("documents the exact positional signature AND the accepted object form for every positional-id method", () => {
 		// #2046: these methods take a positional id at runtime but were described
 		// like named-object methods, so discovery and runtime disagreed. Every one

@@ -13,6 +13,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | Green typecheck that CI then fails | Build & typecheck |
 | A formatting diff thousands of lines wide | Formatting & lint |
 | `PostgresError: malformed array literal` | DB & SQL |
+| A prefix lookup returns another tenant's identifier | DB & SQL |
 | An embedding reads back as a string, not `number[]` | DB & SQL |
 | squawk / migration job exits non-zero on a warning | DB & SQL |
 | `ERR_RESOLVE_PACKAGE_ENTRY_FAIL` in integration setup | Testing |
@@ -26,6 +27,10 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 | `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH` | Browser & connectors |
 | `Missing --auth-profile` | Browser & connectors |
 | Browser automation hitting a login wall | Browser & connectors |
+| A connector action exists live but not under `packages/connectors` | Browser & connectors |
+| A device manifest edit never reaches `connector_definitions` | Browser & connectors |
+| Changed unpacked-extension code is not active | Browser & connectors |
+| A completed browser action opened on the wrong machine | Browser & connectors |
 | `check-drift` failing on a submodule pointer | Submodule & cross-repo |
 | A rebase that "already upstream"-ed your pointer commit | Submodule & cross-repo |
 
@@ -35,7 +40,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 **Phantom `TS2305: Module '@lobu/core' has no exported member 'X'` inside a worktree.** The worktree's own `@lobu/*` dists are missing, so tsc resolves through the *main checkout's* stale dist. Build the worktree's dists (`make build-packages`). `packages/core` is `composite: true`, so use `bunx tsc --build --force` — a plain `rm -rf dist` leaves a stale `tsconfig.tsbuildinfo` behind. Diagnose with `bunx tsc --noEmit --traceResolution 2>&1 | grep "@lobu/core"`.
 
-**A new workspace package must be added to three build lists or CI fails while local passes.** In dependency order: the `build-packages` loop in `Makefile`, the unit job's inline build step in `.github/workflows/ci.yml` (it builds packages individually, not via make), and `build:packages` in the root `package.json`. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
+**A new workspace package must be added to both build graphs or CI fails while local passes.** Add it at the correct dependency layer in `scripts/build-packages.mjs` and to the unit job's inline build step in `.github/workflows/ci.yml` (the unit job intentionally builds a narrower package set). `make build-packages` and root `build:packages` both call the script, so there is no third list. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
 
 **Inter-package deps are always `"@lobu/*": "workspace:*"`.** Never a hardcoded version or caret range — the root `package.json` is the single source of version truth.
 
@@ -58,6 +63,8 @@ sql`... WHERE id = ANY(${pgBigintArray(ids)}::bigint[])` // numbers
 
 Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)`, `ARRAY[$a, $b]` of scalars, and spreads are also safe. JSONB is exempt (`JSON.stringify` / `sql.json`). CI enforces this via `scripts/check-raw-array-params.mjs`; the escape hatch is a `raw-array-ok` line comment.
 
+**A data-derived `LIKE ${prefix}%` is not a literal prefix match.** SQL treats `_` as any one character and `%` as any run, and identifiers such as Slack team ids may contain `_`; an unescaped authorization lookup can therefore match another workspace. Prefer equality or an indexable range. If the suffix is genuinely unknown, escape `\\`, `%`, and `_`, add `ESCAPE '\\'`, and reproduce with sibling identifiers that differ at an underscore position—not only the happy key.
+
 **pgvector columns read back as the text string `"[1,2,3]"`, not `number[]`.** Parse before use.
 
 **Keep array-binding repros on the production value options.** `getDb()` and the integration harness's `getTestDb()` both use `PROD_PG_VALUE_OPTIONS`; an ad hoc `postgres()` client without those options can mask the failure you are chasing.
@@ -77,6 +84,8 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 **`could not create shared memory segment: No space left on device` on macOS.** The SHMMNI limit, not disk. Reap detached segments: `ipcs -mob`, then `ipcrm -m <id>` for entries with `nattch=0` **only**.
 
 **Integration suite prerequisites.** Node 22 is the repo default (`.node-version`); Lobu accepts Node 22–24 and 26+, while Node 25 boots without the SDK sandbox. Global setup uses `DATABASE_URL` if set, otherwise spawns an ephemeral embedded Postgres + pgvector.
+
+**Vitest 3.2.6 `list --shard=N/M` prints every file, even though `run --shard=N/M` partitions correctly.** Do not use `vitest list` to prove shard coverage. Run each shard with the JSON reporter and compare `testResults`: the three-way CI split owns 126 of 378 files per shard, with no overlap at execution time.
 
 **`make dev` is not the test harness.** It migrates its owned local per-branch database and boots the app, but that does not exercise the branches a relevant unit or integration suite covers.
 
@@ -109,6 +118,14 @@ PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node -e "const p=require('playwright').c
 **Connector success status in `runs` is `completed`, not `success`.** To re-trigger one feed: `UPDATE feeds SET next_run_at = now() WHERE id = <id>` — always with the `WHERE`, and against a dev database. Unscoped, it schedules every feed in the table at once.
 
 **To drive the user's real logged-in browser, use the paired Owletto extension**, not claude-in-chrome (that drives a different Chrome without their sessions) and not `lobu connector run` (local Playwright/CDP only — it errors with "Missing --auth-profile"). The recipe is in `docs/BROWSER_TESTING.md` under "Driving the paired Owletto extension"; it routes through `packages/server/src/worker-api/dispatch-chrome-action.ts`. Discover the `operations` namespace with `search_sdk operations`, then call it through `run_sdk`. A new server-side chrome action also needs a handler in the *installed* extension build, so check `git ls-tree origin/main packages/owletto`, never the working-tree submodule HEAD.
+
+**A connector capability can be DB-backed with no file under `packages/connectors`.** Check the active `connector_definitions` row and `operations.listAvailable({ connection_id })` before declaring an action absent. Organization-scoped code in `connector_versions` wins over the shared artifact for the active version. Catalog refresh skips keys with no bundled source, but re-syncs keys that do have bundled source and can reset their active definition to bundled metadata; inspect the active version after deploy. Connector source in `examples/` still requires `lobu apply` to update the organization copy.
+
+**One invalid device manifest preserves the whole previous inventory.** `validateDeviceConnectorManifests` marks the entire poll payload unaccepted when any entry fails validation (including `manifest_hash mismatch`), and `poll.ts` then retains the prior `connector_manifests`. The rejection is only an app-pod warning; a definition with stale `updated_at` is the DB symptom. `manifest_hash` is optional input and is computed over the normalized manifest by the server—when editing checked-in Chrome manifests, keep the JSON and emitted `connector-manifests.js` payload aligned and validate the exact object the extension sends.
+
+**Do not use a process restart as deployment proof for changed unpacked-extension code.** Chrome's unpacked-extension workflow requires an explicit extension reload for manifest, service-worker, and content-script changes. Reload it from `chrome://extensions`, then verify the poll payload/action behavior rather than reasoning from checked-out files.
+
+**A data connection's browser pin means “scrape here,” not “the user is here.”** Connector-initiated Chrome actions inherit the parent connection's `device_worker_id`; an interactive draft can report `completed` on an always-on machine the user cannot see. Direct one-off operations should target the intended Chrome connection id. For connector actions, verify the resolved Chrome connection/worker and do not claim human-visible delivery unless the flow carries an explicit interactive target.
 
 **Receiving real third-party webhooks against a local gateway** uses Tailscale Funnel on :443: `tailscale funnel --bg --https=443 http://127.0.0.1:<port>`. The `serve` subcommand looks identical but silently makes the port tailnet-only — always `funnel`, and verify with `tailscale funnel status`. curl from the same machine resolves over the tailnet, so a local 200 does not prove public reachability.
 

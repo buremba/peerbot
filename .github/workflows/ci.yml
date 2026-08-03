@@ -7,6 +7,12 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
 
+# Least-privilege GITHUB_TOKEN for every job in this workflow. No job writes to
+# the GitHub API (no artifacts, no `gh`, no comments); the submodule checkout
+# authenticates with OWLETTO_WEB_DEPLOY_KEY, not the token.
+permissions:
+  contents: read
+
 # Auto-cancel superseded runs on a PR so a force-push/rebase doesn't leave the
 # previous (now-stale) run burning ~10 parallel jobs to completion. `main`
 # pushes are never cancelled (ref is unique per push) so deploy-side gating is
@@ -331,13 +337,21 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run smoke:boot
 
-  # Backend integration tests need a real Postgres + pgvector. We run them
-  # under Node (not bun) for two reasons: (1) the vitest suite uses Node-only
-  # APIs in places, and (2) the sandbox runtime requires isolated-vm which
-  # is a V8 native addon that bun cannot load.
-  integration:
+  # Backend integration tests need a real Postgres + pgvector. The Vitest
+  # files share a module graph and database within one process, so each shard
+  # remains single-forked; the shards themselves get isolated runners and
+  # databases. This preserves the hermeticity constraints in vitest.config.ts
+  # while removing the old 5-7 minute serial Vitest step from CI's critical
+  # path. `integration` below remains the stable required check and fails
+  # closed unless every shard and Bun/Postgres suite succeeds.
+  server-integration-vitest:
+    name: integration-vitest (${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -412,7 +426,7 @@ jobs:
 
       - name: Verify Postgres health (fail fast if pgvector setup is broken)
         run: |
-          for i in {1..20}; do
+          for _ in {1..20}; do
             if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
             sleep 1
           done
@@ -429,7 +443,7 @@ jobs:
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
             -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
-      - name: server integration suite (vitest under Node)
+      - name: server integration suite shard ${{ matrix.shard }}/3 (vitest under Node)
         working-directory: packages/server
         # Fail-closed double gate (#1216): vitest's exit code alone went green
         # on a run with 8 failed tests (a `beforeExit` hook from a transitive
@@ -439,10 +453,83 @@ jobs:
         # report (crashed run) also fails.
         run: |
           node node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json" \
+            --shard=${{ matrix.shard }}/3 \
             --coverage.enabled --coverage.provider=v8 --coverage.reporter=lcov --coverage.reportsDirectory=coverage
-          # vitest writes coverage/lcov.info; rename so later bun steps don't clobber it.
-          mv coverage/lcov.info coverage/vitest.lcov.info
+          mv coverage/lcov.info coverage/vitest-shard-${{ matrix.shard }}.lcov.info
           node ../../scripts/assert-vitest-report-clean.mjs "$RUNNER_TEMP/vitest-report.json"
+
+      - name: Upload server integration coverage shard ${{ matrix.shard }}/3
+        if: always()
+        uses: codecov/codecov-action@v7
+        with:
+          directory: packages/server/coverage
+          flags: server-integration-vitest-${{ matrix.shard }}
+          fail_ci_if_error: false
+
+  # The bun:test suites need Postgres but are intentionally separate from
+  # Vitest: they use bun's runner and several gateway directories need their
+  # own process for module/fixture isolation. Running this job alongside the
+  # Vitest shards removes another ~2 minutes from the serial critical path.
+  server-integration-bun:
+    name: integration-bun
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lobu_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
+      DB_POOL_MAX: '5'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build packages server depends on
+        run: |
+          cd packages/core && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
+          cd packages/embeddings && bun run build && cd ../..
+          cd packages/connector-worker && bun run build && cd ../..
+          cd packages/pgvector-embedded && bun run build && cd ../..
+
+      - name: Verify Postgres health (fail fast if pgvector setup is broken)
+        run: |
+          for _ in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: Raise maintenance_work_mem for ivfflat index builds
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: server gateway suites (bun:test, needs Postgres)
         # The gateway bun:test files are excluded from vitest (vitest.config.ts)
@@ -489,14 +576,33 @@ jobs:
           bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__ src/auth/oauth/__tests__ --coverage
           mv coverage/lcov.info coverage/server-postgres-other.lcov.info
 
-      - name: Upload server integration coverage
+      - name: Upload server Bun/Postgres coverage
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          # vitest + every instrumented bun:test step above write into this dir.
           directory: packages/server/coverage
-          flags: server-integration
+          flags: server-integration-bun
           fail_ci_if_error: false
+
+  # Keep the branch-protection context stable while the expensive work fans
+  # out above. Matrix failures collapse into `needs.*.result == failure`, and
+  # this job runs under `always()` so a failed/cancelled dependency cannot turn
+  # into a skipped required check.
+  integration:
+    if: always()
+    needs: [server-integration-vitest, server-integration-bun]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every backend integration job
+        env:
+          VITEST_RESULT: ${{ needs.server-integration-vitest.result }}
+          BUN_RESULT: ${{ needs.server-integration-bun.result }}
+        run: |
+          echo "Vitest matrix: $VITEST_RESULT"
+          echo "Bun/Postgres: $BUN_RESULT"
+          test "$VITEST_RESULT" = success
+          test "$BUN_RESULT" = success
 
   format-lint:
     runs-on: ubuntu-24.04
@@ -835,7 +941,7 @@ jobs:
         # fresh sessions pick it up). Wait for readiness first (this job has no
         # health-wait step of its own).
         run: |
-          for i in {1..20}; do
+          for _ in {1..20}; do
             if pg_isready -h 127.0.0.1 -p 5432 -U postgres; then break; fi
             sleep 1
           done

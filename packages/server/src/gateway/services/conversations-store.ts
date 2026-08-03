@@ -180,9 +180,9 @@ export async function refreshConversationTurn(
 		const lastToolName = row.lastToolName?.trim() || null;
 		await sql`
 			UPDATE public.conversations
-			SET tool_call_count = GREATEST(tool_call_count, ${count}),
+			SET tool_call_count = GREATEST(COALESCE(tool_call_count, 0), ${count}),
 			    last_tool_name = CASE
-			      WHEN ${count} >= tool_call_count
+			      WHEN ${count} >= COALESCE(tool_call_count, 0)
 			      THEN COALESCE(${lastToolName}, last_tool_name)
 			      ELSE last_tool_name
 			    END,
@@ -227,7 +227,7 @@ export async function completeConversationTurn(
 	const lastToolName = row.lastToolName?.trim() || null;
 	await tx`
 		UPDATE public.conversations
-		SET tool_call_count = GREATEST(tool_call_count, ${count}),
+		SET tool_call_count = GREATEST(COALESCE(tool_call_count, 0), ${count}),
 		    last_tool_name = COALESCE(${lastToolName}, last_tool_name),
 		    running_message_id = NULL,
 		    running_until = NULL,
@@ -260,7 +260,7 @@ export interface ConversationListRow {
 	isDirect: boolean | null;
 	lastActivityAt: Date;
 	createdAt: Date;
-	toolCallCount: number;
+	toolCallCount: number | null;
 	lastToolName: string | null;
 	runningMessageId: string | null;
 	runningUntil: Date | null;
@@ -339,7 +339,7 @@ export async function findConversationById(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
-		tool_call_count: string;
+		tool_call_count: string | null;
 		last_tool_name: string | null;
 		running_message_id: string | null;
 		running_until: Date | null;
@@ -367,7 +367,8 @@ export async function findConversationById(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
-		toolCallCount: Number(r.tool_call_count),
+		toolCallCount:
+			r.tool_call_count === null ? null : Number(r.tool_call_count),
 		lastToolName: r.last_tool_name,
 		runningMessageId: r.running_message_id,
 		runningUntil: r.running_until,
@@ -393,7 +394,7 @@ export async function getConversation(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
-		tool_call_count: string;
+		tool_call_count: string | null;
 		last_tool_name: string | null;
 		running_message_id: string | null;
 		running_until: Date | null;
@@ -422,7 +423,8 @@ export async function getConversation(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
-		toolCallCount: Number(r.tool_call_count),
+		toolCallCount:
+			r.tool_call_count === null ? null : Number(r.tool_call_count),
 		lastToolName: r.last_tool_name,
 		runningMessageId: r.running_message_id,
 		runningUntil: r.running_until,
@@ -528,7 +530,7 @@ export async function listConversations(args: {
 		is_direct: boolean | null;
 		last_activity_at: Date | null;
 		created_at: Date;
-		tool_call_count: string;
+		tool_call_count: string | null;
 		last_tool_name: string | null;
 		running_message_id: string | null;
 		running_until: Date | null;
@@ -567,7 +569,8 @@ export async function listConversations(args: {
 		isDirect: r.is_direct,
 		lastActivityAt: r.last_activity_at ?? r.created_at,
 		createdAt: r.created_at,
-		toolCallCount: Number(r.tool_call_count),
+		toolCallCount:
+			r.tool_call_count === null ? null : Number(r.tool_call_count),
 		lastToolName: r.last_tool_name,
 		runningMessageId: r.running_message_id,
 		runningUntil: r.running_until,

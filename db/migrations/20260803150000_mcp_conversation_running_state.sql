@@ -19,10 +19,19 @@ ALTER TABLE public.mcp_client_conversations
 -- response may clear only the turn it belongs to, never a newer turn in the
 -- same Slack/web conversation. `running_until` makes crashed workers expire.
 ALTER TABLE public.conversations
-  ADD COLUMN IF NOT EXISTS tool_call_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS tool_call_count bigint,
   ADD COLUMN IF NOT EXISTS last_tool_name text,
   ADD COLUMN IF NOT EXISTS running_message_id text,
   ADD COLUMN IF NOT EXISTS running_until timestamptz;
+
+-- Legacy/rejected rows have no authoritative runtime count. Keep that state as
+-- NULL instead of claiming zero, and repair an earlier application of this
+-- migration that may have installed NOT NULL DEFAULT 0.
+-- squawk-ignore prefer-robust-stmts -- unreleased shape correction; the migration runner wraps this section in a transaction
+ALTER TABLE public.conversations ALTER COLUMN tool_call_count DROP DEFAULT;
+
+-- squawk-ignore prefer-robust-stmts,ban-drop-not-null -- unreleased shape correction; clients in the same change accept NULL and the migration runner wraps this section in a transaction
+ALTER TABLE public.conversations ALTER COLUMN tool_call_count DROP NOT NULL;
 
 ALTER TABLE public.conversations
   DROP CONSTRAINT IF EXISTS conversations_tool_call_count_nonnegative;

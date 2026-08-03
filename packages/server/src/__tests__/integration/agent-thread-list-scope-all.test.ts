@@ -382,7 +382,11 @@ describe("listAgentThreads scope=all", () => {
 		});
 		const byPlatform = new Map(threads.map((t) => [t.platform, t]));
 
-		expect(byPlatform.get("web")?.id).toBe("webthread");
+		const web = byPlatform.get("web");
+		expect(web?.id).toBe("webthread");
+		// This row predates runtime tracking. Absence means "unknown"; emitting 0
+		// would falsely claim the historical turn made no tool calls.
+		expect(web).not.toHaveProperty("callCount");
 
 		const slack = byPlatform.get("slack");
 		expect(slack?.id).toBe(SLACK_CONV);

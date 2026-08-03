@@ -28,6 +28,10 @@ import { generateWorkerToken } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import { armTurnTimeout } from "../orchestration/turn-liveness.js";
+import {
+  beginConversationTurn,
+  upsertConversation,
+} from "../services/conversations-store.js";
 import { WorkerGateway } from "../gateway/index.js";
 import {
   ensureDbForGatewayTests,
@@ -402,6 +406,66 @@ describe("POST /worker/response — turn-liveness deadline (#14)", () => {
       await new Promise((r) => setTimeout(r, 20));
     }
     expect(after!).toBeGreaterThan(Date.now());
+  });
+});
+
+describe("POST /worker/response — conversation runtime", () => {
+  test("a tool_use custom event refreshes runtime immediately", async () => {
+    await upsertConversation({
+      organizationId: "org-1",
+      agentId: "agent-1",
+      platform: "slack",
+      conversationId: "conv-1",
+      threadId: null,
+      kind: "platform",
+      lastActivityAt: new Date(),
+    });
+    await beginConversationTurn({
+      organizationId: "org-1",
+      agentId: "agent-1",
+      platform: "slack",
+      conversationId: "conv-1",
+      messageId: "m1",
+    });
+
+    const res = await postWorkerResponse({
+      messageId: "m1",
+      conversationId: "conv-1",
+      toolCallCount: 1,
+      lastToolName: "query_sql",
+      customEvent: {
+        name: "tool_use",
+        data: { name: "query_sql" },
+      },
+    });
+    expect(res.status).toBe(200);
+
+    let runtime: {
+      tool_call_count: number | null;
+      last_tool_name: string | null;
+    } | null = null;
+    for (let i = 0; i < 50; i++) {
+      const rows = await getDb()<
+        {
+          tool_call_count: number | null;
+          last_tool_name: string | null;
+        }[]
+      >`
+        SELECT tool_call_count, last_tool_name
+        FROM public.conversations
+        WHERE organization_id = 'org-1'
+          AND agent_id = 'agent-1'
+          AND platform = 'slack'
+          AND conversation_id = 'conv-1'
+      `;
+      runtime = rows[0] ?? null;
+      if (runtime?.tool_call_count === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(runtime).toEqual({
+      tool_call_count: 1,
+      last_tool_name: "query_sql",
+    });
   });
 });
 

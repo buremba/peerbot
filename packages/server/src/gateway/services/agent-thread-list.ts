@@ -221,7 +221,9 @@ export async function listAgentThreads(args: {
 		const at = row.lastActivityAt.getTime();
 		const createdAt = row.createdAt.getTime();
 		const runtime = {
-			callCount: row.toolCallCount,
+			...(row.toolCallCount === null
+				? {}
+				: { callCount: row.toolCallCount }),
 			lastAction: row.lastToolName,
 			isRunning:
 				row.runningMessageId !== null &&

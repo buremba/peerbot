@@ -502,6 +502,16 @@ export class WorkerGateway {
       // Best-effort, same as the ACK path.
       if (enrichedResponse.statusUpdate) {
         void extendTurnDeadlines(deploymentName);
+      }
+
+      // Tool-use events carry the counter/name immediately after the worker
+      // records the call. Persist them now rather than waiting up to 20 seconds
+      // for the next status heartbeat, so Recent reflects active work without a
+      // stale gap. Status updates remain a lease refresh for long non-tool work.
+      if (
+        enrichedResponse.statusUpdate ||
+        enrichedResponse.customEvent?.name === "tool_use"
+      ) {
         const { organizationId, agentId, platform, conversationId, messageId } =
           auth.tokenData;
         if (organizationId && agentId && platform && conversationId && messageId) {

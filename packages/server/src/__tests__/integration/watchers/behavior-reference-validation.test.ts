@@ -277,6 +277,46 @@ describe("manage_behaviors reference validation", () => {
 		).rejects.toThrow(/Unknown field 'skuu'.*typed-price/i);
 	});
 
+	it("create validates a tenant-local entity output type before a public shadow", async () => {
+		const catalog = await TestWorkspace.create({
+			name: "Public Output Catalog",
+			visibility: "public",
+		});
+		await catalog.owner.entity_schema.createType({
+			slug: "shadowed-output",
+			name: "Public Shadow",
+			metadata_schema: {
+				type: "object",
+				properties: { public_key: { type: "string" } },
+			},
+		});
+		await workspace.owner.entity_schema.createType({
+			slug: "shadowed-output",
+			name: "Local Shadow",
+			metadata_schema: {
+				type: "object",
+				properties: { local_key: { type: "string" } },
+			},
+		});
+
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "local-shadow-output",
+				prompt: "Track local rows.",
+				agent_id: agentId,
+				outputs: {
+					rows: { entity: "shadowed-output", key: ["local_key"] },
+				},
+			},
+			TEST_ENV,
+			ctx
+		)) as { behavior_id: string };
+
+		expect(Number(created.behavior_id)).toBeGreaterThan(0);
+	});
+
 	it("create_version rejects a nonexistent entity output type", async () => {
 		const created = (await executeTool(
 			"manage_behaviors",

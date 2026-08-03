@@ -522,6 +522,7 @@ export async function assertOutputEntityTypesExist(
       WHERE et.slug = ${entityType}
         AND et.deleted_at IS NULL
         AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+      ORDER BY (et.organization_id = ${organizationId}) DESC, et.id ASC
       LIMIT 1
     `;
     if (rows.length === 0) {

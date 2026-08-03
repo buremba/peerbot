@@ -499,26 +499,21 @@ function mapRelationshipType(rel: RelationshipType): DesiredRelationshipType {
   };
 }
 
-/**
- * The config API authors `keyingConfig` in camelCase (`entityType`, `entityPath`,
- * `keyFields`, `keyOutputField`), but the server stores it verbatim into
- * `keying_config` and reads snake_case keys (`watcher-extraction-schema.ts`,
- * `promote-keyed-entities.ts`). Without this translation an entity-typed watcher
- * authored via config silently lands as untyped (schema derivation + promotion
- * both miss `entity_type`). Translate the known keys; pass any extra keys through.
- */
-const KEYING_KEY_MAP: Record<string, string> = {
-  entityType: "entity_type",
-  entityPath: "entity_path",
-  keyFields: "key_fields",
-  keyOutputField: "key_output_field",
-};
-function normalizeKeyingConfig(
-  kc: Record<string, unknown>
+function mapBehaviorOutputs(
+  outputs: NonNullable<Behavior["outputs"]>
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(kc)) out[KEYING_KEY_MAP[k] ?? k] = v;
-  return out;
+  return Object.fromEntries(
+    Object.entries(outputs).map(([name, output]) => [
+      name,
+      "entity" in output
+        ? {
+            entity: entitySlug(output.entity),
+            key: output.key,
+            ...(output.name ? { name: output.name } : {}),
+          }
+        : { event: output.event },
+    ])
+  );
 }
 
 /** Max skills a Behavior may pin on one version (issue #2320 cap). */
@@ -550,6 +545,18 @@ function assertBehaviorSkills(watcher: DesiredWatcher): void {
     );
   }
   const triggers = watcher.triggers ?? [];
+  if (
+    watcher.outputs &&
+    Object.keys(watcher.outputs).length > 0 &&
+    triggers.some(
+      (trigger) =>
+        trigger.kind === "event" && (trigger.execution ?? "turn") === "turn"
+    )
+  ) {
+    throw new ValidationError(
+      `Behavior "${watcher.slug}" declares outputs but has a turn trigger — outputs require execution "window". Change the trigger or split the turn into a separate Behavior.`
+    );
+  }
   const requiresSkills =
     triggers.length === 0 ||
     triggers.some(
@@ -643,12 +650,12 @@ function mapBehavior(behavior: Behavior): DesiredWatcher {
     // whole job is its skills, and for event-turn Behaviors with neither.
     prompt: watcher.prompt ?? "",
     ...(watcher.skills?.length ? { skills: watcher.skills } : {}),
-    ...(watcher.keyingConfig !== undefined
+    ...(watcher.outputs !== undefined
       ? {
-          keyingConfig:
-            watcher.keyingConfig === null
+          outputs:
+            watcher.outputs === null
               ? null
-              : normalizeKeyingConfig(watcher.keyingConfig),
+              : mapBehaviorOutputs(watcher.outputs),
         }
       : {}),
     ...(watcher.name ? { name: watcher.name } : {}),

@@ -1,10 +1,31 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+const MIGRATION_FILENAME_RE = /^(\d+)_[^/]+\.sql$/;
+
+export function assertUniqueMigrationVersions(files: string[]): void {
+  const ownerByVersion = new Map<string, string>();
+  for (const file of files) {
+    const match = MIGRATION_FILENAME_RE.exec(file);
+    if (!match) continue;
+    const version = match[1]!;
+    const owner = ownerByVersion.get(version);
+    if (owner) {
+      throw new Error(
+        `Duplicate migration version ${version}: ${owner} and ${file}. ` +
+          'Each schema_migrations ledger version must identify exactly one file.'
+      );
+    }
+    ownerByVersion.set(version, file);
+  }
+}
+
 export function listMigrationFiles(migrationsDir: string): string[] {
-  return readdirSync(migrationsDir)
+  const files = readdirSync(migrationsDir)
     .filter((file) => file.endsWith('.sql'))
     .sort();
+  assertUniqueMigrationVersions(files);
+  return files;
 }
 
 export type MigrationSection = {

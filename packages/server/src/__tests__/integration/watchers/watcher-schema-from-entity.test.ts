@@ -1,16 +1,14 @@
 /**
  * Integration test: a watcher derives its extraction schema from its target
  * entity type's metadata_schema (consolidation — "schema lives on the entity
- * type"). When a watcher names keying_config.entity_type, complete_window
+ * type"). When a Behavior declares an entity output, complete_window
  * validates the extracted data against the entity type's schema — the SAME
  * schema that validates manual entity writes, so
  * a record's shape is defined exactly once.
  *
  * Proves:
- *   1. wrapMetadataSchemaAtPath builds the array-of-records output contract
- *      (single + nested entity_path).
- *   2. deriveWatcherExtractionSchema resolves a real entity type's schema.
- *   3. complete_window REJECTS extracted data that violates the entity type's
+ *   1. deriveWatcherExtractionSchema resolves a real entity type's schema.
+ *   2. complete_window REJECTS extracted data that violates the entity type's
  *      schema and ACCEPTS data that conforms — with no inline watcher schema.
  */
 
@@ -20,7 +18,6 @@ import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
 import {
   deriveWatcherExtractionSchema,
-  wrapMetadataSchemaAtPath,
 } from '../../../utils/watcher-extraction-schema';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -33,41 +30,15 @@ const TOPIC_METADATA_SCHEMA = {
     category: { type: 'string' },
     name: { type: 'string' },
   },
-  required: ['category', 'name'],
+  // `category` is intentionally optional on the entity type. Declaring it as
+  // an output key must still require it in every Behavior-produced row.
+  required: ['name'],
   additionalProperties: true,
 };
 
-const KEYING_CONFIG = {
-  entity_path: 'problems',
-  key_fields: ['category', 'name'],
-  key_output_field: 'problem_key',
-  entity_type: 'topic',
+const OUTPUTS = {
+  problems: { entity: 'topic', key: ['category', 'name'] },
 };
-
-describe('wrapMetadataSchemaAtPath', () => {
-  it('wraps a per-record schema as an array at a single-segment path', () => {
-    const wrapped = wrapMetadataSchemaAtPath(TOPIC_METADATA_SCHEMA, 'problems') as Record<
-      string,
-      any
-    >;
-    expect(wrapped.type).toBe('object');
-    expect(wrapped.required).toEqual(['problems']);
-    expect(wrapped.properties.problems.type).toBe('array');
-    expect(wrapped.properties.problems.items).toEqual(TOPIC_METADATA_SCHEMA);
-  });
-
-  it('nests required objects for a dotted path', () => {
-    const wrapped = wrapMetadataSchemaAtPath(
-      TOPIC_METADATA_SCHEMA,
-      'analysis.results.problems'
-    ) as Record<string, any>;
-    expect(wrapped.required).toEqual(['analysis']);
-    expect(wrapped.properties.analysis.properties.results.properties.problems.type).toBe('array');
-    expect(wrapped.properties.analysis.properties.results.properties.problems.items).toEqual(
-      TOPIC_METADATA_SCHEMA
-    );
-  });
-});
 
 async function setupEntityTypedWatcher() {
   const sql = getTestDb();
@@ -116,7 +87,7 @@ async function setupEntityTypedWatcher() {
     slug: 'schema-watcher',
     name: 'Schema Watcher',
     prompt: 'Extract problems for {{entities}}.',
-    keying_config: KEYING_CONFIG,
+    outputs: OUTPUTS,
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { behavior_id: string };
@@ -182,10 +153,88 @@ describe('complete_window derives its schema from the entity type', () => {
     const derived = (await deriveWatcherExtractionSchema(
       ctx.dbClient,
       ctx.workspace.org.id,
-      KEYING_CONFIG
+      OUTPUTS
     )) as Record<string, any>;
     expect(derived).not.toBeNull();
-    expect(derived.properties.problems.items.required).toEqual(['category', 'name']);
+    expect(derived.properties.problems.items.allOf).toHaveLength(2);
+    expect(derived.properties.problems.items.allOf[0].required).toEqual(['name']);
+    expect(derived.properties.problems.items.allOf[1].required).toEqual([
+      'category',
+      'name',
+    ]);
+  });
+
+  it('still requires the named array when an entity type has no field schema', async () => {
+    const ctx = await setupEntityTypedWatcher();
+    await ctx.api.entity_schema.createType({ slug: 'unstructured', name: 'Unstructured' });
+    const derived = (await deriveWatcherExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      { records: { entity: 'unstructured', key: ['id'] } }
+    )) as Record<string, any>;
+    expect(derived.required).toContain('records');
+    expect(derived.properties.records).toEqual({
+      type: 'array',
+      maxItems: 500,
+      items: {
+        allOf: [
+          { type: 'object' },
+          {
+            type: 'object',
+            properties: {
+              id: {
+                anyOf: [
+                  { type: 'string', minLength: 1, maxLength: 256 },
+                  { type: 'integer', minimum: -9007199254740991, maximum: 9007199254740991 },
+                  { type: 'boolean' },
+                ],
+              },
+            },
+            required: ['id'],
+          },
+        ],
+      },
+    });
+  });
+
+  it('intersects a reaction refinement with the durable output schema', async () => {
+    const ctx = await setupEntityTypedWatcher();
+    await ctx.sql`
+      UPDATE watchers
+      SET reaction_input_schema = ${ctx.sql.json({
+        type: 'object',
+        properties: {
+          signals: {
+            type: 'array',
+            maxItems: 8,
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', minLength: 1 },
+                metadata: {
+                  type: 'object',
+                  properties: { priority: { enum: ['low', 'high'] } },
+                  required: ['priority'],
+                },
+              },
+              required: ['content', 'metadata'],
+            },
+          },
+        },
+        required: ['signals'],
+      })}
+      WHERE id = ${ctx.watcherId}
+    `;
+
+    const derived = (await deriveWatcherExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      { signals: { event: 'observation' } },
+      ctx.watcherId
+    )) as Record<string, any>;
+    expect(derived.properties.signals.allOf).toHaveLength(2);
+    expect(derived.properties.signals.allOf[0].items.properties.metadata).toBeDefined();
+    expect(derived.properties.signals.allOf[1].items.required).toEqual(['content']);
   });
 
   it('REJECTS extracted data missing a field the entity type requires', async () => {
@@ -209,6 +258,64 @@ describe('complete_window derives its schema from the entity type', () => {
       })
     ).rejects.toThrow(/does not match|name/i);
   });
+
+  it('REJECTS extracted data missing an output key even when the entity type makes it optional', async () => {
+    const ctx = await setupEntityTypedWatcher();
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: ctx.workspace.org.id,
+      content: 'Users report problems.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    await expect(
+      ctx.api.behaviors.completeWindow({
+        behavior_id: String(ctx.watcherId),
+        window_token: token,
+        extracted_data: { problems: [{ name: 'App Crashes' }] },
+        run_metadata: { watcher_run_id: runId },
+      })
+    ).rejects.toThrow(/does not match|category/i);
+  });
+
+  it.each([
+    ['a blank string', '   ', /non-blank/i],
+    ['more than 256 UTF-8 bytes', 'é'.repeat(129), /256 bytes/i],
+  ])(
+    'REJECTS %s stable-key component as a 422 before writing the window',
+    async (_label, category, expectedMessage) => {
+      const ctx = await setupEntityTypedWatcher();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report problems.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      const error = await ctx.api.behaviors
+        .completeWindow({
+          behavior_id: String(ctx.watcherId),
+          window_token: token,
+          extracted_data: { problems: [{ category, name: 'App Crashes' }] },
+          run_metadata: { watcher_run_id: runId },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ name: 'ToolUserError', httpStatus: 422 });
+      expect((error as Error).message).toMatch(expectedMessage);
+      const durableRows = await ctx.sql<{ count: string }>`
+        SELECT count(*)::text AS count
+        FROM events
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND semantic_type = 'canvas_state'
+      `;
+      expect(durableRows[0].count).toBe('0');
+    }
+  );
 
   it('ACCEPTS extracted data that conforms to the entity type schema (no inline schema)', async () => {
     const ctx = await setupEntityTypedWatcher();

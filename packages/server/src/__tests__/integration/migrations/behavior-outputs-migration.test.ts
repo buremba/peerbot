@@ -1,0 +1,466 @@
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { getDb } from '../../../db/client';
+import { loadMigrationUpSection } from '../../../db/migration-loader';
+import {
+  computeStableKey,
+  formatBehaviorEntityIdentity,
+} from '../../../utils/stable-keys';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
+import { initWorkspaceProvider } from '../../../workspace';
+import { cleanupTestDatabase } from '../../setup/test-db';
+import { createTestAgent } from '../../setup/test-fixtures';
+import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+
+const MIGRATION = '20260803191113_behavior_outputs.sql';
+
+function resolveMigrationsDir(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, 'db/migrations');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error('Could not locate db/migrations from the test directory');
+}
+
+class Rollback extends Error {}
+
+describe('Behavior outputs migration', () => {
+  beforeAll(async () => {
+    await initWorkspaceProvider();
+    await cleanupTestDatabase();
+  });
+
+  it('backfills JSONPath keying and renames stable identities without exposing two APIs', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Migration Org' });
+    await ensureMemberEntityType(workspace.org.id);
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-migration-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    await api.entity_schema.createType({ slug: 'issue', name: 'Issue' });
+    const entity = (await api.entities.create({
+      type: 'issue',
+      name: 'Legacy promoted issue',
+      metadata: { external_id: 'ISSUE-1' },
+    })) as { entity: { id: number } };
+    const prefixedEntity = (await api.entities.create({
+      type: 'issue',
+      name: 'Legacy issue with output-prefixed stable key',
+      metadata: { external_id: 'items::ISSUE-2' },
+    })) as { entity: { id: number } };
+    const created = (await api.behaviors.create({
+      slug: 'legacy-keyed-behavior',
+      prompt: 'Find issues.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    let captured:
+      | {
+          outputs: unknown;
+          identities: string[];
+          legacyColumnPresent: boolean;
+          draftReplyRegistered: boolean;
+          actionKeyColumnPresent: boolean;
+          actionKeyIndexPresent: boolean;
+        }
+      | undefined;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`DROP INDEX IF EXISTS idx_runs_org_action_idempotency_key`;
+        await tx`ALTER TABLE runs DROP COLUMN IF EXISTS action_idempotency_key`;
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_type: 'issue',
+                entity_path: '$.items[*]',
+                key_fields: ['external_id'],
+                name_fields: ['title'],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId}
+            AND v.id = w.current_version_id
+        `;
+        await tx`
+          UPDATE entities
+          SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
+          WHERE id IN (${entity.entity.id}, ${prefixedEntity.entity.id})
+        `;
+        await tx`
+          INSERT INTO entity_identities (
+            organization_id, entity_id, namespace, identifier, source_connector
+          ) VALUES
+            (
+              ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+              ${`${watcherId}::issue-1`}, 'watcher'
+            ),
+            (
+              ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+              ${`${watcherId}::items::${computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])}`},
+              'watcher'
+            ),
+            (
+              ${workspace.org.id}, ${prefixedEntity.entity.id}, 'watcher_key',
+              ${`${watcherId}::items::issue-2`}, 'watcher'
+            )
+        `;
+        await tx`
+          UPDATE entity_types
+          SET event_kinds = event_kinds - 'draft_reply'
+          WHERE organization_id = ${workspace.org.id}
+            AND slug = '$member'
+            AND event_kinds IS NOT NULL
+        `;
+
+        await tx.unsafe(up);
+        const [version] = await tx<{ outputs: unknown }>`
+          SELECT v.outputs
+          FROM watcher_versions v
+          JOIN watchers w ON w.current_version_id = v.id
+          WHERE w.id = ${watcherId}
+        `;
+        const identities = await tx<{ identifier: string }>`
+          SELECT identifier FROM entity_identities
+          WHERE entity_id IN (${entity.entity.id}, ${prefixedEntity.entity.id})
+            AND namespace = 'watcher_key'
+            AND deleted_at IS NULL
+          ORDER BY identifier
+        `;
+        const [column] = await tx<{ present: boolean }>`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'watcher_versions'
+              AND column_name = 'keying_config'
+          ) AS present
+        `;
+        const [memberType] = await tx<{ registered: boolean }>`
+          SELECT COALESCE(event_kinds ? 'draft_reply', false) AS registered
+          FROM entity_types
+          WHERE organization_id = ${workspace.org.id} AND slug = '$member'
+          LIMIT 1
+        `;
+        const [actionKeySchema] = await tx<{
+          column_present: boolean;
+          index_present: boolean;
+        }>`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'runs'
+                AND column_name = 'action_idempotency_key'
+            ) AS column_present,
+            to_regclass('public.idx_runs_org_action_idempotency_key') IS NOT NULL
+              AS index_present
+        `;
+        captured = {
+          outputs: version.outputs,
+          identities: identities.map((row) => row.identifier).sort(),
+          legacyColumnPresent: column.present,
+          draftReplyRegistered: memberType.registered,
+          actionKeyColumnPresent: actionKeySchema.column_present,
+          actionKeyIndexPresent: actionKeySchema.index_present,
+        };
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured).toEqual({
+      outputs: {
+        items: {
+          entity: 'issue',
+          key: ['external_id'],
+          name: ['title'],
+        },
+      },
+      identities: [
+        formatBehaviorEntityIdentity(
+          watcherId,
+          'items',
+          'issue',
+          computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])
+        ),
+        formatBehaviorEntityIdentity(
+          watcherId,
+          'items',
+          'issue',
+          computeStableKey({ external_id: 'items::ISSUE-2' }, ['external_id'])
+        ),
+      ].sort(),
+      legacyColumnPresent: false,
+      draftReplyRegistered: true,
+      actionKeyColumnPresent: true,
+      actionKeyIndexPresent: true,
+    });
+  });
+
+  it('does not rewrite current identities on a fresh baseline', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Fresh Baseline Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-fresh-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    await api.entity_schema.createType({ slug: 'fresh-issue', name: 'Fresh Issue' });
+    const entity = (await api.entities.create({
+      type: 'fresh-issue',
+      name: 'Fresh promoted issue',
+      metadata: { external_id: 'ISSUE-3' },
+    })) as { entity: { id: number } };
+    const created = (await api.behaviors.create({
+      slug: 'fresh-output-behavior',
+      prompt: 'Find fresh issues.',
+      agent_id: agent.agentId,
+      outputs: { items: { entity: 'fresh-issue', key: ['external_id'] } },
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const expected = formatBehaviorEntityIdentity(
+      watcherId,
+      'items',
+      'fresh-issue',
+      computeStableKey({ external_id: 'ISSUE-3' }, ['external_id'])
+    );
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    let captured: string | undefined;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`
+          UPDATE entities
+          SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
+          WHERE id = ${entity.entity.id}
+        `;
+        await tx`
+          INSERT INTO entity_identities (
+            organization_id, entity_id, namespace, identifier, source_connector
+          ) VALUES (
+            ${workspace.org.id}, ${entity.entity.id}, 'watcher_key', ${expected}, 'watcher'
+          )
+        `;
+        await tx.unsafe(up);
+        const [identity] = await tx<{ identifier: string }>`
+          SELECT identifier FROM entity_identities
+          WHERE entity_id = ${entity.entity.id} AND namespace = 'watcher_key'
+        `;
+        captured = identity.identifier;
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured).toBe(expected);
+  });
+
+  it('preserves legacy slugification when deriving an omitted entity type', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Derived Type Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-derived-type-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      slug: 'derived-type-output-behavior',
+      prompt: 'Find social signals.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    let captured: unknown;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_path: 'social_signals',
+                key_fields: ['external_id'],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx.unsafe(up);
+        const [version] = await tx<{ outputs: unknown }>`
+          SELECT v.outputs
+          FROM watcher_versions v
+          JOIN watchers w ON w.current_version_id = v.id
+          WHERE w.id = ${watcherId}
+        `;
+        captured = version.outputs;
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured).toEqual({
+      social_signals: {
+        entity: 'social-signal',
+        key: ['external_id'],
+      },
+    });
+  });
+
+  it('retires an unmapped legacy identity when the Behavior has no entity output', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Entity-Less Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-entity-less-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    await api.entity_schema.createType({ slug: 'actual-issue', name: 'Actual Issue' });
+    const entity = (await api.entities.create({
+      type: 'actual-issue',
+      name: 'Legacy mismatched issue',
+      metadata: { external_id: 'ISSUE-4' },
+    })) as { entity: { id: number } };
+    const created = (await api.behaviors.create({
+      slug: 'entity-less-output-behavior',
+      prompt: 'Draft replies without publishing entities.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+
+    let captured:
+      | { deletedAt: Date | null; entityStillPresent: boolean; legacyColumnPresent: boolean }
+      | undefined;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = ${tx.json({ drafts: { event: 'draft_reply' } })},
+              keying_config = NULL
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx`
+          UPDATE entities
+          SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
+          WHERE id = ${entity.entity.id}
+        `;
+        await tx`
+          INSERT INTO entity_identities (
+            organization_id, entity_id, namespace, identifier, source_connector
+          ) VALUES (
+            ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+            ${`${watcherId}::issue-4`}, 'watcher'
+          )
+        `;
+        await tx.unsafe(up);
+        const [identity] = await tx<{ deleted_at: Date | null }>`
+          SELECT deleted_at
+          FROM entity_identities
+          WHERE entity_id = ${entity.entity.id} AND namespace = 'watcher_key'
+        `;
+        const [state] = await tx<{ entity_present: boolean; legacy_column_present: boolean }>`
+          SELECT
+            EXISTS (SELECT 1 FROM entities WHERE id = ${entity.entity.id}) AS entity_present,
+            EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'watcher_versions'
+                AND column_name = 'keying_config'
+            ) AS legacy_column_present
+        `;
+        captured = {
+          deletedAt: identity.deleted_at,
+          entityStillPresent: state.entity_present,
+          legacyColumnPresent: state.legacy_column_present,
+        };
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured?.deletedAt).toBeInstanceOf(Date);
+    expect(captured?.entityStillPresent).toBe(true);
+    expect(captured?.legacyColumnPresent).toBe(false);
+  });
+
+  it('rejects malformed dormant key configuration before dropping the retired column', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Invalid Key Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-invalid-key-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      slug: 'invalid-key-output-behavior',
+      prompt: 'Find issues later.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+
+    await expect(
+      sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_type: 'issue',
+                entity_path: '$.items[*]',
+                key_fields: [],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx.unsafe(up);
+      })
+    ).rejects.toThrow(/invalid entity\/key configuration/);
+  });
+});

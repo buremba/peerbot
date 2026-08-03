@@ -633,7 +633,7 @@ const WATCHER_APPROVAL_FIELD_TITLES: Record<string, string> = {
   agent_kind: 'Agent kind',
   sources: 'Sources',
   model_config: 'Model config',
-  keying_config: 'Keying config',
+  outputs: 'Outputs',
   classifiers: 'Classifiers',
   tags: 'Tags',
   change_notes: 'Change notes',

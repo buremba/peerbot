@@ -1,0 +1,59 @@
+{{- if and .Release.IsUpgrade .Values.migrations.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames:
+      - {{ include "lobu.fullname" . }}-app
+      - {{ include "lobu.fullname" . }}-worker
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames:
+      - {{ include "lobu.fullname" . }}-app
+      - {{ include "lobu.fullname" . }}-worker
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lobu.fullname" . }}-migration-quiesce
+    namespace: {{ .Release.Namespace }}
+---
+{{- end }}

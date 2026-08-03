@@ -410,9 +410,8 @@ describe("lobu init --from-org", () => {
       active_run: "coalesce",
       skip_if_unchanged: true,
     });
-    // No keyingConfig means this round-trips as an untyped watcher that uses
-    // the worker's free-form `{ summary }` fallback.
-    expect(w?.keyingConfig).toBeUndefined();
+    // No outputs means this round-trips as a Canvas/reaction-only Behavior.
+    expect(w?.outputs).toBeUndefined();
     expect(w?.sources).toEqual([
       { name: "content", query: "SELECT * FROM events" },
     ]);

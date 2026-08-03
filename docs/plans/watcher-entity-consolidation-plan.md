@@ -1,6 +1,11 @@
 # Watcher / Entity Consolidation — Implementation Plan
 
 > **Status (2026-07-15):** **Partial** — the binary human-owned `field_controls` merge, condensation removal, and promotion update-on-match landed; B1/B2 source ranking remains unbuilt.
+>
+> **Superseded API note (2026-08-03):** named Behavior `outputs` replaced the
+> entity-only promotion configuration discussed by the original plan. Current
+> Behaviors declare `{ outputName: { entity, key, name? } }` and/or
+> `{ outputName: { event } }`.
 
 ## Thesis
 The system reduces to a small primitive set. Most of the debated surface is **duplicate
@@ -18,8 +23,8 @@ Build the keystone (source-ranked projection) once; the rest collapses onto it.
 - Classification corrections **stick** (`content-search/ctes.ts:88`, `user>llm>embedding`).
 - Entity-field corrections **do NOT stick** — `project_entity_field` is pure latest-wins by
   `events.id`, no source rank (`db/migrations/20260623040000…:33-49`). Agent re-writes clobber human edits. **Bug.**
-- keyingConfig config-API is camelCase but server reads snake_case; nothing translates →
-  config-authored entity-typed watchers silently become untyped (`map-config.ts:606` vs `watcher-extraction-schema.ts:98`). **Bug (pi blocker).**
+- The retired entity-promotion API had mismatched client/server naming and could
+  silently become untyped. Named `outputs` removed that translation boundary.
 - Promotion is create-once / no-op-on-match (`promote-keyed-entities.ts:266`) — can't evolve entities.
 - Watcher version *history* is dead (`watcher-detail.tsx:96` `includeVersions:false`; `upgrade` unreachable + buggy at `version-actions.ts:243`); only run-snapshot + group-sharing are load-bearing.
 - Condensation is unreachable in every shipped config (no caller, NULL in provisioning).
@@ -39,7 +44,7 @@ Build the keystone (source-ranked projection) once; the rest collapses onto it.
 ---
 
 ## Track A — stabilize PR #1533 (this branch)
-- **A1 ✅ DONE** (`b6380d228`) keyingConfig camelCase→snake_case in `map-config.ts` + test.
+- **A1 ✅ SUPERSEDED** — named `outputs` removed the old translation layer.
 - **A2 ✅ DONE** (`e0e1d2e5d`) Full `json_template` removal (reads/writes/allowlist; column drop deferred). Server tsc green.
 - **A3 ✅ DONE** (`e0e1d2e5d`) Two-phase: removed the `extraction_schema` DROP migration; deferred to contract release.
 - **A4** Restore classifier `source_path` lint vs the *derived* entity-type schema (recover the deleted validator's loud-fail).

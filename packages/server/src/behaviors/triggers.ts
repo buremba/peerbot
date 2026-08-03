@@ -221,6 +221,26 @@ export function behaviorRequiresInstructions(
 }
 
 /**
+ * Declared outputs are finalized by complete_window. A turn execution is a
+ * conversational agent turn and never enters that pipeline, so accepting both
+ * on one Behavior would silently ignore its output contract for some firings.
+ */
+export function assertBehaviorOutputsUseWindowExecution(
+	triggers: BehaviorTrigger[],
+	outputs: Record<string, unknown> | null | undefined
+): void {
+	if (!outputs || Object.keys(outputs).length === 0) return;
+	const turnTrigger = triggers.find(
+		(trigger) =>
+			trigger.kind === "event" && (trigger.execution ?? "turn") === "turn"
+	);
+	if (!turnTrigger) return;
+	throw new ToolUserError(
+		"Declared outputs require window execution. Change every event trigger to execution 'window', or put turn triggers in a separate Behavior."
+	);
+}
+
+/**
  * Enforce the instruction-presence rule on a complete trigger + instruction
  * pair before either side is stored. Callers must pass the *final* resolved
  * values (inherited prompt/skills when omitted, resolved triggers after

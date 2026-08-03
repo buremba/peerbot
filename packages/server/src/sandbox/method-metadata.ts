@@ -42,7 +42,7 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 	// organizations
 	"organizations.list": {
 		summary:
-			"List organizations the authenticated user belongs to, plus public orgs they can read.",
+			"List organizations the authenticated user belongs to, plus public orgs they can read. Public managed-OAuth providers carry structured managed_auth metadata with connector keys, the connect method, consent/login requirements, and the local bootstrap command.",
 		access: "read",
 		example: "const orgs = await client.organizations.list();",
 	},
@@ -545,11 +545,11 @@ export default async (ctx, client) => {
 	},
 	"behaviors.create": {
 		summary:
-			"Create a Behavior. Requires slug, prompt, and agent_id. Set keying_config.entity_type to derive the output contract from that entity type's metadata_schema, or omit it for a free-form summary. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
+			"Create a Behavior. Requires slug and agent_id; window/manual Behaviors also need prompt or skills. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Behavior. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from the window content.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
 		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
@@ -558,12 +558,7 @@ export default async (_ctx, client) => {
     slug: 'pricing',
     agent_id: 'agt_123',
     prompt: 'Extract current pricing records from the window content.',
-    keying_config: {
-      entity_type: 'price',
-      entity_path: 'prices',
-      key_fields: ['sku'],
-      key_output_field: 'price_key',
-    },
+    outputs: { prices: { entity: 'price', key: ['sku'] } },
     sources: [
       { name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' },
     ],
@@ -576,7 +571,8 @@ export default async (_ctx, client) => {
 		access: "admin",
 	},
 	"behaviors.createVersion": {
-		summary: "Create a new Behavior template version.",
+		summary:
+			"Create a new Behavior version. Version-owned fields include name, description, prompt, skills, sources, outputs, classifiers, and reactions guidance. Outputs use the same entity/event contract as create and require window execution.",
 		access: "admin",
 	},
 	"behaviors.trigger": {
@@ -704,6 +700,15 @@ export default async (_ctx, client) => {
   });
 };`,
 	},
+	"connections.connectManaged": {
+		summary:
+			"Use a live managed OAuth offer from organizations.list. Validates the public provider, automatically joins the signed-in user to that org, and returns a consent URL. The cloud keeps only the caller-owned consent grant with zero feeds; after consent, `lobu init --from-org <managed_by_org>` generates the local `managedBy` connection config so data access runs locally.",
+		access: "write",
+		signature:
+			"connections.connectManaged(input: { managed_by_org: string; connector_key: string; display_name?: string; slug?: string; config?: object }): Promise<unknown>",
+		example:
+			"await client.connections.connectManaged({ managed_by_org: '<organizations.list offer>', connector_key: 'google.gmail' });",
+	},
 	"connections.update": {
 		summary:
 			"Update connection config or auth profile. The label field is `display_name` (not `name`).",
@@ -810,7 +815,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
 		cost: "expensive",
 		example:

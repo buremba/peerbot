@@ -134,7 +134,7 @@ export interface RemoteBehavior {
    */
   skills?: Array<{ name: string; content: string }> | null;
   classifiers?: unknown[] | null;
-  keying_config?: Record<string, unknown> | null;
+  outputs?: Record<string, unknown> | null;
   reactions_guidance?: string | null;
   // NB: reaction_script is not included in Behavior lists — push always (idempotent).
 }
@@ -881,7 +881,7 @@ export class ApplyClient {
 
   async listBehaviors(): Promise<RemoteBehavior[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
-    // classifiers, keying_config, reactions_guidance) too.
+    // classifiers, outputs, reactions_guidance) too.
     // Apply diffs against these to detect drift on prompt / sources / etc.
     const { body } = await this.request<{ behaviors?: RemoteBehavior[] }>(
       "GET",
@@ -911,7 +911,7 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
-    keying_config?: Record<string, unknown> | null;
+    outputs?: Record<string, unknown> | null;
     classifiers?: unknown[];
   }): Promise<{ behavior_id?: string }> {
     const { body } = await this.request<{ behavior_id?: string }>(
@@ -951,9 +951,7 @@ export class ApplyClient {
         ...(payload.agent_kind !== undefined
           ? { agent_kind: payload.agent_kind }
           : {}),
-        ...(payload.keying_config !== undefined
-          ? { keying_config: payload.keying_config }
-          : {}),
+        ...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
         ...(payload.classifiers !== undefined
           ? { classifiers: payload.classifiers }
           : {}),
@@ -965,7 +963,7 @@ export class ApplyClient {
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-   * keying_config / classifiers) require `createBehaviorVersion`
+   * outputs / classifiers) require `createBehaviorVersion`
    * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
@@ -1020,7 +1018,7 @@ export class ApplyClient {
     prompt?: string;
     skills?: Array<{ name: string; content: string }>;
     sources?: BehaviorSource[];
-    keying_config?: Record<string, unknown> | null;
+    outputs?: Record<string, unknown> | null;
     classifiers?: unknown[];
     reactions_guidance?: string;
     change_notes?: string;
@@ -1037,9 +1035,7 @@ export class ApplyClient {
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
         ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
-        ...(payload.keying_config !== undefined
-          ? { keying_config: payload.keying_config }
-          : {}),
+        ...(payload.outputs !== undefined ? { outputs: payload.outputs } : {}),
         ...(payload.classifiers !== undefined
           ? { classifiers: payload.classifiers }
           : {}),

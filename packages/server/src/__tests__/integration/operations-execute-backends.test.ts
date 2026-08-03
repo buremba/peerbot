@@ -286,6 +286,103 @@ describe("operations.execute backend lifecycle", () => {
 		expect(Date.now() - started).toBeLessThan(10_000);
 	});
 
+	it("replays a completed action instead of executing an idempotency key twice", async () => {
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "echo",
+					input: { value: "durable-once" },
+					idempotency_key: "operation-backend-test:durable-once",
+				},
+				{} as Env,
+				ctx,
+			);
+
+		const first = (await execute()) as { run_id: number; status: string };
+		const retry = (await execute()) as { run_id: number; status: string };
+
+		expect(first.status).toBe("completed");
+		expect(retry).toMatchObject({ status: "completed", run_id: first.run_id });
+		const runs = await getTestDb()`
+			SELECT id FROM runs
+			WHERE organization_id = ${orgId}
+			  AND run_type = 'action'
+			  AND action_idempotency_key = 'operation-backend-test:durable-once'
+		`;
+		expect(runs).toHaveLength(1);
+	});
+
+	it("concurrent action retries converge and mismatched key reuse fails closed", async () => {
+		const key = "operation-backend-test:concurrent";
+		const execute = (value: string) =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "echo",
+					input: { value },
+					idempotency_key: key,
+				},
+				{} as Env,
+				ctx,
+			);
+
+		const results = (await Promise.all(
+			Array.from({ length: 4 }, () => execute("same-request")),
+		)) as Array<{ run_id: number; status: string }>;
+		expect(new Set(results.map((result) => result.run_id)).size).toBe(1);
+		expect(results.some((result) => result.status === "completed")).toBe(true);
+		expect(
+			results.every((result) =>
+				["completed", "in_progress"].includes(result.status),
+			),
+		).toBe(true);
+
+		await expect(execute("different-request")).rejects.toMatchObject({
+			httpStatus: 409,
+		});
+	});
+
+	it("replays one pending approval and does not create another approval event", async () => {
+		const execute = () =>
+			manageOperations(
+				{
+					action: "execute",
+					connection_id: localConnectionId,
+					operation_key: "needs_approval",
+					input: {},
+					idempotency_key: "operation-backend-test:approval",
+				},
+				{} as Env,
+				ctx,
+			);
+		const first = (await execute()) as {
+			run_id: number;
+			event_id: number;
+			status: string;
+		};
+		const retry = (await execute()) as {
+			run_id: number;
+			event_id: number;
+			status: string;
+		};
+
+		expect(retry).toMatchObject({
+			status: "pending_approval",
+			run_id: first.run_id,
+			event_id: first.event_id,
+		});
+		const events = await getTestDb()`
+			SELECT id FROM events
+			WHERE organization_id = ${orgId}
+			  AND run_id = ${first.run_id}
+			  AND interaction_type = 'approval'
+		`;
+		expect(events).toHaveLength(1);
+	});
+
 	it("queues destructive local actions for approval", async () => {
 		const result = await manageOperations(
 			{

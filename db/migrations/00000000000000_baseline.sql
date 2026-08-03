@@ -1899,6 +1899,7 @@ CREATE TABLE public.runs (
     approved_input jsonb,
     queue_name text,
     idempotency_key text,
+    action_idempotency_key text,
     attempts integer DEFAULT 0 NOT NULL,
     max_attempts integer DEFAULT 3 NOT NULL,
     run_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -2151,7 +2152,7 @@ CREATE TABLE public.watcher_versions (
     change_notes text,
     created_by text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
-    keying_config jsonb,
+    outputs jsonb,
     json_template jsonb,
     prompt text NOT NULL,
     extraction_schema jsonb NOT NULL,
@@ -4551,6 +4552,12 @@ CREATE INDEX runs_expires_at_idx ON public.runs USING btree (expires_at) WHERE (
 --
 
 CREATE UNIQUE INDEX runs_idempotency_key_uniq ON public.runs USING btree (idempotency_key) WHERE ((idempotency_key IS NOT NULL) AND (status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text])));
+
+--
+-- Name: idx_runs_org_action_idempotency_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_runs_org_action_idempotency_key ON public.runs USING btree (organization_id, action_idempotency_key) WHERE ((run_type = 'action'::text) AND (action_idempotency_key IS NOT NULL));
 
 --
 -- Name: runs_lobu_claim_idx; Type: INDEX; Schema: public; Owner: -

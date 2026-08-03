@@ -38,7 +38,7 @@ export interface BehaviorCreateInput {
 	slug?: string;
 	name?: string;
 	description?: string;
-	keying_config?: Record<string, unknown>;
+	outputs?: Record<string, unknown>;
 	classifiers?: Record<string, unknown>;
 	reactions_guidance?: string;
 	reaction_script?: string;

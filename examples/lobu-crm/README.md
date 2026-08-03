@@ -12,8 +12,8 @@ lobu-crm/                                  # single agent → dir: "." keeps it 
 ├── IDENTITY.md                            # Agent identity
 ├── USER.md                                # User context
 ├── npm-downloads.connector.ts             # Custom connector (connectorFromFile)
-├── inbound-triage.reaction.ts             # Runs after Behavior extraction
-├── funnel-digest.reaction.ts              # Runs after Behavior extraction
+├── inbound-triage.reaction.ts             # Notification side effect only
+├── funnel-digest.reaction.ts              # Notification side effect only
 └── skills/crm-ops/SKILL.md                # Agent skill (skillFromFile)
 ```
 
@@ -26,4 +26,4 @@ The built-in GitHub, X, Hacker News, and website connections are declared inline
 |------|--------------|
 | `lobu.config.ts` | Agent config, providers, network allowlist, entity + relationship + Behavior definitions, connections, auth profiles |
 | `npm-downloads.connector.ts` | Custom connector with typed checkpoint + config against a live no-auth API (listed via `connectorFromFile`) |
-| `inbound-triage.reaction.ts` | Reaction script with typed `ReactionClient` |
+| `inbound-triage.reaction.ts` | Notification-only reaction; events come from declared Behavior outputs |

@@ -2,8 +2,8 @@
  * Integration test for P2 phase 1: promoting keyed watcher-window rows into
  * real child entities.
  *
- * complete_window computes stable keys (keying_config) and then promotes each
- * keyed row into a child entity under the watcher's bound parent, keyed by an
+ * complete_window persists each declared entity output row under the watcher's
+ * bound parent, keyed by an internal stable identity and an
  * entity_identities `watcher_key` claim (the idempotency lock). Origin
  * provenance (window_id / stable_key / watcher_id) is stamped onto the child
  * entity's own metadata — there is no separate observation event.
@@ -27,18 +27,19 @@ import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+import {
+  computeStableKey,
+  formatBehaviorEntityIdentity,
+} from '../../../utils/stable-keys';
 
-const KEYING_CONFIG = {
-  entity_path: 'problems',
-  key_fields: ['category', 'name'],
-  key_output_field: 'problem_key',
-  entity_type: 'topic',
+const OUTPUTS = {
+  problems: { entity: 'topic', key: ['category', 'name'] },
 };
 
 /**
  * Per-record shape owned by the `topic` entity type's `metadata_schema`.
  * The watcher's extraction contract is DERIVED from this (an array of these
- * records at `keying_config.entity_path`), never authored on the watcher.
+ * records in `outputs.problems`), never authored on the Behavior.
  */
 const TOPIC_RECORD_SCHEMA = {
   type: 'object',
@@ -55,6 +56,13 @@ const KEYED_EXTRACTED_DATA = {
     { category: 'Performance', name: 'Slow Loading' },
   ],
 };
+
+const stableTopicKey = (category: string, name: string) =>
+  computeStableKey({ category, name }, ['category', 'name']);
+const APP_CRASHES_KEY = stableTopicKey('Stability', 'App Crashes');
+const SLOW_LOADING_KEY = stableTopicKey('Performance', 'Slow Loading');
+const topicIdentity = (watcherId: number, stableKey: string) =>
+  formatBehaviorEntityIdentity(watcherId, 'problems', 'topic', stableKey);
 
 const TEST_ENV: Env = {
   ENVIRONMENT: 'test',
@@ -115,7 +123,7 @@ async function setupKeyedWatcher() {
     slug: 'keyed-watcher',
     name: 'Keyed Watcher',
     prompt: 'Extract problems for {{entities}}.',
-    keying_config: KEYING_CONFIG,
+    outputs: OUTPUTS,
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { behavior_id: string };
@@ -225,9 +233,21 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       ORDER BY ei.identifier
     `;
     expect(identities.map((r) => String(r.identifier))).toEqual([
-      `${ctx.watcherId}::performance::slow-loading`,
-      `${ctx.watcherId}::stability::app-crashes`,
-    ]);
+      topicIdentity(
+        ctx.watcherId,
+        computeStableKey(
+          { category: 'Performance', name: 'Slow Loading' },
+          ['category', 'name']
+        )
+      ),
+      topicIdentity(
+        ctx.watcherId,
+        computeStableKey(
+          { category: 'Stability', name: 'App Crashes' },
+          ['category', 'name']
+        )
+      ),
+    ].sort());
     for (const row of identities) {
       expect(Number(row.parent_id)).toBe(parentEntityId);
     }
@@ -265,7 +285,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(childMeta).toHaveLength(2);
     const stableKeys = childMeta.map((r) => (r.metadata as Record<string, unknown>).stable_key);
-    expect(stableKeys.sort()).toEqual(['performance::slow-loading', 'stability::app-crashes']);
+    expect(stableKeys.sort()).toEqual([APP_CRASHES_KEY, SLOW_LOADING_KEY].sort());
     for (const row of childMeta) {
       const md = row.metadata as Record<string, unknown>;
       expect(Number(md.window_id)).toBe(windowId);
@@ -294,6 +314,75 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     }>;
     expect(csChanges).toHaveLength(2);
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
+  });
+
+  it('rejects duplicate exact keys instead of silently dropping an output row', async () => {
+    const ctx = await setupKeyedWatcher();
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    await expect(
+      ctx.api.behaviors.completeWindow({
+        behavior_id: String(ctx.watcherId),
+        window_token: token,
+        run_metadata: { watcher_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', severity: 'high' },
+            { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          ],
+        },
+      })
+    ).rejects.toThrow(/duplicate.*key/i);
+
+    const identities = await ctx.sql<{ count: number }>`
+      SELECT COUNT(*)::int AS count
+      FROM entity_identities
+      WHERE organization_id = ${ctx.workspace.org.id}
+        AND namespace = 'watcher_key'
+    `;
+    expect(Number(identities[0].count)).toBe(0);
+  });
+
+  it('does not reuse an old-type entity when a later version retargets the output', async () => {
+    const ctx = await setupKeyedWatcher();
+    await ctx.sql`
+      INSERT INTO entity_types (organization_id, slug, name, metadata_schema, created_at, updated_at)
+      VALUES (
+        ${ctx.workspace.org.id},
+        'issue',
+        'Issue',
+        ${ctx.sql.json(TOPIC_RECORD_SCHEMA)},
+        current_timestamp,
+        current_timestamp
+      )
+    `;
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    const extracted = {
+      problems: [{ category: 'Stability', name: 'App Crashes', severity: 'high' }],
+    };
+    await completeWithToken(ctx, token, runId, extracted);
+
+    await ctx.api.behaviors.createVersion({
+      behavior_id: String(ctx.watcherId),
+      outputs: { problems: { entity: 'issue', key: ['category', 'name'] } },
+    });
+    const retargetedRunId = await queueRunningRun(ctx);
+    const retargetedToken = await readWindowToken(ctx);
+    await completeWithToken(ctx, retargetedToken, retargetedRunId, extracted);
+
+    const promotedTypes = await ctx.sql<{ slug: string }>`
+      SELECT et.slug
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE ei.organization_id = ${ctx.workspace.org.id}
+        AND ei.namespace = 'watcher_key'
+        AND ei.deleted_at IS NULL
+      ORDER BY et.slug
+    `;
+    expect(promotedTypes.map((row) => row.slug)).toEqual(['issue', 'topic']);
   });
 
   it('keeps an exact in-window source_event_id and drops ungranted claims', async () => {
@@ -353,17 +442,30 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND ei.namespace = 'watcher_key'
       ORDER BY ei.identifier
     `;
-    const bySlug = Object.fromEntries(
-      rows.map((r) => [String(r.identifier).split('::').pop(), r.source_event_id])
+    const byIdentifier = Object.fromEntries(
+      rows.map((r) => [String(r.identifier), r.source_event_id])
     );
 
     // The verifiable claim survives; unverifiable values are stripped rather
     // than stored as false provenance. Every row still promotes.
-    expect(bySlug['app-crashes']).toBe(String(inWindow.id));
-    expect(bySlug['fractional-reference']).toBeNull();
-    expect(bySlug['slow-loading']).toBeNull();
-    expect(bySlug['string-reference']).toBeNull();
-    expect(Object.keys(bySlug)).toHaveLength(4);
+    expect(byIdentifier[topicIdentity(ctx.watcherId, APP_CRASHES_KEY)]).toBe(
+      String(inWindow.id)
+    );
+    expect(
+      byIdentifier[
+        topicIdentity(
+          ctx.watcherId,
+          stableTopicKey('Stability', 'Fractional Reference')
+        )
+      ]
+    ).toBeNull();
+    expect(byIdentifier[topicIdentity(ctx.watcherId, SLOW_LOADING_KEY)]).toBeNull();
+    expect(
+      byIdentifier[
+        topicIdentity(ctx.watcherId, stableTopicKey('Stability', 'String Reference'))
+      ]
+    ).toBeNull();
+    expect(Object.keys(byIdentifier)).toHaveLength(4);
   });
 
   it("a create=deny policy on the watcher's OWNING AGENT blocks its promotions", async () => {
@@ -463,6 +565,18 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND metadata->>'source' = 'watcher_canvas'
     `;
     expect(Number(canvasCount[0].c)).toBe(1);
+
+    const changeSets = await sql`
+      SELECT id, metadata->>'_lobu_idempotency_key' AS idempotency_key
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND run_id = ${runId}
+        AND semantic_type = 'change_set'
+    `;
+    expect(changeSets).toHaveLength(1);
+    expect(changeSets[0].idempotency_key).toBe(
+      `behavior:${watcherId}:run:${runId}:change_set`
+    );
   });
 
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
@@ -492,7 +606,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       },
     });
 
-    const appCrashesId = `${ctx.watcherId}::stability::app-crashes`;
+    const appCrashesId = topicIdentity(ctx.watcherId, APP_CRASHES_KEY);
     const [created] = await sql`
       SELECT e.id, e.metadata, e.field_controls
       FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
@@ -615,7 +729,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = topicIdentity(watcherId, APP_CRASHES_KEY);
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -696,7 +810,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     // A human owns `severity` on one of the two promoted entities.
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = topicIdentity(watcherId, APP_CRASHES_KEY);
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -726,8 +840,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     expect(res.action).toBe('list_promoted');
     expect(res.entities.length).toBe(2);
-    const appCrashes = res.entities.find((e) => e.stable_key === 'stability::app-crashes');
-    const slowLoading = res.entities.find((e) => e.stable_key === 'performance::slow-loading');
+    const appCrashes = res.entities.find((e) => e.stable_key === APP_CRASHES_KEY);
+    const slowLoading = res.entities.find((e) => e.stable_key === SLOW_LOADING_KEY);
     expect(appCrashes).toBeDefined();
     expect(slowLoading).toBeDefined();
 
@@ -766,7 +880,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = topicIdentity(watcherId, APP_CRASHES_KEY);
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -825,7 +939,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, parentEntityId } = ctx;
+    const { sql, workspace, parentEntityId, watcherId } = ctx;
 
     await createTestEvent({
       entity_id: parentEntityId,
@@ -872,8 +986,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(identities).toHaveLength(2);
 
     // The "App Crashes" promotion got a DISAMBIGUATED slug (not the squatter's).
-    const appCrashes = identities.find((r) =>
-      String(r.identifier).endsWith('::stability::app-crashes')
+    const appCrashes = identities.find(
+      (r) => String(r.identifier) === topicIdentity(watcherId, APP_CRASHES_KEY)
     );
     expect(appCrashes).toBeDefined();
     expect(String(appCrashes?.slug)).not.toBe(collidingSlug);

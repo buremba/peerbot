@@ -1,6 +1,7 @@
 export {
 	ApplyChatConnectionAction,
 	ConnectAction,
+	ConnectManagedAction,
 	CreateAction,
 	DeleteAction,
 	GetAction,

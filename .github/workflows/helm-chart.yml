@@ -38,7 +38,34 @@ jobs:
         run: helm lint charts/lobu
 
       - name: Render default values
-        run: helm template lobu charts/lobu --namespace lobu >/tmp/lobu-default.yaml
+        run: |
+          helm template lobu charts/lobu --namespace lobu >/tmp/lobu-default.yaml
+          if grep -q 'migration-quiesce' /tmp/lobu-default.yaml; then
+            echo "migration quiesce hook must be opt-in" >&2
+            exit 1
+          fi
+
+      - name: Render migration upgrade with mandatory quiescence
+        run: |
+          helm template lobu charts/lobu --namespace lobu --is-upgrade \
+            --set migrations.enabled=true \
+            >/tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'serviceAccountName: lobu-migration-quiesce' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'name: install-kubectl' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'trap restore_on_failure EXIT' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'migration failed with status' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q '"helm.sh/hook-weight": "0"' /tmp/lobu-quiesced-upgrade.yaml
+
+          helm template lobu charts/lobu --namespace lobu --is-upgrade \
+            --set migrations.enabled=true \
+            --set worker.enabled=false \
+            >/tmp/lobu-worker-disabled-upgrade.yaml
+          grep -q 'name: WORKER_DEPLOYMENT' /tmp/lobu-worker-disabled-upgrade.yaml
+          grep -q 'name: WORKER_SELECTOR' /tmp/lobu-worker-disabled-upgrade.yaml
+          test "$(grep -c -- '- lobu-worker' /tmp/lobu-worker-disabled-upgrade.yaml)" -eq 2
+
+      - name: Exercise migration failure recovery
+        run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 
   publish:
     needs: lint

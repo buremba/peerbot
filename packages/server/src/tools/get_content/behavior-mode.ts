@@ -11,7 +11,7 @@ import type { ContentItem } from '@lobu/connector-sdk';
 import { inferBehaviorGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
-import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/watchers';
+import type { Outputs, UnprocessedRange, WatcherSource } from '../../types/watchers';
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
@@ -350,7 +350,7 @@ export async function handleBehaviorMode(
       i.schedule,
       i.created_by,
       i.organization_id,
-      cv.keying_config as template_keying_config,
+      cv.outputs as template_outputs,
       cv.reactions_guidance,
       cv.version_sources,
       (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug, 'metadata', e.metadata, 'field_controls', e.field_controls)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
@@ -373,12 +373,12 @@ export async function handleBehaviorMode(
   const watcherSources =
     versionSources.length > 0 ? versionSources : parseJson(watcher.sources) || [];
   const timeGranularity = inferBehaviorGranularityFromSchedule(watcher.schedule as string | null);
-  // The extraction contract is derived from the bound entity type's
-  // metadata_schema (entity-typed) — never read from a stored inline schema.
+  // The extraction contract is composed from versioned outputs and the
+  // optional reaction input contract.
   const templateExtractionSchema = await deriveWatcherExtractionSchema(
     sql,
     watcher.organization_id as string,
-    parseJson(watcher.template_keying_config) as KeyingConfig | null,
+    parseJson(watcher.template_outputs) as Outputs | null,
     watcherId
   );
 

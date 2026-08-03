@@ -43,6 +43,6 @@ async function listOrganizationsImpl(
     is_member: o.is_member,
     is_current: ctx.currentOrganizationId !== null && o.id === ctx.currentOrganizationId,
     visibility: o.visibility,
+    ...(o.managed_auth ? { managed_auth: o.managed_auth } : {}),
   }));
 }
-

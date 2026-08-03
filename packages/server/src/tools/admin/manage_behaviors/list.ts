@@ -93,7 +93,7 @@ export async function handleList(
       cv.prompt,
       cv.skills,
       cv.classifiers,
-      cv.keying_config,
+      cv.outputs,
       cv.reactions_guidance
     `;
 	}

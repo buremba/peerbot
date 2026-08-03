@@ -60,11 +60,8 @@ export function handleGetComponentReference(): {
           description: 'Extracts recurring product issues from source content.',
           prompt:
             "Analyze the bound entities' feedback in the window content and extract recurring problems.",
-          keying_config: {
-            entity_type: 'problem',
-            entity_path: 'problems',
-            key_fields: ['name'],
-            key_output_field: 'problem_key',
+          outputs: {
+            problems: { entity: 'problem', key: ['name'] },
           },
           data: {
             daily_volume: {

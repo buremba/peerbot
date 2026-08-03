@@ -228,7 +228,7 @@ async function buildFilterConditionsAndJoins(
     const types = Array.isArray(filters.semantic_type)
       ? filters.semantic_type
       : [filters.semantic_type];
-    params.push(`{${types.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(',')}}`);
+    params.push(pgTextArray(types));
     filterConditions.push(`f.semantic_type = ANY($${paramIndex++}::text[])`);
   }
 

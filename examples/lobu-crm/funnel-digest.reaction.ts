@@ -1,83 +1,53 @@
 /**
- * Reaction for the `funnel-digest` Behavior.
+ * Notification-only reaction for the `funnel-digest` Behavior.
  *
- * Runs after the weekly Monday-9am window completes. `ctx.extracted_data` is
- * whatever the Behavior's extraction schema produced — funnel snapshot, top
- * action, stale leads, etc. We:
- *   1. persist the digest as a `summary` event (tagged `metadata.kind:
- *      "funnel_digest"`) linked to every lead the Behavior knows about, so the
- *      next digest can compare stage_counts week-over-week without re-running
- *      classification; and
- *   2. push it to the team via `client.notifications.send` — which fans out to
- *      the org's active bot connections (the #leads Slack connection) and the
- *      in-app inbox. `watcher_source` is the persisted provenance field.
+ * The Behavior's declared `digests` output persists the summary event before
+ * this runs. The reaction has one job that is intentionally imperative: fan
+ * the already-authored digest out to the team's notification connections.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
-// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
-// this before the reaction runs, so the handler just reads it with a TS cast.
 export const input = {
   type: "object",
   properties: {
-    top_action: { type: "string" },
-    stage_counts: {
-      type: "object",
-      additionalProperties: { type: "number" },
+    digests: {
+      type: "array",
+      maxItems: 1,
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          content: { type: "string", minLength: 1 },
+          metadata: { type: "object" },
+        },
+        required: ["content"],
+      },
     },
-    conversations_this_week: { type: "number" },
-    gap: { type: "string" },
   },
-  required: [],
+  required: ["digests"],
 };
 
-interface DigestData {
-  top_action?: string;
-  stage_counts?: Record<string, number>;
-  conversations_this_week?: number;
-  gap?: string;
+interface DigestDraft {
+  title?: string;
+  content: string;
 }
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as DigestData;
-  const stageSummary = Object.entries(data.stage_counts ?? {})
-    .map(([stage, n]) => `${stage}: ${n}`)
-    .join(", ");
-  const content = [
-    `Weekly funnel digest — ${ctx.window.window_end.slice(0, 10)}`,
-    `Top action: ${data.top_action ?? "(none)"}`,
-    `Stages: ${stageSummary || "(empty)"}`,
-    `Conversations this week: ${data.conversations_this_week ?? 0}`,
-    data.gap ? `Gap: ${data.gap}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  await client.knowledge.save({
-    // Attaching to the whole Behavior's entity set keeps the digest scoped to
-    // CRM data and discoverable from any lead the Behavior already touches.
-    entity_ids: ctx.entities.map((e) => e.id),
-    content,
-    // `semantic_type` must be a registered event kind; "summary" fits a digest.
-    // The domain label lives in metadata so it stays queryable.
-    semantic_type: "summary",
-    metadata: {
-      kind: "funnel_digest",
-      window_id: ctx.window.id,
-      behavior_slug: ctx.behavior.slug,
-      stage_counts: data.stage_counts ?? {},
-      top_action: data.top_action ?? null,
-    },
-  });
+  const drafts =
+    (ctx.extracted_data as { digests?: DigestDraft[] }).digests ?? [];
+  const digest = drafts[0];
+  if (!digest) return;
 
   await client.notifications.send({
-    title: `Weekly funnel digest — ${ctx.window.window_end.slice(0, 10)}`,
-    body: content,
-    watcher_source: {
-      watcher_id: ctx.window.watcher_id,
+    title:
+      digest.title ??
+      `Weekly funnel digest — ${ctx.window.window_end.slice(0, 10)}`,
+    body: digest.content,
+    behavior_source: {
+      behavior_id: ctx.window.behavior_id,
       window_id: ctx.window.id,
     },
   });

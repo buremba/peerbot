@@ -73,8 +73,9 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 		detail: {
 			slug: "daily-summary",
 			triggers: [scheduleTrigger("0 8 * * *")],
+			outputs: { digests: { event: "summary" } },
 			prompt:
-				"Review the activity in this window and produce a concise summary of what matters most. Call out anything notable, surprising, or worth acting on.\n\nReturn a short narrative summary plus a bullet-point list of the most important highlights.\n",
+				"Review the activity in this window and produce a concise summary of what matters most. Return exactly one standard summary event draft in `digests`: put the narrative and highlights in `content`, and provide a useful `title`.\n",
 			tags: ["summary", "digest"],
 		},
 	},
@@ -87,13 +88,14 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 		detail: {
 			slug: "sentiment-monitor",
 			triggers: [scheduleTrigger("0 */6 * * *")],
+			outputs: { sentiment_reports: { event: "summary" } },
 			prompt:
-				"Analyze the overall sentiment of the activity in this window. Classify it, score it, and explain the main drivers behind the sentiment.\n\nReport the sentiment classification (positive, neutral, or negative), a score from -1 (negative) to 1 (positive), and the key factors driving it.\n",
+				'Analyze the overall sentiment of the activity in this window. Return exactly one standard summary event draft in `sentiment_reports`. Put the explanation in `content`; put `{ kind: "sentiment_report", sentiment, score, drivers }` in `metadata`, where sentiment is positive, neutral, or negative and score is from -1 to 1.\n',
 			classifiers: [
 				{
 					slug: "sentiment",
 					name: "Sentiment",
-					source_path: "$",
+					source_path: "$.sentiment_reports[*].metadata",
 					value_field: "sentiment",
 				},
 			],
@@ -109,8 +111,9 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 		detail: {
 			slug: "risk-alert",
 			triggers: [scheduleTrigger("0 */4 * * *")],
+			outputs: { alerts: { event: "observation" } },
 			prompt:
-				"Inspect the activity in this window for anomalies, risks, or anything that deviates from the norm. Assess the risk level and recommend whether action is needed.\n\nReport the overall risk level (low, medium, or high), the specific anomalies or risks detected, and a recommended action.\n",
+				'Inspect the activity in this window for anomalies or rising risk. Return each actionable risk in `alerts` as a standard observation event draft. Put the risk and recommended action in `content`; put `{ kind: "risk_alert", level }` in `metadata`. Return an empty array for low-risk windows.\n',
 			reactions_guidance:
 				"Only alert when risk is high, or medium with a concrete recommended action. Keep low-risk windows silent.",
 			tags: ["risk", "alert", "monitoring"],
@@ -125,8 +128,9 @@ export const BEHAVIOR_CATALOG_TEMPLATES: CatalogEntry[] = [
 		detail: {
 			slug: "action-items",
 			triggers: [scheduleTrigger("0 18 * * *")],
+			outputs: { tasks: { event: "todo" } },
 			prompt:
-				"Extract every actionable task, follow-up, or commitment mentioned in this window. Capture who owns it and any due date if stated.\n\nReturn a list of action items, each with a title and — when known — an owner and a due date or timeframe.\n",
+				'Extract every actionable task, follow-up, or commitment in this window. Return each one in `tasks` as a standard todo event draft. Put the action in `content`, a short task name in `title`, and owner/due date in `metadata` when known. Use `parent_event_id` when the task comes from a specific source event.\n',
 			tags: ["tasks", "action-items"],
 		},
 	},

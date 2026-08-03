@@ -531,7 +531,7 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY = 'target_browser_connection_id
 async function resolveTargetBrowserWorker(
   organizationId: string,
   rawTarget: unknown,
-  sql = getDb()
+  sql: ReturnType<typeof getDb>
 ): Promise<{ deviceWorkerId: string } | { error: string }> {
   const targetId =
     typeof rawTarget === 'number'

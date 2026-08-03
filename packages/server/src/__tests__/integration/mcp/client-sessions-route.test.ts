@@ -56,6 +56,8 @@ describe('client sessions activity route', () => {
       durationMs: 3,
       ctx,
     });
+    // The route reads the write-time projection, so seed it exactly the way
+    // `executeTool` does after each audit row.
     await recordMcpConversationActivity({
       ctx,
       toolName,
@@ -183,6 +185,7 @@ describe('client sessions activity route', () => {
     const alpha = body.sessions.find((s) => s.sessionId === 'sess-alpha')!;
     expect(alpha.callCount).toBe(2);
     expect(alpha.failedCount).toBe(1);
+    // The projection appends each new tool in first-use order.
     expect(alpha.tools).toEqual(['search_memory', 'query_sql']);
     expect(alpha.clientId).toBe(clientId);
     expect(alpha.clientName).toBe(clientName);

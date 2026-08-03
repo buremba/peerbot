@@ -606,7 +606,7 @@ export async function handleCompleteWindow(
     let completedDispatchSource: string | null = null;
     if (behaviorRunId && Number.isFinite(behaviorRunId)) {
       // Provenance now lives on the RUN row (model_used, run_metadata), not on
-      // the retired behavior_windows table. window_id is stamped to the canvas
+      // a separate mutable window table. window_id is stamped to the canvas
       // ROOT event id. Scope by behavior_id so a wrong/stale behavior_run_id
       // (passed in run_metadata) cannot mark another behavior's run completed
       // against this behavior's window. Stamp provenance whenever the run is

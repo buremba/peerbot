@@ -700,7 +700,7 @@ export async function batchCountUnanalyzedContent(
     analyzed_counts AS (
       -- Canvas-on-events: window_id link rows carry a denormalized behavior_id, so
       -- count analyzed events directly off behavior_window_events without a join
-      -- through the retired behavior_windows table.
+      -- through a separate mutable window table.
       SELECT
         ie.behavior_id,
         COUNT(DISTINCT iwc.event_id) as analyzed_count

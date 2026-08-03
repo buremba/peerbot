@@ -207,8 +207,217 @@ UPDATE public.runs
 SET error_message = replace(error_message, 'client.watchers.', 'client.behaviors.')
 WHERE error_message LIKE '%client.watchers.%';
 
--- Canvas identity is the root event id. Only its metadata vocabulary changes;
--- the event chain and window identity stay exactly the same.
+-- Events are append-only, including their payload metadata. Preserve every
+-- legacy canvas event byte-for-byte and create a parallel canonical chain with
+-- fresh ids. Mutable window references move to the canonical root. Each copy
+-- records its legacy source id so a reapply after the dev-only down migration
+-- can reuse the chain and append only the suffix written during rollback.
+DO $canonicalize_event_vocabulary$
+BEGIN
+  CREATE TEMP TABLE behavior_canvas_event_cutover (
+    old_event_id bigint PRIMARY KEY,
+    new_event_id bigint NOT NULL UNIQUE,
+    old_root_id bigint NOT NULL,
+    new_root_id bigint,
+    already_canonicalized boolean NOT NULL
+  ) ON COMMIT DROP;
+
+  WITH RECURSIVE legacy_canvas AS (
+    SELECT e.id, e.id AS root_id
+    FROM public.events e
+    WHERE e.semantic_type = 'canvas_state'
+      AND e.supersedes_event_id IS NULL
+      AND e.metadata ? 'watcher_id'
+    UNION ALL
+    SELECT child.id, parent.root_id
+    FROM public.events child
+    JOIN legacy_canvas parent ON child.supersedes_event_id = parent.id
+    WHERE child.semantic_type = 'canvas_state'
+  )
+  INSERT INTO behavior_canvas_event_cutover (
+    old_event_id, new_event_id, old_root_id, already_canonicalized
+  )
+  SELECT
+    legacy.id,
+    COALESCE(canonical.id, nextval('public.content_id_seq')),
+    legacy.root_id,
+    canonical.id IS NOT NULL
+  FROM legacy_canvas legacy
+  LEFT JOIN public.events canonical
+    ON canonical.semantic_type = 'canvas_state'
+   AND canonical.metadata ? 'cutover_source_event_id'
+   AND (canonical.metadata->>'cutover_source_event_id')::bigint = legacy.id;
+
+  UPDATE behavior_canvas_event_cutover row_map
+  SET new_root_id = root_map.new_event_id
+  FROM behavior_canvas_event_cutover root_map
+  WHERE root_map.old_event_id = row_map.old_root_id;
+
+  INSERT INTO public.events (
+    id, organization_id, entity_ids, origin_id, title, payload_type,
+    payload_text, payload_data, payload_template, attachments, metadata, score,
+    author_name, source_url, occurred_at, created_at, origin_parent_id,
+    origin_type, connector_key, connection_id, feed_key, feed_id, run_id,
+    semantic_type, client_id, created_by, interaction_type, interaction_status,
+    interaction_input_schema, interaction_input, interaction_output,
+    interaction_error, supersedes_event_id, superseded_by
+  )
+  SELECT
+    row_map.new_event_id, e.organization_id, e.entity_ids,
+    CASE WHEN e.connector_key LIKE 'webhook:%' AND e.origin_id IS NOT NULL
+      THEN e.origin_id || ':behavior-cutover:' || e.id::text
+      ELSE e.origin_id
+    END,
+    e.title,
+    e.payload_type, e.payload_text, e.payload_data, e.payload_template,
+    e.attachments,
+    -- The original row remains the durable owner of its reserved idempotency
+    -- key. Copying that key would violate idx_events_org_idempotency_key before
+    -- the supersession edge can be stamped; it is delivery bookkeeping, not
+    -- domain payload vocabulary.
+    (e.metadata - 'watcher_id' - '_lobu_idempotency_key')
+      || jsonb_build_object('behavior_id', e.metadata->'watcher_id')
+      || CASE WHEN e.metadata->>'source' = 'watcher_canvas'
+           THEN jsonb_build_object('source', 'behavior_canvas') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'source' = 'watcher_promotion'
+           THEN jsonb_build_object('source', 'behavior_promotion') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resourceKind' = 'watcher'
+           THEN jsonb_build_object('resourceKind', 'behavior') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resource_kind' = 'watcher'
+           THEN jsonb_build_object('resource_kind', 'behavior') ELSE '{}'::jsonb END
+      || jsonb_build_object('cutover_source_event_id', row_map.old_event_id),
+    e.score, e.author_name, e.source_url, e.occurred_at, e.created_at,
+    e.origin_parent_id, e.origin_type, e.connector_key, e.connection_id,
+    e.feed_key, e.feed_id, e.run_id, e.semantic_type, e.client_id, e.created_by,
+    e.interaction_type, e.interaction_status, e.interaction_input_schema,
+    e.interaction_input, e.interaction_output, e.interaction_error,
+    predecessor.new_event_id, successor.new_event_id
+  FROM public.events e
+  JOIN behavior_canvas_event_cutover row_map ON row_map.old_event_id = e.id
+  LEFT JOIN behavior_canvas_event_cutover predecessor
+    ON predecessor.old_event_id = e.supersedes_event_id
+  LEFT JOIN behavior_canvas_event_cutover successor
+    ON successor.old_event_id = e.superseded_by
+  WHERE NOT row_map.already_canonicalized;
+
+  -- A rollback may append to a legacy chain that this migration copied on its
+  -- first application. Reuse the canonical ids above, copy only the new suffix,
+  -- and advance the canonical inverse links just like an ordinary append.
+  UPDATE public.events canonical
+  SET superseded_by = successor.new_event_id
+  FROM behavior_canvas_event_cutover row_map
+  JOIN public.events legacy ON legacy.id = row_map.old_event_id
+  JOIN behavior_canvas_event_cutover successor
+    ON successor.old_event_id = legacy.superseded_by
+  WHERE canonical.id = row_map.new_event_id
+    AND canonical.superseded_by IS DISTINCT FROM successor.new_event_id;
+
+  UPDATE public.behavior_reactions target
+  SET window_id = root_map.new_root_id
+  FROM behavior_canvas_event_cutover root_map
+  WHERE root_map.old_event_id = root_map.old_root_id
+    AND target.window_id = root_map.old_root_id;
+
+  UPDATE public.runs target
+  SET window_id = root_map.new_root_id
+  FROM behavior_canvas_event_cutover root_map
+  WHERE root_map.old_event_id = root_map.old_root_id
+    AND target.window_id = root_map.old_root_id;
+
+  UPDATE public.behavior_window_events target
+  SET window_id = root_map.new_root_id
+  FROM behavior_canvas_event_cutover root_map
+  WHERE root_map.old_event_id = root_map.old_root_id
+    AND target.window_id = root_map.old_root_id;
+
+  UPDATE public.event_classifications target
+  SET window_id = root_map.new_root_id
+  FROM behavior_canvas_event_cutover root_map
+  WHERE root_map.old_event_id = root_map.old_root_id
+    AND target.window_id = root_map.old_root_id;
+
+  -- Non-canvas event metadata moves through ordinary supersession. This
+  -- includes correction.window_id and config/audit records carrying the old
+  -- discriminator; old rows remain immutable and queryable as history.
+  CREATE TEMP TABLE behavior_event_replacement (
+    old_event_id bigint PRIMARY KEY,
+    new_event_id bigint NOT NULL UNIQUE
+  ) ON COMMIT DROP;
+
+  INSERT INTO behavior_event_replacement (old_event_id, new_event_id)
+  SELECT e.id, nextval('public.content_id_seq')
+  FROM public.events e
+  WHERE e.semantic_type <> 'canvas_state'
+    AND e.superseded_by IS NULL
+    AND (
+      e.metadata ? 'watcher_id'
+      OR e.metadata->>'source' IN ('watcher_canvas', 'watcher_promotion')
+      OR e.metadata->>'resourceKind' = 'watcher'
+      OR e.metadata->>'resource_kind' = 'watcher'
+      OR EXISTS (
+        SELECT 1
+        FROM behavior_canvas_event_cutover root_map
+        WHERE root_map.old_event_id = root_map.old_root_id
+          AND e.metadata->>'window_id' ~ '^[0-9]+$'
+          AND (e.metadata->>'window_id')::bigint = root_map.old_root_id
+      )
+    );
+
+  INSERT INTO public.events (
+    id, organization_id, entity_ids, origin_id, title, payload_type,
+    payload_text, payload_data, payload_template, attachments, metadata, score,
+    author_name, source_url, occurred_at, created_at, origin_parent_id,
+    origin_type, connector_key, connection_id, feed_key, feed_id, run_id,
+    semantic_type, client_id, created_by, interaction_type, interaction_status,
+    interaction_input_schema, interaction_input, interaction_output,
+    interaction_error, supersedes_event_id, superseded_by
+  )
+  SELECT
+    replacement.new_event_id, e.organization_id, e.entity_ids,
+    CASE WHEN e.connector_key LIKE 'webhook:%' AND e.origin_id IS NOT NULL
+      THEN e.origin_id || ':behavior-cutover:' || e.id::text
+      ELSE e.origin_id
+    END,
+    e.title, e.payload_type, e.payload_text, e.payload_data, e.payload_template,
+    e.attachments,
+    -- Keep the reserved idempotency key on its original immutable row; the
+    -- superseding vocabulary copy must not duplicate it.
+    (e.metadata - 'watcher_id' - '_lobu_idempotency_key')
+      || CASE WHEN e.metadata ? 'watcher_id'
+           THEN jsonb_build_object('behavior_id', e.metadata->'watcher_id') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'source' = 'watcher_canvas'
+           THEN jsonb_build_object('source', 'behavior_canvas') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'source' = 'watcher_promotion'
+           THEN jsonb_build_object('source', 'behavior_promotion') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resourceKind' = 'watcher'
+           THEN jsonb_build_object('resourceKind', 'behavior') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resource_kind' = 'watcher'
+           THEN jsonb_build_object('resource_kind', 'behavior') ELSE '{}'::jsonb END
+      || CASE WHEN root_map.new_root_id IS NOT NULL
+           THEN jsonb_build_object('window_id', root_map.new_root_id) ELSE '{}'::jsonb END,
+    e.score, e.author_name, e.source_url, e.occurred_at, e.created_at,
+    e.origin_parent_id, e.origin_type, e.connector_key, e.connection_id,
+    e.feed_key, e.feed_id, e.run_id, e.semantic_type, e.client_id, e.created_by,
+    e.interaction_type, e.interaction_status, e.interaction_input_schema,
+    e.interaction_input, e.interaction_output, e.interaction_error,
+    e.id, NULL
+  FROM public.events e
+  JOIN behavior_event_replacement replacement ON replacement.old_event_id = e.id
+  LEFT JOIN behavior_canvas_event_cutover root_map
+    ON root_map.old_event_id = root_map.old_root_id
+   AND e.metadata->>'window_id' ~ '^[0-9]+$'
+   AND (e.metadata->>'window_id')::bigint = root_map.old_root_id;
+
+  -- superseded_by is lineage metadata, deliberately maintained in-place by
+  -- every normal superseding write (insert-event.ts). No payload is updated.
+  UPDATE public.events old_event
+  SET superseded_by = replacement.new_event_id
+  FROM behavior_event_replacement replacement
+  WHERE old_event.id = replacement.old_event_id
+    AND old_event.superseded_by IS NULL;
+END
+$canonicalize_event_vocabulary$;
+
 -- squawk-ignore require-concurrent-index-deletion -- atomic hard cutover with no serving clients
 DROP INDEX IF EXISTS public.idx_canvas_chain_root;
 -- squawk-ignore require-concurrent-index-creation -- atomic hard cutover with no serving clients
@@ -218,7 +427,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_chain_root
     (metadata->>'granularity'),
     (metadata->>'window_start')
   )
-  WHERE semantic_type = 'canvas_state' AND supersedes_event_id IS NULL;
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'behavior_id';
 
 -- squawk-ignore require-concurrent-index-deletion -- atomic hard cutover with no serving clients
 DROP INDEX IF EXISTS public.idx_canvas_state_listing;
@@ -229,7 +440,7 @@ CREATE INDEX IF NOT EXISTS idx_canvas_state_listing
     (metadata->>'granularity'),
     (metadata->>'window_start') DESC
   )
-  WHERE semantic_type = 'canvas_state';
+  WHERE semantic_type = 'canvas_state' AND metadata ? 'behavior_id';
 
 CREATE OR REPLACE VIEW public.canvas_windows AS
 SELECT
@@ -268,7 +479,8 @@ LEFT JOIN LATERAL (
 ) head ON TRUE
 LEFT JOIN public.runs run ON run.id = head.run_id
 WHERE root.semantic_type = 'canvas_state'
-  AND root.supersedes_event_id IS NULL;
+  AND root.supersedes_event_id IS NULL
+  AND root.metadata ? 'behavior_id';
 
 CREATE OR REPLACE FUNCTION public.archive_chat_behaviors_for_deleted_connection()
 RETURNS trigger
@@ -392,6 +604,149 @@ ALTER TABLE public.runs RENAME COLUMN behavior_id TO watcher_id;
 -- squawk-ignore renaming-column,prefer-robust-stmts -- rollback hard cutover
 ALTER VIEW public.canvas_windows RENAME COLUMN behavior_id TO watcher_id;
 
+-- The forward migration preserved the legacy canvas roots and stamped their
+-- ids on the canonical roots. Restore mutable window references before the old
+-- application resumes; neither event chain is changed.
+WITH root_map AS (
+  SELECT id AS canonical_root_id,
+         (metadata->>'cutover_source_event_id')::bigint AS legacy_root_id
+  FROM public.events
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'cutover_source_event_id'
+)
+UPDATE public.watcher_reactions target
+SET window_id = root_map.legacy_root_id
+FROM root_map
+WHERE target.window_id = root_map.canonical_root_id;
+
+WITH root_map AS (
+  SELECT id AS canonical_root_id,
+         (metadata->>'cutover_source_event_id')::bigint AS legacy_root_id
+  FROM public.events
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'cutover_source_event_id'
+)
+UPDATE public.runs target
+SET window_id = root_map.legacy_root_id
+FROM root_map
+WHERE target.window_id = root_map.canonical_root_id;
+
+WITH root_map AS (
+  SELECT id AS canonical_root_id,
+         (metadata->>'cutover_source_event_id')::bigint AS legacy_root_id
+  FROM public.events
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'cutover_source_event_id'
+)
+UPDATE public.watcher_window_events target
+SET window_id = root_map.legacy_root_id
+FROM root_map
+WHERE target.window_id = root_map.canonical_root_id;
+
+WITH root_map AS (
+  SELECT id AS canonical_root_id,
+         (metadata->>'cutover_source_event_id')::bigint AS legacy_root_id
+  FROM public.events
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'cutover_source_event_id'
+)
+UPDATE public.event_classifications target
+SET window_id = root_map.legacy_root_id
+FROM root_map
+WHERE target.window_id = root_map.canonical_root_id;
+
+-- Restore non-canvas event vocabulary through another append-only
+-- supersession. This keeps corrections/config written after the forward
+-- cutover readable by the rolled-back application without mutating history.
+DO $restore_event_vocabulary$
+BEGIN
+  CREATE TEMP TABLE watcher_event_replacement (
+    old_event_id bigint PRIMARY KEY,
+    new_event_id bigint NOT NULL UNIQUE
+  ) ON COMMIT DROP;
+
+  INSERT INTO watcher_event_replacement (old_event_id, new_event_id)
+  SELECT e.id, nextval('public.content_id_seq')
+  FROM public.events e
+  WHERE e.semantic_type <> 'canvas_state'
+    AND e.superseded_by IS NULL
+    AND (
+      e.metadata ? 'behavior_id'
+      OR e.metadata->>'source' IN ('behavior_canvas', 'behavior_promotion')
+      OR e.metadata->>'resourceKind' = 'behavior'
+      OR e.metadata->>'resource_kind' = 'behavior'
+      OR EXISTS (
+        SELECT 1
+        FROM public.events root
+        WHERE root.semantic_type = 'canvas_state'
+          AND root.supersedes_event_id IS NULL
+          AND root.metadata ? 'cutover_source_event_id'
+          AND e.metadata->>'window_id' ~ '^[0-9]+$'
+          AND (e.metadata->>'window_id')::bigint = root.id
+      )
+    );
+
+  INSERT INTO public.events (
+    id, organization_id, entity_ids, origin_id, title, payload_type,
+    payload_text, payload_data, payload_template, attachments, metadata, score,
+    author_name, source_url, occurred_at, created_at, origin_parent_id,
+    origin_type, connector_key, connection_id, feed_key, feed_id, run_id,
+    semantic_type, client_id, created_by, interaction_type, interaction_status,
+    interaction_input_schema, interaction_input, interaction_output,
+    interaction_error, supersedes_event_id, superseded_by
+  )
+  SELECT
+    replacement.new_event_id, e.organization_id, e.entity_ids,
+    CASE WHEN e.connector_key LIKE 'webhook:%' AND e.origin_id IS NOT NULL
+      THEN e.origin_id || ':watcher-rollback:' || e.id::text
+      ELSE e.origin_id
+    END,
+    e.title, e.payload_type, e.payload_text, e.payload_data, e.payload_template,
+    e.attachments,
+    -- Keep the reserved idempotency key on its original immutable row in both
+    -- directions; the superseding vocabulary copy must not duplicate it.
+    (e.metadata - 'behavior_id' - '_lobu_idempotency_key')
+      || CASE WHEN e.metadata ? 'behavior_id'
+           THEN jsonb_build_object('watcher_id', e.metadata->'behavior_id') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'source' = 'behavior_canvas'
+           THEN jsonb_build_object('source', 'watcher_canvas') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'source' = 'behavior_promotion'
+           THEN jsonb_build_object('source', 'watcher_promotion') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resourceKind' = 'behavior'
+           THEN jsonb_build_object('resourceKind', 'watcher') ELSE '{}'::jsonb END
+      || CASE WHEN e.metadata->>'resource_kind' = 'behavior'
+           THEN jsonb_build_object('resource_kind', 'watcher') ELSE '{}'::jsonb END
+      || CASE WHEN root.id IS NOT NULL
+           THEN jsonb_build_object(
+             'window_id', (root.metadata->>'cutover_source_event_id')::bigint
+           ) ELSE '{}'::jsonb END,
+    e.score, e.author_name, e.source_url, e.occurred_at, e.created_at,
+    e.origin_parent_id, e.origin_type, e.connector_key, e.connection_id,
+    e.feed_key, e.feed_id, e.run_id, e.semantic_type, e.client_id, e.created_by,
+    e.interaction_type, e.interaction_status, e.interaction_input_schema,
+    e.interaction_input, e.interaction_output, e.interaction_error,
+    e.id, NULL
+  FROM public.events e
+  JOIN watcher_event_replacement replacement ON replacement.old_event_id = e.id
+  LEFT JOIN public.events root
+   ON root.semantic_type = 'canvas_state'
+   AND root.supersedes_event_id IS NULL
+   AND root.metadata ? 'cutover_source_event_id'
+   AND e.metadata->>'window_id' ~ '^[0-9]+$'
+   AND (e.metadata->>'window_id')::bigint = root.id;
+
+  UPDATE public.events old_event
+  SET superseded_by = replacement.new_event_id
+  FROM watcher_event_replacement replacement
+  WHERE old_event.id = replacement.old_event_id
+    AND old_event.superseded_by IS NULL;
+END
+$restore_event_vocabulary$;
+
 DO $rename_constraints$
 DECLARE
   item record;
@@ -472,37 +827,36 @@ UPDATE public.entities
 SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
 WHERE metadata->>'source' = 'behavior_promotion';
 
--- Exact inverse of the forward pass: same whole-word suffix alternation, so
--- `canvas_windows` (a relation that outlives the cutover in both directions,
--- with only its column reverting to `watcher_id`) and the pre-existing
--- `behavior_message_subscriptions` / `connector_definitions.behavior_events`
--- names are left alone.
+-- `behaviors` and `behavior_versions` were already the public query_sql
+-- relation names before this physical-schema cutover. Keep those authored
+-- tokens canonical on rollback; only physical-only relations and renamed
+-- columns move back to their pre-cutover identifiers.
 UPDATE public.watchers
 SET sources = regexp_replace(
   sources::text,
-  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M',
   '\1watcher\2',
   'g'
 )::jsonb
-WHERE sources::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
+WHERE sources::text ~ '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.watcher_versions
 SET version_sources = regexp_replace(
   version_sources::text,
-  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M',
   '\1watcher\2',
   'g'
 )::jsonb
-WHERE version_sources::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
+WHERE version_sources::text ~ '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.view_template_versions
 SET json_template = regexp_replace(
   json_template::text,
-  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M',
   '\1watcher\2',
   'g'
 )::jsonb
-WHERE json_template::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
+WHERE json_template::text ~ '\m(source_)?behavior(_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.entity_identities SET namespace = 'watcher_canvas' WHERE namespace = 'behavior_canvas';
 UPDATE public.entity_identities SET namespace = 'watcher_key' WHERE namespace = 'behavior_key';
@@ -550,7 +904,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_chain_root
     (metadata->>'granularity'),
     (metadata->>'window_start')
   )
-  WHERE semantic_type = 'canvas_state' AND supersedes_event_id IS NULL;
+  WHERE semantic_type = 'canvas_state'
+    AND supersedes_event_id IS NULL
+    AND metadata ? 'watcher_id';
 
 -- squawk-ignore require-concurrent-index-deletion -- rollback hard cutover
 DROP INDEX IF EXISTS public.idx_canvas_state_listing;
@@ -561,7 +917,7 @@ CREATE INDEX IF NOT EXISTS idx_canvas_state_listing
     (metadata->>'granularity'),
     (metadata->>'window_start') DESC
   )
-  WHERE semantic_type = 'canvas_state';
+  WHERE semantic_type = 'canvas_state' AND metadata ? 'watcher_id';
 
 CREATE OR REPLACE VIEW public.canvas_windows AS
 SELECT
@@ -600,7 +956,8 @@ LEFT JOIN LATERAL (
 ) head ON TRUE
 LEFT JOIN public.runs run ON run.id = head.run_id
 WHERE root.semantic_type = 'canvas_state'
-  AND root.supersedes_event_id IS NULL;
+  AND root.supersedes_event_id IS NULL
+  AND root.metadata ? 'watcher_id';
 
 CREATE OR REPLACE FUNCTION public.archive_chat_behaviors_for_deleted_connection()
 RETURNS trigger

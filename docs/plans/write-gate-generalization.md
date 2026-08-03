@@ -321,11 +321,12 @@ inspectable as one that needed approval. Do NOT encapsulate the change-set insid
    approve/reject + reviewer routing. When policy = auto, the change-set still exists and
    is still viewable; it just applied without a gate.
 
-**Already partially exists** (grounds this, not net-new): `behavior_run_id` threaded through
-`complete_window` (`manage_behaviors/complete-window.ts`);
-`promoted-entities-recap.tsx` + `behavior-summary-view.tsx` in owletto render a run recap.
-The work is to make the change-set the FIRST-CLASS primitive both the recap AND the batch
-approval read from — one source, two views (mirrors "one writer many mirrors").
+**Already partially exists** (grounds this, not net-new): `behavior_run_id` is threaded through
+`complete_window` (`manage_behaviors/complete-window.ts`). Owletto's
+`agent-behavior-detail-route.tsx` renders the run thread plus a durable-outputs link, but the old
+per-run recap was removed. The work is to make the change-set the FIRST-CLASS primitive both a
+run detail and the batch approval read from — one source, two views (mirrors "one writer many
+mirrors").
 
 **This also fixes Codex gap #6**: the batch grouping contract lives on the RUN change-set
 (`behavior_run_id`), not invented inside the approval flow.

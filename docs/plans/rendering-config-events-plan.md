@@ -43,9 +43,8 @@
   promoted entities are never bare.
 - **R0.2** Unify the entity resolver to `instance → type → auto-default` (extend the existing
   `resolve_path` COALESCE with the auto-default tail).
-- **R0.3 (owletto)** Remove the dead behavior-`json_template` rendering (`behavior-detail`,
-  `behavior-group-detail`, `behavior-summary-view`); add **behavior → promoted-entities navigation**
-  so the behavior view links to the richly-rendered entities. Bump the lobu pointer.
+- **R0.3 (owletto, complete)** The old recap renderers are gone;
+  `agent-behavior-detail-route.tsx` now links each Behavior's promoted entities into Memory.
 - Gate: entity render tests (default + override + drift graceful-skip); owletto compile + manual.
 
 ## Phase R1 — First-class event types (Gap 1)

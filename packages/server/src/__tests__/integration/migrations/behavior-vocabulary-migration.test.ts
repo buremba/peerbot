@@ -120,18 +120,15 @@ describe('Behavior vocabulary migration', () => {
       organizationId: org.id,
       ownerUserId: user.id,
     });
-    const canonicalSqlIdentifiers = [
-      'behaviors',
-      'behavior_versions',
+    const canonicalPublicRelations = ['behaviors', 'behavior_versions'];
+    const canonicalRenamedIdentifiers = [
       'behavior_reactions',
       'behavior_window_events',
       'source_behavior_id',
       'behavior_group_id',
       'behavior_id',
     ];
-    const retiredSqlIdentifiers = [
-      'watchers',
-      'watcher_versions',
+    const retiredRenamedIdentifiers = [
       'watcher_reactions',
       'watcher_window_events',
       'source_watcher_id',
@@ -263,20 +260,25 @@ describe('Behavior vocabulary migration', () => {
       };
     };
 
+    const legacyEventMetadata = {
+      watcher_id: 4242,
+      source: 'watcher_canvas',
+      resourceKind: 'watcher',
+      resource_kind: 'watcher',
+      granularity: 'day',
+      window_start: '2026-08-04T00:00:00Z',
+      window_end: '2026-08-05T00:00:00Z',
+    };
     await executeMigrationSection((statement) => sql.unsafe(statement), down);
     let legacyEventId: string | undefined;
+    let legacyHeadId: string | undefined;
+    let legacyRunId: string | undefined;
+    let legacyCorrectionId: string | undefined;
+    const legacyIdempotencyKey = `vocab-correction-${Date.now()}`;
+    const legacyCorrectionOrigin = `vocab-legacy-correction-${Date.now()}`;
     try {
       const rolledBack = await readBack();
       expect(rolledBack.event).toEqual(canonicalEventMetadata);
-      const legacyEventMetadata = {
-        watcher_id: 4242,
-        source: 'watcher_canvas',
-        resourceKind: 'watcher',
-        resource_kind: 'watcher',
-        granularity: 'day',
-        window_start: '2026-08-04T00:00:00Z',
-        window_end: '2026-08-05T00:00:00Z',
-      };
       const [legacyEvent] = await sql<{ id: string }[]>`
         INSERT INTO events (
           organization_id, origin_id, semantic_type, payload_type, metadata
@@ -288,6 +290,45 @@ describe('Behavior vocabulary migration', () => {
         RETURNING id
       `;
       legacyEventId = legacyEvent?.id;
+      const [legacyHead] = await sql<{ id: string }[]>`
+        INSERT INTO events (
+          organization_id, origin_id, semantic_type, payload_type, payload_data,
+          metadata, supersedes_event_id
+        )
+        VALUES (
+          ${org.id}, ${`vocab-legacy-head-${Date.now()}`}, 'canvas_state',
+          'json_template', ${sql.json({ summary: 'legacy head' })},
+          ${sql.json(legacyEventMetadata)}, ${legacyEventId}
+        )
+        RETURNING id
+      `;
+      legacyHeadId = legacyHead?.id;
+      await sql`
+        UPDATE events SET superseded_by = ${legacyHeadId} WHERE id = ${legacyEventId}
+      `;
+      const [legacyRun] = await sql<{ id: string }[]>`
+        INSERT INTO runs (organization_id, run_type, status, run_at, window_id)
+        VALUES (${org.id}, 'internal', 'completed', current_timestamp, ${legacyEventId})
+        RETURNING id
+      `;
+      legacyRunId = legacyRun?.id;
+      const [legacyCorrection] = await sql<{ id: string }[]>`
+        INSERT INTO events (
+          organization_id, origin_id, connector_key, semantic_type, payload_type, metadata
+        )
+        VALUES (
+          ${org.id}, ${legacyCorrectionOrigin}, 'webhook:vocabulary-cutover',
+          'correction', 'empty',
+          ${sql.json({
+            watcher_id: 4242,
+            window_id: Number(legacyEventId),
+            resourceKind: 'watcher',
+            _lobu_idempotency_key: legacyIdempotencyKey,
+          })}
+        )
+        RETURNING id
+      `;
+      legacyCorrectionId = legacyCorrection?.id;
       expect(rolledBack.storedEntity).toEqual({
         source: 'watcher_promotion',
         watcher_id: 4242,
@@ -308,15 +349,25 @@ describe('Behavior vocabulary migration', () => {
       const [rolledBackVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
         SELECT version_sources FROM watcher_versions WHERE id = ${version!.id}
       `;
-      for (const identifier of retiredSqlIdentifiers) {
+      for (const identifier of retiredRenamedIdentifiers) {
         expect(rolledBackTemplate).toContain(identifier);
         expect(rolledBackBehavior?.sources[0]?.query).toContain(identifier);
         expect(rolledBackVersion?.version_sources[0]?.query).toContain(identifier);
       }
-      for (const identifier of canonicalSqlIdentifiers) {
+      for (const identifier of canonicalRenamedIdentifiers) {
         expect(rolledBackTemplate).not.toContain(identifier);
         expect(rolledBackBehavior?.sources[0]?.query).not.toContain(identifier);
         expect(rolledBackVersion?.version_sources[0]?.query).not.toContain(identifier);
+      }
+      for (const relation of canonicalPublicRelations) {
+        expect(rolledBackTemplate).toContain(relation);
+        expect(rolledBackBehavior?.sources[0]?.query).toContain(relation);
+        expect(rolledBackVersion?.version_sources[0]?.query).toContain(relation);
+      }
+      for (const relation of ['watchers', 'watcher_versions']) {
+        expect(rolledBackTemplate).not.toContain(relation);
+        expect(rolledBackBehavior?.sources[0]?.query).not.toContain(relation);
+        expect(rolledBackVersion?.version_sources[0]?.query).not.toContain(relation);
       }
       // `canvas_windows` is NOT reversed. The view already carried that name
       // before this cutover (20260703100000 dropped the `watcher_windows` table
@@ -356,6 +407,93 @@ describe('Behavior vocabulary migration', () => {
       window_start: '2026-08-04T00:00:00Z',
       window_end: '2026-08-05T00:00:00Z',
     });
+    const [legacyHeadAfterUp] = await sql<{
+      metadata: Record<string, unknown>;
+      payload_data: Record<string, unknown>;
+    }[]>`
+      SELECT metadata, payload_data FROM events WHERE id = ${legacyHeadId}
+    `;
+    expect(legacyHeadAfterUp).toEqual({
+      metadata: {
+        watcher_id: 4242,
+        source: 'watcher_canvas',
+        resourceKind: 'watcher',
+        resource_kind: 'watcher',
+        granularity: 'day',
+        window_start: '2026-08-04T00:00:00Z',
+        window_end: '2026-08-05T00:00:00Z',
+      },
+      payload_data: { summary: 'legacy head' },
+    });
+    const [canonicalLegacyRoot] = await sql<{ id: string }[]>`
+      SELECT id::text
+      FROM events
+      WHERE semantic_type = 'canvas_state'
+        AND supersedes_event_id IS NULL
+        AND (metadata->>'cutover_source_event_id')::bigint = ${legacyEventId}
+    `;
+    expect(canonicalLegacyRoot?.id).toBeDefined();
+    expect(
+      await sql<{ id: string; extracted_data: Record<string, unknown> }[]>`
+        SELECT id::text, extracted_data
+        FROM canvas_windows
+        WHERE id = ${canonicalLegacyRoot?.id}
+      `,
+    ).toEqual([
+      { id: canonicalLegacyRoot?.id, extracted_data: { summary: 'legacy head' } },
+    ]);
+    expect(
+      await sql<{ window_id: string }[]>`
+        SELECT window_id::text FROM runs WHERE id = ${legacyRunId}
+      `,
+    ).toEqual([{ window_id: canonicalLegacyRoot?.id }]);
+    const [originalCorrection] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM events WHERE id = ${legacyCorrectionId}
+    `;
+    expect(originalCorrection?.metadata).toEqual({
+      watcher_id: 4242,
+      window_id: Number(legacyEventId),
+      resourceKind: 'watcher',
+      _lobu_idempotency_key: legacyIdempotencyKey,
+    });
+    expect(
+      await sql<{
+        metadata: Record<string, unknown>;
+        origin_id: string;
+        connector_key: string;
+        supersedes_event_id: string;
+      }[]>`
+        SELECT metadata, origin_id, connector_key, supersedes_event_id::text
+        FROM events
+        WHERE supersedes_event_id = ${legacyCorrectionId}
+      `,
+    ).toEqual([
+      {
+        metadata: {
+          behavior_id: 4242,
+          window_id: Number(canonicalLegacyRoot?.id),
+          resourceKind: 'behavior',
+        },
+        origin_id: `${legacyCorrectionOrigin}:behavior-cutover:${legacyCorrectionId}`,
+        connector_key: 'webhook:vocabulary-cutover',
+        supersedes_event_id: String(legacyCorrectionId),
+      },
+    ]);
+    await expect(
+      sql`
+        INSERT INTO events (
+          organization_id, origin_id, semantic_type, payload_type, metadata
+        )
+        VALUES (
+          ${org.id}, ${`vocab-duplicate-${Date.now()}`}, 'canvas_state', 'empty',
+          ${sql.json({
+            behavior_id: 4242,
+            granularity: 'day',
+            window_start: '2026-08-04T00:00:00Z',
+          })}
+        )
+      `,
+    ).rejects.toThrow(/idx_canvas_chain_root/);
     expect(reapplied.storedEntity).toEqual({
       source: 'behavior_promotion',
       behavior_id: 4242,
@@ -376,12 +514,16 @@ describe('Behavior vocabulary migration', () => {
     const [reappliedVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
       SELECT version_sources FROM behavior_versions WHERE id = ${version!.id}
     `;
-    for (const identifier of canonicalSqlIdentifiers) {
+    for (const identifier of [...canonicalPublicRelations, ...canonicalRenamedIdentifiers]) {
       expect(reappliedTemplate).toContain(identifier);
       expect(reappliedBehavior?.sources[0]?.query).toContain(identifier);
       expect(reappliedVersion?.version_sources[0]?.query).toContain(identifier);
     }
-    for (const identifier of retiredSqlIdentifiers) {
+    for (const identifier of [
+      'watchers',
+      'watcher_versions',
+      ...retiredRenamedIdentifiers,
+    ]) {
       expect(reappliedTemplate).not.toContain(identifier);
       expect(reappliedBehavior?.sources[0]?.query).not.toContain(identifier);
       expect(reappliedVersion?.version_sources[0]?.query).not.toContain(identifier);
@@ -417,5 +559,83 @@ describe('Behavior vocabulary migration', () => {
           AND id = ${entity.id}
       `,
     ).toEqual([{ id: String(entity.id) }]);
+
+    const canonicalLegacyRootId = canonicalLegacyRoot!.id;
+    await executeMigrationSection((statement) => sql.unsafe(statement), down);
+    let rollbackReplayHeadId: string | undefined;
+    try {
+      const [rollbackReplayHead] = await sql<{ id: string }[]>`
+        INSERT INTO events (
+          organization_id, origin_id, semantic_type, payload_type, payload_data,
+          metadata, supersedes_event_id
+        )
+        VALUES (
+          ${org.id}, ${`vocab-rollback-replay-${Date.now()}`}, 'canvas_state',
+          'json_template', ${sql.json({ summary: 'rollback replay head' })},
+          ${sql.json(legacyEventMetadata)}, ${legacyHeadId}
+        )
+        RETURNING id
+      `;
+      rollbackReplayHeadId = rollbackReplayHead?.id;
+      await sql`
+        UPDATE events SET superseded_by = ${rollbackReplayHeadId} WHERE id = ${legacyHeadId}
+      `;
+    } finally {
+      await executeMigrationSection((statement) => sql.unsafe(statement), up);
+    }
+
+    expect(
+      await sql<{ id: string }[]>`
+        SELECT id::text
+        FROM events
+        WHERE semantic_type = 'canvas_state'
+          AND supersedes_event_id IS NULL
+          AND (metadata->>'cutover_source_event_id')::bigint = ${legacyEventId}
+      `,
+    ).toEqual([{ id: canonicalLegacyRootId }]);
+    const [canonicalLegacyHead] = await sql<{ id: string }[]>`
+      SELECT id::text
+      FROM events
+      WHERE (metadata->>'cutover_source_event_id')::bigint = ${legacyHeadId}
+    `;
+    expect(
+      await sql<
+        {
+          metadata: Record<string, unknown>;
+          payload_data: Record<string, unknown>;
+          supersedes_event_id: string;
+        }[]
+      >`
+        SELECT
+          metadata - 'cutover_source_event_id' AS metadata,
+          payload_data,
+          supersedes_event_id::text
+        FROM events
+        WHERE (metadata->>'cutover_source_event_id')::bigint = ${rollbackReplayHeadId}
+      `,
+    ).toEqual([
+      {
+        metadata: {
+          behavior_id: 4242,
+          source: 'behavior_canvas',
+          resourceKind: 'behavior',
+          resource_kind: 'behavior',
+          granularity: 'day',
+          window_start: '2026-08-04T00:00:00Z',
+          window_end: '2026-08-05T00:00:00Z',
+        },
+        payload_data: { summary: 'rollback replay head' },
+        supersedes_event_id: canonicalLegacyHead?.id,
+      },
+    ]);
+    expect(
+      await sql<{ id: string; extracted_data: Record<string, unknown> }[]>`
+        SELECT id::text, extracted_data
+        FROM canvas_windows
+        WHERE id = ${canonicalLegacyRootId}
+      `,
+    ).toEqual([
+      { id: canonicalLegacyRootId, extracted_data: { summary: 'rollback replay head' } },
+    ]);
   });
 });

@@ -541,7 +541,7 @@ export const QUERYABLE_SCHEMA = {
         'version_sources'
       ),
     },
-    // canvas_windows (VIEW; replaces the retired behavior_windows table): one row
+    // canvas_windows (VIEW over canvas_state event chains): one row
     // per behavior window = canvas_state chain ROOT; id is the root event id and
     // matches event_classifications/behavior_window_events/runs.window_id.
     {

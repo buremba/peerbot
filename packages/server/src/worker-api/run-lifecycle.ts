@@ -1267,7 +1267,7 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 			// complete_window, so runs it left on the pipeline default get the device
 			// stamp. An explicit model passed by the agent wins. Provenance now lives
 			// on the RUN row (model_used / run_metadata.execution_time_ms), not the
-			// retired behavior_windows table — the canvas is the window projection and
+			// old mutable window table — the canvas is the window projection and
 			// reads pull execution_time_ms from run timestamps / run_metadata.
 			await sql`
         UPDATE runs

@@ -517,7 +517,7 @@ describe("behavior automation contract", () => {
 	//     → server-side dispatcher refuses to claim (#802 covers this; checked
 	//       above by the "skips behavior runs pinned to a device worker" test)
 	//     → device posts to /api/workers/me/runs/:id/complete-behavior
-	//         which writes the behavior_windows row + advances last_fired_at.
+	//         which writes the canvas window + advances last_fired_at.
 	describe("device-pinned execution (#798)", () => {
 		it("persists behaviors.device_worker_id and agent_kind into approved_input on materialization", async () => {
 			const { sql, behaviorId } = await createAutomatedBehavior();
@@ -1285,7 +1285,7 @@ describe("behavior automation contract", () => {
       `;
 			expect(String(run.status)).toBe("failed");
 			expect(String(run.error_message)).toBe("claude binary not found");
-			// No behavior_windows row on failure.
+			// No canvas window on failure.
 			expect(run.window_id).toBeNull();
 			expect(Number(run.exit_code)).toBe(127);
 			expect(String(run.exit_reason)).toBe("crash");
@@ -1415,7 +1415,7 @@ describe("behavior automation contract", () => {
 		});
 
 		// Pi review #3: a second concurrent completion must be idempotent — no
-		// duplicate behavior_windows row, no 500, status reflects the winner.
+		// duplicate canvas root, no 500, status reflects the winner.
 		// Duplicate exit reports on a FAILED run must be idempotent: the second
 		// report acks without re-failing or double-advancing the schedule
 		// (failRun's RETURNING guard).
@@ -1576,7 +1576,7 @@ describe("behavior automation contract", () => {
       `;
 			expect(String(run.status)).toBe("running");
 			expect(run.window_id).toBeNull();
-			// No behavior_windows row was created.
+			// No canvas window was created.
 			const windows = await sql`
         SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
       `;
@@ -1823,7 +1823,7 @@ describe("behavior automation contract", () => {
 		});
 
 		// Move the run to an active state with a dispatched_message_id and NO
-		// behavior_windows row — mirrors prod's stuck run 146501 exactly, so the
+		// canvas window — mirrors prod's stuck run 146501 exactly, so the
 		// first reconcile query is a no-op and execution reaches the buggy
 		// dispatched-id containment query.
 		await sql`
@@ -2268,7 +2268,7 @@ describe("canvas-on-events window completion", () => {
 
 	it("completes with a PAT/device client_id that is not an oauth_clients row", async () => {
 		// Reproduces the sdk-e2e failure: events.client_id has an FK to
-		// oauth_clients (unlike behavior_windows.client_id, which stores PAT ids
+		// oauth_clients (unlike the historical window record, which stored PAT ids
 		// verbatim). The canvas insert runs inside the completion tx, where
 		// insertEvent's client-id-FK retry can't engage (the first failed INSERT
 		// aborts the tx) — so complete_window must pre-validate and stamp NULL.

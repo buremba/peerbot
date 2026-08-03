@@ -147,6 +147,7 @@ describe('Behavior vocabulary migration', () => {
     };
 
     await executeMigrationSection((statement) => sql.unsafe(statement), down);
+    let canvasEventId: string | undefined;
     try {
       const rolledBack = await readBack();
       expect(rolledBack.identity).toEqual({
@@ -164,6 +165,31 @@ describe('Behavior vocabulary migration', () => {
           ${org.id}, 'internal', 'failed', current_timestamp,
           'Use client.watchers.completeWindow to finish'
         )
+      `;
+      const [canvasEvent] = await sql<{ id: string }[]>`
+        INSERT INTO events (
+          organization_id, origin_id, semantic_type, payload_type, metadata
+        )
+        VALUES (
+          ${org.id}, ${`vocab-canvas-${Date.now()}`}, 'canvas_state', 'empty',
+          ${sql.json({
+            watcher_id: 4242,
+            source: 'watcher_canvas',
+            granularity: 'day',
+            window_start: '2026-08-03T00:00:00Z',
+            window_end: '2026-08-04T00:00:00Z',
+          })}
+        )
+        RETURNING id
+      `;
+      canvasEventId = canvasEvent?.id;
+      await sql`
+        UPDATE entities
+        SET metadata = ${sql.json({
+          source: 'watcher_promotion',
+          watcher_id: 4242,
+        })}
+        WHERE id = ${entity.id}
       `;
     } finally {
       await executeMigrationSection((statement) => sql.unsafe(statement), up);
@@ -186,5 +212,21 @@ describe('Behavior vocabulary migration', () => {
         WHERE organization_id = ${org.id} AND error_message LIKE '%completeWindow%'
       `,
     ).toEqual([{ error_message: 'Use client.behaviors.completeWindow to finish' }]);
+    expect(
+      await sql<{ behavior_id: string }[]>`
+        SELECT behavior_id::text
+        FROM canvas_windows
+        WHERE id = ${canvasEventId}
+      `,
+    ).toEqual([{ behavior_id: '4242' }]);
+    expect(
+      await sql<{ id: string }[]>`
+        SELECT id::text
+        FROM entities
+        WHERE metadata->>'source' = 'behavior_promotion'
+          AND (metadata->>'behavior_id')::bigint = 4242
+          AND id = ${entity.id}
+      `,
+    ).toEqual([{ id: String(entity.id) }]);
   });
 });

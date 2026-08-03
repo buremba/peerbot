@@ -108,6 +108,40 @@ ALTER TABLE public.runs VALIDATE CONSTRAINT runs_policy_principal_kind_check;
 --     gets a second default agent + Behavior on next sign-in.
 -- They move inside the same atomic cutover as the identifiers.
 
+UPDATE public.events
+SET metadata = (metadata - 'watcher_id')
+  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
+WHERE metadata ? 'watcher_id';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
+WHERE metadata->>'source' = 'watcher_canvas';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
+WHERE metadata->>'source' = 'watcher_promotion';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resourceKind}', '"behavior"'::jsonb)
+WHERE metadata->>'resourceKind' = 'watcher';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resource_kind}', '"behavior"'::jsonb)
+WHERE metadata->>'resource_kind' = 'watcher';
+
+UPDATE public.entities
+SET metadata = (metadata - 'watcher_id')
+  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
+WHERE metadata ? 'watcher_id';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
+WHERE metadata->>'source' = 'watcher_canvas';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
+WHERE metadata->>'source' = 'watcher_promotion';
+
 UPDATE public.entity_identities SET namespace = 'behavior_canvas' WHERE namespace = 'watcher_canvas';
 UPDATE public.entity_identities SET namespace = 'behavior_key' WHERE namespace = 'watcher_key';
 UPDATE public.entity_identities SET source_connector = 'behavior' WHERE source_connector = 'watcher';
@@ -148,9 +182,8 @@ BEGIN
 END
 $provisioning_sentinel$;
 
--- Error text is mutable run state, so canonicalize it once instead of keeping
--- a read-time compatibility rewrite. The append-only events table is never
--- rewritten by this migration; historical event payloads remain history.
+-- Canonicalize mutable run error text once instead of keeping a read-time
+-- compatibility rewrite.
 UPDATE public.runs
 SET error_message = replace(error_message, 'client.watchers.', 'client.behaviors.')
 WHERE error_message LIKE '%client.watchers.%';
@@ -408,6 +441,32 @@ ALTER TABLE public.runs
 ALTER TABLE public.runs VALIDATE CONSTRAINT runs_policy_principal_kind_check;
 
 -- Reverse the mutable configuration-value cutover above.
+UPDATE public.events
+SET metadata = (metadata - 'behavior_id')
+  || jsonb_build_object('watcher_id', metadata -> 'behavior_id')
+WHERE metadata ? 'behavior_id';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"watcher_canvas"'::jsonb)
+WHERE metadata->>'source' = 'behavior_canvas';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
+WHERE metadata->>'source' = 'behavior_promotion';
+
+UPDATE public.entities
+SET metadata = (metadata - 'behavior_id')
+  || jsonb_build_object('watcher_id', metadata -> 'behavior_id')
+WHERE metadata ? 'behavior_id';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"watcher_canvas"'::jsonb)
+WHERE metadata->>'source' = 'behavior_canvas';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
+WHERE metadata->>'source' = 'behavior_promotion';
+
 UPDATE public.entity_identities SET namespace = 'watcher_canvas' WHERE namespace = 'behavior_canvas';
 UPDATE public.entity_identities SET namespace = 'watcher_key' WHERE namespace = 'behavior_key';
 UPDATE public.entity_identities SET source_connector = 'watcher' WHERE source_connector = 'behavior';

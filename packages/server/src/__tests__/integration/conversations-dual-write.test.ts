@@ -167,7 +167,20 @@ describe("conversations dual-write", () => {
 			kind: "platform",
 			userId: null,
 			title: "a slack thread",
+			locationLabel: "#old-name",
 			lastActivityAt: new Date("2026-06-28T02:00:00Z"),
+		});
+		await upsertConversation({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: "slack:CX:ts",
+			threadId: null,
+			kind: "platform",
+			userId: null,
+			title: null,
+			locationLabel: "#renamed-channel",
+			lastActivityAt: new Date("2026-06-28T03:00:00Z"),
 		});
 		const rows = await listConversations({
 			organizationId: org,
@@ -180,6 +193,7 @@ describe("conversations dual-write", () => {
 		// of identity, so re-delivery through a different connection does not fork.
 		expect(row).toHaveLength(1);
 		expect(row[0]?.platform).toBe("slack");
+		expect(row[0]?.locationLabel).toBe("#renamed-channel");
 	});
 
 	it("returns the EXPLICIT stored platform for an opaque no-colon platform id", async () => {

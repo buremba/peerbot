@@ -2,7 +2,9 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import { recordMcpConversationActivity } from '../../../lobu/stores/mcp-client-conversations';
 import { recordToolInvocationAudit } from '../../../tools/audit';
+import { isSoftErrorResult } from '../../../tools/execute';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -46,12 +48,18 @@ describe('client sessions activity route', () => {
     overrides: Partial<ToolContext> = {},
     result: Record<string, unknown> = { ok: true }
   ): Promise<void> {
+    const ctx = auditCtx({ mcpSessionId: sessionId, ...overrides });
     await recordToolInvocationAudit({
       toolName,
       args: { query: 'probe' },
       result,
       durationMs: 3,
-      ctx: auditCtx({ mcpSessionId: sessionId, ...overrides }),
+      ctx,
+    });
+    await recordMcpConversationActivity({
+      ctx,
+      toolName,
+      failed: isSoftErrorResult(result),
     });
   }
 
@@ -100,10 +108,10 @@ describe('client sessions activity route', () => {
     // depend on sub-millisecond insertion timing.
     const db = getDb();
     await db`
-      UPDATE events SET occurred_at = now() - interval '1 hour'
-      WHERE organization_id = ${orgId}
-        AND semantic_type = 'audit'
-        AND metadata->>'mcp_session_id' = 'sess-alpha'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '2 hours',
+        last_activity_at = now() - interval '1 hour'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-alpha'
     `;
     await recordCall('sess-beta', 'search_sdk');
 
@@ -116,9 +124,34 @@ describe('client sessions activity route', () => {
     await recordCall('sess-stale', 'search_memory');
     const sql = getDb();
     await sql`
-      UPDATE events SET occurred_at = now() - interval '30 days'
-      WHERE organization_id = ${orgId}
-        AND metadata->>'mcp_session_id' = 'sess-stale'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '30 days',
+        last_activity_at = now() - interval '30 days'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-stale'
+    `;
+
+    for (let index = 0; index < 10; index += 1) {
+      await recordCall('sess-tool-cap', `tool_${index}`);
+    }
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '2 hours',
+        last_activity_at = now() - interval '2 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-tool-cap'
+    `;
+
+    // PAT callers have a synthetic `pat_<id>` client identity but no matching
+    // oauth_clients row. The projection keeps that identity in its key while
+    // storing a null display-client foreign key.
+    await recordCall('sess-pat', 'search_memory', {
+      clientId: 'pat_1',
+      tokenType: 'pat',
+    } as Partial<ToolContext>);
+    await sql`
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '3 hours',
+        last_activity_at = now() - interval '3 hours'
+      WHERE organization_id = ${orgId} AND conversation_id = 'sess-pat'
     `;
   });
 
@@ -138,28 +171,39 @@ describe('client sessions activity route', () => {
         tools: string[];
         pendingInteractionCount: number;
         lastCallAt: number;
+        lastAction: string;
       }>;
     };
 
     const ids = body.sessions.map((s) => s.sessionId);
-    expect(ids).toEqual(['sess-beta', 'sess-alpha']);
+    expect(ids).toEqual(['sess-beta', 'sess-alpha', 'sess-tool-cap', 'sess-pat']);
     expect(ids).not.toContain('sess-foreign');
     expect(ids).not.toContain('sess-stale');
 
     const alpha = body.sessions.find((s) => s.sessionId === 'sess-alpha')!;
     expect(alpha.callCount).toBe(2);
     expect(alpha.failedCount).toBe(1);
-    expect(alpha.tools).toEqual(['query_sql', 'search_memory']);
+    expect(alpha.tools).toEqual(['search_memory', 'query_sql']);
     expect(alpha.clientId).toBe(clientId);
     expect(alpha.clientName).toBe(clientName);
     expect(alpha.userId).toBe(ownerId);
     expect(alpha.agentId).toBe('session-agent');
     expect(alpha.firstCallAt).toBeLessThanOrEqual(alpha.lastCallAt);
     expect(alpha.pendingInteractionCount).toBe(1);
+    expect(alpha.lastAction).toBe('Query SQL');
 
     const beta = body.sessions.find((s) => s.sessionId === 'sess-beta')!;
     expect(beta.callCount).toBe(1);
     expect(beta.pendingInteractionCount).toBe(0);
+
+    const capped = body.sessions.find((s) => s.sessionId === 'sess-tool-cap')!;
+    expect(capped.tools).toHaveLength(8);
+
+    // Listed despite `pat_1` not being an oauth_clients row.
+    const pat = body.sessions.find((s) => s.sessionId === 'sess-pat')!;
+    expect(pat.clientId).toBeNull();
+    expect(pat.clientName).toBeNull();
+    expect(pat.callCount).toBe(1);
   });
 
   it('honors the bounded result limit', async () => {

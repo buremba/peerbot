@@ -18,6 +18,20 @@ describe("MCP conversation display context", () => {
 		).toBeNull();
 	});
 
+	it("rejects a blank or oversized host id as null, never as an empty string", () => {
+		// Must be null, not "": the caller resolves the id with `?? mcpSessionId`,
+		// and "" is not nullish — returning it would suppress the session fallback
+		// and drop the row entirely.
+		for (const blank of ["", "   ", "\t\n"]) {
+			expect(hostConversationIdFromMeta({ "openai/session": blank })).toBeNull();
+		}
+		expect(
+			hostConversationIdFromMeta({ "openai/session": "x".repeat(513) }),
+		).toBeNull();
+		expect(hostConversationIdFromMeta(null)).toBeNull();
+		expect(hostConversationIdFromMeta(undefined)).toBeNull();
+	});
+
 	it("normalizes a client title to one bounded plain-text line", () => {
 		const title = normalizeMcpConversationTitle(
 			`  Q3\nlaunch\t${"x".repeat(250)}  `,

@@ -3,6 +3,13 @@ import { mcpAuth } from "../auth/middleware";
 import { getDb } from "../db/client";
 import type { Env } from "../index";
 
+/**
+ * Recent org-wide MCP client conversations. The per-conversation counts, tools
+ * and labels are read straight off the `mcp_client_conversations` row
+ * materialized at tool-call time, rather than aggregated out of `events` per
+ * request. The one remaining aggregate is the pending-interaction count — see
+ * the note on its CTE below.
+ */
 const routes = new Hono<{ Bindings: Env }>();
 const ACTIVITY_WINDOW_DAYS = 14;
 
@@ -51,16 +58,29 @@ routes.get("/", mcpAuth, async (c) => {
 	);
 	const sql = getDb();
 	const rows = await sql<SessionRow>`
+    -- The one aggregate left on this path. It groups the org's LIVE
+    -- pending-interaction working set — rows leave it as soon as they resolve —
+    -- not append-only history, so it stays bounded as events grows. Kept as a
+    -- CTE rather than a correlated subquery so it is evaluated once, not once
+    -- per returned conversation.
+    WITH pending_interactions AS (
+      SELECT a.metadata->>'mcp_session_id' AS session_id,
+        count(*)::integer AS pending_interaction_count
+      FROM current_event_records a
+      WHERE a.organization_id = ${organizationId}
+        AND a.interaction_type <> 'none'
+        AND a.interaction_status = 'pending'
+        AND a.metadata->>'mcp_session_id' IS NOT NULL
+      GROUP BY a.metadata->>'mcp_session_id'
+    )
     SELECT mc.conversation_id, mc.client_id, oc.client_name, mc.user_id, mc.agent_id,
       mc.title, mc.last_action, mc.first_activity_at, mc.last_activity_at,
-      mc.call_count, mc.failed_count, mc.tools,
-      COALESCE((SELECT count(*)::integer FROM current_event_records a
-        WHERE a.organization_id = mc.organization_id
-          AND a.interaction_type <> 'none' AND a.interaction_status = 'pending'
-          AND a.metadata->>'mcp_session_id' = mc.transport_session_id), 0)::integer
-        AS pending_interaction_count
+      mc.call_count, mc.failed_count,
+      jsonb_path_query_array(mc.tools, '$[0 to 7]') AS tools,
+      COALESCE(pi.pending_interaction_count, 0)::integer AS pending_interaction_count
     FROM public.mcp_client_conversations mc
     LEFT JOIN oauth_clients oc ON oc.id = mc.client_id
+    LEFT JOIN pending_interactions pi ON pi.session_id = mc.transport_session_id
     WHERE mc.organization_id = ${organizationId}
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}

@@ -104,7 +104,10 @@ export async function upsertConversation(
         -- first turn that knows wins. This is what backfills rows written before
         -- the column existed — they fill in on their next inbound message.
         is_direct = COALESCE(public.conversations.is_direct, EXCLUDED.is_direct),
-		location_label = COALESCE(public.conversations.location_label, EXCLUDED.location_label),
+        -- Opposite rule from is_direct: a channel CAN be renamed, and the label is
+        -- re-resolved every turn, so the freshly resolved name wins. Falls back to
+        -- the stored label only when this turn could not resolve one.
+        location_label = COALESCE(EXCLUDED.location_label, public.conversations.location_label),
         updated_at = now()
     `;
 	} catch (err) {

@@ -271,6 +271,7 @@ async function handleConnectImpl(
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
     deviceWorkerId: deviceBinding.deviceWorkerId,
+    oauthAccountCreatedBy: requireManaged ? userId : undefined,
   });
 
   const hasNoAuth =

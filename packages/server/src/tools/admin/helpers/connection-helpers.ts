@@ -715,6 +715,7 @@ export async function resolveConnectionAuthSelection(params: {
   authProfileSlug?: string | null;
   appAuthProfileSlug?: string | null;
   deviceWorkerId?: string | null;
+  oauthAccountCreatedBy?: string | null;
 }): Promise<AuthSelectionResult> {
   const { organizationId, connectorKey } = params;
   const oauthMethod = getOAuthMethods(params.authSchema)[0] ?? null;
@@ -758,6 +759,7 @@ export async function resolveConnectionAuthSelection(params: {
           connectorKey,
           profileKind: 'oauth_account',
           provider: oauthMethod.provider,
+          createdBy: params.oauthAccountCreatedBy,
         })
       : null);
 

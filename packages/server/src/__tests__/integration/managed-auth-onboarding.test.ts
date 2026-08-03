@@ -215,6 +215,48 @@ describe('managed-auth onboarding', () => {
     });
   });
 
+  it('never reuses another user\'s managed OAuth account', async () => {
+    const home = await createTestOrganization({ name: 'Second User Home' });
+    const firstUser = await createTestUser({ email: 'first-user@example.com' });
+    const secondUser = await createTestUser({ email: 'second-user@example.com' });
+    await addUserToOrganization(secondUser.id, home.id, 'owner');
+    const managed = await seedManagedGoogleOrg();
+    const firstUsersProfile = await createAuthProfile({
+      organizationId: managed.id,
+      connectorKey: 'google.gmail',
+      displayName: 'First User Gmail',
+      profileKind: 'oauth_account',
+      provider: 'google',
+      authData: { access_token: 'first-user-token' },
+      createdBy: firstUser.id,
+    });
+
+    const client = await TestApiClient.for({
+      organizationId: home.id,
+      userId: secondUser.id,
+      memberRole: 'owner',
+      scopedToOrg: false,
+    });
+    const result = (await client.connections.connectManaged({
+      managed_by_org: managed.slug,
+      connector_key: 'google.gmail',
+    })) as { connection_id?: number; status?: string; connect_url?: string };
+
+    expect(result).toMatchObject({
+      connection_id: expect.any(Number),
+      status: 'pending_auth',
+      connect_url: expect.any(String),
+    });
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT auth_profile_id, created_by
+      FROM connections
+      WHERE id = ${result.connection_id}
+    `) as unknown as Array<{ auth_profile_id: number | null; created_by: string }>;
+    expect(rows[0]).toEqual({ auth_profile_id: null, created_by: secondUser.id });
+    expect(rows[0]?.auth_profile_id).not.toBe(firstUsersProfile.id);
+  });
+
   it('uses managed OAuth when ordinary bare connects prefer app installation', async () => {
     const home = await createTestOrganization({ name: 'Fresh User Home' });
     const user = await createTestUser({ email: 'fresh-user@example.com' });

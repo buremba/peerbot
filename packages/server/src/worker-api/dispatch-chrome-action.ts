@@ -21,6 +21,7 @@
 
 import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
+import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
@@ -530,6 +531,7 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY = 'target_browser_connection_id
  */
 async function resolveTargetBrowserWorker(
   organizationId: string,
+  requesterUserId: string | null,
   rawTarget: unknown,
   sql: ReturnType<typeof getDb>
 ): Promise<{ deviceWorkerId: string } | { error: string }> {
@@ -545,6 +547,15 @@ async function resolveTargetBrowserWorker(
     };
   }
 
+  // Apply the same org/private boundary used by discovery and execution. A
+  // headless run has no principal and can therefore target org-visible rows
+  // only; a user may additionally target their own private browser.
+  const visibility = sql`${sql.unsafe(
+    compileConnectionRowVisibility(
+      { organizationId, principal: requesterUserId },
+      'con'
+    )
+  )}`;
   const rows = (await sql`
     SELECT dw.id
     FROM connections con
@@ -555,6 +566,7 @@ async function resolveTargetBrowserWorker(
       AND con.connector_key = 'chrome'
       AND con.status = 'active'
       AND con.deleted_at IS NULL
+      ${visibility}
       AND dw.platform = 'chrome-extension'
     LIMIT 1
   `) as Array<{ id: string }>;
@@ -607,6 +619,8 @@ export async function dispatchChromeActionToExtension(params: {
    * a chrome-extension, scrapes target that browser.
    */
   parentConnectionId?: number | null;
+  /** Trusted requesting user. Null means headless and permits org-visible targets only. */
+  requesterUserId?: string | null;
   /** Abort the wait early (e.g. the calling reaction hit its budget). */
   abortSignal?: AbortSignal;
 }): Promise<ChromeActionDispatchResult> {
@@ -616,6 +630,7 @@ export async function dispatchChromeActionToExtension(params: {
     actionInput,
     parentRunId,
     parentConnectionId,
+    requesterUserId = null,
     abortSignal,
   } = params;
   const sql = getDb();
@@ -627,7 +642,12 @@ export async function dispatchChromeActionToExtension(params: {
   let targetedBrowser = false;
   let preferredDeviceWorkerId: string | null;
   if (rawTarget != null) {
-    const resolved = await resolveTargetBrowserWorker(organizationId, rawTarget, sql);
+    const resolved = await resolveTargetBrowserWorker(
+      organizationId,
+      requesterUserId,
+      rawTarget,
+      sql
+    );
     if ('error' in resolved) {
       // Fail closed: never quietly stage on the scrape machine instead.
       return { status: 'failed', error_message: resolved.error };
@@ -679,6 +699,7 @@ export async function dispatchChromeActionToExtension(params: {
       operationInput,
       approvalMode: 'device',
       requireCompiledCode: false,
+      createdByUserId: requesterUserId,
     });
   } catch (err) {
     const msg = errorMessage(err);
@@ -736,7 +757,8 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   // by this worker. Both sync() and execute() receive chrome_dispatcher.
   // connection_id drives browser affinity when pinned to a chrome-extension.
   const parentRows = (await sql`
-    SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id
+    SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id,
+           r.created_by_user_id
     FROM runs r
     WHERE r.id = ${body.parent_run_id}
     LIMIT 1
@@ -746,6 +768,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     claimed_by: string | null;
     run_type: string;
     connection_id: number | null;
+    created_by_user_id: string | null;
   }>;
   if (parentRows.length === 0) {
     return c.json({ error: 'parent_run not found' }, 404);
@@ -773,6 +796,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     actionInput: body.action_input ?? {},
     parentRunId: body.parent_run_id,
     parentConnectionId: parentRun.connection_id,
+    requesterUserId: parentRun.created_by_user_id,
   });
   return c.json(result);
 }

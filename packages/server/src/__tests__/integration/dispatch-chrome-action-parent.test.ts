@@ -6,7 +6,11 @@ import {
   TARGET_BROWSER_CONNECTION_INPUT_KEY,
 } from '../../worker-api/dispatch-chrome-action';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { createTestOrganization, createTestUser } from '../setup/test-fixtures';
+import {
+  addUserToOrganization,
+  createTestOrganization,
+  createTestUser,
+} from '../setup/test-fixtures';
 
 const sql = getTestDb();
 const app = new Hono<{ Bindings: Env }>();
@@ -51,7 +55,8 @@ describe('dispatchChromeAction parent run authorization', () => {
  * name the browser its draft must appear in, overriding the parent connection's
  * scrape pin. It is a routing directive with real blast radius: pointed at the
  * wrong connection it stages a draft in someone else's signed-in browser, so it
- * must resolve strictly inside the caller's org and fail rather than fall back.
+ * must resolve inside both the caller's org and connection-visibility scope,
+ * then fail rather than fall back.
  */
 describe('dispatchChromeAction target browser routing', () => {
   beforeEach(cleanupTestDatabase);
@@ -67,12 +72,17 @@ describe('dispatchChromeAction target browser routing', () => {
     );
   });
 
-  async function seedParentRun(orgId: string): Promise<number> {
+  async function seedParentRun(
+    orgId: string,
+    createdByUserId?: string
+  ): Promise<number> {
     const [run] = (await sql`
       INSERT INTO runs (
-        organization_id, run_type, action_key, status, claimed_by, claimed_at
+        organization_id, run_type, action_key, status, claimed_by, claimed_at,
+        created_by_user_id
       ) VALUES (
-        ${orgId}, 'action', 'prepare_reply', 'running', 'connector-worker-1', NOW()
+        ${orgId}, 'action', 'prepare_reply', 'running', 'connector-worker-1', NOW(),
+        ${createdByUserId ?? null}
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
@@ -149,6 +159,42 @@ describe('dispatchChromeAction target browser routing', () => {
     );
   });
 
+  it("refuses another member's private chrome connection in the same organization", async () => {
+    const org = await createTestOrganization({ name: 'Private browser boundary' });
+    const caller = await createTestUser({ email: 'private-browser-caller@test.com' });
+    const owner = await createTestUser({ email: 'private-browser-owner@test.com' });
+    await addUserToOrganization(caller.id, org.id);
+    await addUserToOrganization(owner.id, org.id);
+
+    const [worker] = (await sql`
+      INSERT INTO device_workers (
+        user_id, worker_id, platform, capabilities, label, organization_id, last_seen_at
+      ) VALUES (
+        ${owner.id}, 'ext-private-owner', 'chrome-extension',
+        ${sql.json(['browser.tabs', 'browser.debugger'])}, 'Owner Ext',
+        ${org.id}, NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: string }>;
+    const [conn] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id, created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'chrome', 'chrome-private-owner', 'Chrome', 'active',
+        ${owner.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = await seedParentRun(org.id, caller.id);
+
+    const body = await dispatchWithTarget(runId, Number(conn.id));
+    expect(body.status).toBe('failed');
+    expect(body.error_message).toContain(
+      'is not an active chrome connection paired to a browser in this organization'
+    );
+  });
+
   it('refuses a same-org connection pinned to another org’s browser', async () => {
     // The connection passes the org check; its pin does not. Without the
     // organization_id equality on the join this resolves to a device worker in
@@ -172,7 +218,7 @@ describe('dispatchChromeAction target browser routing', () => {
         created_by, visibility, device_worker_id, created_at, updated_at
       ) VALUES (
         ${org.id}, 'chrome', 'chrome-foreign-pin', 'Chrome', 'active',
-        ${user.id}, 'private', ${worker.id}::uuid, NOW(), NOW()
+        ${user.id}, 'org', ${worker.id}::uuid, NOW(), NOW()
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;

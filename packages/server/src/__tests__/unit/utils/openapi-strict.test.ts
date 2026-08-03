@@ -84,6 +84,13 @@ describe("generateStrictToolPaths", () => {
 			].schema;
 		expect(body.properties?.query_embedding).toBeUndefined();
 		expect(body.properties?.agent_id).toBeUndefined();
+
+		const readBody =
+			paths["/api/{orgSlug}/read_knowledge"].post.requestBody.content[
+				"application/json"
+			].schema;
+		expect(readBody.properties?.client_ids).toBeDefined();
+		expect(readBody.properties?.mcp_activity_id).toBeUndefined();
 	});
 
 	it("strips TypeBox internal $id/static keys", () => {

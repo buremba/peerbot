@@ -646,7 +646,6 @@ async function recordMcpClientActivity(
     clientId: authCtx.clientId,
     organizationId: authCtx.organizationId,
     userId: authCtx.userId,
-    agentId: authCtx.agentId,
     userAgent: req.headers.get('user-agent'),
     clientInfo: initialize?.clientInfo ?? null,
     capabilities: initialize?.capabilities ?? null,

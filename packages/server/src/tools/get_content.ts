@@ -11,6 +11,10 @@
  */
 
 export { getContent } from './get_content/handler';
-export { GetContentSchema, getIncludeSupersededValidationErrors } from './get_content/schema';
+export {
+  GetContentSchema,
+  PublicGetContentSchema,
+  getIncludeSupersededValidationErrors,
+} from './get_content/schema';
 export { GetContentResultSchema } from './get_content/types';
 export type { ContentItem } from './get_content/types';

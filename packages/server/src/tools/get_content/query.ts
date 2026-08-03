@@ -320,6 +320,7 @@ export async function fetchIncludeSuperseded(opts: {
   sinceDate: Date | null;
   untilDate: Date | null;
   visibilityScope: VisibilityScope;
+  mcpSessionIds: string[] | undefined;
   limit: number;
   offset: number;
 }): Promise<ListPageResult> {
@@ -333,6 +334,7 @@ export async function fetchIncludeSuperseded(opts: {
     sinceDate,
     untilDate,
     visibilityScope,
+    mcpSessionIds,
     limit,
     offset,
   } = opts;
@@ -439,6 +441,13 @@ export async function fetchIncludeSuperseded(opts: {
     queryParams.push(pgTextArray(args.client_ids));
     paramIndex += 1;
   }
+  if (mcpSessionIds !== undefined) {
+    conditions.push(
+      `e.metadata->>'mcp_session_id' = ANY($${paramIndex}::text[])`
+    );
+    queryParams.push(pgTextArray(mcpSessionIds));
+    paramIndex += 1;
+  }
   if (args.semantic_type) {
     const types = Array.isArray(args.semantic_type)
       ? args.semantic_type
@@ -525,6 +534,7 @@ export async function fetchClassificationStats(opts: {
   sinceDate: Date | null;
   untilDate: Date | null;
   visibilityScope: VisibilityScope;
+  mcpSessionIds: string[] | undefined;
 }): Promise<NonNullable<GetContentResult['classification_stats']>> {
   const {
     args,
@@ -534,6 +544,7 @@ export async function fetchClassificationStats(opts: {
     sinceDate,
     untilDate,
     visibilityScope,
+    mcpSessionIds,
   } = opts;
 
   // Build dynamic WHERE conditions using inline SQL
@@ -606,6 +617,12 @@ export async function fetchClassificationStats(opts: {
   if (args.client_ids?.length) {
     conditions.push(`f.client_id = ANY($${paramIndex++}::text[])`);
     params.push(pgTextArray(args.client_ids));
+  }
+  if (mcpSessionIds !== undefined) {
+    conditions.push(
+      `f.metadata->>'mcp_session_id' = ANY($${paramIndex++}::text[])`
+    );
+    params.push(pgTextArray(mcpSessionIds));
   }
 
   // Visibility: events from connections the caller can't see must not

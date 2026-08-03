@@ -59,6 +59,11 @@ export interface ContentSearchOptions {
   // ids), so "everything ChatGPT did" means every id for that name.
   client_id?: string | string[];
 
+  // Exact MCP host-conversation scope resolved server-side from the existing
+  // materialized conversation identity. Events retain transport ids, so one
+  // host conversation can match several reconnects. `[]` is match-none.
+  mcp_session_ids?: string[];
+
   // Classification options (only JOINs when needed)
   include_classifications?: boolean; // Include classifications in results
   classification_filters?: ClassificationFilter[]; // Filter by classifications

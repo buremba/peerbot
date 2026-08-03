@@ -57,6 +57,26 @@ describe("read_knowledge REST → tool arg contract", () => {
 		expect(coerced).not.toHaveProperty("platform");
 	});
 
+	it("accepts but does not advertise the private Connected App activity filter", () => {
+		expect(
+			validateToolArgs("read_knowledge", GetContentSchema, {
+				client_ids: ["chatgpt-registration"],
+				mcp_activity_id: "chatgpt-conversation",
+			}),
+		).toMatchObject({
+			client_ids: ["chatgpt-registration"],
+			mcp_activity_id: "chatgpt-conversation",
+		});
+
+		try {
+			validateToolArgs("read_knowledge", GetContentSchema, { typo: true });
+			expect.unreachable("should reject");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ToolUserError);
+			expect((err as ToolUserError).message).not.toContain("mcp_activity_id");
+		}
+	});
+
 	it("parsePlatformsQuery maps singular platform into platforms[]", () => {
 		expect(parsePlatformsQuery(undefined, "slack")).toEqual(["slack"]);
 		expect(parsePlatformsQuery("telegram,discord", undefined)).toEqual([

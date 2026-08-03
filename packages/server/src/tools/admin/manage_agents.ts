@@ -44,6 +44,10 @@ import { resolveNewAgentProvisioningDefaults } from '../../auth/system-provider-
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import {
+  currentMcpActivityAttribution,
+  currentMcpActivityEventMetadata,
+} from '../../lobu/stores/mcp-client-conversations';
+import {
   persistDefaultModel,
   readAgentModels,
   resolveAgentModelInfo,
@@ -772,9 +776,10 @@ async function queueWriteForApproval(
       },
       status: 'pending_approval',
       run_id: runId,
-      mcp_session_id: ctx.mcpSessionId ?? null,
+      ...currentMcpActivityEventMetadata(ctx),
     },
     authorName: ctx.clientId ?? 'agent',
+    clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
   });
   const eventId = Number(event.id);
 
@@ -802,6 +807,7 @@ async function queueWriteForApproval(
     connectionName: label,
     eventId,
     approvalUrl,
+    mcpActivity: currentMcpActivityAttribution(ctx),
   }).catch((error) =>
     logger.error(error, 'Failed to send manage_agents approval notification')
   );

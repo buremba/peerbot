@@ -13,6 +13,7 @@ import { getDb, pgTextArray } from '../../db/client';
 import { WATCHER_CANVAS_NAMESPACE } from '../../utils/canvas-events';
 import { emit } from '../../events/emitter';
 import { createNotificationForUsers } from '../../notifications/service';
+import { currentMcpActivityAttribution } from '../../lobu/stores/mcp-client-conversations';
 import logger from '../../utils/logger';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
@@ -178,6 +179,7 @@ async function handleSend(
     connectionId: args.connection_id ?? null,
     card: (args.card as CardElement | undefined) ?? null,
     entityIds: canvasEntityIds,
+    mcpActivity: currentMcpActivityAttribution(ctx),
   });
 
   if (notification.created) {

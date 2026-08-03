@@ -18,6 +18,20 @@ export async function restListNotifications(c: Context<{ Bindings: Env }>) {
   const limitRaw = c.req.query('limit') ? Number(c.req.query('limit')) : 20;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 20;
   const unreadOnly = c.req.query('unread_only') === 'true';
+  const clientIds = (c.req.query('client_ids') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const mcpActivityId = c.req.query('mcp_activity_id')?.trim() || null;
+  if (clientIds.some((clientId) => clientId.length > 512)) {
+    return c.json({ error: 'Invalid client ID' }, 400);
+  }
+  if (mcpActivityId && mcpActivityId.length > 512) {
+    return c.json({ error: 'Invalid MCP activity ID' }, 400);
+  }
+  if (mcpActivityId && clientIds.length === 0) {
+    return c.json({ error: 'mcp_activity_id requires client_ids' }, 400);
+  }
 
   const result = await listNotifications({
     organizationId: auth.organizationId,
@@ -25,6 +39,8 @@ export async function restListNotifications(c: Context<{ Bindings: Env }>) {
     cursor,
     limit,
     unreadOnly,
+    clientIds,
+    mcpActivityId,
   });
 
   return c.json(result);

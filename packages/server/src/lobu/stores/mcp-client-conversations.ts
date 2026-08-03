@@ -95,6 +95,10 @@ export async function setCurrentMcpConversationTitle(
 	const sql = getDb();
 	const clientId = oauthClientId(ctx);
 	const sessionIds = transportSessionIds(ctx);
+	// A title can be set before the conversation's first call lands (the activity
+	// row is written after the tool returns), so this seeds the row. `last_action`
+	// is NOT NULL and keeps the raw-name contract; the enclosing tool call
+	// overwrites it moments later, and the read path hides the row until it does.
 	await sql`
     INSERT INTO public.mcp_client_conversations (
       organization_id, client_identity, conversation_id, transport_session_ids,
@@ -102,7 +106,7 @@ export async function setCurrentMcpConversationTitle(
     ) VALUES (
       ${ctx.organizationId}, ${identity.clientIdentity}, ${identity.conversationId},
       ${sql.json(sessionIds)}, ${clientId}, ${ctx.userId ?? null},
-      ${ctx.agentId ?? null}, ${title}, 'Recent activity'
+      ${ctx.agentId ?? null}, ${title}, 'set_title'
     )
     ON CONFLICT (organization_id, client_identity, conversation_id)
     DO UPDATE SET title = EXCLUDED.title,

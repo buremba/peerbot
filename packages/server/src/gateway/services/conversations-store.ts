@@ -145,6 +145,14 @@ export interface ConversationListRow {
 	createdAt: Date;
 }
 
+/**
+ * Where this turn happened, as a human reads it: `#launch-room` for a channel,
+ * the correspondent's name for a DM. Resolved from the channel's graphed
+ * `$resource` entity — the SAME identity the ACL gate keys on — so the label is
+ * connector-owned rather than parsed out of the conversation id. Null when the
+ * channel has no graphed entity (never synced) or its name carries no
+ * information; callers keep the previously stored label in that case.
+ */
 export async function resolveConversationLocationLabel(args: {
 	organizationId: string;
 	platform: string;
@@ -168,6 +176,14 @@ export async function resolveConversationLocationLabel(args: {
   `;
 	const name = rows[0]?.name?.trim();
 	if (!name) return null;
+	// A channel entity graphed before its display name was known is named after
+	// its own identifier (`resource_name: r.name ?? r.key` in access-graph,
+	// `displayName ?? key` in ensureChannelResourceEntity). `#T0ABC:C0XYZ` is not
+	// a location — treat an identifier-only name as unresolved so the row keeps
+	// whatever label an earlier turn resolved.
+	const upperKey = key.toUpperCase();
+	const identifiers = new Set([upperKey, ...upperKey.split(":")]);
+	if (identifiers.has(name.toUpperCase())) return null;
 	return args.platform === "slack" ? `#${name.replace(/^#/, "")}` : name;
 }
 

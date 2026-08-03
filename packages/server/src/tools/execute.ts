@@ -233,20 +233,31 @@ export async function executeTool(
     }
     if (toolName === 'list_organizations') {
       // This early return sits BEFORE the shared audit seam below, so it must
-      // audit its own invocation. The event needs an owning org: use the bound
-      // org when there is one; a session with no bound org has no ledger to
-      // write into, and toToolContext would throw on it anyway.
+      // audit its own invocation AND materialize the same conversation
+      // projection — a client whose only call is this one still belongs in the
+      // client-conversation listing. The event needs an owning org: use the
+      // bound org when there is one; a session with no bound org has no ledger
+      // to write into, and toToolContext would throw on it anyway.
       const startTime = Date.now();
-      const auditIfOrgBound = (outcome: { result?: unknown; error?: unknown }) =>
-        authCtx.organizationId
-          ? recordToolInvocationAudit({
-              toolName,
-              args,
-              ...outcome,
-              durationMs: Date.now() - startTime,
-              ctx: toToolContext(authCtx),
-            })
-          : Promise.resolve();
+      const auditIfOrgBound = async (outcome: {
+        result?: unknown;
+        error?: unknown;
+      }) => {
+        if (!authCtx.organizationId) return;
+        const ctx = toToolContext(authCtx);
+        await recordToolInvocationAudit({
+          toolName,
+          args,
+          ...outcome,
+          durationMs: Date.now() - startTime,
+          ctx,
+        });
+        await recordMcpConversationActivity({
+          ctx,
+          toolName,
+          failed: outcome.error !== undefined || isSoftErrorResult(outcome.result),
+        });
+      };
       try {
         const result = await trackMCPToolCall(toolName, args, () =>
           listOrganizations(args as any, env, {

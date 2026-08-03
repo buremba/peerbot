@@ -2,7 +2,10 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
-import { recordMcpConversationActivity } from '../../../lobu/stores/mcp-client-conversations';
+import {
+  recordMcpConversationActivity,
+  setCurrentMcpConversationTitle,
+} from '../../../lobu/stores/mcp-client-conversations';
 import { recordToolInvocationAudit } from '../../../tools/audit';
 import { isSoftErrorResult } from '../../../tools/execute';
 import type { ToolContext } from '../../../tools/registry';
@@ -257,6 +260,32 @@ describe('client sessions activity route', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
     expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-beta']);
+  });
+
+  it('hides a title-only row and retains its title after the first tool call', async () => {
+    const ctx = auditCtx({
+      mcpSessionId: 'title-transport',
+      mcpConversationId: 'host-title-lifecycle',
+    });
+    await setCurrentMcpConversationTitle(ctx, 'Launch planning');
+
+    const before = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    expect(before.status).toBe(200);
+    const beforeBody = (await before.json()) as {
+      sessions: Array<{ sessionId: string }>;
+    };
+    expect(beforeBody.sessions.some((s) => s.sessionId === 'host-title-lifecycle')).toBe(false);
+
+    await recordCall('title-transport', 'search_sdk', {
+      mcpConversationId: 'host-title-lifecycle',
+    });
+    const after = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    expect(after.status).toBe(200);
+    const afterBody = (await after.json()) as {
+      sessions: Array<{ sessionId: string; title: string | null; callCount: number }>;
+    };
+    const titled = afterBody.sessions.find((s) => s.sessionId === 'host-title-lifecycle');
+    expect(titled).toMatchObject({ title: 'Launch planning', callCount: 1 });
   });
 
   it('rejects unauthenticated requests', async () => {

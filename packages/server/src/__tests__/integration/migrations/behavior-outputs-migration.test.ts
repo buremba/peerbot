@@ -104,6 +104,11 @@ describe('Behavior outputs migration', () => {
               ${`${watcherId}::issue-1`}, 'watcher'
             ),
             (
+              ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+              ${`${watcherId}::items::${computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])}`},
+              'watcher'
+            ),
+            (
               ${workspace.org.id}, ${prefixedEntity.entity.id}, 'watcher_key',
               ${`${watcherId}::items::issue-2`}, 'watcher'
             )
@@ -127,6 +132,7 @@ describe('Behavior outputs migration', () => {
           SELECT identifier FROM entity_identities
           WHERE entity_id IN (${entity.entity.id}, ${prefixedEntity.entity.id})
             AND namespace = 'watcher_key'
+            AND deleted_at IS NULL
           ORDER BY identifier
         `;
         const [column] = await tx<{ present: boolean }>`
@@ -235,13 +241,13 @@ describe('Behavior outputs migration', () => {
     expect(captured).toBe(expected);
   });
 
-  it('aborts rather than stranding a legacy identity with a mismatched entity type', async () => {
-    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Mismatch Org' });
+  it('retires an unmapped legacy identity when the Behavior has no entity output', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Entity-Less Org' });
     const ownerUserId = workspace.users.owner.id;
     const agent = await createTestAgent({
       organizationId: workspace.org.id,
       ownerUserId,
-      agentId: 'behavior-output-mismatch-agent',
+      agentId: 'behavior-output-entity-less-agent',
     });
     const api = await TestApiClient.for({
       organizationId: workspace.org.id,
@@ -255,25 +261,25 @@ describe('Behavior outputs migration', () => {
       metadata: { external_id: 'ISSUE-4' },
     })) as { entity: { id: number } };
     const created = (await api.behaviors.create({
-      slug: 'mismatched-output-behavior',
-      prompt: 'Find mismatched issues.',
+      slug: 'entity-less-output-behavior',
+      prompt: 'Draft replies without publishing entities.',
       agent_id: agent.agentId,
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
     const sql = getDb();
     const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
 
-    await expect(
-      sql.begin(async (tx: typeof sql) => {
+    let captured:
+      | { deletedAt: Date | null; entityStillPresent: boolean; legacyColumnPresent: boolean }
+      | undefined;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
         await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
         await tx`
           UPDATE watcher_versions v
-          SET outputs = NULL,
-              keying_config = ${tx.json({
-                entity_type: 'missing-issue-type',
-                entity_path: '$.items[*]',
-                key_fields: ['external_id'],
-              })}
+          SET outputs = ${tx.json({ drafts: { event: 'draft_reply' } })},
+              keying_config = NULL
           FROM watchers w
           WHERE w.id = ${watcherId} AND v.id = w.current_version_id
         `;
@@ -291,8 +297,35 @@ describe('Behavior outputs migration', () => {
           )
         `;
         await tx.unsafe(up);
-      })
-    ).rejects.toThrow(/cannot map a live watcher_key/);
+        const [identity] = await tx<{ deleted_at: Date | null }>`
+          SELECT deleted_at
+          FROM entity_identities
+          WHERE entity_id = ${entity.entity.id} AND namespace = 'watcher_key'
+        `;
+        const [state] = await tx<{ entity_present: boolean; legacy_column_present: boolean }>`
+          SELECT
+            EXISTS (SELECT 1 FROM entities WHERE id = ${entity.entity.id}) AS entity_present,
+            EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'watcher_versions'
+                AND column_name = 'keying_config'
+            ) AS legacy_column_present
+        `;
+        captured = {
+          deletedAt: identity.deleted_at,
+          entityStillPresent: state.entity_present,
+          legacyColumnPresent: state.legacy_column_present,
+        };
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured?.deletedAt).toBeInstanceOf(Date);
+    expect(captured?.entityStillPresent).toBe(true);
+    expect(captured?.legacyColumnPresent).toBe(false);
   });
 
   it('rejects malformed dormant key configuration before dropping the retired column', async () => {

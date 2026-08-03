@@ -92,6 +92,10 @@ DECLARE
   encoded_value text;
   stable_key text;
   target_identifier text;
+  existing_target_identity_id bigint;
+  existing_target_entity_id bigint;
+  handled_identity_ids bigint[] := ARRAY[]::bigint[];
+  tombstoned_count integer;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -147,53 +151,11 @@ BEGIN
       END LOOP;
     END LOOP;
 
-    -- Every legacy claim for a Behavior being converted must resolve to the
-    -- same entity type as one of that Behavior's outputs. Otherwise the new
-    -- runtime would miss the two-part claim and could create a duplicate. Fail
-    -- closed while the retired configuration is still present and diagnosable.
-    IF EXISTS (
-      WITH ranked_output AS (
-        SELECT
-          w.id AS watcher_id,
-          output.key AS output_name,
-          output.value->>'entity' AS entity_type,
-          row_number() OVER (
-            PARTITION BY w.id, output.value->>'entity'
-            ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
-          ) AS preference
-        FROM watchers w
-        JOIN watcher_versions v
-          ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
-        CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
-        WHERE output.value ? 'entity'
-      ), preferred_output AS (
-        SELECT watcher_id, output_name, entity_type
-        FROM ranked_output
-        WHERE preference = 1
-      ), configured_watcher AS (
-        SELECT DISTINCT watcher_id FROM preferred_output
-      )
-      SELECT 1
-      FROM entity_identities ei
-      JOIN entities e ON e.id = ei.entity_id
-      JOIN entity_types et ON et.id = e.entity_type_id
-      JOIN configured_watcher configured
-        ON e.metadata->>'watcher_id' = configured.watcher_id::text
-      LEFT JOIN preferred_output matched
-        ON matched.watcher_id = configured.watcher_id
-       AND matched.entity_type = et.slug
-      WHERE ei.namespace = 'watcher_key'
-        AND ei.deleted_at IS NULL
-        AND ei.identifier LIKE configured.watcher_id::text || '::%'
-        AND matched.watcher_id IS NULL
-      LIMIT 1
-    ) THEN
-      RAISE EXCEPTION
-        'Behavior output identity migration cannot map a live watcher_key to its configured entity output type; repair the legacy entity type before retrying';
-    END IF;
-
-    -- Re-key every live legacy claim from the entity's RAW key fields. The v1
-    -- tuple is exact and typed: base64url(field).type.base64url(value), joined
+    -- Re-key every live legacy claim that still belongs to the Behavior's
+    -- current entity outputs, using the entity's RAW key fields. Historical
+    -- version declarations remain readable but do not keep retired claims live.
+    -- The v1 tuple is exact and typed:
+    -- base64url(field).type.base64url(value), joined
     -- in declaration order. This avoids the retired lossy slug key, where
     -- distinct opaque ids such as ACME/1 and ACME1 collided. Fail closed on any
     -- row that cannot be represented rather than dropping the old API and
@@ -207,13 +169,14 @@ BEGIN
           output.value->'key' AS key_fields,
           row_number() OVER (
             PARTITION BY w.id, output.value->>'entity'
-            ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
+            ORDER BY output.key
           ) AS preference
         FROM watchers w
         JOIN watcher_versions v
-          ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
+          ON v.id = w.current_version_id
         CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
-        WHERE output.value ? 'entity'
+        WHERE w.status <> 'archived'
+          AND output.value ? 'entity'
       ), preferred_output AS (
         SELECT watcher_id, output_name, entity_type, key_fields
         FROM ranked_output
@@ -223,6 +186,7 @@ BEGIN
         ei.id AS identity_id,
         ei.organization_id,
         ei.entity_id,
+        ei.identifier AS current_identifier,
         preferred_output.watcher_id,
         preferred_output.output_name,
         preferred_output.key_fields,
@@ -299,23 +263,39 @@ BEGIN
 
       target_identifier := move.watcher_id::text || '::' ||
         move.output_name || '::' || stable_key;
-      IF EXISTS (
-        SELECT 1
+      IF move.current_identifier = target_identifier THEN
+        handled_identity_ids := array_append(handled_identity_ids, move.identity_id);
+      ELSE
+        SELECT existing.id, existing.entity_id
+        INTO existing_target_identity_id, existing_target_entity_id
         FROM entity_identities existing
         WHERE existing.organization_id = move.organization_id
           AND existing.namespace = 'watcher_key'
           AND existing.identifier = target_identifier
           AND existing.deleted_at IS NULL
           AND existing.id <> move.identity_id
-      ) THEN
-        RAISE EXCEPTION
-          'Behavior output identity migration would collide with an existing live watcher_key for watcher %, entity %',
-          move.watcher_id, move.entity_id;
-      END IF;
+        LIMIT 1;
 
-      UPDATE entity_identities
-      SET identifier = target_identifier
-      WHERE id = move.identity_id;
+        IF existing_target_identity_id IS NOT NULL THEN
+          IF existing_target_entity_id <> move.entity_id THEN
+            RAISE EXCEPTION
+              'Behavior output identity migration would collide with an existing live watcher_key for watcher %, entity %',
+              move.watcher_id, move.entity_id;
+          END IF;
+          UPDATE entity_identities
+          SET deleted_at = current_timestamp
+          WHERE id = move.identity_id;
+          handled_identity_ids := array_append(
+            handled_identity_ids,
+            existing_target_identity_id
+          );
+        ELSE
+          UPDATE entity_identities
+          SET identifier = target_identifier
+          WHERE id = move.identity_id;
+          handled_identity_ids := array_append(handled_identity_ids, move.identity_id);
+        END IF;
+      END IF;
 
       UPDATE entities
       SET metadata = metadata || jsonb_build_object(
@@ -324,6 +304,22 @@ BEGIN
       )
       WHERE id = move.entity_id;
     END LOOP;
+
+    -- A removed/entity-less output has no valid identity namespace in the new
+    -- contract. Retire every legacy claim that could not be mapped instead of
+    -- leaving a live two-part key that the new runtime can never recognize.
+    -- The promoted entity itself remains intact and auditable.
+    UPDATE entity_identities
+    SET deleted_at = current_timestamp
+    WHERE namespace = 'watcher_key'
+      AND deleted_at IS NULL
+      AND NOT (id = ANY(handled_identity_ids));
+    GET DIAGNOSTICS tombstoned_count = ROW_COUNT;
+    IF tombstoned_count > 0 THEN
+      RAISE NOTICE
+        'Behavior output migration retired % unmapped legacy watcher_key identities',
+        tombstoned_count;
+    END IF;
   END IF;
 END
 $migration$;

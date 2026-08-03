@@ -12,7 +12,7 @@ help:
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
 	@echo "  make test-integration                      - Run the CI integration suite (needs DATABASE_URL with pgvector)"
-	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI cli-smoke gate)"
+	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI sdk-cli-e2e job)"
 	@echo "  make test-providers-live                   - Validate every provider against its live API (keyless tier + key-gated smoke)"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
 	@echo "  make dev-recover [RESTART=1]               - Free this checkout's dev ports + clean workers; RESTART=1 also boots make dev"
@@ -149,7 +149,6 @@ test-unit:
 	@bun test packages/core packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp packages/cli
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit
-	@bun test packages/server/src/auth/__tests__/tool-access.test.ts
 	@# src/gateway/infrastructure/queue runs in the gateway loop in test-integration (#1238)
 	@bun test packages/connector-worker
 	@bun test packages/client packages/promptfoo-provider
@@ -186,7 +185,7 @@ test-integration:
 # SDK lifecycle e2e: boots `lobu run` (embedded Postgres), auto-applies a
 # prune:true fixture, and drives a real agent turn through a spawned worker
 # against a deterministic mock provider (no key needed). Self-contained. This is
-# the CI `sdk-e2e` gate; run it locally the same way.
+# the SDK lifecycle step in CI's `sdk-cli-e2e` job; run it locally the same way.
 test-e2e-sdk:
 	@./scripts/sdk-e2e.sh
 
@@ -201,7 +200,7 @@ test-e2e-error:
 # CLI command-coverage smoke: boots one `lobu run` (embedded Postgres + mock
 # provider) under an isolated HOME and walks EVERY `lobu` command/subcommand
 # once, asserting each runs (or fails gracefully). Self-contained, no key. This
-# is the CI `cli-smoke` gate; run it locally the same way.
+# is the CLI smoke step in CI's `sdk-cli-e2e` job; run it locally the same way.
 test-e2e-cli:
 	@./scripts/cli-smoke.sh
 

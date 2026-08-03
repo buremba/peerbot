@@ -62,7 +62,65 @@ async function seedManagedGoogleOrg() {
     },
   });
 
+  // The OAuth app is provider-wide, but this connector prefers env auth. It
+  // must not be advertised because a bare managed connect would follow the env
+  // path rather than start provider consent.
+  await createTestConnectorDefinition({
+    key: 'google.env-first',
+    name: 'Google env-first',
+    organization_id: org.id,
+    auth_schema: {
+      methods: [
+        { type: 'env_keys', fields: [{ key: 'GOOGLE_TOKEN' }] },
+        {
+          type: 'oauth',
+          provider: 'google',
+          requiredScopes: ['openid'],
+          authorizationUrl: 'https://accounts.example/authorize',
+          tokenUrl: 'https://accounts.example/token',
+          clientIdKey: 'GOOGLE_CLIENT_ID',
+          clientSecretKey: 'GOOGLE_CLIENT_SECRET',
+        },
+      ],
+    },
+    feeds_schema: { items: {} },
+  });
+
   return org;
+}
+
+async function seedHybridManagedConnector(organizationId: string) {
+  await createTestConnectorDefinition({
+    key: 'hybrid.oauth',
+    name: 'Hybrid OAuth',
+    organization_id: organizationId,
+    auth_schema: {
+      methods: [
+        { type: 'app_installation', provider: 'hybrid' },
+        {
+          type: 'oauth',
+          provider: 'hybrid',
+          requiredScopes: ['profile'],
+          authorizationUrl: 'https://hybrid.example/authorize',
+          tokenUrl: 'https://hybrid.example/token',
+          clientIdKey: 'HYBRID_CLIENT_ID',
+          clientSecretKey: 'HYBRID_CLIENT_SECRET',
+        },
+      ],
+    },
+    feeds_schema: { items: {} },
+  });
+  await createAuthProfile({
+    organizationId,
+    connectorKey: 'hybrid.oauth',
+    displayName: 'Managed Hybrid App',
+    profileKind: 'oauth_app',
+    provider: 'hybrid',
+    authData: {
+      HYBRID_CLIENT_ID: 'hybrid-client-id',
+      HYBRID_CLIENT_SECRET: 'hybrid-client-secret',
+    },
+  });
 }
 
 describe('managed-auth onboarding', () => {
@@ -154,6 +212,30 @@ describe('managed-auth onboarding', () => {
     expect(organizations.find((organization) => organization.slug === managed.slug)).toMatchObject({
       is_member: true,
       managed_auth: { join_required: false },
+    });
+  });
+
+  it('uses managed OAuth when ordinary bare connects prefer app installation', async () => {
+    const home = await createTestOrganization({ name: 'Fresh User Home' });
+    const user = await createTestUser({ email: 'fresh-user@example.com' });
+    await addUserToOrganization(user.id, home.id, 'owner');
+    const managed = await seedManagedGoogleOrg();
+    await seedHybridManagedConnector(managed.id);
+
+    const client = await TestApiClient.for({
+      organizationId: home.id,
+      userId: user.id,
+      memberRole: 'owner',
+      scopedToOrg: false,
+    });
+    await expect(
+      client.connections.connectManaged({
+        managed_by_org: managed.slug,
+        connector_key: 'hybrid.oauth',
+      })
+    ).resolves.toMatchObject({
+      connection_id: expect.any(Number),
+      status: 'pending_auth',
     });
   });
 

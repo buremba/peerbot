@@ -1,6 +1,6 @@
 import { getDb, pgTextArray } from '../db/client';
 
-export interface ManagedAuthConnectorOffer {
+interface ManagedAuthConnectorOffer {
   connector_key: string;
   provider: string;
 }
@@ -8,10 +8,11 @@ export interface ManagedAuthConnectorOffer {
 /**
  * List OAuth connectors backed by an active managed app in public orgs.
  *
- * This deliberately mirrors getPrimaryAuthProfileForKind's provider fallback:
- * an active provider-wide Google app can serve both Gmail and Calendar even
- * when the profile's connector_key names only one of them. Only identifiers
- * are returned; app credentials and profile metadata never leave the server.
+ * This mirrors runtime auth selection: only a connector whose first declared
+ * oauth/env_keys/browser method is OAuth is offered. The profile resolver's
+ * provider fallback lets an active provider-wide Google app serve both Gmail
+ * and Calendar even when the profile names only one. Only identifiers are
+ * returned; app credentials and profile metadata never leave the server.
  */
 export async function listManagedAuthConnectorOffers(
   organizationIds: string[],
@@ -23,21 +24,27 @@ export async function listManagedAuthConnectorOffers(
     SELECT DISTINCT
       d.organization_id,
       d.key AS connector_key,
-      lower(method->>'provider') AS provider
+      lower(preferred_method.method->>'provider') AS provider
     FROM connector_definitions d
     JOIN "organization" o ON o.id = d.organization_id
-    CROSS JOIN LATERAL jsonb_array_elements(
-      CASE
-        WHEN jsonb_typeof(d.auth_schema->'methods') = 'array'
-          THEN d.auth_schema->'methods'
-        ELSE '[]'::jsonb
-      END
-    ) method
+    CROSS JOIN LATERAL (
+      SELECT candidate.method
+      FROM jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(d.auth_schema->'methods') = 'array'
+            THEN d.auth_schema->'methods'
+          ELSE '[]'::jsonb
+        END
+      ) WITH ORDINALITY candidate(method, position)
+      WHERE candidate.method->>'type' IN ('oauth', 'env_keys', 'browser')
+      ORDER BY candidate.position
+      LIMIT 1
+    ) preferred_method
     WHERE d.organization_id = ANY(${pgTextArray(organizationIds)}::text[])
       AND d.status = 'active'
       AND o.visibility = 'public'
-      AND method->>'type' = 'oauth'
-      AND NULLIF(method->>'provider', '') IS NOT NULL
+      AND preferred_method.method->>'type' = 'oauth'
+      AND NULLIF(preferred_method.method->>'provider', '') IS NOT NULL
       AND EXISTS (
         SELECT 1
         FROM auth_profiles ap
@@ -46,7 +53,7 @@ export async function listManagedAuthConnectorOffers(
           AND ap.status = 'active'
           AND (
             ap.connector_key = d.key
-            OR lower(ap.provider) = lower(method->>'provider')
+            OR lower(ap.provider) = lower(preferred_method.method->>'provider')
           )
       )
     ORDER BY d.organization_id, d.key
@@ -68,11 +75,7 @@ export async function listManagedAuthConnectorOffers(
 export async function resolveManagedAuthConnectorOffer(params: {
   organizationSlug: string;
   connectorKey: string;
-}): Promise<{
-  organizationId: string;
-  organizationSlug: string;
-  provider: string;
-} | null> {
+}): Promise<string | null> {
   const sql = getDb();
   const organizations = (await sql`
     SELECT id, slug
@@ -88,11 +91,5 @@ export async function resolveManagedAuthConnectorOffer(params: {
   const offer = offers
     .get(organization.id)
     ?.find((candidate) => candidate.connector_key === params.connectorKey);
-  return offer
-    ? {
-        organizationId: organization.id,
-        organizationSlug: organization.slug,
-        provider: offer.provider,
-      }
-    : null;
+  return offer ? organization.slug : null;
 }

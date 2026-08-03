@@ -233,6 +233,17 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits[0]).toContain("provider data stays local");
 	});
 
+	it("still surfaces connectors when optional managed-auth discovery fails", async () => {
+		const deps = makeDeps();
+		deps.listOrganizations = async () => {
+			throw new Error("managed-auth discovery unavailable");
+		};
+
+		const hits = await searchLiveConnectors("website", env, ctx, deps);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]).toContain("connector 'website'");
+	});
+
 	it("does NOT recommend installConnector for a non-installable catalog entry", async () => {
 		// The review-caught bug: a stale/unavailable catalog entry
 		// (installable:false) was still told to run installConnector, which is

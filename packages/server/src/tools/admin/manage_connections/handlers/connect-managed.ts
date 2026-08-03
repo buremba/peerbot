@@ -7,10 +7,10 @@ import { handleRequiredManagedConnect } from './connect';
 /**
  * Start a managed OAuth grant from any workspace context.
  *
- * The public org + active app profile are revalidated from Postgres before the
- * user is enrolled. handleConnect then revalidates the managed signal at the
- * insertion chokepoint (`requireManaged`) so a concurrent visibility/profile
- * change cannot fall through to an ordinary cloud-synced connection.
+ * The public org + active app profile are validated from Postgres before the
+ * user is enrolled. The joined organization supplies the cross-org context,
+ * and handleConnect refuses to create an ordinary cloud-synced connection if
+ * the managed signal no longer holds.
  */
 export async function handleConnectManaged(
 	args: Extract<ConnectionsArgs, { action: 'connect_managed' }>,
@@ -20,11 +20,11 @@ export async function handleConnectManaged(
 		return { error: 'Lobu login is required before using managed auth.' };
 	}
 
-	const offer = await resolveManagedAuthConnectorOffer({
+	const organizationSlug = await resolveManagedAuthConnectorOffer({
 		organizationSlug: args.managed_by_org,
 		connectorKey: args.connector_key,
 	});
-	if (!offer) {
+	if (!organizationSlug) {
 		return {
 			error: `No active managed OAuth offer for connector '${args.connector_key}' was found in public org '${args.managed_by_org}'. Discover organizations.list again before retrying.`,
 		};
@@ -32,7 +32,7 @@ export async function handleConnectManaged(
 
 	const membership = await joinPublicOrganization({
 		userId: ctx.userId,
-		orgSlug: offer.organizationSlug,
+		orgSlug: organizationSlug,
 	});
 	if (membership.status === 'not_found' || membership.status === 'not_public') {
 		return {
@@ -50,7 +50,7 @@ export async function handleConnectManaged(
 		},
 		{
 			...ctx,
-			organizationId: offer.organizationId,
+			organizationId: membership.organizationId,
 			memberRole: membership.role,
 			scopedToOrg: true,
 			allowCrossOrg: false,

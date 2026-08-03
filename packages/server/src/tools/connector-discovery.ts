@@ -33,7 +33,7 @@ export interface ConnectorDiscoveryDeps {
 const DEFAULT_DEPS: ConnectorDiscoveryDeps = {
   manageCatalog,
   manageConnections,
-  listOrganizations: (userId) =>
+  listOrganizations: async (userId) =>
     getWorkspaceProvider().listOrganizations(undefined, userId),
 };
 
@@ -104,7 +104,10 @@ export async function searchLiveConnectors(
       manageCatalog({ action: 'list_catalog', kinds: ['connectors'] } as never, env, ctx) as Promise<{
         catalogs?: { connectors?: { entries?: unknown } };
       }>,
-      deps.listOrganizations(ctx.userId),
+      // Managed-auth offers enrich the normal connector result, but they are
+      // not required to discover connectors that are already installed or in
+      // the catalog. Keep that base path available if org discovery fails.
+      deps.listOrganizations(ctx.userId).catch(() => []),
     ]);
     const installed = asArray<{
       id: string;

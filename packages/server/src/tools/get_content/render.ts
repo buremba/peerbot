@@ -6,13 +6,74 @@
 
 import type { ContentItem } from '@lobu/connector-sdk';
 import { parseJsonObject } from '@lobu/core';
-import { type DbClient, parsePgNumberArray, pgTextArray } from '../../db/client';
+import { type DbClient, parsePgNumberArray, pgBigintArray, pgTextArray } from '../../db/client';
 import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
+import { isAdminOrOwnerRole } from '../access-control';
+import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
+
+/** Payload keys a tool-invocation audit row carries about its request. */
+const AUDIT_REQUEST_KEYS = ['request', 'request_status', 'request_bytes'] as const;
+
+/**
+ * A tool-invocation audit row retains the caller's VERBATIM request (see
+ * `recordToolInvocationAudit`), which only its author or a workspace admin may
+ * read. Content rows arrive with those keys still on `payload_data`, so this
+ * strips them from EVERY audit item first — an unauthorized caller and an
+ * unrecognized role leave them stripped — and puts them back only on the rows
+ * whose `created_by` clears the gate. Authorship is the one thing the content
+ * row does not carry, so it is the only thing re-read here; a failed re-read
+ * rejects rather than serving a half-gated page.
+ */
+export async function hydrateToolInvocationRequests(opts: {
+  sql: DbClient;
+  items: ContentItem[];
+  organizationId: string;
+  userId: string | null;
+  memberRole: string | null;
+}): Promise<void> {
+  const { sql, items, organizationId, userId, memberRole } = opts;
+  const isAdmin = isAdminOrOwnerRole(memberRole);
+  const stripped = new Map<
+    number,
+    { payload: Record<string, unknown>; fields: Record<string, unknown> }
+  >();
+
+  for (const item of items) {
+    if (item.semantic_type !== AUDIT_SEMANTIC_TYPE || item.origin_type !== 'tool_invocation')
+      continue;
+    const payload = item.payload_data as Record<string, unknown> | null | undefined;
+    if (!payload) continue;
+    const fields: Record<string, unknown> = {};
+    for (const key of AUDIT_REQUEST_KEYS) {
+      if (payload[key] === undefined) continue;
+      fields[key] = payload[key];
+      delete payload[key];
+    }
+    if (Object.keys(fields).length > 0) stripped.set(Number(item.id), { payload, fields });
+  }
+
+  if (stripped.size === 0 || (!isAdmin && userId == null)) return;
+
+  const rows = await sql<{ id: number; created_by: string | null }>`
+    SELECT id, created_by
+    FROM events
+    WHERE organization_id = ${organizationId}
+      AND id = ANY(${pgBigintArray([...stripped.keys()])}::bigint[])
+      AND semantic_type = ${AUDIT_SEMANTIC_TYPE}
+      AND origin_type = 'tool_invocation'
+  `;
+
+  for (const row of rows) {
+    if (!isAdmin && row.created_by !== userId) continue;
+    const entry = stripped.get(Number(row.id));
+    if (entry) Object.assign(entry.payload, entry.fields);
+  }
+}
 
 /**
  * Fetch excerpts for evidence highlighting when filtering by a single

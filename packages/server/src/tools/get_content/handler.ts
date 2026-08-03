@@ -38,7 +38,11 @@ import {
   fetchClassificationStats,
   fetchIncludeSuperseded,
 } from './query';
-import { buildContentItems, fetchClassificationExcerpts } from './render';
+import {
+  buildContentItems,
+  fetchClassificationExcerpts,
+  hydrateToolInvocationRequests,
+} from './render';
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleBehaviorMode } from './behavior-mode';
@@ -595,6 +599,13 @@ async function getContentImpl(
       ownerSlug,
       baseUrl,
       excerptsMap,
+    });
+    await hydrateToolInvocationRequests({
+      sql,
+      items: contentItems,
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      memberRole: ctx.memberRole,
     });
 
     // Stamp a LIVE pending-proposal count onto every change_set card. The

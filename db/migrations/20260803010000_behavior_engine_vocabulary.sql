@@ -2,6 +2,68 @@
 
 -- This is an atomic vocabulary cutover. There is no compatibility view or
 -- dual-write period: the application and schema move to Behavior together.
+
+-- Rewrite the large JSON-bearing tables before taking AccessExclusiveLock on
+-- the engine tables below. dbmate keeps the whole cutover atomic, so no client
+-- can observe this intermediate vocabulary.
+UPDATE public.events
+SET metadata = (metadata - 'watcher_id')
+  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
+WHERE metadata ? 'watcher_id';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
+WHERE metadata->>'source' = 'watcher_canvas';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
+WHERE metadata->>'source' = 'watcher_promotion';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resourceKind}', '"behavior"'::jsonb)
+WHERE metadata->>'resourceKind' = 'watcher';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resource_kind}', '"behavior"'::jsonb)
+WHERE metadata->>'resource_kind' = 'watcher';
+
+UPDATE public.entities
+SET metadata = (metadata - 'watcher_id')
+  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
+WHERE metadata ? 'watcher_id';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
+WHERE metadata->>'source' = 'watcher_canvas';
+
+UPDATE public.entities
+SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
+WHERE metadata->>'source' = 'watcher_promotion';
+
+-- Stored source SQL moves with the physical relation. This is a one-time data
+-- cutover, not a runtime alias: all readers see only the canonical relation.
+UPDATE public.watchers
+SET sources = regexp_replace(sources::text, '\mwatchers\M', 'behaviors', 'g')::jsonb
+WHERE sources::text ~ '\mwatchers\M';
+
+UPDATE public.watcher_versions
+SET version_sources = regexp_replace(
+  version_sources::text,
+  '\mwatchers\M',
+  'behaviors',
+  'g'
+)::jsonb
+WHERE version_sources::text ~ '\mwatchers\M';
+
+UPDATE public.view_template_versions
+SET json_template = regexp_replace(
+  json_template::text,
+  '\mwatchers\M',
+  'behaviors',
+  'g'
+)::jsonb
+WHERE json_template::text ~ '\mwatchers\M';
+
 -- squawk-ignore renaming-table,prefer-robust-stmts -- intentional hard cutover; no mixed-schema clients
 ALTER TABLE public.watchers RENAME TO behaviors;
 -- squawk-ignore renaming-table,prefer-robust-stmts -- intentional hard cutover; no mixed-schema clients
@@ -107,40 +169,6 @@ ALTER TABLE public.runs VALIDATE CONSTRAINT runs_policy_principal_kind_check;
 --   * organization.metadata sentinel → every org looks un-provisioned and
 --     gets a second default agent + Behavior on next sign-in.
 -- They move inside the same atomic cutover as the identifiers.
-
-UPDATE public.events
-SET metadata = (metadata - 'watcher_id')
-  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
-WHERE metadata ? 'watcher_id';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
-WHERE metadata->>'source' = 'watcher_canvas';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
-WHERE metadata->>'source' = 'watcher_promotion';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resourceKind}', '"behavior"'::jsonb)
-WHERE metadata->>'resourceKind' = 'watcher';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resource_kind}', '"behavior"'::jsonb)
-WHERE metadata->>'resource_kind' = 'watcher';
-
-UPDATE public.entities
-SET metadata = (metadata - 'watcher_id')
-  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
-WHERE metadata ? 'watcher_id';
-
-UPDATE public.entities
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
-WHERE metadata->>'source' = 'watcher_canvas';
-
-UPDATE public.entities
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
-WHERE metadata->>'source' = 'watcher_promotion';
 
 UPDATE public.entity_identities SET namespace = 'behavior_canvas' WHERE namespace = 'watcher_canvas';
 UPDATE public.entity_identities SET namespace = 'behavior_key' WHERE namespace = 'watcher_key';
@@ -454,6 +482,14 @@ UPDATE public.events
 SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
 WHERE metadata->>'source' = 'behavior_promotion';
 
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resourceKind}', '"watcher"'::jsonb)
+WHERE metadata->>'resourceKind' = 'behavior';
+
+UPDATE public.events
+SET metadata = jsonb_set(metadata, '{resource_kind}', '"watcher"'::jsonb)
+WHERE metadata->>'resource_kind' = 'behavior';
+
 UPDATE public.entities
 SET metadata = (metadata - 'behavior_id')
   || jsonb_build_object('watcher_id', metadata -> 'behavior_id')
@@ -466,6 +502,28 @@ WHERE metadata->>'source' = 'behavior_canvas';
 UPDATE public.entities
 SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
 WHERE metadata->>'source' = 'behavior_promotion';
+
+UPDATE public.watchers
+SET sources = regexp_replace(sources::text, '\mbehaviors\M', 'watchers', 'g')::jsonb
+WHERE sources::text ~ '\mbehaviors\M';
+
+UPDATE public.watcher_versions
+SET version_sources = regexp_replace(
+  version_sources::text,
+  '\mbehaviors\M',
+  'watchers',
+  'g'
+)::jsonb
+WHERE version_sources::text ~ '\mbehaviors\M';
+
+UPDATE public.view_template_versions
+SET json_template = regexp_replace(
+  json_template::text,
+  '\mbehaviors\M',
+  'watchers',
+  'g'
+)::jsonb
+WHERE json_template::text ~ '\mbehaviors\M';
 
 UPDATE public.entity_identities SET namespace = 'watcher_canvas' WHERE namespace = 'behavior_canvas';
 UPDATE public.entity_identities SET namespace = 'watcher_key' WHERE namespace = 'behavior_key';

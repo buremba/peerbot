@@ -7,7 +7,12 @@ import {
   loadMigrationUp,
 } from '../../../db/migration-loader';
 import { getTestDb } from '../../setup/test-db';
-import { createTestEntity, createTestOrganization } from '../../setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestEntity,
+  createTestOrganization,
+  createTestUser,
+} from '../../setup/test-fixtures';
 
 const MIGRATION = '20260803010000_behavior_engine_vocabulary.sql';
 
@@ -109,6 +114,78 @@ describe('Behavior vocabulary migration', () => {
       name: 'Vocabulary values co',
       organization_id: org.id,
     });
+    const user = await createTestUser({ name: 'Vocabulary owner' });
+    const agent = await createTestAgent({
+      organizationId: org.id,
+      ownerUserId: user.id,
+    });
+    const behaviorSources = [
+      { name: 'engine', query: 'SELECT id FROM behaviors WHERE status = \'active\'' },
+    ];
+    const [behavior] = await sql<{ id: number }[]>`
+      INSERT INTO behaviors (
+        name, slug, created_by, organization_id, agent_id, behavior_group_id, sources
+      )
+      VALUES (
+        'Vocabulary source', ${`vocabulary-source-${Date.now()}`}, ${user.id}, ${org.id},
+        ${agent.agentId}, 987654321, ${sql.json(behaviorSources)}
+      )
+      RETURNING id
+    `;
+    const [version] = await sql<{ id: number }[]>`
+      INSERT INTO behavior_versions (
+        behavior_id, version, name, prompt, version_sources, change_notes, created_by
+      )
+      VALUES (
+        ${behavior!.id}, 1, 'Vocabulary source', 'Test source cutover.',
+        ${sql.json(behaviorSources)}, 'Test source cutover', ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      UPDATE behaviors SET current_version_id = ${version!.id} WHERE id = ${behavior!.id}
+    `;
+    await sql`
+      INSERT INTO view_template_versions (
+        resource_type, resource_id, organization_id, version, json_template, created_by
+      )
+      VALUES (
+        'entity', ${String(entity.id)}, ${org.id}, 1,
+        ${sql.json({
+          type: 'div',
+          data_sources: {
+            engine: { query: 'SELECT id FROM behaviors WHERE status = \'active\'' },
+          },
+        })},
+        ${user.id}
+      )
+    `;
+    const [canvasEvent] = await sql<{ id: string }[]>`
+      INSERT INTO events (
+        organization_id, origin_id, semantic_type, payload_type, metadata
+      )
+      VALUES (
+        ${org.id}, ${`vocab-canvas-${Date.now()}`}, 'canvas_state', 'empty',
+        ${sql.json({
+          behavior_id: 4242,
+          source: 'behavior_canvas',
+          resourceKind: 'behavior',
+          resource_kind: 'behavior',
+          granularity: 'day',
+          window_start: '2026-08-03T00:00:00Z',
+          window_end: '2026-08-04T00:00:00Z',
+        })}
+      )
+      RETURNING id
+    `;
+    await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({
+        source: 'behavior_promotion',
+        behavior_id: 4242,
+      })}
+      WHERE id = ${entity.id}
+    `;
     await sql`
       INSERT INTO entity_identities (
         organization_id, entity_id, namespace, identifier, source_connector
@@ -139,17 +216,41 @@ describe('Behavior vocabulary migration', () => {
         FROM write_approval_policies
         WHERE organization_id = ${org.id}
       `;
+      const [event] = await sql<{ metadata: Record<string, unknown> }[]>`
+        SELECT metadata FROM events WHERE id = ${canvasEvent!.id}
+      `;
+      const [storedEntity] = await sql<{ metadata: Record<string, unknown> }[]>`
+        SELECT metadata FROM entities WHERE id = ${entity.id}
+      `;
+      const [template] = await sql<{ json_template: Record<string, unknown> }[]>`
+        SELECT json_template
+        FROM view_template_versions
+        WHERE organization_id = ${org.id} AND resource_id = ${String(entity.id)}
+      `;
       return {
+        event: event?.metadata,
         identity,
         policy,
         sentinels: Object.keys(JSON.parse(organization?.metadata ?? '{}')),
+        storedEntity: storedEntity?.metadata,
+        template: template?.json_template,
       };
     };
 
     await executeMigrationSection((statement) => sql.unsafe(statement), down);
-    let canvasEventId: string | undefined;
     try {
       const rolledBack = await readBack();
+      expect(rolledBack.event).toMatchObject({
+        watcher_id: 4242,
+        source: 'watcher_canvas',
+        resourceKind: 'watcher',
+        resource_kind: 'watcher',
+      });
+      expect(rolledBack.event).not.toHaveProperty('behavior_id');
+      expect(rolledBack.storedEntity).toEqual({
+        source: 'watcher_promotion',
+        watcher_id: 4242,
+      });
       expect(rolledBack.identity).toEqual({
         namespace: 'watcher_key',
         source_connector: 'watcher',
@@ -159,6 +260,15 @@ describe('Behavior vocabulary migration', () => {
         principal_id: 'watcher:4242',
       });
       expect(rolledBack.sentinels).toEqual(['default_watcher_provisioned']);
+      expect(JSON.stringify(rolledBack.template)).toContain('FROM watchers');
+      const [rolledBackBehavior] = await sql<{ sources: typeof behaviorSources }[]>`
+        SELECT sources FROM watchers WHERE id = ${behavior!.id}
+      `;
+      const [rolledBackVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
+        SELECT version_sources FROM watcher_versions WHERE id = ${version!.id}
+      `;
+      expect(rolledBackBehavior?.sources[0]?.query).toContain('FROM watchers');
+      expect(rolledBackVersion?.version_sources[0]?.query).toContain('FROM watchers');
       await sql`
         INSERT INTO runs (organization_id, run_type, status, run_at, error_message)
         VALUES (
@@ -166,36 +276,22 @@ describe('Behavior vocabulary migration', () => {
           'Use client.watchers.completeWindow to finish'
         )
       `;
-      const [canvasEvent] = await sql<{ id: string }[]>`
-        INSERT INTO events (
-          organization_id, origin_id, semantic_type, payload_type, metadata
-        )
-        VALUES (
-          ${org.id}, ${`vocab-canvas-${Date.now()}`}, 'canvas_state', 'empty',
-          ${sql.json({
-            watcher_id: 4242,
-            source: 'watcher_canvas',
-            granularity: 'day',
-            window_start: '2026-08-03T00:00:00Z',
-            window_end: '2026-08-04T00:00:00Z',
-          })}
-        )
-        RETURNING id
-      `;
-      canvasEventId = canvasEvent?.id;
-      await sql`
-        UPDATE entities
-        SET metadata = ${sql.json({
-          source: 'watcher_promotion',
-          watcher_id: 4242,
-        })}
-        WHERE id = ${entity.id}
-      `;
     } finally {
       await executeMigrationSection((statement) => sql.unsafe(statement), up);
     }
 
     const reapplied = await readBack();
+    expect(reapplied.event).toMatchObject({
+      behavior_id: 4242,
+      source: 'behavior_canvas',
+      resourceKind: 'behavior',
+      resource_kind: 'behavior',
+    });
+    expect(reapplied.event).not.toHaveProperty('watcher_id');
+    expect(reapplied.storedEntity).toEqual({
+      source: 'behavior_promotion',
+      behavior_id: 4242,
+    });
     expect(reapplied.identity).toEqual({
       namespace: 'behavior_key',
       source_connector: 'behavior',
@@ -205,6 +301,15 @@ describe('Behavior vocabulary migration', () => {
       principal_id: 'behavior:4242',
     });
     expect(reapplied.sentinels).toEqual(['default_behavior_provisioned']);
+    expect(JSON.stringify(reapplied.template)).toContain('FROM behaviors');
+    const [reappliedBehavior] = await sql<{ sources: typeof behaviorSources }[]>`
+      SELECT sources FROM behaviors WHERE id = ${behavior!.id}
+    `;
+    const [reappliedVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
+      SELECT version_sources FROM behavior_versions WHERE id = ${version!.id}
+    `;
+    expect(reappliedBehavior?.sources[0]?.query).toContain('FROM behaviors');
+    expect(reappliedVersion?.version_sources[0]?.query).toContain('FROM behaviors');
     expect(
       await sql<{ error_message: string }[]>`
         SELECT error_message
@@ -216,7 +321,7 @@ describe('Behavior vocabulary migration', () => {
       await sql<{ behavior_id: string }[]>`
         SELECT behavior_id::text
         FROM canvas_windows
-        WHERE id = ${canvasEventId}
+        WHERE id = ${canvasEvent!.id}
       `,
     ).toEqual([{ behavior_id: '4242' }]);
     expect(

@@ -1067,6 +1067,32 @@ describe("prepareXReply", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	// The a11y walker keeps only in-viewport nodes, and one image in the post is
+	// enough to push X's reply composer past the fold (measured: innerHeight
+	// 779, composer top 830). The extraction then finds no textbox and the run
+	// dies claiming the composer does not exist, on a page that plainly has one.
+	test("scrolls the composer into view BEFORE reading the accessibility tree", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "hi",
+		});
+		const scrollIdx = calls.findIndex(
+			(c) =>
+				c.action === "evaluate" &&
+				String(c.input.expression).includes("scrollIntoView"),
+		);
+		const treeIdx = calls.findIndex(
+			(c) => c.action === "get_accessibility_tree",
+		);
+		expect(scrollIdx).toBeGreaterThanOrEqual(0);
+		// Ordering is the whole point: scrolling after the snapshot fixes nothing.
+		expect(scrollIdx).toBeLessThan(treeIdx);
+		expect(String(calls[scrollIdx]?.input.expression)).toContain(
+			"tweetTextarea_0",
+		);
+	});
+
 	test("reports the auth wall instead of typing into a logged-out page", async () => {
 		const { dispatcher } = stagingDispatcher({
 			currentUrl: "https://x.com/i/flow/login",

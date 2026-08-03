@@ -2253,6 +2253,20 @@ export async function prepareXReply(
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 
+	// The a11y walker keeps only what is inside the viewport
+	// (accessibility-tree.js `keepElement` → `inViewport`), and X pushes the
+	// reply composer below the fold whenever the post is tall — one image is
+	// enough (measured 2026-08-03 on a photo post: innerHeight 779, composer
+	// top 830). Without this scroll the extraction below finds no textbox at
+	// all and the run dies with "could not locate the reply composer" on a page
+	// that plainly has one.
+	await safeDispatch.dispatch("evaluate", {
+		tab_id: tabId,
+		expression:
+			'document.querySelector(\'[data-testid="tweetTextarea_0"]\')?.scrollIntoView({ block: "center" })',
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
 	const tree = await safeDispatch.dispatch<{
 		tree?: XA11yNode[];
 		document_epoch?: number;
@@ -2406,7 +2420,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.10.0",
+		version: "3.11.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [

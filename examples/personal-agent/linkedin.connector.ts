@@ -807,6 +807,11 @@ type PrepareCommentResult = {
   body: string;
   /** How the composer was filled: evaluate or the a11y type_ref fallback. */
   method: "type_ref" | "evaluate";
+  /**
+   * Whether the tab was handed to the user. False means the extension has no
+   * `release_tab`, so the reaper will close the tab — and the draft — shortly.
+   */
+  released?: boolean;
   /** Whether the in-page handoff banner was injected. */
   banner_shown?: boolean;
   /** Truncated reason shown on the banner (if any). */
@@ -1553,12 +1558,34 @@ export async function prepareLinkedInComment(
     }
   }
 
+  // Hand the tab to the human. Until this point it is an extension-owned
+  // scratch tab, which the reaper force-closes after ~5 minutes — taking the
+  // staged draft with it while this function still returns prepared: true.
+  // Released, it is an ordinary user tab the reaper ignores.
+  //
+  // Deliberately last, after the composer-filled check above: a run that fails
+  // earlier leaves the tab owned, and a tab with no draft in it SHOULD be
+  // reaped.
+  let released = false;
+  try {
+    await safeDispatch.dispatch("release_tab", {
+      tab_id: tabId,
+      ...chromeOriginsInput(),
+    });
+    released = true;
+  } catch {
+    // Older extension builds have no release_tab. Reported as `released` so the
+    // caller can tell a durable draft from a doomed one instead of trusting
+    // prepared: true — the exact blind spot that let this bug survive.
+  }
+
   return {
     prepared: true,
     tab_id: tabId,
     post_url: postUrl,
     body,
     method,
+    released,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
     agent_id: handoff?.agentId,
@@ -2143,7 +2170,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.4.0",
+    version: "3.5.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2403,6 +2430,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
             post_url: { type: "string" },
             body: { type: "string" },
             method: { type: "string" },
+            released: { type: "boolean" },
             banner_shown: { type: "boolean" },
             reason_preview: { type: "string" },
             agent_id: { type: "string" },

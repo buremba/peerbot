@@ -713,6 +713,16 @@ jobs:
         # could only be exercised by cutting a real release.
         run: bun test scripts/__tests__/derive-image-tags.test.ts
 
+      - name: Release publish ordering
+        # 14.9.0 and 14.10.0 never reached npm: release-please dispatched
+        # publish-packages the moment the release existed, build-images was
+        # still `queued`, and the image-smoke guard correctly refused. The
+        # ordering now lives in build-images.yml's `trigger-package-publish`.
+        # Workflow YAML is not covered by any other suite, so a re-introduced
+        # dispatch in release-please.yml would otherwise only surface at the
+        # next release.
+        run: bun test scripts/__tests__/release-publish-order.test.ts
+
       - name: Release image audit decision table
         # The scheduled audit (release-image-audit.yml) is the only thing that
         # notices a release which published no image — a run evicted from its

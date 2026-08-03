@@ -15,6 +15,28 @@ function singleLine(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
+const INTERNAL_BEHAVIOR_SCHEMA_FIELDS = new Set([
+  'acting_watcher_id',
+  'analyzed_by_watcher_id',
+  'exclude_watcher_id',
+  'source_watcher_id',
+  'watcher_id',
+  'watcher_ids',
+]);
+
+function isInternalBehaviorSchemaField(field: string): boolean {
+  return INTERNAL_BEHAVIOR_SCHEMA_FIELDS.has(field.toLowerCase());
+}
+
+/** Translate engine vocabulary only on known internal fields. */
+function publicFieldDescription(field: string, value: unknown): string {
+  const description = singleLine(value);
+  if (field.toLowerCase() !== 'window_id') return description;
+  return description
+    .replace(/\bwatchers\b/gi, 'Behaviors')
+    .replace(/\bwatcher\b/gi, 'Behavior');
+}
+
 /**
  * Render a metadata schema's fields as a compact `name (description)` list.
  * Accepts both a real JSON Schema (descends into `.properties` — the old
@@ -33,8 +55,12 @@ function renderSchemaFields(schema: unknown): string {
   }
   if (!props) return '';
   return Object.entries(props)
+    .filter(([field]) => !isInternalBehaviorSchemaField(field))
     .map(([field, def]) => {
-      const desc = singleLine((def as Record<string, unknown> | null)?.description);
+      const desc = publicFieldDescription(
+        field,
+        (def as Record<string, unknown> | null)?.description
+      );
       return desc ? `${field} (${desc})` : field;
     })
     .join(', ');
@@ -127,9 +153,11 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       if (kindEntries.length === 0) continue;
 
       const kindLines = kindEntries.map(([kind, def]) => {
-        const desc = def.description ?? '';
+        const desc = singleLine(def.description);
         const metaFields = def.metadataSchema?.properties
-          ? Object.keys(def.metadataSchema.properties as Record<string, unknown>).join(', ')
+          ? Object.keys(def.metadataSchema.properties as Record<string, unknown>)
+              .filter((field) => !isInternalBehaviorSchemaField(field))
+              .join(', ')
           : '';
         const parts = [desc, metaFields ? `metadata: ${metaFields}` : '']
           .filter(Boolean)
@@ -196,7 +224,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
         const detail =
           localOps.length > 0
             ? localOps.join(', ')
-            : 'operations via `manage_operations.list_available`';
+            : 'operations via `client.operations.listAvailable()`';
         const desc = singleLine(conn.description);
         sections.push(`- ${conn.key}${desc ? ` (${desc})` : ''}: ${detail}`);
       }
@@ -210,7 +238,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       'A connector may be INSTALLED for this org yet absent from the global catalog, so always check installed connectors before concluding a source is unsupported:',
       '- Find the connector: `search_sdk` with the source/topic word (e.g. "website", "slack") returns any matching live connector + its feed keys + lifecycle. Or list them: `query_sdk` → `client.catalog.listInstalled({ kinds: ["connectors"] })` (installed = ready to configure; each item\'s `detail.feeds_schema` keys are the feed_key values) and `client.catalog.listCatalog({ kinds: ["connectors"] })` (global, installable) and `client.connections.list()` (already configured).',
       '- Lifecycle: `run_sdk` → `client.connections.connect({ connector_key })` → `client.feeds.create({ connection_id, feed_key, config })` → `client.feeds.trigger({ feed_id })`; then verify with `query_sql` on the events table and search with `search_memory`.',
-      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, watchers, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
+      'For reads beyond search_memory, prefer `query_sdk` with a TS script. For writes (entity CRUD, Behaviors, classifiers, connections, feeds, view templates, operations), use `run_sdk`. Use `search_sdk` to discover method names.',
       '',
       '### Saving (do this automatically)',
       'When the user shares any of these, save immediately:',

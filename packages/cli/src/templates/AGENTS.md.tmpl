@@ -186,7 +186,7 @@ Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — 
 paste a real key into the config, and never fabricate one. If a secret is missing,
 ask the user to add it to `.env`.
 
-### Behavior (event, schedule, or manual) + reaction
+### Behavior (event, schedule, or manual) + outputs
 
 A Behavior's instructions come from the agent's skill library: list skill names
 in `skills` and `lobu apply` compiles their bodies (in order) into the frozen
@@ -213,19 +213,28 @@ const digest = defineBehavior({
     // { kind: "event", connector_key: "github", connection: gh, event_types: ["pull_request.created"] },
   ],
   skills: ["daily-digest"],
-  // Entity-typed: the output schema comes from the `ticket` entity type's
-  // properties (schema lives on the type, not the Behavior), and extracted rows
-  // are keyed + merged into ticket entities across windows.
-  keyingConfig: { entityType: "ticket", entityPath: "tickets", keyFields: ["id"], keyOutputField: "ticket_key" },
+  outputs: {
+    tickets: { entity: ticket, key: ["id"] },
+    alerts: { event: "observation" },
+  },
   // reaction: reactionFromFile<typeof reactionMod>("./daily-digest.reaction.ts"),
 });
 ```
 
-No `reaction` → the extracted data is written to memory. A `reaction` lets the
-Behavior act (post a message, update entities). Omit `keyingConfig` for an
-untyped Behavior that runs the worker's free-form `{ summary }` fallback — there
-is no inline Behavior schema; the schema is owned by the entity type. Omit
-`triggers` for a manual-only Behavior.
+Declared outputs are persisted whether or not a `reaction` is present, and the
+complete result remains on Canvas. A `reaction` lets the Behavior act (post a
+message, call connectors, or request a governed merge) and can consume those
+persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
+For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,
+not two alternative keys. Use one to four durable fields; every row must include
+every field as a non-blank string (at most 256 UTF-8 bytes), safe integer, or
+boolean. Field order, the Behavior, and the output name are part of identity, so
+do not key on editable display labels.
+Event output rows use the standard draft fields: required `content`,
+plus optional `title`, `metadata`, `author`, `source_url`, `occurred_at`,
+`parent_event_id`, `payload_type`, and `idempotency_key`. Use
+`idempotency_key` when the same real-world source must emit at most once across
+runs. Omit `triggers` for a manual-only Behavior.
 
 ### Wire it together
 

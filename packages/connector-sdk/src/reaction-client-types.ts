@@ -205,9 +205,16 @@ export interface ReactionClient {
       connection_id: number;
       operation_key: string;
       input?: Record<string, unknown>;
+      /** Durable key for at-most-once execution across reaction retries. */
+      idempotency_key?: string;
       behavior_source?: { behavior_id: number; window_id: number };
     }): Promise<{
-      status?: "completed" | "failed" | "timeout" | "pending_approval";
+      status?:
+        | "completed"
+        | "failed"
+        | "timeout"
+        | "pending_approval"
+        | "in_progress";
       output?: Record<string, unknown>;
       error_message?: string;
       run_id?: number;

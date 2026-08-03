@@ -6,17 +6,19 @@
  */
 
 import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 import { createDbClientFromEnv, getDb, parsePgNumberArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
-import { promoteKeyedEntities } from '../../../utils/promote-keyed-entities';
+import { promoteBehaviorEntityOutput } from '../../../utils/promote-keyed-entities';
 import type { DeferredMutation } from '../../../authz/entity-mutation-gate';
 import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
-import { computeStableKeys } from '../../../utils/stable-keys';
+import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
+import { validateStableKeyComponents } from '../../../utils/stable-keys';
 import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
 import {
@@ -27,7 +29,7 @@ import {
 import { advanceWatcherSchedule } from '../../../watchers/schedule-cursor';
 import { executeReaction } from '../../../watchers/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
-import type { KeyingConfig } from '../../../types/watchers';
+import type { Outputs } from '../../../types/watchers';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs } from '../manage_behaviors';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
@@ -37,6 +39,29 @@ import { getErrorMessage } from '@lobu/core';
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
 // This allows workers to add internal fields while still validating the core schema
 const ajv = new Ajv({ allErrors: true, strict: false, removeAdditional: true });
+addFormats(ajv);
+
+function validateEntityOutputKeys(
+  extractedData: Record<string, unknown>,
+  outputs: Outputs | null
+): void {
+  for (const [outputName, output] of Object.entries(outputs ?? {})) {
+    if (!('entity' in output)) continue;
+    const rows = extractedData[outputName];
+    if (!Array.isArray(rows)) continue;
+    for (const [index, row] of rows.entries()) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      try {
+        validateStableKeyComponents(row as Record<string, unknown>, output.key);
+      } catch (error) {
+        throw new ToolUserError(
+          `Invalid stable key in entity output '${outputName}' row ${index + 1}: ${getErrorMessage(error)}`,
+          422
+        );
+      }
+    }
+  }
+}
 
 // ============================================
 // handleCompleteWindow
@@ -195,7 +220,7 @@ export async function handleCompleteWindow(
       i.organization_id,
       i.created_by,
       wv.id as version_id,
-      wv.keying_config
+      wv.outputs
     FROM watchers i
     LEFT JOIN watcher_versions wv
       ON wv.id = COALESCE(${snapshotVersionId}::bigint, i.current_version_id)
@@ -207,7 +232,7 @@ export async function handleCompleteWindow(
   if (watcherRows.length === 0) {
     throw new Error(
       `Behavior ${watcherId} not found. ` +
-        "It may have been deleted. Use manage_behaviors with action='list' to see available Behaviors."
+        'It may have been deleted. Use client.behaviors.list() via query_sdk to see available Behaviors.'
     );
   }
 
@@ -234,7 +259,7 @@ export async function handleCompleteWindow(
 
   const resolvedVersionId =
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
-  const keyingConfig = parseJson(watcherRows[0].keying_config) as KeyingConfig | null;
+  const outputs = parseJson(watcherRows[0].outputs) as Outputs | null;
 
   // The org + bound parent entity the promoted child entities hang under. The
   // watcher's first bound entity is the parent; unbound watchers promote at the
@@ -250,16 +275,14 @@ export async function handleCompleteWindow(
 
   // ============================================
   // STEP 2.5: Validate extracted_data against the extraction schema.
-  // The schema is DERIVED from the bound entity type's metadata_schema
-  // (keying_config.entity_type) — schema lives on the type, never on the watcher.
-  // Same helper the worker payload uses, so the contract the device extracts
-  // against and the contract we validate against never drift. An untyped watcher
-  // (no entity_type) gets null here and skips validation (free-form summary).
+  // The schema is composed from declared outputs and the optional reaction
+  // input. Entity schemas still live on their entity types; event outputs use
+  // the standard event draft. The worker and completion share this helper.
   // ============================================
   const extractionSchema: Record<string, any> | null = await deriveWatcherExtractionSchema(
     getDb(),
     watcherOrgId,
-    keyingConfig,
+    outputs,
     watcherId
   );
   if (extractionSchema) {
@@ -290,15 +313,11 @@ export async function handleCompleteWindow(
     logger.info('[complete_window] extracted_data validated against template schema successfully');
   }
 
-  // ============================================
-  // STEP 2.6: Compute stable entity keys if template has keying_config
-  // ============================================
-  if (keyingConfig) {
-    computeStableKeys(extractedData, keyingConfig);
-    logger.info(
-      `[complete_window] Computed stable keys for entities at path "${keyingConfig.entity_path}"`
-    );
-  }
+  // JSON Schema maxLength counts characters, while durable stable-key storage
+  // is bounded in UTF-8 bytes and also rejects blank strings. Enforce the exact
+  // encoder contract before opening the completion transaction or writing the
+  // Canvas so invalid model output is an actionable 422, not a mid-write error.
+  validateEntityOutputKeys(extractedData, outputs);
 
   // ============================================
   // STEP 3: Resolve the exact content IDs analyzed by the worker
@@ -376,6 +395,7 @@ export async function handleCompleteWindow(
     // re-analysis states replace_existing explicitly.
     // ============================================
     let windowId!: number;
+    let canvasRevisionId!: number;
     let windowCreated = false;
     let headSuperseded = false;
     const canvasEntityId = await ensureCanvasEntity({
@@ -418,13 +438,14 @@ export async function handleCompleteWindow(
       // never create a second root and never overwrite a successful head. The
       // window identity is the existing chain root.
       windowId = existingHead.rootEventId;
+      canvasRevisionId = existingHead.id;
     } else if (existingHead && args.replace_existing) {
       // Supersede the current head, copying the root's period metadata. Loser of
       // a concurrent supersede hits idx_events_superseded_by → 23505 → 409. The
       // root id (window identity) never changes across a supersede.
       windowId = existingHead.rootEventId;
       try {
-        await insertEvent(
+        const replacement = await insertEvent(
           {
             entityIds: canvasEntityIds,
             organizationId: watcherOrgId,
@@ -444,6 +465,7 @@ export async function handleCompleteWindow(
           },
           { sql: tx }
         );
+        canvasRevisionId = Number(replacement.id);
       } catch (err) {
         if (isUniqueViolation(err, 'idx_events_superseded_by')) {
           throw new ToolUserError(
@@ -483,6 +505,7 @@ export async function handleCompleteWindow(
           { sql: tx }
         );
         windowId = Number(rootEvent.id);
+        canvasRevisionId = windowId;
         windowCreated = true;
         logger.info(
           `[complete_window] Created canvas window ${windowId} for watcher ${watcherId} (${window_start} - ${window_end})`
@@ -529,62 +552,93 @@ export async function handleCompleteWindow(
     const validContentIds = new Set(batchContentIds);
 
     // ============================================
-    // STEP 8.5: Promote keyed rows into child entities (P2 phase 1)
-    // computeStableKeys (STEP 2.6) stamped a deterministic stable key onto each
-    // extracted entity; promote those keyed rows into real child entities under
-    // the watcher's bound entity. Origin provenance (window_id / stable_key /
-    // watcher_id) is stamped onto each child's metadata — no separate event.
-    // Runs on `tx` so the entity + identity writes commit atomically with the
-    // window itself. Idempotent across re-runs and concurrent replicas
-    // (entity_identities live-unique key).
+    // STEP 8.5: Persist declared entity and event outputs atomically with Canvas.
     // ============================================
-    if (keyingConfig) {
-      const promote = await promoteKeyedEntities({
-        tx,
-        extractedData,
-        keyingConfig,
-        watcherId: Number(watcherId),
-        organizationId: watcherOrgId,
-        windowId,
-        parentEntityId,
-        createdBy: watcherCreatedBy,
-        validContentIds,
-      });
-      // Owned-field changes and policy-held creates the watcher couldn't apply —
-      // flush each AFTER the window transaction commits (approvals must not ride
-      // the tx).
-      deferredApprovals = promote.deferred;
+    const entityChanges = [] as Array<{
+      entityId: number;
+      name: string;
+      kind: 'created' | 'updated';
+      applied: Record<string, unknown>;
+    }>;
+    for (const [outputName, output] of Object.entries(outputs ?? {})) {
+      if ('entity' in output) {
+        const promote = await promoteBehaviorEntityOutput({
+          tx,
+          extractedData,
+          outputName,
+          output,
+          watcherId: Number(watcherId),
+          organizationId: watcherOrgId,
+          windowId,
+          parentEntityId,
+          createdBy: watcherCreatedBy,
+          validContentIds,
+        });
+        deferredApprovals.push(...promote.deferred);
+        entityChanges.push(...promote.changes);
+      } else {
+        await persistBehaviorEventOutput({
+          tx,
+          rows: extractedData[outputName],
+          outputName,
+          output,
+          watcherId: Number(watcherId),
+          organizationId: watcherOrgId,
+          windowId,
+          canvasRevisionId,
+          runId: watcherRunId,
+          boundEntityIds,
+          validContentIds,
+          occurredAt: window_end,
+          createdBy: watcherCreatedBy,
+        });
+      }
+    }
 
-      // Record the applied change-set as a FIRST-CLASS event on the run — even
-      // for fully-auto promotions. The diff is a property of the run, not of the
-      // approval flow: a watcher run that auto-applied 100 entity changes still
-      // shows exactly what it changed. Rides the window tx (it describes writes
-      // that just committed on this same tx) and is scoped to the run + the
-      // entities it touched, so the run view and the entity views both resolve it.
-      if (promote.changes.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {
-        const createdCount = promote.changes.filter((c) => c.kind === 'created').length;
-        const updatedCount = promote.changes.length - createdCount;
-        await insertEvent(
-          {
-            entityIds: promote.changes.map((c) => c.entityId),
-            organizationId: watcherOrgId,
-            originId: `run_${watcherRunId}_changeset`,
-            title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
-            content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
-            semanticType: 'change_set',
-            runId: watcherRunId,
-            metadata: {
-              kind: 'watcher_change_set',
-              window_id: windowId,
-              watcher_id: Number(watcherId),
-              created_count: createdCount,
-              updated_count: updatedCount,
-              changes: promote.changes,
-            },
-            createdBy: watcherCreatedBy,
-          },
-          { sql: tx }
-        );
+    // One run-level change set covers every entity output.
+    if (entityChanges.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {
+      const createdCount = entityChanges.filter((c) => c.kind === 'created').length;
+      const updatedCount = entityChanges.length - createdCount;
+      const changeSetIdempotencyKey = `behavior:${watcherId}:run:${watcherRunId}:change_set`;
+      const findChangeSet = () => tx<{ id: number }>`
+        SELECT id FROM events
+        WHERE organization_id = ${watcherOrgId}
+          AND metadata->>'_lobu_idempotency_key' = ${changeSetIdempotencyKey}
+        LIMIT 1
+      `;
+      if ((await findChangeSet()).length === 0) {
+        try {
+          await tx.savepoint((sp) =>
+            insertEvent(
+              {
+                entityIds: entityChanges.map((c) => c.entityId),
+                organizationId: watcherOrgId,
+                originId: `run_${watcherRunId}_changeset`,
+                title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
+                content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
+                semanticType: 'change_set',
+                runId: watcherRunId,
+                metadata: {
+                  _lobu_idempotency_key: changeSetIdempotencyKey,
+                  kind: 'watcher_change_set',
+                  window_id: windowId,
+                  watcher_id: Number(watcherId),
+                  created_count: createdCount,
+                  updated_count: updatedCount,
+                  changes: entityChanges,
+                },
+                createdBy: watcherCreatedBy,
+              },
+              { sql: sp }
+            )
+          );
+        } catch (error) {
+          if (!isUniqueViolation(error, 'idx_events_org_idempotency_key')) throw error;
+          // The failed INSERT was savepoint-isolated, so the outer completion
+          // transaction is still usable. Confirm the concurrent winner before
+          // treating this replay as complete.
+          if ((await findChangeSet()).length === 0) throw error;
+        }
       }
     }
 

@@ -17,10 +17,13 @@ import {
   resolveWatcherSourcesForSave,
   extractSkillNamesFromPromptTokens,
 } from '../../../watchers/source-refs';
+import { validateSaveContentSemanticType } from '../../../utils/event-kind-validation';
 import type { ToolContext } from '../../registry';
 import { Value } from '@sinclair/typebox/value';
 import {
-  BehaviorKeyingConfigSchema,
+  BehaviorEntityOutputSchema,
+  BehaviorEventOutputSchema,
+  BehaviorOutputsSchema,
   normalizeBehaviorTags,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 
@@ -171,10 +174,8 @@ function validateWatcherConfig(input: {
     return 'prompt must be a string';
   }
 
-  // The output contract is no longer authored on the watcher. An entity-typed
-  // watcher (keying_config.entity_type) derives it from that entity type's
-  // metadata_schema at runtime; an untyped watcher runs the worker's free-form
-  // summary fallback. There is no inline watcher schema input.
+  // A Behavior version declares only durable output targets. Entity row schemas
+  // remain owned by entity types; event rows use the standard event draft.
 
   if (input.classifiers !== undefined) {
     if (!Array.isArray(input.classifiers)) {
@@ -438,97 +439,150 @@ export async function assertAgentExists(
   }
 }
 
-/**
- * Shape-check a CALLER-SUPPLIED keying_config after parseJsonInput. An
- * object-typed input is already validated by the tool schema, but the wire
- * contract also accepts a pre-serialized JSON string (see the keying_config
- * union in ManageBehaviorsSchema), which passes validation as Type.String and
- * would otherwise store any shape. Never call this on stored/inherited
- * configs — rows written before the contract existed must stay loadable.
- *
- * Only `undefined` counts as omitted: the tool contract has no null member, so
- * a serialized JSON `null` string is a caller-supplied value and is rejected
- * rather than silently inheriting the previous version's config.
- *
- * Unknown keys are rejected HERE rather than via `additionalProperties: false`
- * on the shared schema. A misspelled OPTIONAL field (`nameFields`, `entityType`)
- * satisfies every required field, so the schema alone accepts it and the caller
- * silently loses the display-name or entity-type binding — the exact silent-void
- * failure this contract exists to stop. The schema stays open because it is also
- * `get_behavior`'s output shape, where a legacy stored config with extra keys
- * must still round-trip; this guard only ever sees caller input.
- */
-export function assertKeyingConfigShape(keyingConfig: unknown): void {
-  if (keyingConfig === undefined) return;
-  if (keyingConfig !== null && typeof keyingConfig === 'object' && !Array.isArray(keyingConfig)) {
-    // `Object.hasOwn`, not `in`: `in` walks Object.prototype, so prototype-named
-    // own keys (`constructor`, `toString`, `__proto__`) would pass as declared.
-    const unknown = Object.keys(keyingConfig).filter(
-      (key) => !Object.hasOwn(BehaviorKeyingConfigSchema.properties, key)
-    );
-    if (unknown.length > 0) {
-      const allowed = Object.keys(BehaviorKeyingConfigSchema.properties).join(', ');
-      throw new ToolUserError(
-        `Invalid keying_config: unknown field(s) ${unknown.slice(0, 3).join(', ')}. Allowed: ${allowed}.`,
-        400
+/** Shape-check caller-supplied named outputs, including unknown-field typos. */
+export function assertOutputsShape(outputs: unknown): void {
+  if (outputs === undefined || outputs === null) return;
+  if (typeof outputs === 'object' && !Array.isArray(outputs)) {
+    for (const [name, raw] of Object.entries(outputs)) {
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name)) {
+        throw new ToolUserError(
+          `Invalid outputs.${name}: output names must start with a letter and contain only letters, numbers, or underscores.`,
+          400
+        );
+      }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const target = raw as Record<string, unknown>;
+      const hasEntity = Object.hasOwn(target, 'entity');
+      const hasEvent = Object.hasOwn(target, 'event');
+      if (hasEntity === hasEvent) {
+        throw new ToolUserError(
+          `Invalid outputs.${name}: declare exactly one of 'entity' or 'event'.`,
+          400
+        );
+      }
+      const referenceField = hasEntity ? 'entity' : 'event';
+      const reference = target[referenceField];
+      if (typeof reference === 'string' && reference !== reference.trim()) {
+        throw new ToolUserError(
+          `Invalid outputs.${name}.${referenceField}: surrounding whitespace is not allowed.`,
+          400
+        );
+      }
+      if (target.event === 'guidance') {
+        throw new ToolUserError(
+          `Invalid outputs.${name}: Behaviors cannot author organization-wide guidance events.`,
+          422
+        );
+      }
+      const schema = hasEntity ? BehaviorEntityOutputSchema : BehaviorEventOutputSchema;
+      const unknown = Object.keys(target).filter(
+        (key) => !Object.hasOwn(schema.properties, key)
       );
+      if (unknown.length > 0) {
+        throw new ToolUserError(
+          `Invalid outputs.${name}: unknown field(s) ${unknown.slice(0, 3).join(', ')}. Allowed: ${Object.keys(schema.properties).join(', ')}.`,
+          400
+        );
+      }
     }
   }
-  if (Value.Check(BehaviorKeyingConfigSchema, keyingConfig)) return;
+  if (Value.Check(BehaviorOutputsSchema, outputs)) return;
   // Dedupe by path — TypeBox emits both `Expected required property` and
   // `Expected <type>` for one missing field (same as validate-args).
   const seen = new Set<string>();
   const errs: string[] = [];
-  for (const e of Value.Errors(BehaviorKeyingConfigSchema, keyingConfig)) {
+  for (const e of Value.Errors(BehaviorOutputsSchema, outputs)) {
     const path = e.path || '/';
     if (seen.has(path)) continue;
     seen.add(path);
     errs.push(`${path}: ${e.message}`);
     if (errs.length >= 3) break;
   }
-  throw new ToolUserError(`Invalid keying_config: ${errs.join('; ')}`, 400);
+  throw new ToolUserError(`Invalid outputs: ${errs.join('; ')}`, 400);
 }
 
 /**
- * Resolve `keying_config.entity_type` against the org before it is persisted.
- *
- * An entity-typed Behavior derives its whole output contract from the named
- * type's `metadata_schema`. When the type does not exist,
- * `deriveWatcherExtractionSchema()` returns null and complete_window SKIPS
- * extraction validation entirely — so a typo does not fail loudly, it silently
- * VOIDS the contract the Behavior was created to enforce. Its sibling
- * `entity_id` is already existence-checked at create, so validating here makes
- * the pair consistent.
- *
- * Uses the same tenant-first-then-public-catalog visibility rule as
- * `resolveEntityTypeMetadataSchema()` (watcher-extraction-schema.ts) so a type
- * that derivation CAN see is never rejected here — checking existence only, as
- * a type legitimately may carry no metadata_schema yet.
+ * Resolve every entity output target against the org before it is persisted.
  */
-export async function assertKeyingConfigEntityTypeExists(
+export async function assertOutputEntityTypesExist(
   sql: DbClient,
   organizationId: string,
-  keyingConfig: Record<string, unknown> | null | undefined
+  outputs: Record<string, unknown> | null | undefined
 ): Promise<void> {
-  const rawType = keyingConfig?.entity_type;
-  if (typeof rawType !== 'string') return;
-  const entityType = rawType.trim();
-  if (!entityType) return;
+  if (!outputs) return;
+  for (const [name, raw] of Object.entries(outputs)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const rawType = (raw as Record<string, unknown>).entity;
+    if (typeof rawType !== 'string' || !rawType.trim()) continue;
+    const entityType = rawType.trim();
+    const rows = await sql<{ id: number; metadata_schema: unknown; backing_sql: string | null }>`
+      SELECT et.id, et.metadata_schema, et.backing_sql
+      FROM entity_types et
+      LEFT JOIN organization o ON o.id = et.organization_id
+      WHERE et.slug = ${entityType}
+        AND et.deleted_at IS NULL
+        AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
+      ORDER BY (et.organization_id = ${organizationId}) DESC, et.id ASC
+      LIMIT 1
+    `;
+    if (rows.length === 0) {
+      throw new ToolUserError(
+        `Unknown entity type '${entityType}' in outputs.${name}. Use client.entitySchema.listTypes() to list available types or client.entitySchema.createType(...) to create a custom type first.`,
+        422
+      );
+    }
+    if (rows[0].backing_sql) {
+      throw new ToolUserError(
+        `Invalid entity output outputs.${name}: '${entityType}' is a derived entity type and cannot receive persisted rows.`,
+        422
+      );
+    }
+    const metadataSchema = parseJson(rows[0].metadata_schema);
+    const properties =
+      metadataSchema &&
+      typeof metadataSchema === 'object' &&
+      !Array.isArray(metadataSchema) &&
+      (metadataSchema as Record<string, unknown>).properties &&
+      typeof (metadataSchema as Record<string, unknown>).properties === 'object' &&
+      !Array.isArray((metadataSchema as Record<string, unknown>).properties)
+        ? ((metadataSchema as Record<string, unknown>).properties as Record<string, unknown>)
+        : null;
+    if (!properties) continue;
+    const target = raw as Record<string, unknown>;
+    for (const field of [...((target.key as string[]) ?? []), ...((target.name as string[]) ?? [])]) {
+      if (!Object.hasOwn(properties, field)) {
+        throw new ToolUserError(
+          `Unknown field '${field}' in outputs.${name}: entity type '${entityType}' does not declare that property.`,
+          422
+        );
+      }
+    }
+  }
+}
 
-  const rows = await sql<{ id: number }>`
-    SELECT et.id
-    FROM entity_types et
-    LEFT JOIN organization o ON o.id = et.organization_id
-    WHERE et.slug = ${entityType}
-      AND et.deleted_at IS NULL
-      AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
-    LIMIT 1
-  `;
-  if (rows.length === 0) {
-    throw new ToolUserError(
-      `Unknown entity type '${entityType}' in keying_config. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
-      422
+/** Validate declared event kinds at authoring time when the org has a registry. */
+export async function assertOutputEventTypesExist(
+  organizationId: string,
+  outputs: Record<string, unknown> | null | undefined,
+  entityIds: number[] = []
+): Promise<void> {
+  if (!outputs) return;
+  for (const [name, raw] of Object.entries(outputs)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const event = (raw as Record<string, unknown>).event;
+    if (typeof event !== 'string' || !event.trim()) continue;
+    const validation = await validateSaveContentSemanticType(
+      event.trim(),
+      {},
+      organizationId,
+      entityIds.length > 0 ? entityIds : undefined
     );
+    if (!validation.valid) {
+      throw new ToolUserError(
+        `Invalid event type '${event}' in outputs.${name}: ${validation.errors.join(' ')}`,
+        422
+      );
+    }
   }
 }
 

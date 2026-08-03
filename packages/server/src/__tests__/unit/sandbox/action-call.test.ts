@@ -171,7 +171,7 @@ describe("createActionCaller", () => {
 		// recover against `client.feeds.get`.
 		const handler = async () => {
 			throw new ToolUserError(
-				"Invalid arguments for manage_feeds: /feed_id: Expected required property",
+				"Invalid arguments for manage_feeds: unknown argument(s): limit — valid arguments for action 'read_feed' are: action, feed_id, connection_id",
 			);
 		};
 		const { action } = createActionCaller(
@@ -186,7 +186,10 @@ describe("createActionCaller", () => {
 		expect(thrown).toBeInstanceOf(ToolUserError);
 		expect(thrown.message).not.toMatch(/manage_feeds/);
 		expect(thrown.message).toMatch(/client\.feeds\.get/);
-		expect(thrown.message).toMatch(/feed_id/);
+		expect(thrown.message).toMatch(/unknown argument\(s\): limit/);
+		expect(thrown.message).not.toMatch(/\baction\b/);
+		expect(thrown.message).not.toMatch(/connection_id/);
+		expect(thrown.message).toContain("search_sdk 'feeds.get'");
 	});
 
 	it("derives a CAMEL-CASE public method from a snake_case action when none is supplied", async () => {
@@ -219,6 +222,24 @@ describe("createActionCaller", () => {
 		const thrown = (await action("read_feed", {}).catch((e: unknown) => e)) as ToolUserError;
 		// No namespace → nothing to rewrite to; message passes through.
 		expect(thrown.message).toBe("Invalid arguments for manage_feeds: boom");
+	});
+
+	it("leaves non-validator errors from namespaced callers untouched", async () => {
+		const message =
+			"Connector rejected the request — valid arguments are: retry_after";
+		const handler = async () => {
+			throw new ToolUserError(message);
+		};
+		const { action } = createActionCaller(
+			handler as never,
+			{} as never,
+			{} as never,
+			"feeds",
+		);
+		const thrown = (await action("trigger_feed", {}).catch(
+			(e: unknown) => e,
+		)) as ToolUserError;
+		expect(thrown.message).toBe(message);
 	});
 
 	it("returns a queued approval even when its mutation success is false", async () => {

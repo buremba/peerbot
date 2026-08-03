@@ -521,9 +521,9 @@ describe("apply diff — watchers", () => {
     ).toEqual(["prompt"]);
   });
 
-  test("explicit null keying clears a remote entity binding", () => {
+  test("explicit null outputs clears remote declarations", () => {
     const desired = buildState([], {
-      watchers: [{ ...desiredWatcher, keyingConfig: null }],
+      watchers: [{ ...desiredWatcher, outputs: null }],
     });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
@@ -534,11 +534,8 @@ describe("apply diff — watchers", () => {
           agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
-          keying_config: {
-            entity_type: "social-signal",
-            entity_path: "items",
-            key_fields: ["source_origin_id"],
-            key_output_field: "stable_key",
+          outputs: {
+            items: { entity: "social-signal", key: ["source_origin_id"] },
           },
         },
       ],
@@ -548,10 +545,37 @@ describe("apply diff — watchers", () => {
       (candidate) => candidate.kind === "watcher"
     );
     expect(row?.verb).toBe("update");
-    expect(row?.changedFields).toContain("keying_config");
+    expect(row?.changedFields).toContain("outputs");
     expect(
       (row as { versionBoundFields?: string[] }).versionBoundFields
-    ).toContain("keying_config");
+    ).toContain("outputs");
+  });
+
+  test("removing outputs from the declaration clears remote declarations", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          outputs: {
+            items: { entity: "social-signal", key: ["source_origin_id"] },
+          },
+        },
+      ],
+    };
+
+    const row = computeDiff(desired, remote).rows.find(
+      (candidate) => candidate.kind === "watcher"
+    );
+    expect(row?.verb).toBe("update");
+    expect(
+      (row as { versionBoundFields?: string[] }).versionBoundFields
+    ).toContain("outputs");
   });
 
   test("reaction_script declared → always re-pushed (idempotent)", () => {

@@ -4,15 +4,13 @@ import {
   defineSkill,
   defineEntityType,
   defineBehavior,
-  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
-import type catalogStalenessCheckerReaction from "./catalog-staleness-checker.reaction.ts";
 
 const catalogStalenessCheckerSkill = defineSkill({
   name: "catalog-staleness-checker",
   content:
-    'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
+    'Sweep the atlas reference catalog for entries that haven\'t been updated in 90+ days. Return the stalest 10 in `stale_entries` as standard observation event drafts. Put the readable warning and suggested action in `content`; put `{ kind: "catalog_stale", entity_type, slug, last_updated }` in `metadata`. Return an empty array when nothing is stale.\n',
 });
 
 const atlasCurator = defineAgent({
@@ -214,9 +212,7 @@ const catalogStalenessChecker = defineBehavior({
   notification: { priority: "low" },
   tags: ["atlas", "reference", "weekly"],
   minCooldownSeconds: 3600,
-  reaction: reactionFromFile<typeof catalogStalenessCheckerReaction>(
-    "./catalog-staleness-checker.reaction.ts"
-  ),
+  outputs: { stale_entries: { event: "observation" } },
   skills: ["catalog-staleness-checker"],
 });
 

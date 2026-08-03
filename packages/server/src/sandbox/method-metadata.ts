@@ -42,7 +42,7 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 	// organizations
 	"organizations.list": {
 		summary:
-			"List organizations the authenticated user belongs to, plus public orgs they can read.",
+			"List organizations the authenticated user belongs to, plus public orgs they can read. Public managed-OAuth providers carry structured managed_auth metadata with connector keys, the connect method, consent/login requirements, and the local bootstrap command.",
 		access: "read",
 		example: "const orgs = await client.organizations.list();",
 	},
@@ -545,11 +545,11 @@ export default async (ctx, client) => {
 	},
 	"behaviors.create": {
 		summary:
-			"Create a Behavior. Requires slug, prompt, and agent_id. Set keying_config.entity_type to derive the output contract from that entity type's metadata_schema, or omit it for a free-form summary. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
+			"Create a Behavior. Requires slug and agent_id; window/manual Behaviors also need prompt or skills. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a Canvas/reaction-only Behavior. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Behavior.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		example:
-			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from the window content.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+			"await client.behaviors.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
 		usageExample: `// Stand up a Behavior that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
@@ -558,12 +558,7 @@ export default async (_ctx, client) => {
     slug: 'pricing',
     agent_id: 'agt_123',
     prompt: 'Extract current pricing records from the window content.',
-    keying_config: {
-      entity_type: 'price',
-      entity_path: 'prices',
-      key_fields: ['sku'],
-      key_output_field: 'price_key',
-    },
+    outputs: { prices: { entity: 'price', key: ['sku'] } },
     sources: [
       { name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' },
     ],
@@ -576,7 +571,8 @@ export default async (_ctx, client) => {
 		access: "admin",
 	},
 	"behaviors.createVersion": {
-		summary: "Create a new Behavior template version.",
+		summary:
+			"Create a new Behavior version. Version-owned fields include name, description, prompt, skills, sources, outputs, classifiers, and reactions guidance. Outputs use the same entity/event contract as create and require window execution.",
 		access: "admin",
 	},
 	"behaviors.trigger": {
@@ -681,13 +677,13 @@ export default async (_ctx, client) => {
 	},
 	"connections.connect": {
 		summary:
-			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. rss or hackernews) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check` and only call feeds.create once the result actually carries a connection_id. Once you have a connection_id you must create a feed on it to collect data — connect() alone syncs nothing.",
+			"Recommended connector setup entry point. Handles every auth family; the result's `status` tells you what to do next. status 'active' (auth-none, e.g. rss or hackernews) or 'pending_auth' (OAuth waiting on the user) BOTH carry a `connection_id`. status 'setup_required' is a continuation — `connection_id` is OPTIONAL there (may be absent); follow `next_action` / `resume_call` / `completion_check`. After auth is complete, create a feed and either schedule or trigger it; connect() alone syncs nothing.",
 		access: "admin",
 		example:
 			"const c = await client.connections.connect({ connector_key: 'rss' }); // c.connection_id",
-		usageExample: `// Two-hop: connect() creates the connection; feeds.create() starts the
-// collection. connect() ALONE does not sync anything — you must create a feed
-// on the returned connection_id with a connector-declared feed_key
+		usageExample: `// Three-hop: connect() creates the connection, feeds.create() defines the
+// sync target, and feeds.trigger() collects now. The feed can instead carry a
+// schedule. Use the returned connection_id with a connector-declared feed_key
 // (search_sdk '<connector>' lists the feed keys, e.g. rss → 'articles').
 export default async (_ctx, client) => {
   const c = await client.connections.connect({ connector_key: 'rss' });
@@ -697,12 +693,22 @@ export default async (_ctx, client) => {
   // via client.catalog.listInstalled({ kinds: ['connectors'] }) (each entry's
   // detail.feeds_schema[feed_key]) if you're unsure what to pass. For rss's
   // 'articles' feed that's { feed_urls: [...] }.
-  return client.feeds.create({
+  const { feed } = await client.feeds.create({
     connection_id: c.connection_id,
     feed_key: 'articles',
     config: { feed_urls: ['https://example.com/feed.xml'] },
   });
+  return client.feeds.trigger({ feed_id: feed.id });
 };`,
+	},
+	"connections.connectManaged": {
+		summary:
+			"Use a live managed OAuth offer from organizations.list. Validates the public provider, automatically joins the signed-in user to that org, and returns a consent URL. The cloud keeps only the caller-owned consent grant with zero feeds; after consent, `lobu init --from-org <managed_by_org>` generates the local `managedBy` connection config so data access runs locally.",
+		access: "write",
+		signature:
+			"connections.connectManaged(input: { managed_by_org: string; connector_key: string; display_name?: string; slug?: string; config?: object }): Promise<unknown>",
+		example:
+			"await client.connections.connectManaged({ managed_by_org: '<organizations.list offer>', connector_key: 'google.gmail' });",
 	},
 	"connections.update": {
 		summary:
@@ -810,7 +816,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
 		cost: "expensive",
 		example:
@@ -856,7 +862,7 @@ export default async (_ctx, client) => {
 			"Get a feed by id. Collected feeds return feed metadata and recent runs, not stored records; search collected records with knowledge.search/search_memory or client.query. Virtual feeds return live rows.",
 		access: "read",
 		signature:
-			"feeds.get(input: { feed_id: number; limit?: number }): Promise<unknown>",
+			"feeds.get(input: { feed_id: number; limit?: number; search_term?: string }): Promise<unknown>",
 		example: "const feed = await client.feeds.get({ feed_id: 42 });",
 	},
 	"feeds.readMany": {
@@ -864,20 +870,25 @@ export default async (_ctx, client) => {
 			"Read several feeds in parallel with per-feed successes/failures. Collected feeds return metadata and recent runs; virtual feeds return live rows. Search collected records with knowledge.search/search_memory or client.query.",
 		access: "read",
 		signature:
-			"feeds.readMany(input: { feed_ids: number[]; limit?: number }): Promise<unknown>",
+			"feeds.readMany(input: { feed_ids: number[]; limit?: number; timeout_ms?: number; search_term?: string }): Promise<unknown>",
 		example:
 			"const feeds = await client.feeds.readMany({ feed_ids: [42, 43], limit: 25 });",
 	},
 	"feeds.create": {
 		summary:
-			"Create a data-sync feed for a connection — this is what actually starts collecting data. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like the feed urls) in `config`.",
+			"Create a collected or virtual feed for a connection. A collected feed is manual-only unless `schedule` is set; call feeds.trigger to collect immediately. A virtual feed reads live and never syncs. Needs the `connection_id` from connections.connect and a connector-declared `feed_key` (search_sdk '<connector>' lists the keys, e.g. rss → 'articles'). Pass connector-specific settings (like feed URLs) in `config`.",
 		access: "admin",
 		signature:
-			"feeds.create(input: { connection_id: number; feed_key: string; config?: object; display_name?: string; schedule?: string }): Promise<unknown>",
+			"feeds.create(input: { connection_id: number; feed_key: string; display_name?: string; entity_ids?: number[]; config?: object; schedule?: string | null; timezone?: string; virtual?: boolean }): Promise<unknown>",
 		example:
 			"await client.feeds.create({ connection_id: 42, feed_key: 'articles', config: { feed_urls: ['https://example.com/feed.xml'] } });",
 	},
-	"feeds.update": { summary: "Update a feed.", access: "admin" },
+	"feeds.update": {
+		summary: "Update a feed.",
+		access: "admin",
+		signature:
+			"feeds.update(input: { feed_id: number; display_name?: string; status?: 'active' | 'paused'; entity_ids?: number[]; config?: object; replace_config?: boolean; schedule?: string | null; timezone?: string | null }): Promise<unknown>",
+	},
 	"feeds.delete": {
 		summary: "Delete a feed.",
 		access: "admin",

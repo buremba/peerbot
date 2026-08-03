@@ -18,6 +18,7 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
+import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
 import {
   memberRoleCache,
   orgSlugCache,
@@ -642,32 +643,56 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
   async listOrganizations(search?: string, userId?: string | null): Promise<OrgInfo[]> {
     const sql = getDb();
+    let organizations: OrgInfo[];
 
     if (!userId) {
       const params: string[] = [];
       const searchClause = search ? `AND o.name ILIKE $${params.push(`%${search}%`)}` : '';
 
-      return sql.unsafe(
+      organizations = (await sql.unsafe(
         `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at, false as is_member, o.visibility
          FROM "organization" o
          WHERE o.visibility = 'public' ${searchClause}
          ORDER BY o.name ASC`,
         params
-      );
+      )) as unknown as OrgInfo[];
+    } else {
+      const params: string[] = [userId];
+      const searchClause = search ? `AND o.name ILIKE $${params.push(`%${search}%`)}` : '';
+
+      organizations = (await sql.unsafe(
+        `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
+                (m."userId" IS NOT NULL) as is_member, o.visibility
+         FROM "organization" o
+         LEFT JOIN "member" m ON o.id = m."organizationId" AND m."userId" = $1
+         WHERE (m."userId" IS NOT NULL OR o.visibility = 'public') ${searchClause}
+         ORDER BY o.name ASC`,
+        params
+      )) as unknown as OrgInfo[];
     }
 
-    const params: string[] = [userId];
-    const searchClause = search ? `AND o.name ILIKE $${params.push(`%${search}%`)}` : '';
-
-    return sql.unsafe(
-      `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
-              (m."userId" IS NOT NULL) as is_member, o.visibility
-       FROM "organization" o
-       LEFT JOIN "member" m ON o.id = m."organizationId" AND m."userId" = $1
-       WHERE (m."userId" IS NOT NULL OR o.visibility = 'public') ${searchClause}
-       ORDER BY o.name ASC`,
-      params
+    const offers = await listManagedAuthConnectorOffers(
+      organizations.map((organization) => organization.id)
     );
+    return organizations.map((organization) => {
+      const connectors = offers.get(organization.id);
+      if (!connectors?.length) return organization;
+      return {
+        ...organization,
+        managed_auth: {
+          credential_mode: 'managed' as const,
+          requires_user_login: true as const,
+          requires_user_consent: true as const,
+          join_required: !organization.is_member,
+          connect_method: 'connections.connectManaged' as const,
+          local_bootstrap_command: `lobu init --from-org ${organization.slug}`,
+          connectors: connectors.map((connector) => ({
+            ...connector,
+            managed_by_org: organization.slug,
+          })),
+        },
+      };
+    });
   }
 
   async getAuthConfig(env: Env): Promise<AuthConfigData> {

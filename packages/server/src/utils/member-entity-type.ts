@@ -65,6 +65,22 @@ const DEFAULT_MEMBER_EVENT_KINDS = {
     description: 'Observations and insights',
     metadataSchema: BASE_MEMBER_EVENT_METADATA_SCHEMA,
   },
+  draft_reply: {
+    description: 'A reply draft linked to the source event it responds to',
+    metadataSchema: {
+      type: 'object',
+      properties: {
+        ...BASE_MEMBER_EVENT_METADATA_SCHEMA.properties,
+        platform: { type: 'string' },
+        author: { type: 'string' },
+        why: { type: 'string' },
+        priority: { type: 'string', enum: ['low', 'normal', 'high'] },
+        source_origin_id: { type: 'string' },
+        source_event_id: { type: 'integer', minimum: 1 },
+        source_connection_id: { type: 'integer', minimum: 1 },
+      },
+    },
+  },
   todo: {
     description: 'Tasks and action items',
     metadataSchema: BASE_MEMBER_EVENT_METADATA_SCHEMA,
@@ -297,28 +313,27 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
     `;
   }
 
-  // Backfill ONLY the `guidance` built-in kind an org's NON-NULL registry may
-  // lack — guidance became a required built-in after orgs were provisioned, and
-  // it now validates through this registry instead of a code bypass, so a
-  // pre-guidance org with an explicit allowlist would otherwise reject it. Two
-  // deliberate non-actions:
+  // Backfill ONLY system kinds introduced after org provisioning. They validate
+  // through the registry, so an older explicit allowlist would otherwise reject
+  // organization guidance or a declarative draft-reply output. Two deliberate
+  // non-actions:
   // - A NULL registry is left NULL. NULL means "no allowlist, accept any kind"
   //   (validateKindAgainstDefinitions short-circuits to valid), so guidance
-  //   already saves fine; materializing `{guidance}` would flip the org from
-  //   accept-any to accept-ONLY-guidance and reject the next ordinary note/fact
+  //   already saves fine; materializing a partial registry would flip the org
+  //   from accept-any to accept-only-system-kinds and reject the next note/fact
   //   save. The `event_kinds IS NOT NULL` guard preserves permissive mode.
-  // - We do NOT restore other default kinds a non-null registry omits:
+  // - We do NOT restore older default kinds a non-null registry omits:
   //   `manage_entity_schema` lets an org intentionally remove a kind from its
   //   allowlist, and silently re-adding it would override that choice. Only the
-  //   newly-mandatory key is added.
+  //   only newly introduced system kinds are added.
   //
   // Guarded UPDATE, then a SEPARATE read that primes the cache from current
   // committed truth:
-  // - The UPDATE merges `{guidance:…} || event_kinds` — a JSONB concat where the
+  // - The UPDATE merges the system patch before `event_kinds` — a JSONB concat where the
   //   RIGHT (live DB) side wins per key, so an org's authored kinds, including any
   //   a CONCURRENT $member schema edit committed since our top-of-function SELECT,
-  //   are preserved; only a missing `guidance` is added. The guard skips the write
-  //   when the registry is NULL (permissive) or `guidance` is already present (the
+  //   are preserved; only missing system keys are added. The guard skips the write
+  //   when the registry is NULL (permissive) or both keys are already present (the
   //   hot path: this runs on every save).
   // - The read is a fresh statement whose snapshot opens AFTER the UPDATE returns,
   //   so it always reflects committed truth — including a `guidance` another
@@ -335,14 +350,20 @@ export async function ensureMemberEntityType(organizationId: string): Promise<vo
   //   reflected until the 60s TTL lapses — the same bounded staleness every
   //   $member.event_kinds edit already has (the cache is TTL-only, never cross-pod
   //   busted), not a new regression.
-  const guidanceKindPatch = { guidance: DEFAULT_MEMBER_EVENT_KINDS.guidance };
+  const requiredKindPatch = {
+    guidance: DEFAULT_MEMBER_EVENT_KINDS.guidance,
+    draft_reply: DEFAULT_MEMBER_EVENT_KINDS.draft_reply,
+  };
   await sql`
     UPDATE entity_types
-    SET event_kinds = ${sql.json(guidanceKindPatch)} || event_kinds,
+    SET event_kinds = ${sql.json(requiredKindPatch)} || event_kinds,
         updated_at = current_timestamp
     WHERE id = ${existing.id}
       AND event_kinds IS NOT NULL
-      AND NOT (event_kinds ? ${GUIDANCE_SEMANTIC_TYPE})
+      AND (
+        NOT (event_kinds ? ${GUIDANCE_SEMANTIC_TYPE})
+        OR NOT (event_kinds ? 'draft_reply')
+      )
   `;
   const resolved = await sql<{ event_kinds: Record<string, EventKindDefinition> | null }>`
     SELECT event_kinds FROM entity_types WHERE id = ${existing.id}

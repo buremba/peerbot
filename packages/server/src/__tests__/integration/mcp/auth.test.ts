@@ -1234,6 +1234,7 @@ describe('MCP Authentication', () => {
         expect(tool.description).toBeDefined();
         expect(typeof tool.description).toBe('string');
       }
+      expect(JSON.stringify(result.tools)).not.toMatch(/watcher/i);
     });
   });
 

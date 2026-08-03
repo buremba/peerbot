@@ -14,6 +14,7 @@ export interface OperationsExecuteInput {
 	connection_id: number;
 	operation_key: string;
 	input?: Record<string, unknown>;
+	idempotency_key?: string;
 	/**
 	 * Watcher provenance when this operation fires from a reaction. Both ids are
 	 * numeric.

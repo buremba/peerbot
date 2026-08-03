@@ -54,6 +54,15 @@ describe('readExpectedSchemaVersion', () => {
   it('returns null for an empty directory', () => {
     expect(readExpectedSchemaVersion(dir)).toBeNull();
   });
+
+  it('fails closed when two migration files share one ledger version', () => {
+    writeFileSync(path.join(dir, '20260803140000_behavior_outputs.sql'), '');
+    writeFileSync(path.join(dir, '20260803140000_mcp_client_id.sql'), '');
+
+    expect(() => readExpectedSchemaVersion(dir)).toThrow(
+      /duplicate migration version 20260803140000/i
+    );
+  });
 });
 
 describe('compareSchemaVersions', () => {

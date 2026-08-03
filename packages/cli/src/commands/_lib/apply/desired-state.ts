@@ -140,9 +140,8 @@ export interface DesiredWatcher {
   tags?: string[];
   /** Optional agent-kind override (e.g. "background", "notifier"). */
   agentKind?: string;
-  /** Stable key generation across windows. */
-  /** Stable-key binding; explicit null clears an existing binding. */
-  keyingConfig?: Record<string, unknown> | null;
+  /** Named durable outputs; explicit null clears existing declarations. */
+  outputs?: Record<string, unknown> | null;
   /** Classifier definitions for extraction (server-side feature). */
   classifiers?: unknown[];
 }

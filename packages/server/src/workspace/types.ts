@@ -31,6 +31,19 @@ export interface OrgInfo {
   created_at: string;
   is_member: boolean;
   visibility: 'public' | 'private';
+  managed_auth?: {
+    credential_mode: 'managed';
+    requires_user_login: true;
+    requires_user_consent: true;
+    join_required: boolean;
+    connect_method: 'connections.connectManaged';
+    local_bootstrap_command: string;
+    connectors: Array<{
+      connector_key: string;
+      provider: string;
+      managed_by_org: string;
+    }>;
+  };
 }
 
 export interface AuthConfigData {

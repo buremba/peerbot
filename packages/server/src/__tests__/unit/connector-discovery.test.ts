@@ -57,6 +57,7 @@ function makeDeps(over?: {
 	// the real filter and proves an active connection is found regardless of how
 	// many other connections exist).
 	connectionsByKey?: Record<string, Array<{ status: string }>>;
+	organizations?: Array<Record<string, unknown>>;
 }): ConnectorDiscoveryDeps {
 	return {
 		manageCatalog: (async (args: { action: string }) =>
@@ -69,6 +70,7 @@ function makeDeps(over?: {
 			const rows = args.status ? all.filter((c) => c.status === args.status) : all;
 			return { connections: rows };
 		}) as never,
+		listOrganizations: async () => (over?.organizations ?? []) as never,
 	};
 }
 
@@ -184,6 +186,62 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		const hits = await searchLiveConnectors("slack", env, ctx, makeDeps());
 		expect(hits.some((h) => h.includes("'slack'") && /CATALOG/.test(h))).toBe(true);
 		expect(hits.some((h) => /installConnector/.test(h))).toBe(true);
+	});
+
+	it("surfaces the exact managed-auth org and local-data lifecycle for a matching connector", async () => {
+		const deps = makeDeps({
+			catalog: {
+				catalogs: {
+					connectors: {
+						entries: [
+							{ id: "google.gmail", name: "Gmail", description: "Email search and sync" },
+						],
+					},
+				},
+			},
+			organizations: [
+				{
+					id: "managed-org",
+					slug: "lobu-cloud",
+					name: "Lobu Cloud",
+					is_member: false,
+					visibility: "public",
+					managed_auth: {
+						credential_mode: "managed",
+						requires_user_login: true,
+						requires_user_consent: true,
+						join_required: true,
+						connect_method: "connections.connectManaged",
+						local_bootstrap_command: "lobu init --from-org lobu-cloud",
+						connectors: [
+							{
+								connector_key: "google.gmail",
+								provider: "google",
+								managed_by_org: "lobu-cloud",
+							},
+						],
+					},
+				},
+			],
+		});
+
+		const hits = await searchLiveConnectors("gmail", env, ctx, deps);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]).toContain("public org 'lobu-cloud'");
+		expect(hits[0]).toContain("connections.connectManaged");
+		expect(hits[0]).toContain("lobu init --from-org lobu-cloud");
+		expect(hits[0]).toContain("provider data stays local");
+	});
+
+	it("still surfaces connectors when optional managed-auth discovery fails", async () => {
+		const deps = makeDeps();
+		deps.listOrganizations = async () => {
+			throw new Error("managed-auth discovery unavailable");
+		};
+
+		const hits = await searchLiveConnectors("website", env, ctx, deps);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]).toContain("connector 'website'");
 	});
 
 	it("does NOT recommend installConnector for a non-installable catalog entry", async () => {

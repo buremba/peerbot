@@ -6,16 +6,14 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
-  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
 import type QuickBooksTransactionsConnector from "./quickbooks-transactions.connector.ts";
-import type reconciliationMonitorReaction from "./reconciliation-monitor.reaction.ts";
 
 const reconciliationMonitorSkill = defineSkill({
   name: "reconciliation-monitor",
   content:
-    "Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.\n",
+    'Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Return actionable exceptions in `alerts` as standard observation event drafts. Put the readable exception in `content` and counts/details in `metadata` with `kind: "reconciliation_alert"`. Return an empty array when there is nothing to review.\n',
 });
 
 const finance = defineAgent({
@@ -183,9 +181,7 @@ const reconciliationMonitor = defineBehavior({
   notification: { priority: "high", channel: "both" },
   tags: ["finance", "reconciliation", "daily"],
   minCooldownSeconds: 3600,
-  reaction: reactionFromFile<typeof reconciliationMonitorReaction>(
-    "./reconciliation-monitor.reaction.ts"
-  ),
+  outputs: { alerts: { event: "observation" } },
   skills: ["reconciliation-monitor"],
 });
 

@@ -1,7 +1,7 @@
 /**
  * Foreign-key-shaped reference validation on manage_behaviors.
  *
- * `agent_id` and `keying_config.entity_type` are both free-text columns with NO
+ * `agent_id`, `outputs.*.entity`, and `outputs.*.event` are free-text references with NO
  * database foreign key, so a typo is accepted and only fails much later — or
  * never fails at all, silently:
  *
@@ -10,7 +10,7 @@
  *    health 'healthy' and never runs. `behaviors.create` documents
  *    `throws: ["EntityNotFound"]` for exactly this case (see
  *    src/sandbox/method-metadata.ts) but never resolved the id.
- *  - `keying_config.entity_type`: deriveWatcherExtractionSchema() returns null
+ *  - `outputs.*.entity`: schema derivation cannot resolve an unknown type
  *    for an unknown type, and complete_window SKIPS extraction validation when
  *    the derived schema is null — so an unknown type silently VOIDS the output
  *    contract instead of enforcing it. Its sibling `entity_id` is validated
@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
+import { ensureMemberEntityType } from "../../../utils/member-entity-type";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestAgent } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -61,6 +62,7 @@ describe("manage_behaviors reference validation", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
 		workspace = await TestWorkspace.create();
+		await ensureMemberEntityType(workspace.org.id);
 		ctx = ownerCtx(workspace.org.id, workspace.users.owner.id);
 		const agent = await createTestAgent({
 			organizationId: workspace.org.id,
@@ -200,10 +202,10 @@ describe("manage_behaviors reference validation", () => {
 	});
 
 	// ============================================
-	// keying_config.entity_type
+	// outputs.*.entity
 	// ============================================
 
-	it("create rejects a nonexistent keying_config.entity_type", async () => {
+	it("create rejects a nonexistent entity output type", async () => {
 		await expect(
 			executeTool(
 				"manage_behaviors",
@@ -213,11 +215,8 @@ describe("manage_behaviors reference validation", () => {
 					name: "ghost-entity-type",
 					prompt: "Track things.",
 					agent_id: agentId,
-					keying_config: {
-						entity_type: "not-a-real-type",
-						entity_path: "rows",
-						key_fields: ["sku"],
-						key_output_field: "row_key",
+					outputs: {
+						rows: { entity: "not-a-real-type", key: ["sku"] },
 					},
 				},
 				TEST_ENV,
@@ -226,7 +225,7 @@ describe("manage_behaviors reference validation", () => {
 		).rejects.toThrow(/Unknown entity type 'not-a-real-type'/i);
 	});
 
-	it("create accepts a keying_config.entity_type that exists", async () => {
+	it("create accepts an entity output type that exists", async () => {
 		await workspace.owner.entity_schema.createType({
 			slug: "price",
 			name: "Price",
@@ -240,11 +239,8 @@ describe("manage_behaviors reference validation", () => {
 				name: "real-entity-type",
 				prompt: "Track things.",
 				agent_id: agentId,
-				keying_config: {
-					entity_type: "price",
-					entity_path: "prices",
-					key_fields: ["sku"],
-					key_output_field: "price_key",
+				outputs: {
+					prices: { entity: "price", key: ["sku"] },
 				},
 			},
 			TEST_ENV,
@@ -253,7 +249,75 @@ describe("manage_behaviors reference validation", () => {
 		expect(created.behavior_id).toBeDefined();
 	});
 
-	it("create_version rejects a nonexistent keying_config.entity_type", async () => {
+	it("create rejects entity key and name fields missing from a declared schema", async () => {
+		await workspace.owner.entity_schema.createType({
+			slug: "typed-price",
+			name: "Typed Price",
+			metadata_schema: {
+				type: "object",
+				properties: { sku: { type: "string" }, label: { type: "string" } },
+			},
+		});
+
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "create",
+					slug: "bad-output-key",
+					prompt: "Track prices.",
+					agent_id: agentId,
+					outputs: {
+						prices: { entity: "typed-price", key: ["skuu"], name: ["label"] },
+					},
+				},
+				TEST_ENV,
+				ctx
+			)
+		).rejects.toThrow(/Unknown field 'skuu'.*typed-price/i);
+	});
+
+	it("create validates a tenant-local entity output type before a public shadow", async () => {
+		const catalog = await TestWorkspace.create({
+			name: "Public Output Catalog",
+			visibility: "public",
+		});
+		await catalog.owner.entity_schema.createType({
+			slug: "shadowed-output",
+			name: "Public Shadow",
+			metadata_schema: {
+				type: "object",
+				properties: { public_key: { type: "string" } },
+			},
+		});
+		await workspace.owner.entity_schema.createType({
+			slug: "shadowed-output",
+			name: "Local Shadow",
+			metadata_schema: {
+				type: "object",
+				properties: { local_key: { type: "string" } },
+			},
+		});
+
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "local-shadow-output",
+				prompt: "Track local rows.",
+				agent_id: agentId,
+				outputs: {
+					rows: { entity: "shadowed-output", key: ["local_key"] },
+				},
+			},
+			TEST_ENV,
+			ctx
+		)) as { behavior_id: string };
+
+		expect(Number(created.behavior_id)).toBeGreaterThan(0);
+	});
+
+	it("create_version rejects a nonexistent entity output type", async () => {
 		const created = (await executeTool(
 			"manage_behaviors",
 			{
@@ -274,16 +338,95 @@ describe("manage_behaviors reference validation", () => {
 					action: "create_version",
 					behavior_id: created.behavior_id,
 					prompt: "Track things differently.",
-					keying_config: {
-						entity_type: "not-a-real-type",
-						entity_path: "rows",
-						key_fields: ["sku"],
-						key_output_field: "row_key",
+					outputs: {
+						rows: { entity: "not-a-real-type", key: ["sku"] },
 					},
 				},
 				TEST_ENV,
 				ctx
 			)
 		).rejects.toThrow(/Unknown entity type 'not-a-real-type'/i);
+	});
+
+	it("create and create_version reject event output types outside the org registry", async () => {
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "create",
+					slug: "ghost-event-type",
+					prompt: "Track things.",
+					agent_id: agentId,
+					outputs: { alerts: { event: "not_a_registered_kind" } },
+				},
+				TEST_ENV,
+				ctx
+			)
+		).rejects.toThrow(/Invalid event type 'not_a_registered_kind'/i);
+
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "event-version-target",
+				prompt: "Track things.",
+				agent_id: agentId,
+			},
+			TEST_ENV,
+			ctx
+		)) as { behavior_id: string };
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "create_version",
+					behavior_id: created.behavior_id,
+					outputs: { alerts: { event: "not_a_registered_kind" } },
+				},
+				TEST_ENV,
+				ctx
+			)
+		).rejects.toThrow(/Invalid event type 'not_a_registered_kind'/i);
+	});
+
+	it("accepts the built-in draft_reply output type", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "draft-reply-output",
+				prompt: "Draft a reply without publishing it.",
+				agent_id: agentId,
+				outputs: { drafts: { event: "draft_reply" } },
+			},
+			TEST_ENV,
+			ctx
+		)) as { behavior_id: string };
+
+		expect(Number(created.behavior_id)).toBeGreaterThan(0);
+	});
+
+	it("rejects outputs on event turn execution", async () => {
+		await expect(
+			executeTool(
+				"manage_behaviors",
+				{
+					action: "create",
+					slug: "turn-output",
+					agent_id: agentId,
+					outputs: { alerts: { event: "observation" } },
+					triggers: [
+						{
+							kind: "event",
+							connector_key: "github",
+							event_types: ["pull_request.created"],
+							execution: "turn",
+						},
+					],
+				},
+				TEST_ENV,
+				ctx
+			)
+		).rejects.toThrow(/outputs require window execution/i);
 	});
 });

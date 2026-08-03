@@ -26,7 +26,12 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	// auth profile / display name / device pin; the handler enforces
 	// `created_by === ctx.userId` plus the same per-field role gates as
 	// create (app_auth_profile pinned-default, target-profile ownership).
-	manage_connections: new Set(["create", "update", "reauthenticate"]),
+	manage_connections: new Set([
+		"create",
+		"connect_managed",
+		"update",
+		"reauthenticate",
+	]),
 	// Members create / reconnect their own oauth_account profile. The handler
 	// gates `profile_kind` against role so env / oauth_app / browser_session
 	// stay admin-only. `get_auth_profile` is public-read because it returns the
@@ -73,7 +78,8 @@ export const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"remove_rule",
 	]),
 	manage_connections: new Set([
-		// `create`, `update`, `reauthenticate` are in MEMBER_WRITE_ACTIONS —
+		// `create`, `connect_managed`, `update`, and `reauthenticate` are in
+		// MEMBER_WRITE_ACTIONS —
 		// members install / edit their own connections (handler enforces
 		// created_by === ctx.userId + app_auth_profile slug override + role
 		// gates).

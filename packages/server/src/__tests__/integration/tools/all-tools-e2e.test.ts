@@ -387,10 +387,16 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			{ action: "create", entity_type: "product", name: "Ephemeral Product" },
 			TEST_ENV,
 			authCtx
-		)) as { entity?: { id: number } };
+		)) as { entity?: { id: number }; next_steps?: string[] };
+		expect(created.next_steps?.join("\n")).not.toMatch(/manage_[a-z_]+/);
+		expect(created.next_steps?.join("\n")).toContain("client.connections.connect");
+		expect(created.next_steps?.join("\n")).toContain("client.feeds.trigger");
+		expect(created.next_steps?.join("\n")).toContain("kind: 'schedule'");
+		expect(created.next_steps?.join("\n")).toContain("timezone: '<IANA timezone>'");
 		const maybeId = created.entity?.id;
 		expect(maybeId).toBeDefined();
 		const id = maybeId as number;
+		expect(created.next_steps?.join("\n")).toContain(`entity_ids: [${id}]`);
 
 		await executeTool(
 			"manage_entity",

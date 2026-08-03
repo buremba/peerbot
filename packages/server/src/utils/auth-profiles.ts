@@ -615,6 +615,7 @@ export async function getPrimaryAuthProfileForKind(params: {
   profileKind: AuthProfileKind;
   provider?: string | null;
   deviceWorkerId?: string | null;
+  createdBy?: string | null;
 }): Promise<AuthProfileRow | null> {
   const sql = getDb();
 
@@ -680,6 +681,11 @@ export async function getPrimaryAuthProfileForKind(params: {
       AND profile_kind = ${params.profileKind}
       AND connector_key = ${params.connectorKey}
       AND status = 'active'
+      ${
+        params.profileKind === 'oauth_account' && params.createdBy !== undefined
+          ? sql`AND created_by IS NOT DISTINCT FROM ${params.createdBy ?? null}`
+          : sql``
+      }
     ORDER BY updated_at DESC, id DESC
     LIMIT 1
   `;

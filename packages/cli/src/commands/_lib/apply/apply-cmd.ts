@@ -865,7 +865,7 @@ export async function executePlan(
           min_cooldown_seconds: w.minCooldownSeconds,
           tags: w.tags,
           agent_kind: w.agentKind,
-          keying_config: w.keyingConfig,
+          outputs: w.outputs,
           classifiers: w.classifiers,
         });
         watcherId = created.behavior_id;
@@ -882,14 +882,13 @@ export async function executePlan(
         const scalarChanges = [...changed].filter(
           (f) => !versionBound.has(f) && f !== "reaction_script"
         );
-        // When triggers and either versioned instruction source change, send
-        // them together through create_version so the server validates the
-        // final set atomically. A separate update(triggers) would reject an
-        // event-turn → schedule transition before the new prompt/skills land.
-        const triggersWithInstructions =
-          scalarChanges.includes("triggers") &&
-          (versionBound.has("prompt") || versionBound.has("skills"));
-        const scalarForUpdate = triggersWithInstructions
+        // When triggers and any version-bound field change, send them together
+        // through create_version so the server validates the final state
+        // atomically. Splitting the writes can reject a valid transition, such
+        // as clearing outputs while changing window execution to turn.
+        const triggersWithVersionChange =
+          scalarChanges.includes("triggers") && versionBound.size > 0;
+        const scalarForUpdate = triggersWithVersionChange
           ? scalarChanges.filter((f) => f !== "triggers")
           : scalarChanges;
         // a) Scalar fields → manage_behaviors update
@@ -931,10 +930,7 @@ export async function executePlan(
         // b) Version-bound fields → manage_behaviors create_version (server
         //    inherits unset fields from the previous version row, but we always
         //    send the desired-side values for the changed keys).
-        if (
-          (row.versionBoundFields && row.versionBoundFields.length > 0) ||
-          triggersWithInstructions
-        ) {
+        if (row.versionBoundFields && row.versionBoundFields.length > 0) {
           await ctx.client.createBehaviorVersion({
             behavior_id: watcherId,
             ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
@@ -948,14 +944,15 @@ export async function executePlan(
             w.reactionsGuidance !== undefined
               ? { reactions_guidance: w.reactionsGuidance }
               : {}),
-            ...(versionBound.has("keying_config") &&
-            w.keyingConfig !== undefined
-              ? { keying_config: w.keyingConfig }
+            ...(versionBound.has("outputs")
+              ? { outputs: w.outputs ?? null }
               : {}),
             ...(versionBound.has("classifiers") && w.classifiers !== undefined
               ? { classifiers: w.classifiers }
               : {}),
-            ...(triggersWithInstructions ? { triggers: w.triggers ?? [] } : {}),
+            ...(triggersWithVersionChange
+              ? { triggers: w.triggers ?? [] }
+              : {}),
           });
         }
       }

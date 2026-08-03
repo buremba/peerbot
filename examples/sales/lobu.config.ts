@@ -6,16 +6,14 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
-  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
 import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
-import type accountHealthMonitorReaction from "./account-health-monitor.reaction.ts";
 
 const accountHealthMonitorSkill = defineSkill({
   name: "account-health-monitor",
   content:
-    "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
+    'Poll CRM data for tracked accounts. Return only material risk escalations in `health_changes` as standard observation event drafts. Put the readable risk change and supporting signals in `content`; put `{ kind: "health_change", account, from, to }` in `metadata`. Return an empty array when risk did not increase.\n',
 });
 
 const sales = defineAgent({
@@ -198,9 +196,7 @@ const accountHealthMonitor = defineBehavior({
   notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,
-  reaction: reactionFromFile<typeof accountHealthMonitorReaction>(
-    "./account-health-monitor.reaction.ts"
-  ),
+  outputs: { health_changes: { event: "observation" } },
   skills: ["account-health-monitor"],
 });
 

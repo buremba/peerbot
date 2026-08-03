@@ -341,7 +341,9 @@ describe('entity schema CRUD', () => {
 					name: 'Wrong Schema Shape',
 					properties: { title: { type: 'string' } },
 				} as never)
-			).rejects.toThrow(/properties.*metadata_schema/i);
+			).rejects.toThrow(
+				/unknown argument\(s\): properties.*search_sdk 'entitySchema\.createType'/i,
+			);
 		});
   });
 

@@ -12,6 +12,7 @@ import type { Env } from "../index";
  */
 const routes = new Hono<{ Bindings: Env }>();
 const ACTIVITY_WINDOW_DAYS = 14;
+const LOBU_COMMAND_CLIENT_SOFTWARE_ID = "lobu-cli";
 
 interface SessionRow {
 	conversation_id: string;
@@ -56,6 +57,7 @@ routes.get("/", mcpAuth, async (c) => {
 		Math.max(Number.isNaN(rawLimit) ? 20 : rawLimit, 1),
 		100,
 	);
+	const conversationOnly = c.req.query("conversation_only") === "true";
 	const sql = getDb();
 	const rows = await sql<SessionRow>`
     -- The one aggregate left on this path. It groups the org's LIVE
@@ -94,6 +96,10 @@ routes.get("/", mcpAuth, async (c) => {
       -- its default now() timestamps with a placeholder action.
       AND mc.call_count > 0
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
+      AND (
+        NOT ${conversationOnly}
+        OR oc.software_id IS DISTINCT FROM ${LOBU_COMMAND_CLIENT_SOFTWARE_ID}
+      )
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}
   `;
 	return c.json({

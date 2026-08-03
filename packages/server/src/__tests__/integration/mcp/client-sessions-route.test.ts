@@ -2,7 +2,9 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
+import { recordMcpConversationActivity } from '../../../lobu/stores/mcp-client-conversations';
 import { recordToolInvocationAudit } from '../../../tools/audit';
+import { isSoftErrorResult } from '../../../tools/execute';
 import type { ToolContext } from '../../../tools/registry';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -46,12 +48,20 @@ describe('client sessions activity route', () => {
     overrides: Partial<ToolContext> = {},
     result: Record<string, unknown> = { ok: true }
   ): Promise<void> {
+    const ctx = auditCtx({ mcpSessionId: sessionId, ...overrides });
     await recordToolInvocationAudit({
       toolName,
       args: { query: 'probe' },
       result,
       durationMs: 3,
-      ctx: auditCtx({ mcpSessionId: sessionId, ...overrides }),
+      ctx,
+    });
+    // The route reads the write-time projection, so seed it exactly the way
+    // `executeTool` does after each audit row.
+    await recordMcpConversationActivity({
+      ctx,
+      toolName,
+      failed: isSoftErrorResult(result),
     });
   }
 
@@ -100,10 +110,11 @@ describe('client sessions activity route', () => {
     // depend on sub-millisecond insertion timing.
     const db = getDb();
     await db`
-      UPDATE events SET occurred_at = now() - interval '1 hour'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '2 hours',
+        last_activity_at = now() - interval '1 hour'
       WHERE organization_id = ${orgId}
-        AND semantic_type = 'audit'
-        AND metadata->>'mcp_session_id' = 'sess-alpha'
+        AND conversation_id = 'sess-alpha'
     `;
     await recordCall('sess-beta', 'search_sdk');
 
@@ -116,9 +127,11 @@ describe('client sessions activity route', () => {
     await recordCall('sess-stale', 'search_memory');
     const sql = getDb();
     await sql`
-      UPDATE events SET occurred_at = now() - interval '30 days'
+      UPDATE mcp_client_conversations
+      SET first_activity_at = now() - interval '30 days',
+        last_activity_at = now() - interval '30 days'
       WHERE organization_id = ${orgId}
-        AND metadata->>'mcp_session_id' = 'sess-stale'
+        AND conversation_id = 'sess-stale'
     `;
   });
 
@@ -149,7 +162,8 @@ describe('client sessions activity route', () => {
     const alpha = body.sessions.find((s) => s.sessionId === 'sess-alpha')!;
     expect(alpha.callCount).toBe(2);
     expect(alpha.failedCount).toBe(1);
-    expect(alpha.tools).toEqual(['query_sql', 'search_memory']);
+    // The projection appends each new tool in first-use order.
+    expect(alpha.tools).toEqual(['search_memory', 'query_sql']);
     expect(alpha.clientId).toBe(clientId);
     expect(alpha.clientName).toBe(clientName);
     expect(alpha.userId).toBe(ownerId);

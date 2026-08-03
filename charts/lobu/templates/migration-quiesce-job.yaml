@@ -1,0 +1,121 @@
+{{- if and .Release.IsUpgrade .Values.migrations.enabled .Values.migrations.quiesceBeforeUpgrade.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames:
+      - {{ include "lobu.fullname" . }}-app
+      {{- if .Values.worker.enabled }}
+      - {{ include "lobu.fullname" . }}-worker
+      {{- end }}
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames:
+      - {{ include "lobu.fullname" . }}-app
+      {{- if .Values.worker.enabled }}
+      - {{ include "lobu.fullname" . }}-worker
+      {{- end }}
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lobu.fullname" . }}-migration-quiesce
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "lobu.fullname" . }}-migration-quiesce
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add (mul (int .Values.migrations.quiesceBeforeUpgrade.timeoutSeconds) 2) 60 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lobu.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration-quiesce
+    spec:
+      serviceAccountName: {{ include "lobu.fullname" . }}-migration-quiesce
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: quiesce
+          image: {{ .Values.migrations.quiesceBeforeUpgrade.image }}
+          imagePullPolicy: {{ .Values.migrations.quiesceBeforeUpgrade.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              namespace={{ .Release.Namespace | quote }}
+              timeout={{ printf "%ds" (int .Values.migrations.quiesceBeforeUpgrade.timeoutSeconds) | quote }}
+
+              quiesce() {
+                deployment="$1"
+                component="$2"
+                if ! kubectl --namespace "$namespace" get deployment "$deployment" >/dev/null 2>&1; then
+                  echo "deployment $deployment is absent; nothing to quiesce"
+                  return
+                fi
+                kubectl --namespace "$namespace" scale deployment "$deployment" --replicas=0
+                if kubectl --namespace "$namespace" get pods \
+                  --selector "app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=$component" \
+                  --output name | grep -q .; then
+                  kubectl --namespace "$namespace" wait --for=delete pod \
+                    --selector "app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=$component" \
+                    --timeout "$timeout"
+                fi
+              }
+
+              quiesce {{ printf "%s-app" (include "lobu.fullname" .) | quote }} api
+              {{- if .Values.worker.enabled }}
+              quiesce {{ printf "%s-worker" (include "lobu.fullname" .) | quote }} worker
+              {{- end }}
+              echo "all old database clients are quiesced"
+{{- end }}

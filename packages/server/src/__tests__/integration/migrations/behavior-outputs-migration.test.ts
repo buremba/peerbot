@@ -61,7 +61,7 @@ describe('Behavior outputs migration', () => {
       | {
           outputs: unknown;
           identity: string;
-          legacyColumnStillPresent: boolean;
+          legacyColumnPresent: boolean;
         }
       | undefined;
 
@@ -117,7 +117,7 @@ describe('Behavior outputs migration', () => {
         captured = {
           outputs: version.outputs,
           identity: identity.identifier,
-          legacyColumnStillPresent: column.present,
+          legacyColumnPresent: column.present,
         };
         throw new Rollback();
       });
@@ -134,7 +134,7 @@ describe('Behavior outputs migration', () => {
         },
       },
       identity: `${watcherId}::items::issue-1`,
-      legacyColumnStillPresent: true,
+      legacyColumnPresent: false,
     });
   });
 });

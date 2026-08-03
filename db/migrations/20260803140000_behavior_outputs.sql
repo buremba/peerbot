@@ -1,15 +1,14 @@
--- Replace the single entity-only keying_config with named durable outputs.
--- The object key is the extracted_data top-level array, so entity_path and the
--- model-visible key_output_field disappear. Existing stable-key identities are
--- renamed to include the output name, allowing one Behavior to publish several
--- entity collections without cross-output key collisions.
+-- Hard-cut the single entity-only configuration over to named durable outputs.
+-- Existing versions are converted before the retired column is dropped in this
+-- same transaction. Stable-key identities gain the output name, allowing one
+-- Behavior to publish several entity collections without cross-output collisions.
 
 -- migrate:up
 ALTER TABLE watcher_versions
   ADD COLUMN IF NOT EXISTS outputs jsonb;
 
--- A fresh install already has `outputs` in the squashed baseline, while an
--- upgrade still has `keying_config`. Keep the backfill parse-safe for both.
+-- A fresh install already has `outputs` in the squashed baseline. An upgrade
+-- still has the retired column long enough for this one-time conversion.
 DO $migration$
 BEGIN
   IF EXISTS (
@@ -116,55 +115,16 @@ SET identifier = identity_moves.watcher_id::text || '::' || identity_moves.outpu
 FROM identity_moves
 WHERE ei.id = identity_moves.id;
 
--- Keep the legacy database column for one rolling-deploy interval. It is no
--- longer read or written by the application and is absent from the public API;
--- a later migration may drop it after every old replica is gone.
-DO $migration$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'watcher_versions'
-      AND column_name = 'keying_config'
-  ) THEN
-    EXECUTE $comment$
-      COMMENT ON COLUMN watcher_versions.keying_config IS
-        'Deprecated internal column retained temporarily for rolling-deploy safety; use outputs.'
-    $comment$;
-  END IF;
-END
-$migration$;
+ALTER TABLE watcher_versions
+  DROP COLUMN IF EXISTS keying_config;
 
 COMMENT ON COLUMN watcher_versions.outputs IS
   'Named Behavior output arrays. Values are {entity,key,name?} or {event}; schemas are derived at execution time.';
 
 -- migrate:down
-ALTER TABLE watcher_versions
-  ADD COLUMN IF NOT EXISTS keying_config jsonb;
-
-WITH migrated AS (
-  SELECT v.id, jsonb_strip_nulls(jsonb_build_object(
-    'entity_type', output.value->>'entity',
-    'entity_path', output.key,
-    'key_fields', output.value->'key',
-    'key_output_field', '_lobu_stable_key',
-    'name_fields', output.value->'name'
-  )) AS keying_config
-  FROM watcher_versions v
-  CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
-  WHERE output.value ? 'entity'
-    AND output.key = (
-      SELECT min(candidate.key)
-      FROM jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS candidate
-      WHERE candidate.value ? 'entity'
-    )
-)
-UPDATE watcher_versions v
-SET keying_config = migrated.keying_config
-FROM migrated
-WHERE v.id = migrated.id
-  AND v.keying_config IS NULL;
-
-ALTER TABLE watcher_versions
-  DROP COLUMN IF EXISTS outputs;
+DO $migration$
+BEGIN
+  RAISE EXCEPTION
+    '20260803140000_behavior_outputs is an irreversible hard cutover; restore from backup instead of recreating the retired API';
+END
+$migration$;

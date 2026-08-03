@@ -185,21 +185,22 @@ describe('Behavior vocabulary migration', () => {
         ${user.id}
       )
     `;
+    const canonicalEventMetadata = {
+      behavior_id: 4242,
+      source: 'behavior_canvas',
+      resourceKind: 'behavior',
+      resource_kind: 'behavior',
+      granularity: 'day',
+      window_start: '2026-08-03T00:00:00Z',
+      window_end: '2026-08-04T00:00:00Z',
+    };
     const [canvasEvent] = await sql<{ id: string }[]>`
       INSERT INTO events (
         organization_id, origin_id, semantic_type, payload_type, metadata
       )
       VALUES (
         ${org.id}, ${`vocab-canvas-${Date.now()}`}, 'canvas_state', 'empty',
-        ${sql.json({
-          behavior_id: 4242,
-          source: 'behavior_canvas',
-          resourceKind: 'behavior',
-          resource_kind: 'behavior',
-          granularity: 'day',
-          window_start: '2026-08-03T00:00:00Z',
-          window_end: '2026-08-04T00:00:00Z',
-        })}
+        ${sql.json(canonicalEventMetadata)}
       )
       RETURNING id
     `;
@@ -263,15 +264,30 @@ describe('Behavior vocabulary migration', () => {
     };
 
     await executeMigrationSection((statement) => sql.unsafe(statement), down);
+    let legacyEventId: string | undefined;
     try {
       const rolledBack = await readBack();
-      expect(rolledBack.event).toMatchObject({
+      expect(rolledBack.event).toEqual(canonicalEventMetadata);
+      const legacyEventMetadata = {
         watcher_id: 4242,
         source: 'watcher_canvas',
         resourceKind: 'watcher',
         resource_kind: 'watcher',
-      });
-      expect(rolledBack.event).not.toHaveProperty('behavior_id');
+        granularity: 'day',
+        window_start: '2026-08-04T00:00:00Z',
+        window_end: '2026-08-05T00:00:00Z',
+      };
+      const [legacyEvent] = await sql<{ id: string }[]>`
+        INSERT INTO events (
+          organization_id, origin_id, semantic_type, payload_type, metadata
+        )
+        VALUES (
+          ${org.id}, ${`vocab-legacy-${Date.now()}`}, 'canvas_state', 'empty',
+          ${sql.json(legacyEventMetadata)}
+        )
+        RETURNING id
+      `;
+      legacyEventId = legacyEvent?.id;
       expect(rolledBack.storedEntity).toEqual({
         source: 'watcher_promotion',
         watcher_id: 4242,
@@ -327,13 +343,19 @@ describe('Behavior vocabulary migration', () => {
     }
 
     const reapplied = await readBack();
-    expect(reapplied.event).toMatchObject({
-      behavior_id: 4242,
-      source: 'behavior_canvas',
-      resourceKind: 'behavior',
-      resource_kind: 'behavior',
+    expect(reapplied.event).toEqual(canonicalEventMetadata);
+    const [legacyEventAfterUp] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM events WHERE id = ${legacyEventId}
+    `;
+    expect(legacyEventAfterUp?.metadata).toEqual({
+      watcher_id: 4242,
+      source: 'watcher_canvas',
+      resourceKind: 'watcher',
+      resource_kind: 'watcher',
+      granularity: 'day',
+      window_start: '2026-08-04T00:00:00Z',
+      window_end: '2026-08-05T00:00:00Z',
     });
-    expect(reapplied.event).not.toHaveProperty('watcher_id');
     expect(reapplied.storedEntity).toEqual({
       source: 'behavior_promotion',
       behavior_id: 4242,

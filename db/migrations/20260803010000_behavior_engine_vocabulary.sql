@@ -3,30 +3,6 @@
 -- This is an atomic vocabulary cutover. There is no compatibility view or
 -- dual-write period: the application and schema move to Behavior together.
 
--- Rewrite the large JSON-bearing tables before taking AccessExclusiveLock on
--- the engine tables below. dbmate keeps the whole cutover atomic, so no client
--- can observe this intermediate vocabulary.
-UPDATE public.events
-SET metadata = (metadata - 'watcher_id')
-  || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
-WHERE metadata ? 'watcher_id';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_canvas"'::jsonb)
-WHERE metadata->>'source' = 'watcher_canvas';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"behavior_promotion"'::jsonb)
-WHERE metadata->>'source' = 'watcher_promotion';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resourceKind}', '"behavior"'::jsonb)
-WHERE metadata->>'resourceKind' = 'watcher';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resource_kind}', '"behavior"'::jsonb)
-WHERE metadata->>'resource_kind' = 'watcher';
-
 UPDATE public.entities
 SET metadata = (metadata - 'watcher_id')
   || jsonb_build_object('behavior_id', metadata -> 'watcher_id')
@@ -482,28 +458,6 @@ ALTER TABLE public.runs
     OR policy_principal_kind IN ('agent', 'watcher', 'user')
   ) NOT VALID;
 ALTER TABLE public.runs VALIDATE CONSTRAINT runs_policy_principal_kind_check;
-
--- Reverse the mutable configuration-value cutover above.
-UPDATE public.events
-SET metadata = (metadata - 'behavior_id')
-  || jsonb_build_object('watcher_id', metadata -> 'behavior_id')
-WHERE metadata ? 'behavior_id';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"watcher_canvas"'::jsonb)
-WHERE metadata->>'source' = 'behavior_canvas';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
-WHERE metadata->>'source' = 'behavior_promotion';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resourceKind}', '"watcher"'::jsonb)
-WHERE metadata->>'resourceKind' = 'behavior';
-
-UPDATE public.events
-SET metadata = jsonb_set(metadata, '{resource_kind}', '"watcher"'::jsonb)
-WHERE metadata->>'resource_kind' = 'behavior';
 
 UPDATE public.entities
 SET metadata = (metadata - 'behavior_id')

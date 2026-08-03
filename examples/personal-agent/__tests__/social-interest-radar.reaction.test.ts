@@ -1,26 +1,30 @@
 import { describe, expect, it } from "bun:test";
-import type {
-  KnowledgeSaveResult,
-  ReactionClient,
-  ReactionContext,
-} from "@lobu/connector-sdk";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 import runReaction from "../social-interest-radar.reaction";
+
+const signalMetadata = {
+  kind: "social_signal",
+  platform: "linkedin",
+  author: "Ada",
+  snippet: "Reliable agents need durable state.",
+  why: "Directly relevant to Lobu's delivery model.",
+  priority: "high",
+  source_origin_id: "linkedin:activity:123",
+  source_event_id: 101,
+  suggested_action: "Reply with the event-sourcing design.",
+};
 
 function context(): ReactionContext {
   return {
     extracted_data: {
-      digest_title: "Social interest radar",
-      analysis_summary: "One useful post",
-      items: [
+      signals: [
         {
-          platform: "linkedin",
-          author: "Ada",
-          snippet: "Reliable agents need durable state.",
-          why: "Directly relevant to Lobu's delivery model.",
-          priority: "high",
-          source_origin_id: "linkedin:activity:123",
-          source_event_id: 101,
-          suggested_action: "Reply with the event-sourcing design.",
+          title: "Ada on linkedin",
+          content:
+            "Directly relevant to Lobu's delivery model.\n\nSuggested action: Reply with the event-sourcing design.",
+          parent_event_id: 101,
+          idempotency_key: "linkedin:activity:123",
+          metadata: signalMetadata,
         },
       ],
     },
@@ -45,43 +49,33 @@ function context(): ReactionContext {
   };
 }
 
-function clientWithSaveResult(saveResult: KnowledgeSaveResult) {
-  const saves: Record<string, unknown>[] = [];
+function clientWithRows(
+  rows: Array<{ id: number; metadata: typeof signalMetadata }>
+) {
+  const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
   const client = {
-    knowledge: {
-      save: async (input: Record<string, unknown>) => {
-        saves.push(input);
-        return saveResult;
-      },
+    query: async (sql: string) => {
+      queries.push(sql);
+      return rows;
     },
     notifications: {
       send: async (input: Record<string, unknown>) => {
         notifications.push(input);
-        return { ok: true };
+        return { notified_count: 1 };
       },
     },
   } as unknown as ReactionClient;
-  return { client, saves, notifications };
+  return { client, queries, notifications };
 }
 
 describe("social interest radar reaction", () => {
-  it("persists a threaded reply and links the notification to both events", async () => {
-    const fixture = clientWithSaveResult({
-      id: 501,
-      created: true,
-      metadata: { producer_run_key: "run:88" },
-    });
+  it("links the notification to declaratively persisted source and reply events", async () => {
+    const fixture = clientWithRows([{ id: 501, metadata: signalMetadata }]);
 
     await runReaction(context(), fixture.client);
 
-    expect(fixture.saves).toHaveLength(1);
-    expect(fixture.saves[0]).toMatchObject({
-      parent_event_id: 101,
-      idempotency_key: "social-radar:source:linkedin:activity:123",
-      semantic_type: "social_signal",
-      payload_type: "markdown",
-    });
+    expect(fixture.queries[0]).toContain("run_id = 88");
     expect(fixture.notifications).toEqual([
       expect.objectContaining({
         resource_url: "/buremba/memory?content_ids=101,501",
@@ -90,47 +84,30 @@ describe("social interest radar reaction", () => {
     ]);
   });
 
-  it("does not notify again when a later run re-ranks an existing post", async () => {
-    const fixture = clientWithSaveResult({
-      id: 501,
-      created: false,
-      metadata: { producer_run_key: "run:77" },
-    });
+  it("does not notify when this run only re-ranked an event owned by an earlier run", async () => {
+    const fixture = clientWithRows([]);
 
     await runReaction(context(), fixture.client);
 
-    expect(fixture.saves).toHaveLength(1);
     expect(fixture.notifications).toHaveLength(0);
   });
 
   it("lets the original run retry its idempotent notification", async () => {
-    const fixture = clientWithSaveResult({
-      id: 501,
-      created: false,
-      metadata: { producer_run_key: "run:88" },
-    });
+    const fixture = clientWithRows([{ id: 501, metadata: signalMetadata }]);
 
     await runReaction(context(), fixture.client);
 
-    expect(fixture.notifications).toHaveLength(1);
     expect(fixture.notifications[0]?.idempotency_key).toBe(
       "social-radar:notification:run:88"
     );
   });
 
   it("keeps the digest within the notification service limit", async () => {
-    const longContext = context();
-    const extracted = longContext.extracted_data as {
-      items: Array<{ why: string }>;
-    };
-    extracted.items[0].why = "x".repeat(1_200);
-    const fixture = clientWithSaveResult({
-      id: 501,
-      created: true,
-      metadata: { producer_run_key: "run:88" },
-    });
+    const fixture = clientWithRows([
+      { id: 501, metadata: { ...signalMetadata, why: "x".repeat(1_200) } },
+    ]);
 
-    await runReaction(longContext, fixture.client);
+    await runReaction(context(), fixture.client);
 
     expect(String(fixture.notifications[0]?.body).length).toBe(1000);
   });

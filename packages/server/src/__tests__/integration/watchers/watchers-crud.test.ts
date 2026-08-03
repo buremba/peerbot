@@ -707,35 +707,32 @@ describe('watcher CRUD', () => {
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
-  it('clears entity promotion when create_version receives keying_config: null', async () => {
+  it('clears durable outputs when create_version receives outputs: null', async () => {
     const created = (await owner.behaviors.create({
       entity_id: entityId,
-      slug: 'clear-keying-config-watcher',
-      name: 'Clear Keying Config Watcher',
+      slug: 'clear-outputs-watcher',
+      name: 'Clear Outputs Watcher',
       prompt: 'Extract companies.',
       agent_id: agentId,
-      keying_config: {
-        entity_type: 'company',
-        entity_path: 'items',
-        key_fields: ['name'],
-        key_output_field: 'stable_key',
+      outputs: {
+        items: { entity: 'company', key: ['name'] },
       },
     })) as { behavior_id: string };
 
     await owner.behaviors.createVersion({
       behavior_id: created.behavior_id,
-      keying_config: null,
+      outputs: null,
       change_notes: 'switch to reaction-only output',
     });
 
     const sql = getTestDb();
     const [row] = await sql`
-      SELECT wv.keying_config AS version_keying_config
+      SELECT wv.outputs AS version_outputs
       FROM watchers w
       JOIN watcher_versions wv ON wv.id = w.current_version_id
       WHERE w.id = ${created.behavior_id}
     `;
-    expect(row.version_keying_config).toBeNull();
+    expect(row.version_outputs).toBeNull();
 
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });

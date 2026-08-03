@@ -1,12 +1,10 @@
 /**
  * Promote keyed watcher-window rows into real child entities (P2 phase 1).
  *
- * `computeStableKeys()` stamps a deterministic stable-key string onto each
- * extracted entity (at `keyingConfig.key_output_field`). That key dead-ended:
- * nothing turned the keyed rows into rows in the `entities` table. This module
- * closes that gap. For each keyed row it upserts a child entity, idempotent by
- * stable key. The stable key is persisted as an `entity_identities` row in a
- * dedicated `watcher_key` namespace (identifier = `<watcherId>::<stableKey>`),
+ * For each row in one declared entity output, this module computes an internal
+ * stable key and upserts a child entity. The key is persisted as an
+ * `entity_identities` row in a dedicated `watcher_key` namespace (identifier =
+ * `<watcherId>::<outputName>::<stableKey>`),
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
  * `idx_entity_identities_live_unique (organization_id, namespace, identifier)
@@ -46,15 +44,15 @@ import {
   resolveWatcherOwner,
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
-import type { KeyingConfig } from '../types/watchers';
+import type { EntityOutput } from '../types/watchers';
 import {
   type AppliedChange,
   type BlockedChange,
   mergeEntityFields,
 } from './entity-field-merge';
-import { getValueAtPath } from './object-path';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
+import { computeStableKey } from './stable-keys';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
 const WATCHER_KEY_NAMESPACE = 'watcher_key';
@@ -65,9 +63,10 @@ const SOURCE_EVENT_ID_FIELD = 'source_event_id';
 export interface PromoteKeyedEntitiesParams {
   /** Transaction-bound SQL handle (MUST be the window-write transaction). */
   tx: DbClient;
-  /** Extracted data AFTER `computeStableKeys` has stamped the keys. */
+  /** Full extracted result containing this output's top-level array. */
   extractedData: Record<string, unknown>;
-  keyingConfig: KeyingConfig;
+  outputName: string;
+  output: EntityOutput;
   watcherId: number;
   organizationId: string;
   /** The finalized window identity (canvas ROOT event id) this completion produced/reused. */
@@ -160,23 +159,6 @@ async function resolveCreator(
 
 
 /**
- * Resolve the target entity-type slug. Prefer the explicit `keying_config`
- * field; otherwise derive a singular-ish slug from the last segment of
- * `entity_path` (`analysis.results.problems` → `problem`).
- */
-function resolveEntityTypeSlug(config: KeyingConfig): string {
-  if (config.entity_type && config.entity_type.trim().length > 0) {
-    return config.entity_type.trim();
-  }
-  const lastSegment = config.entity_path.split('.').pop() ?? config.entity_path;
-  const base = slugify(lastSegment);
-  // Light singularization so `problems` → `problem`, `categories` → `category`.
-  if (base.endsWith('ies')) return `${base.slice(0, -3)}y`;
-  if (base.endsWith('s') && !base.endsWith('ss')) return base.slice(0, -1);
-  return base || 'item';
-}
-
-/**
  * Build a human-readable entity name from RAW field values (not the slugified
  * key). Falls back to the stable key when no field carries a value.
  *
@@ -189,11 +171,11 @@ function resolveEntityTypeSlug(config: KeyingConfig): string {
  */
 export function buildEntityName(
   entityRecord: Record<string, unknown>,
-  config: KeyingConfig,
+  output: EntityOutput,
   stableKey: string
 ): string {
   const nameFields =
-    config.name_fields && config.name_fields.length > 0 ? config.name_fields : config.key_fields;
+    output.name && output.name.length > 0 ? output.name : output.key;
   const parts = nameFields
     .map((field) => entityRecord[field])
     .filter((v): v is string | number => v !== null && v !== undefined && String(v).trim().length > 0)
@@ -477,18 +459,19 @@ async function upsertKeyedEntity(params: {
 }
 
 /**
- * Promote every keyed row at `keyingConfig.entity_path` into a child entity.
+ * Promote every row in one named entity output into a child entity.
  * Skips rows whose stable key is empty. NEVER throws on a
  * single-row problem (e.g. unresolved entity type) — promotion must not break
  * window completion; it logs and returns what it managed to promote.
  */
-export async function promoteKeyedEntities(
+export async function promoteBehaviorEntityOutput(
   params: PromoteKeyedEntitiesParams
 ): Promise<PromoteKeyedEntitiesResult> {
   const {
     tx,
     extractedData,
-    keyingConfig,
+    outputName,
+    output,
     watcherId,
     organizationId,
     windowId,
@@ -503,14 +486,14 @@ export async function promoteKeyedEntities(
     changes: [],
   };
 
-  const rows = getValueAtPath(extractedData, keyingConfig.entity_path);
+  const rows = extractedData[outputName];
   if (!Array.isArray(rows) || rows.length === 0) return result;
 
-  const entityTypeSlug = resolveEntityTypeSlug(keyingConfig);
+  const entityTypeSlug = output.entity.trim();
   const entityTypeId = await resolveEntityTypeId(tx, organizationId, entityTypeSlug);
   if (entityTypeId == null) {
     logger.warn(
-      { watcherId, organizationId, entityTypeSlug, entityPath: keyingConfig.entity_path },
+      { watcherId, organizationId, entityTypeSlug, outputName },
       '[promote-keyed-entities] target entity type not found (or derived) — skipping promotion'
     );
     return result;
@@ -573,20 +556,18 @@ export async function promoteKeyedEntities(
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
     const entityRecord = row as Record<string, unknown>;
-    const stableKey = entityRecord[keyingConfig.key_output_field];
+    const stableKey = computeStableKey(entityRecord, output.key);
     if (!hasNonEmptyKey(stableKey)) continue;
     if (seenKeys.has(stableKey)) continue;
     seenKeys.add(stableKey);
 
-    const identifier = `${watcherId}::${stableKey}`;
-    const name = buildEntityName(entityRecord, keyingConfig, stableKey);
+    const identifier = `${watcherId}::${outputName}::${stableKey}`;
+    const name = buildEntityName(entityRecord, output, stableKey);
     const slug = slugify(name) || stableKey;
     // The extracted record's data fields (everything except the computed stable
     // key) are the entity's field values — synced into metadata on create and,
     // for existing entities, merged honoring human ownership.
-    const fieldValues = Object.fromEntries(
-      Object.entries(entityRecord).filter(([k]) => k !== keyingConfig.key_output_field)
-    );
+    const fieldValues = { ...entityRecord };
     // `source_event_id` is an agent-authored provenance claim. Keep it only when
     // it names content this window actually read — same rule the classifier
     // applies to citations. An unverifiable id is worse than none: it reads like
@@ -611,6 +592,7 @@ export async function promoteKeyedEntities(
     const metadata: Record<string, unknown> = {
       ...fieldValues,
       watcher_id: watcherId,
+      behavior_output: outputName,
       stable_key: stableKey,
       source: 'watcher_promotion',
       // Origin provenance lives on the entity itself — the window that first

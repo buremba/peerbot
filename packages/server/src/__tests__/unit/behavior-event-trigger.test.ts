@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import type { BehaviorEventTrigger } from '@lobu/core/contracts/tools/manage-behaviors';
 import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import { matchingBehaviorTriggers } from '../../behaviors/event-trigger';
-import { normalizeBehaviorTriggers } from '../../behaviors/triggers';
+import {
+  assertBehaviorOutputsUseWindowExecution,
+  normalizeBehaviorTriggers,
+} from '../../behaviors/triggers';
 
 const githubTrigger: BehaviorEventTrigger = {
   kind: 'event',
@@ -270,5 +273,23 @@ describe('behavior event trigger matching', () => {
         },
       ]),
     ).toThrow('Steering requires a turn that replies to the source');
+  });
+
+  test('requires window execution when a Behavior declares durable outputs', () => {
+    expect(() =>
+      assertBehaviorOutputsUseWindowExecution([githubTrigger], {
+        observations: { event: 'observation' },
+      })
+    ).toThrow(/outputs require window execution/i);
+
+    expect(() =>
+      assertBehaviorOutputsUseWindowExecution(
+        [{ ...githubTrigger, execution: 'window' }],
+        { observations: { event: 'observation' } }
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertBehaviorOutputsUseWindowExecution([githubTrigger], null)
+    ).not.toThrow();
   });
 });

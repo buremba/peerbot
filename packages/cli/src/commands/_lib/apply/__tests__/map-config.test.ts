@@ -190,19 +190,19 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
-  test("preserves explicit null keying so apply can untype a Behavior", () => {
+  test("preserves explicit null outputs so apply can clear a Behavior", () => {
     const agent = defineAgent({ id: "radar" });
     const behavior = defineBehavior({
       agent,
       slug: "social-radar",
       prompt: "Rank social posts.",
-      keyingConfig: null,
+      outputs: null,
     });
     const state = mapProjectToDesiredState(
       defineConfig({ agents: [agent], behaviors: [behavior] })
     );
 
-    expect(state.watchers[0]?.keyingConfig).toBeNull();
+    expect(state.watchers[0]?.outputs).toBeNull();
   });
 
   test("BYO chat connection carries credentialMode + resolves secret config", () => {
@@ -631,30 +631,48 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.agentKind).toBe("notifier");
   });
 
-  test("normalizes keyingConfig camelCase → snake_case for the server", () => {
+  test("maps entity handles and event outputs to the server contract", () => {
     const crm = defineAgent({ id: "crm" });
+    const price = defineEntityType({ key: "price" });
     const watcher = defineBehavior({
       agent: crm,
       slug: "pricing",
       skills: ["s"],
-      keyingConfig: {
-        entityType: "price",
-        entityPath: "prices",
-        keyFields: ["sku"],
-        keyOutputField: "price_key",
+      outputs: {
+        prices: { entity: price, key: ["sku"] },
+        alerts: { event: "price_changed" },
       },
     });
     const dw = mapProjectToDesiredState(
-      defineConfig({ agents: [crm], behaviors: [watcher] })
+      defineConfig({ agents: [crm], entities: [price], behaviors: [watcher] })
     ).watchers[0];
-    // Server reads snake_case (watcher-extraction-schema.ts / promote-keyed-entities.ts);
-    // camelCase would silently land the watcher as untyped.
-    expect(dw?.keyingConfig).toEqual({
-      entity_type: "price",
-      entity_path: "prices",
-      key_fields: ["sku"],
-      key_output_field: "price_key",
+    expect(dw?.outputs).toEqual({
+      prices: { entity: "price", key: ["sku"] },
+      alerts: { event: "price_changed" },
     });
+  });
+
+  test("rejects declared outputs on conversational turn triggers", () => {
+    const crm = defineAgent({ id: "crm" });
+    const watcher = defineBehavior({
+      agent: crm,
+      slug: "reply-and-persist",
+      outputs: { alerts: { event: "observation" } },
+      triggers: [
+        {
+          kind: "event",
+          connector_key: "slack",
+          event_types: ["message.created"],
+          execution: "turn",
+        },
+      ],
+    });
+
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ agents: [crm], behaviors: [watcher] })
+      )
+    ).toThrow(/outputs require execution "window"/i);
   });
 
   test("throws when a watcher names an unknown agent", () => {

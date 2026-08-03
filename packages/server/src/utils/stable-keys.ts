@@ -8,9 +8,6 @@
  * the computed key would be "stability::app-crashes"
  */
 
-import type { KeyingConfig } from '../types/watchers';
-import { getValueAtPath } from './object-path';
-
 /**
  * Slugify a string for use in stable keys.
  *
@@ -30,45 +27,17 @@ function slugify(value: string): string {
 }
 
 /**
- * Compute stable keys for entities in extracted data.
- *
- * This function mutates the input data, adding a computed key field
- * to each entity in the specified array.
- *
- * @param data - The extracted_data object from LLM output
- * @param config - Keying configuration from template
- *
- * @example
- * // Input data:
- * { problems: [{ category: "Stability", name: "App Crashes" }] }
- *
- * // With config:
- * { entity_path: "problems", key_fields: ["category", "name"], key_output_field: "problem_key" }
- *
- * // Output (mutated):
- * { problems: [{ category: "Stability", name: "App Crashes", problem_key: "stability::app-crashes" }] }
+ * Compute one Behavior-scoped stable key without adding transport-only fields
+ * to the model's output or the entity's metadata.
  */
-export function computeStableKeys(data: Record<string, unknown>, config: KeyingConfig): void {
-  const entities = getValueAtPath(data, config.entity_path);
-
-  if (!Array.isArray(entities)) {
-    // No entities to process, or path doesn't resolve to an array
-    return;
-  }
-
-  for (const entity of entities) {
-    if (!entity || typeof entity !== 'object') continue;
-
-    const entityRecord = entity as Record<string, unknown>;
-
-    // Build key from specified fields
-    const keyParts = config.key_fields.map((field) => {
-      const value = entityRecord[field];
-      if (value === null || value === undefined) return '';
-      return slugify(String(value));
-    });
-
-    // Join with :: separator (e.g., "stability::app-crashes")
-    entityRecord[config.key_output_field] = keyParts.join('::');
-  }
+export function computeStableKey(
+  row: Record<string, unknown>,
+  keyFields: readonly string[]
+): string {
+  return keyFields
+    .map((field) => {
+      const value = row[field];
+      return value === null || value === undefined ? '' : slugify(String(value));
+    })
+    .join('::');
 }

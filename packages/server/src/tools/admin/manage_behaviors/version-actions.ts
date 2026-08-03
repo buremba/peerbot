@@ -12,8 +12,9 @@ import { getNextNumericId } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageBehaviorsArgs, ManageBehaviorsResult } from '../manage_behaviors';
 import {
-  assertKeyingConfigEntityTypeExists,
-  assertKeyingConfigShape,
+  assertOutputEntityTypesExist,
+  assertOutputEventTypesExist,
+  assertOutputsShape,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
@@ -24,6 +25,7 @@ import {
 } from './shared';
 import {
   assertBehaviorInstructions,
+  assertBehaviorOutputsUseWindowExecution,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -77,7 +79,7 @@ export async function handleCreateVersion(
   const prevRows = await sql`
     SELECT
       name, description, prompt, version_sources, skills,
-      keying_config, classifiers,
+      outputs, classifiers,
       reactions_guidance
     FROM watcher_versions
     WHERE watcher_id = ${groupId}
@@ -127,17 +129,17 @@ export async function handleCreateVersion(
   const skills = args.skills !== undefined ? args.skills : storedSkills;
   // Shape-check ONLY the caller-supplied value (string inputs pass the wire
   // union unparsed); the inherited stored config may predate the contract.
-  const callerKeyingConfig = parseJsonInput<Record<string, unknown>>(
-    args.keying_config,
-    'keying_config'
+  const callerOutputs = parseJsonInput<Record<string, unknown>>(
+    args.outputs,
+    'outputs'
   );
-  assertKeyingConfigShape(callerKeyingConfig);
-  const keyingConfig =
-    args.keying_config === null
+  assertOutputsShape(callerOutputs);
+  const outputs =
+    args.outputs === null
       ? null
-      : (callerKeyingConfig ??
+      : (callerOutputs ??
         normalizeStoredJsonField(
-          prev.keying_config,
+          prev.outputs,
           undefined as Record<string, unknown> | undefined
         ));
   const classifiers =
@@ -145,9 +147,8 @@ export async function handleCreateVersion(
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
   // Validate. The output contract is not authored on the watcher: an
-  // entity-typed watcher (keying_config.entity_type) derives it from that
-  // entity type's metadata_schema at runtime, and an untyped watcher runs
-  // the worker's free-form summary fallback.
+  // declared outputs derive it from entity/event contracts at runtime; a
+  // Behavior without outputs or a reaction uses the free-form summary fallback.
   assertWatcherVersionConfigValid({ prompt, classifiers, sources });
 
   // Resolve every source against the org now (broken source → 422, not silent
@@ -156,11 +157,16 @@ export async function handleCreateVersion(
   // entity_ids so {{entityId}} validates as it runs.
   const versionOrganizationId = watcherRows[0].organization_id as string | null;
   if (versionOrganizationId) {
-    // Only validate a CALLER-SUPPLIED keying_config. An inherited value comes
+    // Only validate CALLER-SUPPLIED outputs. An inherited value comes
     // from the stored previous version, and a metadata-only bump (name/schedule)
     // must not start failing because of a type that was already persisted.
-    if (args.keying_config !== undefined) {
-      await assertKeyingConfigEntityTypeExists(sql, versionOrganizationId, keyingConfig);
+    if (args.outputs !== undefined) {
+      await assertOutputEntityTypesExist(sql, versionOrganizationId, outputs);
+      await assertOutputEventTypesExist(
+        versionOrganizationId,
+        outputs,
+        parsePgNumberArray(watcherRows[0].entity_ids)
+      );
     }
     await assertWatcherSourcesResolve(
       sql,
@@ -168,7 +174,7 @@ export async function handleCreateVersion(
       sources,
       parsePgNumberArray(watcherRows[0].entity_ids),
     );
-    // Only check a CALLER-SUPPLIED skill set, for the same reason keying_config
+    // Only check a CALLER-SUPPLIED skill set, for the same reason outputs
     // is gated above: inherited snapshots were already valid when pinned, and a
     // name-only bump must not start failing because a skill was since renamed or
     // disabled in the library. The stored text still runs either way.
@@ -220,10 +226,12 @@ export async function handleCreateVersion(
           ? triggerWrite.triggers
           : ((sibling.triggers ?? []) as typeof triggerWrite.triggers);
       assertBehaviorInstructions(siblingTriggers, prompt, skills);
+      assertBehaviorOutputsUseWindowExecution(siblingTriggers, outputs);
     }
   } else {
     // Draft version only — triggers on the live row do not change.
     assertBehaviorInstructions(previousTriggers, prompt, skills);
+    assertBehaviorOutputsUseWindowExecution(previousTriggers, outputs);
   }
   // Both branches above write the SAME resolved prompt+skills pair, so the
   // chip/pin agreement is checked once here rather than inside either arm.
@@ -265,14 +273,14 @@ export async function handleCreateVersion(
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, version_sources, skills,
-        keying_config, classifiers,
+        outputs, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${groupId}, ${lockedNextVersion},
         ${args.name ?? (prev.name as string) ?? 'Behavior'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
         ${prompt}, NULL, ${tx.json(skills)},
-        ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${toJsonParam(tx, outputs)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},
         ${args.change_notes ?? null}, ${createdBy}, NOW()
       )
@@ -351,7 +359,7 @@ export async function handleCreateVersion(
         current_version_id: setAsCurrent ? versionId : undefined,
         prompt,
         sources,
-        keying_config: keyingConfig ?? null,
+        outputs: outputs ?? null,
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null,
         change_notes: args.change_notes ?? null,
@@ -364,7 +372,7 @@ export async function handleCreateVersion(
         ...(promptEdited ? ['prompt'] : []),
         ...(args.name !== undefined ? ['name'] : []),
         ...(args.sources !== undefined ? ['sources'] : []),
-        ...(args.keying_config !== undefined ? ['keying_config'] : []),
+        ...(args.outputs !== undefined ? ['outputs'] : []),
         ...(args.classifiers !== undefined ? ['classifiers'] : []),
         ...(args.reactions_guidance !== undefined ? ['reactions_guidance'] : []),
         ...(args.triggers !== undefined ? ['schedule', 'timezone'] : []),
@@ -488,7 +496,7 @@ export async function handleGetVersionDetails(
       SELECT
         id, version, name, description, prompt,
         version_sources, skills,
-        keying_config, classifiers,
+        outputs, classifiers,
         reactions_guidance
       FROM watcher_versions
       WHERE watcher_id = ${groupId} AND version = ${args.version}
@@ -499,7 +507,7 @@ export async function handleGetVersionDetails(
       SELECT
         v.id, v.version, v.name, v.description, v.prompt,
         v.version_sources, v.skills,
-        v.keying_config, v.classifiers,
+        v.outputs, v.classifiers,
         v.reactions_guidance
       FROM watcher_versions v
       JOIN watchers w ON v.id = w.current_version_id
@@ -543,7 +551,7 @@ export async function handleGetVersionDetails(
             watcherRows[0].sources,
             [] as Array<{ name: string; query: string }>
           ),
-    keying_config: normalizeStoredJsonField(v.keying_config, undefined as unknown),
+    outputs: normalizeStoredJsonField(v.outputs, undefined as unknown),
     classifiers: normalizeStoredJsonField(v.classifiers, undefined as unknown[] | undefined),
     reactions_guidance: v.reactions_guidance as string | undefined,
   };

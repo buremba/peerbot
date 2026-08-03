@@ -865,7 +865,7 @@ export async function executePlan(
           min_cooldown_seconds: w.minCooldownSeconds,
           tags: w.tags,
           agent_kind: w.agentKind,
-          keying_config: w.keyingConfig,
+          outputs: w.outputs,
           classifiers: w.classifiers,
         });
         watcherId = created.behavior_id;
@@ -948,9 +948,8 @@ export async function executePlan(
             w.reactionsGuidance !== undefined
               ? { reactions_guidance: w.reactionsGuidance }
               : {}),
-            ...(versionBound.has("keying_config") &&
-            w.keyingConfig !== undefined
-              ? { keying_config: w.keyingConfig }
+            ...(versionBound.has("outputs") && w.outputs !== undefined
+              ? { outputs: w.outputs }
               : {}),
             ...(versionBound.has("classifiers") && w.classifiers !== undefined
               ? { classifiers: w.classifiers }

@@ -283,7 +283,7 @@ const channel = defineEntityType({
 });
 
 // Collaborative actions for Burak + personal-agent (hourly-task-collaborator
-// keys + merges on `action`). Schema is owned here — the watcher does not
+// keys + merges on `action`). Schema is owned here — the Behavior does not
 // declare its own extraction schema.
 const task = defineEntityType({
   key: "task",
@@ -338,19 +338,6 @@ const task = defineEntityType({
     source_event_id: {
       type: "string",
       description: "Originating Lobu event id when applicable",
-    },
-    // Written by the entity-typed watcher keying pipeline
-    stable_key: {
-      type: "string",
-      description: "Stable dedupe key from the task watcher",
-    },
-    watcher_id: {
-      type: "string",
-      description: "Watcher that last wrote this task",
-    },
-    window_id: {
-      type: "string",
-      description: "Watcher window that produced this task",
     },
   },
 });
@@ -964,12 +951,11 @@ const voiceProfile = defineEntityType({
     evidence_from: { type: "string", format: "date" },
     evidence_to: { type: "string", format: "date" },
     sample_event_ids: { type: "array", items: { type: "number" } },
-    profile_key: { type: "string" },
   },
 });
 
 // Deprecated compatibility declaration. The radar now writes threaded events
-// with keyingConfig: null, but prune must retain this type while historical
+// with event persistence, but prune must retain this type while historical
 // social-signal entity rows still exist. Remove it only through an explicit
 // data migration; it is not part of the active output path.
 const socialSignal = defineEntityType({
@@ -1021,11 +1007,11 @@ const voiceProfileSynthesis = defineBehavior({
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 3600,
-  keyingConfig: {
-    entityType: "voice-profile",
-    entityPath: "profiles",
-    keyFields: ["channel", "mode"],
-    keyOutputField: "profile_key",
+  outputs: {
+    profiles: {
+      entity: voiceProfile,
+      key: ["channel", "mode"],
+    },
   },
   sources: {
     authored_recent:
@@ -1039,9 +1025,9 @@ const voiceProfileSynthesis = defineBehavior({
     },
   },
   prompt:
-    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","profile_key","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
+    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
   reactionsGuidance:
-    "ALWAYS re-emit every existing_profiles row (same channel/mode/profile_key). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
+    "ALWAYS re-emit every existing_profiles row (same channel/mode). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
 });
 
 const socialInterestRadar = defineBehavior({
@@ -1054,14 +1040,13 @@ const socialInterestRadar = defineBehavior({
   ],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 1800,
-  keyingConfig: null,
   sources: {
     recent_social:
       "SELECT id, origin_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
     already_emitted: {
       context: true,
       query:
-        "SELECT id, metadata->>'source_origin_id' AS source_origin_id FROM events WHERE semantic_type = 'social_signal' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
+        "SELECT id, metadata->>'source_origin_id' AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'kind' = 'social_signal' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
     },
     voice_profiles: {
       context: true,
@@ -1074,10 +1059,11 @@ const socialInterestRadar = defineBehavior({
         "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40",
     },
   },
+  outputs: { signals: { event: "observation" } },
   prompt:
-    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Read LinkedIn authors from metadata.author and X authors from metadata.author_handle. Never use "unknown" when an author field exists. For each item, copy the source row\'s id to source_event_id and origin_id to source_origin_id, explain a specific why, and give a concrete suggested_action. Prefer posts not present in already_emitted. Return only the extracted data required by the reaction schema; the deterministic reaction persists threaded replies and sends the notification.',
+    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `content` to the specific why plus a concrete suggested action, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put `{ kind: "social_signal", platform, author, snippet, why, priority, source_origin_id, source_event_id, suggested_action }` in metadata. Prefer posts not present in already_emitted; return an empty array when nothing qualifies.',
   reactionsGuidance:
-    "Rank with voice profiles. The deterministic reaction owns reply-event persistence, retry deduplication, and notification delivery.",
+    "Declared outputs own event persistence and source-level deduplication. The reaction only delivers a digest notification for events created by this run.",
   reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
     "./social-interest-radar.reaction.ts"
   ),
@@ -1090,11 +1076,11 @@ const hourlyTaskCollaborator = defineBehavior({
   triggers: [{ kind: "schedule", cron: "0 * * * *" }],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,
-  keyingConfig: {
-    entityType: "task",
-    entityPath: "tasks",
-    keyFields: ["action"],
-    keyOutputField: "task_key",
+  outputs: {
+    tasks: {
+      entity: task,
+      key: ["action"],
+    },
   },
   sources: {
     recent_signals:

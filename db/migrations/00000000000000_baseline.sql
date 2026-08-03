@@ -2151,7 +2151,7 @@ CREATE TABLE public.watcher_versions (
     change_notes text,
     created_by text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
-    keying_config jsonb,
+    outputs jsonb,
     json_template jsonb,
     prompt text NOT NULL,
     extraction_schema jsonb NOT NULL,

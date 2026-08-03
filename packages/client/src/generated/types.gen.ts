@@ -35,7 +35,7 @@ export type SearchMemoryData = {
      */
     fuzzy?: boolean;
     /**
-     * Minimum similarity threshold for fuzzy matching (0.0-1.0)
+     * Minimum similarity threshold (0.0-1.0) applied to BOTH fuzzy entity-name matching and recalled content. Raise it to cut weak matches, lower it to widen recall.
      */
     min_similarity?: number;
     /**
@@ -264,6 +264,14 @@ export type SaveMemoryData = {
      */
     source_url?: string;
     /**
+     * Event this content answers. The saved event is threaded under the source and inherits its source_url when one is not supplied.
+     */
+    parent_event_id?: number;
+    /**
+     * Stable producer key. Repeating a save with the same key returns the original event instead of appending a duplicate.
+     */
+    idempotency_key?: string;
+    /**
      * When the event actually happened (ISO 8601). Defaults to now if omitted.
      */
     occurred_at?: string;
@@ -472,6 +480,14 @@ export type QuerySdkResponses = {
       stack?: string;
       line?: number;
       column?: number;
+      /**
+       * Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.
+       */
+      code?: string;
+      /**
+       * Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).
+       */
+      retryable?: boolean;
     };
     duration_ms: number;
     /**
@@ -694,6 +710,14 @@ export type RunSdkResponses = {
       stack?: string;
       line?: number;
       column?: number;
+      /**
+       * Structured error code (lobu#2051 Item 2), e.g. UPSTREAM_TIMEOUT / RATE_LIMITED / VALIDATION.
+       */
+      code?: string;
+      /**
+       * Whether re-running the identical script may succeed. Advisory — run_sdk is never auto-retried (may have side effects).
+       */
+      retryable?: boolean;
     };
     duration_ms: number;
     /**
@@ -795,6 +819,10 @@ export type ManageEntityData = {
       identity_ids?: Array<number>;
     }>;
     /**
+     * [merge] Why you believe these are the same thing, in one sentence, for the human reviewing the approval card (e.g. 'Same phone digits; the shell is a WhatsApp handle for this contact.'). Shown as your claim, clearly separated from the workspace's own policy verdict — it never counts as proof and never affects whether the merge auto-applies.
+     */
+    merge_rationale?: string;
+    /**
      * Entity type as defined in your workspace
      */
     entity_type?: string;
@@ -881,9 +909,13 @@ export type ManageEntityData = {
      */
     sort_order?: "asc" | "desc";
     /**
-     * [delete] Force delete entity and all descendants
+     * [delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.
      */
     force_delete_tree?: boolean;
+    /**
+     * [delete] Preflight only: report what the delete would remove/detach without mutating anything
+     */
+    dry_run?: boolean;
     /**
      * [link] Source entity ID
      */
@@ -917,7 +949,7 @@ export type ManageEntityData = {
      */
     confidence_min?: number;
     /**
-     * [list_links] Include soft-deleted relationships
+     * [get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.
      */
     include_deleted?: boolean;
     /**
@@ -1115,6 +1147,16 @@ export type ManageEntityResponses = {
         success: boolean;
         message: string;
         deleted_count: number;
+        dry_run?: boolean;
+        tree?: {
+          entities: number;
+          relationships: number;
+          behaviors_deleted: number;
+          behaviors_detached: number;
+          feeds_deleted: number;
+          feeds_detached: number;
+          events_detached: number;
+        };
         approval_queued?: boolean;
         approval_url?: string;
         approval_run_id?: number;
@@ -2040,7 +2082,7 @@ export type ManageConnectionsData = {
       }
     | {
         /**
-         * Enable a reviewed catalog connector with connector_id, or install from exactly one source_url/source_uri/source_code/mcp_url. Catalog enablement does not authenticate external accounts.
+         * Enable a reviewed catalog connector with connector_id, or install from exactly one source_url/source_uri/source_code/mcp_url. Catalog enablement does not authenticate external accounts. Organization-local: if the connector key is already installed for this org, the active definition is updated in place (prior versions stay retained for rollback_connector_version); the global catalog is never modified. To change an existing connector's source, prefer validate_connector_source then update_connector_source.
          */
         action: "install_connector";
         /**
@@ -2083,6 +2125,70 @@ export type ManageConnectionsData = {
          * Connector key to uninstall
          */
         connector_key: string;
+      }
+    | {
+        /**
+         * Read the installed source for a connector in this organization (organization-local; the global catalog is never involved). Returns the requested (default: active) version's source_code/source_path plus the retained version history usable with rollback_connector_version.
+         */
+        action: "get_connector_source";
+        /**
+         * Installed connector key (e.g. google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Read a specific retained version instead of the active one.
+         */
+        version?: string;
+      }
+    | {
+        /**
+         * Compile connector source and return extracted metadata or compiler diagnostics WITHOUT persisting anything — the safe preflight for update_connector_source. Also reports whether the source's key is already installed in this org and whether its version collides with a retained version.
+         */
+        action: "validate_connector_source";
+        /**
+         * TypeScript or pre-compiled JavaScript connector source to validate.
+         */
+        source_code: string;
+        /**
+         * Set to true if source_code is already compiled JavaScript (skip compilation)
+         */
+        compiled?: boolean;
+      }
+    | {
+        /**
+         * Replace an installed connector's source (organization-local; the global catalog is never modified). The source's definition.key must equal connector_key, and definition.version must be bumped when the code changes — the previously active version stays retained for rollback_connector_version. Existing connections, feeds, and credentials stay attached (they reference the connector key, not a version).
+         */
+        action: "update_connector_source";
+        /**
+         * Installed connector key to update. Must equal the definition.key inside source_code.
+         */
+        connector_key: string;
+        /**
+         * New TypeScript or pre-compiled JavaScript connector source.
+         */
+        source_code: string;
+        /**
+         * Set to true if source_code is already compiled JavaScript (skip compilation)
+         */
+        compiled?: boolean;
+        /**
+         * Optimistic concurrency check: fail without persisting if the currently active version differs.
+         */
+        expected_version?: string;
+      }
+    | {
+        /**
+         * Re-activate a previously installed version of a connector in one operation (organization-local). The retained code is re-validated before the definition flips; existing connections and feeds stay attached.
+         */
+        action: "rollback_connector_version";
+        /**
+         * Installed connector key (e.g. google.gmail)
+         */
+        connector_key: string;
+        /**
+         * Retained version to re-activate (see get_connector_source's `versions`).
+         */
+        version: string;
       }
     | {
         /**
@@ -2374,11 +2480,23 @@ export type ManageConnectionsResponses = {
       }
     | {
         action: "test";
-        status: string;
+        /**
+         * Test outcome: ok, warning, or error.
+         */
+        status: "ok" | "warning" | "error";
         message: string;
         has_token?: boolean;
         has_refresh?: boolean;
+        device_online?: boolean;
         expires_at?: string | null;
+        /**
+         * Structured error code when status is error/warning, e.g. AUTH_MISSING / AUTH_INVALID.
+         */
+        error_code?: string;
+        /**
+         * Whether re-running the test may succeed. Advisory; not auto-retried.
+         */
+        retryable?: boolean;
       }
     | {
         action: "install_connector";
@@ -2393,6 +2511,66 @@ export type ManageConnectionsResponses = {
         action: "uninstall_connector";
         uninstalled: true;
         connector_key: string;
+      }
+    | {
+        action: "get_connector_source";
+        connector_key: string;
+        active_version: string;
+        version: string;
+        source_code: string | null;
+        source_path: string | null;
+        code_hash: string | null;
+        versions: Array<{
+          version: string;
+          created_at: string;
+          has_source: boolean;
+          has_compiled: boolean;
+          active: boolean;
+        }>;
+      }
+    | {
+        action: "validate_connector_source";
+        valid: true;
+        connector_key: string;
+        name: string;
+        version: string;
+        code_hash: string;
+        installed: boolean;
+        active_version: string | null;
+        version_exists: boolean;
+        actions: {
+          [key: string]:
+            | unknown
+            | {
+                kind: "read" | "write";
+                requires_approval: boolean;
+                required_scopes: Array<string>;
+              };
+        };
+        feed_keys: Array<string>;
+      }
+    | {
+        action: "validate_connector_source";
+        valid: false;
+        diagnostics: string;
+      }
+    | {
+        action: "update_connector_source";
+        success: true;
+        connector_key: string;
+        name: string;
+        previous_version: string;
+        version: string;
+        code_hash: string;
+      }
+    | {
+        action: "rollback_connector_version";
+        success: true;
+        connector_key: string;
+        name: string;
+        previous_version: string;
+        version: string;
+        code_hash: string;
       }
     | {
         action: "toggle_connector_login";
@@ -2437,11 +2615,11 @@ export type ManageCatalogData = {
       }
     | {
         /**
-         * List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails, channels). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
+         * List installed kinds for the org (connectors, behaviors) and/or agent (skills, providers, guardrails). Pass `include_catalog: true` to merge available catalog entries with `installed`/`installable` flags.
          */
         action: "list_installed";
         /**
-         * Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails, channels.
+         * Installed kinds. Org: connectors, behaviors. Agent: skills, providers, guardrails.
          */
         kinds?: Array<string>;
         /**
@@ -2561,6 +2739,10 @@ export type ManageAgentsData = {
      * [create/update] Agent identity / system prompt (Markdown).
      */
     identity_md?: string;
+    /**
+     * [create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org's connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.
+     */
+    default_model?: string;
   };
   path: {
     /**
@@ -2700,11 +2882,11 @@ export type ManageFeedsData = {
          */
         entity_id?: number;
         /**
-         * Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses.
+         * Filter by desired lifecycle status. Only 'active' and 'paused' are real feed statuses — a feed that keeps failing stays 'active' (or auto-pauses). Use `health` to find failing feeds.
          */
         status?: "active" | "paused";
         /**
-         * Filter by runtime health, independent of lifecycle status. 'failing' = last sync failed or one or more consecutive failures; 'healthy' = otherwise.
+         * Filter by runtime health, independent of lifecycle status. 'failing' = last sync failed or the feed has one or more consecutive failures; 'healthy' = otherwise. Surfaces active-but-failing feeds the `status` filter cannot.
          */
         health?: "healthy" | "failing";
         /**
@@ -2806,7 +2988,7 @@ export type ManageFeedsData = {
          */
         feed_id: number;
         /**
-         * Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set.
+         * Desired feed status: active or paused. 'error' is a runtime state the system owns, not a status you set — a failing feed stays active; use the `list_feeds` action's `health: failing` filter to find failing feeds.
          */
         status?: "active" | "paused";
         display_name?: string;
@@ -2846,6 +3028,10 @@ export type ManageFeedsData = {
          * Feed ID to trigger sync for
          */
         feed_id: number;
+        /**
+         * Execute the connector for real but persist nothing in Lobu — no events, no entities, no attachments, and the feed's checkpoint and sync state do not move. The run executes asynchronously; once it completes, a capped preview of what would have been ingested is on the run's dry_run_preview, visible via read_feed's recent_runs. Use this to test a connector whose credentials are OAuth or API-key based; those never leave the gateway, so the sync can only run server-side. Two limits worth knowing: it does not undo side effects the connector causes UPSTREAM (marking a message read, etc.), and it occupies the feed's single active-sync slot while it runs, so a scheduled sync landing mid-run is skipped until the next tick.
+         */
+        dry_run?: boolean;
       };
   path: {
     /**
@@ -2969,6 +3155,7 @@ export type ManageFeedsResponses = {
         triggered: true;
         run_id: number;
         feed_id: number;
+        dry_run?: boolean;
       }
     | {
         action: "trigger_feed";
@@ -3290,7 +3477,7 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Paginated run list with keyset cursor support.
+         * Paginated operational run list with keyset cursor support. Chat-message transport runs (complete replies + streaming deltas, run_type='chat_message') are excluded unless explicitly requested via run_types.
          */
         action: "list_runs";
         /**
@@ -3304,6 +3491,10 @@ export type ManageOperationsData = {
          */
         device_worker_id?: string;
         /**
+         * Filter by connector key (e.g. 'github')
+         */
+        connector_key?: string;
+        /**
          * Filter by operation key
          */
         operation_key?: string;
@@ -3316,6 +3507,14 @@ export type ManageOperationsData = {
          */
         approval_status?: string;
         run_types?: Array<string>;
+        /**
+         * Only runs created at or after this ISO 8601 timestamp (inclusive)
+         */
+        created_after?: string;
+        /**
+         * Only runs created before this ISO 8601 timestamp (exclusive)
+         */
+        created_before?: string;
         behavior_ids?: Array<number>;
         /**
          * Keyset cursor: return runs before this ID
@@ -3336,7 +3535,7 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Fetch one action run.
+         * Fetch one connector action or internal approval run.
          */
         action: "get_run";
         run_id: number;
@@ -3354,6 +3553,10 @@ export type ManageOperationsData = {
         include_runs?: boolean;
         aggregate?: boolean;
         kinds?: Array<string>;
+        /**
+         * Scope activity to a single agent's runs
+         */
+        agent_id?: string;
       }
     | {
         /**
@@ -3375,10 +3578,35 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Approve every pending proposal a Behavior run produced, in one go. Groups by the run's window.
+         * Approve many pending approvals at once. Either scope by window_id (a Behavior run's proposals) or by `scope` (queued connector operations). Exactly one of the two is required — there is no unscoped approve-everything.
          */
         action: "approve_batch";
-        window_id: number;
+        window_id?: number;
+        /**
+         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.
+         */
+        scope?: {
+          /**
+           * Only approvals queued against this connection.
+           */
+          connection_id?: number;
+          /**
+           * Only approvals for this connector (e.g. 'github').
+           */
+          connector_key?: string;
+          /**
+           * Only approvals for this operation key.
+           */
+          action_key?: string;
+          /**
+           * Only approvals queued by this Behavior.
+           */
+          behavior_id?: number;
+          /**
+           * Only approvals queued more than this many days ago. Narrows further; never widens.
+           */
+          older_than_days?: number;
+        };
         /**
          * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
          */
@@ -3386,10 +3614,35 @@ export type ManageOperationsData = {
       }
     | {
         /**
-         * Reject every pending proposal a Behavior run produced. The reason is fed back to the agent so it can revise its proposals (the conversational revision loop).
+         * Reject many pending approvals at once. Either scope by window_id (a Behavior run's proposals — the reason is fed back so the agent revises) or by `scope` (queued connector operations). Exactly one of the two is required.
          */
         action: "reject_batch";
-        window_id: number;
+        window_id?: number;
+        /**
+         * Scope filters for a connector-approval batch. At least one of connection_id / connector_key / action_key / behavior_id is required.
+         */
+        scope?: {
+          /**
+           * Only approvals queued against this connection.
+           */
+          connection_id?: number;
+          /**
+           * Only approvals for this connector (e.g. 'github').
+           */
+          connector_key?: string;
+          /**
+           * Only approvals for this operation key.
+           */
+          action_key?: string;
+          /**
+           * Only approvals queued by this Behavior.
+           */
+          behavior_id?: number;
+          /**
+           * Only approvals queued more than this many days ago. Narrows further; never widens.
+           */
+          older_than_days?: number;
+        };
         /**
          * Exact proposal run IDs shown to the reviewer. The batch fails closed if the pending set changed.
          */
@@ -3498,17 +3751,8 @@ export type ManageOperationsResponses = {
           unread?: boolean;
           notification_id?: number;
           run_id?: number;
-          /**
-           * Kind of pending interaction behind this notification (events `interaction_type` vocabulary — 'approval' today).
-           */
           interaction_type?: string;
-          /**
-           * Live interaction state, from the interaction's authoritative per-type source. For 'approval' it is passed through verbatim from the run's approval_status (e.g. 'pending', 'approved', 'rejected', 'expired', 'auto'). Not a fixed enum — treat any value not explicitly handled as non-actionable.
-           */
           interaction_status?: string;
-          /**
-           * This interaction can be completed inline from the feed.
-           */
           interaction_inline?: boolean;
           member_run_ids?: Array<number>;
           connection_id?: number;
@@ -3532,7 +3776,7 @@ export type ManageOperationsResponses = {
       }
     | {
         action: "approve_batch";
-        window_id: number;
+        window_id?: number;
         approved_count: number;
         failed_count: number;
         run_ids: Array<number>;
@@ -3540,7 +3784,7 @@ export type ManageOperationsResponses = {
       }
     | {
         action: "reject_batch";
-        window_id: number;
+        window_id?: number;
         rejected_count: number;
         run_ids: Array<number>;
         message: string;
@@ -3569,6 +3813,10 @@ export type NotifyData = {
      * Relative URL to link the notification to (e.g. /acme/entities)
      */
     resource_url?: string;
+    /**
+     * Stable producer key. Repeating a send with the same key returns success without creating or delivering a duplicate.
+     */
+    idempotency_key?: string;
     /**
      * Connection ID for targeted delivery (e.g. Telegram bot connection). When set, notification is delivered through this specific bot connection.
      */
@@ -3783,7 +4031,7 @@ export type ManageBehaviorsData = {
       | "list_promoted"
       | "create_from_version";
     /**
-     * [update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
+     * [list/update/upgrade/get_versions/get_version_details/set_reaction_script/trigger] Behavior ID (numeric string)
      */
     behavior_id?: string;
     /**
@@ -3819,11 +4067,24 @@ export type ManageBehaviorsData = {
      */
     name_pattern?: string;
     /**
-     * [create/create_version] Literal LLM instruction text for the Behavior. No template expansion happens — the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload.
+     * [create/create_version] Literal LLM instruction text for the Behavior — the task statement, frozen into the version. No template expansion happens: the text is delivered to the agent verbatim, and the window's data (content, sources, entities, extraction_schema) arrives alongside it in the knowledge-read payload. Reusable know-how belongs in `skills` instead, which is delivered as readable files rather than pasted in here. A schedule trigger, an event trigger with execution 'window', and a Behavior with no triggers each need an instruction source — supply `prompt`, `skills`, or both; an event trigger with execution 'turn' may omit both and use the built-in default.
      */
     prompt?: string;
     /**
-     * [create/create_version] Array of SQL data sources. Each source is { name, query }. Sources are version-owned — to change them on an existing Behavior, publish a new version with action: 'create_version'.
+     * [create/create_version] Up to 5 ordered agent skills pinned into this version as {name, content} snapshots. Server-side agents receive `.skills/<name>/SKILL.md` files; device executors receive the same frozen text in their per-run task. Snapshots, not live references: editing the agent's library later does not change an existing version until a caller publishes a new one (`lobu apply` re-resolves on every run). FULL REPLACEMENT on create_version — passing it (even []) makes it the complete set, and OMITTING it keeps the stored snapshots unchanged. Every name must exist and be enabled in the owning agent's library, or the call is rejected rather than silently running under-instructed.
+     */
+    skills?: Array<{
+      /**
+       * Skill name, matching an entry in the owning agent's skill library. Identifies the skill for diffing a pinned snapshot against the library's current body.
+       */
+      name: string;
+      /**
+       * The skill body, frozen as of this version. Server-side agents receive it as `.skills/<name>/SKILL.md`; device executors receive the same frozen text in their per-run task.
+       */
+      content: string;
+    }>;
+    /**
+     * [create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.
      */
     sources?: Array<{
       /**
@@ -3840,13 +4101,55 @@ export type ManageBehaviorsData = {
       context?: boolean;
     }>;
     /**
-     * [create/create_version] Config for stable key generation across windows.
+     * [create/create_version] Named durable outputs for window execution. `{ entity, key, name? }` validates and upserts entities; `{ event }` appends standard event drafts. The object key is the top-level extracted_data array name. Event rows require content and may include title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Event triggers on a Behavior with outputs must use execution="window". Pass null on create_version to remove all declared outputs.
      */
-    keying_config?: unknown;
+    outputs?:
+      | string
+      | {
+          [key: string]:
+            | {
+                /**
+                 * Stored entity-type slug for every row in this output array.
+                 */
+                entity: string;
+                /**
+                 * Fields whose values compose each row's stable identity across Behavior runs.
+                 */
+                key: Array<string>;
+                /**
+                 * Fields used for the human-readable entity name. Defaults to key.
+                 */
+                name?: Array<string>;
+              }
+            | {
+                /**
+                 * Semantic type assigned to every event in this output array.
+                 */
+                event: string;
+              };
+        }
+      | null;
     /**
-     * [create/create_version] Classifier definitions for extraction.
+     * [create/create_version] Classifier definitions for extraction. Each attribute_values MUST be an object map keyed by value, never an array.
      */
-    classifiers?: unknown;
+    classifiers?:
+      | string
+      | Array<{
+          slug?: string;
+          name?: string;
+          source_path?: string;
+          value_field?: string;
+          description_field?: string;
+          examples_field?: string;
+          attribute_key?: string;
+          /**
+           * Object MAP keyed by value string. An array here corrupts on read (#2033).
+           */
+          attribute_values?: {
+            [key: string]: unknown;
+          };
+          [key: string]: unknown;
+        }>;
     /**
      * [create/update/create_version] Canonical Behavior activations. Use a schedule trigger for cadence and timezone.
      */
@@ -3884,14 +4187,30 @@ export type ManageBehaviorsData = {
           cron: string;
           timezone?: string | null;
           execution?: "window";
-          active_run?: "queue" | "coalesce";
+          active_run?: "coalesce";
           skip_if_unchanged?: boolean;
         }
     >;
     /**
-     * [create/update] Agent ID that owns/executes this Behavior.
+     * [create/update] Agent ID that owns/executes this Behavior. [list] Optional owner filter.
      */
     agent_id?: string;
+    /**
+     * [list] Optional status filter. Omit to include active Behaviors only.
+     */
+    status?: "active" | "archived";
+    /**
+     * [list] Include prompt, schema, and sources in the response (default: false).
+     */
+    include_details?: boolean;
+    /**
+     * [list] Sort field (default: created_at).
+     */
+    order_by?: "last_fired_at" | "created_at";
+    /**
+     * [list] Sort direction (default: desc).
+     */
+    order_dir?: "asc" | "desc";
     /**
      * [create/update/create_version] Optional MCP client ID that should auto-run this Behavior. Null clears it.
      */
@@ -4044,7 +4363,7 @@ export type ManageBehaviorsData = {
       note?: string;
     }>;
     /**
-     * [get_feedback] Max feedback records to return (default: 50).
+     * [list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Behaviors.
      */
     limit?: number;
   };
@@ -4393,7 +4712,7 @@ export type GetBehaviorResponses = {
             cron: string;
             timezone?: string | null;
             execution?: "window";
-            active_run?: "queue" | "coalesce";
+            active_run?: "coalesce";
             skip_if_unchanged?: boolean;
           }
       >;
@@ -4409,11 +4728,28 @@ export type GetBehaviorResponses = {
       }>;
       prompt?: string;
       description?: string;
-      keying_config?: {
-        entity_path: string;
-        key_fields: Array<string>;
-        key_output_field: string;
-        entity_type?: string;
+      outputs?: {
+        [key: string]:
+          | {
+              /**
+               * Stored entity-type slug for every row in this output array.
+               */
+              entity: string;
+              /**
+               * Fields whose values compose each row's stable identity across Behavior runs.
+               */
+              key: Array<string>;
+              /**
+               * Fields used for the human-readable entity name. Defaults to key.
+               */
+              name?: Array<string>;
+            }
+          | {
+              /**
+               * Semantic type assigned to every event in this output array.
+               */
+              event: string;
+            };
       } | null;
       classifiers?: Array<unknown>;
       reactions_guidance?: string;
@@ -4438,6 +4774,9 @@ export type GetBehaviorResponses = {
         created_at?: string | null;
         completed_at?: string | null;
       };
+      health?: "healthy" | "degraded";
+      health_reasons?: Array<string>;
+      last_scheduling_error?: string | null;
     };
     pending_analysis?: {
       unprocessed_count: number;
@@ -4524,6 +4863,10 @@ export type ReadKnowledgeData = {
      * Limit results to memory written by this agent. Filters events where metadata.agent_id matches.
      */
     agent_id?: string;
+    /**
+     * OAuth client IDs to filter by (events.client_id — the connected client that produced the event, e.g. a ChatGPT or CLI registration). Pass several ids to cover one client that registered more than once.
+     */
+    client_ids?: Array<string>;
     /**
      * Platform types to filter by (reddit, trustpilot, etc.)
      */
@@ -4670,6 +5013,7 @@ export type ReadKnowledgeResponses = {
   200: {
     content: Array<unknown>;
     total: number;
+    chain_total?: number;
     page: {
       limit: number;
       offset: number;
@@ -4698,20 +5042,11 @@ export type ReadKnowledgeResponses = {
     sources?: {
       [key: string]: unknown | Array<unknown>;
     };
-    /**
-     * Behavior-bound entities as structured rows (id, name, type, metadata, field_controls). field_controls marks human-owned field values the agent must not overwrite without new evidence.
-     */
     entities?: Array<unknown>;
     classifiers?: Array<unknown>;
     unprocessed_ranges?: Array<unknown>;
     reactions_guidance?: string;
-    /**
-     * Summary of this Behavior's recent reactions (self-learning context).
-     */
     past_reactions?: string;
-    /**
-     * Summary of recent human feedback on this Behavior's output.
-     */
     past_feedback?: string;
     available_operations?: Array<{
       connection_id: number;
@@ -4742,13 +5077,19 @@ export type ManageClassifiersData = {
     /**
      * Action to perform
      */
-    action: "create" | "list" | "generate_embeddings" | "delete" | "classify";
+    action:
+      | "create"
+      | "list"
+      | "generate_embeddings"
+      | "delete"
+      | "classify"
+      | "apply";
     /**
      * [create/list] Entity ID to scope classifiers (global if omitted)
      */
     entity_id?: number;
     /**
-     * [create] Persisted Behavior ID (`behavior_id`) returned by manage_behaviors (numeric string; required)
+     * [create] Persisted Behavior ID returned by manage_behaviors (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Behavior.
      */
     behavior_id?: string;
     /**
@@ -4796,13 +5137,17 @@ export type ManageClassifiersData = {
      */
     created_by?: string;
     /**
-     * [list] Filter by status (active or deprecated)
+     * [list] Filter by status. Defaults to 'active' (deprecated classifiers are excluded). Pass 'deprecated' to see archived ones, or 'all' to list every classifier regardless of status.
      */
     status?: string;
     /**
      * [generate_embeddings] Force regenerate existing embeddings (default: false)
      */
     force_regenerate?: boolean;
+    /**
+     * [create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.
+     */
+    embedding_model?: string;
     /**
      * [classify] Content ID to update (single mode)
      */
@@ -4825,7 +5170,11 @@ export type ManageClassifiersData = {
       reasoning?: string;
     }>;
     /**
-     * [classify] Classifier slug (e.g., "sentiment", "bug-severity")
+     * [apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.
+     */
+    content_ids?: Array<number>;
+    /**
+     * [classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")
      */
     classifier_slug?: string;
     /**
@@ -5208,6 +5557,26 @@ export type MetricSeriesData = {
      * A single SELECT (or WITH … SELECT) returning a bucket column plus one or more numeric stat columns. Table references are auto-scoped to the caller's organization; `$1` is the organization id (injected — do not pass it).
      */
     sql: string;
+    /**
+     * Name of the time-bucket column to run data-quality checks against. Defaults to the first column whose name looks temporal (bucket, time, date, *_at, …).
+     */
+    time_column?: string;
+    /**
+     * Inclusive lower bound (ISO 8601) of the valid time range for the bucket column. Buckets before this are counted as out-of-range. Default 2000-01-01T00:00:00Z.
+     */
+    start?: string;
+    /**
+     * Exclusive upper bound (ISO 8601) of the valid time range for the bucket column. Buckets at/after this are counted as out-of-range. Default now + 1 day.
+     */
+    end?: string;
+    /**
+     * Drop rows whose bucket timestamp is NULL, unparseable, or outside the valid range instead of returning them. Counts are still reported in data_quality.
+     */
+    exclude_invalid_timestamps?: boolean;
+    /**
+     * Fail the call if any NULL/unparseable/out-of-range bucket timestamps are found.
+     */
+    strict?: boolean;
   };
   path: {
     /**
@@ -5555,6 +5924,14 @@ export type PostApiV1AgentsErrors = {
    * Unauthorized
    */
   401: {
+    success: boolean;
+    error: string;
+    details?: string;
+  };
+  /**
+   * Forbidden
+   */
+  403: {
     success: boolean;
     error: string;
     details?: string;

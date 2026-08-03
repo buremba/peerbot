@@ -546,11 +546,8 @@ function emitBehavior(
   if (w.skills?.length) {
     fields.push(`skills: [${w.skills.map((s) => str(s.name)).join(", ")}]`);
   }
-  // A watcher's output schema is owned by its entity type (keying_config.entityType)
-  // or falls back to the worker's free-form `{ summary }` — never inline. Emit
-  // `keyingConfig` (the entity connection) only.
-  if (w.keying_config) {
-    fields.push(`keyingConfig: ${emitValue(w.keying_config, 1)}`);
+  if (w.outputs) {
+    fields.push(`outputs: ${emitValue(w.outputs, 1)}`);
   }
   if (w.sources?.length) {
     const sourceObj = Object.fromEntries(

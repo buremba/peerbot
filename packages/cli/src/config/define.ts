@@ -378,6 +378,22 @@ export interface BehaviorNotification {
   priority?: "low" | "normal" | "high";
 }
 
+export interface BehaviorEntityOutput {
+  /** Stored entity type (a config handle or slug). */
+  entity: EntityType | string;
+  /** Stable identity fields, scoped to this Behavior output. */
+  key: string[];
+  /** Optional fields used to build a readable entity name. Defaults to key. */
+  name?: string[];
+}
+
+export interface BehaviorEventOutput {
+  /** Semantic type assigned to every standard event draft in this output. */
+  event: string;
+}
+
+export type BehaviorOutput = BehaviorEntityOutput | BehaviorEventOutput;
+
 /**
  * Declarative event trigger. The persisted API contract uses an integer
  * `connection_id`; config may instead name a stable project connection handle
@@ -432,21 +448,13 @@ export interface Behavior {
    */
   skills?: string[];
   /**
-   * Stable key generation for promoted entities. When `entityType` is set, the
-   * Behavior is entity-typed: its output schema derives from that entity type's
-   * metadata schema (schema lives on the type, never on the Behavior), and
-   * extracted rows are keyed + merged into entities of that type across windows.
-   * Omit for an untyped Behavior that runs the worker's free-form `{ summary }`
-   * fallback. There is no inline Behavior schema — schema is owned by the entity
-   * type, full stop.
+   * Named top-level arrays the Behavior persists after each completed window.
+   * Entity output schemas live on their entity types; event outputs use Lobu's
+   * standard event draft. Event triggers on a Behavior with outputs must use
+   * execution `"window"`; conversational `"turn"` triggers belong in a
+   * separate Behavior. Omit for a Canvas-only or reaction-only Behavior.
    */
-  keyingConfig?: {
-    entityType?: string;
-    entityPath?: string;
-    keyFields?: string[];
-    keyOutputField?: string;
-    [k: string]: unknown;
-  } | null;
+  outputs?: Record<string, BehaviorOutput> | null;
   /**
    * Named SQL data sources. Value is either a query string or
    * `{ query, context? }` — `context: true` marks a context-only source

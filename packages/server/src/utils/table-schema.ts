@@ -533,7 +533,7 @@ export const QUERYABLE_SCHEMA = {
         'description',
         'prompt',
         'skills',
-        'keying_config',
+        'outputs',
         'classifiers',
         'reactions_guidance',
         'change_notes',

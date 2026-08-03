@@ -26,6 +26,6 @@ export interface ComponentReferenceDocumentation {
     description: string;
     prompt?: string;
     data?: Record<string, { query: string }>;
-    keying_config?: unknown;
+    outputs?: unknown;
   }>;
 }

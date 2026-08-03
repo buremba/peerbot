@@ -110,49 +110,64 @@ export const BehaviorSourceSchema = Type.Object({
 export type BehaviorSource = Static<typeof BehaviorSourceSchema>;
 
 /**
- * Stable-key + promotion config for a Behavior's extracted rows.
- *
- * Setting this is what binds a Behavior to an entity type, and that binding
- * drives THREE things at once: the extraction schema handed to the agent, the
- * `complete_window` validation of `extracted_data`, and the promotion of each
- * keyed row into an entity. Under a free-form JSON contract a mistyped field
- * name failed silently — an unresolvable entity_path or entity_type skips
- * schema derivation and promotion, and a wrong key_fields name yields empty
- * keys and promotes nothing — so the shape is declared rather than left as
- * free-form JSON.
+ * Persist extracted rows as entities of one declared type. `key` is scoped to
+ * the producing Behavior, so retries and later windows update the same entity
+ * without claiming that two independent producers necessarily mean the same
+ * real-world identity. The stable key is server-internal and never appears in
+ * the model's output contract.
  */
-export const BehaviorKeyingConfigSchema = Type.Object({
-  entity_path: Type.String({
+export const BehaviorEntityOutputSchema = Type.Object({
+  entity: Type.String({
     minLength: 1,
-    description:
-      "Dotted path to the array of extracted rows inside extracted_data (e.g. `items`, `analysis.results.problems`).",
+    description: "Stored entity-type slug for every row in this output array.",
   }),
-  key_fields: Type.Array(Type.String({ minLength: 1 }), {
+  key: Type.Array(Type.String({ minLength: 1 }), {
     minItems: 1,
     description:
-      "Fields whose values compose each row's stable key. Pick values that do NOT change between runs — the key is the entity's identity across windows.",
+      "Fields whose values compose each row's stable identity across Behavior runs.",
   }),
-  key_output_field: Type.String({
-    minLength: 1,
-    description:
-      "Field the computed stable key is stamped onto. The agent must not emit it; it is excluded from the entity's synced fields.",
-  }),
-  entity_type: Type.Optional(
-    Type.String({
-      minLength: 1,
-      description:
-        "Entity-type slug the keyed rows are promoted into. Pass the STORED slug — entity-type creation slugifies (`social_signal` is stored as `social-signal`); a slug that resolves to no type is rejected at create with 422. Omit to derive one from the last segment of entity_path (slugified and singularized: `analysis.results.problems` → `problem`); a derived slug is not checked at create, and if it resolves to no type at run time, promotion is silently skipped.",
-    })
-  ),
-  name_fields: Type.Optional(
+  name: Type.Optional(
     Type.Array(Type.String({ minLength: 1 }), {
       minItems: 1,
       description:
-        "Fields used to build the entity's human-readable display name. Defaults to key_fields, which is usually wrong when the key is an opaque id — identity wants a value that never changes, a name wants one a person can read.",
+        "Fields used for the human-readable entity name. Defaults to key.",
     })
   ),
 });
-export type BehaviorKeyingConfig = Static<typeof BehaviorKeyingConfigSchema>;
+export type BehaviorEntityOutput = Static<typeof BehaviorEntityOutputSchema>;
+
+/**
+ * Persist each row as an append-only event. The semantic type is fixed by the
+ * Behavior version; the row supplies the standard event draft fields.
+ */
+export const BehaviorEventOutputSchema = Type.Object({
+  event: Type.String({
+    minLength: 1,
+    description: "Semantic type assigned to every event in this output array.",
+  }),
+});
+export type BehaviorEventOutput = Static<typeof BehaviorEventOutputSchema>;
+
+export const BehaviorOutputSchema = Type.Union([
+  BehaviorEntityOutputSchema,
+  BehaviorEventOutputSchema,
+]);
+export type BehaviorOutput = Static<typeof BehaviorOutputSchema>;
+
+export const BehaviorOutputsSchema = Type.Object(
+  {},
+  {
+    additionalProperties: BehaviorOutputSchema,
+    minProperties: 1,
+    maxProperties: 20,
+    description:
+      "Named top-level arrays persisted after a completed window. Entity outputs are validated against their entity type; event rows require content and may include title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key.",
+  }
+);
+// TypeBox deliberately types an open `Type.Object` as unknown-valued. Keep the
+// runtime schema open for user-chosen output names while exposing the actual
+// value contract to TypeScript consumers.
+export type BehaviorOutputs = Record<string, BehaviorOutput>;
 
 export const BehaviorExecutionConfigSchema = Type.Object(
   {
@@ -417,19 +432,18 @@ export const ManageBehaviorsSchema = Type.Object(
           "[create/create_version] Array of SQL data sources. Each source is { name, query }. To change them on an existing Behavior, publish a new version with action: 'create_version'. On create_version this array is the ONLY way to change them and is a FULL REPLACEMENT: passing it (even []) makes it the complete source set, [] clears everything, and OMITTING it keeps the stored sources unchanged. Instruction text is never an input: @-mention chips in an inherited prompt neither add nor remove sources. (On create only, chips in the prompt still seed the initial list, which is how the web composer authors them.) The response returns source_count and removed_sources so you can see what a replacement dropped.",
       })
     ),
-    keying_config: Type.Optional(
+    outputs: Type.Optional(
       Type.Union(
         [
-          // Callers may pass a pre-serialized JSON string (parsed by
-          // parseJsonInput, then shape-checked against
-          // BehaviorKeyingConfigSchema) or the object directly.
+          // Callers may pass a pre-serialized JSON string (parsed and
+          // shape-checked by the server) or the object directly.
           Type.String(),
-          BehaviorKeyingConfigSchema,
+          BehaviorOutputsSchema,
           Type.Null(),
         ],
         {
           description:
-            "[create/create_version] Binds extracted rows to an entity type: computes a stable key per row, validates extracted_data against that type's metadata_schema, and promotes each row into an entity. Pass null on create_version to remove an existing binding and make the Behavior reaction-only.",
+            '[create/create_version] Named durable outputs for window execution. `{ entity, key, name? }` validates and upserts entities; `{ event }` appends standard event drafts. The object key is the top-level extracted_data array name. Event rows require content and may include title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Event triggers on a Behavior with outputs must use execution="window". Pass null on create_version to remove all declared outputs.',
         }
       )
     ),

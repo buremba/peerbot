@@ -1,6 +1,10 @@
 # Watcher / Entity Consolidation — Implementation Plan
 
 > **Status (2026-07-15):** **Partial** — the binary human-owned `field_controls` merge, condensation removal, and promotion update-on-match landed; B1/B2 source ranking remains unbuilt.
+>
+> **Historical API note (2026-08-03):** this plan predates named Behavior `outputs`. Its
+> `keyingConfig` references describe the removed entity-only API; current Behaviors declare
+> `{ outputName: { entity, key, name? } }` and/or `{ outputName: { event } }`.
 
 ## Thesis
 The system reduces to a small primitive set. Most of the debated surface is **duplicate

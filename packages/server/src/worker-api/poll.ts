@@ -9,7 +9,7 @@ import { authorizeCapabilities } from '@lobu/core';
 import type { PollRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
 import { getDb, pgTextArray } from '../db/client';
-import type { KeyingConfig } from '../types/watchers';
+import type { Outputs } from '../types/watchers';
 import { deriveWatcherExtractionSchema } from '../utils/watcher-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
 import type { Env } from '../index';
@@ -632,7 +632,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.execution_config AS watcher_execution_config,
         wv.prompt AS watcher_prompt,
         wv.skills AS watcher_skills,
-        wv.keying_config AS watcher_keying_config
+        wv.outputs AS watcher_outputs
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
@@ -723,7 +723,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_execution_config: Record<string, unknown> | null;
     watcher_prompt: string | null;
     watcher_skills: unknown;
-    watcher_keying_config: Record<string, unknown> | string | null;
+    watcher_outputs: Record<string, unknown> | string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
@@ -749,15 +749,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       typeof approved['agent_kind'] === 'string' && (approved['agent_kind'] as string).trim()
         ? (approved['agent_kind'] as string).trim()
         : null;
-    // Output contract for the device: derived from the target entity type's
-    // metadata_schema when the watcher is entity-typed (keying_config.entity_type);
-    // null for an untyped watcher, which runs the worker's free-form {summary}
-    // fallback. Same helper complete_window validates with, so the device extracts
-    // against exactly what we'll validate. The contract is never authored inline.
+    // Output contract for the device: composed from declared entity/event
+    // outputs and the optional reaction input contract. The same helper is used
+    // by complete_window, so extraction and validation cannot drift.
     const watcherExtractionSchema = await deriveWatcherExtractionSchema(
       getDb(),
       row.organization_id,
-      parseClaimJson(row.watcher_keying_config) as KeyingConfig | null,
+      parseClaimJson(row.watcher_outputs) as Outputs | null,
       row.watcher_id
     );
     let watcherInstructions: string | null;

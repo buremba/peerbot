@@ -28,8 +28,9 @@ import {
 } from '@lobu/core/contracts/tools/manage-behaviors';
 import {
   assertAgentExists,
-  assertKeyingConfigEntityTypeExists,
-  assertKeyingConfigShape,
+  assertOutputEntityTypesExist,
+  assertOutputEventTypesExist,
+  assertOutputsShape,
   assertWatcherVersionConfigValid,
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
@@ -48,6 +49,7 @@ import {
 } from '../../../watchers/reaction-executor';
 import {
   assertBehaviorInstructions,
+  assertBehaviorOutputsUseWindowExecution,
   assertBehaviorTriggerConnections,
   behaviorTriggersEqual,
   resolveBehaviorTriggerWrite,
@@ -101,9 +103,8 @@ export async function handleCreate(
   // the trigger shape runs on instructions alone — event-turn Behaviors may
   // omit it and run on the built-in default (see assertBehaviorInstructions,
   // called after triggers resolve below). The output contract is not authored
-  // here: an entity-typed watcher (keying_config.entity_type) derives it from
-  // entity_types.metadata_schema at runtime, and an untyped watcher uses the
-  // worker's free-form summary fallback.
+  // here: declared outputs derive it from entity/event contracts at runtime;
+  // a Behavior without outputs or a reaction uses the free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
@@ -122,10 +123,10 @@ export async function handleCreate(
   const entityId = args.entity_id;
 
   // Parse JSON inputs
-  const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
+  const outputs = parseJsonInput<Record<string, unknown>>(args.outputs, 'outputs');
   // String inputs pass the wire union unparsed — enforce the declared shape
   // here so both input forms meet the same contract.
-  assertKeyingConfigShape(keyingConfig);
+  assertOutputsShape(outputs);
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
 
   // Build sources array. Sources are authored two ways and merged here:
@@ -216,9 +217,14 @@ export async function handleCreate(
   // Both of these are free-text columns with NO database foreign key, so an
   // unresolvable id is accepted by the INSERT and only shows up as a Behavior
   // that never runs (agent_id) or one whose output contract is silently voided
-  // (keying_config.entity_type). Resolve them BEFORE the row is written.
+  // Resolve entity output targets BEFORE the row is written.
   await assertAgentExists(sql, organizationId, args.agent_id);
-  await assertKeyingConfigEntityTypeExists(sql, organizationId, keyingConfig);
+  await assertOutputEntityTypesExist(sql, organizationId, outputs);
+  await assertOutputEventTypesExist(
+    organizationId,
+    outputs,
+    entityId ? [entityId] : []
+  );
   await assertWatcherSourcesResolve(
     sql,
     organizationId,
@@ -228,6 +234,7 @@ export async function handleCreate(
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
   });
+  assertBehaviorOutputsUseWindowExecution(triggerWrite.triggers, outputs);
   await assertBehaviorTriggerConnections(sql, organizationId, triggerWrite.triggers);
   const skills = args.skills ?? [];
   assertBehaviorInstructions(triggerWrite.triggers, args.prompt, skills);
@@ -315,12 +322,12 @@ export async function handleCreate(
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, version_sources, skills,
-        keying_config, classifiers,
+        outputs, classifiers,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
         ${args.prompt ?? ''}, ${toJsonParam(tx, sources)}, ${tx.json(skills)},
-        ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${toJsonParam(tx, outputs)}, ${toJsonParam(tx, classifiers)},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
     `;
@@ -418,7 +425,7 @@ export async function handleCreate(
         min_cooldown_seconds: args.min_cooldown_seconds ?? 0,
         prompt: args.prompt ?? '',
         description: args.description ?? null,
-        keying_config: keyingConfig ?? null,
+        outputs: outputs ?? null,
         classifiers: classifiers ?? null,
         reactions_guidance: args.reactions_guidance ?? null,
         reaction_script: reactionScript,
@@ -460,7 +467,8 @@ export async function handleUpdate(
   await requireExists(sql, 'watchers', args.behavior_id, 'Behavior');
   const currentRows = await sql`
     SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
-           cv.prompt AS current_prompt, cv.skills AS current_skills
+           cv.prompt AS current_prompt, cv.skills AS current_skills,
+           cv.outputs AS current_outputs
     FROM watchers w
     LEFT JOIN watcher_versions cv ON cv.id = w.current_version_id
     WHERE w.id = ${args.behavior_id}
@@ -474,11 +482,16 @@ export async function handleUpdate(
     triggers: ManageBehaviorsArgs['triggers'];
     current_prompt: string | null;
     current_skills: Array<{ name: string; content: string }> | null;
+    current_outputs: Record<string, unknown> | null;
   };
   const triggerWrite = resolveBehaviorTriggerWrite({
     triggers: args.triggers,
     currentTriggers: currentRow.triggers ?? [],
   });
+  assertBehaviorOutputsUseWindowExecution(
+    triggerWrite.triggers,
+    currentRow.current_outputs
+  );
   if (
     args.triggers !== undefined &&
     !behaviorTriggersEqual(currentRow.triggers ?? [], triggerWrite.triggers)
@@ -862,6 +875,10 @@ export async function handleCreateFromVersion(
           version.prompt as string | null | undefined,
           version.skills as Array<{ name: string; content: string }> | null
         );
+        assertBehaviorOutputsUseWindowExecution(
+          (Array.isArray(cloneTriggers) ? cloneTriggers : []) as BehaviorTrigger[],
+          version.outputs as Record<string, unknown> | null | undefined
+        );
         // `tags` is a text[] column read under fetch_types:false, so postgres.js
         // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),
         // not a JS array. Parse it before filtering.
@@ -965,7 +982,7 @@ export async function handleCreateFromVersion(
         source_watcher_id: version.watcher_id,
         sources: p.sources,
         prompt: version.prompt ?? null,
-        keying_config: version.keying_config ?? null,
+        outputs: version.outputs ?? null,
         classifiers: version.classifiers ?? null,
         reactions_guidance: version.reactions_guidance ?? null,
       },

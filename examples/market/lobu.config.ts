@@ -6,18 +6,16 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
-  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
 import type ExaNewsFeedConnector from "./exa-news-feed.connector.ts";
-import type founderActivityTrackerReaction from "./founder-activity-tracker.reaction.ts";
 
 const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
 
 const founderActivityTrackerSkill = defineSkill({
   name: "founder-activity-tracker",
   content:
-    "You are a venture capital analyst tracking the public activity of startup founders in your portfolio.\n\nThe founders are the entities bound to this Behavior — the payload's `entities` array lists each founder's name, type, and ID. Their recent public activity arrives in the payload's `founder_posts` source.\n\nProduce a structured founder activity report:\n1. **Executive Summary**: 2-3 sentence overview of founder activity and signals.\n2. **Per-Founder Analysis**: For each active founder, summarize their messaging themes, engagement level, and signals about company direction.\n3. **Cross-Portfolio Patterns**: Themes multiple founders discuss.\n4. **Notable Signals**: Flag potential announcements, strategic shifts, or concerns.\n\nBe specific and cite actual tweets/posts as evidence.\n",
+    'You are a venture capital analyst tracking the public activity of startup founders in your portfolio. The founders are the entities bound to this Behavior and recent activity is in `founder_posts`. Return only high-importance findings in `signals` as standard observation event drafts. Put the readable finding in `content`; put `{ kind: "founder_activity", founder, activity_type, importance: "high" }` in `metadata`, and use `parent_event_id` when a source post supports the finding. Return an empty array when there is no notable activity.\n',
 });
 
 const opportunityMatcherSkill = defineSkill({
@@ -474,9 +472,7 @@ const founderActivityTracker = defineBehavior({
   notification: { priority: "normal" },
   tags: ["vc", "founders", "daily"],
   minCooldownSeconds: 600,
-  reaction: reactionFromFile<typeof founderActivityTrackerReaction>(
-    "./founder-activity-tracker.reaction.ts"
-  ),
+  outputs: { signals: { event: "observation" } },
   skills: ["founder-activity-tracker"],
   sources: {
     founder_posts:

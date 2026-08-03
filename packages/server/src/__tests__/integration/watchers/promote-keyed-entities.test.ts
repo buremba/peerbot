@@ -2,8 +2,8 @@
  * Integration test for P2 phase 1: promoting keyed watcher-window rows into
  * real child entities.
  *
- * complete_window computes stable keys (keying_config) and then promotes each
- * keyed row into a child entity under the watcher's bound parent, keyed by an
+ * complete_window persists each declared entity output row under the watcher's
+ * bound parent, keyed by an internal stable identity and an
  * entity_identities `watcher_key` claim (the idempotency lock). Origin
  * provenance (window_id / stable_key / watcher_id) is stamped onto the child
  * entity's own metadata — there is no separate observation event.
@@ -28,17 +28,14 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
-const KEYING_CONFIG = {
-  entity_path: 'problems',
-  key_fields: ['category', 'name'],
-  key_output_field: 'problem_key',
-  entity_type: 'topic',
+const OUTPUTS = {
+  problems: { entity: 'topic', key: ['category', 'name'] },
 };
 
 /**
  * Per-record shape owned by the `topic` entity type's `metadata_schema`.
  * The watcher's extraction contract is DERIVED from this (an array of these
- * records at `keying_config.entity_path`), never authored on the watcher.
+ * records in `outputs.problems`), never authored on the Behavior.
  */
 const TOPIC_RECORD_SCHEMA = {
   type: 'object',
@@ -115,7 +112,7 @@ async function setupKeyedWatcher() {
     slug: 'keyed-watcher',
     name: 'Keyed Watcher',
     prompt: 'Extract problems for {{entities}}.',
-    keying_config: KEYING_CONFIG,
+    outputs: OUTPUTS,
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     agent_id: agent.agentId,
   })) as { behavior_id: string };
@@ -225,8 +222,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       ORDER BY ei.identifier
     `;
     expect(identities.map((r) => String(r.identifier))).toEqual([
-      `${ctx.watcherId}::performance::slow-loading`,
-      `${ctx.watcherId}::stability::app-crashes`,
+      `${ctx.watcherId}::problems::performance::slow-loading`,
+      `${ctx.watcherId}::problems::stability::app-crashes`,
     ]);
     for (const row of identities) {
       expect(Number(row.parent_id)).toBe(parentEntityId);
@@ -492,7 +489,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       },
     });
 
-    const appCrashesId = `${ctx.watcherId}::stability::app-crashes`;
+    const appCrashesId = `${ctx.watcherId}::problems::stability::app-crashes`;
     const [created] = await sql`
       SELECT e.id, e.metadata, e.field_controls
       FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
@@ -615,7 +612,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -696,7 +693,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     // A human owns `severity` on one of the two promoted entities.
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -766,7 +763,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}

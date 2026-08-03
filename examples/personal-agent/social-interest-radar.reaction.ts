@@ -1,81 +1,50 @@
 /**
- * Deterministic delivery for the Social Interest Radar Behavior.
+ * Notification-only delivery for the Social Interest Radar Behavior.
  *
- * The model ranks posts and explains why they matter. This reaction owns every
- * durable side effect: one reply event per source post, followed by one digest
- * notification linking to the source/reply threads. Both writes carry durable
- * idempotency keys because the reaction executor retries a failed script.
+ * The declared `signals` output has already persisted and deduplicated the
+ * threaded observation events. Querying this run's persisted rows means a
+ * later run that re-ranks an old source does not notify twice, while a retry of
+ * the original run can safely retry the idempotent notification.
  */
-import type {
-  KnowledgeSaveResult,
-  ReactionClient,
-  ReactionContext,
-} from "@lobu/connector-sdk";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 export const input = {
   type: "object",
   properties: {
-    digest_title: { type: "string", minLength: 1, maxLength: 200 },
-    analysis_summary: { type: "string" },
-    items: {
+    signals: {
       type: "array",
       maxItems: 8,
       items: {
         type: "object",
         properties: {
-          platform: { enum: ["x", "linkedin"] },
-          author: { type: "string", minLength: 1 },
-          snippet: { type: "string" },
-          why: { type: "string", minLength: 1 },
-          priority: { enum: ["high", "normal", "low"] },
-          source_origin_id: { type: "string", minLength: 1 },
-          source_event_id: { type: "integer", minimum: 1 },
-          suggested_action: { type: "string", minLength: 1 },
+          title: { type: "string" },
+          content: { type: "string", minLength: 1 },
+          parent_event_id: { type: "integer", minimum: 1 },
+          idempotency_key: { type: "string", minLength: 1 },
+          metadata: { type: "object" },
         },
-        required: [
-          "platform",
-          "author",
-          "snippet",
-          "why",
-          "priority",
-          "source_origin_id",
-          "source_event_id",
-          "suggested_action",
-        ],
+        required: ["content", "parent_event_id", "idempotency_key", "metadata"],
       },
     },
   },
-  required: ["digest_title", "analysis_summary", "items"],
+  required: ["signals"],
 };
 
-interface RadarItem {
-  platform: "x" | "linkedin";
-  author: string;
-  snippet: string;
-  why: string;
-  priority: "high" | "normal" | "low";
-  source_origin_id: string;
-  source_event_id: number;
-  suggested_action: string;
-}
-
-interface RadarOutput {
-  digest_title: string;
-  analysis_summary: string;
-  items: RadarItem[];
+interface PersistedSignal {
+  id: number;
+  metadata: {
+    platform?: string;
+    author?: string;
+    why?: string;
+    priority?: string;
+    source_event_id?: number;
+  };
 }
 
 function producerRunKey(ctx: ReactionContext): string {
   return ctx.window.run_id != null
     ? `run:${ctx.window.run_id}`
     : `window:${ctx.window.id}:version:${ctx.behavior.version}`;
-}
-
-function belongsToProducer(
-  result: KnowledgeSaveResult,
-  producerKey: string
-): boolean {
-  return result.created || result.metadata.producer_run_key === producerKey;
 }
 
 function notificationBody(lines: string[]): string {
@@ -87,64 +56,42 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const output = ctx.extracted_data as unknown as RadarOutput;
-  if (output.items.length === 0) return;
+  const drafts = (ctx.extracted_data as { signals?: unknown[] }).signals ?? [];
+  if (drafts.length === 0) return;
 
-  const producerKey = producerRunKey(ctx);
-  const delivered: Array<{ item: RadarItem; replyId: number }> = [];
-
-  for (const item of output.items) {
-    const reply = await client.knowledge.save({
-      content: [
-        item.why,
-        "",
-        `Suggested action: ${item.suggested_action}`,
-      ].join("\n"),
-      title: `${item.author} on ${item.platform}`,
-      author: "personal-agent",
-      semantic_type: "social_signal",
-      payload_type: "markdown",
-      parent_event_id: item.source_event_id,
-      idempotency_key: `social-radar:source:${item.source_origin_id}`,
-      metadata: {
-        ...item,
-        producer_run_key: producerKey,
-        behavior_id: ctx.behavior.id,
-        window_id: ctx.window.id,
-      },
-      behavior_source: {
-        behavior_id: ctx.behavior.id,
-        window_id: ctx.window.id,
-      },
-    });
-
-    // A later Behavior run may rank the same post again. knowledge.save returns
-    // its original event, but only the run that first created it should notify.
-    // A retry of THAT run still qualifies through the stored producer key.
-    if (belongsToProducer(reply, producerKey)) {
-      delivered.push({ item, replyId: reply.id });
-    }
-  }
-
+  const runPredicate =
+    ctx.window.run_id != null
+      ? `run_id = ${Number(ctx.window.run_id)}`
+      : `metadata->>'window_id' = '${Number(ctx.window.id)}'`;
+  const delivered = (await client.query(
+    `SELECT id, metadata FROM events
+     WHERE ${runPredicate}
+       AND semantic_type = 'observation'
+       AND metadata->>'behavior_output' = 'signals'
+       AND metadata->>'behavior_id' = '${Number(ctx.behavior.id)}'
+     ORDER BY id`
+  )) as PersistedSignal[];
   if (delivered.length === 0) return;
 
-  const contentIds = delivered.flatMap(({ item, replyId }) => [
-    item.source_event_id,
-    replyId,
-  ]);
-  const resourceUrl = `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${contentIds.join(",")}`;
+  const contentIds = delivered.flatMap((signal) => {
+    const sourceId = Number(signal.metadata.source_event_id);
+    return Number.isInteger(sourceId) && sourceId > 0
+      ? [sourceId, signal.id]
+      : [signal.id];
+  });
   const body = notificationBody(
     delivered.map(
-      ({ item }) =>
-        `[${item.priority}] ${item.author} (${item.platform}) — ${item.why}`
+      ({ metadata }) =>
+        `[${metadata.priority ?? "normal"}] ${metadata.author ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
     )
   );
+  const producerKey = producerRunKey(ctx);
 
   await client.notifications.send({
-    title: output.digest_title,
+    title: "Social interest radar",
     body,
     recipients: "admins",
-    resource_url: resourceUrl,
+    resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${contentIds.join(",")}`,
     idempotency_key: `social-radar:notification:${producerKey}`,
     behavior_source: {
       behavior_id: ctx.behavior.id,

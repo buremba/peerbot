@@ -1,24 +1,23 @@
 /**
- * Watcher extraction schema — derived from the target entity type (consolidation:
- * "schema lives on the entity type, not the watcher").
+ * Behavior extraction schema — composed from named durable outputs and an
+ * optional reaction input contract.
  *
- * A watcher that names an `entity_type` in its `keying_config` derives its output
- * contract from that entity type's `metadata_schema`: the extraction must produce
- * an array of records (at `keying_config.entity_path`) that each conform to the
- * type's schema. This is the single source of truth — the same schema validates
- * manual entity writes (`schema-validation.ts`), so a record's shape is defined
- * ONCE, on the type.
+ * Entity output rows derive from their entity type's `metadata_schema`, so the
+ * same schema governs manual writes and Behavior promotion. Event output rows
+ * use one standard event-draft envelope. Output names are top-level arrays.
  *
  * Both the worker payload (poll.ts / get_content — ships the contract to the
  * device) and window completion (complete-window.ts — validates the returned
  * data) resolve the schema through this helper, so extraction and validation can
- * never drift. Returns null when the watcher isn't entity-typed or the type has
- * no schema — callers then run the worker's free-form `{ summary }` fallback
- * (there is no inline extraction schema; that path was removed).
+ * never drift. A schemaless entity type still contributes a required array of
+ * objects. Returns null only when there are no outputs and no reaction schema;
+ * callers then use the worker's free-form `{ summary }` fallback.
  */
 
 import type { DbClient } from '../db/client';
-import type { KeyingConfig } from '../types/watchers';
+import type { Outputs } from '../types/watchers';
+
+export const MAX_BEHAVIOR_OUTPUT_ROWS = 500;
 
 /**
  * Resolve an entity type's `metadata_schema` (JSON Schema Draft-7), tenant-first
@@ -58,38 +57,53 @@ function safeParse(value: string): Record<string, unknown> | null {
   }
 }
 
-/**
- * Wrap a per-record metadata schema as the full extraction-output schema: an
- * array of those records living at `entityPath`. A dotted path
- * (`analysis.results.problems`) becomes nested required objects, so the LLM's
- * output object is validated end to end, not just the leaf array.
- */
-export function wrapMetadataSchemaAtPath(
-  metadataSchema: Record<string, unknown>,
-  entityPath: string
+export const BehaviorEventDraftSchema: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    content: { type: 'string', minLength: 1 },
+    title: { type: 'string' },
+    metadata: { type: 'object' },
+    author: { type: 'string' },
+    source_url: { type: 'string' },
+    occurred_at: { type: 'string', format: 'date-time' },
+    parent_event_id: { type: 'integer', minimum: 1 },
+    payload_type: { enum: ['text', 'markdown'] },
+    idempotency_key: { type: 'string', minLength: 1, maxLength: 255 },
+  },
+  required: ['content'],
+  additionalProperties: false,
+};
+
+function mergeObjectSchemas(
+  reaction: Record<string, unknown> | null,
+  outputProperties: Record<string, unknown>,
+  outputNames: string[]
 ): Record<string, unknown> {
-  const segments = entityPath.split('.').filter((s) => s.length > 0);
-  if (segments.length === 0) {
-    // No path — the whole output is the array of records.
-    return { type: 'array', items: metadataSchema };
-  }
-  // Build from the leaf array outward.
-  let node: Record<string, unknown> = { type: 'array', items: metadataSchema };
-  for (let i = segments.length - 1; i >= 0; i--) {
-    node = {
+  if (!reaction || reaction.type !== 'object') {
+    return {
       type: 'object',
-      properties: { [segments[i]]: node },
-      required: [segments[i]],
+      properties: outputProperties,
+      required: outputNames,
     };
   }
-  return node;
+  const reactionProperties =
+    reaction.properties && typeof reaction.properties === 'object'
+      ? (reaction.properties as Record<string, unknown>)
+      : {};
+  const reactionRequired = Array.isArray(reaction.required)
+    ? reaction.required.filter((value): value is string => typeof value === 'string')
+    : [];
+  return {
+    ...reaction,
+    properties: { ...reactionProperties, ...outputProperties },
+    required: [...new Set([...reactionRequired, ...outputNames])],
+  };
 }
 
 /**
  * Derive a watcher's extraction schema. Precedence:
- *  1. Entity-typed (`keying_config.entity_type`) → the type's `metadata_schema`
- *     wrapped as an array at `entity_path`.
- *  2. Reaction watcher → the reaction's exported `input` schema, cached on
+ *  1. Named outputs → entity metadata schemas or the standard event draft.
+ *  2. Reaction Behavior → the reaction's exported `input` schema, cached on
  *     `watchers.reaction_input_schema` when the watcher is created or its script
  *     is set. This is how "the reaction owns the schema" reaches the worker:
  *     the device extracts against exactly what the reaction will `Value.Parse`.
@@ -102,14 +116,32 @@ export function wrapMetadataSchemaAtPath(
 export async function deriveWatcherExtractionSchema(
   sql: DbClient,
   organizationId: string,
-  keyingConfig: KeyingConfig | null | undefined,
+  outputs: Outputs | null | undefined,
   watcherId?: string | number | null
 ): Promise<Record<string, unknown> | null> {
-  const entityType = keyingConfig?.entity_type?.trim();
-  if (entityType && keyingConfig?.entity_path) {
-    const metadataSchema = await resolveEntityTypeMetadataSchema(sql, organizationId, entityType);
-    if (metadataSchema) return wrapMetadataSchemaAtPath(metadataSchema, keyingConfig.entity_path);
+  const outputProperties: Record<string, unknown> = {};
+  for (const [name, output] of Object.entries(outputs ?? {})) {
+    if ('entity' in output) {
+      const metadataSchema = await resolveEntityTypeMetadataSchema(
+        sql,
+        organizationId,
+        output.entity
+      );
+      outputProperties[name] = {
+        type: 'array',
+        maxItems: MAX_BEHAVIOR_OUTPUT_ROWS,
+        items: metadataSchema ?? { type: 'object' },
+      };
+    } else {
+      outputProperties[name] = {
+        type: 'array',
+        maxItems: MAX_BEHAVIOR_OUTPUT_ROWS,
+        items: BehaviorEventDraftSchema,
+      };
+    }
   }
+
+  let reactionSchema: Record<string, unknown> | null = null;
   if (watcherId != null && watcherId !== '') {
     const rows = await sql<{ reaction_input_schema: Record<string, unknown> | string | null }>`
       SELECT reaction_input_schema FROM watchers
@@ -117,11 +149,16 @@ export async function deriveWatcherExtractionSchema(
       LIMIT 1
     `;
     const raw = rows[0]?.reaction_input_schema ?? null;
-    if (raw == null) return null;
-    const schema = typeof raw === 'string' ? safeParse(raw) : raw;
-    if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
-      return schema as Record<string, unknown>;
+    if (raw != null) {
+      const schema = typeof raw === 'string' ? safeParse(raw) : raw;
+      if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
+        reactionSchema = schema as Record<string, unknown>;
+      }
     }
   }
-  return null;
+  const outputNames = Object.keys(outputProperties);
+  if (outputNames.length > 0) {
+    return mergeObjectSchemas(reactionSchema, outputProperties, outputNames);
+  }
+  return reactionSchema;
 }

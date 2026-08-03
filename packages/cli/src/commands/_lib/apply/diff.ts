@@ -560,10 +560,10 @@ function diffWatcher(
     versionBound.push("reactions_guidance");
   }
   if (
-    desired.keyingConfig !== undefined &&
-    !deepEqual(desired.keyingConfig, remote.keying_config ?? null)
+    desired.outputs !== undefined &&
+    !deepEqual(desired.outputs, remote.outputs ?? null)
   ) {
-    versionBound.push("keying_config");
+    versionBound.push("outputs");
   }
   if (
     desired.classifiers !== undefined &&

@@ -6,6 +6,7 @@ import type {
   WorkerTokenData,
 } from "@lobu/core";
 import {
+  AgentErrorCode,
 	createLogger,
 	generateWorkerToken,
 	encrypt,
@@ -14,6 +15,7 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
+import { getDb } from "../../db/client.js";
 import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
 import {
   BEHAVIOR_RUN_SOURCE,
@@ -367,6 +369,71 @@ export class WorkerGateway {
   }
 
   /**
+   * Resolve the reply-to-source Behavior selected for this exact queued turn.
+   *
+   * platformMetadata in a worker response is attacker-controlled. The signed
+   * per-run token carries only runs.id; re-reading that durable gateway-written
+   * row binds the Behavior id to the planner decision without putting per-turn
+   * state on the deployment-lifetime fallback token. Missing per-run identity
+   * degrades safely to no schedule mutation. Database errors propagate so a
+   * terminal quota reply is retried rather than delivered with an untrusted id.
+   */
+  private async resolveTrustedBehaviorId(
+    tokenData: WorkerTokenData
+  ): Promise<number | undefined> {
+    const { runId, organizationId, agentId, messageId } = tokenData;
+    if (
+      typeof runId !== "number" ||
+      !Number.isSafeInteger(runId) ||
+      runId < 1 ||
+      !organizationId ||
+      !agentId
+    ) {
+      return undefined;
+    }
+
+    const rows = await getDb()<{
+      payload: {
+        organizationId?: unknown;
+        agentId?: unknown;
+        messageId?: unknown;
+        platformMetadata?: unknown;
+      } | null;
+    }>`
+      SELECT CASE
+        WHEN jsonb_typeof(action_input) = 'string'
+          THEN (action_input #>> '{}')::jsonb
+        ELSE action_input
+      END AS payload
+      FROM public.runs
+      WHERE id = ${runId}
+        AND run_type = 'chat_message'
+        AND organization_id = ${organizationId}
+      LIMIT 1
+    `;
+    const payload = rows[0]?.payload;
+    if (
+      !payload ||
+      payload.organizationId !== organizationId ||
+      payload.agentId !== agentId ||
+      (messageId && payload.messageId !== messageId)
+    ) {
+      return undefined;
+    }
+
+    const metadata = payload.platformMetadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+      return undefined;
+    }
+    const behaviorId = (metadata as { behaviorId?: unknown }).behaviorId;
+    return typeof behaviorId === "number" &&
+      Number.isSafeInteger(behaviorId) &&
+      behaviorId > 0
+      ? behaviorId
+      : undefined;
+  }
+
+  /**
    * Handle HTTP response from worker
    */
   private async handleWorkerResponse(c: Context): Promise<Response> {
@@ -389,6 +456,10 @@ export class WorkerGateway {
       // token and retain only non-routing metadata from the body. In particular,
       // an absent connectionId must remove a body-supplied value rather than
       // turning a non-chat run into a cross-tenant Chat delivery.
+      const trustedBehaviorId =
+        responseData.errorCode === AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED
+          ? await this.resolveTrustedBehaviorId(auth.tokenData)
+          : undefined;
       const tokenRouting = {
         userId: auth.tokenData.userId,
         conversationId: auth.tokenData.conversationId,
@@ -407,6 +478,7 @@ export class WorkerGateway {
         teamId: tokenRouting.teamId,
         source: auth.tokenData.source,
         senderId: tokenRouting.userId,
+        behaviorId: trustedBehaviorId,
       };
       const platformMetadata =
         responseData.platformMetadata &&

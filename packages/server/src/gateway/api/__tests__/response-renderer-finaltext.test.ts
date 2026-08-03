@@ -72,6 +72,16 @@ describe("ApiResponseRenderer.handleCompletion finalText repair", () => {
     const complete = broadcasts.find((b) => b.event === "complete");
     expect(complete?.data.finalText).toBeUndefined();
   });
+
+  test("retries durable run resolution before broadcasting completion", async () => {
+    const { renderer, broadcasts } = makeRenderer();
+    resolveRunsMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      renderer.handleCompletion(basePayload({ finalText: "done" }), "session-key")
+    ).rejects.toThrow("database unavailable");
+    expect(broadcasts).toEqual([]);
+  });
 });
 
 describe("ApiResponseRenderer.handleCompletion suggestion embed", () => {

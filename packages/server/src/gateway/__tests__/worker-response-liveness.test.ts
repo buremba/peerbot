@@ -90,6 +90,7 @@ function mintToken(opts?: {
   omitOrganizationId?: boolean;
   omitConnectionId?: boolean;
   omitResponseThreadId?: boolean;
+  runId?: number;
 }): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
@@ -102,7 +103,7 @@ function mintToken(opts?: {
     ...(opts?.omitResponseThreadId
       ? {}
       : { responseThreadId: "slack:chan-1:conv-1" }),
-    runId: 1,
+    runId: opts?.runId ?? 1,
     messageId: "m1",
   });
 }
@@ -128,6 +129,7 @@ async function postWorkerResponse(
     omitTokenOrganizationId?: boolean;
     omitTokenConnectionId?: boolean;
     omitTokenResponseThreadId?: boolean;
+    tokenRunId?: number;
   }
 ): Promise<Response> {
   const gateway = makeGateway();
@@ -140,6 +142,7 @@ async function postWorkerResponse(
           omitOrganizationId: opts?.omitTokenOrganizationId,
           omitConnectionId: opts?.omitTokenConnectionId,
           omitResponseThreadId: opts?.omitTokenResponseThreadId,
+          runId: opts?.tokenRunId,
         })}`,
         host: "gateway.example.com",
         "content-type": "application/json",
@@ -282,6 +285,69 @@ describe("POST /worker/response — authoritative tenant", () => {
     });
   });
 
+  test("binds reply Behavior routing to the signed turn row, not worker metadata", async () => {
+    await armLiveTurn("m1");
+    const trustedRunId = Number(
+      await queue.send(`thread_message_${DEPLOYMENT}`, {
+        userId: "user-1",
+        conversationId: "conv-1",
+        messageId: "m1",
+        channelId: "chan-1",
+        teamId: "team-1",
+        agentId: "agent-1",
+        organizationId: "org-1",
+        platform: "slack",
+        platformMetadata: { behaviorId: 41 },
+      })
+    );
+
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        conversationId: "conv-spoofed",
+        error: "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        platformMetadata: { behaviorId: 99 },
+      },
+      { tokenRunId: trustedRunId }
+    );
+    expect(res.status).toBe(200);
+
+    const { input } = await latestThreadResponse();
+    expect(input.platformMetadata?.behaviorId).toBe(41);
+  });
+
+  test("drops reply Behavior routing when the signed turn row has no Behavior", async () => {
+    await armLiveTurn("m1");
+    const trustedRunId = Number(
+      await queue.send(`thread_message_${DEPLOYMENT}`, {
+        userId: "user-1",
+        conversationId: "conv-1",
+        messageId: "m1",
+        channelId: "chan-1",
+        teamId: "team-1",
+        agentId: "agent-1",
+        organizationId: "org-1",
+        platform: "slack",
+        platformMetadata: {},
+      })
+    );
+
+    const res = await postWorkerResponse(
+      {
+        messageId: "m1",
+        error: "429 Limit Exhausted. Your limit will reset at 2026-08-04 06:00:00",
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        platformMetadata: { behaviorId: 99 },
+      },
+      { tokenRunId: trustedRunId }
+    );
+    expect(res.status).toBe(200);
+
+    const { input } = await latestThreadResponse();
+    expect(input.platformMetadata?.behaviorId).toBeUndefined();
+  });
+
   test("an orgless worker token cannot inject a body organization id", async () => {
     const res = await postWorkerResponse(
       {
@@ -312,6 +378,7 @@ describe("POST /worker/response — authoritative tenant", () => {
           chatId: "C-SPOOFED",
           responseThreadId: "thread-spoofed",
           senderId: "sender-spoofed",
+          behaviorId: 99,
         },
         customEvent: {
           name: "chat-interaction",

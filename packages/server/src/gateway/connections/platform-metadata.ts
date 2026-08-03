@@ -54,8 +54,9 @@ export interface PlatformMetadata {
   /** Outbound: client-side message id correlation. */
   clientMessageId?: string;
   /**
-   * Inbound Behavior id for reply-to-source delivery. Treat it as untrusted
-   * until the response bridge scopes it to the authenticated organization and agent.
+   * Per-turn Behavior id for reply-to-source delivery. Worker responses must
+   * restore it from the durable row named by the signed per-run token, never
+   * from the response body; the response bridge also verifies ownership.
    */
   behaviorId?: number;
 }

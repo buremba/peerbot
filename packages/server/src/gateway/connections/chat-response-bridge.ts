@@ -176,8 +176,8 @@ export class ChatResponseBridge implements ResponseRenderer {
    * hits a known provider quota boundary. These turns intentionally have no
    * Behavior run row, so the API run terminalizer cannot move their cursor.
    *
-   * The worker-carried Behavior id is never trusted by itself: the authenticated
-   * gateway-stamped organization and agent must own it. Database errors propagate
+   * The gateway-restored Behavior id is still scoped to the authenticated
+   * organization and agent that own it. Database errors propagate
    * so the durable thread-response job retries instead of delivering an error
    * while leaving the Behavior immediately due.
    */

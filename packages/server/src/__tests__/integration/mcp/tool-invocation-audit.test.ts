@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ContentItem } from '@lobu/connector-sdk';
 import { REDACTED_SENTINEL } from '@lobu/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SCOPE_CHECK_NOT_APPLICABLE } from '../../../auth/tool-access';
@@ -6,6 +7,7 @@ import { recordToolInvocationAudit } from '../../../tools/audit';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { type AuthContext, executeTool } from '../../../tools/execute';
+import { hydrateToolInvocationRequests } from '../../../tools/get_content/render';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -190,6 +192,63 @@ describe('tool invocation audit coverage', () => {
       limit: 1,
       org_slug: orgSlug,
     });
+  });
+
+  it('does not inline exact requests into audit list results', async () => {
+    const row = await latestAuditRow(orgId, 'query_sql');
+    expect(row).not.toBeNull();
+    // Guard the guard: the stored row must actually carry a request, or the
+    // absence assertions below would pass on a row that never had one.
+    expect(row!.payload_data).toHaveProperty('request');
+
+    const result = (await executeTool(
+      'read_knowledge',
+      { semantic_type: 'audit', sort_by: 'date', sort_order: 'desc', limit: 100 },
+      {} as Env,
+      authCtxFor('session')
+    )) as {
+      content: Array<{ id: string | number; payload_data: Record<string, unknown> }>;
+    };
+    const listed = result.content.find((item) => String(item.id) === String(row!.id));
+    expect(listed).toBeDefined();
+    expect(listed!.payload_data).not.toHaveProperty('request');
+    expect(listed!.payload_data).not.toHaveProperty('request_status');
+    expect(listed!.payload_data).not.toHaveProperty('request_bytes');
+  });
+
+  it('restores every copy when an exact read contains duplicate event ids', async () => {
+    const row = await latestAuditRow(orgId, 'query_sql');
+    expect(row).not.toBeNull();
+    const firstPayload = structuredClone(row!.payload_data);
+    const secondPayload = structuredClone(row!.payload_data);
+    const items = [
+      {
+        id: Number(row!.id),
+        semantic_type: 'audit',
+        origin_type: 'tool_invocation',
+        payload_data: firstPayload,
+      },
+      {
+        id: Number(row!.id),
+        semantic_type: 'audit',
+        origin_type: 'tool_invocation',
+        payload_data: secondPayload,
+      },
+    ];
+
+    await hydrateToolInvocationRequests({
+      sql: getDb(),
+      // Only the four discriminating fields above are read; the rest of
+      // ContentItem is irrelevant to the strip/restore index.
+      items: items as unknown as ContentItem[],
+      organizationId: orgId,
+      userId: ownerId,
+      memberRole: 'owner',
+      restoreRequests: true,
+    });
+
+    expect(firstPayload).toHaveProperty('request');
+    expect(secondPayload).toHaveProperty('request');
   });
 
   it('strips `request` from audit rows ONLY, leaving other events untouched', async () => {

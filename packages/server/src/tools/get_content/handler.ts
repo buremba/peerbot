@@ -401,7 +401,12 @@ async function getContentImpl(
       }
     }
 
-    if (args.content_ids && args.content_ids.length > 0) {
+    // One flag, two consumers: it picks the fetch strategy here and gates
+    // verbatim-request hydration below. Kept as a single binding so the read
+    // bound can never drift from the branch it is supposed to describe.
+    const isExactIdRead = Boolean(args.content_ids?.length);
+
+    if (isExactIdRead) {
       ({ rawContent, total, chainTotal, pageInfo } = await fetchByContentIds({
         args,
         sql,
@@ -600,12 +605,18 @@ async function getContentImpl(
       baseUrl,
       excerptsMap,
     });
+    // Verbatim requests are served ONLY on an explicit `content_ids` read. A
+    // list or search page is an ambient read — inlining every retained request
+    // there would spray each caller's exact SQL/script across pages nobody
+    // asked for it on, and would grow with the page size rather than with the
+    // caller's intent.
     await hydrateToolInvocationRequests({
       sql,
       items: contentItems,
       organizationId: ctx.organizationId,
       userId: ctx.userId,
       memberRole: ctx.memberRole,
+      restoreRequests: isExactIdRead,
     });
 
     // Stamp a LIVE pending-proposal count onto every change_set card. The

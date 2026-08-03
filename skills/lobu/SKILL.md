@@ -1,11 +1,11 @@
 ---
 name: lobu
-description: Work with an existing Lobu project (run, validate, evaluate, connect) and with Lobu memory from your coding agent. Covers MCP client setup, knowledge search/save, Behaviors, and browser-authenticated connectors. To scaffold a NEW project run "npx @lobu/cli@latest init"; the AGENTS.md it generates is the config-API guide.
+description: Operate existing Lobu projects and memory: validate configs, authenticate, search or save knowledge, connect feeds, execute operations, and test Behaviors.
 ---
 
 # Lobu
 
-Use this skill when working with an existing Lobu project — running, validating, evaluating, or connecting one — or with Lobu memory from a coding agent: MCP client setup, knowledge search/save workflows, Behaviors, and browser-authenticated connectors.
+Use this skill when running, validating, evaluating, or connecting an existing Lobu project, or when operating Lobu memory from a coding agent.
 
 To scaffold a NEW project, run `npx @lobu/cli@latest init`. The `AGENTS.md` it writes into the project is the source of truth for the config API (the `define*` helpers, connectors, auth, Behaviors, memory) — this skill does not duplicate it. For an existing project, jump to "Core Model" + the relevant reference section below.
 
@@ -24,7 +24,8 @@ To scaffold a NEW project, run `npx @lobu/cli@latest init`. The `AGENTS.md` it w
 2. Read the active agent files under `agents/<id>/`.
 3. Check local skills under `skills/` and `agents/<id>/skills/`.
 4. Use `lobu validate` after config changes.
-5. When prompt or behavior changes, run evals via promptfoo (see `examples/personal-finance/evals/promptfooconfig.yaml`). The in-house `lobu eval` command has been removed.
+5. Discover the live SDK and connector surface with `search_sdk`; never guess a method, connector key, feed key, connection id, or operation key.
+6. When prompt or Behavior changes, run evals via promptfoo (see `examples/personal-finance/evals/promptfooconfig.yaml`). The in-house `lobu eval` command has been removed.
 
 ## Common Commands
 
@@ -128,35 +129,44 @@ lobu memory browser-auth --connector <key> --auth-profile-slug <slug> --check
 
 Use `--dedicated-profile` only when you want a non-default dedicated Chrome profile directory; use `--remote-debug-port` to customize the CDP port (default `9222`).
 
-## Tool Discipline
+## Agent-Facing Tool Surface
 
-- Search before create to avoid duplicate entities.
-- Never fabricate Lobu memory links. If a tool returns a view URL, use that URL.
-- Use canonical MCP tool names only.
-- Prefer read-only operations before mutations when validating connectivity.
-- `events` is append-only: never delete rows directly; use tombstone/supersede flows.
+The normal MCP surface is intentionally small. Flat administrative tools are not advertised to agents; compose through these tools instead:
 
-## Advanced Data Integration & Ingestion Patterns
+- `search_memory` and `save_memory` for direct knowledge recall and persistence.
+- `search_sdk` to discover current ClientSDK methods, signatures, connector feed keys, operations, access requirements, and examples. Pass `mode: "read"` when you only need methods safe for `query_sdk`.
+- `query_sdk` for read-only TypeScript and `query_sql` for governed, paginated SQL reads.
+- `run_sdk` for mutations and external operations. Use `lobu memory exec` from the CLI for the same ClientSDK scripting workflow.
 
-### 1. Connectors, Feeds & Federation
-Connectors are the primary way to integrate third-party services.
-- **Connections (`manage_connections`)**: Instantiate an installed connector. They can require user OAuth (`connect_url`), API keys, or browser-auth.
-- **Federation vs. Sync (`manage_feeds`)**: Lobu supports two data integration models via Feeds:
-  - **Virtual Feeds (Federation)**: Data is queried live from the third-party service at read-time and is *not* stored in Lobu's database. Use `query_sdk` to read virtual feeds directly (e.g., `client.feeds.readMany(...)`).
-  - **Synced Feeds (Persistence)**: Data is periodically pulled and written into Lobu's memory graph as true entities, enabling global search and fast relational queries.
+Search before create to avoid duplicates. Prefer a read or dry run before mutations, never fabricate returned URLs or identifiers, and never delete from `events`; supersede or tombstone instead.
 
-### 2. Bulk Ingestion (`run_sdk` vs `seed`)
-- **`lobu memory seed`**: Parses `./data/**/*.yaml` against `lobu.config.ts`. Note: It executes sequentially (one HTTP POST per record). Excellent for initial static configs, but very slow for massive data backfills.
-- **`run_sdk` Bulk Inserts**: For massive backfills (thousands of rows) from local files, bypass sequential HTTP latency by sending chunked arrays (e.g., 100 rows) via `lobu call run_sdk`. The v8 isolate executes them in parallel directly next to the DB:
-  ```ts
-  // Example run_sdk bulk-insert payload:
-  export default async (ctx, client) => {
-    const records = [{ type: "person", ... }, /* ... 100 items ... */ ];
-    return await Promise.allSettled(records.map(r => client.entities.create(r)));
-  }
-  ```
+## Connectors, Feeds, and Operations
 
-### 3. Advanced SDK Patterns
-- **`search_sdk`**: Always use this first to discover available SDK methods (e.g., `lobu call search_sdk --arg query=entities`).
-- **`query_sdk`**: Used for read-only sandboxed TS scripts.
-- **`run_sdk`**: Used for mutating scripts. Set `dry_run: true` to test logic before committing writes.
+Connectors are the primary integration path for third-party services. Use this lifecycle:
+
+1. Call `search_sdk` with the service name. It returns installed and installable connectors, declared feed keys, SDK methods, and readiness details.
+2. Use `query_sdk` to inspect `client.catalog.listInstalled({ kinds: ["connectors"] })`, `client.catalog.listCatalog({ kinds: ["connectors"] })`, and `client.connections.list()` when you need a complete inventory.
+3. In `run_sdk`, call `client.connections.connect({ connector_key })`. An `active` or `pending_auth` result carries a `connection_id`. A `setup_required` result is a continuation: follow its `next_action`, `resume_call`, or `completion_check` exactly and do not create a feed until a `connection_id` is present.
+4. Create the feed with `client.feeds.create({ connection_id, feed_key, config })`. Connecting alone collects nothing.
+5. Trigger and verify it with `client.feeds.trigger({ feed_id, dry_run: true })`, then inspect `client.feeds.get({ feed_id })`. A dry run prevents Lobu writes but cannot undo upstream side effects caused by the connector.
+
+Virtual feeds query the provider live and can be read with `client.feeds.readMany(...)`; collected feeds persist events for search and relational queries.
+
+Discover executable connector actions with `client.operations.listAvailable({ query, include_disconnected: true })`. Use the returned connection and operation target with `client.operations.execute({ connection_id, operation_key, input })`. If readiness is disconnected, follow the returned next action instead of guessing a connection. Approval-gated execution returns `pending_approval`; surface that state rather than treating it as failure.
+
+## Data Ingestion
+
+- Use `lobu memory seed` for small declarative YAML datasets under `./data`; it processes records sequentially and is not a bulk-backfill path.
+- Use `client.knowledge.save` for schema-less semantic history such as messages, notes, observations, and content. Pass `supersedes_event_id` when replacing an existing fact.
+- Use `client.entities.create` / `client.entities.update` only for strict structured records that match declared entity schemas.
+- For large backfills, send bounded chunks through `run_sdk` / `lobu memory exec` and use `Promise.allSettled` so conflicts and partial failures remain visible.
+
+```ts
+export default async (_ctx, client) => {
+  const records = [
+    { content: "...", semantic_type: "note" },
+    { content: "...", semantic_type: "observation" },
+  ];
+  return Promise.allSettled(records.map((record) => client.knowledge.save(record)));
+};
+```

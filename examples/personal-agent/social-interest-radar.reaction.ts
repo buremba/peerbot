@@ -1,10 +1,10 @@
 /**
- * Notification-only delivery for the Social Interest Radar Behavior.
+ * Delivery for the Social Interest Radar Behavior.
  *
- * The declared `signals` output has already persisted and deduplicated the
- * threaded observation events. Querying this run's persisted rows means a
- * later run that re-ranks an old source does not notify twice, while a retry of
- * the original run can safely retry the idempotent notification.
+ * Declared outputs have already persisted and deduplicated the threaded signal
+ * and draft events. The reaction notifies from this run's signal rows and
+ * stages its single best reply in an explicitly named interactive browser. A
+ * later run that re-ranks the same source neither notifies nor opens a tab.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -19,6 +19,7 @@ export const input = {
         properties: {
           title: { type: "string" },
           content: { type: "string", minLength: 1 },
+          source_url: { type: "string", minLength: 1 },
           parent_event_id: { type: "integer", minimum: 1 },
           idempotency_key: { type: "string", minLength: 1 },
           metadata: {
@@ -32,15 +33,76 @@ export const input = {
                 enum: ["low", "normal", "high"],
               },
               source_event_id: { type: "integer", minimum: 1 },
+              source_origin_id: { type: "string", minLength: 1 },
+              source_connection_id: { type: "integer", minimum: 1 },
             },
-            required: ["platform", "author", "why", "priority"],
+            required: [
+              "platform",
+              "author",
+              "why",
+              "priority",
+              "source_origin_id",
+              "source_event_id",
+              "source_connection_id",
+            ],
           },
         },
-        required: ["content", "parent_event_id", "idempotency_key", "metadata"],
+        required: [
+          "content",
+          "source_url",
+          "parent_event_id",
+          "idempotency_key",
+          "metadata",
+        ],
+      },
+    },
+    drafts: {
+      type: "array",
+      maxItems: 1,
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          content: { type: "string", minLength: 1 },
+          source_url: { type: "string", minLength: 1 },
+          parent_event_id: { type: "integer", minimum: 1 },
+          idempotency_key: { type: "string", minLength: 1 },
+          metadata: {
+            type: "object",
+            properties: {
+              platform: { type: "string", enum: ["x", "linkedin"] },
+              author: { type: "string" },
+              why: { type: "string" },
+              priority: {
+                type: "string",
+                enum: ["low", "normal", "high"],
+              },
+              source_origin_id: { type: "string", minLength: 1 },
+              source_event_id: { type: "integer", minimum: 1 },
+              source_connection_id: { type: "integer", minimum: 1 },
+            },
+            required: [
+              "platform",
+              "author",
+              "why",
+              "priority",
+              "source_origin_id",
+              "source_event_id",
+              "source_connection_id",
+            ],
+          },
+        },
+        required: [
+          "content",
+          "source_url",
+          "parent_event_id",
+          "idempotency_key",
+          "metadata",
+        ],
       },
     },
   },
-  required: ["signals"],
+  required: ["signals", "drafts"],
 };
 
 interface PersistedSignal {
@@ -51,6 +113,21 @@ interface PersistedSignal {
     why?: string;
     priority?: string;
     source_event_id?: number;
+  };
+}
+
+interface PersistedDraft {
+  id: number;
+  payload_text: string;
+  source_url: string;
+  metadata: {
+    platform?: string;
+    author?: string;
+    why?: string;
+    priority?: string;
+    source_origin_id?: string;
+    source_event_id?: number;
+    source_connection_id?: number;
   };
 }
 
@@ -69,14 +146,22 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const drafts = (ctx.extracted_data as { signals?: unknown[] }).signals ?? [];
-  if (drafts.length === 0) return;
+  const extracted = ctx.extracted_data as {
+    signals?: unknown[];
+    drafts?: unknown[];
+  };
+  if (
+    (extracted.signals?.length ?? 0) === 0 &&
+    (extracted.drafts?.length ?? 0) === 0
+  ) {
+    return;
+  }
 
   const runPredicate =
     ctx.window.run_id != null
       ? `run_id = ${Number(ctx.window.run_id)}`
       : `metadata->>'window_id' = '${Number(ctx.window.id)}'`;
-  const delivered = (await client.query(
+  const deliveredSignals = (await client.query(
     `SELECT id, metadata FROM events
      WHERE ${runPredicate}
        AND semantic_type = 'observation'
@@ -84,31 +169,126 @@ export default async (
        AND metadata->>'behavior_id' = '${Number(ctx.behavior.id)}'
      ORDER BY id`
   )) as PersistedSignal[];
-  if (delivered.length === 0) return;
+  const deliveredDrafts = (await client.query(
+    `SELECT id, payload_text, source_url, metadata FROM events
+     WHERE ${runPredicate}
+       AND semantic_type = 'draft_reply'
+       AND metadata->>'behavior_output' = 'drafts'
+       AND metadata->>'behavior_id' = '${Number(ctx.behavior.id)}'
+     ORDER BY id`
+  )) as PersistedDraft[];
 
-  const contentIds = delivered.flatMap((signal) => {
+  const contentIds = deliveredSignals.flatMap((signal) => {
     const sourceId = Number(signal.metadata.source_event_id);
     return Number.isInteger(sourceId) && sourceId > 0
       ? [sourceId, signal.id]
       : [signal.id];
   });
+  for (const draft of deliveredDrafts) contentIds.push(draft.id);
   const body = notificationBody(
-    delivered.map(
+    deliveredSignals.map(
       ({ metadata }) =>
         `[${metadata.priority ?? "normal"}] ${metadata.author ?? "Someone"} (${metadata.platform ?? "social"}) — ${metadata.why ?? "New signal"}`
     )
   );
   const producerKey = producerRunKey(ctx);
 
-  await client.notifications.send({
-    title: "Social interest radar",
-    body,
-    recipients: "admins",
-    resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${contentIds.join(",")}`,
-    idempotency_key: `social-radar:notification:${producerKey}`,
-    behavior_source: {
-      behavior_id: ctx.behavior.id,
-      window_id: ctx.window.id,
-    },
-  });
+  if (deliveredSignals.length > 0) {
+    await client.notifications.send({
+      title: "Social interest radar",
+      body,
+      recipients: "admins",
+      resource_url: `/${encodeURIComponent(ctx.organization_slug)}/memory?content_ids=${[
+        ...new Set(contentIds),
+      ].join(",")}`,
+      idempotency_key: `social-radar:notification:${producerKey}`,
+      behavior_source: {
+        behavior_id: ctx.behavior.id,
+        window_id: ctx.window.id,
+      },
+    });
+  }
+
+  if (deliveredDrafts.length === 0) return;
+
+  // This is intentionally a stable, human-selected pairing slug. Never pick an
+  // arbitrary online Chrome connection: that can stage a draft in the wrong
+  // physical browser or signed-in account.
+  const browsers = (await client.query(
+    `SELECT c.id
+     FROM connections c
+     JOIN device_workers d
+       ON d.id = c.device_worker_id
+      AND d.organization_id = c.organization_id
+      AND d.platform = 'chrome-extension'
+      AND d.last_seen_at > now() - interval '20 minutes'
+     WHERE c.connector_key = 'chrome'
+       AND c.slug = 'chrome-macbook'
+       AND c.status = 'active'
+       AND c.deleted_at IS NULL
+     LIMIT 1`
+  )) as Array<{ id: number }>;
+  const browserConnectionId = Number(browsers[0]?.id);
+  if (!Number.isSafeInteger(browserConnectionId) || browserConnectionId <= 0) {
+    client.log(
+      "Interactive browser 'chrome-macbook' is not online; draft event was saved but no browser was guessed."
+    );
+    return;
+  }
+
+  const behaviorSource = {
+    behavior_id: ctx.behavior.id,
+    window_id: ctx.window.id,
+  };
+  for (const draft of deliveredDrafts) {
+    const connectionId = Number(draft.metadata.source_connection_id);
+    const body = draft.payload_text?.trim();
+    const sourceUrl = draft.source_url?.trim();
+    const platform = draft.metadata.platform;
+    if (
+      !Number.isSafeInteger(connectionId) ||
+      connectionId <= 0 ||
+      !body ||
+      !sourceUrl ||
+      (platform !== "x" && platform !== "linkedin")
+    ) {
+      client.log(
+        "Saved social draft is missing a valid source connection, URL, or body.",
+        {
+          draft_event_id: draft.id,
+        }
+      );
+      continue;
+    }
+
+    const result = await client.operations.execute({
+      connection_id: connectionId,
+      operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
+      input:
+        platform === "x"
+          ? {
+              tweet_url: sourceUrl,
+              body,
+              reason: draft.metadata.why,
+              browser_connection_id: browserConnectionId,
+            }
+          : {
+              post_url: sourceUrl,
+              body,
+              reason: draft.metadata.why,
+              browser_connection_id: browserConnectionId,
+            },
+      behavior_source: behaviorSource,
+    });
+    if (result.status !== "completed") {
+      client.log(
+        "Could not stage the saved social draft in the interactive browser.",
+        {
+          draft_event_id: draft.id,
+          status: result.status,
+          error: result.error_message,
+        }
+      );
+    }
+  }
 };

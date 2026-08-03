@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { loadMigrationUpSection } from '../../../db/migration-loader';
+import { computeStableKey } from '../../../utils/stable-keys';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { createTestAgent } from '../../setup/test-fixtures';
@@ -32,6 +34,7 @@ describe('Behavior outputs migration', () => {
 
   it('backfills JSONPath keying and renames stable identities without exposing two APIs', async () => {
     const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Migration Org' });
+    await ensureMemberEntityType(workspace.org.id);
     const ownerUserId = workspace.users.owner.id;
     const agent = await createTestAgent({
       organizationId: workspace.org.id,
@@ -67,6 +70,7 @@ describe('Behavior outputs migration', () => {
           outputs: unknown;
           identities: string[];
           legacyColumnPresent: boolean;
+          draftReplyRegistered: boolean;
         }
       | undefined;
 
@@ -104,6 +108,13 @@ describe('Behavior outputs migration', () => {
               ${`${watcherId}::items::issue-2`}, 'watcher'
             )
         `;
+        await tx`
+          UPDATE entity_types
+          SET event_kinds = event_kinds - 'draft_reply'
+          WHERE organization_id = ${workspace.org.id}
+            AND slug = '$member'
+            AND event_kinds IS NOT NULL
+        `;
 
         await tx.unsafe(up);
         const [version] = await tx<{ outputs: unknown }>`
@@ -126,10 +137,17 @@ describe('Behavior outputs migration', () => {
               AND column_name = 'keying_config'
           ) AS present
         `;
+        const [memberType] = await tx<{ registered: boolean }>`
+          SELECT COALESCE(event_kinds ? 'draft_reply', false) AS registered
+          FROM entity_types
+          WHERE organization_id = ${workspace.org.id} AND slug = '$member'
+          LIMIT 1
+        `;
         captured = {
           outputs: version.outputs,
-          identities: identities.map((row) => row.identifier),
+          identities: identities.map((row) => row.identifier).sort(),
           legacyColumnPresent: column.present,
+          draftReplyRegistered: memberType.registered,
         };
         throw new Rollback();
       });
@@ -146,10 +164,11 @@ describe('Behavior outputs migration', () => {
         },
       },
       identities: [
-        `${watcherId}::items::issue-1`,
-        `${watcherId}::items::items::issue-2`,
-      ],
+        `${watcherId}::items::${computeStableKey({ external_id: 'ISSUE-1' }, ['external_id'])}`,
+        `${watcherId}::items::${computeStableKey({ external_id: 'items::ISSUE-2' }, ['external_id'])}`,
+      ].sort(),
       legacyColumnPresent: false,
+      draftReplyRegistered: true,
     });
   });
 
@@ -179,7 +198,10 @@ describe('Behavior outputs migration', () => {
       outputs: { items: { entity: 'fresh-issue', key: ['external_id'] } },
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
-    const expected = `${watcherId}::items::issue-3`;
+    const expected = `${watcherId}::items::${computeStableKey(
+      { external_id: 'ISSUE-3' },
+      ['external_id']
+    )}`;
     const sql = getDb();
     const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
     let captured: string | undefined;
@@ -271,5 +293,46 @@ describe('Behavior outputs migration', () => {
         await tx.unsafe(up);
       })
     ).rejects.toThrow(/cannot map a live watcher_key/);
+  });
+
+  it('rejects malformed dormant key configuration before dropping the retired column', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Invalid Key Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-invalid-key-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      slug: 'invalid-key-output-behavior',
+      prompt: 'Find issues later.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+
+    await expect(
+      sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_type: 'issue',
+                entity_path: '$.items[*]',
+                key_fields: [],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx.unsafe(up);
+      })
+    ).rejects.toThrow(/invalid entity\/key configuration/);
   });
 });

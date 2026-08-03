@@ -37,7 +37,10 @@ describe('Behavior event outputs', () => {
       slug: 'event-output-behavior',
       prompt: 'Return notable observations as standard event drafts.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      outputs: { observations: { event: 'observation' } },
+      outputs: {
+        observations: { event: 'observation' },
+        drafts: { event: 'draft_reply' },
+      },
       agent_id: agent.agentId,
     })) as { behavior_id: string };
     const watcherId = Number(created.behavior_id);
@@ -82,6 +85,19 @@ describe('Behavior event outputs', () => {
           metadata: { rank: 2 },
         },
       ],
+      drafts: [
+        {
+          title: 'Draft reply to source',
+          content: 'A reply the human can review before publishing.',
+          parent_event_id: source.id,
+          idempotency_key: `draft:${source.origin_id}`,
+          metadata: {
+            platform: 'linkedin',
+            source_origin_id: source.origin_id,
+            source_event_id: source.id,
+          },
+        },
+      ],
     };
 
     const complete = () =>
@@ -97,21 +113,30 @@ describe('Behavior event outputs', () => {
     const rows = await sql<{
       id: number;
       run_id: number;
+      semantic_type: string;
       origin_parent_id: string | null;
       metadata: Record<string, unknown>;
     }>`
-      SELECT id, run_id, origin_parent_id, metadata
+      SELECT id, run_id, semantic_type, origin_parent_id, metadata
       FROM events
       WHERE organization_id = ${workspace.org.id}
-        AND semantic_type = 'observation'
-        AND metadata->>'behavior_output' = 'observations'
+        AND metadata->>'behavior_output' IN ('observations', 'drafts')
       ORDER BY id
     `;
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.every((row) => Number(row.run_id) === queued.runId)).toBe(true);
-    expect(rows[0].origin_parent_id).toBe(source.origin_id);
-    expect(rows[1].origin_parent_id).toBeNull();
-    expect(rows.map((row) => Number(row.metadata.rank))).toEqual([1, 2]);
+    const observations = rows.filter(
+      (row) => row.metadata.behavior_output === 'observations'
+    );
+    const draft = rows.find((row) => row.metadata.behavior_output === 'drafts');
+    expect(observations).toHaveLength(2);
+    expect(observations[0].origin_parent_id).toBe(source.origin_id);
+    expect(observations[1].origin_parent_id).toBeNull();
+    expect(draft).toMatchObject({
+      semantic_type: 'draft_reply',
+      origin_parent_id: source.origin_id,
+    });
+    expect(observations.map((row) => Number(row.metadata.rank))).toEqual([1, 2]);
 
     // A source-derived idempotency key is intentionally stronger than a run
     // retry key: a later run that rediscovers the same post reuses the original
@@ -141,6 +166,28 @@ describe('Behavior event outputs', () => {
       })
     );
     expect(reused).toHaveLength(1);
-    expect(reused[0].id).toBe(rows[0].id);
+    expect(reused[0].id).toBe(observations[0].id);
+
+    await expect(
+      sql.begin((tx) =>
+        persistBehaviorEventOutput({
+          tx: tx as unknown as DbClient,
+          rows: [
+            { content: 'First draft', idempotency_key: 'duplicate-in-one-output' },
+            { content: 'Different draft', idempotency_key: 'duplicate-in-one-output' },
+          ],
+          outputName: 'drafts',
+          output: { event: 'draft_reply' },
+          watcherId,
+          organizationId: workspace.org.id,
+          windowId: firstCompletion.window_id,
+          runId: laterRun.runId,
+          boundEntityIds: [parent.id],
+          validContentIds: new Set([source.id]),
+          occurredAt: pending.windowEnd.toISOString(),
+          createdBy: ownerUserId,
+        })
+      )
+    ).rejects.toThrow(/duplicate.*idempotency/i);
   });
 });

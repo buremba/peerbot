@@ -381,7 +381,12 @@ export interface BehaviorNotification {
 export interface BehaviorEntityOutput {
   /** Stored entity type (a config handle or slug). */
   entity: EntityType | string;
-  /** Stable identity fields, scoped to this Behavior output. */
+  /**
+   * One to four fields forming one exact composite identity tuple, scoped to
+   * this Behavior and output name. Every row must contain every field as a
+   * non-blank string (max 256 UTF-8 bytes), safe integer, or boolean. Field
+   * order is significant; use durable source IDs rather than editable labels.
+   */
   key: string[];
   /** Optional fields used to build a readable entity name. Defaults to key. */
   name?: string[];

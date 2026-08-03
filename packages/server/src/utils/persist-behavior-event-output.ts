@@ -54,6 +54,18 @@ export async function persistBehaviorEventOutput(
   params: PersistBehaviorEventOutputParams
 ): Promise<InsertedEvent[]> {
   if (!Array.isArray(params.rows) || params.rows.length === 0) return [];
+  const seenIdempotencyKeys = new Set<string>();
+  for (let index = 0; index < params.rows.length; index++) {
+    const draft = params.rows[index] as EventDraft;
+    if (typeof draft?.idempotency_key !== 'string') continue;
+    if (seenIdempotencyKeys.has(draft.idempotency_key)) {
+      throw new ToolUserError(
+        `outputs.${params.outputName} contains a duplicate idempotency_key at item ${index}.`,
+        422
+      );
+    }
+    seenIdempotencyKeys.add(draft.idempotency_key);
+  }
   const inserted: InsertedEvent[] = [];
   const producer = params.runId != null ? `run:${params.runId}` : `window:${params.windowId}`;
 

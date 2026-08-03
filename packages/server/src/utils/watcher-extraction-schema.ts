@@ -16,8 +16,45 @@
 
 import type { DbClient } from '../db/client';
 import type { Outputs } from '../types/watchers';
+import {
+  MAX_STABLE_KEY_COMPONENT_BYTES,
+} from './stable-keys';
 
 export const MAX_BEHAVIOR_OUTPUT_ROWS = 500;
+
+const STABLE_KEY_VALUE_SCHEMA = {
+  anyOf: [
+    {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_STABLE_KEY_COMPONENT_BYTES,
+    },
+    {
+      type: 'integer',
+      minimum: Number.MIN_SAFE_INTEGER,
+      maximum: Number.MAX_SAFE_INTEGER,
+    },
+    { type: 'boolean' },
+  ],
+};
+
+function entityOutputRowSchema(
+  metadataSchema: Record<string, unknown> | null,
+  keyFields: string[]
+): Record<string, unknown> {
+  return {
+    allOf: [
+      metadataSchema ?? { type: 'object' },
+      {
+        type: 'object',
+        properties: Object.fromEntries(
+          keyFields.map((field) => [field, STABLE_KEY_VALUE_SCHEMA])
+        ),
+        required: keyFields,
+      },
+    ],
+  };
+}
 
 /**
  * Resolve an entity type's `metadata_schema` (JSON Schema Draft-7), tenant-first
@@ -142,7 +179,7 @@ export async function deriveWatcherExtractionSchema(
       outputProperties[name] = {
         type: 'array',
         maxItems: MAX_BEHAVIOR_OUTPUT_ROWS,
-        items: metadataSchema ?? { type: 'object' },
+        items: entityOutputRowSchema(metadataSchema, output.key),
       };
     } else {
       outputProperties[name] = {

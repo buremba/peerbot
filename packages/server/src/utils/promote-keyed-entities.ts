@@ -124,17 +124,6 @@ export interface PromoteKeyedEntitiesResult {
 }
 
 /**
- * A stable key is "non-empty" when at least one of its `::`-joined segments
- * carries a slug. `computeStableKeys` emits `"stability::"` / `"::app-crashes"`
- * when one field is null — those are still meaningful and DO promote. Only an
- * all-empty key (`""`, `"::"`, `"::::"`) is skipped.
- */
-function hasNonEmptyKey(stableKey: unknown): stableKey is string {
-  if (typeof stableKey !== 'string') return false;
-  return stableKey.split('::').some((segment) => segment.length > 0);
-}
-
-/**
  * Resolve a live `user(id)` to attribute created entities to. Prefers the
  * caller-supplied `created_by` (the watcher's creator — already a live user);
  * otherwise falls back to an org owner/admin, mirroring entity-link-upsert's
@@ -460,9 +449,11 @@ async function upsertKeyedEntity(params: {
 
 /**
  * Promote every row in one named entity output into a child entity.
- * Skips rows whose stable key is empty. NEVER throws on a
- * single-row problem (e.g. unresolved entity type) — promotion must not break
- * window completion; it logs and returns what it managed to promote.
+ * The extraction schema requires every stable-key component, and
+ * `computeStableKey` preserves exact scalar identity rather than display
+ * normalization. Duplicate exact keys and unexpected persistence errors fail
+ * the completion transaction: declared outputs are an atomic contract, not a
+ * best-effort side channel that may silently lose rows.
  */
 export async function promoteBehaviorEntityOutput(
   params: PromoteKeyedEntitiesParams
@@ -549,17 +540,23 @@ export async function promoteBehaviorEntityOutput(
     );
   }
 
-  // De-dupe within this window: two extracted rows can collapse to the same
-  // stable key. Process each distinct key once.
+  // A declared output is a complete result, so duplicate identities are an
+  // authoring error. Silently keeping the first row would make output depend on
+  // array order and discard potentially different field values.
   const seenKeys = new Set<string>();
-
-  for (const row of rows) {
-    if (!row || typeof row !== 'object') continue;
+  const keyedRows = rows.map((row) => {
     const entityRecord = row as Record<string, unknown>;
     const stableKey = computeStableKey(entityRecord, output.key);
-    if (!hasNonEmptyKey(stableKey)) continue;
-    if (seenKeys.has(stableKey)) continue;
+    if (seenKeys.has(stableKey)) {
+      throw new Error(
+        `Behavior output "${outputName}" contains a duplicate exact key (${stableKey})`
+      );
+    }
     seenKeys.add(stableKey);
+    return { entityRecord, stableKey };
+  });
+
+  for (const { entityRecord, stableKey } of keyedRows) {
 
     const identifier = `${watcherId}::${outputName}::${stableKey}`;
     const name = buildEntityName(entityRecord, output, stableKey);
@@ -672,17 +669,15 @@ export async function promoteBehaviorEntityOutput(
         );
       }
     } catch (err) {
-      // Non-fatal + savepoint-isolated: a single failing row rolls back only its
-      // savepoint, never the window-completion transaction. Re-throwing here
-      // would roll the whole completion back and — because the row is
-      // deterministic — poison-pill the window on every retry. Log and skip; the
-      // row is retried idempotently on the next window run (the identity claim
-      // dedupes). Slug clashes are already recovered inside upsertKeyedEntity, so
-      // reaching here means a genuinely unexpected error for this row.
+      // The savepoint gives us a clean error boundary, but the declared output
+      // remains atomic: an unexpected failure must roll back the completion so
+      // the caller can fix or retry it. Known slug collisions are recovered in
+      // upsertKeyedEntity and policy outcomes are modeled explicitly above.
       logger.error(
         { err, watcherId, windowId, stableKey, organizationId },
-        '[promote-keyed-entities] skipped a keyed row after an unrecoverable error — window completion not blocked'
+        '[promote-keyed-entities] keyed output failed; rolling back window completion'
       );
+      throw err;
     }
   }
 

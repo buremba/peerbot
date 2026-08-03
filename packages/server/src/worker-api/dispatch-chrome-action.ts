@@ -516,8 +516,8 @@ export async function resolveOnlineChromeConnection(
  * it by the scrape pin stages the draft on whichever box runs the cron, so the
  * human never sees it — exactly the bug this key fixes. Only the connector
  * knows an action is interactive, so the connector names the browser; syncs
- * never set it and are unaffected. `x.prepare_reply` is the only action that
- * sets it today (`linkedin.prepare_comment` is interactive too and should).
+ * never set it and are unaffected. `x.prepare_reply` and
+ * `linkedin.prepare_comment` set it for human-visible draft staging.
  *
  * Consumed and stripped here — never forwarded to the extension.
  */

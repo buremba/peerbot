@@ -225,6 +225,11 @@ Declared outputs are persisted whether or not a `reaction` is present, and the
 complete result remains on Canvas. A `reaction` lets the Behavior act (post a
 message, call connectors, or request a governed merge) and can consume those
 persisted drafts. Omit `outputs` for a Canvas-only or reaction-only Behavior.
+For an entity output, `key: ["a", "b"]` is one exact composite identity tuple,
+not two alternative keys. Use one to four durable fields; every row must include
+every field as a non-blank string (at most 256 UTF-8 bytes), safe integer, or
+boolean. Field order, the Behavior, and the output name are part of identity, so
+do not key on editable display labels.
 Event output rows use the standard draft fields: required `content`,
 plus optional `title`, `metadata`, `author`, `source_url`, `occurred_at`,
 `parent_event_id`, `payload_type`, and `idempotency_key`. Use

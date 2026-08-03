@@ -30,7 +30,9 @@ const TOPIC_METADATA_SCHEMA = {
     category: { type: 'string' },
     name: { type: 'string' },
   },
-  required: ['category', 'name'],
+  // `category` is intentionally optional on the entity type. Declaring it as
+  // an output key must still require it in every Behavior-produced row.
+  required: ['name'],
   additionalProperties: true,
 };
 
@@ -154,7 +156,12 @@ describe('complete_window derives its schema from the entity type', () => {
       OUTPUTS
     )) as Record<string, any>;
     expect(derived).not.toBeNull();
-    expect(derived.properties.problems.items.required).toEqual(['category', 'name']);
+    expect(derived.properties.problems.items.allOf).toHaveLength(2);
+    expect(derived.properties.problems.items.allOf[0].required).toEqual(['name']);
+    expect(derived.properties.problems.items.allOf[1].required).toEqual([
+      'category',
+      'name',
+    ]);
   });
 
   it('still requires the named array when an entity type has no field schema', async () => {
@@ -169,7 +176,24 @@ describe('complete_window derives its schema from the entity type', () => {
     expect(derived.properties.records).toEqual({
       type: 'array',
       maxItems: 500,
-      items: { type: 'object' },
+      items: {
+        allOf: [
+          { type: 'object' },
+          {
+            type: 'object',
+            properties: {
+              id: {
+                anyOf: [
+                  { type: 'string', minLength: 1, maxLength: 256 },
+                  { type: 'integer', minimum: -9007199254740991, maximum: 9007199254740991 },
+                  { type: 'boolean' },
+                ],
+              },
+            },
+            required: ['id'],
+          },
+        ],
+      },
     });
   });
 
@@ -233,6 +257,27 @@ describe('complete_window derives its schema from the entity type', () => {
         run_metadata: { watcher_run_id: runId },
       })
     ).rejects.toThrow(/does not match|name/i);
+  });
+
+  it('REJECTS extracted data missing an output key even when the entity type makes it optional', async () => {
+    const ctx = await setupEntityTypedWatcher();
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: ctx.workspace.org.id,
+      content: 'Users report problems.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    await expect(
+      ctx.api.behaviors.completeWindow({
+        behavior_id: String(ctx.watcherId),
+        window_token: token,
+        extracted_data: { problems: [{ name: 'App Crashes' }] },
+        run_metadata: { watcher_run_id: runId },
+      })
+    ).rejects.toThrow(/does not match|category/i);
   });
 
   it('ACCEPTS extracted data that conforms to the entity type schema (no inline schema)', async () => {

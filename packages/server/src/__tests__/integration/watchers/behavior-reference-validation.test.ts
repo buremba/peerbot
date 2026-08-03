@@ -349,6 +349,23 @@ describe("manage_behaviors reference validation", () => {
 		).rejects.toThrow(/Invalid event type 'not_a_registered_kind'/i);
 	});
 
+	it("accepts the built-in draft_reply output type", async () => {
+		const created = (await executeTool(
+			"manage_behaviors",
+			{
+				action: "create",
+				slug: "draft-reply-output",
+				prompt: "Draft a reply without publishing it.",
+				agent_id: agentId,
+				outputs: { drafts: { event: "draft_reply" } },
+			},
+			TEST_ENV,
+			ctx
+		)) as { behavior_id: string };
+
+		expect(Number(created.behavior_id)).toBeGreaterThan(0);
+	});
+
 	it("rejects outputs on event turn execution", async () => {
 		await expect(
 			executeTool(

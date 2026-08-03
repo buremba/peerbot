@@ -786,6 +786,23 @@ function requireExtensionDispatcher(ctx: {
 
 // ── prepare_comment handoff (browser stage, human submits) ───────────
 
+/** Reserved gateway input selecting the physical Chrome for an interactive action. */
+export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
+  "target_browser_connection_id";
+
+function resolveTargetBrowserConnectionId(
+  input: Record<string, unknown>
+): number | null {
+  const raw = input.browser_connection_id;
+  if (raw == null) return null;
+  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) {
+    throw new Error(
+      `prepare_comment: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`
+    );
+  }
+  return raw;
+}
+
 /** Interactive a11y node from chrome `get_accessibility_tree`. */
 type A11yNode = {
   ref_id: number;
@@ -1311,6 +1328,8 @@ export async function prepareLinkedInComment(
     notify?: boolean;
     /** Inject in-page handoff banner (default true). */
     banner?: boolean;
+    /** Chrome connection whose browser should show this interactive draft. */
+    targetBrowserConnectionId?: number | null;
     /**
      * Optional Owletto sidepanel deep-link: when set with threadId, the
      * extension stamps agent+thread on the owned tab so the sidepanel opens
@@ -1361,6 +1380,10 @@ export async function prepareLinkedInComment(
       }
       const input = { ...action_input };
       delete input.allowed_click;
+      if (opts.targetBrowserConnectionId != null) {
+        input[TARGET_BROWSER_CONNECTION_INPUT_KEY] =
+          opts.targetBrowserConnectionId;
+      }
       return dispatcher.dispatch(action_key, input);
     },
   };
@@ -2155,7 +2178,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.6.0",
+    version: "3.7.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2393,6 +2416,11 @@ export default class LinkedInConnector extends ConnectorRuntime<
               description:
                 "Inject a small in-page Lobu handoff banner (default true).",
             },
+            browser_connection_id: {
+              type: "integer",
+              description:
+                "Chrome connection to open the draft in. Set this to the machine you are actually sitting at; no fallback is used when explicitly targeted.",
+            },
             agent_id: {
               type: "string",
               description:
@@ -2563,6 +2591,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
         agentId: agentId || undefined,
         threadId: threadId || undefined,
         messageId: messageId || undefined,
+        targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
       });
       return { success: true, output };
     } catch (error) {

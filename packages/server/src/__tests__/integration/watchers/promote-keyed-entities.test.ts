@@ -27,6 +27,7 @@ import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+import { computeStableKey } from '../../../utils/stable-keys';
 
 const OUTPUTS = {
   problems: { entity: 'topic', key: ['category', 'name'] },
@@ -52,6 +53,11 @@ const KEYED_EXTRACTED_DATA = {
     { category: 'Performance', name: 'Slow Loading' },
   ],
 };
+
+const stableTopicKey = (category: string, name: string) =>
+  computeStableKey({ category, name }, ['category', 'name']);
+const APP_CRASHES_KEY = stableTopicKey('Stability', 'App Crashes');
+const SLOW_LOADING_KEY = stableTopicKey('Performance', 'Slow Loading');
 
 const TEST_ENV: Env = {
   ENVIRONMENT: 'test',
@@ -222,9 +228,15 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       ORDER BY ei.identifier
     `;
     expect(identities.map((r) => String(r.identifier))).toEqual([
-      `${ctx.watcherId}::problems::performance::slow-loading`,
-      `${ctx.watcherId}::problems::stability::app-crashes`,
-    ]);
+      `${ctx.watcherId}::problems::${computeStableKey(
+        { category: 'Performance', name: 'Slow Loading' },
+        ['category', 'name']
+      )}`,
+      `${ctx.watcherId}::problems::${computeStableKey(
+        { category: 'Stability', name: 'App Crashes' },
+        ['category', 'name']
+      )}`,
+    ].sort());
     for (const row of identities) {
       expect(Number(row.parent_id)).toBe(parentEntityId);
     }
@@ -262,7 +274,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(childMeta).toHaveLength(2);
     const stableKeys = childMeta.map((r) => (r.metadata as Record<string, unknown>).stable_key);
-    expect(stableKeys.sort()).toEqual(['performance::slow-loading', 'stability::app-crashes']);
+    expect(stableKeys.sort()).toEqual([APP_CRASHES_KEY, SLOW_LOADING_KEY].sort());
     for (const row of childMeta) {
       const md = row.metadata as Record<string, unknown>;
       expect(Number(md.window_id)).toBe(windowId);
@@ -291,6 +303,34 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     }>;
     expect(csChanges).toHaveLength(2);
     expect(csChanges.every((c) => c.kind === 'created')).toBe(true);
+  });
+
+  it('rejects duplicate exact keys instead of silently dropping an output row', async () => {
+    const ctx = await setupKeyedWatcher();
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    await expect(
+      ctx.api.behaviors.completeWindow({
+        behavior_id: String(ctx.watcherId),
+        window_token: token,
+        run_metadata: { watcher_run_id: runId },
+        extracted_data: {
+          problems: [
+            { category: 'Stability', name: 'App Crashes', severity: 'high' },
+            { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          ],
+        },
+      })
+    ).rejects.toThrow(/duplicate.*key/i);
+
+    const identities = await ctx.sql<{ count: number }>`
+      SELECT COUNT(*)::int AS count
+      FROM entity_identities
+      WHERE organization_id = ${ctx.workspace.org.id}
+        AND namespace = 'watcher_key'
+    `;
+    expect(Number(identities[0].count)).toBe(0);
   });
 
   it('keeps an exact in-window source_event_id and drops ungranted claims', async () => {
@@ -350,17 +390,27 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND ei.namespace = 'watcher_key'
       ORDER BY ei.identifier
     `;
-    const bySlug = Object.fromEntries(
-      rows.map((r) => [String(r.identifier).split('::').pop(), r.source_event_id])
+    const byIdentifier = Object.fromEntries(
+      rows.map((r) => [String(r.identifier), r.source_event_id])
     );
 
     // The verifiable claim survives; unverifiable values are stripped rather
     // than stored as false provenance. Every row still promotes.
-    expect(bySlug['app-crashes']).toBe(String(inWindow.id));
-    expect(bySlug['fractional-reference']).toBeNull();
-    expect(bySlug['slow-loading']).toBeNull();
-    expect(bySlug['string-reference']).toBeNull();
-    expect(Object.keys(bySlug)).toHaveLength(4);
+    expect(byIdentifier[`${ctx.watcherId}::problems::${APP_CRASHES_KEY}`]).toBe(
+      String(inWindow.id)
+    );
+    expect(
+      byIdentifier[
+        `${ctx.watcherId}::problems::${stableTopicKey('Stability', 'Fractional Reference')}`
+      ]
+    ).toBeNull();
+    expect(byIdentifier[`${ctx.watcherId}::problems::${SLOW_LOADING_KEY}`]).toBeNull();
+    expect(
+      byIdentifier[
+        `${ctx.watcherId}::problems::${stableTopicKey('Stability', 'String Reference')}`
+      ]
+    ).toBeNull();
+    expect(Object.keys(byIdentifier)).toHaveLength(4);
   });
 
   it("a create=deny policy on the watcher's OWNING AGENT blocks its promotions", async () => {
@@ -501,7 +551,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       },
     });
 
-    const appCrashesId = `${ctx.watcherId}::problems::stability::app-crashes`;
+    const appCrashesId = `${ctx.watcherId}::problems::${APP_CRASHES_KEY}`;
     const [created] = await sql`
       SELECT e.id, e.metadata, e.field_controls
       FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
@@ -624,7 +674,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::${APP_CRASHES_KEY}`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -705,7 +755,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     // A human owns `severity` on one of the two promoted entities.
-    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::${APP_CRASHES_KEY}`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -735,8 +785,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     expect(res.action).toBe('list_promoted');
     expect(res.entities.length).toBe(2);
-    const appCrashes = res.entities.find((e) => e.stable_key === 'stability::app-crashes');
-    const slowLoading = res.entities.find((e) => e.stable_key === 'performance::slow-loading');
+    const appCrashes = res.entities.find((e) => e.stable_key === APP_CRASHES_KEY);
+    const slowLoading = res.entities.find((e) => e.stable_key === SLOW_LOADING_KEY);
     expect(appCrashes).toBeDefined();
     expect(slowLoading).toBeDefined();
 
@@ -775,7 +825,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         ],
       },
     });
-    const appCrashesId = `${watcherId}::problems::stability::app-crashes`;
+    const appCrashesId = `${watcherId}::problems::${APP_CRASHES_KEY}`;
     const [created] = await sql`
       SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
       WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
@@ -882,7 +932,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // The "App Crashes" promotion got a DISAMBIGUATED slug (not the squatter's).
     const appCrashes = identities.find((r) =>
-      String(r.identifier).endsWith('::stability::app-crashes')
+      String(r.identifier).endsWith(`::${APP_CRASHES_KEY}`)
     );
     expect(appCrashes).toBeDefined();
     expect(String(appCrashes?.slug)).not.toBe(collidingSlug);

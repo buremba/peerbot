@@ -76,10 +76,22 @@ END
 $migration$;
 
 -- Only an upgrading database has the retired column. A fresh database starts
--- from the squashed baseline with new-format identities, so never infer legacy
--- identity shape from a string prefix alone (a valid stable key may itself
--- begin with an output name).
+-- from the squashed baseline with exact v1 tuple identities, so never infer
+-- legacy identity shape from a string prefix alone.
 DO $migration$
+DECLARE
+  definition record;
+  move record;
+  key_field text;
+  key_field_json jsonb;
+  key_fields_seen text[];
+  key_value jsonb;
+  raw_value text;
+  type_tag text;
+  encoded_field text;
+  encoded_value text;
+  stable_key text;
+  target_identifier text;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -88,6 +100,53 @@ BEGIN
       AND table_name = 'watcher_versions'
       AND column_name = 'keying_config'
   ) THEN
+    -- Validate every persisted declaration before removing keying_config, even
+    -- when a Behavior has not promoted an entity yet. Otherwise malformed
+    -- dormant configuration would survive the cutover and fail only after its
+    -- first production run.
+    FOR definition IN
+      SELECT
+        w.id AS watcher_id,
+        v.id AS version_id,
+        output.key AS output_name,
+        output.value->>'entity' AS entity_type,
+        output.value->'key' AS key_fields
+      FROM watchers w
+      JOIN watcher_versions v
+        ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
+      CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
+      WHERE output.value ? 'entity'
+    LOOP
+      IF definition.entity_type IS NULL
+         OR length(definition.entity_type) = 0
+         OR jsonb_typeof(definition.key_fields) <> 'array'
+         OR jsonb_array_length(definition.key_fields) < 1
+         OR jsonb_array_length(definition.key_fields) > 4 THEN
+        RAISE EXCEPTION
+          'Behavior output migration found invalid entity/key configuration for watcher %, version %, output %',
+          definition.watcher_id, definition.version_id, definition.output_name;
+      END IF;
+
+      key_fields_seen := ARRAY[]::text[];
+      FOR key_field_json IN SELECT value FROM jsonb_array_elements(definition.key_fields)
+      LOOP
+        IF jsonb_typeof(key_field_json) <> 'string' THEN
+          RAISE EXCEPTION
+            'Behavior output migration found a non-string key field for watcher %, version %, output %',
+            definition.watcher_id, definition.version_id, definition.output_name;
+        END IF;
+        key_field := key_field_json #>> '{}';
+        IF key_field = ANY(key_fields_seen)
+           OR length(key_field) < 1
+           OR length(key_field) > 128 THEN
+          RAISE EXCEPTION
+            'Behavior output migration found an invalid or duplicate key field for watcher %, version %, output %',
+            definition.watcher_id, definition.version_id, definition.output_name;
+        END IF;
+        key_fields_seen := array_append(key_fields_seen, key_field);
+      END LOOP;
+    END LOOP;
+
     -- Every legacy claim for a Behavior being converted must resolve to the
     -- same entity type as one of that Behavior's outputs. Otherwise the new
     -- runtime would miss the two-part claim and could create a duplicate. Fail
@@ -133,15 +192,19 @@ BEGIN
         'Behavior output identity migration cannot map a live watcher_key to its configured entity output type; repair the legacy entity type before retrying';
     END IF;
 
-    -- Abort instead of dropping or stranding either claim if a manually
-    -- pre-migrated target is already live. Production is preflighted before
-    -- this cutover, but this guard keeps every installation lossless.
-    IF EXISTS (
+    -- Re-key every live legacy claim from the entity's RAW key fields. The v1
+    -- tuple is exact and typed: base64url(field).type.base64url(value), joined
+    -- in declaration order. This avoids the retired lossy slug key, where
+    -- distinct opaque ids such as ACME/1 and ACME1 collided. Fail closed on any
+    -- row that cannot be represented rather than dropping the old API and
+    -- silently creating duplicates on the next Behavior run.
+    FOR move IN
       WITH ranked_output AS (
         SELECT
           w.id AS watcher_id,
           output.key AS output_name,
           output.value->>'entity' AS entity_type,
+          output.value->'key' AS key_fields,
           row_number() OVER (
             PARTITION BY w.id, output.value->>'entity'
             ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
@@ -152,66 +215,18 @@ BEGIN
         CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
         WHERE output.value ? 'entity'
       ), preferred_output AS (
-        SELECT watcher_id, output_name, entity_type
+        SELECT watcher_id, output_name, entity_type, key_fields
         FROM ranked_output
         WHERE preference = 1
-      ), identity_moves AS (
-        SELECT
-          ei.id,
-          ei.organization_id,
-          ei.namespace,
-          preferred_output.watcher_id::text || '::' ||
-            preferred_output.output_name || '::' ||
-            substring(ei.identifier FROM length(preferred_output.watcher_id::text) + 3)
-            AS target_identifier
-        FROM entity_identities ei
-        JOIN entities e ON e.id = ei.entity_id
-        JOIN entity_types et ON et.id = e.entity_type_id
-        JOIN preferred_output
-          ON e.metadata->>'watcher_id' = preferred_output.watcher_id::text
-         AND preferred_output.entity_type = et.slug
-        WHERE ei.namespace = 'watcher_key'
-          AND ei.deleted_at IS NULL
-          AND ei.identifier LIKE preferred_output.watcher_id::text || '::%'
       )
-      SELECT 1
-      FROM identity_moves move
-      JOIN entity_identities existing
-        ON existing.organization_id = move.organization_id
-       AND existing.namespace = move.namespace
-       AND existing.identifier = move.target_identifier
-       AND existing.deleted_at IS NULL
-       AND existing.id <> move.id
-      LIMIT 1
-    ) THEN
-      RAISE EXCEPTION
-        'Behavior output identity migration would collide with an existing live watcher_key; resolve duplicate claims before retrying';
-    END IF;
-
-    WITH ranked_output AS (
       SELECT
-        w.id AS watcher_id,
-        output.key AS output_name,
-        output.value->>'entity' AS entity_type,
-        row_number() OVER (
-          PARTITION BY w.id, output.value->>'entity'
-          ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
-        ) AS preference
-      FROM watchers w
-      JOIN watcher_versions v
-        ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
-      CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
-      WHERE output.value ? 'entity'
-    ), preferred_output AS (
-      SELECT watcher_id, output_name, entity_type
-      FROM ranked_output
-      WHERE preference = 1
-    ), identity_moves AS (
-      SELECT
-        ei.id,
+        ei.id AS identity_id,
+        ei.organization_id,
+        ei.entity_id,
         preferred_output.watcher_id,
         preferred_output.output_name,
-        substring(ei.identifier FROM length(preferred_output.watcher_id::text) + 3) AS stable_key
+        preferred_output.key_fields,
+        e.metadata
       FROM entity_identities ei
       JOIN entities e ON e.id = ei.entity_id
       JOIN entity_types et ON et.id = e.entity_type_id
@@ -221,18 +236,139 @@ BEGIN
       WHERE ei.namespace = 'watcher_key'
         AND ei.deleted_at IS NULL
         AND ei.identifier LIKE preferred_output.watcher_id::text || '::%'
-    )
-    UPDATE entity_identities ei
-    SET identifier = identity_moves.watcher_id::text || '::' ||
-      identity_moves.output_name || '::' || identity_moves.stable_key
-    FROM identity_moves
-    WHERE ei.id = identity_moves.id;
+      ORDER BY ei.id
+    LOOP
+      IF jsonb_typeof(move.key_fields) <> 'array'
+         OR jsonb_array_length(move.key_fields) < 1
+         OR jsonb_array_length(move.key_fields) > 4 THEN
+        RAISE EXCEPTION
+          'Behavior output identity migration found invalid key fields for watcher %, entity %',
+          move.watcher_id, move.entity_id;
+      END IF;
+
+      key_fields_seen := ARRAY[]::text[];
+      stable_key := 'v1';
+      FOR key_field IN SELECT jsonb_array_elements_text(move.key_fields)
+      LOOP
+        IF key_field = ANY(key_fields_seen)
+           OR length(key_field) < 1
+           OR length(key_field) > 128 THEN
+          RAISE EXCEPTION
+            'Behavior output identity migration found an invalid or duplicate key field for watcher %, entity %',
+            move.watcher_id, move.entity_id;
+        END IF;
+        key_fields_seen := array_append(key_fields_seen, key_field);
+        key_value := move.metadata -> key_field;
+        raw_value := move.metadata ->> key_field;
+
+        CASE jsonb_typeof(key_value)
+          WHEN 'string' THEN
+            IF length(btrim(raw_value)) = 0 OR octet_length(raw_value) > 256 THEN
+              RAISE EXCEPTION
+                'Behavior output identity migration found an invalid string key value for watcher %, entity %, field %',
+                move.watcher_id, move.entity_id, key_field;
+            END IF;
+            type_tag := 's';
+          WHEN 'number' THEN
+            IF raw_value !~ '^-?(0|[1-9][0-9]*)$'
+               OR raw_value::numeric < -9007199254740991
+               OR raw_value::numeric > 9007199254740991 THEN
+              RAISE EXCEPTION
+                'Behavior output identity migration found a non-safe-integer key value for watcher %, entity %, field %',
+                move.watcher_id, move.entity_id, key_field;
+            END IF;
+            type_tag := 'i';
+          WHEN 'boolean' THEN
+            type_tag := 'b';
+          ELSE
+            RAISE EXCEPTION
+              'Behavior output identity migration found a missing, null, or non-scalar key value for watcher %, entity %, field %',
+              move.watcher_id, move.entity_id, key_field;
+        END CASE;
+
+        encoded_field := translate(
+          rtrim(replace(encode(convert_to(key_field, 'UTF8'), 'base64'), E'\n', ''), '='),
+          '+/', '-_'
+        );
+        encoded_value := translate(
+          rtrim(replace(encode(convert_to(raw_value, 'UTF8'), 'base64'), E'\n', ''), '='),
+          '+/', '-_'
+        );
+        stable_key := stable_key || '~' || encoded_field || '.' || type_tag || '.' || encoded_value;
+      END LOOP;
+
+      target_identifier := move.watcher_id::text || '::' ||
+        move.output_name || '::' || stable_key;
+      IF EXISTS (
+        SELECT 1
+        FROM entity_identities existing
+        WHERE existing.organization_id = move.organization_id
+          AND existing.namespace = 'watcher_key'
+          AND existing.identifier = target_identifier
+          AND existing.deleted_at IS NULL
+          AND existing.id <> move.identity_id
+      ) THEN
+        RAISE EXCEPTION
+          'Behavior output identity migration would collide with an existing live watcher_key for watcher %, entity %',
+          move.watcher_id, move.entity_id;
+      END IF;
+
+      UPDATE entity_identities
+      SET identifier = target_identifier
+      WHERE id = move.identity_id;
+
+      UPDATE entities
+      SET metadata = metadata || jsonb_build_object(
+        'stable_key', stable_key,
+        'behavior_output', move.output_name
+      )
+      WHERE id = move.entity_id;
+    END LOOP;
   END IF;
 END
 $migration$;
 
 ALTER TABLE watcher_versions
   DROP COLUMN IF EXISTS keying_config;
+
+-- Behavior event outputs may now represent a durable reply draft linked under
+-- its source event. Existing orgs commonly have an explicit $member allowlist,
+-- so add the newly built-in kind without overwriting an org-authored definition
+-- (or materializing a NULL, permissive registry).
+UPDATE entity_types
+SET event_kinds = jsonb_build_object(
+      'draft_reply',
+      jsonb_build_object(
+        'description', 'A reply draft linked to the source event it responds to',
+        'metadataSchema', jsonb_build_object(
+          'type', 'object',
+          'properties', jsonb_build_object(
+            'confidence', jsonb_build_object('type', 'number', 'minimum', 0, 'maximum', 1),
+            'importance', jsonb_build_object('type', 'number', 'minimum', 0, 'maximum', 1),
+            'namespace', jsonb_build_object('type', 'string'),
+            'status', jsonb_build_object(
+              'type', 'string',
+              'enum', jsonb_build_array('active', 'archived', 'deleted')
+            ),
+            'platform', jsonb_build_object('type', 'string'),
+            'author', jsonb_build_object('type', 'string'),
+            'why', jsonb_build_object('type', 'string'),
+            'priority', jsonb_build_object(
+              'type', 'string',
+              'enum', jsonb_build_array('low', 'normal', 'high')
+            ),
+            'source_origin_id', jsonb_build_object('type', 'string'),
+            'source_event_id', jsonb_build_object('type', 'integer', 'minimum', 1),
+            'source_connection_id', jsonb_build_object('type', 'integer', 'minimum', 1)
+          )
+        )
+      )
+    ) || event_kinds,
+    updated_at = current_timestamp
+WHERE slug = '$member'
+  AND deleted_at IS NULL
+  AND event_kinds IS NOT NULL
+  AND NOT (event_kinds ? 'draft_reply');
 
 COMMENT ON COLUMN watcher_versions.outputs IS
   'Named Behavior output arrays. Values are {entity,key,name?} or {event}; schemas are derived at execution time.';

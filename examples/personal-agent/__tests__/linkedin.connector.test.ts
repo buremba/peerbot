@@ -1832,7 +1832,10 @@ describe("prepare_comment helpers", () => {
       { required: ["post_url"] },
       { required: ["activity_id"] },
     ]);
-    expect(c.definition.version).toBe("3.6.0");
+    expect(action?.inputSchema?.properties?.browser_connection_id?.type).toBe(
+      "integer"
+    );
+    expect(c.definition.version).toBe("3.7.0");
     expect(String(action?.description ?? "")).toMatch(/NEVER submits/i);
   });
 
@@ -2253,6 +2256,40 @@ describe("prepare_comment helpers", () => {
         body: "x",
       })
     ).rejects.toThrow(/Not logged into LinkedIn/);
+  });
+
+  test("prepareLinkedInComment routes every dispatch to the explicit interactive browser", async () => {
+    const inputs: Array<Record<string, unknown>> = [];
+    const dispatcher = {
+      dispatch: async (key: string, input: Record<string, unknown>) => {
+        inputs.push(input);
+        if (key === "navigate") {
+          return {
+            tab_id: 9,
+            current_url:
+              "https://www.linkedin.com/feed/update/urn:li:activity:7312345678901234567",
+          };
+        }
+        if (key === "evaluate") {
+          return { value: { ok: true, reason: "typed", preview: "Nice post" } };
+        }
+        return {};
+      },
+    };
+
+    await prepareLinkedInComment(dispatcher, {
+      postUrl: "7312345678901234567",
+      body: "Nice post",
+      focus: false,
+      notify: false,
+      banner: false,
+      targetBrowserConnectionId: 432,
+    });
+
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(
+      inputs.every((input) => input.target_browser_connection_id === 432)
+    ).toBe(true);
   });
 
   test("execute prepare_comment returns success output via dispatcher", async () => {

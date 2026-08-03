@@ -1,29 +1,54 @@
-/**
- * Stable Keys Utility
- *
- * Computes deterministic entity keys for merging entities across windows.
- * Keys are computed by slugifying and concatenating specified fields.
- *
- * Example: For a problem with category="Stability" and name="App Crashes",
- * the computed key would be "stability::app-crashes"
- */
+import { Buffer } from 'node:buffer';
 
-/**
- * Slugify a string for use in stable keys.
- *
- * NOTE: This is intentionally NOT the shared `generateSlug`. Stable keys are
- * persisted and used to merge entities across windows, so its output must stay
- * byte-stable — it keeps word chars (`\w`) and converts underscores, which
- * differs from the URL-slug rules. Do not consolidate this with generateSlug.
- */
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, '') // Remove non-word chars except spaces and hyphens
-    .replace(/[\s_]+/g, '-') // Replace spaces and underscores with hyphens
-    .replace(/-+/g, '-') // Collapse multiple hyphens
-    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+/** Maximum tuple width keeps indexed identity values bounded and understandable. */
+export const MAX_STABLE_KEY_FIELDS = 4;
+
+/** Field names are configuration, but they are encoded into every identity. */
+export const MAX_STABLE_KEY_FIELD_LENGTH = 128;
+
+/** Each exact scalar component is capped before base64url expansion. */
+export const MAX_STABLE_KEY_COMPONENT_BYTES = 256;
+
+const STABLE_KEY_VERSION = 'v1';
+
+function encode(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64url');
+}
+
+function encodeComponent(field: string, value: unknown): string {
+  if (value === null || value === undefined) {
+    throw new Error(`Stable key field '${field}' must be present and non-null.`);
+  }
+
+  let type: 's' | 'i' | 'b';
+  let raw: string;
+  if (typeof value === 'string') {
+    if (value.trim().length === 0) {
+      throw new Error(`Stable key field '${field}' must be non-blank.`);
+    }
+    type = 's';
+    raw = value;
+  } else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(`Stable key field '${field}' must be a safe integer.`);
+    }
+    type = 'i';
+    raw = String(value);
+  } else if (typeof value === 'boolean') {
+    type = 'b';
+    raw = value ? 'true' : 'false';
+  } else {
+    throw new Error(
+      `Stable key field '${field}' must be a string, safe integer, or boolean scalar.`
+    );
+  }
+
+  if (Buffer.byteLength(raw, 'utf8') > MAX_STABLE_KEY_COMPONENT_BYTES) {
+    throw new Error(
+      `Stable key field '${field}' must be at most ${MAX_STABLE_KEY_COMPONENT_BYTES} bytes.`
+    );
+  }
+  return `${encode(field)}.${type}.${encode(raw)}`;
 }
 
 /**
@@ -34,10 +59,22 @@ export function computeStableKey(
   row: Record<string, unknown>,
   keyFields: readonly string[]
 ): string {
-  return keyFields
-    .map((field) => {
-      const value = row[field];
-      return value === null || value === undefined ? '' : slugify(String(value));
-    })
-    .join('::');
+  if (keyFields.length === 0 || keyFields.length > MAX_STABLE_KEY_FIELDS) {
+    throw new Error(
+      `Stable keys require between 1 and ${MAX_STABLE_KEY_FIELDS} fields.`
+    );
+  }
+  if (new Set(keyFields).size !== keyFields.length) {
+    throw new Error('Stable key fields must be unique.');
+  }
+  for (const field of keyFields) {
+    if (field.length === 0 || field.length > MAX_STABLE_KEY_FIELD_LENGTH) {
+      throw new Error(
+        `Stable key field names must be between 1 and ${MAX_STABLE_KEY_FIELD_LENGTH} characters.`
+      );
+    }
+  }
+  return `${STABLE_KEY_VERSION}~${keyFields
+    .map((field) => encodeComponent(field, row[field]))
+    .join('~')}`;
 }

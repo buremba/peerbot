@@ -22,7 +22,7 @@ import type SocialInterestRadarReaction from "./social-interest-radar.reaction.t
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
   content:
-    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.",
+    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. For every task, copy source_scope, source_origin_id, and source_event_id exactly from its recent_signals row. Set task_key to a short stable machine key for that distinct action within the source (for example send-deck or book-flight); keep the same task_key when only the wording or status changes. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source and a short rationale. Produce at most 12 tasks, ordered by priority.",
 });
 
 const duplicateEntityResolutionRealV3FinalSkill = defineSkill({
@@ -282,16 +282,23 @@ const channel = defineEntityType({
     "A chat channel (Slack channel, etc.) — the unit of conversation access control",
 });
 
-// Collaborative actions for Burak + personal-agent (hourly-task-collaborator
-// keys + merges on `action`). Schema is owned here — the Behavior does not
-// declare its own extraction schema.
+// Collaborative actions for Burak + personal-agent. Identity comes from the
+// stable source plus a per-source task key, never editable display wording.
+// Schema is owned here — the Behavior does not declare an extraction schema.
 const task = defineEntityType({
   key: "task",
   name: "Task",
   description:
     "An actionable item collaboratively managed by Burak and his personal agent.",
   metadata: { icon: "check-square", color: "#10B981" },
-  required: ["action", "status"],
+  required: [
+    "action",
+    "status",
+    "source_scope",
+    "source_origin_id",
+    "source_event_id",
+    "task_key",
+  ],
   properties: {
     action: {
       type: "string",
@@ -336,8 +343,25 @@ const task = defineEntityType({
       description: "Why this task is worth doing",
     },
     source_event_id: {
+      type: "integer",
+      description: "Originating Lobu event id (provenance, not identity)",
+    },
+    source_scope: {
       type: "string",
-      description: "Originating Lobu event id when applicable",
+      minLength: 1,
+      description:
+        "Stable source namespace copied from the source row (connection, connector, or local event)",
+    },
+    source_origin_id: {
+      type: "string",
+      minLength: 1,
+      description: "Stable source event identity copied from the source row",
+    },
+    task_key: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Stable machine key for one distinct action within the source event",
     },
   },
 });
@@ -1042,7 +1066,7 @@ const socialInterestRadar = defineBehavior({
   minCooldownSeconds: 1800,
   sources: {
     recent_social:
-      "SELECT id, origin_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
+      "SELECT id, origin_id, connection_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
     already_emitted: {
       context: true,
       query:
@@ -1059,11 +1083,14 @@ const socialInterestRadar = defineBehavior({
         "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40",
     },
   },
-  outputs: { signals: { event: "observation" } },
+  outputs: {
+    signals: { event: "observation" },
+    drafts: { event: "draft_reply" },
+  },
   prompt:
-    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `content` to the specific why plus a concrete suggested action, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put `{ kind: "social_signal", platform, author, snippet, why, priority, source_origin_id, source_event_id, suggested_action }` in metadata. Prefer posts not present in already_emitted; return an empty array when nothing qualifies.',
+    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put `{ kind: "social_signal", platform, author, snippet, why, priority, source_origin_id, source_event_id, source_connection_id, suggested_action }` in metadata, copying the source id, origin_id, and connection_id exactly. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy source_url and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ kind: "social_draft_reply", platform, author, why, priority, source_origin_id, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
   reactionsGuidance:
-    "Declared outputs own event persistence and source-level deduplication. The reaction only delivers a digest notification for events created by this run.",
+    "Declared outputs own event persistence and source-level deduplication. The reaction delivers a digest and stages at most one saved draft in the explicitly paired chrome-macbook browser; it never publishes.",
   reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
     "./social-interest-radar.reaction.ts"
   ),
@@ -1079,12 +1106,13 @@ const hourlyTaskCollaborator = defineBehavior({
   outputs: {
     tasks: {
       entity: task,
-      key: ["action"],
+      key: ["source_scope", "source_origin_id", "task_key"],
+      name: ["action"],
     },
   },
   sources: {
     recent_signals:
-      "SELECT id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
+      "SELECT id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
     // context-only: existing tasks are dedup reference data, not window signal
     task_list: {
       context: true,

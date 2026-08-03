@@ -2356,6 +2356,83 @@ export type ManageConnectionsResponses = {
         view_url?: string;
       }
     | {
+        action: "connect";
+        status: "connected_in_other_workspace";
+        connector_key: string;
+        current_workspace: {
+          id: string;
+          slug: string;
+          name: string;
+        };
+        accessible_workspaces: Array<{
+          workspace: {
+            id: string;
+            slug: string;
+            name: string;
+          };
+          connection: {
+            id: number;
+            slug: string;
+            display_name: string | null;
+            status: "active";
+          };
+          switch_workspace: {
+            next_action: "switch_workspace";
+            organization_id: string;
+            organization_slug: string;
+            view_url: string;
+          };
+        }>;
+        install_app_here: {
+          next_action: "install_app";
+          install_url: string;
+        };
+        setup_attempt_id?: string;
+        completion_check?: {
+          call: {
+            /**
+             * Dotted ClientSDK method name, e.g. connections.connect.
+             */
+            sdk_method: string;
+            /**
+             * Positional method arguments. This supports both object-taking methods and connections.get(id).
+             */
+            arguments: Array<unknown>;
+          };
+          /**
+           * Observable condition that marks setup complete.
+           */
+          success_when:
+            | {
+                path: string;
+                equals: unknown;
+              }
+            | {
+                path: string;
+                includes: unknown;
+              };
+          poll_interval_ms: number;
+          /**
+           * Human-readable summary of the completion check.
+           */
+          description: string;
+        };
+        transfer_installation_here?: {
+          next_action: "transfer_installation_here";
+          requires_confirmation: true;
+          warning: string;
+          options: Array<{
+            source_workspace: {
+              id: string;
+              slug: string;
+            };
+            source_installation_id: number;
+            transfer_url: string;
+          }>;
+        };
+        instructions: string;
+      }
+    | {
         action: "connect" | "create";
         status: "setup_required";
         connector_key: string;
@@ -4113,7 +4190,7 @@ export type ManageBehaviorsData = {
                  */
                 entity: string;
                 /**
-                 * Fields whose values compose each row's stable identity across Behavior runs.
+                 * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, or the output name changes identity. Use durable source IDs rather than editable labels.
                  */
                 key: Array<string>;
                 /**
@@ -4736,7 +4813,7 @@ export type GetBehaviorResponses = {
                */
               entity: string;
               /**
-               * Fields whose values compose each row's stable identity across Behavior runs.
+               * One to four fields whose exact non-blank string (up to 256 UTF-8 bytes), safe-integer, or boolean values compose each row's stable identity across Behavior runs. Every key field is required in every row; changing the fields, their order, or the output name changes identity. Use durable source IDs rather than editable labels.
                */
               key: Array<string>;
               /**

@@ -990,6 +990,8 @@ export async function createConnectorOperationRun(params: {
    */
   policyPrincipalKind?: 'agent' | 'watcher' | 'user' | null;
   policyPrincipalId?: string | null;
+  /** Trusted user who initiated the operation, used for downstream visibility checks. */
+  createdByUserId?: string | null;
   /**
    * Optional transaction handle. When passed, the run INSERT (and its
    * connector-version read) execute on the caller's transaction instead of the
@@ -1030,13 +1032,14 @@ export async function createConnectorOperationRun(params: {
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
-      policy_principal_kind, policy_principal_id, created_at
+      policy_principal_kind, policy_principal_id, created_by_user_id, created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
       ${approvalStatus}, ${status},
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
+      ${params.createdByUserId ?? null},
       current_timestamp
     )
     RETURNING id

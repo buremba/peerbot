@@ -28,6 +28,8 @@
  */
 
 import {
+	type ActionContext,
+	type ActionResult,
 	type ChromeActionDispatcher,
 	type ConnectorDefinition,
 	type EventAttributionRule,
@@ -795,15 +797,20 @@ export function finalizeSyncResult(
 // ── Extension dispatcher ───────────────────────────────────────
 //
 // Pulled from sessionState — the connector-worker subprocess splices a live
-// `chrome_dispatcher` onto every sync's sessionState; the dispatcher's
-// `dispatch()` rides an IPC channel up to the gateway's
+// `chrome_dispatcher` onto the sessionState of every sync AND every action run;
+// the dispatcher's `dispatch()` rides an IPC channel up to the gateway's
 // /api/workers/dispatch-chrome-action bridge and out to the paired Owletto
 // extension. When no extension is online in the connection's org, the bridge
 // returns `failed` and the dispatcher throws — we surface that verbatim.
-function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
-	const handle = (
-		ctx.sessionState as Record<string, unknown> | null | undefined
-	)?.chrome_dispatcher as ChromeActionDispatcher | undefined;
+//
+// Structurally typed rather than taking SyncContext, so `execute()` can pass an
+// ActionContext without either context type having to know about the other.
+function requireExtensionDispatcher(ctx: {
+	sessionState?: Record<string, unknown> | null;
+}): ChromeActionDispatcher {
+	const handle = ctx.sessionState?.chrome_dispatcher as
+		| ChromeActionDispatcher
+		| undefined;
 	if (!handle || typeof handle.dispatch !== "function") {
 		throw new Error(
 			"X connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — re-run on a connector-worker that has the dispatcher bridge.",
@@ -1326,8 +1333,7 @@ async function syncViaExtension(args: {
 		},
 		url,
 		parseResponse,
-		checkAuth: (currentUrl) =>
-			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
+		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
 	});
 
 	return finalizeSyncResult(
@@ -1659,8 +1665,7 @@ async function syncDirectMessagesViaExtension(
 			}
 			return parseBrowserDmResponse(_url, json, authUserId);
 		},
-		checkAuth: (currentUrl) =>
-			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
+		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
 	});
 
 	return finalizeDmSyncResult(result.items, checkpoint, {
@@ -1856,6 +1861,549 @@ const dmMetadataSchema = {
 	},
 };
 
+// ── prepare_reply handoff (browser stage, human submits) ───────
+//
+// Mirrors `linkedin.prepare_comment`. There is deliberately no URL-based path:
+// X ignores the `?text=` prefill parameter on /intent/post, /intent/tweet and
+// /compose/post alike, with and without `in_reply_to` (verified 2026-08-02
+// against the signed-in app). The only way to put text in X's composer is to
+// type it, so this drives the paired Owletto Chrome and stops before submit.
+
+/**
+ * Reserved chrome-action input key read (and stripped) by the gateway's
+ * chrome-action dispatcher: "run this in the browser paired with THIS chrome
+ * connection", overriding the X connection's scrape pin.
+ *
+ * The scrape pin is correct for syncs — the timeline should be read by the
+ * always-on machine. It is wrong for prepare_reply, whose whole purpose is to
+ * put a draft in front of a person: honouring the scrape pin stages the tab on
+ * the cron box and the human never sees it. Must match
+ * TARGET_BROWSER_CONNECTION_INPUT_KEY in
+ * packages/server/src/worker-api/dispatch-chrome-action.ts.
+ */
+export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
+	"target_browser_connection_id";
+
+/**
+ * Which browser should show the staged draft. Null means "no opinion" — the
+ * dispatcher falls back to the scrape pin (previous behaviour).
+ */
+export function resolveTargetBrowserConnectionId(
+	input: Record<string, unknown>,
+): number | null {
+	const raw = input.browser_connection_id;
+	if (raw == null) return null;
+	if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) {
+		throw new Error(
+			`prepare_reply: browser_connection_id must be a positive integer chrome connection id, got ${JSON.stringify(raw)}`,
+		);
+	}
+	return raw;
+}
+
+/** Cap the explanation shown in the in-page banner. Mirrors linkedin. */
+export function truncateHandoffReason(
+	reason: string | undefined | null,
+	maxLen = 120,
+): string | undefined {
+	if (reason == null) return undefined;
+	const t = reason.replace(/\s+/g, " ").trim();
+	if (!t) return undefined;
+	if (t.length <= maxLen) return t;
+	return `${t.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
+/**
+ * JS expression: inject a small Lobu handoff banner above X's reply composer,
+ * carrying the reason this post was worth answering.
+ *
+ * Without it the staged tab is context-free — you get a draft in a box with no
+ * record of why the agent thought this post mattered, which is most of what you
+ * need in order to accept, edit, or bin it. Same banner as
+ * `linkedin.prepare_comment`, adapted for X: its own composer selectors, no
+ * side-panel footer line.
+ *
+ * Best-effort: X re-renders aggressively and may drop the node. Never fatal —
+ * the draft is already staged by the time this runs.
+ */
+export function buildInjectHandoffBannerExpression(opts: {
+	reason?: string;
+}): string {
+	const reason = truncateHandoffReason(opts.reason);
+	const titleLit = JSON.stringify("Lobu staged this reply");
+	const reasonLit = JSON.stringify(reason ?? null);
+	return `(async()=>{
+  const TITLE = ${titleLit};
+  const REASON = ${reasonLit};
+  const ID = 'lobu-handoff-banner';
+  try {
+    const prev = document.getElementById(ID);
+    if (prev) prev.remove();
+  } catch (_) {}
+
+  const root = document.createElement('div');
+  root.id = ID;
+  root.setAttribute('role', 'status');
+  root.setAttribute('data-lobu', 'handoff-banner');
+  root.style.cssText = [
+    'position:fixed',
+    'top:12px',
+    'left:50%',
+    'transform:translateX(-50%)',
+    'z-index:2147483646',
+    'max-width:min(520px,calc(100vw - 24px))',
+    'font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif',
+    'color:#0f172a',
+    'background:#fff',
+    'border:1px solid #cbd5e1',
+    'border-left:4px solid #0ea5e9',
+    'border-radius:10px',
+    'box-shadow:0 8px 28px rgba(15,23,42,.18)',
+    'padding:10px 12px',
+    'display:flex',
+    'gap:10px',
+    'align-items:flex-start',
+    'pointer-events:auto',
+  ].join(';');
+
+  const body = document.createElement('div');
+  body.style.cssText = 'flex:1;min-width:0';
+
+  const head = document.createElement('div');
+  head.style.cssText = 'font-weight:600;margin:0 0 2px;color:#0c4a6e';
+  head.textContent = TITLE;
+
+  const line = document.createElement('div');
+  line.style.cssText = 'color:#334155;margin:0 0 2px';
+  line.textContent = 'Review the draft and click Reply yourself — Lobu did not submit.';
+
+  body.appendChild(head);
+  body.appendChild(line);
+
+  if (REASON) {
+    const why = document.createElement('div');
+    why.style.cssText = 'color:#64748b;margin:4px 0 0;font-size:12px';
+    why.textContent = 'Why: ' + REASON;
+    body.appendChild(why);
+  }
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '\\u00d7';
+  close.style.cssText = [
+    'flex:none',
+    'border:0',
+    'background:transparent',
+    'color:#64748b',
+    'font:20px/1 sans-serif',
+    'cursor:pointer',
+    'padding:0 2px',
+  ].join(';');
+  close.onclick = function () { try { root.remove(); } catch (_) {} };
+
+  root.appendChild(body);
+  root.appendChild(close);
+
+  // Anchor above the reply composer when we can find it, so the reason sits
+  // next to the draft instead of floating over unrelated timeline content.
+  let anchored = false;
+  try {
+    const composer =
+      document.querySelector('[data-testid="tweetTextarea_0"]') ||
+      document.querySelector('div[role="textbox"][contenteditable="true"]');
+    if (composer) {
+      const host = composer.closest('form') || composer.parentElement;
+      if (host && host.parentElement) {
+        root.style.position = 'relative';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.transform = 'none';
+        root.style.margin = '8px 0 12px';
+        root.style.maxWidth = '100%';
+        host.parentElement.insertBefore(root, host);
+        anchored = true;
+      }
+    }
+  } catch (_) {}
+
+  if (!anchored) {
+    (document.body || document.documentElement).appendChild(root);
+  }
+
+  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // still be present when the user returns later. The dismiss button remains.
+
+  return { ok: true, anchored: anchored };
+})()`;
+}
+
+export interface PrepareReplyResult {
+	prepared: boolean;
+	tab_id?: number;
+	tweet_url: string;
+	body: string;
+	method: "type_ref";
+	staged_text?: string;
+	submitted: false;
+	/** X's own Reply button was disabled — it will not accept the draft as written. */
+	submit_blocked: boolean;
+	/** Whether the in-page handoff banner was injected. */
+	banner_shown?: boolean;
+	/** Whether the tab was handed to the user so the reaper cannot close it. */
+	released: true;
+	/** Truncated reason shown on the banner (if any). */
+	reason_preview?: string;
+	message: string;
+}
+
+/**
+ * Normalize a tweet reference into an x.com status permalink. Accepts a full
+ * x.com/twitter.com status URL, a bare numeric tweet id, or the `i/web/status`
+ * form. Returns null when nothing addressable can be derived — callers must
+ * treat that as an error rather than navigating somewhere arbitrary.
+ */
+export function normalizeXPostUrl(raw: string): string | null {
+	const value = raw.trim();
+	if (!value) return null;
+
+	if (/^\d{6,}$/.test(value)) {
+		return `https://x.com/i/web/status/${value}`;
+	}
+
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return null;
+	}
+	const host = parsed.hostname.replace(/^www\./, "");
+	if (host !== "x.com" && host !== "twitter.com") return null;
+
+	const statusId = parsed.pathname.match(/\/status(?:es)?\/(\d{6,})/);
+	if (!statusId) return null;
+	// Preserve the handle when present — x.com/i/web/status/<id> redirects, and
+	// the canonical form is friendlier in the handoff banner and logs.
+	const handle = parsed.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/status/);
+	return handle
+		? `https://x.com/${handle[1]}/status/${statusId[1]}`
+		: `https://x.com/i/web/status/${statusId[1]}`;
+}
+
+/**
+ * URLs X bounces signed-out sessions to: /login, /i/flow/login, /i/flow/signup
+ * and /account/access.
+ *
+ * Matched on the path with a segment boundary, not as a substring: an X handle
+ * may start with "login" (e.g. @LoginRadius), and a bare `includes("/login")`
+ * reads https://x.com/loginradius/status/123 as an auth wall and kills the run
+ * on a perfectly signed-in page.
+ */
+export function isXAuthWall(url: string | undefined): boolean {
+	if (!url) return false;
+	let path: string;
+	try {
+		path = new URL(url).pathname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return ["/login", "/i/flow/login", "/i/flow/signup", "/account/access"].some(
+		(wall) => path === wall || path.startsWith(`${wall}/`),
+	);
+}
+
+/** Labels that would *submit* a reply. prepare_reply must never click these. */
+export function isReplySubmitLabel(name: string | undefined | null): boolean {
+	if (!name) return false;
+	const n = name.replace(/\s+/g, " ").trim();
+	return /^(reply|post|post all|tweet|send)$/i.test(n);
+}
+
+interface XA11yNode {
+	ref_id: number;
+	role?: string;
+	name?: string;
+}
+
+/**
+ * Read back what actually landed in the composer, so the caller can fail loudly
+ * instead of reporting a staged draft that is not there.
+ *
+ * `submit_enabled` is X's own verdict on the draft. We never click the button —
+ * we read its `aria-disabled` because X disables it when the draft breaks a rule
+ * it enforces and we deliberately do not model, above all its weighted character
+ * count (URLs = 23 each, CJK/emoji = 2). With non-empty text in the box, a
+ * disabled button means X will not accept this draft as written.
+ */
+function buildReadComposerExpression(): string {
+	return `(async () => {
+  const box = document.querySelector('[data-testid="tweetTextarea_0"]');
+  const btn = document.querySelector('[data-testid="tweetButtonInline"]')
+    || document.querySelector('[data-testid="tweetButton"]');
+  return {
+    staged_text: box ? box.innerText.replace(/\\n+$/, "") : null,
+    submit_enabled: btn ? btn.getAttribute("aria-disabled") !== "true" : null,
+  };
+})()`;
+}
+
+/**
+ * Stage a reply draft on an X post in the paired Chrome: navigate → focus the
+ * reply composer → type the draft. Then stop.
+ *
+ * HARD RULE — never auto-post:
+ *  - never click Reply / Post / Send
+ *  - never press Enter / Cmd+Enter after typing
+ *  - only focus the composer and type
+ * The human must click Reply themselves.
+ */
+export async function prepareXReply(
+	dispatcher: ChromeActionDispatcher,
+	opts: {
+		tweetUrl: string;
+		body: string;
+		/** Short explanation for the in-page banner — why this post is worth a reply. */
+		reason?: string;
+		/** Inject the in-page handoff banner (default true). */
+		banner?: boolean;
+		/**
+		 * Chrome connection whose browser should show the staged draft. Without
+		 * it the dispatcher falls back to this connection's scrape pin, which is
+		 * the always-on machine running the feed cron — so the draft lands where
+		 * nobody is looking. See TARGET_BROWSER_CONNECTION_INPUT_KEY.
+		 */
+		targetBrowserConnectionId?: number | null;
+	},
+): Promise<PrepareReplyResult> {
+	const body = opts.body.trim();
+	if (!body) {
+		throw new Error("prepare_reply: body must be non-empty");
+	}
+	// No length check here on purpose. X does not count UTF-16 code units: every
+	// URL counts as 23 regardless of its real length, CJK and emoji count 2, and
+	// the text is NFC-normalized first. A naive `body.length > 280` rejects
+	// drafts X would happily accept — one link is enough to blow past 280 code
+	// units while weighing 23. Rather than reimplement that spec (or vendor
+	// twitter-text) we let X's own composer be the authority and report back
+	// whether it will accept the draft, via `submit_blocked` below.
+	const tweetUrl = normalizeXPostUrl(opts.tweetUrl);
+	if (!tweetUrl) {
+		throw new Error(
+			`prepare_reply: invalid tweet_url / tweet_id: ${JSON.stringify(opts.tweetUrl)}`,
+		);
+	}
+
+	// Single chokepoint for every dispatch this action makes: it refuses submit
+	// clicks, and it stamps the browser the draft must appear in. Both belong
+	// here rather than at each call site — a new dispatch added below inherits
+	// them instead of having to remember them.
+	const safeDispatch: ChromeActionDispatcher = {
+		dispatch: async (action_key, action_input) => {
+			if (action_key === "click_ref") {
+				if (action_input.allowed_click !== "reply_open") {
+					throw new Error(
+						"prepare_reply: blocked click_ref — only focusing the reply composer is allowed (never Reply/Post)",
+					);
+				}
+			}
+			const input = { ...action_input };
+			delete input.allowed_click;
+			if (opts.targetBrowserConnectionId != null) {
+				input[TARGET_BROWSER_CONNECTION_INPUT_KEY] =
+					opts.targetBrowserConnectionId;
+			}
+			return dispatcher.dispatch(action_key, input);
+		},
+	};
+
+	const nav = await safeDispatch.dispatch<{
+		tab_id?: number;
+		current_url?: string;
+	}>("navigate", {
+		url: tweetUrl,
+		open_in_new_tab: true,
+		wait_for_load: true,
+		// Deliberately not asking navigate to focus: it opens a background
+		// scratch tab (tabs.create active:false) and only reads `focus` on the
+		// `persistent` sticky-anchor path. The tab is brought forward by the
+		// explicit focus_tab dispatch below, once the draft is actually in it.
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const tabId = nav.tab_id;
+	if (typeof tabId !== "number") {
+		throw new Error("prepare_reply: navigate did not return tab_id");
+	}
+	if (isXAuthWall(nav.current_url)) {
+		throw new Error(
+			`Not logged into X (landed on ${nav.current_url}). Sign in in the paired Chrome profile, then retry.`,
+		);
+	}
+
+	// `wait_for_load` fires long before the SPA paints — the document reports
+	// readyState "complete" with an empty body. Wait on the composer itself.
+	await safeDispatch.dispatch("wait_for_selector", {
+		tab_id: tabId,
+		selector: '[data-testid="tweetTextarea_0"]',
+		timeout_ms: 15000,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
+	// The a11y walker keeps only what is inside the viewport
+	// (accessibility-tree.js `keepElement` → `inViewport`), and X pushes the
+	// reply composer below the fold whenever the post is tall — one image is
+	// enough (measured 2026-08-03 on a photo post: innerHeight 779, composer
+	// top 830). Without this scroll the extraction below finds no textbox at
+	// all and the run dies with "could not locate the reply composer" on a page
+	// that plainly has one.
+	//
+	// `behavior: "instant"` rather than the default: a smooth scroll (X sets
+	// scroll-behavior in places, and the default resolves to the page's CSS)
+	// returns before the scroll finishes, so the a11y snapshot below could still
+	// be taken with the composer off-screen — the exact failure this scroll is
+	// here to prevent.
+	await safeDispatch.dispatch("evaluate", {
+		tab_id: tabId,
+		expression:
+			'document.querySelector(\'[data-testid="tweetTextarea_0"]\')?.scrollIntoView({ block: "center", behavior: "instant" })',
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
+	const tree = await safeDispatch.dispatch<{
+		tree?: XA11yNode[];
+		document_epoch?: number;
+	}>("get_accessibility_tree", {
+		tab_id: tabId,
+		filter: "interactive",
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const nodes = Array.isArray(tree.tree) ? tree.tree : [];
+	// X labels the reply box "Post text" today. Prefer that, but fall back to the
+	// first textbox so a relabel degrades instead of breaking — the submit-label
+	// check below is what keeps the fallback safe.
+	const textboxes = nodes.filter((n) => n.role === "textbox");
+	const composer =
+		textboxes.find((n) => /post text/i.test(n.name ?? "")) ?? textboxes[0];
+	if (!composer || typeof tree.document_epoch !== "number") {
+		throw new Error(
+			"prepare_reply: could not locate the reply composer in the accessibility tree",
+		);
+	}
+	// Belt and braces: the a11y name is X's, not ours. If a relabelled node ever
+	// matches the textbox lookup, refuse rather than click a submit control.
+	if (isReplySubmitLabel(composer.name)) {
+		throw new Error(
+			`prepare_reply: refusing to click "${composer.name}" — that is a submit control, not the composer`,
+		);
+	}
+	// The ref is only valid for this tab + document snapshot.
+	const ref = { ref_id: composer.ref_id, document_epoch: tree.document_epoch };
+
+	await safeDispatch.dispatch("click_ref", {
+		tab_id: tabId,
+		ref,
+		allowed_click: "reply_open",
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	await safeDispatch.dispatch("type_ref", {
+		tab_id: tabId,
+		ref,
+		text: body,
+		clear_first: true,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+
+	const read = await safeDispatch.dispatch<{
+		value?: {
+			staged_text?: string | null;
+			submit_enabled?: boolean | null;
+		};
+	}>("evaluate", {
+		tab_id: tabId,
+		expression: buildReadComposerExpression(),
+		await_promise: true,
+		allowed_origins: X_ALLOWED_ORIGINS,
+	});
+	const staged = read.value?.staged_text?.trim() ?? "";
+	// Compare in NFC: X normalizes the composer content, so a draft handed to us
+	// in NFD comes back re-composed and would fail a raw `!==` even though it is
+	// staged exactly as asked.
+	if (staged.normalize("NFC") !== body.normalize("NFC")) {
+		throw new Error(
+			`prepare_reply: composer content does not match the draft (staged ${staged.length} chars, expected ${body.length}). Nothing was submitted.`,
+		);
+	}
+
+	// Banner AFTER the match check: if the draft did not land we throw above, and
+	// a banner claiming "Lobu staged this reply" would be a lie on a page that
+	// has no draft on it.
+	const reasonPreview = truncateHandoffReason(opts.reason);
+	let bannerShown = false;
+	if (opts.banner !== false) {
+		try {
+			const bannerOut = await safeDispatch.dispatch<{
+				value?: { ok?: boolean; anchored?: boolean };
+				exception?: string;
+			}>("evaluate", {
+				tab_id: tabId,
+				expression: buildInjectHandoffBannerExpression({
+					reason: reasonPreview,
+				}),
+				await_promise: true,
+				allowed_origins: X_ALLOWED_ORIGINS,
+			});
+			bannerShown = bannerOut.value?.ok === true && !bannerOut.exception;
+		} catch {
+			// Banner is best-effort; the draft is already staged.
+		}
+	}
+
+	try {
+		await safeDispatch.dispatch("focus_tab", {
+			tab_id: tabId,
+			draw_attention: true,
+			allowed_origins: X_ALLOWED_ORIGINS,
+		});
+	} catch {
+		// Focus is best-effort; the draft is still staged.
+	}
+
+	// Hand the tab to the human. Until this point it is an extension-owned
+	// scratch tab, which the reaper force-closes after ~5 minutes — with the
+	// draft in it. Before release_tab was required, the action still returned
+	// prepared: true (measured 2026-08-02: staged 23:45:09, gone by 23:52:28).
+	// Released, it is an ordinary user tab the reaper ignores.
+	//
+	// Deliberately last, after the staged-text check: a run that fails earlier
+	// leaves the tab owned, and a tab with no draft in it SHOULD be reaped.
+	//
+	// The one dispatch here without allowed_origins: release_tab gates on run
+	// tab-ownership, not on the page's origin, so an origin list would only add
+	// a way for the handover to fail — and a failed handover is a reaped draft.
+	await safeDispatch.dispatch("release_tab", { tab_id: tabId });
+
+	// X's own verdict, not ours. Still `prepared: true` — the draft IS in the
+	// composer and the human is about to look at it, so trimming it there beats
+	// throwing away work over a limit we cannot compute correctly.
+	const submitBlocked = read.value?.submit_enabled === false;
+
+	return {
+		prepared: true,
+		tab_id: tabId,
+		tweet_url: tweetUrl,
+		body,
+		method: "type_ref",
+		staged_text: staged,
+		banner_shown: bannerShown,
+		released: true,
+		...(reasonPreview ? { reason_preview: reasonPreview } : {}),
+		submitted: false,
+		submit_blocked: submitBlocked,
+		message: submitBlocked
+			? `Reply draft staged on ${tweetUrl}, but X has Reply disabled — most likely over its weighted character limit (URLs count 23, CJK/emoji count 2). Trim it in the tab, then click Reply yourself.`
+			: `Reply draft staged on ${tweetUrl}. Review and click Reply yourself — Lobu never submits.`,
+	};
+}
+
 // ── Connector ──────────────────────────────────────────────────
 
 export default class XConnector extends ConnectorRuntime {
@@ -1864,7 +2412,7 @@ export default class XConnector extends ConnectorRuntime {
 		name: "X (Twitter)",
 		description:
 			"Fetches tweets, likes, bookmarks, and DMs via the X API v2 or the paired Owletto Chrome extension. Links authors and DM counterparts into the person identity graph.",
-		version: "3.4.0",
+		version: "3.11.0",
 		faviconDomain: "x.com",
 		authSchema: {
 			methods: [
@@ -2020,7 +2568,121 @@ export default class XConnector extends ConnectorRuntime {
 				},
 			},
 		},
+		actions: {
+			prepare_reply: {
+				key: "prepare_reply",
+				kind: "write",
+				name: "Prepare reply",
+				description:
+					"Stage a reply draft on an X post in the paired Chrome browser (open post, focus the reply composer, type the draft). NEVER submits — the human must click Reply. No auto-post path exists. There is no URL that can prefill X's composer, so this is the only way to hand a draft over.",
+				annotations: {
+					destructiveHint: false,
+					idempotentHint: false,
+					openWorldHint: true,
+				},
+				inputSchema: {
+					type: "object",
+					required: ["body"],
+					anyOf: [{ required: ["tweet_url"] }, { required: ["tweet_id"] }],
+					properties: {
+						body: {
+							type: "string",
+							minLength: 1,
+							description:
+								"Draft reply text, left in the composer for the user to edit/send. Deliberately uncapped: X counts URLs as 23 and CJK/emoji as 2, so a code-unit cap here would reject drafts X accepts. The action reports X's own verdict as submit_blocked.",
+						},
+						tweet_url: {
+							type: "string",
+							description:
+								'Post URL, e.g. "https://x.com/someone/status/2083959735481716957". twitter.com URLs are accepted.',
+						},
+						tweet_id: {
+							type: "string",
+							description:
+								"Numeric post id when tweet_url is omitted (this is the `origin_id` on X timeline events).",
+						},
+						reason: {
+							type: "string",
+							description:
+								"Why this post is worth replying to. Shown on an in-page banner above the composer so the draft arrives with its context instead of as a bare box of text (truncated to 120 chars).",
+						},
+						banner: {
+							type: "boolean",
+							description:
+								"Inject the in-page Lobu handoff banner carrying `reason` (default true).",
+						},
+						browser_connection_id: {
+							type: "integer",
+							description:
+								"Chrome connection to open the draft in. Set this to the machine you are actually sitting at — otherwise the draft is staged in whichever browser syncs the timeline.",
+						},
+					},
+				},
+				outputSchema: {
+					type: "object",
+					properties: {
+						body: { type: "string" },
+						method: { type: "string" },
+						tab_id: { type: "integer" },
+						message: { type: "string" },
+						prepared: { type: "boolean" },
+						submitted: { type: "boolean" },
+						tweet_url: { type: "string" },
+						staged_text: { type: "string" },
+						submit_blocked: { type: "boolean" },
+						banner_shown: { type: "boolean" },
+						released: { type: "boolean" },
+						reason_preview: { type: "string" },
+					},
+				},
+				// NOT gated on Lobu approval, deliberately. The irreversible step is
+				// publishing, and X's own Reply button already guards it — a human
+				// must click it, and this action structurally cannot (safeDispatch
+				// rejects every click_ref except focusing the composer). A Lobu gate
+				// here would only guard "opens an x.com tab and types", while forcing
+				// the user to approve a draft BEFORE they can see it in context. The
+				// staged tab is the approval. `linkedin.prepare_comment` is ungated for
+				// the same reason.
+				requiresApproval: false,
+			},
+		},
 	};
+
+	async execute(ctx: ActionContext): Promise<ActionResult> {
+		try {
+			if (ctx.actionKey !== "prepare_reply") {
+				return { success: false, error: `Unknown action: ${ctx.actionKey}` };
+			}
+			const body =
+				typeof ctx.input.body === "string" ? ctx.input.body.trim() : "";
+			if (!body) {
+				return { success: false, error: "body is required" };
+			}
+			const tweetRef =
+				(typeof ctx.input.tweet_url === "string" &&
+					ctx.input.tweet_url.trim()) ||
+				(typeof ctx.input.tweet_id === "string" && ctx.input.tweet_id.trim()) ||
+				"";
+			if (!tweetRef) {
+				return { success: false, error: "tweet_url or tweet_id is required" };
+			}
+			const output = await prepareXReply(requireExtensionDispatcher(ctx), {
+				tweetUrl: tweetRef,
+				body,
+				banner: ctx.input.banner !== false,
+				...(typeof ctx.input.reason === "string"
+					? { reason: ctx.input.reason }
+					: {}),
+				targetBrowserConnectionId: resolveTargetBrowserConnectionId(ctx.input),
+			});
+			return { success: true, output: { ...output } };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
 
 	async sync(ctx: SyncContext): Promise<SyncResult> {
 		const config = ctx.config as Record<string, unknown>;

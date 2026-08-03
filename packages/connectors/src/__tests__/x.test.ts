@@ -25,6 +25,22 @@ let isHomeFeedNoise: any;
 let parseBrowserDmResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let XConnector: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let normalizeXPostUrl: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let isReplySubmitLabel: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let isXAuthWall: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let prepareXReply: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let resolveTargetBrowserConnectionId: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let TARGET_BROWSER_CONNECTION_INPUT_KEY: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let truncateHandoffReason: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let buildInjectHandoffBannerExpression: any;
 
 beforeAll(async () => {
 	const mod = await import("../x");
@@ -38,6 +54,15 @@ beforeAll(async () => {
 	parseUsernameFromStatusPath = mod.parseUsernameFromStatusPath;
 	isHomeFeedNoise = mod.isHomeFeedNoise;
 	XConnector = mod.default;
+	normalizeXPostUrl = mod.normalizeXPostUrl;
+	isReplySubmitLabel = mod.isReplySubmitLabel;
+	isXAuthWall = mod.isXAuthWall;
+	prepareXReply = mod.prepareXReply;
+	resolveTargetBrowserConnectionId = mod.resolveTargetBrowserConnectionId;
+	truncateHandoffReason = mod.truncateHandoffReason;
+	buildInjectHandoffBannerExpression = mod.buildInjectHandoffBannerExpression;
+	TARGET_BROWSER_CONNECTION_INPUT_KEY =
+		mod.TARGET_BROWSER_CONNECTION_INPUT_KEY;
 });
 
 // A tweet_results.result node in x.com's GraphQL shape. `restId`/`legacy` is
@@ -771,5 +796,625 @@ describe("XConnector home_feed", () => {
 			sessionState: { chrome_dispatcher: dispatcher },
 		});
 		expect(scrollMaxes).toEqual([7]);
+	});
+});
+
+// ── prepare_reply ───────────────────────────────────────────────
+//
+// X ignores ?text= on every intent/compose URL, so typing into the composer is
+// the only handoff that exists. These tests pin the two properties that matter:
+// the draft lands verbatim, and nothing ever submits it.
+
+/** A dispatcher that plays back a healthy x.com post page. */
+function stagingDispatcher(
+	overrides: {
+		composerName?: string;
+		stagedText?: string;
+		currentUrl?: string;
+		submitEnabled?: boolean;
+	} = {},
+) {
+	const calls: Array<{ action: string; input: Record<string, unknown> }> = [];
+	let typedText = "";
+	const dispatcher = {
+		dispatch: async (action: string, input: Record<string, unknown>) => {
+			calls.push({ action, input });
+			switch (action) {
+				case "navigate":
+					return {
+						tab_id: 42,
+						current_url: overrides.currentUrl ?? (input.url as string),
+					};
+				case "wait_for_selector":
+					return { found: true };
+				case "get_accessibility_tree":
+					return {
+						document_epoch: 3,
+						tree: [
+							{ ref_id: 29, role: "button", name: "5 Replies. Reply" },
+							{
+								ref_id: 36,
+								role: "textbox",
+								name: overrides.composerName ?? "Post text",
+							},
+						],
+					};
+				case "type_ref":
+					typedText = input.text as string;
+					return { ok: true };
+				case "evaluate":
+					return {
+						value: {
+							staged_text: overrides.stagedText ?? typedText,
+							submit_enabled: overrides.submitEnabled ?? true,
+						},
+					};
+				default:
+					return { ok: true };
+			}
+		},
+	};
+	return { dispatcher, calls };
+}
+
+describe("normalizeXPostUrl", () => {
+	test("accepts a bare numeric tweet id (the origin_id on X events)", () => {
+		expect(normalizeXPostUrl("2083959735481716957")).toBe(
+			"https://x.com/i/web/status/2083959735481716957",
+		);
+	});
+
+	test("preserves the handle from a canonical permalink", () => {
+		expect(
+			normalizeXPostUrl("https://x.com/boristane/status/2083959735481716957"),
+		).toBe("https://x.com/boristane/status/2083959735481716957");
+	});
+
+	test("rewrites twitter.com to x.com", () => {
+		expect(
+			normalizeXPostUrl("https://twitter.com/paulg/status/2083929305630089297"),
+		).toBe("https://x.com/paulg/status/2083929305630089297");
+	});
+
+	test("rejects a non-status URL rather than navigating somewhere arbitrary", () => {
+		expect(normalizeXPostUrl("https://x.com/home")).toBeNull();
+		expect(normalizeXPostUrl("https://evil.example/status/123456")).toBeNull();
+		expect(normalizeXPostUrl("")).toBeNull();
+	});
+});
+
+describe("isXAuthWall", () => {
+	test("matches the pages X bounces a signed-out session to", () => {
+		for (const url of [
+			"https://x.com/login",
+			"https://x.com/i/flow/login",
+			"https://x.com/i/flow/login?redirect_after_login=%2Fhome",
+			"https://x.com/i/flow/signup",
+			"https://x.com/account/access",
+		]) {
+			expect(isXAuthWall(url)).toBe(true);
+		}
+	});
+
+	// @LoginRadius is a real account. A substring test reads its permalink as an
+	// auth wall and kills the run on a signed-in page.
+	test("does not mistake a handle that starts with 'login' for the login page", () => {
+		expect(isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957")).toBe(
+			false,
+		);
+		expect(isXAuthWall("https://x.com/LoginRadius")).toBe(false);
+		expect(isXAuthWall("https://x.com/i/web/status/2083959735481716957")).toBe(
+			false,
+		);
+		expect(isXAuthWall(undefined)).toBe(false);
+	});
+});
+
+describe("isReplySubmitLabel", () => {
+	test("matches the controls that would publish", () => {
+		for (const label of ["Reply", "Post", "Post all", "Tweet", "send"]) {
+			expect(isReplySubmitLabel(label)).toBe(true);
+		}
+	});
+
+	test("does not match the composer or unrelated chrome", () => {
+		for (const label of ["Post text", "5 Replies. Reply", "Reply to thread", ""]) {
+			expect(isReplySubmitLabel(label)).toBe(false);
+		}
+	});
+});
+
+describe("prepare_reply action contract", () => {
+	test("pins the connector version for catalog upgrades", () => {
+		expect(new XConnector().definition.version).toBe("3.11.0");
+	});
+
+	// This is a deliberate design decision, not an oversight. Publishing is
+	// guarded by X's own Reply button, which a human must click and this action
+	// cannot. A Lobu approval gate would only guard "opens a tab and types",
+	// while forcing the user to approve a draft before seeing it in context —
+	// which defeats the whole review-and-iterate workflow. Do not flip this back
+	// without re-reading the comment at the definition site.
+	test("does not require Lobu approval — the staged tab is the approval", () => {
+		const action = new XConnector().definition.actions.prepare_reply;
+		expect(action.requiresApproval).toBe(false);
+		expect(action.kind).toBe("write");
+	});
+
+	test("accepts either tweet_url or tweet_id, and always a body", () => {
+		const schema = new XConnector().definition.actions.prepare_reply.inputSchema;
+		expect(schema.required).toEqual(["body"]);
+		expect(schema.anyOf).toEqual([
+			{ required: ["tweet_url"] },
+			{ required: ["tweet_id"] },
+		]);
+		// No maxLength: X's weighted count makes a code-unit cap wrong.
+		expect(schema.properties.body.maxLength).toBeUndefined();
+		// The composer does not reliably paint in a background tab, so staging
+		// cannot offer an option that makes the action fail before it can type.
+		expect(schema.properties.focus).toBeUndefined();
+	});
+});
+
+describe("prepareXReply", () => {
+	test("stages the draft verbatim and never submits", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		const body =
+			"nintendo didn't lose because they had principles — they bet on cartridges";
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.submitted).toBe(false);
+		expect(result.staged_text).toBe(body);
+		expect(result.tweet_url).toBe(
+			"https://x.com/i/web/status/2083959735481716957",
+		);
+
+		const typed = calls.find((c) => c.action === "type_ref");
+		expect(typed?.input.text).toBe(body);
+		expect(typed?.input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
+
+		// The only click is the one that focuses the composer.
+		const clicks = calls.filter((c) => c.action === "click_ref");
+		expect(clicks).toHaveLength(1);
+		expect(clicks[0].input.ref).toEqual({ ref_id: 36, document_epoch: 3 });
+		// The guard token is stripped before reaching the extension.
+		expect(clicks[0].input.allowed_click).toBeUndefined();
+		// The composer click is origin-guarded like every other dispatch here —
+		// X is an SPA and can navigate away between the wait and the click.
+		expect(clicks[0].input.allowed_origins).toEqual([
+			"x.com",
+			"*.x.com",
+			"twitter.com",
+			"*.twitter.com",
+		]);
+	});
+
+	// X normalizes the composer content, so an NFD draft reads back as NFC. That
+	// is the same text, not a staging failure.
+	test("accepts a draft that X re-composes to NFC", async () => {
+		const body = "cafe\u0301 chess \u1E9B\u0323";
+		const { dispatcher } = stagingDispatcher({
+			stagedText: body.normalize("NFC"),
+		});
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.submitted).toBe(false);
+	});
+
+	test("errors instead of typing when no textbox is on the page", async () => {
+		const { dispatcher } = stagingDispatcher();
+		await expect(
+			prepareXReply(
+				{
+					dispatch: async (action, input) => {
+						if (action === "get_accessibility_tree") {
+							return { document_epoch: 1, tree: [] };
+						}
+						return dispatcher.dispatch(action, input);
+					},
+				},
+				{ tweetUrl: "2083959735481716957", body: "hi" },
+			),
+		).rejects.toThrow(/could not locate the reply composer/);
+	});
+
+	test("refuses when the located node is a submit control", async () => {
+		const { dispatcher } = stagingDispatcher({ composerName: "Reply" });
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "hi",
+			}),
+		).rejects.toThrow(/refusing to click/);
+	});
+
+	test("fails loudly when the composer content does not match the draft", async () => {
+		const { dispatcher } = stagingDispatcher({ stagedText: "half a dr" });
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "half a draft that got truncated",
+			}),
+		).rejects.toThrow(/does not match the draft/);
+	});
+
+	// X counts a URL as 23 characters however long it really is, and NFC-
+	// normalizes first. A raw code-unit cap here would refuse to stage drafts X
+	// accepts, so there is deliberately no pre-flight length check.
+	test("stages a URL-bearing draft that exceeds 280 code units", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const url = `https://example.com/${"path/".repeat(60)}`;
+		const body = `worth a read ${url}`;
+		expect(body.length).toBeGreaterThan(280);
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.staged_text).toBe(body);
+		expect(result.submit_blocked).toBe(false);
+	});
+
+	test("stages a CJK draft rather than guessing at weighted length", async () => {
+		const { dispatcher } = stagingDispatcher();
+		// 200 CJK characters weigh 400 to X but are only 200 code units — the
+		// mirror image of the URL case, and equally not ours to adjudicate.
+		const body = "検".repeat(200);
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body,
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.staged_text).toBe(body);
+	});
+
+	test("reports X's own refusal via submit_blocked instead of guessing", async () => {
+		const { dispatcher } = stagingDispatcher({ submitEnabled: false });
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft X will not accept as written",
+		});
+
+		// Still staged — the human is looking at the tab and can trim it there.
+		expect(result.prepared).toBe(true);
+		expect(result.submit_blocked).toBe(true);
+		expect(result.message).toMatch(/Reply disabled/);
+	});
+
+	test("still rejects an empty body without touching the browser", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await expect(
+			prepareXReply(dispatcher, { tweetUrl: "2083959735481716957", body: "   " }),
+		).rejects.toThrow(/must be non-empty/);
+		expect(calls).toHaveLength(0);
+	});
+
+	// The a11y walker keeps only in-viewport nodes, and one image in the post is
+	// enough to push X's reply composer past the fold (measured: innerHeight
+	// 779, composer top 830). The extraction then finds no textbox and the run
+	// dies claiming the composer does not exist, on a page that plainly has one.
+	test("scrolls the composer into view BEFORE reading the accessibility tree", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "hi",
+		});
+		const scrollIdx = calls.findIndex(
+			(c) =>
+				c.action === "evaluate" &&
+				String(c.input.expression).includes("scrollIntoView"),
+		);
+		const treeIdx = calls.findIndex(
+			(c) => c.action === "get_accessibility_tree",
+		);
+		expect(scrollIdx).toBeGreaterThanOrEqual(0);
+		// Ordering is the whole point: scrolling after the snapshot fixes nothing.
+		expect(scrollIdx).toBeLessThan(treeIdx);
+		expect(String(calls[scrollIdx]?.input.expression)).toContain(
+			"tweetTextarea_0",
+		);
+	});
+
+	test("reports the auth wall instead of typing into a logged-out page", async () => {
+		const { dispatcher } = stagingDispatcher({
+			currentUrl: "https://x.com/i/flow/login",
+		});
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "hi",
+			}),
+		).rejects.toThrow(/Not logged into X/);
+	});
+});
+
+// The draft is only useful in the browser the human is actually sitting at. The
+// connection's own pin points at whichever machine runs the timeline cron, so
+// without an explicit target the tab opens where nobody is looking.
+describe("prepare_reply browser targeting", () => {
+	// The connector cannot import from the server, so the key is declared twice.
+	// Both copies are pinned to this literal (the server's in
+	// dispatch-chrome-action-parent.test.ts) — drift in either breaks a test
+	// instead of silently routing the draft by the scrape pin again.
+	test("uses the wire key the gateway's dispatcher strips", () => {
+		expect(TARGET_BROWSER_CONNECTION_INPUT_KEY).toBe(
+			"target_browser_connection_id",
+		);
+	});
+
+	test("stamps the target browser on EVERY dispatch, not just navigate", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "staged where I can see it",
+			targetBrowserConnectionId: 432,
+		});
+
+		expect(calls.length).toBeGreaterThan(1);
+		// A dispatch that loses the target mid-sequence would act on a different
+		// browser than the one the tab was opened in.
+		for (const call of calls) {
+			expect(call.input[TARGET_BROWSER_CONNECTION_INPUT_KEY]).toBe(432);
+		}
+	});
+
+	test("omits the key entirely when no target is given, preserving scrape-pin routing", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "no opinion about the browser",
+		});
+
+		for (const call of calls) {
+			expect(call.input).not.toHaveProperty(
+				TARGET_BROWSER_CONNECTION_INPUT_KEY,
+			);
+		}
+	});
+
+	test("never leaks the internal allowed_click guard token to the extension", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "check the click payload",
+			targetBrowserConnectionId: 432,
+		});
+
+		const click = calls.find((c) => c.action === "click_ref");
+		expect(click).toBeDefined();
+		// allowed_click is the internal guard token and must still be stripped.
+		expect(click?.input).not.toHaveProperty("allowed_click");
+	});
+
+	test("accepts a per-call browser_connection_id", () => {
+		expect(resolveTargetBrowserConnectionId({ browser_connection_id: 432 })).toBe(
+			432,
+		);
+	});
+
+	test("returns null when neither is set, so the scrape pin still wins", () => {
+		expect(resolveTargetBrowserConnectionId({})).toBeNull();
+	});
+
+	test("rejects a non-id rather than silently ignoring it and using the wrong browser", () => {
+		expect(() =>
+			resolveTargetBrowserConnectionId({ browser_connection_id: "432" }),
+		).toThrow(/positive integer chrome connection id/);
+		expect(() =>
+			resolveTargetBrowserConnectionId({ browser_connection_id: 0 }),
+		).toThrow(/positive integer chrome connection id/);
+		expect(() =>
+			resolveTargetBrowserConnectionId({
+				browser_connection_id: Number.MAX_SAFE_INTEGER + 1,
+			}),
+		).toThrow(/positive integer chrome connection id/);
+	});
+});
+
+// The staged tab must outlive the run. Until it is released the extension owns
+// it as a scratch tab and the reaper force-closes it after 5 minutes — the
+// draft vanishes while the run still reports prepared:true, so nothing at
+// runtime reveals the bug. These tests are the only guard.
+describe("prepare_reply tab survival", () => {
+	test("opens a non-persistent tab, focuses it, and hands it over with release_tab", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "must still be here in an hour",
+		});
+
+		const nav = calls.find((c) => c.action === "navigate");
+		expect(nav).toBeDefined();
+		// NOT persistent: the sticky anchor survives the reaper too, but it
+		// opens its own window and X would not render the composer in it.
+		expect(nav?.input.persistent).toBeUndefined();
+		// The tab is brought forward by focus_tab, not by a navigate flag —
+		// navigate opens a background scratch tab and only honours `focus` on
+		// the persistent path.
+		const focused = calls.find((c) => c.action === "focus_tab");
+		expect(focused?.input.tab_id).toBe(42);
+
+		// The tab must be handed to the user, or the reaper closes the draft.
+		const release = calls.find((c) => c.action === "release_tab");
+		expect(release).toBeDefined();
+		expect(release?.input.tab_id).toBe(42);
+	});
+
+	test("releases only AFTER the draft is verified in the composer", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "check the ordering",
+		});
+		const order = calls.map((c) => c.action);
+		// A tab released before the check would be un-reapable AND empty if the
+		// draft never landed.
+		expect(order.indexOf("release_tab")).toBeGreaterThan(
+			order.lastIndexOf("type_ref"),
+		);
+		expect(order.indexOf("release_tab")).toBeGreaterThan(
+			order.indexOf("evaluate"),
+		);
+	});
+
+	test("leaves the tab owned when staging fails, so the reaper still collects it", async () => {
+		const { dispatcher, calls } = stagingDispatcher({
+			stagedText: "something else entirely",
+		});
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "the draft",
+			}),
+		).rejects.toThrow(/does not match the draft/);
+		expect(calls.some((c) => c.action === "release_tab")).toBe(false);
+	});
+
+	test("fails when the tab cannot be released to the user", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const inner = dispatcher.dispatch;
+		dispatcher.dispatch = async (
+			action: string,
+			input: Record<string, unknown>,
+		) => {
+			if (action === "release_tab") throw new Error("unknown tool");
+			return inner(action, input);
+		};
+
+		await expect(
+			prepareXReply(dispatcher, {
+				tweetUrl: "2083959735481716957",
+				body: "must survive the action run",
+			}),
+		).rejects.toThrow("unknown tool");
+	});
+
+	test("does not stamp holder_agent_id / holder_thread_id", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+		});
+
+		// Those stamps buy a 30-min TTL but drive the sidepanel's conversation
+		// deep-link; faking them to win a TTL would break the sidepanel.
+		for (const call of calls) {
+			expect(call.input).not.toHaveProperty("holder_agent_id");
+			expect(call.input).not.toHaveProperty("holder_thread_id");
+		}
+	});
+});
+
+// A draft with no reason attached is just text in a box — the "why" is most of
+// what you need to accept, edit or bin it. linkedin.prepare_comment already
+// injects this banner; X did not.
+describe("prepare_reply handoff banner", () => {
+	test("injects the reason above the composer", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "he is asking exactly the question your event-sourcing post answers",
+		});
+
+		const banner = calls.find(
+			(c) =>
+				c.action === "evaluate" &&
+				String(c.input.expression).includes("lobu-handoff-banner"),
+		);
+		expect(banner).toBeDefined();
+		expect(String(banner?.input.expression)).toContain(
+			"event-sourcing post answers",
+		);
+		expect(result.reason_preview).toContain("event-sourcing");
+	});
+
+	test("banner:false suppresses injection entirely", async () => {
+		const { dispatcher, calls } = stagingDispatcher();
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "some reason",
+			banner: false,
+		});
+
+		expect(
+			calls.some((c) =>
+				String(c.input.expression ?? "").includes("lobu-handoff-banner"),
+			),
+		).toBe(false);
+		expect(result.banner_shown).toBe(false);
+	});
+
+	test("a failed banner never fails the staged draft", async () => {
+		const { dispatcher } = stagingDispatcher();
+		const inner = dispatcher.dispatch;
+		dispatcher.dispatch = async (
+			action: string,
+			input: Record<string, unknown>,
+		) => {
+			if (
+				action === "evaluate" &&
+				String(input.expression).includes("lobu-handoff-banner")
+			) {
+				throw new Error("X re-rendered the composer");
+			}
+			return inner(action, input);
+		};
+
+		const result = await prepareXReply(dispatcher, {
+			tweetUrl: "2083959735481716957",
+			body: "a draft",
+			reason: "some reason",
+		});
+
+		expect(result.prepared).toBe(true);
+		expect(result.banner_shown).toBe(false);
+	});
+
+	test("truncates a long reason so the banner cannot swallow the page", () => {
+		const long = "x".repeat(400);
+		const out = truncateHandoffReason(long);
+		expect(out).toHaveLength(120);
+		expect(out.endsWith("…")).toBe(true);
+		expect(truncateHandoffReason("   ")).toBeUndefined();
+		expect(truncateHandoffReason(null)).toBeUndefined();
+	});
+
+	test("escapes the reason as a JS literal — an apostrophe must not break the script", () => {
+		const expr = buildInjectHandoffBannerExpression({
+			reason: `it's a "quoted" </script> case`,
+		});
+		// JSON.stringify is what makes this safe; assert the raw text never
+		// lands unescaped in the emitted source.
+		expect(expr).toContain(JSON.stringify(`it's a "quoted" </script> case`));
+	});
+
+	test("keeps the context visible until the user dismisses it", () => {
+		const expr = buildInjectHandoffBannerExpression({ reason: "read this later" });
+		expect(expr).not.toContain("setTimeout");
+		expect(expr).toContain("root.remove()");
 	});
 });

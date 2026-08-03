@@ -152,11 +152,14 @@ describe("approval-event atomicity (item 16)", () => {
 
 		// The run exists and is pending.
 		const runRows = await sql`
-			SELECT status, approval_status FROM runs WHERE id = ${result.run_id} AND organization_id = ${orgId}
+			SELECT status, approval_status, created_by_user_id
+			FROM runs
+			WHERE id = ${result.run_id} AND organization_id = ${orgId}
 		`;
 		expect(runRows).toHaveLength(1);
 		expect(runRows[0].status).toBe("pending");
 		expect(runRows[0].approval_status).toBe("pending");
+		expect(runRows[0].created_by_user_id).toBe(userId);
 
 		// The approval event exists, is org-scoped, and joins to the run — this is
 		// what the /memory?run_ids= page reads. A stranded run would have none.

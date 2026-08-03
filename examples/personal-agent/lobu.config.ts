@@ -296,7 +296,6 @@ const task = defineEntityType({
     "status",
     "source_scope",
     "source_origin_id",
-    "source_event_id",
     "task_key",
   ],
   properties: {
@@ -875,8 +874,8 @@ const instagramTakeoutConnection = defineConnection({
 // One consolidated LinkedIn connection spanning BOTH sources: the local Data
 // Export CSV feeds AND the live Chrome-extension feeds. Because it's a single
 // connection on connector "linkedin", people met live and people in the CSV
-// export dedup on the shared linkedin_slug/email identity. Keeps the existing
-// slug (buremba connection id 410, 2544 events).
+// export dedup on the shared linkedin_slug/email identity. The stable slug is
+// the config identity; runtime database ids are deliberately not hard-coded.
 //
 // The live home_feed reads linkedin.com/feed/ through the paired Owletto Chrome
 // extension and needs no company_url. The company_updates/jobs live feeds each

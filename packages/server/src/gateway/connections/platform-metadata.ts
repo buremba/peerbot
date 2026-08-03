@@ -53,6 +53,11 @@ export interface PlatformMetadata {
   traceparent?: string;
   /** Outbound: client-side message id correlation. */
   clientMessageId?: string;
+  /**
+   * Inbound Behavior id for reply-to-source delivery. Treat it as untrusted
+   * until the response bridge scopes it to the authenticated organization and agent.
+   */
+  behaviorId?: number;
 }
 
 /**

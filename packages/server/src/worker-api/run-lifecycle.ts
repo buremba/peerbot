@@ -55,7 +55,10 @@ import {
 	bumpDeviceFinalizeNudge,
 	resolveFinalizeNudgeBudget,
 } from "../watchers/run-completion";
-import { advanceScheduleAfterTerminalFailure } from "../watchers/schedule-cursor";
+import {
+	advanceScheduleAfterTerminalFailure,
+	parseProviderQuotaResetAt,
+} from "../watchers/schedule-cursor";
 import { authorizeRunForWorker } from "./shared";
 
 type DbClient = ReturnType<typeof getDb>;
@@ -1184,7 +1187,8 @@ export async function completeBehaviorRun(c: Context<{ Bindings: Env }>) {
 				watcherId,
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
-					: null
+					: null,
+				parseProviderQuotaResetAt(reason)
 			);
 			return true;
 		});

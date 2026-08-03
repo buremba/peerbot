@@ -12,6 +12,11 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { ApiResponseRenderer } from "../response-renderer.js";
 import type { ThreadResponsePayload } from "../../infrastructure/queue/types.js";
 
+const resolveRunsMock = mock(async () => ({ resolved: 0 }));
+mock.module("../../../watchers/run-completion.js", () => ({
+  resolveWatcherRunsByMessageIds: resolveRunsMock,
+}));
+
 function makeRenderer() {
   const broadcasts: Array<{ key: string; event: string; data: any }> = [];
   const sseManager = {
@@ -22,6 +27,11 @@ function makeRenderer() {
   const renderer = new ApiResponseRenderer(sseManager as never);
   return { renderer, broadcasts };
 }
+
+beforeEach(() => {
+  resolveRunsMock.mockReset();
+  resolveRunsMock.mockResolvedValue({ resolved: 0 });
+});
 
 const basePayload = (over: Partial<ThreadResponsePayload>): ThreadResponsePayload =>
   ({
@@ -140,5 +150,21 @@ describe("ApiResponseRenderer.handleError targeting context", () => {
         errorContext: { provider: "z-ai", model: "glm-5.2" },
       });
     }
+  });
+
+  test("retries durable run resolution before broadcasting an error", async () => {
+    const { renderer, broadcasts } = makeRenderer();
+    resolveRunsMock.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      renderer.handleError(
+        basePayload({
+          error: "Your limit will reset at 2026-08-04 12:00:00",
+          errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+        }),
+        "session-key"
+      )
+    ).rejects.toThrow("database unavailable");
+    expect(broadcasts).toEqual([]);
   });
 });

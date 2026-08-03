@@ -1,4 +1,3 @@
-import { AgentErrorCode } from "@lobu/core";
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
@@ -6,7 +5,7 @@ import logger from "../utils/logger";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import {
 	advanceScheduleAfterTerminalFailure,
-	parseProviderQuotaResetAt,
+	providerQuotaResetNotBefore,
 } from "./schedule-cursor";
 
 type WatcherTerminalResult =
@@ -251,10 +250,10 @@ export async function resolveWatcherRunsByMessageIds(
 		if (!Number.isFinite(runId)) continue;
 
 		if (!result.ok) {
-			const notBefore =
-				result.errorCode === AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED
-					? parseProviderQuotaResetAt(result.error)
-					: null;
+			const notBefore = providerQuotaResetNotBefore(
+				result.error,
+				result.errorCode
+			);
 			if (
 				await markWatcherRunFailed(
 					sql,

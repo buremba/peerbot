@@ -1,3 +1,4 @@
+import { AgentErrorCode } from "@lobu/core";
 import type { DbClient } from "../db/client";
 import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
@@ -19,7 +20,7 @@ export function parseProviderQuotaResetAt(
 	now: Date = new Date()
 ): Date | null {
 	const match = message.match(
-		/\breset(?:s)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?/i
+		/\breset(?:s)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?(?![ T]\d{2}:)(?![0-9A-Za-z:+-]|\.\d)/i
 	);
 	if (!match) return null;
 
@@ -31,7 +32,6 @@ export function parseProviderQuotaResetAt(
 	const hourValue = Number(hour ?? "0");
 	const minuteValue = Number(minute ?? "0");
 	const secondValue = Number(second ?? "0");
-	const millisecondValue = Number(milliseconds ?? "0");
 	const daysInMonth = [
 		31,
 		year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28,
@@ -47,26 +47,17 @@ export function parseProviderQuotaResetAt(
 		31,
 	][month - 1];
 	if (
-		!Number.isInteger(year) ||
-		!Number.isInteger(month) ||
 		month < 1 ||
 		month > 12 ||
-		!Number.isInteger(day) ||
 		day < 1 ||
 		daysInMonth === undefined ||
 		day > daysInMonth ||
-		!Number.isInteger(hourValue) ||
 		hourValue < 0 ||
 		hourValue > 23 ||
-		!Number.isInteger(minuteValue) ||
 		minuteValue < 0 ||
 		minuteValue > 59 ||
-		!Number.isInteger(secondValue) ||
 		secondValue < 0 ||
-		secondValue > 59 ||
-		!Number.isInteger(millisecondValue) ||
-		millisecondValue < 0 ||
-		millisecondValue > 999
+		secondValue > 59
 	) {
 		return null;
 	}
@@ -75,12 +66,7 @@ export function parseProviderQuotaResetAt(
 	if (normalizedZone && normalizedZone !== "Z") {
 		const offsetHour = Number(normalizedZone.slice(1, 3));
 		const offsetMinute = Number(normalizedZone.slice(-2));
-		if (
-			!Number.isInteger(offsetHour) ||
-			offsetHour > 23 ||
-			!Number.isInteger(offsetMinute) ||
-			offsetMinute > 59
-		) {
+		if (offsetHour > 23 || offsetMinute > 59) {
 			return null;
 		}
 	}
@@ -104,11 +90,29 @@ export function parseProviderQuotaResetAt(
 }
 
 /**
+ * Resolve a provider reset boundary for a terminal error.
+ *
+ * Structured worker/API paths must explicitly classify the error as quota
+ * exhaustion; this prevents an unrelated provider sentence containing
+ * "reset at" from moving a schedule.
+ */
+export function providerQuotaResetNotBefore(
+	message: string,
+	errorCode?: string,
+	now: Date = new Date()
+): Date | null {
+	if (errorCode !== AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED) {
+		return null;
+	}
+	return parseProviderQuotaResetAt(message, now);
+}
+
+/**
  * Move a watcher's `next_run_at` forward to the next cron tick after now.
  *
  * The target is `nextRunAt(schedule, now)` unless the caller supplies a later
- * `notBefore` boundary, so repeated completions within a cron interval converge
- * to the same upcoming tick while terminal quota errors can park until reset.
+ * `notBefore` boundary. The write never moves an existing cursor backward, so
+ * overlapping completions cannot erase a quota park.
  * (Basing it on `max(now, next_run_at)` instead compounded the schedule: each
  * manual trigger's completion pushed an already-future `next_run_at` one more
  * tick out, so N manual runs silently skipped N cron slots.)
@@ -176,7 +180,7 @@ export async function advanceWatcherSchedule(
 
 	await sql`
     UPDATE watchers
-    SET next_run_at = ${target}::timestamptz,
+    SET next_run_at = GREATEST(next_run_at, ${target}::timestamptz),
         updated_at = NOW()
     WHERE id = ${watcherId}
   `;

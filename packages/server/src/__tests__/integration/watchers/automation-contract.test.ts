@@ -1233,7 +1233,7 @@ describe("watcher automation contract", () => {
 			expect(dupeJson.idempotent).toBe(true);
 		});
 
-		it("complete-behavior endpoint marks the run failed when error is supplied", async () => {
+		it("complete-behavior endpoint parks a failed run until provider quota resets", async () => {
 			const { sql, dbClient, workspace, watcherId, agent } =
 				await createAutomatedWatcher();
 			const granularity = inferBehaviorGranularityFromSchedule("0 9 * * *");
@@ -1263,12 +1263,18 @@ describe("watcher automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
+			const resetAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+			const providerReset = resetAt
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d{3}Z$/, "");
+			const error = `429 Limit Exhausted. Your limit will reset at ${providerReset}`;
 			const response = await post(
 				`/api/workers/me/runs/${queued.runId}/complete-behavior`,
 				{
 					body: {
 						worker_id: workerId,
-						error: "claude binary not found",
+						error,
 						duration_ms: 12,
 						exit_reason: "crash",
 						exit_code: 127,
@@ -1285,7 +1291,7 @@ describe("watcher automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 			expect(String(run.status)).toBe("failed");
-			expect(String(run.error_message)).toBe("claude binary not found");
+			expect(String(run.error_message)).toBe(error);
 			// No watcher_windows row on failure.
 			expect(run.window_id).toBeNull();
 			expect(Number(run.exit_code)).toBe(127);
@@ -1295,6 +1301,13 @@ describe("watcher automation contract", () => {
         SELECT id FROM events WHERE run_id = ${queued.runId} AND semantic_type = 'canvas_state'
       `;
 			expect(windows).toHaveLength(0);
+
+			const [watcher] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+			expect(new Date(watcher.next_run_at as string).getTime()).toBe(
+				Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000
+			);
 		});
 
 		it("complete-behavior endpoint refuses non-Behavior run types", async () => {

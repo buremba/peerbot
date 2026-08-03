@@ -24,6 +24,10 @@ import {
   type RenderedAgentError,
   renderAgentError,
 } from "../../utils/url-builder.js";
+import {
+  advanceScheduleAfterTerminalFailure,
+  providerQuotaResetNotBefore,
+} from "../../watchers/schedule-cursor.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
   OutputGuardrailScanner,
@@ -165,6 +169,61 @@ export class ChatResponseBridge implements ResponseRenderer {
     return typeof fromConnection === "string" && fromConnection
       ? fromConnection
       : undefined;
+  }
+
+  /**
+   * Park the scheduled side of a reply-to-source Behavior when its event turn
+   * hits a known provider quota boundary. These turns intentionally have no
+   * Behavior run row, so the API run terminalizer cannot move their cursor.
+   *
+   * The worker-carried Behavior id is never trusted by itself: the authenticated
+   * gateway-stamped organization and agent must own it. Database errors propagate
+   * so the durable thread-response job retries instead of delivering an error
+   * while leaving the Behavior immediately due.
+   */
+  private async parkQuotaExhaustedBehavior(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext
+  ): Promise<void> {
+    const notBefore = providerQuotaResetNotBefore(
+      payload.error ?? "",
+      payload.errorCode
+    );
+    if (!notBefore) return;
+
+    const behaviorId = readPlatformMetadata(payload.platformMetadata).behaviorId;
+    if (
+      typeof behaviorId !== "number" ||
+      !Number.isSafeInteger(behaviorId) ||
+      behaviorId < 1
+    ) {
+      return;
+    }
+
+    const organizationId = this.resolveOrganizationId(payload, ctx);
+    if (!organizationId) return;
+    const agentId = this.resolveAgentId(payload, ctx);
+    if (!agentId) return;
+
+    const sql = getDb();
+    await sql.begin(async (tx) => {
+      const owned = await tx<{ id: number }>`
+        SELECT id
+        FROM watchers
+        WHERE id = ${behaviorId}
+          AND organization_id = ${organizationId}
+          AND agent_id = ${agentId}
+          AND status = 'active'
+        LIMIT 1
+      `;
+      if (owned.length === 0) return;
+      await advanceScheduleAfterTerminalFailure(
+        tx,
+        behaviorId,
+        "event",
+        notBefore
+      );
+    });
   }
 
   /**
@@ -637,6 +696,8 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
+
+    await this.parkQuotaExhaustedBehavior(payload, ctx);
 
     const { connectionId, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;

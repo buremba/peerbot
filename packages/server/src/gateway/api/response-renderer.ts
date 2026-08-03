@@ -81,6 +81,11 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
+    // Complete durable Behavior bookkeeping before delivering the terminal SSE
+    // event. A database failure must reject the thread-response job so it can
+    // retry; delivering first would acknowledge the turn with its run still due.
+    await this.resolveWatcherRunsFromPayload(payload, { ok: true });
+
     // Resolve the current suggestion set for this conversation and decide
     // whether to attach it to `complete` (this turn produced it), clear it
     // (this turn produced none — stale chips must not linger), or leave it
@@ -110,8 +115,6 @@ export class ApiResponseRenderer implements ResponseRenderer {
     });
 
     logger.info(`Broadcast completion to session ${sessionId}`);
-
-    await this.resolveWatcherRunsFromPayload(payload, { ok: true });
   }
 
   /**
@@ -186,6 +189,12 @@ export class ApiResponseRenderer implements ResponseRenderer {
       spec?.message ??
       labelProviderErrorBody(payload.error, payload.errorContext?.provider);
 
+    await this.resolveWatcherRunsFromPayload(payload, {
+      ok: false,
+      error: typeof errorText === "string" ? errorText : "agent error",
+      errorCode: code,
+    });
+
     const errorEvent = {
       type: "error",
       error: errorText,
@@ -202,12 +211,6 @@ export class ApiResponseRenderer implements ResponseRenderer {
     this.sseManager.broadcast(sessionId, "agent-error", errorEvent);
 
     logger.error(`Broadcast error to session ${sessionId}: ${errorText}`);
-
-    await this.resolveWatcherRunsFromPayload(payload, {
-      ok: false,
-      error: typeof errorText === "string" ? errorText : "agent error",
-      errorCode: code,
-    });
   }
 
   /**
@@ -228,13 +231,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     for (const id of payload.processedMessageIds ?? []) {
       if (id) ids.add(id);
     }
-    try {
-      await resolveWatcherRunsByMessageIds(ids, result);
-    } catch (error) {
-      logger.error("Failed to resolve watcher runs from terminal API payload", {
-        error,
-      });
-    }
+    await resolveWatcherRunsByMessageIds(ids, result);
   }
 
   /**

@@ -7,6 +7,12 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
 
+# Least-privilege GITHUB_TOKEN for every job in this workflow. No job writes to
+# the GitHub API (no artifacts, no `gh`, no comments); the submodule checkout
+# authenticates with OWLETTO_WEB_DEPLOY_KEY, not the token.
+permissions:
+  contents: read
+
 # Auto-cancel superseded runs on a PR so a force-push/rebase doesn't leave the
 # previous (now-stale) run burning ~10 parallel jobs to completion. `main`
 # pushes are never cancelled (ref is unique per push) so deploy-side gating is

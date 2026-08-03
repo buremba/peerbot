@@ -18,11 +18,13 @@ import {
 	classifyConversation,
 	isWatcherConversationId,
 	listConversations,
+	resolveConversationLocationLabel,
 	upsertConversation,
 } from "../../gateway/services/conversations-store";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestAgent,
+	createTestEntity,
 	createTestOrganization,
 	createTestUser,
 } from "../setup/test-fixtures";
@@ -167,7 +169,20 @@ describe("conversations dual-write", () => {
 			kind: "platform",
 			userId: null,
 			title: "a slack thread",
+			locationLabel: "#old-name",
 			lastActivityAt: new Date("2026-06-28T02:00:00Z"),
+		});
+		await upsertConversation({
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			conversationId: "slack:CX:ts",
+			threadId: null,
+			kind: "platform",
+			userId: null,
+			title: null,
+			locationLabel: "#renamed-channel",
+			lastActivityAt: new Date("2026-06-28T03:00:00Z"),
 		});
 		const rows = await listConversations({
 			organizationId: org,
@@ -180,6 +195,77 @@ describe("conversations dual-write", () => {
 		// of identity, so re-delivery through a different connection does not fork.
 		expect(row).toHaveLength(1);
 		expect(row[0]?.platform).toBe("slack");
+		expect(row[0]?.locationLabel).toBe("#renamed-channel");
+	});
+
+	it("resolves channel and direct-message location labels", async () => {
+		const channel = await createTestEntity({
+			organization_id: org,
+			name: "launch-room",
+		});
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities
+				(organization_id, entity_id, namespace, identifier, source_connector)
+			VALUES (${org}, ${channel.id}, 'slack_channel_id', 'TLOC:CLOC', 'connector:slack')
+		`;
+
+		expect(
+			await resolveConversationLocationLabel({
+				organizationId: org,
+				platform: "slack",
+				teamId: "TLOC",
+				channelId: "CLOC",
+				isDirect: false,
+			}),
+		).toBe("#launch-room");
+		expect(
+			await resolveConversationLocationLabel({
+				organizationId: org,
+				platform: "slack",
+				teamId: "TLOC",
+				channelId: "DM1",
+				isDirect: true,
+				senderDisplayName: "  Ada  ",
+			}),
+		).toBe("Ada");
+		expect(
+			await resolveConversationLocationLabel({
+				organizationId: org,
+				platform: "slack",
+				teamId: "TLOC",
+				channelId: "UNKNOWN",
+				isDirect: false,
+			}),
+		).toBeNull();
+	});
+
+	it("treats an identifier-only channel entity name as unresolved", async () => {
+		// A channel graphed before its display name was known is named after its
+		// own identifier — the bare id (ACL sync's `c.name ?? c.channelId`) or the
+		// full team-scoped key (`displayName ?? key`). Neither is a location, and
+		// `#TLOC:CKEY` in the sidebar is worse than no label at all.
+		const sql = getTestDb();
+		for (const [channelId, name] of [
+			["CBARE", "CBARE"],
+			["CKEY", "TLOC:CKEY"],
+		]) {
+			const entity = await createTestEntity({ organization_id: org, name });
+			await sql`
+				INSERT INTO entity_identities
+					(organization_id, entity_id, namespace, identifier, source_connector)
+				VALUES (${org}, ${entity.id}, 'slack_channel_id', ${`TLOC:${channelId}`}, 'connector:slack')
+			`;
+			expect(
+				await resolveConversationLocationLabel({
+					organizationId: org,
+					platform: "slack",
+					teamId: "TLOC",
+					channelId,
+					isDirect: false,
+				}),
+			).toBeNull();
+		}
 	});
 
 	it("returns the EXPLICIT stored platform for an opaque no-colon platform id", async () => {

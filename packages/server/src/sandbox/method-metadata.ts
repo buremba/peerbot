@@ -370,6 +370,15 @@ export default async (_ctx, client) => {
 		summary: "Raw manage_conversations action wrapper. Prefer named methods.",
 		access: "write",
 	},
+	"conversations.setTitle": {
+		summary:
+			"Set display-only text for the current MCP host conversation. Source, icon, location, and navigation remain server-owned.",
+		access: "write",
+		signature:
+			"conversations.setTitle({ title: string }): Promise<{ title: string }>",
+		example:
+			"await client.conversations.setTitle({ title: 'Q3 launch research' });",
+	},
 	"conversations.list": {
 		summary:
 			"List an agent's conversations, newest-first (own threads for a member; all for admin).",

@@ -595,11 +595,39 @@ describe('tool invocation audit coverage', () => {
   });
 
   it('audits org-agnostic list_organizations under the bound org (early-return path)', async () => {
-    await executeTool('list_organizations', {}, {} as Env, authCtxFor('oauth'));
+    const conversationId = 'list-organizations-only-session';
+    await executeTool(
+      'list_organizations',
+      {},
+      {} as Env,
+      {
+        ...authCtxFor('oauth'),
+        mcpSessionId: 'list-organizations-transport',
+        mcpConversationId: conversationId,
+      }
+    );
 
     const row = await latestAuditRow(orgId, 'list_organizations');
     expect(row).not.toBeNull();
     expect(row!.payload_data.success).toBe(true);
+
+    const db = getDb();
+    const conversations = await db<
+      Array<{ conversation_id: string; last_action: string; call_count: number }>
+    >`
+      SELECT conversation_id, last_action, call_count::int AS call_count
+      FROM mcp_client_conversations
+      WHERE organization_id = ${orgId}
+        AND client_identity = ${clientId}
+        AND conversation_id = ${conversationId}
+    `;
+    expect(conversations).toEqual([
+      {
+        conversation_id: conversationId,
+        last_action: 'list_organizations',
+        call_count: 1,
+      },
+    ]);
   });
 
   it('records resolved tool failures as failed', async () => {

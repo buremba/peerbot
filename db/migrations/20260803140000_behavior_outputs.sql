@@ -13,6 +13,9 @@ ALTER TABLE watcher_versions
 ALTER TABLE runs
   ADD COLUMN IF NOT EXISTS action_idempotency_key text;
 
+-- The mandatory upgrade hook quiesces every app and worker database client;
+-- keeping this index in the migration transaction makes the new claim atomic.
+-- squawk-ignore require-concurrent-index-creation -- all database clients are quiesced before this atomic migration
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_org_action_idempotency_key
   ON runs (organization_id, action_idempotency_key)
   WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL;
@@ -96,8 +99,8 @@ END
 $migration$;
 
 -- Only an upgrading database has the retired column. A fresh database starts
--- from the squashed baseline with exact v1 tuple identities, so never infer
--- legacy identity shape from a string prefix alone.
+-- from the squashed baseline with v2 digest identities, so never infer legacy
+-- identity shape from a string prefix alone.
 DO $migration$
 DECLARE
   definition record;
@@ -174,11 +177,12 @@ BEGIN
     -- Re-key every live legacy claim that still belongs to the Behavior's
     -- current entity outputs, using the entity's RAW key fields. Historical
     -- version declarations remain readable but do not keep retired claims live.
-    -- The v1 tuple is exact and typed:
+    -- The metadata's v1 tuple is exact and typed:
     -- base64url(field).type.base64url(value), joined
-    -- in declaration order. This avoids the retired lossy slug key, where
-    -- distinct opaque ids such as ACME/1 and ACME1 collided. Fail closed on any
-    -- row that cannot be represented rather than dropping the old API and
+    -- in declaration order. The indexed v2 identity is a fixed-size SHA-256 of
+    -- the Behavior, output, entity type, and that tuple. This avoids both the
+    -- retired lossy slug key and PostgreSQL B-tree tuple limits. Fail closed on
+    -- any row that cannot be represented rather than dropping the old API and
     -- silently creating duplicates on the next Behavior run.
     FOR move IN
       WITH ranked_output AS (
@@ -282,8 +286,14 @@ BEGIN
         stable_key := stable_key || '~' || encoded_field || '.' || type_tag || '.' || encoded_value;
       END LOOP;
 
-      target_identifier := move.watcher_id::text || '::' ||
-        move.output_name || '::' || move.entity_type || '::' || stable_key;
+      target_identifier := 'v2::' || encode(
+        sha256(convert_to(
+          move.watcher_id::text || '::' || move.output_name || '::' ||
+            move.entity_type || '::' || stable_key,
+          'UTF8'
+        )),
+        'hex'
+      );
       IF move.current_identifier = target_identifier THEN
         handled_identity_ids := array_append(handled_identity_ids, move.identity_id);
       ELSE

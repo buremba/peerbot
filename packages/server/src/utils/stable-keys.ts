@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 
 /** Maximum tuple width keeps indexed identity values bounded and understandable. */
 export const MAX_STABLE_KEY_FIELDS = 4;
@@ -10,15 +11,22 @@ export const MAX_STABLE_KEY_FIELD_LENGTH = 128;
 export const MAX_STABLE_KEY_COMPONENT_BYTES = 256;
 
 const STABLE_KEY_VERSION = 'v1';
+const BEHAVIOR_ENTITY_IDENTITY_VERSION = 'v2';
 
-/** Scope a stable tuple to the Behavior output and its declared entity type. */
+/**
+ * Scope a stable tuple to the Behavior output and its declared entity type.
+ * The full exact tuple stays in entity metadata; the indexed identity is a
+ * fixed-size digest so every contract-valid tuple fits PostgreSQL B-tree keys.
+ */
 export function formatBehaviorEntityIdentity(
   watcherId: number,
   outputName: string,
   entityTypeSlug: string,
   stableKey: string
 ): string {
-  return `${watcherId}::${outputName}::${entityTypeSlug}::${stableKey}`;
+  const scopedTuple = `${watcherId}::${outputName}::${entityTypeSlug}::${stableKey}`;
+  const digest = createHash('sha256').update(scopedTuple, 'utf8').digest('hex');
+  return `${BEHAVIOR_ENTITY_IDENTITY_VERSION}::${digest}`;
 }
 
 function encode(value: string): string {

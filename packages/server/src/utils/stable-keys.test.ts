@@ -53,4 +53,34 @@ describe('computeStableKey', () => {
       formatBehaviorEntityIdentity(42, 'records', 'contact', stableKey)
     );
   });
+
+  it('keeps a maximal multibyte tuple inside the indexed identity budget', () => {
+    const keyFields = Array.from(
+      { length: 4 },
+      (_, index) => `${index}${'界'.repeat(127)}`
+    );
+    const row = Object.fromEntries(
+      keyFields.map((field) => [field, '😀'.repeat(64)])
+    );
+    const stableKey = computeStableKey(row, keyFields);
+    const identifier = formatBehaviorEntityIdentity(
+      42,
+      'records',
+      'company',
+      stableKey
+    );
+
+    expect(identifier).toMatch(/^v2::[0-9a-f]{64}$/);
+    expect(Buffer.byteLength(identifier, 'utf8')).toBeLessThanOrEqual(68);
+
+    const changedRow = { ...row, [keyFields[3]]: 'different' };
+    expect(
+      formatBehaviorEntityIdentity(
+        42,
+        'records',
+        'company',
+        computeStableKey(changedRow, keyFields)
+      )
+    ).not.toBe(identifier);
+  });
 });

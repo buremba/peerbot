@@ -939,7 +939,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
   it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {
     const ctx = await setupKeyedWatcher();
-    const { sql, workspace, parentEntityId } = ctx;
+    const { sql, workspace, parentEntityId, watcherId } = ctx;
 
     await createTestEvent({
       entity_id: parentEntityId,
@@ -986,8 +986,8 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(identities).toHaveLength(2);
 
     // The "App Crashes" promotion got a DISAMBIGUATED slug (not the squatter's).
-    const appCrashes = identities.find((r) =>
-      String(r.identifier).endsWith(`::${APP_CRASHES_KEY}`)
+    const appCrashes = identities.find(
+      (r) => String(r.identifier) === topicIdentity(watcherId, APP_CRASHES_KEY)
     );
     expect(appCrashes).toBeDefined();
     expect(String(appCrashes?.slug)).not.toBe(collidingSlug);

@@ -3,8 +3,9 @@
  *
  * For each row in one declared entity output, this module computes an internal
  * stable key and upserts a child entity. The key is persisted as an
- * `entity_identities` row in a dedicated `watcher_key` namespace (identifier =
- * `<watcherId>::<outputName>::<entityTypeSlug>::<stableKey>`),
+ * `entity_identities` row in a dedicated `watcher_key` namespace. Its identifier
+ * is a fixed-size SHA-256 digest of the Behavior, output, entity type, and exact
+ * typed key tuple; the full tuple remains in entity metadata for inspection,
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
  * `idx_entity_identities_live_unique (organization_id, namespace, identifier)

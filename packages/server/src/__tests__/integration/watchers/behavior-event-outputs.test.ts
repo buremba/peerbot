@@ -193,6 +193,93 @@ describe('Behavior event outputs', () => {
     ).rejects.toThrow(/duplicate.*idempotency/i);
   });
 
+  it('rejects the loser when concurrent output versions reuse a key for different event types', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Behavior Event Output Race Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const parent = await createTestEntity({
+      name: 'Observed account',
+      organization_id: workspace.org.id,
+      created_by: ownerUserId,
+    });
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'event-output-race-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      entity_id: parent.id,
+      slug: 'event-output-race-behavior',
+      prompt: 'Return one durable event.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      outputs: { result: { event: 'observation' } },
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+
+    let arrivals = 0;
+    let release!: () => void;
+    const bothPrechecksComplete = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pauseAfterInitialLookup = (tx: DbClient): DbClient => {
+      let paused = false;
+      const wrapped = (async (
+        strings: TemplateStringsArray,
+        ...values: unknown[]
+      ) => {
+        const rows = await tx(strings, ...values);
+        if (!paused && strings.join('').includes("metadata->>'_lobu_idempotency_key'")) {
+          paused = true;
+          arrivals += 1;
+          if (arrivals === 2) release();
+          await bothPrechecksComplete;
+        }
+        return rows;
+      }) as DbClient;
+      wrapped.unsafe = tx.unsafe.bind(tx);
+      wrapped.array = tx.array.bind(tx);
+      wrapped.json = tx.json.bind(tx);
+      wrapped.savepoint = tx.savepoint.bind(tx);
+      return wrapped;
+    };
+    const persist = (event: 'observation' | 'draft_reply') =>
+      sql.begin((tx) =>
+        persistBehaviorEventOutput({
+          tx: pauseAfterInitialLookup(tx as unknown as DbClient),
+          rows: [{ content: `${event} result`, idempotency_key: 'shared-source' }],
+          outputName: 'result',
+          output: { event },
+          watcherId,
+          organizationId: workspace.org.id,
+          windowId: 1,
+          canvasRevisionId: 1,
+          runId: null,
+          boundEntityIds: [parent.id],
+          validContentIds: new Set(),
+          occurredAt: new Date().toISOString(),
+          createdBy: ownerUserId,
+        })
+      );
+
+    const results = await Promise.allSettled([
+      persist('observation'),
+      persist('draft_reply'),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ httpStatus: 409 }),
+    });
+  });
+
   it('appends changed unkeyed output for a Canvas replacement and deduplicates its retry', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Behavior Event Replacement Org' });

@@ -174,6 +174,12 @@ export async function persistBehaviorEventOutput(
         idempotencyKey
       );
       if (!winner) throw error;
+      if (winner.semantic_type !== params.output.event) {
+        throw new ToolUserError(
+          `Behavior output idempotency key already belongs to '${winner.semantic_type}'.`,
+          409
+        );
+      }
       inserted.push(winner);
     }
   }

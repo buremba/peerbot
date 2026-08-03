@@ -62,7 +62,9 @@ routes.get("/", mcpAuth, async (c) => {
     -- pending-interaction working set — rows leave it as soon as they resolve —
     -- not append-only history, so it stays bounded as events grows. Kept as a
     -- CTE rather than a correlated subquery so it is evaluated once, not once
-    -- per returned conversation.
+    -- per returned conversation, and served by the partial index
+    -- events_pending_interaction_mcp_session so the scan touches only rows that
+    -- are still pending.
     WITH pending_interactions AS (
       SELECT mc.client_identity, mc.conversation_id,
         count(*)::integer AS pending_interaction_count
@@ -87,6 +89,10 @@ routes.get("/", mcpAuth, async (c) => {
     LEFT JOIN pending_interactions pi
       ON pi.client_identity = mc.client_identity AND pi.conversation_id = mc.conversation_id
     WHERE mc.organization_id = ${organizationId}
+      -- Title-only rows are not activity: setTitle can create a row before the
+      -- conversation has called any tool, and it would otherwise sort first on
+      -- its default now() timestamps with a placeholder action.
+      AND mc.call_count > 0
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}
   `;

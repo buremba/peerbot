@@ -11,17 +11,23 @@ import logger from '../../utils/logger';
 import { buildResourcePermalink } from '../../utils/url-builder';
 import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
+import { isAdminOrOwnerRole } from '../access-control';
+import { AUDIT_SEMANTIC_TYPE } from '../constants';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
-import { isAdminOrOwnerRole } from '../access-control';
+
+/** Payload keys a tool-invocation audit row carries about its request. */
+const AUDIT_REQUEST_KEYS = ['request', 'request_status', 'request_bytes'] as const;
 
 /**
  * A tool-invocation audit row retains the caller's VERBATIM request (see
  * `recordToolInvocationAudit`), which only its author or a workspace admin may
- * read. Content rows arrive with that key still on `payload_data`, so this
- * strips it from EVERY audit item first — an unauthorized caller, an
- * unrecognized role, and a failed re-read all leave it stripped — and puts it
- * back only on the rows whose `created_by` clears the gate.
+ * read. Content rows arrive with those keys still on `payload_data`, so this
+ * strips them from EVERY audit item first — an unauthorized caller and an
+ * unrecognized role leave them stripped — and puts them back only on the rows
+ * whose `created_by` clears the gate. Authorship is the one thing the content
+ * row does not carry, so it is the only thing re-read here; a failed re-read
+ * rejects rather than serving a half-gated page.
  */
 export async function hydrateToolInvocationRequests(opts: {
   sql: DbClient;
@@ -32,45 +38,40 @@ export async function hydrateToolInvocationRequests(opts: {
 }): Promise<void> {
   const { sql, items, organizationId, userId, memberRole } = opts;
   const isAdmin = isAdminOrOwnerRole(memberRole);
-  const auditPayloads = new Map<number, Record<string, unknown>>();
+  const stripped = new Map<
+    number,
+    { payload: Record<string, unknown>; fields: Record<string, unknown> }
+  >();
 
   for (const item of items) {
-    if (item.semantic_type !== 'audit' || item.origin_type !== 'tool_invocation') continue;
+    if (item.semantic_type !== AUDIT_SEMANTIC_TYPE || item.origin_type !== 'tool_invocation')
+      continue;
     const payload = item.payload_data as Record<string, unknown> | null | undefined;
     if (!payload) continue;
-    const hadRequest = payload.request !== undefined || payload.request_status !== undefined;
-    delete payload.request;
-    delete payload.request_status;
-    delete payload.request_bytes;
-    if (hadRequest) auditPayloads.set(Number(item.id), payload);
+    const fields: Record<string, unknown> = {};
+    for (const key of AUDIT_REQUEST_KEYS) {
+      if (payload[key] === undefined) continue;
+      fields[key] = payload[key];
+      delete payload[key];
+    }
+    if (Object.keys(fields).length > 0) stripped.set(Number(item.id), { payload, fields });
   }
 
-  if (auditPayloads.size === 0 || (!isAdmin && userId == null)) return;
+  if (stripped.size === 0 || (!isAdmin && userId == null)) return;
 
-  const rows = await sql<{
-    id: number;
-    created_by: string | null;
-    payload_data: Record<string, unknown>;
-  }>`
-    SELECT id, created_by, payload_data
+  const rows = await sql<{ id: number; created_by: string | null }>`
+    SELECT id, created_by
     FROM events
     WHERE organization_id = ${organizationId}
-      AND id = ANY(${pgBigintArray([...auditPayloads.keys()])}::bigint[])
-      AND semantic_type = 'audit'
+      AND id = ANY(${pgBigintArray([...stripped.keys()])}::bigint[])
+      AND semantic_type = ${AUDIT_SEMANTIC_TYPE}
       AND origin_type = 'tool_invocation'
   `;
 
   for (const row of rows) {
     if (!isAdmin && row.created_by !== userId) continue;
-    const payload = auditPayloads.get(Number(row.id));
-    if (!payload) continue;
-    const stored = parseJsonObject(row.payload_data);
-    if (typeof stored.request_status !== 'string') continue;
-    payload.request_status = stored.request_status;
-    if (stored.request_status === 'too_large') payload.request_bytes = stored.request_bytes;
-    if (stored.request_status === 'complete' && stored.request !== undefined) {
-      payload.request = stored.request;
-    }
+    const entry = stripped.get(Number(row.id));
+    if (entry) Object.assign(entry.payload, entry.fields);
   }
 }
 

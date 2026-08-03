@@ -30,6 +30,8 @@ let normalizeXPostUrl: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let isReplySubmitLabel: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
+let isXAuthWall: any;
+// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let prepareXReply: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let resolveTargetBrowserConnectionId: any;
@@ -54,6 +56,7 @@ beforeAll(async () => {
 	XConnector = mod.default;
 	normalizeXPostUrl = mod.normalizeXPostUrl;
 	isReplySubmitLabel = mod.isReplySubmitLabel;
+	isXAuthWall = mod.isXAuthWall;
 	prepareXReply = mod.prepareXReply;
 	resolveTargetBrowserConnectionId = mod.resolveTargetBrowserConnectionId;
 	truncateHandoffReason = mod.truncateHandoffReason;
@@ -880,6 +883,33 @@ describe("normalizeXPostUrl", () => {
 	});
 });
 
+describe("isXAuthWall", () => {
+	test("matches the pages X bounces a signed-out session to", () => {
+		for (const url of [
+			"https://x.com/login",
+			"https://x.com/i/flow/login",
+			"https://x.com/i/flow/login?redirect_after_login=%2Fhome",
+			"https://x.com/i/flow/signup",
+			"https://x.com/account/access",
+		]) {
+			expect(isXAuthWall(url)).toBe(true);
+		}
+	});
+
+	// @LoginRadius is a real account. A substring test reads its permalink as an
+	// auth wall and kills the run on a signed-in page.
+	test("does not mistake a handle that starts with 'login' for the login page", () => {
+		expect(isXAuthWall("https://x.com/LoginRadius/status/2083959735481716957")).toBe(
+			false,
+		);
+		expect(isXAuthWall("https://x.com/LoginRadius")).toBe(false);
+		expect(isXAuthWall("https://x.com/i/web/status/2083959735481716957")).toBe(
+			false,
+		);
+		expect(isXAuthWall(undefined)).toBe(false);
+	});
+});
+
 describe("isReplySubmitLabel", () => {
 	test("matches the controls that would publish", () => {
 		for (const label of ["Reply", "Post", "Post all", "Tweet", "send"]) {
@@ -916,6 +946,9 @@ describe("prepare_reply action contract", () => {
 		]);
 		// No maxLength: X's weighted count makes a code-unit cap wrong.
 		expect(schema.properties.body.maxLength).toBeUndefined();
+		// The composer does not reliably paint in a background tab, so staging
+		// cannot offer an option that makes the action fail before it can type.
+		expect(schema.properties.focus).toBeUndefined();
 	});
 });
 
@@ -1110,6 +1143,16 @@ describe("prepareXReply", () => {
 // connection's own pin points at whichever machine runs the timeline cron, so
 // without an explicit target the tab opens where nobody is looking.
 describe("prepare_reply browser targeting", () => {
+	// The connector cannot import from the server, so the key is declared twice.
+	// Both copies are pinned to this literal (the server's in
+	// dispatch-chrome-action-parent.test.ts) — drift in either breaks a test
+	// instead of silently routing the draft by the scrape pin again.
+	test("uses the wire key the gateway's dispatcher strips", () => {
+		expect(TARGET_BROWSER_CONNECTION_INPUT_KEY).toBe(
+			"target_browser_connection_id",
+		);
+	});
+
 	test("stamps the target browser on EVERY dispatch, not just navigate", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 
@@ -1379,5 +1422,11 @@ describe("prepare_reply handoff banner", () => {
 		// JSON.stringify is what makes this safe; assert the raw text never
 		// lands unescaped in the emitted source.
 		expect(expr).toContain(JSON.stringify(`it's a "quoted" </script> case`));
+	});
+
+	test("keeps the context visible until the user dismisses it", () => {
+		const expr = buildInjectHandoffBannerExpression({ reason: "read this later" });
+		expect(expr).not.toContain("setTimeout");
+		expect(expr).toContain("root.remove()");
 	});
 });

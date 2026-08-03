@@ -1817,6 +1817,8 @@ describe("prepare_comment helpers", () => {
     expect(expr).toContain("Owletto side panel");
     expect(expr).toContain('Met them at \\"AI\\" meetup');
     expect(expr).not.toMatch(/click\(\)\s*;[\s\S]*Post|Post[\s\S]*\.click\(/);
+    expect(expr).not.toContain("setTimeout");
+    expect(expr).toContain("root.remove()");
   });
 
   test("definition declares prepare_comment write action with human gate", () => {

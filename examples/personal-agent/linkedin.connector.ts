@@ -1160,12 +1160,8 @@ export function buildInjectHandoffBannerExpression(opts: {
     (document.body || document.documentElement).appendChild(root);
   }
 
-  // Soft auto-dismiss after 90s so we don't leave permanent chrome on the page.
-  try {
-    setTimeout(function () {
-      try { if (root.isConnected) root.remove(); } catch (_) {}
-    }, 90000);
-  } catch (_) {}
+  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // still be present when the user returns later. The dismiss button remains.
 
   return { ok: true, anchored: anchored, has_reason: !!REASON };
 })()`;

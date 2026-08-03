@@ -1330,8 +1330,7 @@ async function syncViaExtension(args: {
 		},
 		url,
 		parseResponse,
-		checkAuth: (currentUrl) =>
-			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
+		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
 	});
 
 	return finalizeSyncResult(
@@ -1663,8 +1662,7 @@ async function syncDirectMessagesViaExtension(
 			}
 			return parseBrowserDmResponse(_url, json, authUserId);
 		},
-		checkAuth: (currentUrl) =>
-			!currentUrl.includes("/login") && !currentUrl.includes("/i/flow/login"),
+		checkAuth: (currentUrl) => !isXAuthWall(currentUrl),
 	});
 
 	return finalizeDmSyncResult(result.items, checkpoint, {
@@ -2047,9 +2045,8 @@ export function buildInjectHandoffBannerExpression(opts: {
     (document.body || document.documentElement).appendChild(root);
   }
 
-  try {
-    setTimeout(function () { try { root.remove(); } catch (_) {} }, 90000);
-  } catch (_) {}
+  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // still be present when the user returns later. The dismiss button remains.
 
   return { ok: true, anchored: anchored };
 })()`;
@@ -2111,16 +2108,24 @@ export function normalizeXPostUrl(raw: string): string | null {
 }
 
 /**
- * URLs X bounces signed-out sessions to: /i/flow/login, /login, /account/access
- * and /i/flow/signup. `/login` subsumes the /i/flow/login form.
+ * URLs X bounces signed-out sessions to: /login, /i/flow/login, /i/flow/signup
+ * and /account/access.
+ *
+ * Matched on the path with a segment boundary, not as a substring: an X handle
+ * may start with "login" (e.g. @LoginRadius), and a bare `includes("/login")`
+ * reads https://x.com/loginradius/status/123 as an auth wall and kills the run
+ * on a perfectly signed-in page.
  */
 export function isXAuthWall(url: string | undefined): boolean {
 	if (!url) return false;
-	const lower = url.toLowerCase();
-	return (
-		lower.includes("/login") ||
-		lower.includes("/account/access") ||
-		lower.includes("/i/flow/signup")
+	let path: string;
+	try {
+		path = new URL(url).pathname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return ["/login", "/i/flow/login", "/i/flow/signup", "/account/access"].some(
+		(wall) => path === wall || path.startsWith(`${wall}/`),
 	);
 }
 
@@ -2174,7 +2179,6 @@ export async function prepareXReply(
 	opts: {
 		tweetUrl: string;
 		body: string;
-		focus?: boolean;
 		/** Short explanation for the in-page banner — why this post is worth a reply. */
 		reason?: string;
 		/** Inject the in-page handoff banner (default true). */
@@ -2236,7 +2240,9 @@ export async function prepareXReply(
 		url: tweetUrl,
 		open_in_new_tab: true,
 		wait_for_load: true,
-		focus: opts.focus !== false,
+		// X does not reliably paint the composer in a background tab, so this is
+		// part of staging correctness rather than a presentation preference.
+		focus: true,
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 	const tabId = nav.tab_id;
@@ -2265,10 +2271,16 @@ export async function prepareXReply(
 	// top 830). Without this scroll the extraction below finds no textbox at
 	// all and the run dies with "could not locate the reply composer" on a page
 	// that plainly has one.
+	//
+	// `behavior: "instant"` rather than the default: a smooth scroll (X sets
+	// scroll-behavior in places, and the default resolves to the page's CSS)
+	// returns before the scroll finishes, so the a11y snapshot below could still
+	// be taken with the composer off-screen — the exact failure this scroll is
+	// here to prevent.
 	await safeDispatch.dispatch("evaluate", {
 		tab_id: tabId,
 		expression:
-			'document.querySelector(\'[data-testid="tweetTextarea_0"]\')?.scrollIntoView({ block: "center" })',
+			'document.querySelector(\'[data-testid="tweetTextarea_0"]\')?.scrollIntoView({ block: "center", behavior: "instant" })',
 		allowed_origins: X_ALLOWED_ORIGINS,
 	});
 
@@ -2617,11 +2629,6 @@ export default class XConnector extends ConnectorRuntime {
 							description:
 								"Numeric post id when tweet_url is omitted (this is the `origin_id` on X timeline events).",
 						},
-						focus: {
-							type: "boolean",
-							description:
-								"Bring the staged tab to the foreground (default true).",
-						},
 						reason: {
 							type: "string",
 							description:
@@ -2690,7 +2697,6 @@ export default class XConnector extends ConnectorRuntime {
 			const output = await prepareXReply(requireExtensionDispatcher(ctx), {
 				tweetUrl: tweetRef,
 				body,
-				focus: ctx.input.focus !== false,
 				banner: ctx.input.banner !== false,
 				...(typeof ctx.input.reason === "string"
 					? { reason: ctx.input.reason }

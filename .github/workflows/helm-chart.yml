@@ -50,12 +50,14 @@ jobs:
           helm template lobu charts/lobu --namespace lobu --is-upgrade \
             --set migrations.enabled=true \
             >/tmp/lobu-quiesced-upgrade.yaml
-          grep -q 'name: lobu-migration-quiesce' /tmp/lobu-quiesced-upgrade.yaml
           grep -q 'serviceAccountName: lobu-migration-quiesce' /tmp/lobu-quiesced-upgrade.yaml
-          grep -q 'scale deployment "$deployment" --replicas=0' /tmp/lobu-quiesced-upgrade.yaml
-          grep -q 'wait --for=delete pod' /tmp/lobu-quiesced-upgrade.yaml
-          grep -q '"helm.sh/hook-weight": "-10"' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'name: install-kubectl' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'trap restore_on_failure EXIT' /tmp/lobu-quiesced-upgrade.yaml
+          grep -q 'migration failed with status' /tmp/lobu-quiesced-upgrade.yaml
           grep -q '"helm.sh/hook-weight": "0"' /tmp/lobu-quiesced-upgrade.yaml
+
+      - name: Exercise migration failure recovery
+        run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 
   publish:
     needs: lint

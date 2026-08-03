@@ -328,10 +328,10 @@ healthCheck:
 migrations:
   enabled: false
   # Incompatible migrations cannot run while an old app or worker still uses
-  # the previous schema. Every migration upgrade first scales both
-  # deployments to zero and waits for their pods to terminate before the
-  # migration hook runs. Helm then restores the configured replica counts with
-  # the new release.
+  # the previous schema. Every migration upgrade records the current replica
+  # counts, scales both deployments to zero, and waits for their pods to
+  # terminate before migrating. A failed migration restores those counts;
+  # after success Helm applies the new release's configured replica counts.
   quiesceBeforeUpgrade:
     image: bitnami/kubectl@sha256:9e369df7ab3386b736d162348f167bcc02cb4ba3f5203e9151be854437d6e0af
     pullPolicy: IfNotPresent

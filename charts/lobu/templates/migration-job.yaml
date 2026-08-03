@@ -11,6 +11,9 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 1
+  {{- if .Release.IsUpgrade }}
+  activeDeadlineSeconds: {{ add (mul (int .Values.migrations.quiesceBeforeUpgrade.timeoutSeconds) 2) 600 }}
+  {{- end }}
   template:
     metadata:
       labels:
@@ -18,6 +21,20 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
+      {{- if .Release.IsUpgrade }}
+      serviceAccountName: {{ include "lobu.fullname" . }}-migration-quiesce
+      initContainers:
+        - name: install-kubectl
+          image: {{ .Values.migrations.quiesceBeforeUpgrade.image }}
+          imagePullPolicy: {{ .Values.migrations.quiesceBeforeUpgrade.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - cp "$(command -v kubectl)" /migration-tools/kubectl
+          volumeMounts:
+            - name: migration-tools
+              mountPath: /migration-tools
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -62,7 +79,12 @@ spec:
               }
               NODE
               {{- end }}
+              {{- if .Release.IsUpgrade }}
+              set -- /app/start.sh migrate
+{{ .Files.Get "files/migrate-upgrade.sh" | nindent 14 }}
+              {{- else }}
               exec /app/start.sh migrate
+              {{- end }}
           env:
             {{- range $key, $value := .Values.app.env }}
             - name: {{ $key }}
@@ -71,6 +93,24 @@ spec:
             {{- if .Values.releaseGates.databasePreflight.enabled }}
             - name: DB_PREFLIGHT_TIMEOUT_SECONDS
               value: {{ .Values.releaseGates.databasePreflight.timeoutSeconds | quote }}
+            {{- end }}
+            {{- if .Release.IsUpgrade }}
+            - name: KUBECTL_BIN
+              value: /migration-tools/kubectl
+            - name: NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: APP_DEPLOYMENT
+              value: {{ printf "%s-app" (include "lobu.fullname" .) | quote }}
+            - name: APP_SELECTOR
+              value: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=api" .Release.Name | quote }}
+            {{- if .Values.worker.enabled }}
+            - name: WORKER_DEPLOYMENT
+              value: {{ printf "%s-worker" (include "lobu.fullname" .) | quote }}
+            - name: WORKER_SELECTOR
+              value: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=worker" .Release.Name | quote }}
+            {{- end }}
+            - name: QUIESCE_TIMEOUT
+              value: {{ printf "%ds" (int .Values.migrations.quiesceBeforeUpgrade.timeoutSeconds) | quote }}
             {{- end }}
             {{- if .Values.migrations.database.existingSecret }}
             {{- if .Values.migrations.database.usePooler }}
@@ -99,4 +139,15 @@ spec:
             - secretRef:
                 name: {{ .Values.secretName }}
           {{- end }}
+          {{- if .Release.IsUpgrade }}
+          volumeMounts:
+            - name: migration-tools
+              mountPath: /migration-tools
+              readOnly: true
+          {{- end }}
+      {{- if .Release.IsUpgrade }}
+      volumes:
+        - name: migration-tools
+          emptyDir: {}
+      {{- end }}
 {{- end }}

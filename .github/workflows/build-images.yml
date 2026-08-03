@@ -272,6 +272,34 @@ jobs:
           scripts/app-image-smoke.sh \
             "${REGISTRY}/${IMAGE_NAME_APP}:${{ needs.generate-tag.outputs.tag }}"
 
+  # Package publication belongs after the exact release artifact passes its
+  # runtime smoke. release-please used to dispatch this immediately after
+  # creating the release, while build-images was still queued/in progress;
+  # publish-packages correctly failed closed, leaving 14.9 and 14.10 absent
+  # from npm. Target the release tag and pass this exact run ID so
+  # the downstream guard cannot select a different same-SHA image run.
+  trigger-package-publish:
+    runs-on: ubuntu-24.04
+    needs: [generate-tag, app-image-smoke]
+    if: >-
+      github.event_name == 'release'
+      && needs.generate-tag.outputs.should_publish == 'true'
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Trigger publish-packages for the smoked release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish-packages.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
+            -f bump=skip \
+            -f image_run_id="$GITHUB_RUN_ID"
+
   build-worker:
     runs-on: ubuntu-24.04
     # Gate the worker push (and transitively the app push, which `needs:
@@ -403,10 +431,12 @@ jobs:
   # repo secret; if unset the curl is skipped, never failing the job.
   # app-image-smoke is in `needs` too: it runs after the tag is already pushed,
   # so when it fails Flux may already be rolling a broken image — exactly the
-  # case that must ping, not just redden the workflow.
+  # case that must ping, not just redden the workflow. trigger-package-publish
+  # is in `needs` for the same reason: nothing else watches that dispatch, so a
+  # failed one would otherwise surface only as a version missing from npm.
   notify-failure:
     runs-on: ubuntu-24.04
-    needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app, app-image-smoke]
+    needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app, app-image-smoke, trigger-package-publish]
     if: >-
       failure()
       && needs.generate-tag.outputs.should_publish == 'true'

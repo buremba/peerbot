@@ -787,8 +787,7 @@ function requireExtensionDispatcher(ctx: {
 // ── prepare_comment handoff (browser stage, human submits) ───────────
 
 /** Reserved gateway input selecting the physical Chrome for an interactive action. */
-export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
-  "target_browser_connection_id";
+const TARGET_BROWSER_CONNECTION_INPUT_KEY = "target_browser_connection_id";
 
 function resolveTargetBrowserConnectionId(
   input: Record<string, unknown>

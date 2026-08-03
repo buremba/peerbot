@@ -306,6 +306,7 @@ async function upsertKeyedEntity(params: {
   /** Fields the watcher actually wrote inline (auto-applied), old→new. */
   applied: Record<string, AppliedChange>;
   blockedCreate: boolean;
+  deniedUpdate?: true;
 }> {
   const { tx, organizationId, identifier } = params;
 
@@ -349,13 +350,17 @@ async function upsertKeyedEntity(params: {
         Object.keys(params.fieldValues).map((field) => [field, 'none' as const])
       ),
     });
-    // Fail CLOSED on a deny: apply nothing. The throw is caught by the per-row
-    // savepoint in promoteKeyedEntities, so a denied row is skipped without
-    // rolling back the window completion.
+    // Fail CLOSED on a deny: apply nothing and return a modeled policy outcome.
+    // Unexpected persistence errors still throw and roll back the completion.
     if (decision.outcome === 'deny') {
-      throw new Error(
-        `Mutation gate denied watcher update to entity ${entityId}: ${decision.reason}`
-      );
+      return {
+        entityId,
+        created: false,
+        blocked: {},
+        applied: {},
+        blockedCreate: false,
+        deniedUpdate: true,
+      };
     }
     const requireApproval = [...decision.requireApproval];
     const merge = await mergeEntityFields({
@@ -599,7 +604,7 @@ export async function promoteBehaviorEntityOutput(
     };
 
     try {
-      const { created, blocked, applied, entityId, blockedCreate } = await tx.savepoint((sp) =>
+      const { created, blocked, applied, entityId, blockedCreate, deniedUpdate } = await tx.savepoint((sp) =>
         upsertKeyedEntity({
           tx: sp,
           organizationId,
@@ -618,6 +623,13 @@ export async function promoteBehaviorEntityOutput(
           createNeedsApproval,
         })
       );
+      if (deniedUpdate) {
+        logger.warn(
+          { watcherId, organizationId, windowId, stableKey, entityId },
+          '[promote-keyed-entities] mutation gate denied update — row skipped'
+        );
+        continue;
+      }
       if (blockedCreate) {
         // Only a 'defer' outcome queues an approval; a 'deny' is fail-closed —
         // the row is skipped entirely (no create, no approval card).

@@ -235,6 +235,64 @@ describe('Behavior outputs migration', () => {
     expect(captured).toBe(expected);
   });
 
+  it('preserves legacy slugification when deriving an omitted entity type', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Derived Type Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-derived-type-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    const created = (await api.behaviors.create({
+      slug: 'derived-type-output-behavior',
+      prompt: 'Find social signals.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    let captured: unknown;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_path: 'social_signals',
+                key_fields: ['external_id'],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx.unsafe(up);
+        const [version] = await tx<{ outputs: unknown }>`
+          SELECT v.outputs
+          FROM watcher_versions v
+          JOIN watchers w ON w.current_version_id = v.id
+          WHERE w.id = ${watcherId}
+        `;
+        captured = version.outputs;
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured).toEqual({
+      social_signals: {
+        entity: 'social-signal',
+        key: ['external_id'],
+      },
+    });
+  });
+
   it('aborts rather than stranding a legacy identity with a mismatched entity type', async () => {
     const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Mismatch Org' });
     const ownerUserId = workspace.users.owner.id;

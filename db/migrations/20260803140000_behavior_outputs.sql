@@ -27,7 +27,17 @@ BEGIN
             WHEN normalized_name ~ '^[A-Za-z][A-Za-z0-9_]{0,63}$'
               THEN normalized_name
             ELSE 'items'
-          END AS output_name
+          END AS output_name,
+          COALESCE(
+            NULLIF(
+              btrim(
+                regexp_replace(lower(normalized_name), '[^a-z0-9]+', '-', 'g'),
+                '-'
+              ),
+              ''
+            ),
+            'item'
+          ) AS entity_slug
         FROM (
           SELECT
             id,
@@ -53,14 +63,14 @@ BEGIN
         jsonb_strip_nulls(
           jsonb_build_object(
             'entity', COALESCE(
-              NULLIF(legacy.keying_config->>'entity_type', ''),
+              NULLIF(btrim(legacy.keying_config->>'entity_type'), ''),
               CASE
-                WHEN legacy.output_name LIKE '%ies'
-                  THEN regexp_replace(legacy.output_name, 'ies$', 'y')
-                WHEN legacy.output_name LIKE '%s'
-                     AND legacy.output_name NOT LIKE '%ss'
-                  THEN regexp_replace(legacy.output_name, 's$', '')
-                ELSE legacy.output_name
+                WHEN legacy.entity_slug LIKE '%ies'
+                  THEN regexp_replace(legacy.entity_slug, 'ies$', 'y')
+                WHEN legacy.entity_slug LIKE '%s'
+                     AND legacy.entity_slug NOT LIKE '%ss'
+                  THEN regexp_replace(legacy.entity_slug, 's$', '')
+                ELSE legacy.entity_slug
               END
             ),
             'key', legacy.keying_config->'key_fields',

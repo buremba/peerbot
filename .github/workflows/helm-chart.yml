@@ -45,11 +45,10 @@ jobs:
             exit 1
           fi
 
-      - name: Render quiesced migration upgrade
+      - name: Render migration upgrade with mandatory quiescence
         run: |
           helm template lobu charts/lobu --namespace lobu --is-upgrade \
             --set migrations.enabled=true \
-            --set migrations.quiesceBeforeUpgrade.enabled=true \
             >/tmp/lobu-quiesced-upgrade.yaml
           grep -q 'name: lobu-migration-quiesce' /tmp/lobu-quiesced-upgrade.yaml
           grep -q 'serviceAccountName: lobu-migration-quiesce' /tmp/lobu-quiesced-upgrade.yaml

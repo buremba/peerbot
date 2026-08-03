@@ -1,4 +1,4 @@
-{{- if and .Release.IsUpgrade .Values.migrations.enabled .Values.migrations.quiesceBeforeUpgrade.enabled }}
+{{- if and .Release.IsUpgrade .Values.migrations.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -46,6 +46,7 @@ import {
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleBehaviorMode } from './behavior-mode';
+import { resolveMcpActivitySessionIds } from './mcp-activity-filter';
 import { withValidatedArgs } from '../validate-args';
 
 /**
@@ -164,6 +165,23 @@ async function getContentImpl(
     await requireReadAccess(pgSql, args.entity_id, ctx);
   }
 
+  const hasMcpActivityId = args.mcp_activity_id !== undefined;
+  if (hasMcpActivityId && !args.client_ids?.length) {
+    throw new ToolUserError('mcp_activity_id requires client_ids.', 400);
+  }
+  if (hasMcpActivityId && args.behavior_id) {
+    throw new ToolUserError(
+      'mcp_activity_id cannot be combined with behavior_id.',
+      400
+    );
+  }
+  if (hasMcpActivityId && args.content_ids?.length) {
+    throw new ToolUserError(
+      'mcp_activity_id cannot be combined with content_ids.',
+      400
+    );
+  }
+
   // Agent/watcher: entity-type read policy (same envelope as manage_entity /
   // search_memory). Humans skip — role ACL is separate.
   if (ctx.agentId || ctx.actingWatcherId) {
@@ -213,6 +231,20 @@ async function getContentImpl(
       }
     }
   }
+
+  // Resolve the existing composite identity after every caller-specific read
+  // policy. Then thread its transport ids through every SQL strategy.
+  // `undefined` means no filter; an empty durable mapping remains an empty
+  // array and therefore matches no events rather than widening to the org.
+  const mcpSessionIds = hasMcpActivityId
+    ? await resolveMcpActivitySessionIds(
+        sql,
+        ctx.organizationId,
+        args.client_ids as string[],
+        args.mcp_activity_id as string
+      )
+    : undefined;
+
   // Stats are now opt-in: callers must explicitly pass `include_classification=summary`
   // (the Atlas events page used to set this unconditionally, which fired a heavy
   // `WITH matching_content` CTE on every first paint — including empty entities).
@@ -426,6 +458,7 @@ async function getContentImpl(
         sinceDate,
         untilDate,
         visibilityScope,
+        mcpSessionIds,
         limit,
         offset,
       }));
@@ -438,6 +471,7 @@ async function getContentImpl(
         ...(args.run_ids?.length && { run_ids: args.run_ids }),
         ...(args.agent_id && { agent_id: args.agent_id }),
         ...(args.client_ids?.length && { client_id: args.client_ids }),
+        ...(mcpSessionIds !== undefined && { mcp_session_ids: mcpSessionIds }),
         ...(effectivePlatform && { platform: effectivePlatform }),
         ...(sinceDate && { since: sinceDate }),
         ...(untilDate && { until: untilDate }),
@@ -480,6 +514,7 @@ async function getContentImpl(
         run_ids: args.run_ids,
         ...(args.agent_id && { agent_id: args.agent_id }),
         ...(args.client_ids?.length && { client_id: args.client_ids }),
+        ...(mcpSessionIds !== undefined && { mcp_session_ids: mcpSessionIds }),
         visibility_scope: visibilityScope,
         window_id: args.window_id,
         analyzed_by_watcher_id: args.analyzed_by_behavior_id,
@@ -590,6 +625,7 @@ async function getContentImpl(
         sinceDate,
         untilDate,
         visibilityScope,
+        mcpSessionIds,
       });
     }
 

@@ -42,6 +42,7 @@
 
 ## Agent workflow
 - Do only what was asked. Delete ephemeral files you create. Do not create `*.md` unless asked.
+- Never introduce a new table or change the database design, API surface, or SDK surface without explicitly surfacing the proposal and receiving user confirmation first.
 - Prefer `bun`; do not use npm/yarn/pnpm for repo work.
 - Fix unused params by deleting them, not `_`-prefixing.
 - Never `git stash`; use WIP commits and squash later.

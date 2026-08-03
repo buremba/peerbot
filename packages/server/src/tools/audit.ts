@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { REDACTED_SENTINEL } from '@lobu/core';
+import { currentMcpActivityEventMetadata } from '../lobu/stores/mcp-client-conversations';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { AUDIT_SEMANTIC_TYPE } from './constants';
@@ -275,7 +276,7 @@ export async function recordToolInvocationAudit(
         tool_name: params.toolName,
         token_type: params.ctx.tokenType,
         agent_id: params.ctx.agentId ?? null,
-        mcp_session_id: params.ctx.mcpSessionId ?? null,
+        ...currentMcpActivityEventMetadata(params.ctx),
       },
       createdBy: params.ctx.userId ?? null,
       clientId: params.ctx.clientId ?? null,

@@ -31,6 +31,10 @@ import {
 } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
 import {
+	currentMcpActivityAttribution,
+	currentMcpActivityEventMetadata,
+} from "../../lobu/stores/mcp-client-conversations";
+import {
 	formatFieldChangeAction,
 	formatLabel,
 	notifyActionApprovalNeeded,
@@ -859,9 +863,10 @@ export async function proposeEntityChange(
 					proposer_rationale: mergeProposal?.proposer_rationale ?? null,
 					status: "pending_approval",
 					run_id: runId,
-					mcp_session_id: ctx.mcpSessionId ?? null,
+					...currentMcpActivityEventMetadata(ctx),
 				},
 				authorName: attribution,
+				clientId: ctx.tokenType === "oauth" ? (ctx.clientId ?? null) : null,
 			},
 			{ sql: db },
 		);
@@ -1001,6 +1006,7 @@ export async function proposeEntityChange(
 		channelId: deliveryTarget.channelId,
 		teamId: deliveryTarget.teamId,
 		ownerUserId: updateProposal?.owner_user_id ?? null,
+		mcpActivity: currentMcpActivityAttribution(ctx),
 		details:
 			operation === "update"
 				? {

@@ -43,6 +43,9 @@ export function buildStandardParams(
     options.client_id
       ? pgTextArray(Array.isArray(options.client_id) ? options.client_id : [options.client_id])
       : null,
+    // Slot $13 — exact MCP conversation transport scope. Unlike ordinary
+    // optional arrays, an empty array is load-bearing: it must match nothing.
+    options.mcp_session_ids !== undefined ? pgTextArray(options.mcp_session_ids) : null,
   ];
 }
 
@@ -71,7 +74,8 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
-          AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))`;
+          AND ($12::text[] IS NULL OR f.client_id = ANY($12::text[]))
+          AND ($13::text[] IS NULL OR f.metadata->>'mcp_session_id' = ANY($13::text[]))`;
 }
 
 export const WINDOW_JOIN_SQL = `LEFT JOIN watcher_window_events iwf

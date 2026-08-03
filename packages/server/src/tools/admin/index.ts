@@ -12,6 +12,7 @@ import type { Env } from "../../index";
 import {
 	GetContentSchema,
 	GetContentResultSchema,
+	PublicGetContentSchema,
 	getContent,
 } from "../get_content";
 import {
@@ -274,6 +275,9 @@ export const ADMIN_TOOLS: ToolDefinition[] = ENTRIES.map((entry) => ({
 	name: entry.name,
 	description: entry.description,
 	inputSchema: entry.schema,
+	...(entry.name === "read_knowledge" && {
+		publicInputSchema: PublicGetContentSchema,
+	}),
 	annotations: entry.annotations ?? WRITE,
 	...(entry.resultSchema && { outputSchema: entry.resultSchema }),
 	handler: entry.handler,

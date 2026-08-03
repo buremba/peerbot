@@ -345,6 +345,12 @@ export async function listContentInternal(
       baseParams.push(pgTextArray(clientIds));
       baseConditions.push(`f.client_id = ANY($${baseParams.length}::text[])`);
     }
+    if (options.mcp_session_ids !== undefined) {
+      baseParams.push(pgTextArray(options.mcp_session_ids));
+      baseConditions.push(
+        `f.metadata->>'mcp_session_id' = ANY($${baseParams.length}::text[])`
+      );
+    }
 
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,
@@ -405,7 +411,8 @@ export async function listContentInternal(
 
   // Build the entity-link UNION fragment once so both list and count emit
   // identical SQL — same shape as before but with namespaces trimmed to the
-  // entity's actual identities. Params slot right after $1-$10 standardParams.
+  // entity's actual identities. Params slot right after the fixed $1-$13
+  // standardParams block.
   let standardEntityLinkSql: string;
   let standardEntityLinkParams: string[] = [];
   let standardEntityLinkSqlForP: string | undefined;

@@ -34,6 +34,10 @@ import {
 import { resolveActingPrincipal, resolveWritePolicyDecision } from '../../authz/entity-policy';
 import { createDbClientFromEnv, getDb, getLockDb } from '../../db/client';
 import type { Env } from '../../index';
+import {
+  currentMcpActivityAttribution,
+  currentMcpActivityEventMetadata,
+} from '../../lobu/stores/mcp-client-conversations';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
@@ -755,9 +759,10 @@ async function queueWatcherWriteForApproval(
       run_id: runId,
       input_schema: inputSchema,
       action_input: displayInput,
-      mcp_session_id: ctx.mcpSessionId ?? null,
+      ...currentMcpActivityEventMetadata(ctx),
     },
     authorName: ctx.clientId ?? 'agent',
+    clientId: ctx.tokenType === 'oauth' ? (ctx.clientId ?? null) : null,
   });
   const eventId = Number(event.id);
 
@@ -786,6 +791,7 @@ async function queueWatcherWriteForApproval(
     connectionName: label,
     eventId,
     approvalUrl,
+    mcpActivity: currentMcpActivityAttribution(ctx),
   }).catch((error) => logger.error(error, 'Failed to send manage_behaviors approval notification'));
 
   return {

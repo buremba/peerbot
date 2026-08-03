@@ -53,6 +53,10 @@ import {
 import { droppedEvidence } from "../../entity-resolution/evidence-strength";
 import { ResolutionFingerprintError } from "../../entity-resolution/staleness";
 import type { Env } from "../../index";
+import {
+	currentMcpActivityAttribution,
+	currentMcpActivityEventMetadata,
+} from "../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../mcp-proxy/client";
 import { notifyActionApprovalNeeded } from "../../notifications/triggers";
 import {
@@ -1201,9 +1205,10 @@ async function handleExecute(
 					connection_name:
 						connection.display_name ?? connection.connector_key,
 					run_id: createdRunId,
-					mcp_session_id: ctx.mcpSessionId ?? null,
+					...currentMcpActivityEventMetadata(ctx),
 				},
 				authorName: ctx.clientId ?? "agent",
+				clientId: ctx.tokenType === "oauth" ? (ctx.clientId ?? null) : null,
 			},
 				{ sql: tx },
 			);
@@ -1246,6 +1251,7 @@ async function handleExecute(
 			connectionName: connection.display_name ?? connection.connector_key,
 			eventId,
 			approvalUrl,
+			mcpActivity: currentMcpActivityAttribution(ctx),
 		}).catch((error) =>
 			logger.error(error, "Failed to send operation approval notification"),
 		);

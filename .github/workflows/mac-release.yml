@@ -77,7 +77,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     if: >-
       github.event_name == 'workflow_dispatch'
       || startsWith(github.event.release.tag_name, 'lobu-v')

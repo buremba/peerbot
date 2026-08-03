@@ -54,7 +54,7 @@ jobs:
     # build-images' own notify-failure already sent. The scheduled canary
     # still covers plain health.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       # Full history: the rollout gate runs `git merge-base --is-ancestor`

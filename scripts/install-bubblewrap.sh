@@ -28,9 +28,7 @@ if [ -z "$installed" ]; then
   exit 1
 fi
 
-# Only flip the AppArmor userns restriction when the kernel exposes it
-# (GitHub-hosted ubuntu-24.04). Blacksmith's Firecracker microVMs don't
-# restrict unprivileged user namespaces and lack this sysctl key.
+# Only flip the AppArmor userns restriction when the runner kernel exposes it.
 if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 fi

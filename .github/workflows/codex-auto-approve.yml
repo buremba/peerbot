@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   approve:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     # Event-driven runs are gated to Codex authors. Scheduled sweeps and
     # manual dispatches always run.

@@ -21,7 +21,7 @@ jobs:
   # waiting behind DB setup. Worker tests run under bun (full suite, not the
   # cherry-picked subset that used to live here).
   unit:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -187,7 +187,7 @@ jobs:
   # mock OpenAI-compatible provider (no provider key needed). A failure here
   # fails CI → the PR goes red. See scripts/sdk-e2e.sh.
   sdk-e2e:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -232,7 +232,7 @@ jobs:
   # HOME and walks the whole command surface, asserting each runs or fails
   # gracefully. A failure here fails CI → the PR goes red. See scripts/cli-smoke.sh.
   cli-smoke:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -270,7 +270,7 @@ jobs:
   # white-screen" packaging bugs. Build uses the same `bun run build` path as
   # docker/app/Dockerfile. Forks without the deploy key get a stub and skip.
   frontend:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -308,9 +308,8 @@ jobs:
         run: cd packages/owletto && bun run build
 
       - name: Install Google Chrome for SPA boot smoke
-        # Ubuntu apt chromium/chromium-browser is a *snap* shim. Snap will not
-        # launch under Blacksmith's runner cgroup:
-        #   "is not a snap cgroup for tag snap.chromium.chromium"
+        # Ubuntu apt chromium/chromium-browser is a *snap* shim rather than a
+        # directly runnable browser binary.
         # Playwright's bundled browser also fights monorepo patchright/playwright
         # revision skew. Install real Google Chrome .deb (non-snap) and point
         # the smoke at it.
@@ -337,7 +336,7 @@ jobs:
   # APIs in places, and (2) the sandbox runtime requires isolated-vm which
   # is a V8 native addon that bun cannot load.
   integration:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
       postgres:
@@ -500,7 +499,7 @@ jobs:
           fail_ci_if_error: false
 
   format-lint:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -632,7 +631,7 @@ jobs:
           bash scripts/lib/__tests__/review-upstream-guard.test.sh
 
   typecheck:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -704,7 +703,7 @@ jobs:
     # uses (scripts/migrate-up.mjs), so a migration that only the prod runner
     # can apply (e.g. transaction:false heal-DO + CONCURRENTLY) is validated
     # here instead of silently diverging from `dbmate up`.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
@@ -888,7 +887,7 @@ jobs:
   # never matches. Use git diff against the PR base instead. On push events
   # (main) there's no PR object, so default to running the smoke job.
   mac-build-smoke-filter:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.filter.outputs.run }}
     steps:
@@ -932,7 +931,7 @@ jobs:
   mac-build-smoke:
     needs: mac-build-smoke-filter
     if: needs.mac-build-smoke-filter.outputs.run == 'true'
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -981,7 +980,7 @@ jobs:
   # list, so we diff against the PR base. On push (main) there's no PR object,
   # so default to running.
   connector-parity-smoke-filter:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.filter.outputs.run }}
     steps:
@@ -1019,7 +1018,7 @@ jobs:
   connector-parity-smoke:
     needs: connector-parity-smoke-filter
     if: needs.connector-parity-smoke-filter.outputs.run == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -1032,15 +1031,15 @@ jobs:
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       # Build the worker image for amd64 only (no QEMU/arm64 — this is a smoke
       # gate, not a release) and load it into the local daemon instead of
       # pushing. Reuse the GHA buildx cache shared with build-images.yml so this
       # leg doesn't pay a cold worker build.
       - name: Build worker image (amd64, load, no push)
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -1048,6 +1047,8 @@ jobs:
           load: true
           push: false
           tags: lobu-worker:parity-smoke
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
 
       # The real prod runtime contract: run the built image's self-check with NO
       # network, so a green result can't depend on reaching anything external.
@@ -1086,7 +1087,7 @@ jobs:
   # runner without a user session must not redden main. Read the summary, do
   # not gate on it. No checkout: the probe only inspects the runner itself.
   exec-sandbox-backend-probe:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     continue-on-error: true
     steps:
@@ -1147,7 +1148,7 @@ jobs:
   # so a future rebuild on a newer base can't silently reintroduce it. Cheap
   # enough (seconds, no deps) that it runs unfiltered.
   pgvector-glibc-floor:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7

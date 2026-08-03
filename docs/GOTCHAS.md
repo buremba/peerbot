@@ -35,7 +35,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 **Phantom `TS2305: Module '@lobu/core' has no exported member 'X'` inside a worktree.** The worktree's own `@lobu/*` dists are missing, so tsc resolves through the *main checkout's* stale dist. Build the worktree's dists (`make build-packages`). `packages/core` is `composite: true`, so use `bunx tsc --build --force` — a plain `rm -rf dist` leaves a stale `tsconfig.tsbuildinfo` behind. Diagnose with `bunx tsc --noEmit --traceResolution 2>&1 | grep "@lobu/core"`.
 
-**A new workspace package must be added to three build lists or CI fails while local passes.** In dependency order: the `build-packages` loop in `Makefile`, the unit job's inline build step in `.github/workflows/ci.yml` (it builds packages individually, not via make), and `build:packages` in the root `package.json`. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
+**A new workspace package must be added to both build graphs or CI fails while local passes.** Add it at the correct dependency layer in `scripts/build-packages.mjs` and to the unit job's inline build step in `.github/workflows/ci.yml` (the unit job intentionally builds a narrower package set). `make build-packages` and root `build:packages` both call the script, so there is no third list. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
 
 **Inter-package deps are always `"@lobu/*": "workspace:*"`.** Never a hardcoded version or caret range — the root `package.json` is the single source of version truth.
 
@@ -77,6 +77,8 @@ Both helpers are exported from `packages/server/src/db/client.ts`. `sql.array(a)
 **`could not create shared memory segment: No space left on device` on macOS.** The SHMMNI limit, not disk. Reap detached segments: `ipcs -mob`, then `ipcrm -m <id>` for entries with `nattch=0` **only**.
 
 **Integration suite prerequisites.** Node 22 is the repo default (`.node-version`); Lobu accepts Node 22–24 and 26+, while Node 25 boots without the SDK sandbox. Global setup uses `DATABASE_URL` if set, otherwise spawns an ephemeral embedded Postgres + pgvector.
+
+**Vitest 3.2.6 `list --shard=N/M` prints every file, even though `run --shard=N/M` partitions correctly.** Do not use `vitest list` to prove shard coverage. Run each shard with the JSON reporter and compare `testResults`: the three-way CI split owns 126 of 378 files per shard, with no overlap at execution time.
 
 **`make dev` is not the test harness.** It migrates its owned local per-branch database and boots the app, but that does not exercise the branches a relevant unit or integration suite covers.
 

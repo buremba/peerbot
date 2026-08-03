@@ -1,4 +1,4 @@
-import { getDb, tsTime } from "../../db/client.js";
+import { getDb, pgTextArray, tsTime } from "../../db/client.js";
 
 /** Advisory-lock tag that serializes activation for one tenant tuple. */
 function activeTenantLockTag(key: AppInstallationTenantKey): string {
@@ -101,6 +101,21 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
    */
   blockCrossOrgTransfer?: boolean;
   /**
+   * When a confirmed transfer demotes an installation owned by another org,
+   * revoke connections bound to the demoted installation in the SAME database
+   * transaction. This prevents the source workspace from continuing to present
+   * an active connection after webhook/token routing has moved away. Historical
+   * feeds and events are retained; revoked connections no longer dispatch.
+   */
+  revokeConnectionsOnTransfer?: { errorMessage: string };
+  /**
+   * Source org the caller explicitly approved moving FROM. Checked under the
+   * tenant advisory lock; if the approved source no longer owns it (including
+   * no active owner), the transfer fails closed instead of claiming or revoking
+   * an unapproved workspace.
+   */
+  expectedTransferOwnerOrganizationId?: string;
+  /**
    * Extends {@link blockCrossOrgTransfer} to a SECONDARY grouping key: an active
    * install owned by a different org whose `metadata[key] === value` also trips
    * the fence, even if its tenant tuple differs. This closes the Slack Grid
@@ -133,13 +148,19 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
 }
 
 /**
- * Thrown by {@link AppInstallationStore.upsert} when `blockCrossOrgTransfer` is
- * set and an active install for the tuple is owned by a different org. Carries
- * that org's id so the caller can surface it.
+ * Thrown by {@link AppInstallationStore.upsert} when a cross-org claim is
+ * refused: either `blockCrossOrgTransfer` is set and a different org holds the
+ * active install, or `expectedTransferOwnerOrganizationId` no longer matches the
+ * tuple's active owner. Carries the ACTUAL owning org id so the caller can
+ * surface it — `null` when the tuple has no active owner at all.
  */
 export class CrossOrgTransferBlockedError extends Error {
-  constructor(readonly ownerOrganizationId: string) {
-    super("Active install owned by a different org; transfer not confirmed");
+  constructor(readonly ownerOrganizationId: string | null) {
+    super(
+      ownerOrganizationId
+        ? "Active install owned by a different org; transfer not confirmed"
+        : "Approved source no longer owns an active install"
+    );
     this.name = "CrossOrgTransferBlockedError";
   }
 }
@@ -153,9 +174,11 @@ export interface AppInstallationStore {
    * tenant tuple at a time.
    *  - Same-org reinstall (an active row for the tuple already owned by
    *    `organizationId`): updates that row in place.
-   *  - Different-org install: TRANSFERS ownership — the prior active row is
-   *    demoted (status -> 'suspended') and a new active row is inserted/
-   *    activated, atomically in ONE transaction.
+   *  - Different-org install: by default TRANSFERS ownership — the prior active
+   *    row is demoted (status -> 'suspended') and a new active row is inserted/
+   *    activated, atomically in ONE transaction. Callers may instead fence the
+   *    claim with `blockCrossOrgTransfer`, or require one exact approved source
+   *    with `expectedTransferOwnerOrganizationId`.
    *
    * Converges under concurrent callers across replicas: the work runs in a
    * transaction and the partial unique index `app_installations_active_tenant`
@@ -387,11 +410,34 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
           }
         }
 
+        if (install.expectedTransferOwnerOrganizationId) {
+          const foreign = await tx`
+            SELECT organization_id FROM app_installations
+            WHERE provider = ${install.provider}
+              AND provider_instance = ${install.providerInstance}
+              AND provider_app_id = ${install.providerAppId}
+              AND external_tenant_id = ${install.externalTenantId}
+              AND status = 'active'
+              AND organization_id <> ${install.organizationId}
+            LIMIT 1
+          `;
+          // `LIMIT 1` means this is the tuple's single active foreign owner, or
+          // null when nobody owns it (it was suspended/revoked between the
+          // caller's approval and this transaction). Both mismatches fail closed,
+          // and the error carries the ACTUAL owner so the caller's log doesn't
+          // assert an ownership that isn't there.
+          const currentOwner =
+            (foreign[0]?.organization_id as string | undefined) ?? null;
+          if (currentOwner !== install.expectedTransferOwnerOrganizationId) {
+            throw new CrossOrgTransferBlockedError(currentOwner);
+          }
+        }
+
         // Demote any active row for this tuple owned by a DIFFERENT org — a
         // transfer takes the single active slot from the prior owner. (A same-org
         // active row is left as-is; it becomes the row we refresh below.) This is
         // a no-op when no different-org active row exists.
-        await tx`
+        const transferredRows = (await tx`
           UPDATE app_installations
           SET status = 'suspended', updated_at = now()
           WHERE provider = ${install.provider}
@@ -400,7 +446,32 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
             AND external_tenant_id = ${install.externalTenantId}
             AND status = 'active'
             AND organization_id <> ${install.organizationId}
-        `;
+          RETURNING id, organization_id
+        `) as unknown as Array<{ id: number; organization_id: string }>;
+
+        if (
+          install.revokeConnectionsOnTransfer &&
+          transferredRows.length > 0
+        ) {
+          const transferredIds = transferredRows.map((row) => String(row.id));
+          const transferredOrganizationIds = transferredRows.map(
+            (row) => row.organization_id
+          );
+          await tx`
+            UPDATE connections
+            SET status = 'revoked',
+                error_message = ${install.revokeConnectionsOnTransfer.errorMessage},
+                updated_at = now()
+            WHERE deleted_at IS NULL
+              AND status <> 'revoked'
+              AND organization_id = ANY(
+                ${pgTextArray(transferredOrganizationIds)}::text[]
+              )
+              AND config ->> 'installation_ref' = ANY(
+                ${pgTextArray(transferredIds)}::text[]
+              )
+          `;
+        }
 
         // Find an EXISTING row for the TARGET (org, tuple) — active or demoted —
         // so an install/reinstall/return-transfer REACTIVATES that single row in

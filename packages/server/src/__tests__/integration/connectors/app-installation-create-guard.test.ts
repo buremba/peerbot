@@ -10,11 +10,12 @@
  * generic `app_installation`-primary connector rather than github specifically.
  */
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
 import { manageAuthProfiles } from "../../../tools/admin/manage_auth_profiles";
 import { manageConnections } from "../../../tools/admin/manage_connections";
+import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
 import { getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -26,6 +27,13 @@ import {
 
 const TEST_ENV = {} as Env;
 const CONNECTOR_KEY = "demo.appinstall.guard";
+const PROVIDER_APP_ID = "demo-app-install-guard";
+const OTHER_PROVIDER_APP_ID = "other-demo-app-install-guard";
+const previousDemoAppId = process.env.DEMO_APP_ID;
+const seededConnectorDefinitions: Array<{
+	organizationId: string;
+	connectorKey: string;
+}> = [];
 
 function ctxFor(organizationId: string, userId: string): ToolContext {
 	return {
@@ -49,18 +57,26 @@ function ctxFor(organizationId: string, userId: string): ToolContext {
  * env_keys). The fallbacks let the selection-aware guard be exercised: a create
  * that targets oauth (auth_profile_slug) or env (config DEMO_TOKEN) must pass.
  */
-async function seedAppInstallConnector(organizationId: string): Promise<void> {
+async function seedAppInstallConnector(
+	organizationId: string,
+	opts?: {
+		provider: "github";
+		installShape: "github-app";
+		connectorKey?: string;
+	},
+): Promise<void> {
+	const connectorKey = opts?.connectorKey ?? CONNECTOR_KEY;
 	await createTestConnectorDefinition({
-		key: CONNECTOR_KEY,
+		key: connectorKey,
 		name: "Demo App Install Guard",
 		organization_id: organizationId,
 		auth_schema: {
 			methods: [
 				{
 					type: "app_installation",
-					provider: "slack",
+					provider: opts?.provider ?? "slack",
 					providerInstance: "cloud",
-					installShape: "oauth-code-exchange",
+					installShape: opts?.installShape ?? "oauth-code-exchange",
 					appIdKey: "DEMO_APP_ID",
 					privateKeyKey: "DEMO_APP_PRIVATE_KEY",
 				},
@@ -77,6 +93,7 @@ async function seedAppInstallConnector(organizationId: string): Promise<void> {
 		},
 		feeds_schema: { items: {} },
 	});
+	seededConnectorDefinitions.push({ organizationId, connectorKey });
 }
 
 /**
@@ -125,14 +142,37 @@ async function connectionCount(organizationId: string): Promise<number> {
 }
 
 beforeAll(async () => {
+	process.env.DEMO_APP_ID = PROVIDER_APP_ID;
 	await initWorkspaceProvider();
+});
+
+afterAll(() => {
+	if (previousDemoAppId === undefined) delete process.env.DEMO_APP_ID;
+	else process.env.DEMO_APP_ID = previousDemoAppId;
 });
 
 afterEach(async () => {
 	const sql = getTestDb();
-	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM auth_profiles WHERE connector_key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
+	for (const { organizationId, connectorKey } of seededConnectorDefinitions) {
+		await sql`
+			DELETE FROM connections
+			WHERE organization_id = ${organizationId}
+				AND connector_key = ${connectorKey}
+		`;
+		await sql`
+			DELETE FROM auth_profiles
+			WHERE organization_id = ${organizationId}
+				AND connector_key = ${connectorKey}
+		`;
+		await sql`
+			DELETE FROM connector_definitions
+			WHERE organization_id = ${organizationId}
+				AND key = ${connectorKey}
+		`;
+	}
+	seededConnectorDefinitions.length = 0;
+	await sql`DELETE FROM app_installations WHERE provider_app_id = ${PROVIDER_APP_ID}`;
+	await sql`DELETE FROM app_installations WHERE provider_app_id = ${OTHER_PROVIDER_APP_ID}`;
 });
 
 describe("manage_connections — app_installation create guard", () => {
@@ -208,6 +248,273 @@ describe("manage_connections — app_installation create guard", () => {
 		// id, so returning an "any active Slack connection" poll would be unsafe.
 		expect(res).not.toHaveProperty("completion_check");
 		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("connect reports an active installation in another accessible workspace", async () => {
+		const currentOrg = await createTestOrganization({
+			name: "Current App Install Org",
+		});
+		const connectedOrg = await createTestOrganization({
+			name: "Connected App Install Org",
+		});
+		const otherInstanceOrg = await createTestOrganization({
+			name: "Other Provider Instance Org",
+		});
+		const otherAppOrg = await createTestOrganization({
+			name: "Other Provider App Org",
+		});
+		const installOnlyOrg = await createTestOrganization({
+			name: "Install Only Org",
+		});
+		// The caller is a plain member here, and the connection belongs to someone
+		// else privately — the workspace must stay invisible to this listing.
+		const memberOnlyOrg = await createTestOrganization({
+			name: "Member Only Private Org",
+		});
+		const user = await createTestUser();
+		const otherUser = await createTestUser();
+		await addUserToOrganization(user.id, currentOrg.id, "owner");
+		await addUserToOrganization(user.id, connectedOrg.id, "owner");
+		await addUserToOrganization(user.id, otherInstanceOrg.id, "owner");
+		await addUserToOrganization(user.id, otherAppOrg.id, "owner");
+		await addUserToOrganization(user.id, installOnlyOrg.id, "owner");
+		await addUserToOrganization(user.id, memberOnlyOrg.id, "member");
+		await addUserToOrganization(otherUser.id, memberOnlyOrg.id, "owner");
+		await seedAppInstallConnector(currentOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+		await seedAppInstallConnector(connectedOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+		await seedAppInstallConnector(otherInstanceOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+		await seedAppInstallConnector(otherAppOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+		await seedAppInstallConnector(installOnlyOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+		await seedAppInstallConnector(memberOnlyOrg.id, {
+			provider: "github",
+			installShape: "github-app",
+			connectorKey: "github",
+		});
+
+		const store = createPostgresAppInstallationStore();
+		const install = await store.upsert({
+			organizationId: connectedOrg.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "T-DEMO-CONNECTED-ELSEWHERE",
+			status: "active",
+		});
+		const otherInstanceInstall = await store.upsert({
+			organizationId: otherInstanceOrg.id,
+			provider: "github",
+			providerInstance: "github.example.test",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "T-DEMO-OTHER-INSTANCE",
+			status: "active",
+		});
+		const otherAppInstall = await store.upsert({
+			organizationId: otherAppOrg.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: OTHER_PROVIDER_APP_ID,
+			externalTenantId: "T-DEMO-OTHER-APP",
+			status: "active",
+		});
+		const installOnly = await store.upsert({
+			organizationId: installOnlyOrg.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "T-DEMO-INSTALL-ONLY",
+			status: "active",
+		});
+		const memberOnlyInstall = await store.upsert({
+			organizationId: memberOnlyOrg.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "T-DEMO-MEMBER-ONLY",
+			status: "active",
+		});
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status, config, created_by
+			) VALUES (
+				${connectedOrg.id}, 'github', 'connected-elsewhere',
+				'Connected Elsewhere', 'active',
+				${sql.json({ installation_ref: install.id })}, ${user.id}
+			)
+		`;
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status, config, created_by
+			) VALUES (
+				${otherAppOrg.id}, 'github', 'other-provider-app',
+				'Other Provider App', 'active',
+				${sql.json({ installation_ref: otherAppInstall.id })}, ${user.id}
+			)
+		`;
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status, config, created_by
+			) VALUES (
+				${otherInstanceOrg.id}, 'github', 'other-instance',
+				'Other Instance', 'active',
+				${sql.json({ installation_ref: otherInstanceInstall.id })}, ${user.id}
+			)
+		`;
+		await sql`
+			INSERT INTO connections (
+				organization_id, connector_key, slug, display_name, status, visibility,
+				config, created_by
+			) VALUES (
+				${memberOnlyOrg.id}, 'github', 'member-only-private',
+				'Member Only Private', 'active', 'private',
+				${sql.json({ installation_ref: memberOnlyInstall.id })}, ${otherUser.id}
+			)
+		`;
+
+		const res = await manageConnections(
+			{
+				action: "connect",
+				connector_key: "github",
+			},
+			TEST_ENV,
+			ctxFor(currentOrg.id, user.id),
+		);
+
+		expect(res).toMatchObject({
+			action: "connect",
+			status: "connected_in_other_workspace",
+			connector_key: "github",
+			current_workspace: { id: currentOrg.id },
+			accessible_workspaces: [
+				{
+					workspace: { id: connectedOrg.id },
+					connection: { slug: "connected-elsewhere", status: "active" },
+					switch_workspace: {
+						next_action: "switch_workspace",
+						organization_id: connectedOrg.id,
+					},
+				},
+			],
+		});
+		// Only the workspace whose connection the caller can actually see is listed:
+		// the member-only workspace's PRIVATE connection (owned by someone else)
+		// must not leak its slug — nor an installation the caller could transfer.
+		expect(
+			(res as { accessible_workspaces: unknown[] }).accessible_workspaces,
+		).toHaveLength(1);
+		expect(JSON.stringify(res)).not.toContain("member-only-private");
+		expect(JSON.stringify(res)).not.toContain("other-provider-app");
+		expect(res).toHaveProperty(
+			"transfer_installation_here.next_action",
+			"transfer_installation_here",
+		);
+		const transferOptions = (
+			res as {
+				transfer_installation_here: {
+					options: Array<{
+						source_installation_id: number;
+						transfer_url: string;
+					}>;
+				};
+			}
+		).transfer_installation_here.options;
+		expect(transferOptions).toHaveLength(2);
+		expect(
+			transferOptions.some(
+				(option) => option.source_installation_id === install.id,
+			),
+		).toBe(true);
+		const installOnlyOption = transferOptions.find(
+			(option) => option.source_installation_id === installOnly.id,
+		);
+		expect(installOnlyOption).toMatchObject({
+			source_installation_id: installOnly.id,
+		});
+		expect(installOnlyOption?.transfer_url).toContain(
+			`source_installation_id=${installOnly.id}`,
+		);
+		expect(res).not.toHaveProperty("accessible_workspaces.0.connection.config");
+		// The install_url the caller is sent to still pins the attempt id, so the
+		// poll affordance from the plain setup_required continuation survives.
+		expect(res).toHaveProperty("setup_attempt_id");
+		expect(res).toHaveProperty(
+			"install_app_here.install_url",
+			expect.stringContaining(
+				`setup_attempt_id=${(res as { setup_attempt_id: string }).setup_attempt_id}`,
+			),
+		);
+		expect(res).toHaveProperty("completion_check.call.sdk_method");
+		const currentGithubRows = await sql`
+			SELECT id FROM connections
+			WHERE organization_id = ${currentOrg.id}
+				AND connector_key = 'github'
+				AND deleted_at IS NULL
+		`;
+		expect(currentGithubRows).toHaveLength(0);
+
+		await sql`
+			DELETE FROM connections
+			WHERE organization_id = ${connectedOrg.id}
+				AND config ->> 'installation_ref' = ${String(install.id)}
+		`;
+		const installOnlyResult = await manageConnections(
+			{ action: "connect", connector_key: "github" },
+			TEST_ENV,
+			ctxFor(currentOrg.id, user.id),
+		);
+		expect(installOnlyResult).toMatchObject({
+			status: "connected_in_other_workspace",
+			accessible_workspaces: [],
+		});
+		expect(installOnlyResult).toHaveProperty(
+			"instructions",
+			expect.stringContaining(
+				"GitHub App installation is active in another workspace you administer",
+			),
+		);
+
+		const patResult = await manageConnections(
+			{ action: "connect", connector_key: "github" },
+			TEST_ENV,
+			{ ...ctxFor(currentOrg.id, user.id), tokenType: "pat" },
+		);
+		expect(patResult).toMatchObject({
+			action: "connect",
+			status: "setup_required",
+			next_action: "install_app",
+		});
+		expect(patResult).not.toHaveProperty("accessible_workspaces");
+
+		const invalidGatewayUrlResult = await manageConnections(
+			{ action: "connect", connector_key: "github" },
+			TEST_ENV,
+			{ ...ctxFor(currentOrg.id, user.id), baseUrl: "not-a-valid-url" },
+		);
+		expect(invalidGatewayUrlResult).toMatchObject({
+			action: "connect",
+			status: "setup_required",
+			next_action: "install_app",
+		});
 	});
 
 	it("create WITH installation_ref in config is allowed past the guard (the callback's shape)", async () => {

@@ -1,6 +1,7 @@
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { getDb } from "../../../db/client.js";
+import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import {
   getCachedMembershipRole,
   getCachedOrgBySlug,
@@ -168,6 +169,26 @@ export async function verifyInstallOrgAccess(
   if (userId) {
     const role = await getCachedMembershipRole(organizationId, userId);
     return role !== null;
+  }
+  const single = await resolveSingleTenantOrgId();
+  return single !== null && single === organizationId;
+}
+
+/**
+ * Stronger install authorization for destructive ownership moves. Ordinary app
+ * installation completion needs plain membership; moving an installation between
+ * workspaces requires owner/admin, and the GitHub transfer flow calls this for
+ * BOTH the source and the target org — one demoted, one claimed.
+ */
+export async function verifyInstallOrgAdminAccess(
+  c: Context,
+  organizationId: string
+): Promise<boolean> {
+  const userId = readUserId(c);
+  if (userId) {
+    return isAdminOrOwnerRole(
+      await getCachedMembershipRole(organizationId, userId)
+    );
   }
   const single = await resolveSingleTenantOrgId();
   return single !== null && single === organizationId;

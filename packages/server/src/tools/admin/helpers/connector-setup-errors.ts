@@ -8,6 +8,7 @@ export type ConnectorSetupError = {
 	error_code: "connector_setup_required";
 	connector_key: string;
 	provider: string;
+	provider_instance?: string;
 	install_type: "app_installation" | "oauth_app_profile";
 	next_action: "install_app" | "configure_oauth_app" | "open_setup";
 	setup_url?: string;
@@ -53,6 +54,9 @@ export function buildAppInstallationSetupError(params: {
 		provider: params.method.provider,
 		install_type: "app_installation",
 		next_action: installUrl ? "install_app" : "open_setup",
+		...(params.method.providerInstance
+			? { provider_instance: params.method.providerInstance }
+			: {}),
 		...(params.setupUrl ? { setup_url: params.setupUrl } : {}),
 		...(installUrl ? { install_url: installUrl } : {}),
 		...(params.method.installShape

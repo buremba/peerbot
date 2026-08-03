@@ -12,6 +12,7 @@ import { getContent } from "../../tools/get_content";
 import type { ToolContext } from "../../tools/registry";
 import { saveContent } from "../../tools/save_content";
 import { search } from "../../tools/search";
+import type {} from "./knowledge.typecheck";
 
 export interface KnowledgeSearchInput {
 	query?: string;

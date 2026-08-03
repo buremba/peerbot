@@ -16,8 +16,8 @@ interface SessionRow {
 	last_action: string;
 	first_activity_at: Date;
 	last_activity_at: Date;
-	call_count: number;
-	failed_count: number;
+	call_count: number | string;
+	failed_count: number | string;
 	tools: unknown;
 	pending_interaction_count: number;
 }

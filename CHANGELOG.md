@@ -1,5 +1,42 @@
 # Changelog
 
+## [14.11.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.10.0...lobu-v14.11.0) (2026-08-03)
+
+
+### Features
+
+* **behaviors:** persist social radar event threads ([#2435](https://github.com/lobu-ai/lobu/issues/2435)) ([6eeb341](https://github.com/lobu-ai/lobu/commit/6eeb341434af10618ca3ecdd22c1015741766679))
+* **connectors:** min_scrolls jitter for X/LinkedIn home feeds ([#2356](https://github.com/lobu-ai/lobu/issues/2356)) ([ae791ad](https://github.com/lobu-ai/lobu/commit/ae791ad495fa974b46c8c96a3b3b8f7a893bad58))
+* **connectors:** stage X reply drafts via prepare_reply ([#2437](https://github.com/lobu-ai/lobu/issues/2437)) ([598f394](https://github.com/lobu-ai/lobu/commit/598f39400f9aa8adfa4bc180ef8e8185d89bf77b))
+* **server:** materialize recent conversation context ([#2441](https://github.com/lobu-ai/lobu/issues/2441)) ([19928ef](https://github.com/lobu-ai/lobu/commit/19928eff8f1cbb8b197e40f350b2253fccdccbd8))
+
+
+### Bug Fixes
+
+* **ci:** publish packages after image smoke ([#2453](https://github.com/lobu-ai/lobu/issues/2453)) ([b5cf43a](https://github.com/lobu-ai/lobu/commit/b5cf43aef5a0c9e42bcb319702f7a9ff18219c77))
+* **server:** authenticate approved tool execution ([#2426](https://github.com/lobu-ai/lobu/issues/2426)) ([56c5de9](https://github.com/lobu-ai/lobu/commit/56c5de91d1ad7c4e56c578f07411f432b5e83510))
+* **server:** bind builder admin grants to auth actors ([#2422](https://github.com/lobu-ai/lobu/issues/2422)) ([a7f7446](https://github.com/lobu-ai/lobu/commit/a7f74461baadff8ad68eddeb862ab883283d9ae1))
+* **server:** bound tool request hydration ([#2445](https://github.com/lobu-ai/lobu/issues/2445)) ([052f0a3](https://github.com/lobu-ai/lobu/commit/052f0a36a56e4064642c8e7544cc1c49fdfd40b7))
+* **server:** exclude command sessions from Recent ([#2457](https://github.com/lobu-ai/lobu/issues/2457)) ([87e4506](https://github.com/lobu-ai/lobu/commit/87e45063fbb35e3dc96c98e1b407f604d338f63f))
+* **server:** normalize canonical chat channel ids ([#2423](https://github.com/lobu-ai/lobu/issues/2423)) ([f0969f7](https://github.com/lobu-ai/lobu/commit/f0969f73e35f60dcc53bf24cd9c6b824c31c2d49))
+* **server:** preserve command-session classification ([#2458](https://github.com/lobu-ai/lobu/issues/2458)) ([a699df4](https://github.com/lobu-ai/lobu/commit/a699df44f9911529bedbc2d01658020b6e05514e))
+* **server:** route Grid interactive approvals ([#2424](https://github.com/lobu-ai/lobu/issues/2424)) ([c7e9489](https://github.com/lobu-ai/lobu/commit/c7e9489a4435971eadb6374b5d32787581fac816))
+* **server:** route same-org Grid install aliases ([#2425](https://github.com/lobu-ai/lobu/issues/2425)) ([18711a6](https://github.com/lobu-ai/lobu/commit/18711a6c0a458c8eeddda6a4249af38523c2c5c0))
+* **server:** route scoped hosted preview delivery ([#2428](https://github.com/lobu-ai/lobu/issues/2428)) ([5958685](https://github.com/lobu-ai/lobu/commit/5958685495138a63386bdc0b0b2a3aa0f4dbaf7c))
+* **server:** secure root embedded Postgres traversal ([#2444](https://github.com/lobu-ai/lobu/issues/2444)) ([e44b0ee](https://github.com/lobu-ai/lobu/commit/e44b0ee1e85db84386c28d5110825700fec2b12f))
+* **server:** stop minting chat identity from a redeemed preview code ([#2418](https://github.com/lobu-ai/lobu/issues/2418)) ([d3834b8](https://github.com/lobu-ai/lobu/commit/d3834b88dc060f7e06b86e750dbfbd8b1fa6cff0))
+* **server:** surface cross-workspace GitHub installs ([#2450](https://github.com/lobu-ai/lobu/issues/2450)) ([61211c0](https://github.com/lobu-ai/lobu/commit/61211c06a16236c84c794a70f26d79a95d1b5056))
+* **server:** type keying_config and split entity display name from its stable key ([#2421](https://github.com/lobu-ai/lobu/issues/2421)) ([eb7a522](https://github.com/lobu-ai/lobu/commit/eb7a5229b1947c268b27a42a10d412ec410a7b53))
+* **skills:** align Lobu guidance with SDK workflows ([#2443](https://github.com/lobu-ai/lobu/issues/2443)) ([c3b2bb4](https://github.com/lobu-ai/lobu/commit/c3b2bb4bb721b8bde806dc0e2f12c70e54756238))
+* **submodule:** align owletto behavior contracts ([#2454](https://github.com/lobu-ai/lobu/issues/2454)) ([92955a6](https://github.com/lobu-ai/lobu/commit/92955a6971707823383e4a6e5f7b839762d1baaf))
+* **ui:** expose MCP client attribution ([#2433](https://github.com/lobu-ai/lobu/issues/2433)) ([f608afd](https://github.com/lobu-ai/lobu/commit/f608afd7f37560aa87eb822a9c2457d18f62cae5))
+
+
+### Performance Improvements
+
+* **ci:** parallelize integration and package builds ([#2442](https://github.com/lobu-ai/lobu/issues/2442)) ([ad2d42a](https://github.com/lobu-ai/lobu/commit/ad2d42a4e52e53daeee21862fd96c8d1928c38e4))
+* **ci:** reduce merge-gate latency ([#2455](https://github.com/lobu-ai/lobu/issues/2455)) ([0664c19](https://github.com/lobu-ai/lobu/commit/0664c19f4dfeee708e17fb1c3970bd5d405c285b))
+
 ## [14.10.0](https://github.com/lobu-ai/lobu/compare/lobu-v14.9.0...lobu-v14.10.0) (2026-08-01)
 
 

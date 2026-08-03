@@ -23,6 +23,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# PR edits and synchronizations often arrive back-to-back. Only the newest
+# open-PR guard matters; never cancel the merged-reachability or scheduled run.
+concurrency:
+  group: merge-integrity-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' }}
+
 jobs:
   # Prevention. Configure this job as a required check so it blocks the merge
   # button before the damage.

@@ -1568,10 +1568,10 @@ export async function prepareLinkedInComment(
   // reaped.
   let released = false;
   try {
-    await safeDispatch.dispatch("release_tab", {
-      tab_id: tabId,
-      ...chromeOriginsInput(),
-    });
+    // No allowed_origins: release_tab gates on run tab-ownership, not on the
+    // page's origin, so passing them would only add a way for the handover to
+    // fail — and a failed handover is a reaped draft.
+    await safeDispatch.dispatch("release_tab", { tab_id: tabId });
     released = true;
   } catch {
     // Older extension builds have no release_tab. Reported as `released` so the

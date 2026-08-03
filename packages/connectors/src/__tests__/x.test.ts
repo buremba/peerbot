@@ -1198,13 +1198,12 @@ describe("prepare_reply browser targeting", () => {
 	});
 });
 
-// The staged tab must outlive the run. Unless it is released to the user the
-// extension keeps treating it as an owned scratch tab and the reaper
-// force-closes it after 5 minutes — the draft vanishes while the run still
-// reports prepared:true, so nothing at runtime reveals the bug. This test is
-// the only guard.
+// The staged tab must outlive the run. Until it is released the extension owns
+// it as a scratch tab and the reaper force-closes it after 5 minutes — the
+// draft vanishes while the run still reports prepared:true, so nothing at
+// runtime reveals the bug. These tests are the only guard.
 describe("prepare_reply tab survival", () => {
-	test("releases the tab to the user so the reaper cannot close the draft", async () => {
+	test("opens a focused, non-persistent tab and hands it over with release_tab", async () => {
 		const { dispatcher, calls } = stagingDispatcher();
 
 		await prepareXReply(dispatcher, {

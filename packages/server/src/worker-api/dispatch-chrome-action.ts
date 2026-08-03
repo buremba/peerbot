@@ -511,11 +511,12 @@ export async function resolveOnlineChromeConnection(
  *
  * Why this exists. A connection's `device_worker_id` means "scrape with this
  * browser", and for a sync that is right — it belongs on the always-on machine.
- * But an interactive action (x.prepare_reply, linkedin.prepare_comment) exists
- * to put a page in front of a person. Routing it by the scrape pin stages the
- * draft on whichever box runs the cron, so the human never sees it — exactly
- * the bug this key fixes. Only the connector knows an action is interactive, so
- * the connector names the browser; syncs never set it and are unaffected.
+ * But an interactive action exists to put a page in front of a person. Routing
+ * it by the scrape pin stages the draft on whichever box runs the cron, so the
+ * human never sees it — exactly the bug this key fixes. Only the connector
+ * knows an action is interactive, so the connector names the browser; syncs
+ * never set it and are unaffected. `x.prepare_reply` is the only action that
+ * sets it today (`linkedin.prepare_comment` is interactive too and should).
  *
  * Consumed and stripped here — never forwarded to the extension.
  */

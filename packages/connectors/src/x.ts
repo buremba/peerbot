@@ -1890,8 +1890,10 @@ export const TARGET_BROWSER_CONNECTION_INPUT_KEY =
  *
  * `config.interactive_browser_connection_id` is honoured if a connection row
  * carries it, but no connection config schema declares it, so it is not
- * user-selectable today; `browser_connection_id` on the call is the supported
- * way to name a browser.
+ * user-selectable today, and only the gateway's inline action path passes
+ * connection config at all (the worker-fleet path does not — see the NOTE in
+ * connector-worker `daemon/executor.ts`). `browser_connection_id` on the call
+ * is the supported way to name a browser.
  */
 export function resolveTargetBrowserConnectionId(
 	input: Record<string, unknown>,
@@ -1932,7 +1934,8 @@ export function truncateHandoffReason(
  * Without it the staged tab is context-free — you get a draft in a box with no
  * record of why the agent thought this post mattered, which is most of what you
  * need in order to accept, edit, or bin it. Same banner as
- * `linkedin.prepare_comment`; only the composer selectors differ.
+ * `linkedin.prepare_comment`, adapted for X: its own composer selectors, no
+ * side-panel footer line.
  *
  * Best-effort: X re-renders aggressively and may drop the node. Never fatal —
  * the draft is already staged by the time this runs.
@@ -2107,12 +2110,14 @@ export function normalizeXPostUrl(raw: string): string | null {
 		: `https://x.com/i/web/status/${statusId[1]}`;
 }
 
-/** URLs X bounces signed-out sessions to. */
+/**
+ * URLs X bounces signed-out sessions to: /i/flow/login, /login, /account/access
+ * and /i/flow/signup. `/login` subsumes the /i/flow/login form.
+ */
 export function isXAuthWall(url: string | undefined): boolean {
 	if (!url) return false;
 	const lower = url.toLowerCase();
 	return (
-		lower.includes("/i/flow/login") ||
 		lower.includes("/login") ||
 		lower.includes("/account/access") ||
 		lower.includes("/i/flow/signup")
@@ -2314,7 +2319,6 @@ export async function prepareXReply(
 	const read = await safeDispatch.dispatch<{
 		value?: {
 			staged_text?: string | null;
-			composer_present?: boolean;
 			submit_enabled?: boolean | null;
 		};
 	}>("evaluate", {
@@ -2377,6 +2381,10 @@ export async function prepareXReply(
 	//
 	// Deliberately last, after the staged-text check: a run that fails earlier
 	// leaves the tab owned, and a tab with no draft in it SHOULD be reaped.
+	//
+	// The one dispatch here without allowed_origins: release_tab gates on run
+	// tab-ownership, not on the page's origin, so an origin list would only add
+	// a way for the handover to fail — and a failed handover is a reaped draft.
 	let released = false;
 	try {
 		await safeDispatch.dispatch("release_tab", { tab_id: tabId });
@@ -2688,8 +2696,8 @@ export default class XConnector extends ConnectorRuntime {
 					? { reason: ctx.input.reason }
 					: {}),
 				targetBrowserConnectionId: resolveTargetBrowserConnectionId(
-					ctx.input as Record<string, unknown>,
-					(ctx.config ?? {}) as Record<string, unknown>,
+					ctx.input,
+					ctx.config,
 				),
 			});
 			return { success: true, output: { ...output } };

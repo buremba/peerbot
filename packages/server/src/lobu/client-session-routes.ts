@@ -98,7 +98,7 @@ routes.get("/", mcpAuth, async (c) => {
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
       AND (
         NOT ${conversationOnly}
-        OR oc.software_id IS DISTINCT FROM ${LOBU_COMMAND_CLIENT_SOFTWARE_ID}
+        OR mc.client_software_id IS DISTINCT FROM ${LOBU_COMMAND_CLIENT_SOFTWARE_ID}
       )
     ORDER BY mc.last_activity_at DESC LIMIT ${limit}
   `;

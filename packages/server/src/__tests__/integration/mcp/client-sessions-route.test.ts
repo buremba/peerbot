@@ -129,6 +129,9 @@ describe('client sessions activity route', () => {
     // Command clients create transport sessions for individual invocations;
     // they belong in client activity, not the conversation-only Recent list.
     await recordCall('sess-command', 'run_sdk', { clientId: commandClientId });
+    // Revocation removes the display client row. The write-time software-id
+    // stamp must continue to classify the retained activity afterward.
+    await getDb()`DELETE FROM oauth_clients WHERE id = ${commandClientId}`;
 
     // Cross-org session: must never appear for orgSlug.
     await recordCall('sess-foreign', 'search_memory', {
@@ -251,6 +254,10 @@ describe('client sessions activity route', () => {
     const beta = body.sessions.find((s) => s.sessionId === 'sess-beta')!;
     expect(beta.callCount).toBe(1);
     expect(beta.pendingInteractionCount).toBe(0);
+
+    const command = body.sessions.find((s) => s.sessionId === 'sess-command')!;
+    expect(command.clientId).toBeNull();
+    expect(command.clientName).toBeNull();
 
     const capped = body.sessions.find((s) => s.sessionId === 'sess-tool-cap')!;
     expect(capped.tools).toHaveLength(8);

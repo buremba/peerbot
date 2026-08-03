@@ -4,10 +4,10 @@ name: Published-artifact smoke
 # page's quickstart end to end — init, validate, run, and one REAL agent turn.
 #
 # This is the gate for the "works from the monorepo, broken from the artifact"
-# class (#2186, #2231, __filename, GLIBC_2.38, uid-0). `ci.yml`'s cli-smoke job
-# walks every command but points at the SOURCE TREE, which pins four things at
-# once — tarball-vs-source, bun-vs-node, root-vs-not, and the runner's glibc —
-# and each pin hid one of those bugs. The bun/node one is structural: the
+# class (#2186, #2231, __filename, GLIBC_2.38, uid-0). The CLI smoke in
+# `ci.yml` walks every command but points at the SOURCE TREE, which pins four
+# things at once — tarball-vs-source, bun-vs-node, root-vs-not, and the runner's
+# glibc — and each pin hid one of those bugs. The bun/node one is structural: the
 # gateway picks the worker entrypoint by extension and spawns `.ts` under bun,
 # `.mjs` under node, so in-repo it can only ever take the bun path.
 #

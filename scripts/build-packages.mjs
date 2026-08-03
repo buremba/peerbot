@@ -4,6 +4,16 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+const knownArgs = new Set(["--skip-applications"]);
+const unknownArgs = process.argv.slice(2).filter((arg) => !knownArgs.has(arg));
+if (unknownArgs.length > 0) {
+  console.error(
+    `Unknown build-packages argument(s): ${unknownArgs.join(", ")}`
+  );
+  process.exit(2);
+}
+const skipApplications = process.argv.includes("--skip-applications");
+
 function packageBuild(packageName, script = "build") {
   return {
     label: `packages/${packageName}`,
@@ -76,21 +86,27 @@ const layers = [
   ],
 ];
 
-const applications = [packageBuild("server", "build:server")];
-if (existsSync(new URL("../packages/owletto/package.json", import.meta.url))) {
-  applications.push(packageBuild("owletto"));
+if (!skipApplications) {
+  const applications = [packageBuild("server", "build:server")];
+  if (
+    existsSync(new URL("../packages/owletto/package.json", import.meta.url))
+  ) {
+    applications.push(packageBuild("owletto"));
+  } else {
+    console.warn(
+      "⚠️  packages/owletto absent — CLI will ship headless (API only)"
+    );
+  }
+  layers.push(["applications", applications]);
 } else {
-  console.warn(
-    "⚠️  packages/owletto absent — CLI will ship headless (API only)"
-  );
+  console.log("⏩ Skipping application bundles (server + Owletto)");
 }
-layers.push(["applications", applications]);
 layers.push(["distribution", [packageBuild("cli")]]);
 
-console.log("📦 Building all TypeScript packages by dependency layer...");
+console.log("📦 Building TypeScript packages by dependency layer...");
 try {
   for (const [label, builds] of layers) await runLayer(label, builds);
-  console.log("✅ All packages built successfully!");
+  console.log("✅ Package build completed successfully!");
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;

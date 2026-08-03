@@ -6,8 +6,8 @@
  * the same org. We:
  *
  *   1. Look up the parent connector run's org (+ optional data connection) from runs.
- *   2. Pick an online chrome connection / extension (prefer parent connection's
- *      chrome-extension pin when set — browser affinity for LinkedIn/X/etc.).
+ *   2. Pick an online chrome connection / extension (prefer an explicit target,
+ *      then the parent connection's chrome-extension scrape pin).
  *   3. Enqueue an action run via `createConnectorOperationRun` (the same
  *      helper `manage_operations.execute` uses for device-bound calls).
  *   4. Await completion via the shared `waitForDeviceActionRun` (also
@@ -21,6 +21,7 @@
 
 import type { DispatchChromeActionRequest } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
+import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
@@ -506,6 +507,75 @@ export async function resolveOnlineChromeConnection(
 }
 
 /**
+ * Reserved key in a chrome action's input: "dispatch this to the browser paired
+ * with THIS chrome connection", overriding the parent connection's scrape pin.
+ *
+ * Why this exists. A connection's `device_worker_id` means "scrape with this
+ * browser", and for a sync that is right — it belongs on the always-on machine.
+ * But an interactive action exists to put a page in front of a person. Routing
+ * it by the scrape pin stages the draft on whichever box runs the cron, so the
+ * human never sees it — exactly the bug this key fixes. Only the connector
+ * knows an action is interactive, so the connector names the browser; syncs
+ * never set it and are unaffected. `x.prepare_reply` is the only action that
+ * sets it today (`linkedin.prepare_comment` is interactive too and should).
+ *
+ * Consumed and stripped here — never forwarded to the extension.
+ */
+export const TARGET_BROWSER_CONNECTION_INPUT_KEY = 'target_browser_connection_id';
+
+/**
+ * Resolve the chrome-extension worker paired with an explicitly requested chrome
+ * connection. Returns `{ error }` rather than falling back: an interactive action
+ * that silently retargets is the defect we are fixing, and a wrong browser can
+ * mean a wrong logged-in account.
+ */
+async function resolveTargetBrowserWorker(
+  organizationId: string,
+  requesterUserId: string | null,
+  rawTarget: unknown,
+  sql: ReturnType<typeof getDb>
+): Promise<{ deviceWorkerId: string } | { error: string }> {
+  const targetId = typeof rawTarget === 'number' ? rawTarget : Number.NaN;
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+    return {
+      error: `${TARGET_BROWSER_CONNECTION_INPUT_KEY} must be a positive integer chrome connection id, got ${JSON.stringify(rawTarget)}`,
+    };
+  }
+
+  // Apply the same org/private boundary used by discovery and execution. A
+  // headless run has no principal and can therefore target org-visible rows
+  // only; a user may additionally target their own private browser.
+  const visibility = sql`${sql.unsafe(
+    compileConnectionRowVisibility(
+      { organizationId, principal: requesterUserId },
+      'con'
+    )
+  )}`;
+  const rows = (await sql`
+    SELECT dw.id
+    FROM connections con
+    JOIN device_workers dw ON dw.id = con.device_worker_id
+      AND dw.organization_id = con.organization_id
+      AND dw.user_id = con.created_by
+    WHERE con.id = ${targetId}
+      AND con.organization_id = ${organizationId}
+      AND con.connector_key = 'chrome'
+      AND con.status = 'active'
+      AND con.deleted_at IS NULL
+      ${visibility}
+      AND dw.platform = 'chrome-extension'
+    LIMIT 1
+  `) as Array<{ id: string }>;
+
+  if (rows.length === 0) {
+    return {
+      error: `${TARGET_BROWSER_CONNECTION_INPUT_KEY}=${targetId} is not an active chrome connection paired to a browser in this organization.`,
+    };
+  }
+  return { deviceWorkerId: rows[0].id };
+}
+
+/**
  * Look up browser affinity for a parent connector run: if its data connection is pinned
  * to a chrome-extension worker, that pin means "use this browser" (not "run
  * the parent connector on the extension" — see poll.ts).
@@ -545,6 +615,8 @@ export async function dispatchChromeActionToExtension(params: {
    * a chrome-extension, scrapes target that browser.
    */
   parentConnectionId?: number | null;
+  /** Trusted requesting user. Null means headless and permits org-visible targets only. */
+  requesterUserId?: string | null;
   /** Abort the wait early (e.g. the calling reaction hit its budget). */
   abortSignal?: AbortSignal;
 }): Promise<ChromeActionDispatchResult> {
@@ -554,14 +626,36 @@ export async function dispatchChromeActionToExtension(params: {
     actionInput,
     parentRunId,
     parentConnectionId,
+    requesterUserId = null,
     abortSignal,
   } = params;
   const sql = getDb();
 
-  const preferredDeviceWorkerId = await preferredBrowserWorkerForConnection(
-    parentConnectionId,
-    sql
-  );
+  // An interactive action may name the browser it wants to be seen in. That
+  // beats the parent connection's scrape pin, which points at whichever machine
+  // owns the cron rather than wherever the human is sitting.
+  const rawTarget = (actionInput ?? {})[TARGET_BROWSER_CONNECTION_INPUT_KEY];
+  let targetedBrowser = false;
+  let preferredDeviceWorkerId: string | null;
+  if (rawTarget != null) {
+    const resolved = await resolveTargetBrowserWorker(
+      organizationId,
+      requesterUserId,
+      rawTarget,
+      sql
+    );
+    if ('error' in resolved) {
+      // Fail closed: never quietly stage on the scrape machine instead.
+      return { status: 'failed', error_message: resolved.error };
+    }
+    preferredDeviceWorkerId = resolved.deviceWorkerId;
+    targetedBrowser = true;
+  } else {
+    preferredDeviceWorkerId = await preferredBrowserWorkerForConnection(
+      parentConnectionId,
+      sql
+    );
+  }
 
   const chromeConnection = await resolveOnlineChromeConnection(organizationId, sql, {
     preferredDeviceWorkerId,
@@ -570,15 +664,19 @@ export async function dispatchChromeActionToExtension(params: {
   if (!chromeConnection) {
     return {
       status: 'failed',
-      error_message: preferredDeviceWorkerId
-        ? 'The Chrome extension selected for this connection is offline. Open Owletto in that browser (and stay signed in) to continue.'
-        : 'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
+      error_message: targetedBrowser
+        ? 'The browser this action is set to open in is offline. Open Chrome with the Owletto extension on that machine and try again.'
+        : preferredDeviceWorkerId
+          ? 'The Chrome extension selected for this connection is offline. Open Owletto in that browser (and stay signed in) to continue.'
+          : 'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
     };
   }
 
   // Stamp holder_run_id on every chrome action so the extension can scope
   // scratch-tab ownership/cleanup to the parent connector run.
   const operationInput: Record<string, unknown> = { ...(actionInput ?? {}) };
+  // Routing directive, not an extension argument — the extension must never see it.
+  delete operationInput[TARGET_BROWSER_CONNECTION_INPUT_KEY];
   if (
     parentRunId != null &&
     operationInput.holder_run_id == null &&
@@ -597,6 +695,7 @@ export async function dispatchChromeActionToExtension(params: {
       operationInput,
       approvalMode: 'device',
       requireCompiledCode: false,
+      createdByUserId: requesterUserId,
     });
   } catch (err) {
     const msg = errorMessage(err);
@@ -616,6 +715,8 @@ export async function dispatchChromeActionToExtension(params: {
       chrome_connection_id: chromeConnection.connectionId,
       device_worker_id: chromeConnection.deviceWorkerId,
       preferred_device_worker_id: preferredDeviceWorkerId,
+      // true = the action named its browser; false = fell back to the scrape pin.
+      targeted_browser: targetedBrowser,
     },
     '[dispatchChromeAction] dispatched'
   );
@@ -650,9 +751,11 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
 
   // Authorize: parent run must exist, be a running connector execution claimed
   // by this worker. Both sync() and execute() receive chrome_dispatcher.
-  // connection_id drives browser affinity when pinned to a chrome-extension.
+  // connection_id supplies scrape affinity; an explicit action target
+  // overrides it.
   const parentRows = (await sql`
-    SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id
+    SELECT r.organization_id, r.status, r.claimed_by, r.run_type, r.connection_id,
+           r.created_by_user_id
     FROM runs r
     WHERE r.id = ${body.parent_run_id}
     LIMIT 1
@@ -662,6 +765,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     claimed_by: string | null;
     run_type: string;
     connection_id: number | null;
+    created_by_user_id: string | null;
   }>;
   if (parentRows.length === 0) {
     return c.json({ error: 'parent_run not found' }, 404);
@@ -689,6 +793,7 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
     actionInput: body.action_input ?? {},
     parentRunId: body.parent_run_id,
     parentConnectionId: parentRun.connection_id,
+    requesterUserId: parentRun.created_by_user_id,
   });
   return c.json(result);
 }

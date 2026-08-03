@@ -807,6 +807,8 @@ type PrepareCommentResult = {
   body: string;
   /** How the composer was filled: evaluate or the a11y type_ref fallback. */
   method: "type_ref" | "evaluate";
+  /** Whether the tab was handed to the user so the reaper cannot close it. */
+  released: true;
   /** Whether the in-page handoff banner was injected. */
   banner_shown?: boolean;
   /** Truncated reason shown on the banner (if any). */
@@ -1155,12 +1157,8 @@ export function buildInjectHandoffBannerExpression(opts: {
     (document.body || document.documentElement).appendChild(root);
   }
 
-  // Soft auto-dismiss after 90s so we don't leave permanent chrome on the page.
-  try {
-    setTimeout(function () {
-      try { if (root.isConnected) root.remove(); } catch (_) {}
-    }, 90000);
-  } catch (_) {}
+  // No auto-dismiss: release_tab makes the draft durable, so its context must
+  // still be present when the user returns later. The dismiss button remains.
 
   return { ok: true, anchored: anchored, has_reason: !!REASON };
 })()`;
@@ -1553,12 +1551,26 @@ export async function prepareLinkedInComment(
     }
   }
 
+  // Hand the tab to the human. Until this point it is an extension-owned
+  // scratch tab, which the reaper force-closes after ~5 minutes — taking the
+  // staged draft with it. Released, it is an ordinary user tab the reaper
+  // ignores.
+  //
+  // Deliberately last, after the composer-filled check above: a run that fails
+  // earlier leaves the tab owned, and a tab with no draft in it SHOULD be
+  // reaped.
+  // No allowed_origins: release_tab gates on run tab-ownership, not on the
+  // page's origin, so passing them would only add a way for the handover to
+  // fail — and a failed handover is a reaped draft.
+  await safeDispatch.dispatch("release_tab", { tab_id: tabId });
+
   return {
     prepared: true,
     tab_id: tabId,
     post_url: postUrl,
     body,
     method,
+    released: true,
     banner_shown: bannerShown,
     reason_preview: reasonPreview,
     agent_id: handoff?.agentId,
@@ -2143,7 +2155,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.4.0",
+    version: "3.6.0",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -2328,7 +2340,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
         name: "Prepare comment",
         description:
           "Stage a comment draft on LinkedIn in the paired Chrome browser (open post, fill composer, banner). NEVER submits — the human must click Post. No auto-post path exists.",
-        requiresApproval: true,
+        // Staging is the approval surface: this action can only open the
+        // composer and type. The human still performs the irreversible Post
+        // click, which safeDispatch structurally refuses above.
+        requiresApproval: false,
         kind: "write",
         annotations: {
           openWorldHint: true,
@@ -2403,6 +2418,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
             post_url: { type: "string" },
             body: { type: "string" },
             method: { type: "string" },
+            released: { type: "boolean" },
             banner_shown: { type: "boolean" },
             reason_preview: { type: "string" },
             agent_id: { type: "string" },

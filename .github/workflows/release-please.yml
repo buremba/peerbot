@@ -15,10 +15,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
     steps:
       # Releases created with GITHUB_TOKEN do not trigger release-event
       # workflows, including build-images and mac-release.
@@ -32,34 +28,15 @@ jobs:
           fi
 
       - uses: googleapis/release-please-action@v5
-        id: release
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           include-component-in-tag: true
 
-  publish:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      # Delegate the actual publish to publish-packages.yml so there's
-      # only one workflow registered as a trusted publisher on npmjs.com
-      # (the OIDC token is tied to the workflow filename).
-      actions: write
-    steps:
-      - name: Trigger publish-packages workflow
-        env:
-          # workflow_dispatch is allowed to create a run with GITHUB_TOKEN;
-          # only release-event consumers require the automation token above.
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run publish-packages.yml \
-            --repo ${{ github.repository }} \
-            --ref main \
-            -f bump=skip
+  # build-images.yml triggers publish-packages.yml only after the release's
+  # exact app image has been built and boot-smoked. Keeping that dependency at
+  # the artifact chokepoint prevents release creation from racing image CI.
 
   # mac-release.yml now auto-fires on `release: types: [published]` directly,
   # so this job is no longer needed — see mac-release.yml's `on:` block.

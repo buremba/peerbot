@@ -248,6 +248,7 @@ async function executeLocalActionInline(
 	connection: ConnectionRow,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
+	requesterUserId: string | null,
 	env: Env,
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
@@ -322,6 +323,7 @@ async function executeLocalActionInline(
 						// Browser affinity: data connection pin to a chrome-extension
 						// selects which Owletto browser receives scrapes.
 						parentConnectionId: connection.id,
+						requesterUserId,
 						abortSignal,
 					});
 
@@ -395,6 +397,7 @@ async function executeOperationInline(
 	connection: ConnectionRow,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
+	requesterUserId: string | null,
 	env: Env,
 	abortSignal?: AbortSignal,
 ): Promise<InlineExecutionResult> {
@@ -405,6 +408,7 @@ async function executeOperationInline(
       connection,
       operation,
       actionInput,
+			requesterUserId,
       env,
 			abortSignal,
     );
@@ -1165,6 +1169,7 @@ async function handleExecute(
 				// attended recheck.
 				policyPrincipalKind: actor.kind,
 				policyPrincipalId: actor.id,
+				createdByUserId: ctx.userId,
 				db: tx,
 			});
 			const event = await insertEvent(
@@ -1267,6 +1272,7 @@ async function handleExecute(
 		requireCompiledCode: operation.backend === "local_action",
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
+		createdByUserId: ctx.userId,
 	});
 
 	if (args.behavior_source) {
@@ -1326,6 +1332,7 @@ async function handleExecute(
 		connection,
 		operation,
 		input,
+		ctx.userId,
 		env,
 		ctx.abortSignal,
 	);
@@ -2731,7 +2738,7 @@ async function handleApprove(
       AND organization_id = ${ctx.organizationId}
       AND approval_status = 'pending'
       AND run_type = 'action'
-    RETURNING id, connection_id, action_key, action_input
+    RETURNING id, connection_id, action_key, action_input, created_by_user_id
   `;
 	if (runRows.length === 0) {
 		return { error: "Run not found or not pending approval" };
@@ -2742,6 +2749,7 @@ async function handleApprove(
 		connection_id: number;
 		action_key: string;
 		action_input: Record<string, unknown> | null;
+		created_by_user_id: string | null;
 	};
 
 	const reviewer = await resolveReviewer(ctx);
@@ -2772,6 +2780,7 @@ async function handleApprove(
 		resolved.connection,
 		resolved.operation,
 		(run.action_input ?? {}) as Record<string, unknown>,
+		run.created_by_user_id,
 		env,
 	);
 

@@ -21,6 +21,7 @@ import {
 	type AppInstallRouterDeps,
 	autoProvisionGithubIssueFeeds,
 	createAppInstallRoutes,
+	linkGithubAppInstallation,
 } from "../../../gateway/routes/public/app-install";
 import { createGithubInstallStateStore } from "../../../gateway/auth/oauth/state-store";
 import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
@@ -120,6 +121,8 @@ function buildRouter(
 			| undefined;
 		/** Repos the (mocked) /installation/repositories enumeration returns. */
 		installationRepos?: Array<{ owner: string; name: string }>;
+		/** Lobu workspaces where the completing user is owner/admin. */
+		adminOrganizationIds?: string[];
 	} = {},
 ): {
 	router: ReturnType<typeof createAppInstallRoutes>;
@@ -170,6 +173,9 @@ function buildRouter(
 		// fixation test drives a state org ≠ installOrgId → not a member → reject.
 		verifyInstallOrgAccess: async (_c, organizationId) =>
 			organizationId === installOrgId,
+		verifyInstallOrgAdminAccess: async (_c, organizationId) =>
+			(opts.adminOrganizationIds ??
+				(installOrgId ? [installOrgId] : [])).includes(organizationId),
 		getPublicGatewayUrl: () =>
 			opts.publicGatewayUrl === undefined
 				? PUBLIC_GATEWAY_URL
@@ -1061,6 +1067,157 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 });
 
 describe("GitHub App install callback — re-bind recovery (user-auth flow)", () => {
+	it("an unconfirmed install of another workspace's installation is 409, zero mutation", async () => {
+		const sourceOrg = await createTestOrganization({
+			name: "Unconfirmed Transfer Source",
+		});
+		const targetOrg = await createTestOrganization({
+			name: "Unconfirmed Transfer Target",
+		});
+		await seedGithubConnector(sourceOrg.id);
+		await seedGithubConnector(targetOrg.id);
+		const store = createPostgresAppInstallationStore();
+		const source = await linkGithubAppInstallation({
+			organizationId: sourceOrg.id,
+			installationId: "6560",
+			store,
+			providerAppId: PROVIDER_APP_ID,
+		});
+		// A plain (non-transfer) install state for the target org — the shape a
+		// GitHub-owner reaches by re-installing the SAME installation elsewhere.
+		const state = await createGithubInstallStateStore().create({
+			organizationId: targetOrg.id,
+		});
+		const { router } = buildRouter(targetOrg.id, {
+			installations: { 6560: { login: "installer-user", type: "User" } },
+		});
+
+		const response = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6560&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(response.status).toBe(409);
+		expect(await response.text()).toContain("active in another Lobu workspace");
+		// Ownership stayed with the source org, and the target got nothing.
+		const active = await store.resolveActiveByTenant({
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "6560",
+		});
+		expect(active?.organizationId).toBe(sourceOrg.id);
+		expect(await installCount(targetOrg.id)).toBe(0);
+		expect(await connectionCount(targetOrg.id)).toBe(0);
+		const sql = getDb();
+		const [sourceConnection] = (await sql`
+			SELECT status FROM connections WHERE id = ${source.connectionId}
+		`) as unknown as Array<{ status: string }>;
+		expect(sourceConnection.status).toBe("active");
+	});
+
+	it("explicit transfer requires both workspace admins and signs the exact installation", async () => {
+		const sourceOrg = await createTestOrganization({ name: "Transfer Source Org" });
+		const targetOrg = await createTestOrganization({ name: "Transfer Target Org" });
+		await seedGithubConnector(sourceOrg.id);
+		await seedGithubConnector(targetOrg.id);
+		const source = await linkGithubAppInstallation({
+			organizationId: sourceOrg.id,
+			installationId: "6540",
+			store: createPostgresAppInstallationStore(),
+			providerAppId: PROVIDER_APP_ID,
+		});
+		// The installation remains owned by the source workspace even if its
+		// connection was deleted; explicit transfer must not dead-end in that state.
+		const sql = getDb();
+		await sql`DELETE FROM connections WHERE id = ${source.connectionId}`;
+
+		const forbidden = buildRouter(targetOrg.id, {
+			adminOrganizationIds: [targetOrg.id],
+		});
+		const forbiddenResponse = await forbidden.router.fetch(
+			new Request(
+				`http://gw.test/github/app/install?recovery=1&confirm_transfer=1&source_installation_id=${source.installId}`,
+			),
+		);
+		expect(forbiddenResponse.status).toBe(403);
+
+		const allowed = buildRouter(targetOrg.id, {
+			adminOrganizationIds: [sourceOrg.id, targetOrg.id],
+		});
+		const response = await allowed.router.fetch(
+			new Request(
+				`http://gw.test/github/app/install?recovery=1&confirm_transfer=1&source_installation_id=${source.installId}`,
+			),
+		);
+		expect(response.status).toBe(302);
+		const location = response.headers.get("location") ?? "";
+		expect(location).toContain("https://github.com/login/oauth/authorize");
+		const state = new URL(location).searchParams.get("state");
+		const peeked = await createGithubInstallStateStore().peek(state as string);
+		expect(peeked).toMatchObject({
+			organizationId: targetOrg.id,
+			recovery: true,
+			confirmTransfer: true,
+			transferInstallationId: "6540",
+			transferSourceOrganizationId: sourceOrg.id,
+		});
+	});
+
+	it("a signed exact transfer moves ownership and revokes the source connection", async () => {
+		const sourceOrg = await createTestOrganization({
+			name: "Transfer Callback Source",
+		});
+		const targetOrg = await createTestOrganization({
+			name: "Transfer Callback Target",
+		});
+		await seedGithubConnector(sourceOrg.id);
+		await seedGithubConnector(targetOrg.id);
+		const store = createPostgresAppInstallationStore();
+		const source = await linkGithubAppInstallation({
+			organizationId: sourceOrg.id,
+			installationId: "6550",
+			store,
+			providerAppId: PROVIDER_APP_ID,
+		});
+		const state = await createGithubInstallStateStore().create({
+			organizationId: targetOrg.id,
+			recovery: true,
+			confirmTransfer: true,
+			transferInstallationId: "6550",
+			transferSourceOrganizationId: sourceOrg.id,
+		});
+		const { router } = buildRouter(targetOrg.id, {
+			adminOrganizationIds: [sourceOrg.id, targetOrg.id],
+			installations: {
+				6550: { login: "installer-user", type: "User" },
+			},
+			// The exact signed id means this deliberately remains ambiguous: transfer
+			// must not fall back to guessing the user's sole installation.
+			soleInstallation: "ambiguous",
+		});
+
+		const response = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(response.status).toBe(200);
+		const active = await store.resolveActiveByTenant({
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "6550",
+		});
+		expect(active?.organizationId).toBe(targetOrg.id);
+		const sql = getDb();
+		const [sourceConnection] = (await sql`
+			SELECT status FROM connections WHERE id = ${source.connectionId}
+		`) as unknown as Array<{ status: string }>;
+		expect(sourceConnection.status).toBe("revoked");
+	});
+
 	it("start route routes through GitHub user-auth (recovery) when an install row already exists", async () => {
 		const org = await createTestOrganization({ name: "Recovery Start Org" });
 		await seedGithubConnector(org.id);
@@ -1178,6 +1335,33 @@ describe("GitHub App install callback — re-bind recovery (user-auth flow)", ()
 			),
 		);
 		expect(res.status).toBe(400);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("ignores an exact transfer id unless signed transfer confirmation is present", async () => {
+		const org = await createTestOrganization({
+			name: "Recovery Unsigned Transfer Id Org",
+		});
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+			recovery: true,
+			transferInstallationId: "6650",
+		});
+		const { router } = buildRouter(org.id, {
+			installations: {
+				6650: { login: "installer-user", type: "User" },
+			},
+			soleInstallation: "ambiguous",
+		});
+
+		const response = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(response.status).toBe(400);
 		expect(await installCount(org.id)).toBe(0);
 		expect(await connectionCount(org.id)).toBe(0);
 	});

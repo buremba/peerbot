@@ -7,9 +7,8 @@ name: Supply chain
 # relevant job to a hard gate once it's clean.
 
 on:
-  # PR and main-push scans are called by ci.yml only after required checks
-  # finish, so informational scans cannot starve the merge gate.
-  workflow_call:
+  # Informational scans run out of band so they cannot consume PR merge-gate
+  # capacity. The daily run still catches newly published advisories.
   schedule:
     # Daily so newly-published advisories are caught between PRs.
     - cron: "13 6 * * *"
@@ -17,7 +16,6 @@ on:
 
 concurrency:
   group: supply-chain-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -66,12 +64,10 @@ jobs:
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v4
-        # Upload only from main/schedule runs: PR uploads create a per-tool
-        # code-scanning check that compares against the base branch, and until
-        # a main baseline exists every pre-existing finding shows as a "new
-        # alert" failing that check on every PR. PR runs still scan and log;
-        # the Security tab baseline populates from main.
-        if: always() && github.event_name != 'pull_request'
+        # The workflow has no PR trigger, so scheduled and manual scans can
+        # populate the Security tab without creating per-PR code-scanning
+        # checks from the existing advisory backlog.
+        if: always()
         with:
           sarif_file: trivy-results.sarif
           category: trivy-fs

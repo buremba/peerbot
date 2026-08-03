@@ -653,6 +653,65 @@ export const ManageConnectionsResultSchema = Type.Union([
     message: Type.String(),
     view_url: Type.Optional(Type.String()),
   }),
+  Type.Object({
+    action: Type.Literal("connect"),
+    status: Type.Literal("connected_in_other_workspace"),
+    connector_key: Type.String(),
+    current_workspace: Type.Object({
+      id: Type.String(),
+      slug: Type.String(),
+      name: Type.String(),
+    }),
+    accessible_workspaces: Type.Array(
+      Type.Object({
+        workspace: Type.Object({
+          id: Type.String(),
+          slug: Type.String(),
+          name: Type.String(),
+        }),
+        connection: Type.Object({
+          id: Type.Integer(),
+          slug: Type.String(),
+          display_name: Type.Union([Type.String(), Type.Null()]),
+          status: Type.Literal("active"),
+        }),
+        switch_workspace: Type.Object({
+          next_action: Type.Literal("switch_workspace"),
+          organization_id: Type.String(),
+          organization_slug: Type.String(),
+          view_url: Type.String(),
+        }),
+      })
+    ),
+    install_app_here: Type.Object({
+      next_action: Type.Literal("install_app"),
+      install_url: Type.String(),
+    }),
+    // Carried over from the `setup_required` continuation this variant replaces:
+    // `install_app_here.install_url` still pins this `setup_attempt_id`, so the
+    // caller can poll for the install callback landing exactly as it would on the
+    // ordinary install path.
+    setup_attempt_id: Type.Optional(Type.String()),
+    completion_check: Type.Optional(ConnectCompletionCheck),
+    transfer_installation_here: Type.Optional(
+      Type.Object({
+        next_action: Type.Literal("transfer_installation_here"),
+        requires_confirmation: Type.Literal(true),
+        warning: Type.String(),
+        options: Type.Array(
+          Type.Object({
+            source_workspace: Type.Object({
+              id: Type.String(),
+              slug: Type.String(),
+            }),
+            source_installation_id: Type.Integer(),
+            transfer_url: Type.String(),
+          })
+        ),
+      })
+    ),
+    instructions: Type.String(),
+  }),
   // Setup-required continuation — a NON-TERMINAL, actionable outcome that MUST
   // survive run_sdk/query_sdk as a return value (no `error` key). Distinct from
   // the `pending_auth` OAuth-pending variant: that already created a connection

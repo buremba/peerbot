@@ -13,9 +13,15 @@ on:
         required: false
         default: false
         type: boolean
+      image_run_id:
+        description: "Exact build-images run whose app-image-smoke must be green (release automation sets this)"
+        required: false
+        type: string
 
 permissions:
   contents: read
+  # The image gate reads workflow/run/job metadata through the Actions API.
+  actions: read
   # Needed for npm trusted publishing (OIDC). Only effective when each
   # package is registered on npmjs.com → Settings → Publishing access →
   # Add trusted publisher → Workflow: .github/workflows/publish-packages.yml,
@@ -49,34 +55,58 @@ jobs:
       - name: Require a green app-image smoke for this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read the dispatch input through env, never `${{ }}` inside `run:`.
+          # This job holds `id-token: write` and the production environment's
+          # NPM_TOKEN, so a template-expanded input is a publish-credential
+          # injection, not just a broken script.
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
           echo "publishing from ${sha}"
 
-          # Newest run of build-images for this SHA. `head_sha` filters server
-          # side so a busy main can't push ours off the first page.
-          run=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${sha}&per_page=1" \
-            --jq 'if (.workflow_runs | length) == 0 then "missing"
-                  else "\(.workflow_runs[0].status) \(.workflow_runs[0].conclusion // "none")" end')
-          status="${run%% *}"
-          conclusion="${run#* }"
-          echo "build-images status: ${status}, conclusion: ${conclusion}"
-
-          if [ "$status" = "missing" ]; then
+          run_id="$IMAGE_RUN_ID"
+          if [ -z "$run_id" ]; then
+            # Manual publishes do not know the producer run ID. Resolve the
+            # newest exact-SHA build server-side rather than scanning a busy
+            # main branch client-side.
+            run_id=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${sha}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')
+          fi
+          if [ -z "$run_id" ]; then
             echo "::error::No build-images run for ${sha}. The app image for this commit has never been built or smoked; publish would ship an unverified tree."
             exit 1
           fi
-          if [ "$status" != "completed" ]; then
-            echo "::error::build-images for ${sha} is still '${status}'. Wait for the app-image smoke to finish, then re-run this publish."
+
+          expected_workflow_id=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml" \
+            --jq '.id')
+          metadata=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+            --jq '[.workflow_id, .head_sha] | @tsv')
+          IFS=$'\t' read -r workflow_id run_sha <<< "$metadata"
+          if [ "$workflow_id" != "$expected_workflow_id" ]; then
+            echo "::error::Run ${run_id} belongs to workflow ${workflow_id}, not build-images.yml (${expected_workflow_id})."
             exit 1
           fi
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::build-images for ${sha} concluded '${conclusion}'. The app image smoke is not green — fix main before releasing."
+          if [ "$run_sha" != "$sha" ]; then
+            echo "::error::Run ${run_id} built ${run_sha}, but publish checked out ${sha}."
             exit 1
           fi
-          echo "app-image smoke green for ${sha} — proceeding."
+
+          smoke=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+            --jq '[.jobs[] | select(.name == "app-image-smoke")]
+                  | if length == 0 then "missing"
+                    else "\(.[0].status) \(.[0].conclusion // "none")" end')
+          status="${smoke%% *}"
+          conclusion="${smoke#* }"
+          echo "build-images run ${run_id} app-image-smoke: ${status}, ${conclusion}"
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            echo "::error::app-image-smoke for build-images run ${run_id} is not green. Wait for it to complete successfully before publishing."
+            exit 1
+          fi
+          echo "app-image smoke green for ${sha} in run ${run_id} — proceeding."
 
       - uses: ./.github/actions/setup-submodule
         with:
@@ -123,9 +153,12 @@ jobs:
           # NPM_CONFIG_PROVENANCE enables provenance attestations when the
           # provenance input is true (requires trusted publisher on npmjs.com).
           NPM_CONFIG_PROVENANCE: "${{ inputs.provenance }}"
+          # Same reason as IMAGE_RUN_ID above: dispatch inputs reach the shell
+          # as env vars, not as `${{ }}` expansions inside the script body.
+          BUMP: ${{ inputs.bump }}
         run: |
-          if [ "${{ inputs.bump }}" = "skip" ]; then
+          if [ "$BUMP" = "skip" ]; then
             node scripts/publish-packages.mjs --skip-bump
           else
-            node scripts/publish-packages.mjs "${{ inputs.bump }}"
+            node scripts/publish-packages.mjs "$BUMP"
           fi

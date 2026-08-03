@@ -28,6 +28,7 @@ describe('client sessions activity route', () => {
   let ownerId: string;
   let clientId: string;
   let clientName: string;
+  let commandClientId: string;
   let otherOrgId: string;
 
   function auditCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -83,6 +84,11 @@ describe('client sessions activity route', () => {
     clientName = 'Sessions Probe App';
     const oauthClient = await createTestOAuthClient({ client_name: clientName });
     clientId = oauthClient.client_id;
+    const commandClient = await createTestOAuthClient({
+      client_name: 'Lobu CLI',
+      software_id: 'lobu-cli',
+    });
+    commandClientId = commandClient.client_id;
     token = (
       await createTestAccessToken(owner.id, org.id, oauthClient.client_id, {
         scope: 'mcp:read mcp:write mcp:admin',
@@ -119,6 +125,13 @@ describe('client sessions activity route', () => {
       WHERE organization_id = ${orgId} AND conversation_id = 'sess-alpha'
     `;
     await recordCall('sess-beta', 'search_sdk');
+
+    // Command clients create transport sessions for individual invocations;
+    // they belong in client activity, not the conversation-only Recent list.
+    await recordCall('sess-command', 'run_sdk', { clientId: commandClientId });
+    // Revocation removes the display client row. The write-time software-id
+    // stamp must continue to classify the retained activity afterward.
+    await getDb()`DELETE FROM oauth_clients WHERE id = ${commandClientId}`;
 
     // Cross-org session: must never appear for orgSlug.
     await recordCall('sess-foreign', 'search_memory', {
@@ -208,6 +221,7 @@ describe('client sessions activity route', () => {
 
     const ids = body.sessions.map((s) => s.sessionId);
     expect(ids).toEqual([
+      'sess-command',
       'sess-beta',
       'sess-alpha',
       'sess-tool-cap',
@@ -241,6 +255,10 @@ describe('client sessions activity route', () => {
     expect(beta.callCount).toBe(1);
     expect(beta.pendingInteractionCount).toBe(0);
 
+    const command = body.sessions.find((s) => s.sessionId === 'sess-command')!;
+    expect(command.clientId).toBeNull();
+    expect(command.clientName).toBeNull();
+
     const capped = body.sessions.find((s) => s.sessionId === 'sess-tool-cap')!;
     expect(capped.tools).toHaveLength(8);
 
@@ -257,6 +275,16 @@ describe('client sessions activity route', () => {
 
   it('honors the bounded result limit', async () => {
     const res = await get(`/api/${orgSlug}/clients/sessions?limit=1`, { token });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
+    expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-command']);
+  });
+
+  it('can exclude command-client sessions before applying the result limit', async () => {
+    const res = await get(
+      `/api/${orgSlug}/clients/sessions?conversation_only=true&limit=1`,
+      { token }
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Array<{ sessionId: string }> };
     expect(body.sessions.map((session) => session.sessionId)).toEqual(['sess-beta']);

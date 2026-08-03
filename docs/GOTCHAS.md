@@ -40,7 +40,7 @@ Root `AGENTS.md` holds the invariants and the workflow. This file holds the mech
 
 **Phantom `TS2305: Module '@lobu/core' has no exported member 'X'` inside a worktree.** The worktree's own `@lobu/*` dists are missing, so tsc resolves through the *main checkout's* stale dist. Build the worktree's dists (`make build-packages`). `packages/core` is `composite: true`, so use `bunx tsc --build --force` — a plain `rm -rf dist` leaves a stale `tsconfig.tsbuildinfo` behind. Diagnose with `bunx tsc --noEmit --traceResolution 2>&1 | grep "@lobu/core"`.
 
-**A new workspace package must be added to both build graphs or CI fails while local passes.** Add it at the correct dependency layer in `scripts/build-packages.mjs` and to the unit job's inline build step in `.github/workflows/ci.yml` (the unit job intentionally builds a narrower package set). `make build-packages` and root `build:packages` both call the script, so there is no third list. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
+**A new workspace package must be added to the dependency-layered build graph or CI fails while local passes.** Add it at the correct layer in `scripts/build-packages.mjs`. `make build-packages`, root `build:packages`, and the CI unit job all call that script; the unit job passes `--skip-applications` but still builds the shared package graph. Symptom is `TS2307: Cannot find module '@lobu/<pkg>'` cascading into implicit-any noise. Reproduce locally with `rm -rf packages/<pkg>/dist` then typecheck.
 
 **Inter-package deps are always `"@lobu/*": "workspace:*"`.** Never a hardcoded version or caret range — the root `package.json` is the single source of version truth.
 

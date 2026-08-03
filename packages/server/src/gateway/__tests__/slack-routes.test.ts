@@ -140,6 +140,7 @@ describe("slack OAuth install routes", () => {
         const fromCtx = c.get("organizationId" as never) as string | null | undefined;
         return typeof fromCtx === "string" && fromCtx === organizationId;
       },
+      verifyInstallOrgAdminAccess: async () => false,
       getPublicGatewayUrl: () => "https://gateway.example.com",
       // The generic engine mounts /slack/install + /slack/oauth_callback from
       // this declared oauth-code-exchange integration; EVERY callback now parks

@@ -160,8 +160,21 @@ export function appInstallationSetupContinuation(params: {
 	setupUrl?: string;
 }): ManageConnectionsResult {
 	const { action, connectorKey, setup, setupUrl } = params;
-	const setupAttemptId =
-		setup.provider === "github" && setup.install_url ? randomUUID() : undefined;
+	let setupAttemptId: string | undefined;
+	let installUrl = setup.install_url;
+	if (setup.provider === "github" && setup.install_url) {
+		const candidateSetupAttemptId = randomUUID();
+		try {
+			installUrl = appendSetupAttemptId(
+				setup.install_url,
+				candidateSetupAttemptId,
+			);
+			setupAttemptId = candidateSetupAttemptId;
+		} catch {
+			// A malformed configured gateway URL must not turn setup guidance into a
+			// tool failure. Return the original continuation without polling metadata.
+		}
+	}
 	return buildConnectionSetupContinuation({
 		action,
 		connectorKey,
@@ -174,10 +187,7 @@ export function appInstallationSetupContinuation(params: {
 		installShape: setup.install_shape,
 		setupInstructions: setup.setup_instructions,
 		setupUrl,
-		installUrl:
-			setup.install_url && setupAttemptId
-				? appendSetupAttemptId(setup.install_url, setupAttemptId)
-				: setup.install_url,
+		installUrl,
 		provider: setup.provider,
 		completionCheck: setupAttemptId
 			? installedConnectorPoll(connectorKey, setupAttemptId)

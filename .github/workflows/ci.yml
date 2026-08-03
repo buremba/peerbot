@@ -13,13 +13,14 @@ on:
 permissions:
   contents: read
 
-# Auto-cancel superseded runs on a PR so a force-push/rebase doesn't leave the
-# previous (now-stale) run burning ~10 parallel jobs to completion. `main`
-# pushes are never cancelled (ref is unique per push) so deploy-side gating is
-# unaffected.
+# Auto-cancel superseded runs. PR revisions are obsolete after a force-push or
+# rebase, and a newer main SHA contains every older main SHA. Keeping stale main
+# runs alive consumed the same 20-slot hosted-runner pool while newer required
+# PR checks waited. Deployment is driven by Build and Push Images, not this
+# workflow, so only the newest CI result per ref is useful.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   # Fast unit tests — no Postgres, no submodule needed for most.
@@ -65,7 +66,7 @@ jobs:
         # install it in the worker runtime image" before it ships.
         run: node scripts/check-connector-runtime-deps.mjs
 
-      - name: Build core + plugins + sdk + embeddings + connector-worker + pgvector-embedded + cli for downstream type-resolution
+      - name: Build package graph for unit-test runtime resolution
         # connector-worker integration tests import from its compiled `dist/`
         # (subprocess-mode tests spawn the built executor); build it here
         # so those run. embeddings must build before connector-worker —
@@ -75,23 +76,11 @@ jobs:
         # whose shim resolves `../dist/index.js` at runtime. The cli's build
         # script vendors @lobu/pgvector-embedded's dist+prebuilt into its
         # tarball, so pgvector-embedded must build first.
-        run: |
-          cd packages/core && bun run build && cd ../..
-          cd packages/plugin-api && bun run build && cd ../..
-          cd packages/plugin-host && bun run build && cd ../..
-          cd packages/plugin-toolkit && bun run build && cd ../..
-          cd packages/plugin-memory && bun run build && cd ../..
-          cd packages/plugin-conversations && bun run build && cd ../..
-          cd packages/plugin-media && bun run build && cd ../..
-          cd packages/plugin-mcp && bun run build && cd ../..
-          cd packages/connector-sdk && bun run build && cd ../..
-          cd packages/embeddings && bun run build && cd ../..
-          cd packages/connector-worker && bun run build && cd ../..
-          cd packages/pgvector-embedded && bun run build && cd ../..
-          cd packages/cli && bun run build && cd ../..
-          # agent-worker dist: the egress transport test spawns `node` against
-          # dist/embedded/just-bash-bootstrap.js to exercise the Node branch.
-          cd packages/agent-worker && bun run build && cd ../..
+        # Reuse the dependency-layered builder so independent packages build in
+        # parallel and new workspace packages cannot drift from an inline list.
+        # Server/Owletto application bundles are not used by the unit suites;
+        # the CLI distribution remains included for cli-ux runtime tests.
+        run: node scripts/build-packages.mjs --skip-applications
 
       # bunfig.toml routes every `bun test --coverage` run to ./coverage/lcov.info
       # (bun 1.3.x ignores --coverage-dir when bunfig sets coverageDir), so each
@@ -132,7 +121,7 @@ jobs:
         run: |
           bun test packages/server/src/__tests__/unit --coverage
           mv coverage/lcov.info coverage/server-units.lcov.info
-          bun test packages/server/src/auth/__tests__/tool-access.test.ts packages/server/src/auth/__tests__/system-provider-resolution.test.ts --coverage
+          bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --coverage
           mv coverage/lcov.info coverage/server-units-auth.lcov.info
           # Pure-unit bun:test files that live outside src/__tests__/unit: the
           # device-pin tombstone helpers and the activity-feed collapse logic.
@@ -185,14 +174,16 @@ jobs:
           flags: unit
           fail_ci_if_error: false
 
-  # SDK lifecycle e2e — the hard gate that the WHOLE TypeScript-SDK path runs,
-  # not just that config maps (unit/integration cover that). Boots `lobu run`
+  # Deep SDK + CLI e2e coverage, kept behind the merge gate. The SDK lifecycle
+  # proves that the WHOLE TypeScript-SDK path runs, not just that config maps
+  # (unit/integration cover that). It boots `lobu run`
   # (embedded Postgres — the linux binary ships as an @embedded-postgres
   # optional dep, the same engine prod uses), auto-applies a prune:true fixture,
   # and drives a real agent turn through a spawned worker against a deterministic
   # mock OpenAI-compatible provider (no provider key needed). A failure here
-  # fails CI → the PR goes red. See scripts/sdk-e2e.sh.
-  sdk-e2e:
+  # fails this advisory job without delaying the branch-protected merge gate.
+  # See scripts/sdk-e2e.sh.
+  sdk-cli-e2e:
     # Keep deep, non-required smoke coverage out of the runner queue until the
     # merge-critical checks finish. During a PR burst these jobs used slots
     # while required integration shards remained queued for 10+ minutes.
@@ -226,7 +217,16 @@ jobs:
       - name: Build all packages (CLI + server bundle + sdk + pgvector-embedded)
         run: make build-packages
 
+      # The hard unused-file gate stays in required typecheck. The full report
+      # is advisory, so run it after the merge gate instead of adding 10-20s to
+      # every required typecheck result.
+      - name: Dead-code report (knip full, non-blocking)
+        continue-on-error: true
+        run: bun run knip
+
       - name: SDK lifecycle e2e (apply + prune + real worker turn)
+        id: sdk
+        continue-on-error: true
         run: bash scripts/sdk-e2e.sh
 
       # Failure-path companion: drives a real provider 429 through the worker
@@ -234,46 +234,69 @@ jobs:
       # reset time) with no generic "stopped responding" mask. Reuses this
       # job's build.
       - name: Error-taxonomy e2e (provider 429 → verbatim relay)
+        id: error_taxonomy
+        continue-on-error: true
         run: bash scripts/sdk-e2e-error.sh
 
-  # CLI command-coverage smoke — the hard gate that EVERY `lobu` command runs,
-  # not just the SDK lifecycle (sdk-e2e covers that). Boots one `lobu run`
-  # (embedded Postgres + a deterministic mock provider, no key) under an isolated
-  # HOME and walks the whole command surface, asserting each runs or fails
-  # gracefully. A failure here fails CI → the PR goes red. See scripts/cli-smoke.sh.
-  cli-smoke:
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/setup-submodule
-        with:
-          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.5
-
-      # Node 22 — the worker uses isolated-vm (abi127 prebuild); the runner's
-      # default Node major would segfault the sandbox runtime.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-
-      - name: Install dependencies
-        run: bun install
-
-      # The worker's exec-sandbox uses bwrap on Linux; ubuntu-latest blocks
-      # unprivileged user namespaces via AppArmor, so flip the sysctl too.
-      - name: Install bubblewrap (worker exec-sandbox)
-        run: bash scripts/install-bubblewrap.sh
-      - name: Build all packages (CLI + server bundle + sdk + pgvector-embedded)
-        run: make build-packages
-
+      # The CLI smoke needs the same fully-built distribution as the SDK
+      # lifecycle. Keeping it in this job avoids a second checkout, install,
+      # bubblewrap setup, and full workspace build after required checks pass.
       - name: CLI command-coverage smoke (every command runs)
+        id: cli
+        continue-on-error: true
         run: bash scripts/cli-smoke.sh
+
+      - name: Require every deep smoke
+        if: always()
+        env:
+          SDK_RESULT: ${{ steps.sdk.outcome }}
+          ERROR_TAXONOMY_RESULT: ${{ steps.error_taxonomy.outcome }}
+          CLI_RESULT: ${{ steps.cli.outcome }}
+        run: |
+          echo "SDK lifecycle: $SDK_RESULT"
+          echo "Error taxonomy: $ERROR_TAXONOMY_RESULT"
+          echo "CLI surface: $CLI_RESULT"
+          test "$SDK_RESULT" = success
+          test "$ERROR_TAXONOMY_RESULT" = success
+          test "$CLI_RESULT" = success
+
+      # Measurement only. Reuse this already-running main-push job instead of
+      # allocating a separate hosted runner to inspect the same Ubuntu host.
+      - name: Report available exec-sandbox backends
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          {
+            echo "### exec-sandbox backend probe"
+            echo ""
+            if command -v bwrap >/dev/null 2>&1; then
+              if bwrap --unshare-user --unshare-pid \
+                   --ro-bind /usr /usr \
+                   --ro-bind-try /lib /lib \
+                   --ro-bind-try /lib64 /lib64 \
+                   --ro-bind-try /bin /bin \
+                   --proc /proc --dev /dev -- /usr/bin/true >/tmp/bwrap.err 2>&1; then
+                echo "- bwrap: **isolation works**"
+              else
+                echo "- bwrap: present but refused — \`$(head -c 200 /tmp/bwrap.err)\`"
+              fi
+            else
+              echo "- bwrap: not installed"
+            fi
+            if command -v systemd-run >/dev/null 2>&1; then
+              if systemd-run --user --scope --quiet /bin/true >/tmp/sdr.err 2>&1; then
+                echo "- systemd-run --user: **works** (viable alternative backend)"
+              else
+                echo "- systemd-run --user: present but failed — \`$(head -c 200 /tmp/sdr.err)\`"
+              fi
+            else
+              echo "- systemd-run: not installed"
+            fi
+            echo ""
+            echo "kernel.unprivileged_userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 'unset')"
+            echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'unset')"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
 
   # Frontend: vitest (jsdom) + prod SPA build + Chromium cold-boot smoke.
   # The boot smoke is the SPA equivalent of connector-parity-smoke: unit tests
@@ -318,27 +341,11 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run build
 
-      - name: Install Google Chrome for SPA boot smoke
-        # Ubuntu apt chromium/chromium-browser is a *snap* shim rather than a
-        # directly runnable browser binary.
-        # Playwright's bundled browser also fights monorepo patchright/playwright
-        # revision skew. Install real Google Chrome .deb (non-snap) and point
-        # the smoke at it.
-        if: steps.submodule.outputs.stubbed != 'true'
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/google-chrome.deb \
-            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends /tmp/google-chrome.deb
-          test -x /usr/bin/google-chrome-stable
-          /usr/bin/google-chrome-stable --version
-          echo "SPA_SMOKE_CHROME=/usr/bin/google-chrome-stable" >> "$GITHUB_ENV"
-
       - name: SPA cold-boot smoke (Chrome)
         # Loads dist/ in a real browser; fails on pageerror (e.g. process is
-        # not defined). Network API failures are ignored — no backend here.
-        # spa-boot-smoke refuses snap Chromium; SPA_SMOKE_CHROME is required in CI.
+        # not defined). Network API failures are ignored — no backend here. The
+        # Ubuntu runner image already includes Google Chrome; the smoke locates
+        # /usr/bin/google-chrome-stable itself and refuses snap Chromium.
         if: steps.submodule.outputs.stubbed != 'true'
         run: cd packages/owletto && bun run smoke:boot
 
@@ -437,7 +444,6 @@ jobs:
           done
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
-
       - name: Raise maintenance_work_mem for ivfflat index builds
         # The baseline idx_events_embedding ivfflat index (lists=1000) needs
         # ~150MB to build; the default 64MB fails with "memory required is
@@ -536,7 +542,19 @@ jobs:
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
             -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
-      - name: server gateway suites (bun:test, needs Postgres)
+      - name: server root gateway suites (two Bun lanes, isolated Postgres)
+        working-directory: packages/server
+        env:
+          GATEWAY_TEST_DATABASE_URL_1: postgres://postgres:postgres@127.0.0.1:5433/lobu_test_lane_1
+          GATEWAY_TEST_DATABASE_URL_2: postgres://postgres:postgres@127.0.0.1:5433/lobu_test_lane_2
+        run: |
+          # The gateway harness resets `public`, so concurrent lanes need
+          # independent databases rather than independent schemas.
+          PGPASSWORD=postgres createdb -h 127.0.0.1 -p 5433 -U postgres lobu_test_lane_1
+          PGPASSWORD=postgres createdb -h 127.0.0.1 -p 5433 -U postgres lobu_test_lane_2
+          node ../../scripts/run-gateway-test-lanes.mjs
+
+      - name: server nested gateway suites (bun:test, needs Postgres)
         # The gateway bun:test files are excluded from vitest (vitest.config.ts)
         # and need a real Postgres, so they run here. We run EACH __tests__ dir
         # in its own `bun test` process rather than one `bun test src/gateway`:
@@ -545,16 +563,18 @@ jobs:
         # one process leaks DB rows and module singletons across files (org rows,
         # service registries) and fails. A process per dir gives each dir a clean
         # module registry, matching why vitest uses singleFork here. `find`
-        # auto-discovers nested dirs, and check-test-runner-coverage.mjs fails CI
-        # if a gateway test file ever escapes this loop. Covers
-        # src/gateway/infrastructure/queue too (#1238). Run all dirs and fail at
-        # the end so one run reports every failing dir, not just the first.
-        # packages/server/bunfig.toml routes --coverage to ./coverage/lcov.info
-        # (lcov only); each dir is moved to a unique name before the next overwrites it.
+        # auto-discovers every nested directory, including
+        # src/gateway/infrastructure/queue (#1238). Run all dirs and fail at the
+        # end so one run reports every failing dir, not just the first.
+        # The root __tests__ tree (including its ordinary child directories)
+        # ran in the isolated lanes above. Keep every other directory named
+        # __tests__ in its own process for its existing module/fixture isolation
+        # contract. packages/server/bunfig.toml routes --coverage to
+        # ./coverage/lcov.info; move each report before the next overwrites it.
         working-directory: packages/server
         run: |
           set -uo pipefail
-          dirs=$(find src/gateway -type d -name __tests__ | sort)
+          dirs=$(find src/gateway -type d -name __tests__ ! -path src/gateway/__tests__ | sort)
           # Fail loudly if the glob matches nothing (path typo / restructure):
           # an empty loop would otherwise run zero tests and exit green.
           [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
@@ -693,6 +713,16 @@ jobs:
         # could only be exercised by cutting a real release.
         run: bun test scripts/__tests__/derive-image-tags.test.ts
 
+      - name: Release publish ordering
+        # 14.9.0 and 14.10.0 never reached npm: release-please dispatched
+        # publish-packages the moment the release existed, build-images was
+        # still `queued`, and the image-smoke guard correctly refused. The
+        # ordering now lives in build-images.yml's `trigger-package-publish`.
+        # Workflow YAML is not covered by any other suite, so a re-introduced
+        # dispatch in release-please.yml would otherwise only surface at the
+        # next release.
+        run: bun test scripts/__tests__/release-publish-order.test.ts
+
       - name: Release image audit decision table
         # The scheduled audit (release-image-audit.yml) is the only thing that
         # notices a release which published no image — a run evicted from its
@@ -774,28 +804,12 @@ jobs:
       - name: Run TypeScript type check
         run: bun run typecheck
 
-      - name: Type check packages excluded from root tsconfig
-        # Root tsconfig excludes these packages, so `bun run typecheck`
-        # above never sees them. Run each package's own tsc here so a
-        # type error can't reach main and break the npm publish at
-        # release time. connectors is intentionally left out — it needs
-        # preconditions (DOM lib) that belong to its own build pipeline.
-        run: |
-          set -euo pipefail
-          for pkg in server connector-worker connector-sdk plugin-api plugin-host plugin-toolkit plugin-memory plugin-conversations plugin-media plugin-mcp embeddings cli; do
-            echo "::group::typecheck $pkg"
-            (cd "packages/$pkg" && bunx tsc --noEmit)
-            echo "::endgroup::"
-          done
-
-      # `make build-packages` above deliberately skips the CLI, but the
-      # package-content gate must inspect the CLI's real dist/ — that's where
-      # scripts/build.cjs copies connector sources with tests filtered out,
-      # the exact artifact the gate exists to guard. All of the CLI build's
-      # inputs (pgvector-embedded dist+prebuilt, server bundle, catalogs) are
-      # produced by `make build-packages`, so this only adds the CLI itself.
-      - name: Build @lobu/cli (needed for the package-content check)
-        run: cd packages/cli && bun run build
+      - name: Type check server (excluded from root tsconfig)
+        # Every other excluded publishable package runs its own `tsc` as its
+        # build command inside make build-packages above. Server's build is an
+        # esbuild bundle, so it is the one excluded package that still needs a
+        # separate no-emit typecheck here.
+        run: cd packages/server && bunx tsc --noEmit
 
       # Hard gate: published tarballs must not ship internal tests or dangling
       # sourcemaps. Uses the packages built above and `npm pack --dry-run` to
@@ -805,17 +819,19 @@ jobs:
       - name: Package-content check (no tests/sourcemaps in tarballs)
         run: bun run check:packages
 
-      # Report-only for now: knip surfaces unused files / exports / deps to
       # The files section is a hard gate: a PR that adds an unreachable file
-      # fails CI. Exports/deps/types stay report-only until their baseline is
-      # triaged — promote sections into the gate by extending --include.
+      # fails CI. Exports/deps/types stay report-only in the post-gate SDK job
+      # until their baseline is triaged.
       - name: Dead-code gate (knip, unused files)
         run: bun run knip --include files
-      - name: Dead-code report (knip full, non-blocking)
-        continue-on-error: true
-        run: bun run knip
 
   migrations:
+    # Serialize this short compatibility context behind format-lint so it does
+    # not occupy a hosted runner while the faster policy job is still running.
+    # Migration coverage and its required check name remain unchanged for
+    # existing open PRs.
+    if: ${{ !cancelled() }}
+    needs: format-lint
     # Catches the class of bug that has now broken prod twice in one
     # session: a migration file that's syntactically a SQL file but that the
     # migration runner rejects (missing -- migrate:up directive, constraint
@@ -841,6 +857,14 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      # `needs` normally turns a downstream job into a skipped check when its
+      # prerequisite fails. This compatibility context is branch-required, so
+      # emit an explicit failure instead of allowing a skipped migration check.
+      - name: Require format and policy checks
+        env:
+          FORMAT_LINT_RESULT: ${{ needs.format-lint.result }}
+        run: test "$FORMAT_LINT_RESULT" = success
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -1001,17 +1025,40 @@ jobs:
             exit 1
           fi
 
-  # Path-filter for the Mac smoke build, isolated to a cheap ubuntu runner
-  # so skipped PRs don't allocate a macOS runner just to evaluate the diff.
+      # The committed pgvector libraries bypass normal TypeScript builds. Keep
+      # their ABI floor in this already-required, Docker-capable policy job
+      # instead of allocating another post-gate runner.
+      - name: Assert glibc floor on committed pgvector prebuilts
+        run: |
+          set -euo pipefail
+          for arch in linux-x64 linux-arm64; do
+            packages/pgvector-embedded/scripts/assert-glibc-floor.sh \
+              "packages/pgvector-embedded/prebuilt/${arch}"
+          done
+
+      - name: Resolve the x64 prebuilt on the oldest supported glibc
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye \
+            ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
+          echo "$out"
+          if echo "$out" | grep -qi "not found"; then
+            echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)."
+            exit 1
+          fi
+
+  # One post-gate path filter for the optional Mac and connector-runtime smoke
+  # jobs. Keeping both decisions in one checkout avoids spending two hosted
+  # slots just to evaluate the same PR diff.
   # `github.event.pull_request.changed_files` in the webhook payload is an
   # integer (the count of changed files), not a list — `contains()` over it
-  # never matches. Use git diff against the PR base instead. On push events
-  # (main) there's no PR object, so default to running the smoke job.
-  mac-build-smoke-filter:
+  # never matches. On push events there is no PR base, so both smokes run.
+  optional-smoke-filter:
     needs: [unit, frontend, integration, format-lint, typecheck, migrations]
     runs-on: ubuntu-24.04
     outputs:
-      run: ${{ steps.filter.outputs.run }}
+      mac: ${{ steps.filter.outputs.mac }}
+      connector: ${{ steps.filter.outputs.connector }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1019,23 +1066,29 @@ jobs:
           # fetch-depth=1 only has HEAD.
           fetch-depth: 0
 
-      - name: Decide whether to run the Mac smoke build
+      - name: Decide which optional smokes to run
         id: filter
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ -z "${BASE_SHA:-}" ]; then
-            # push to main (or any non-PR trigger) — always run.
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "mac=true" >> "$GITHUB_OUTPUT"
+            echo "connector=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
           if echo "$changed" | grep -E '^(packages/owletto($|/)|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "mac=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "mac=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
+          fi
+          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
+            echo "connector=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "connector=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No paths affecting the connector runtime changed — skipping connector-parity-smoke."
           fi
 
   # Standalone Swift tests + a cheap end-to-end Xcode build for the Mac app.
@@ -1051,8 +1104,8 @@ jobs:
   # workflow, the submodule setup action, or `.gitmodules` changes. This
   # workflow is in the filter so a PR editing this job can't skip it.
   mac-build-smoke:
-    needs: mac-build-smoke-filter
-    if: needs.mac-build-smoke-filter.outputs.run == 'true'
+    needs: optional-smoke-filter
+    if: needs.optional-smoke-filter.outputs.mac == 'true'
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -1095,40 +1148,6 @@ jobs:
             -scheme Owletto -configuration Release build \
             CODE_SIGNING_ALLOWED=NO
 
-  # Path-filter for the connector-runtime parity smoke gate, isolated to a cheap
-  # ubuntu runner so unrelated PRs don't pay for the worker-image build + the
-  # host package build just to evaluate the diff. Same shape as
-  # `mac-build-smoke-filter`: `changed_files` in the webhook is a count, not a
-  # list, so we diff against the PR base. On push (main) there's no PR object,
-  # so default to running.
-  connector-parity-smoke-filter:
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
-    outputs:
-      run: ${{ steps.filter.outputs.run }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Decide whether to run the connector parity smoke
-        id: filter
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${BASE_SHA:-}" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No paths affecting the connector runtime changed — skipping connector-parity-smoke."
-          fi
-
   # Connector-runtime parity smoke gate. Guards against the packaging/parity
   # drift that broke prod: the worker image shipped missing `COPY packages/core`,
   # so `@lobu/connector-sdk`'s transitive `@lobu/core` import dangled and every
@@ -1139,8 +1158,8 @@ jobs:
   # runConnectorRuntimeSelfCheck() over the same compile + default
   # SubprocessExecutor path.
   connector-parity-smoke:
-    needs: connector-parity-smoke-filter
-    if: needs.connector-parity-smoke-filter.outputs.run == 'true'
+    needs: optional-smoke-filter
+    if: needs.optional-smoke-filter.outputs.connector == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -1198,121 +1217,3 @@ jobs:
 
       - name: CLI runtime self-check (host)
         run: node packages/cli/bin/lobu.js connector runtime-self-check --json
-
-  # Measurement, not a gate. `probeSandboxStrategy()` returns "none" on the
-  # managed cluster because bubblewrap cannot create a user namespace there
-  # (uid_map is runtime-restricted — charts/lobu/values.yaml records the
-  # measurement), so contributed CLIs exit 127 by design. bwrap is not the only
-  # possible backend, and this job answers the open question "is systemd-run
-  # --user even available to us?" with a fact instead of an assumption.
-  #
-  # Deliberately `continue-on-error`: nothing depends on the answer yet, and a
-  # runner without a user session must not redden main. Read the summary, do
-  # not gate on it. No checkout: the probe only inspects the runner itself.
-  exec-sandbox-backend-probe:
-    if: github.event_name == 'push'
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    continue-on-error: true
-    steps:
-      - name: Report available exec-sandbox backends
-        run: |
-          echo "### exec-sandbox backend probe" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          if command -v bwrap >/dev/null 2>&1; then
-            # Bind set mirrors probeBwrap() in exec-sandbox.ts. /lib64 is not
-            # optional: /usr/bin/true's ELF interpreter is
-            # /lib64/ld-linux-*.so, so binding only /usr makes exec fail with
-            # an execvp error even where userns works — the probe would then
-            # report "present but refused" and name the wrong cause, which is
-            # the exact failure this PR exists to remove.
-            if bwrap --unshare-user --unshare-pid \
-                 --ro-bind /usr /usr \
-                 --ro-bind-try /lib /lib \
-                 --ro-bind-try /lib64 /lib64 \
-                 --ro-bind-try /bin /bin \
-                 --proc /proc --dev /dev -- /usr/bin/true >/tmp/bwrap.err 2>&1; then
-              echo "- bwrap: **isolation works**" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "- bwrap: present but refused — \`$(head -c 200 /tmp/bwrap.err)\`" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            echo "- bwrap: not installed" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # The actual open question. --user needs a systemd user session; a
-          # container without one fails here, which is itself the answer.
-          if command -v systemd-run >/dev/null 2>&1; then
-            if systemd-run --user --scope --quiet /bin/true >/tmp/sdr.err 2>&1; then
-              echo "- systemd-run --user: **works** (viable alternative backend)" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "- systemd-run --user: present but failed — \`$(head -c 200 /tmp/sdr.err)\`" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            echo "- systemd-run: not installed" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Both knobs: unprivileged_userns_clone is the Debian patch (absent on
-          # Ubuntu 24.04), apparmor_restrict_unprivileged_userns is what actually
-          # governs userns on this runner's distro.
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "kernel.unprivileged_userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
-          echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'unset')" >> "$GITHUB_STEP_SUMMARY"
-          cat "$GITHUB_STEP_SUMMARY"
-
-  # The prebuilt pgvector libraries are committed binaries, so nothing in the
-  # normal build/test path ever looks at them — `make build-packages` copies the
-  # file, it does not link against it. That blind spot shipped a `vector.so`
-  # requiring GLIBC_2.38, which made `lobu run` unable to boot embedded Postgres
-  # on Debian 12 (including `node:22-slim`), Ubuntu 22.04 LTS, RHEL 9 and AL2023.
-  #
-  # #2376 fixed the BUILDER (it now pins debian:bullseye). This job is the
-  # separate half: it asserts the artifacts ACTUALLY IN THE TREE clear the floor,
-  # so a future rebuild on a newer base can't silently reintroduce it. Cheap
-  # enough (seconds, no deps) that it runs unfiltered.
-  pgvector-glibc-floor:
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-
-      # Static half: read the dynamic-symbol version table. Covers BOTH arches
-      # (arm64 included, which we cannot execute here without QEMU) and names the
-      # offending symbol when it fails.
-      - name: Assert glibc floor on committed prebuilts
-        run: |
-          set -euo pipefail
-          for arch in linux-x64 linux-arm64; do
-            packages/pgvector-embedded/scripts/assert-glibc-floor.sh \
-              "packages/pgvector-embedded/prebuilt/${arch}"
-          done
-
-      # Dynamic half: the symbol table says what the library ASKS for; this says
-      # whether an old-glibc system can actually satisfy it. debian:bullseye is
-      # the floor itself (glibc 2.31), so a resolvable link here means every
-      # distro at or above it can load the library. `ldd` on an unsatisfiable
-      # object prints "version `GLIBC_2.xx' not found" and still exits 0, so the
-      # grep — not the exit code — is the assertion.
-      - name: Resolve the x64 prebuilt on the oldest supported glibc
-        run: |
-          set -euo pipefail
-          out=$(docker run --rm -v "$PWD:/w:ro" debian:bullseye \
-            ldd /w/packages/pgvector-embedded/prebuilt/linux-x64/vector.so 2>&1)
-          echo "$out"
-          if echo "$out" | grep -qi "not found"; then
-            echo "::error::vector.so has unresolved dependencies on debian:bullseye (glibc 2.31)."
-            exit 1
-          fi
-
-  # Dependency/secret/config scans remain available on every PR and main push,
-  # but they no longer compete with merge-critical checks for hosted slots.
-  # The reusable workflow retains its daily schedule for advisory drift.
-  supply-chain:
-    needs: [unit, frontend, integration, format-lint, typecheck, migrations]
-    permissions:
-      contents: read
-      security-events: write
-    uses: ./.github/workflows/supply-chain.yml

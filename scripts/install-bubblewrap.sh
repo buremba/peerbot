@@ -2,8 +2,8 @@
 # Install bubblewrap for the worker exec-sandbox and prove it delivers real
 # isolation on this runner.
 #
-# Why this is a script and not three inline `run:` blocks: the `unit`,
-# `sdk-e2e`, and `cli-smoke` jobs all need bwrap, and the unit job now runs the
+# Why this is a script and not duplicated inline `run:` blocks: the `unit` and
+# `sdk-cli-e2e` jobs both need bwrap, and the unit job now runs the
 # escape matrix under LOBU_REQUIRE_EXEC_SANDBOX=1 (a missing bwrap is a test
 # failure, not a silent skip). Keeping one copy means the retry policy and the
 # AppArmor workaround can't drift apart between jobs.
@@ -36,9 +36,9 @@ fi
 bwrap --version
 
 # The userns probe is opt-in ($1 == "probe"). Only the unit job runs the escape
-# matrix, and only it probed before this script existed; sdk-e2e and cli-smoke
-# just need the binary present. Enabling the probe everywhere would newly fail
-# those jobs on any runner where unsharing is restricted — a behaviour change
+# matrix, and only it probed before this script existed; the deep-smoke job just
+# needs the binary present. Enabling the probe there would newly fail it on any
+# runner where unsharing is restricted — a behaviour change
 # this refactor has no business making.
 if [ "${1:-}" = "probe" ]; then
   # Same unshare flags production uses (exec-sandbox.ts), so a runner that can

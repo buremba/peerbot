@@ -88,6 +88,51 @@ BEGIN
       AND table_name = 'watcher_versions'
       AND column_name = 'keying_config'
   ) THEN
+    -- Every legacy claim for a Behavior being converted must resolve to the
+    -- same entity type as one of that Behavior's outputs. Otherwise the new
+    -- runtime would miss the two-part claim and could create a duplicate. Fail
+    -- closed while the retired configuration is still present and diagnosable.
+    IF EXISTS (
+      WITH ranked_output AS (
+        SELECT
+          w.id AS watcher_id,
+          output.key AS output_name,
+          output.value->>'entity' AS entity_type,
+          row_number() OVER (
+            PARTITION BY w.id, output.value->>'entity'
+            ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
+          ) AS preference
+        FROM watchers w
+        JOIN watcher_versions v
+          ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
+        CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
+        WHERE output.value ? 'entity'
+      ), preferred_output AS (
+        SELECT watcher_id, output_name, entity_type
+        FROM ranked_output
+        WHERE preference = 1
+      ), configured_watcher AS (
+        SELECT DISTINCT watcher_id FROM preferred_output
+      )
+      SELECT 1
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      JOIN entity_types et ON et.id = e.entity_type_id
+      JOIN configured_watcher configured
+        ON e.metadata->>'watcher_id' = configured.watcher_id::text
+      LEFT JOIN preferred_output matched
+        ON matched.watcher_id = configured.watcher_id
+       AND matched.entity_type = et.slug
+      WHERE ei.namespace = 'watcher_key'
+        AND ei.deleted_at IS NULL
+        AND ei.identifier LIKE configured.watcher_id::text || '::%'
+        AND matched.watcher_id IS NULL
+      LIMIT 1
+    ) THEN
+      RAISE EXCEPTION
+        'Behavior output identity migration cannot map a live watcher_key to its configured entity output type; repair the legacy entity type before retrying';
+    END IF;
+
     -- Abort instead of dropping or stranding either claim if a manually
     -- pre-migrated target is already live. Production is preflighted before
     -- this cutover, but this guard keeps every installation lossless.

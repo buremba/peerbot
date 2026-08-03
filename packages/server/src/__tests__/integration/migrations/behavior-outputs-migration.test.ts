@@ -212,4 +212,64 @@ describe('Behavior outputs migration', () => {
 
     expect(captured).toBe(expected);
   });
+
+  it('aborts rather than stranding a legacy identity with a mismatched entity type', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Mismatch Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-mismatch-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    await api.entity_schema.createType({ slug: 'actual-issue', name: 'Actual Issue' });
+    const entity = (await api.entities.create({
+      type: 'actual-issue',
+      name: 'Legacy mismatched issue',
+      metadata: { external_id: 'ISSUE-4' },
+    })) as { entity: { id: number } };
+    const created = (await api.behaviors.create({
+      slug: 'mismatched-output-behavior',
+      prompt: 'Find mismatched issues.',
+      agent_id: agent.agentId,
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+
+    await expect(
+      sql.begin(async (tx: typeof sql) => {
+        await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
+        await tx`
+          UPDATE watcher_versions v
+          SET outputs = NULL,
+              keying_config = ${tx.json({
+                entity_type: 'missing-issue-type',
+                entity_path: '$.items[*]',
+                key_fields: ['external_id'],
+              })}
+          FROM watchers w
+          WHERE w.id = ${watcherId} AND v.id = w.current_version_id
+        `;
+        await tx`
+          UPDATE entities
+          SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
+          WHERE id = ${entity.entity.id}
+        `;
+        await tx`
+          INSERT INTO entity_identities (
+            organization_id, entity_id, namespace, identifier, source_connector
+          ) VALUES (
+            ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+            ${`${watcherId}::issue-4`}, 'watcher'
+          )
+        `;
+        await tx.unsafe(up);
+      })
+    ).rejects.toThrow(/cannot map a live watcher_key/);
+  });
 });

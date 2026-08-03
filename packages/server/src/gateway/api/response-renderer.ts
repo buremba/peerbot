@@ -178,6 +178,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
       await this.resolveWatcherRunsFromPayload(payload, {
         ok: false,
         error: "agent error",
+        errorCode: code,
       });
       return;
     }
@@ -205,6 +206,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     await this.resolveWatcherRunsFromPayload(payload, {
       ok: false,
       error: typeof errorText === "string" ? errorText : "agent error",
+      errorCode: code,
     });
   }
 
@@ -217,7 +219,9 @@ export class ApiResponseRenderer implements ResponseRenderer {
    */
   private async resolveWatcherRunsFromPayload(
     payload: ThreadResponsePayload,
-    result: { ok: true } | { ok: false; error: string }
+    result:
+      | { ok: true }
+      | { ok: false; error: string; errorCode?: string }
   ): Promise<void> {
     const ids = new Set<string>();
     if (payload.messageId) ids.add(payload.messageId);

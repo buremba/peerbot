@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { materializeDueWatcherRuns } from "../../../watchers/automation";
 import { resolveWatcherRunsByMessageIds } from "../../../watchers/run-completion";
-import { advanceWatcherSchedule } from "../../../watchers/schedule-cursor";
+import {
+  advanceWatcherSchedule,
+  parseProviderQuotaResetAt,
+} from "../../../watchers/schedule-cursor";
 import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestEntity } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
@@ -82,6 +86,37 @@ async function cursorOf(watcherId: number): Promise<Date> {
   return new Date(row.next_run_at as string);
 }
 
+describe("provider quota reset parsing", () => {
+  it("treats a date-only reset as UTC and adds boundary grace", () => {
+    const reset = parseProviderQuotaResetAt(
+      "429 Limit Exhausted. Your limit will reset at 2026-07-31",
+      new Date("2026-07-30T12:00:00.000Z")
+    );
+
+    expect(reset?.toISOString()).toBe("2026-07-31T00:01:00.000Z");
+  });
+
+  it("ignores missing or already-past reset timestamps", () => {
+    const now = new Date("2026-07-31T12:00:00.000Z");
+
+    expect(parseProviderQuotaResetAt("429 Limit Exhausted", now)).toBeNull();
+    expect(
+      parseProviderQuotaResetAt("Your limit will reset at 2026-07-31", now)
+    ).toBeNull();
+  });
+
+  it("keeps the boundary grace when the reset time just passed", () => {
+    const now = new Date("2026-07-31T12:00:30.000Z");
+
+    expect(
+      parseProviderQuotaResetAt(
+        "Your limit will reset at 2026-07-31 12:00:00",
+        now
+      )?.toISOString()
+    ).toBe("2026-07-31T12:01:00.000Z");
+  });
+});
+
 describe("a terminally failed Behavior run advances next_run_at", () => {
   it("advances the cursor when the agent turn returns an error", async () => {
     const { watcherId, runId, staleCursor } =
@@ -105,6 +140,44 @@ describe("a terminally failed Behavior run advances next_run_at", () => {
     const after = await cursorOf(watcherId);
     expect(after.getTime()).toBeGreaterThan(staleCursor.getTime());
     expect(after.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("parks a quota-exhausted Behavior through the provider reset boundary", async () => {
+    const resetAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+    const providerReset = resetAt
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, "");
+    const { watcherId, runId } = await createDueWatcherWithDispatchedRun({
+      slug: "park-until-provider-reset",
+      messageId: "msg-provider-reset",
+    });
+
+    const renderer = new ApiResponseRenderer({
+      broadcast() {},
+    } as unknown as ConstructorParameters<typeof ApiResponseRenderer>[0]);
+    await renderer.handleError(
+      {
+        messageId: "msg-provider-reset",
+        channelId: "api-provider-reset",
+        conversationId: "api-provider-reset",
+        userId: "watcher-test",
+        teamId: "api",
+        timestamp: Date.now(),
+        error: `429 Weekly/Monthly Limit Exhausted. Your limit will reset at ${providerReset}`,
+        errorCode: "PROVIDER_QUOTA_EXHAUSTED",
+      },
+      "test-session"
+    );
+
+    const sql = getTestDb();
+    const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect(run.status).toBe("failed");
+
+    const after = await cursorOf(watcherId);
+    const expectedNotBefore =
+      Math.floor(resetAt.getTime() / 1000) * 1000 + 60_000;
+    expect(after.getTime()).toBe(expectedNotBefore);
   });
 
   it("advances the cursor when the agent never calls complete_window", async () => {

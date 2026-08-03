@@ -36,7 +36,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
@@ -981,6 +981,12 @@ export interface AppWebhookRouterDeps {
 	/** Provider plugins keyed by `provider` (the `:provider` path param). */
 	providers: AppWebhookProvider[];
 	/**
+	 * Historical provider URLs that already-installed apps may still call.
+	 * Every alias enters the exact same verification and delivery path as the
+	 * canonical `/api/v1/app-webhooks/:provider` endpoint.
+	 */
+	legacyProviderRoutes?: ReadonlyArray<{ path: string; provider: string }>;
+	/**
 	 * Resolve the APP-LEVEL webhook secret for a provider. Returns undefined
 	 * when no secret is configured — the router then fails closed (401), never
 	 * accepting an unverifiable delivery.
@@ -1029,8 +1035,7 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 	const providers = new Map(deps.providers.map((p) => [p.provider, p]));
 	const routeLogger = deps.logger ?? logger;
 
-	router.post("/api/v1/app-webhooks/:provider", async (c) => {
-		const providerName = c.req.param("provider");
+	const handleProviderWebhook = async (c: Context, providerName: string) => {
 		const provider = providers.get(providerName);
 		if (!provider) {
 			// Unknown provider: no plugin to verify with. 404, not 500.
@@ -1224,7 +1229,16 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			);
 			return json(500, { error: "Failed to land delivery" });
 		}
-	});
+	};
+
+	router.post("/api/v1/app-webhooks/:provider", (c) =>
+		handleProviderWebhook(c, c.req.param("provider")),
+	);
+	for (const legacyRoute of deps.legacyProviderRoutes ?? []) {
+		router.post(legacyRoute.path, (c) =>
+			handleProviderWebhook(c, legacyRoute.provider),
+		);
+	}
 
 	return router;
 }

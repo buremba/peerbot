@@ -11,8 +11,8 @@
  *     performs the edge `v0` signing + freshness verify (replay defense) and,
  *     only on success, delegates everything to
  *     `ChatInstanceManager.handleChatAppWebhook`, which fans out to the
- *     adapter described above. The bespoke `/slack/events` route was folded
- *     into this generic endpoint.
+ *     adapter described above. The historical `/slack/events` URL remains an
+ *     alias for already-installed apps and enters this same verified path.
  */
 
 import { createHmac } from "node:crypto";
@@ -144,6 +144,7 @@ describe("slack app-webhook provider route", () => {
           handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
         }),
       ],
+      legacyProviderRoutes: [{ path: "/slack/events", provider: "slack" }],
       resolveAppWebhookSecret: async () => SIGNING_SECRET,
     });
   }
@@ -205,6 +206,21 @@ describe("slack app-webhook provider route", () => {
     const body = JSON.stringify({ type: "event_callback" });
 
     const res = await router.fetch(delivery(body, nowTs()));
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("forwarded");
+  });
+
+  it("keeps the pre-consolidation Slack webhook URL working", async () => {
+    const handler = vi.fn(async () => new Response("forwarded", { status: 200 }));
+    const router = makeRouter(handler);
+    const body = JSON.stringify({ command: "/lobu", text: "help" });
+    const timestamp = nowTs();
+    const request = delivery(body, timestamp);
+    const legacyRequest = new Request("http://gateway.test/slack/events", request);
+
+    const res = await router.fetch(legacyRequest);
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);

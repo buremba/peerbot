@@ -630,6 +630,7 @@ export function createGatewayApp(
     // set); otherwise the route reports the provider unknown (404).
     const appWebhookSecretStore = coreServices.getSecretStore();
     const appWebhookProviders: AppWebhookProvider[] = [];
+    const legacyChatWebhookRoutes: Array<{ path: string; provider: string }> = [];
     const declaredSecretEnvKeys: Record<string, string | undefined> = {};
     for (const integration of bundledIntegrationConnectors ?? []) {
       // Reference resolveAppInstallCredentials so the declared env-var contract
@@ -653,6 +654,13 @@ export function createGatewayApp(
       > = {};
       if (deliveryKind === "chat") {
         const provider = integration.provider;
+        // Chat integrations predating the shared app-webhook router were
+        // installed with `/<provider>/events`. Keep those installations live;
+        // the alias enters the same declared signature verifier below.
+        legacyChatWebhookRoutes.push({
+          path: `/${provider}/events`,
+          provider,
+        });
         deliveryHooks.handleDelivery = createChatWebhookDelivery({
           handleChatAppWebhook: (req) =>
             chatInstanceManager.handleChatAppWebhook(provider, req),
@@ -678,6 +686,7 @@ export function createGatewayApp(
         installationStore: createPostgresAppInstallationStore(),
         secretStore: appWebhookSecretStore,
         providers: appWebhookProviders,
+        legacyProviderRoutes: legacyChatWebhookRoutes,
         resolveAppWebhookSecret: createDefaultAppWebhookSecretResolver(
           appWebhookSecretStore,
           declaredSecretEnvKeys,

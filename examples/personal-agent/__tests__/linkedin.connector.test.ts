@@ -1821,11 +1821,11 @@ describe("prepare_comment helpers", () => {
     expect(expr).toContain("root.remove()");
   });
 
-  test("definition declares prepare_comment write action with human gate", () => {
+  test("definition lets prepare_comment stage without a redundant approval gate", () => {
     const c = new LinkedInConnector();
     const action = c.definition.actions?.prepare_comment;
     expect(action?.key).toBe("prepare_comment");
-    expect(action?.requiresApproval).toBe(true);
+    expect(action?.requiresApproval).toBe(false);
     expect(action?.kind).toBe("write");
     expect(action?.annotations?.destructiveHint).toBe(false);
     expect(action?.inputSchema?.anyOf).toEqual([

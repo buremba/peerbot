@@ -797,17 +797,20 @@ export function finalizeSyncResult(
 // ── Extension dispatcher ───────────────────────────────────────
 //
 // Pulled from sessionState — the connector-worker subprocess splices a live
-// `chrome_dispatcher` onto every sync's sessionState; the dispatcher's
-// `dispatch()` rides an IPC channel up to the gateway's
+// `chrome_dispatcher` onto the sessionState of every sync AND every action run;
+// the dispatcher's `dispatch()` rides an IPC channel up to the gateway's
 // /api/workers/dispatch-chrome-action bridge and out to the paired Owletto
 // extension. When no extension is online in the connection's org, the bridge
 // returns `failed` and the dispatcher throws — we surface that verbatim.
+//
+// Structurally typed rather than taking SyncContext, so `execute()` can pass an
+// ActionContext without either context type having to know about the other.
 function requireExtensionDispatcher(ctx: {
 	sessionState?: Record<string, unknown> | null;
 }): ChromeActionDispatcher {
-	const handle = (
-		ctx.sessionState as Record<string, unknown> | null | undefined
-	)?.chrome_dispatcher as ChromeActionDispatcher | undefined;
+	const handle = ctx.sessionState?.chrome_dispatcher as
+		| ChromeActionDispatcher
+		| undefined;
 	if (!handle || typeof handle.dispatch !== "function") {
 		throw new Error(
 			"X connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — re-run on a connector-worker that has the dispatcher bridge.",
@@ -2667,8 +2670,8 @@ export default class XConnector extends ConnectorRuntime {
 				// rejects every click_ref except focusing the composer). A Lobu gate
 				// here would only guard "opens an x.com tab and types", while forcing
 				// the user to approve a draft BEFORE they can see it in context. The
-				// staged tab is the approval. Contrast linkedin.prepare_comment, which
-				// sets this true — same reasoning applies there and is worth revisiting.
+				// staged tab is the approval. `linkedin.prepare_comment` is ungated for
+				// the same reason.
 				requiresApproval: false,
 			},
 		},

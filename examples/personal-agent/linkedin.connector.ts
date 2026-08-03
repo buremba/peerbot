@@ -2351,7 +2351,10 @@ export default class LinkedInConnector extends ConnectorRuntime<
         name: "Prepare comment",
         description:
           "Stage a comment draft on LinkedIn in the paired Chrome browser (open post, fill composer, banner). NEVER submits — the human must click Post. No auto-post path exists.",
-        requiresApproval: true,
+        // Staging is the approval surface: this action can only open the
+        // composer and type. The human still performs the irreversible Post
+        // click, which safeDispatch structurally refuses above.
+        requiresApproval: false,
         kind: "write",
         annotations: {
           openWorldHint: true,

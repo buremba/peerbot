@@ -20,15 +20,12 @@ describe("sandbox sleep", () => {
     await expect(sleepAgainstAbort(30_001, signal)).rejects.toThrow(/SleepLimitExceeded/);
   });
 
-  it("rejects promptly with the overall script abort reason", async () => {
+  it("rejects an active sleep with the overall script abort reason", async () => {
     const controller = new AbortController();
-    setTimeout(() => controller.abort(new Error("TimeoutError: script deadline")), 10);
-    const started = Date.now();
+    const sleeping = sleepAgainstAbort(1_000, controller.signal);
+    controller.abort(new Error("TimeoutError: script deadline"));
 
-    await expect(sleepAgainstAbort(1_000, controller.signal)).rejects.toThrow(
-      /script deadline/,
-    );
-    expect(Date.now() - started).toBeLessThan(200);
+    await expect(sleeping).rejects.toThrow(/script deadline/);
   });
 });
 

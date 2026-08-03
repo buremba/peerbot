@@ -23,9 +23,10 @@ describe("sandbox sleep", () => {
   it("rejects an active sleep with the overall script abort reason", async () => {
     const controller = new AbortController();
     const sleeping = sleepAgainstAbort(1_000, controller.signal);
-    controller.abort(new Error("TimeoutError: script deadline"));
+    const reason = new Error("TimeoutError: script deadline");
+    controller.abort(reason);
 
-    await expect(sleeping).rejects.toThrow(/script deadline/);
+    await expect(sleeping).rejects.toBe(reason);
   });
 });
 

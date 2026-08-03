@@ -196,6 +196,16 @@ interface GithubInstallStateData {
    */
   recovery?: boolean;
   /**
+   * Signed proof that an owner/admin deliberately chose to move an installation
+   * from another Lobu workspace. The callback never trusts a query parameter for
+   * this decision; only this single-use Postgres-backed state flag can authorize
+   * the cross-workspace transfer.
+   */
+  confirmTransfer?: boolean;
+  /** Exact installation and source org selected by the explicit transfer URL. */
+  transferInstallationId?: string;
+  transferSourceOrganizationId?: string;
+  /**
    * Opaque correlation id minted by the connection setup continuation. It is
    * carried through GitHub's signed state and stamped on the linked connection
    * so the initiating agent can distinguish this callback from older installs.

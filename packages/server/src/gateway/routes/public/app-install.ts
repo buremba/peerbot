@@ -52,7 +52,10 @@ import {
 	getAppInstallationAuthMethods,
 	normalizeConnectorAuthSchema,
 } from "../../../utils/connector-auth.js";
-import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
+import {
+	CrossOrgTransferBlockedError,
+	type AppInstallationStore,
+} from "../../../lobu/stores/app-installation-store.js";
 import { exchangeCodeForTokens } from "../../../connect/oauth-providers.js";
 import {
 	createGithubInstallStateStore,
@@ -417,8 +420,9 @@ export interface LinkGithubInstallationResult {
  * the org's `github` connector connection so its `config.installation_ref` points
  * at the install. Pure of HTTP — the route is a thin wrapper, and tests drive
  * this directly. Idempotent: re-running for the same (org, installation_id)
- * refreshes the install (reject/transfer upsert) and reuses an existing linked
- * connection instead of creating a duplicate.
+ * refreshes the install and reuses an existing linked connection instead of
+ * creating a duplicate. A different-org active owner is rejected unless the
+ * caller carries explicit, signed, admin-approved transfer confirmation.
  */
 export async function linkGithubAppInstallation(params: {
 	organizationId: string;
@@ -430,6 +434,9 @@ export async function linkGithubAppInstallation(params: {
 	metadata?: Record<string, unknown>;
 	createdBy?: string | null;
 	setupAttemptId?: string;
+	/** Explicit, signed, admin-approved move from another Lobu workspace. */
+	confirmTransfer?: boolean;
+	transferSourceOrganizationId?: string;
 }): Promise<LinkGithubInstallationResult> {
 	const sql = getDb();
 	const accountLogin =
@@ -437,10 +444,10 @@ export async function linkGithubAppInstallation(params: {
 			? (params.metadata.account_login as string)
 			: null;
 
-	// 1. Upsert the install row (reject/transfer ownership on the active-tenant
-	//    invariant — same-org reinstall refreshes in place, different-org install
-	//    transfers ownership). auth_profile_id stays null: the GitHub App
-	//    credential (app id + private key) lives in gateway env, not auth_profiles.
+	// 1. Upsert the install row under the active-tenant invariant. Same-org
+	//    reinstall refreshes in place; a different-org owner fails closed unless
+	//    this callback carried signed transfer confirmation. auth_profile_id stays
+	//    null: the App credential lives in gateway env, not auth_profiles.
 	const install = await params.store.upsert({
 		organizationId: params.organizationId,
 		provider: GITHUB_PROVIDER,
@@ -449,6 +456,19 @@ export async function linkGithubAppInstallation(params: {
 		externalTenantId: params.installationId,
 		status: "active",
 		metadata: params.metadata ?? {},
+		blockCrossOrgTransfer:
+			params.confirmTransfer !== true || !params.transferSourceOrganizationId,
+		expectedTransferOwnerOrganizationId:
+			params.confirmTransfer === true
+				? params.transferSourceOrganizationId
+				: undefined,
+		revokeConnectionsOnTransfer:
+			params.confirmTransfer === true
+				? {
+						errorMessage:
+							"GitHub App installation transferred to another workspace",
+					}
+				: undefined,
 	});
 
 	// 2 + 3. Find-or-create the connection bound to this install, serialized by a
@@ -912,6 +932,11 @@ export interface AppInstallRouterDeps {
 		c: import("hono").Context,
 		organizationId: string,
 	): Promise<boolean>;
+	/** Owner/admin authorization required for a cross-workspace transfer. */
+	verifyInstallOrgAdminAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
 	/**
 	 * The public gateway base URL (e.g. `https://app.lobu.ai`) used to build the
 	 * OAuth `redirect_uri`, which must equal the App's registered Callback URL.
@@ -1018,10 +1043,11 @@ async function verifyInstallationOwnership(params: {
 	clientSecret: string | undefined;
 	/**
 	 * The installation_id GitHub passed on the install redirect. `undefined` only
-	 * in the recovery flow (GitHub's user-auth redirect omits it); then it is
-	 * DERIVED from the user's sole ACCESSIBLE installation via
+	 * in an ordinary recovery flow (GitHub's user-auth redirect omits it); then it
+	 * is DERIVED from the user's sole ACCESSIBLE installation via
 	 * `fetchSoleInstallation` and re-subjected to the full ownership check (so the
-	 * derived id is admin-verified, not merely access-verified).
+	 * derived id is admin-verified, not merely access-verified). An explicit
+	 * transfer instead supplies the exact installation id from signed state.
 	 */
 	installationId: number | undefined;
 	/** True when this is the recovery (user-authorization) flow. */
@@ -1075,15 +1101,17 @@ async function verifyInstallationOwnership(params: {
 		};
 	}
 
-	// Recovery: GitHub's user-auth redirect carries no installation_id, so derive
-	// it from the user's sole ACCESSIBLE installation for this App. ACCESS is not
-	// admin — the derived id is then run through the IDENTICAL ownership check
-	// below (personal-owner or active org admin), so recovery never relaxes a
-	// guard; it only supplies the id GitHub omitted. Ambiguous (>1 installation)
-	// and none are both rejected rather than guessing.
+	// Ordinary recovery: GitHub's user-auth redirect carries no installation_id,
+	// so derive it from the user's sole ACCESSIBLE installation for this App. An
+	// explicit transfer already carries the exact id in signed state and skips
+	// this ambiguous derivation. ACCESS is not admin — the derived id is then run
+	// through the IDENTICAL ownership check below (personal-owner or active org
+	// admin), so recovery never relaxes a guard; it only supplies the id GitHub
+	// omitted. Ambiguous (>1 installation) and none are both rejected rather than
+	// guessing.
 	let installationId = params.installationId;
 	let account: InstallationAccount | null | undefined;
-	if (params.recovery) {
+	if (params.recovery && installationId === undefined) {
 		const sole = await params.fetchSoleInstallation(userToken);
 		if (sole === undefined) {
 			return {
@@ -1262,6 +1290,19 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				401,
 			);
 		}
+		const confirmTransfer = c.req.query("confirm_transfer") === "1";
+		if (
+			confirmTransfer &&
+			!(await deps.verifyInstallOrgAdminAccess(c, orgId))
+		) {
+			return c.html(
+				renderOAuthErrorPage(
+					"transfer_forbidden",
+					"Only an owner or admin of the target workspace can transfer a GitHub App installation into it.",
+				),
+				403,
+			);
+		}
 
 		const method = await getOrgAppInstallationMethod(
 			orgId,
@@ -1281,6 +1322,60 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
+		let transferInstallationId: string | undefined;
+		let transferSourceOrganizationId: string | undefined;
+		if (confirmTransfer) {
+			const sourceInstallationId = Number(
+				c.req.query("source_installation_id"),
+			);
+			if (!Number.isInteger(sourceInstallationId) || sourceInstallationId <= 0) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_transfer_source",
+						"Choose a specific source installation from the connector setup result before transferring.",
+					),
+					400,
+				);
+			}
+			const sql = getDb();
+			const sourceRows = (await sql`
+				SELECT ai.organization_id, ai.external_tenant_id
+				FROM app_installations ai
+				WHERE ai.id = ${sourceInstallationId}
+				  AND ai.provider = ${GITHUB_PROVIDER}
+				  AND ai.provider_instance = ${GITHUB_PROVIDER_INSTANCE}
+				  AND ai.provider_app_id = ${appId}
+				  AND ai.status = 'active'
+				LIMIT 1
+			`) as unknown as Array<{
+				organization_id: string;
+				external_tenant_id: string;
+			}>;
+			const source = sourceRows[0];
+			if (!source || source.organization_id === orgId) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_transfer_source",
+						"The selected source is no longer an active GitHub App installation in another workspace.",
+					),
+					409,
+				);
+			}
+			if (
+				!(await deps.verifyInstallOrgAdminAccess(c, source.organization_id))
+			) {
+				return c.html(
+					renderOAuthErrorPage(
+						"transfer_forbidden",
+						"You must be an owner or admin in both the source and target workspaces to transfer this installation.",
+					),
+					403,
+				);
+			}
+			transferInstallationId = source.external_tenant_id;
+			transferSourceOrganizationId = source.organization_id;
+		}
+
 		// Decide recovery vs fresh install. Explicit `?recovery=1`, or this org
 		// already has an app_installations row for this App (a prior bind exists, so
 		// the install page would dead-end). Recovery needs the App's OAuth client id
@@ -1296,13 +1391,30 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				: undefined;
 		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
-		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
+		if (confirmTransfer && !clientId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_oauth_not_configured",
+					"The GitHub App user-authorization flow is required to confirm a transfer, but it is not configured on this gateway.",
+				),
+				503,
+			);
+		}
+		const useRecovery =
+			(confirmTransfer || explicitRecovery || alreadyHasInstallRow) && !!clientId;
 
 		const stateStore = createGithubInstallStateStore();
 		if (useRecovery && clientId) {
 			const state = await stateStore.create({
 				organizationId: orgId,
 				recovery: true,
+				...(confirmTransfer ? { confirmTransfer: true } : {}),
+				...(transferInstallationId
+					? { transferInstallationId }
+					: {}),
+				...(transferSourceOrganizationId
+					? { transferSourceOrganizationId }
+					: {}),
 				...(setupAttemptId ? { setupAttemptId } : {}),
 			});
 			const callbackUrl = githubInstallCallbackUrl(
@@ -1469,6 +1581,61 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				503,
 			);
 		}
+		if (installState.confirmTransfer === true) {
+			if (!(await deps.verifyInstallOrgAdminAccess(c, orgId))) {
+				return c.html(
+					renderOAuthErrorPage(
+						"transfer_forbidden",
+						"Your target-workspace owner/admin permission could not be confirmed. The GitHub App installation was not moved.",
+					),
+					403,
+				);
+			}
+			const transferInstallationId = installState.transferInstallationId;
+			const transferSourceOrganizationId =
+				installState.transferSourceOrganizationId;
+			if (!transferInstallationId || !transferSourceOrganizationId) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_transfer_state",
+						"This transfer confirmation is incomplete. Return to connector setup and choose the source connection again.",
+					),
+					400,
+				);
+			}
+			const incumbent = await deps.installationStore.resolveActiveByTenant({
+				provider: GITHUB_PROVIDER,
+				providerInstance: GITHUB_PROVIDER_INSTANCE,
+				providerAppId: appId,
+				externalTenantId: transferInstallationId,
+			});
+			if (
+				!incumbent ||
+				incumbent.organizationId !== transferSourceOrganizationId
+			) {
+				return c.html(
+					renderOAuthErrorPage(
+						"transfer_source_changed",
+						"The installation is no longer active in the workspace that was approved. Nothing was moved; start again from connector setup.",
+					),
+					409,
+				);
+			}
+			if (
+				!(await deps.verifyInstallOrgAdminAccess(
+					c,
+					transferSourceOrganizationId,
+				))
+			) {
+				return c.html(
+					renderOAuthErrorPage(
+						"transfer_forbidden",
+						"Your owner/admin permission in the source workspace could not be confirmed. The installation was not moved.",
+					),
+					403,
+				);
+			}
+		}
 
 		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
 		// the caller OWNS the supplied installation_id (an enumerable integer).
@@ -1480,24 +1647,32 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// Prove it via OAuth-during-install — ALL of this runs BEFORE any DB write,
 		// so every failure returns 4xx/503 with zero mutation.
 		//
-		// Non-recovery: validate the installation_id GitHub passed. Recovery: it is
-		// absent (passed as undefined) and verifyInstallationOwnership derives it
-		// from /user/installations, then runs the identical ownership check.
-		let suppliedInstallationId: number | undefined;
+		// Non-recovery validates the installation_id GitHub passed. Ordinary recovery
+		// passes undefined and derives it from /user/installations. Explicit transfer
+		// recovery uses the exact id preserved in signed state. Every path then runs
+		// the identical ownership check.
+		// Only a state that ALSO carries `confirmTransfer` may supply the id this
+		// way — that is the flag the transfer guards above are keyed on, so an id
+		// without it would skip both the incumbent-owner and dual-admin checks.
+		let suppliedInstallationId =
+			installState.confirmTransfer === true &&
+			installState.transferInstallationId
+				? Number(installState.transferInstallationId)
+				: undefined;
 		if (!isRecovery) {
 			suppliedInstallationId = Number((installationIdRaw ?? "").trim());
-			if (
-				!Number.isInteger(suppliedInstallationId) ||
-				suppliedInstallationId <= 0
-			) {
-				return c.html(
-					renderOAuthErrorPage(
-						"invalid_request",
-						"The GitHub install callback carried an invalid installation_id.",
-					),
-					400,
-				);
-			}
+		}
+		if (
+			suppliedInstallationId !== undefined &&
+			(!Number.isInteger(suppliedInstallationId) || suppliedInstallationId <= 0)
+		) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_request",
+					"The GitHub install callback carried an invalid installation_id.",
+				),
+				400,
+			);
 		}
 		// The redirect_uri must EXACTLY equal the App's registered Callback URL.
 		// Derive it from the public gateway base — NOT c.req.url, which behind the
@@ -1595,6 +1770,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				installationId: String(installationId),
 				store: deps.installationStore,
 				providerAppId: appId,
+				confirmTransfer: consumed.confirmTransfer === true,
+				transferSourceOrganizationId:
+					consumed.transferSourceOrganizationId,
 				...(consumed.setupAttemptId
 					? { setupAttemptId: consumed.setupAttemptId }
 					: {}),
@@ -1690,6 +1868,30 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				}),
 			);
 		} catch (error) {
+			if (error instanceof CrossOrgTransferBlockedError) {
+				const confirmedTransfer = consumed.confirmTransfer === true;
+				logger.warn(
+					{
+						organization_id: orgId,
+						installation_id: installationId,
+						owner_organization_id: error.ownerOrganizationId,
+					},
+					confirmedTransfer
+						? "GitHub App transfer blocked because the approved source changed"
+						: "GitHub App transfer blocked pending explicit confirmation",
+				);
+				return c.html(
+					renderOAuthErrorPage(
+						confirmedTransfer
+							? "transfer_source_changed"
+							: "transfer_confirmation_required",
+						confirmedTransfer
+							? "The installation is no longer active in the workspace that was approved. Nothing was moved; start again from connector setup."
+							: "This GitHub App installation is active in another Lobu workspace. Nothing was changed. Return to the connector setup result and choose the explicit admin-confirmed transfer action if you intend to move it here.",
+					),
+					409,
+				);
+			}
 			logger.error(
 				{
 					organization_id: orgId,
@@ -2035,6 +2237,11 @@ export interface InstallEngineDeps {
 		c: import("hono").Context,
 		organizationId: string,
 	): Promise<boolean>;
+	/** Owner/admin authorization for GitHub cross-workspace transfers. */
+	verifyInstallOrgAdminAccess(
+		c: import("hono").Context,
+		organizationId: string,
+	): Promise<boolean>;
 	/** The public gateway base URL used to build OAuth `redirect_uri`s. */
 	getPublicGatewayUrl?(): string | undefined;
 	/** The bundled integration connectors to mount install routes for. */
@@ -2073,6 +2280,7 @@ export function createInstallRoutes(deps: InstallEngineDeps): Hono {
 					installationStore: deps.installationStore,
 					resolveInstallOrgId: deps.resolveInstallOrgId,
 					verifyInstallOrgAccess: deps.verifyInstallOrgAccess,
+					verifyInstallOrgAdminAccess: deps.verifyInstallOrgAdminAccess,
 					getPublicGatewayUrl: deps.getPublicGatewayUrl,
 				}),
 			);

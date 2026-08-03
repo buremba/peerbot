@@ -52,6 +52,7 @@ import {
 import { createPublicFileRoutes } from "../routes/public/files.js";
 import {
   resolveInstallOrgId,
+  verifyInstallOrgAdminAccess,
   verifyInstallOrgAccess,
 } from "../routes/public/install-org.js";
 import { createLandingRoutes } from "../routes/public/landing.js";
@@ -699,6 +700,7 @@ export function createGatewayApp(
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
         verifyInstallOrgAccess,
+        verifyInstallOrgAdminAccess,
         getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
         integrations: (bundledIntegrationConnectors ?? []).map((integration) => ({
           connectorKey: integration.connectorKey,

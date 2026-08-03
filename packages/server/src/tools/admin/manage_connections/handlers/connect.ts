@@ -62,6 +62,7 @@ import {
 	type ConnectionSetupNextAction,
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
+import { buildCrossWorkspaceAppInstallResult } from "../../helpers/cross-workspace-app-install";
 
 export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
@@ -125,11 +126,19 @@ export async function handleConnect(
 		// Setup-required continuation: the App install callback creates the active
 		// connection itself, so do NOT instruct a retry of connect. The guard's
 		// ConnectorSetupError already carries the absolute install_url.
-		return appInstallationSetupContinuation({
+		const setupContinuation = appInstallationSetupContinuation({
 			action: "connect",
 			connectorKey: args.connector_key,
 			setup: appInstallGuard,
 			setupUrl: await buildAppInstallationSetupUrl(ctx, args.connector_key),
+		});
+		return buildCrossWorkspaceAppInstallResult({
+			connectorKey: args.connector_key,
+			ctx,
+			setup: appInstallGuard,
+			setupContinuation,
+			ownerSlug,
+			baseUrl,
 		});
   }
 

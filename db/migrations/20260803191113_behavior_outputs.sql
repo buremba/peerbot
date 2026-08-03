@@ -1,3 +1,5 @@
+-- This migration was renamed from version 20260803140000 after that ledger
+-- version collided with mcp_conversation_client_software_id in production.
 -- Hard-cut the single entity-only configuration over to named durable outputs.
 -- Existing versions are converted before the retired column is dropped in this
 -- same transaction. Stable-key identities gain the output name, allowing one
@@ -404,6 +406,6 @@ COMMENT ON COLUMN watcher_versions.outputs IS
 DO $migration$
 BEGIN
   RAISE EXCEPTION
-    '20260803140000_behavior_outputs is an irreversible hard cutover; restore from backup instead of recreating the retired API';
+    '20260803191113_behavior_outputs is an irreversible hard cutover; restore from backup instead of recreating the retired API';
 END
 $migration$;

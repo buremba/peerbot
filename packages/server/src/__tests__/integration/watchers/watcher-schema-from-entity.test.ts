@@ -280,6 +280,43 @@ describe('complete_window derives its schema from the entity type', () => {
     ).rejects.toThrow(/does not match|category/i);
   });
 
+  it.each([
+    ['a blank string', '   ', /non-blank/i],
+    ['more than 256 UTF-8 bytes', 'é'.repeat(129), /256 bytes/i],
+  ])(
+    'REJECTS %s stable-key component as a 422 before writing the window',
+    async (_label, category, expectedMessage) => {
+      const ctx = await setupEntityTypedWatcher();
+      await createTestEvent({
+        entity_id: ctx.parentEntityId,
+        organization_id: ctx.workspace.org.id,
+        content: 'Users report problems.',
+        occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      const runId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx);
+
+      const error = await ctx.api.behaviors
+        .completeWindow({
+          behavior_id: String(ctx.watcherId),
+          window_token: token,
+          extracted_data: { problems: [{ category, name: 'App Crashes' }] },
+          run_metadata: { watcher_run_id: runId },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ name: 'ToolUserError', httpStatus: 422 });
+      expect((error as Error).message).toMatch(expectedMessage);
+      const durableRows = await ctx.sql<{ count: string }>`
+        SELECT count(*)::text AS count
+        FROM events
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND semantic_type = 'canvas_state'
+      `;
+      expect(durableRows[0].count).toBe('0');
+    }
+  );
+
   it('ACCEPTS extracted data that conforms to the entity type schema (no inline schema)', async () => {
     const ctx = await setupEntityTypedWatcher();
     await createTestEvent({

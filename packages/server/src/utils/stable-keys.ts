@@ -51,14 +51,10 @@ function encodeComponent(field: string, value: unknown): string {
   return `${encode(field)}.${type}.${encode(raw)}`;
 }
 
-/**
- * Compute one Behavior-scoped stable key without adding transport-only fields
- * to the model's output or the entity's metadata.
- */
-export function computeStableKey(
+function encodeStableKeyComponents(
   row: Record<string, unknown>,
   keyFields: readonly string[]
-): string {
+): string[] {
   if (keyFields.length === 0 || keyFields.length > MAX_STABLE_KEY_FIELDS) {
     throw new Error(
       `Stable keys require between 1 and ${MAX_STABLE_KEY_FIELDS} fields.`
@@ -74,7 +70,24 @@ export function computeStableKey(
       );
     }
   }
-  return `${STABLE_KEY_VERSION}~${keyFields
-    .map((field) => encodeComponent(field, row[field]))
-    .join('~')}`;
+  return keyFields.map((field) => encodeComponent(field, row[field]));
+}
+
+/** Validate the exact scalar and UTF-8 byte contract used to encode a stable key. */
+export function validateStableKeyComponents(
+  row: Record<string, unknown>,
+  keyFields: readonly string[]
+): void {
+  encodeStableKeyComponents(row, keyFields);
+}
+
+/**
+ * Compute one Behavior-scoped stable key without adding transport-only fields
+ * to the model's output or the entity's metadata.
+ */
+export function computeStableKey(
+  row: Record<string, unknown>,
+  keyFields: readonly string[]
+): string {
+  return `${STABLE_KEY_VERSION}~${encodeStableKeyComponents(row, keyFields).join('~')}`;
 }

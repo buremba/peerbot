@@ -18,6 +18,7 @@ import { ensureCanvasEntity, findCanvasHead } from '../../../utils/canvas-events
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { persistBehaviorEventOutput } from '../../../utils/persist-behavior-event-output';
+import { validateStableKeyComponents } from '../../../utils/stable-keys';
 import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
 import {
@@ -39,6 +40,28 @@ import { getErrorMessage } from '@lobu/core';
 // This allows workers to add internal fields while still validating the core schema
 const ajv = new Ajv({ allErrors: true, strict: false, removeAdditional: true });
 addFormats(ajv);
+
+function validateEntityOutputKeys(
+  extractedData: Record<string, unknown>,
+  outputs: Outputs | null
+): void {
+  for (const [outputName, output] of Object.entries(outputs ?? {})) {
+    if (!('entity' in output)) continue;
+    const rows = extractedData[outputName];
+    if (!Array.isArray(rows)) continue;
+    for (const [index, row] of rows.entries()) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      try {
+        validateStableKeyComponents(row as Record<string, unknown>, output.key);
+      } catch (error) {
+        throw new ToolUserError(
+          `Invalid stable key in entity output '${outputName}' row ${index + 1}: ${getErrorMessage(error)}`,
+          422
+        );
+      }
+    }
+  }
+}
 
 // ============================================
 // handleCompleteWindow
@@ -289,6 +312,12 @@ export async function handleCompleteWindow(
 
     logger.info('[complete_window] extracted_data validated against template schema successfully');
   }
+
+  // JSON Schema maxLength counts characters, while durable stable-key storage
+  // is bounded in UTF-8 bytes and also rejects blank strings. Enforce the exact
+  // encoder contract before opening the completion transaction or writing the
+  // Canvas so invalid model output is an actionable 422, not a mid-write error.
+  validateEntityOutputKeys(extractedData, outputs);
 
   // ============================================
   // STEP 3: Resolve the exact content IDs analyzed by the worker

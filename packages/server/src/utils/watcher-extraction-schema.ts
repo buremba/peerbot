@@ -93,9 +93,21 @@ function mergeObjectSchemas(
   const reactionRequired = Array.isArray(reaction.required)
     ? reaction.required.filter((value): value is string => typeof value === 'string')
     : [];
+  const mergedProperties = { ...reactionProperties };
+  for (const [name, outputSchema] of Object.entries(outputProperties)) {
+    const reactionSchema = reactionProperties[name];
+    // A reaction may refine a declared output (for example, require domain
+    // metadata inside a standard event draft). Preserve both contracts instead
+    // of silently replacing the reaction's property with the durable-output
+    // property. `allOf` also makes an incompatible refinement fail validation
+    // before either persistence or side effects run.
+    mergedProperties[name] = reactionSchema
+      ? { allOf: [reactionSchema, outputSchema] }
+      : outputSchema;
+  }
   return {
     ...reaction,
-    properties: { ...reactionProperties, ...outputProperties },
+    properties: mergedProperties,
     required: [...new Set([...reactionRequired, ...outputNames])],
   };
 }
@@ -105,8 +117,8 @@ function mergeObjectSchemas(
  *  1. Named outputs → entity metadata schemas or the standard event draft.
  *  2. Reaction Behavior → the reaction's exported `input` schema, cached on
  *     `watchers.reaction_input_schema` when the watcher is created or its script
- *     is set. This is how "the reaction owns the schema" reaches the worker:
- *     the device extracts against exactly what the reaction will `Value.Parse`.
+ *     is set. A property that is also a declared output refines that output via
+ *     JSON Schema `allOf`; reaction-only properties are added alongside it.
  *  3. Otherwise null — the worker runs the free-form `{ summary }` fallback.
  *
  * Both the worker payload and complete_window validation resolve through here,

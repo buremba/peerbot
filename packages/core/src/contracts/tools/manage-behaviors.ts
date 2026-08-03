@@ -116,36 +116,44 @@ export type BehaviorSource = Static<typeof BehaviorSourceSchema>;
  * real-world identity. The stable key is server-internal and never appears in
  * the model's output contract.
  */
-export const BehaviorEntityOutputSchema = Type.Object({
-  entity: Type.String({
-    minLength: 1,
-    description: "Stored entity-type slug for every row in this output array.",
-  }),
-  key: Type.Array(Type.String({ minLength: 1 }), {
-    minItems: 1,
-    description:
-      "Fields whose values compose each row's stable identity across Behavior runs.",
-  }),
-  name: Type.Optional(
-    Type.Array(Type.String({ minLength: 1 }), {
+export const BehaviorEntityOutputSchema = Type.Object(
+  {
+    entity: Type.String({
+      minLength: 1,
+      description:
+        "Stored entity-type slug for every row in this output array.",
+    }),
+    key: Type.Array(Type.String({ minLength: 1 }), {
       minItems: 1,
       description:
-        "Fields used for the human-readable entity name. Defaults to key.",
-    })
-  ),
-});
+        "Fields whose values compose each row's stable identity across Behavior runs.",
+    }),
+    name: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description:
+          "Fields used for the human-readable entity name. Defaults to key.",
+      })
+    ),
+  },
+  { additionalProperties: false }
+);
 export type BehaviorEntityOutput = Static<typeof BehaviorEntityOutputSchema>;
 
 /**
  * Persist each row as an append-only event. The semantic type is fixed by the
  * Behavior version; the row supplies the standard event draft fields.
  */
-export const BehaviorEventOutputSchema = Type.Object({
-  event: Type.String({
-    minLength: 1,
-    description: "Semantic type assigned to every event in this output array.",
-  }),
-});
+export const BehaviorEventOutputSchema = Type.Object(
+  {
+    event: Type.String({
+      minLength: 1,
+      description:
+        "Semantic type assigned to every event in this output array.",
+    }),
+  },
+  { additionalProperties: false }
+);
 export type BehaviorEventOutput = Static<typeof BehaviorEventOutputSchema>;
 
 export const BehaviorOutputSchema = Type.Union([

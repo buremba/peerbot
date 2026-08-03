@@ -35,6 +35,7 @@ import {
   assertWatcherSourcesResolve,
   assertBehaviorSkillsResolve,
   assertPromptSkillTokensPinned,
+  normalizeStoredJsonField,
   parseJsonInput,
   toJsonParam,
   toTextArrayParam,
@@ -490,7 +491,10 @@ export async function handleUpdate(
   });
   assertBehaviorOutputsUseWindowExecution(
     triggerWrite.triggers,
-    currentRow.current_outputs
+    normalizeStoredJsonField(
+      currentRow.current_outputs,
+      undefined as Record<string, unknown> | undefined
+    )
   );
   if (
     args.triggers !== undefined &&
@@ -877,7 +881,10 @@ export async function handleCreateFromVersion(
         );
         assertBehaviorOutputsUseWindowExecution(
           (Array.isArray(cloneTriggers) ? cloneTriggers : []) as BehaviorTrigger[],
-          version.outputs as Record<string, unknown> | null | undefined
+          normalizeStoredJsonField(
+            version.outputs,
+            undefined as Record<string, unknown> | undefined
+          )
         );
         // `tags` is a text[] column read under fetch_types:false, so postgres.js
         // hands back a raw array literal string (e.g. "{}" or "{system:chat-link}"),

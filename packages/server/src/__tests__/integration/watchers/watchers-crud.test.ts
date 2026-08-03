@@ -737,6 +737,36 @@ describe('watcher CRUD', () => {
     await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
   });
 
+  it('clears durable outputs when create_version receives serialized null', async () => {
+    const created = (await owner.behaviors.create({
+      entity_id: entityId,
+      slug: 'clear-serialized-outputs-watcher',
+      name: 'Clear Serialized Outputs Watcher',
+      prompt: 'Extract companies.',
+      agent_id: agentId,
+      outputs: {
+        items: { entity: 'company', key: ['name'] },
+      },
+    })) as { behavior_id: string };
+
+    await owner.behaviors.createVersion({
+      behavior_id: created.behavior_id,
+      outputs: 'null',
+      change_notes: 'switch to reaction-only output',
+    });
+
+    const sql = getTestDb();
+    const [row] = await sql`
+      SELECT wv.outputs AS version_outputs
+      FROM watchers w
+      JOIN watcher_versions wv ON wv.id = w.current_version_id
+      WHERE w.id = ${created.behavior_id}
+    `;
+    expect(row.version_outputs).toBeNull();
+
+    await owner.behaviors.delete({ behavior_ids: [created.behavior_id] });
+  });
+
   it('round-trips execution_config through create → list → update', async () => {
     const created = (await owner.behaviors.create({
       entity_id: entityId,

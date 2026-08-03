@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'bun:test';
+import {
+  BehaviorEntityOutputSchema,
+  BehaviorEventOutputSchema,
+} from '@lobu/core/contracts/tools/manage-behaviors';
+import { Value } from '@sinclair/typebox/value';
 import { assertOutputsShape, parseJsonInput } from '../../tools/admin/manage_behaviors/shared';
 
 const valid = {
@@ -52,6 +57,22 @@ describe('assertOutputsShape', () => {
       const target = JSON.parse(JSON.stringify({ ...valid.items, [key]: 'x' }));
       expect(() => assertOutputsShape({ items: target })).toThrow(/unknown field/);
     }
+  });
+
+  it('publishes strict entity and event value schemas', () => {
+    expect(
+      Value.Check(BehaviorEntityOutputSchema, {
+        entity: 'person',
+        key: ['id'],
+        event: 'observation',
+      })
+    ).toBe(false);
+    expect(
+      Value.Check(BehaviorEventOutputSchema, {
+        event: 'observation',
+        typo: true,
+      })
+    ).toBe(false);
   });
 
   it('rejects empty keys and organization guidance events', () => {

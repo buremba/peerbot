@@ -129,25 +129,27 @@ export async function persistBehaviorEventOutput(
     };
     try {
       inserted.push(
-        await insertEvent(
-          {
-            entityIds: params.boundEntityIds,
-            organizationId: params.organizationId,
-            originId: `behavior_${params.watcherId}_${params.outputName}_${producer.replace(':', '_')}_${index}`,
-            title: draft.title ?? null,
-            payloadType: draft.payload_type ?? 'text',
-            content: draft.content,
-            authorName: draft.author ?? null,
-            sourceUrl: draft.source_url ?? parentSourceUrl,
-            occurredAt: draft.occurred_at ?? params.occurredAt,
-            semanticType: params.output.event,
-            originType: params.output.event,
-            metadata: eventMetadata,
-            parentOriginId,
-            runId: params.runId,
-            createdBy: params.createdBy ?? null,
-          },
-          { sql: params.tx }
+        await params.tx.savepoint((sp) =>
+          insertEvent(
+            {
+              entityIds: params.boundEntityIds,
+              organizationId: params.organizationId,
+              originId: `behavior_${params.watcherId}_${params.outputName}_${producer.replace(':', '_')}_${index}`,
+              title: draft.title ?? null,
+              payloadType: draft.payload_type ?? 'text',
+              content: draft.content,
+              authorName: draft.author ?? null,
+              sourceUrl: draft.source_url ?? parentSourceUrl,
+              occurredAt: draft.occurred_at ?? params.occurredAt,
+              semanticType: params.output.event,
+              originType: params.output.event,
+              metadata: eventMetadata,
+              parentOriginId,
+              runId: params.runId,
+              createdBy: params.createdBy ?? null,
+            },
+            { sql: sp }
+          )
         )
       );
     } catch (error) {

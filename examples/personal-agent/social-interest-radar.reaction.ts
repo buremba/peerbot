@@ -21,7 +21,20 @@ export const input = {
           content: { type: "string", minLength: 1 },
           parent_event_id: { type: "integer", minimum: 1 },
           idempotency_key: { type: "string", minLength: 1 },
-          metadata: { type: "object" },
+          metadata: {
+            type: "object",
+            properties: {
+              platform: { type: "string" },
+              author: { type: "string" },
+              why: { type: "string" },
+              priority: {
+                type: "string",
+                enum: ["low", "normal", "high"],
+              },
+              source_event_id: { type: "integer", minimum: 1 },
+            },
+            required: ["platform", "author", "why", "priority"],
+          },
         },
         required: ["content", "parent_event_id", "idempotency_key", "metadata"],
       },

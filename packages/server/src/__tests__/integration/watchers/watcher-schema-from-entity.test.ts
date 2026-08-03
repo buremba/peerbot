@@ -173,6 +173,46 @@ describe('complete_window derives its schema from the entity type', () => {
     });
   });
 
+  it('intersects a reaction refinement with the durable output schema', async () => {
+    const ctx = await setupEntityTypedWatcher();
+    await ctx.sql`
+      UPDATE watchers
+      SET reaction_input_schema = ${ctx.sql.json({
+        type: 'object',
+        properties: {
+          signals: {
+            type: 'array',
+            maxItems: 8,
+            items: {
+              type: 'object',
+              properties: {
+                content: { type: 'string', minLength: 1 },
+                metadata: {
+                  type: 'object',
+                  properties: { priority: { enum: ['low', 'high'] } },
+                  required: ['priority'],
+                },
+              },
+              required: ['content', 'metadata'],
+            },
+          },
+        },
+        required: ['signals'],
+      })}
+      WHERE id = ${ctx.watcherId}
+    `;
+
+    const derived = (await deriveWatcherExtractionSchema(
+      ctx.dbClient,
+      ctx.workspace.org.id,
+      { signals: { event: 'observation' } },
+      ctx.watcherId
+    )) as Record<string, any>;
+    expect(derived.properties.signals.allOf).toHaveLength(2);
+    expect(derived.properties.signals.allOf[0].items.properties.metadata).toBeDefined();
+    expect(derived.properties.signals.allOf[1].items.required).toEqual(['content']);
+  });
+
   it('REJECTS extracted data missing a field the entity type requires', async () => {
     const ctx = await setupEntityTypedWatcher();
     await createTestEvent({

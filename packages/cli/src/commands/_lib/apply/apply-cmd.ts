@@ -948,8 +948,8 @@ export async function executePlan(
             w.reactionsGuidance !== undefined
               ? { reactions_guidance: w.reactionsGuidance }
               : {}),
-            ...(versionBound.has("outputs") && w.outputs !== undefined
-              ? { outputs: w.outputs }
+            ...(versionBound.has("outputs")
+              ? { outputs: w.outputs ?? null }
               : {}),
             ...(versionBound.has("classifiers") && w.classifiers !== undefined
               ? { classifiers: w.classifiers }

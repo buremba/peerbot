@@ -559,10 +559,10 @@ function diffWatcher(
   ) {
     versionBound.push("reactions_guidance");
   }
-  if (
-    desired.outputs !== undefined &&
-    !deepEqual(desired.outputs, remote.outputs ?? null)
-  ) {
+  // Config is declarative: removing `outputs` means "no durable outputs", just
+  // like writing `outputs: null`. Compare that resolved value so deleting the
+  // declaration clears the previous version instead of silently inheriting it.
+  if (!deepEqual(desired.outputs ?? null, remote.outputs ?? null)) {
     versionBound.push("outputs");
   }
   if (

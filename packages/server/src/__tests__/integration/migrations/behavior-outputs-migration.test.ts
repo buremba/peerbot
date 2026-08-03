@@ -49,6 +49,11 @@ describe('Behavior outputs migration', () => {
       name: 'Legacy promoted issue',
       metadata: { external_id: 'ISSUE-1' },
     })) as { entity: { id: number } };
+    const prefixedEntity = (await api.entities.create({
+      type: 'issue',
+      name: 'Legacy issue with output-prefixed stable key',
+      metadata: { external_id: 'items::ISSUE-2' },
+    })) as { entity: { id: number } };
     const created = (await api.behaviors.create({
       slug: 'legacy-keyed-behavior',
       prompt: 'Find issues.',
@@ -60,7 +65,7 @@ describe('Behavior outputs migration', () => {
     let captured:
       | {
           outputs: unknown;
-          identity: string;
+          identities: string[];
           legacyColumnPresent: boolean;
         }
       | undefined;
@@ -84,15 +89,20 @@ describe('Behavior outputs migration', () => {
         await tx`
           UPDATE entities
           SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
-          WHERE id = ${entity.entity.id}
+          WHERE id IN (${entity.entity.id}, ${prefixedEntity.entity.id})
         `;
         await tx`
           INSERT INTO entity_identities (
             organization_id, entity_id, namespace, identifier, source_connector
-          ) VALUES (
-            ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
-            ${`${watcherId}::issue-1`}, 'watcher'
-          )
+          ) VALUES
+            (
+              ${workspace.org.id}, ${entity.entity.id}, 'watcher_key',
+              ${`${watcherId}::issue-1`}, 'watcher'
+            ),
+            (
+              ${workspace.org.id}, ${prefixedEntity.entity.id}, 'watcher_key',
+              ${`${watcherId}::items::issue-2`}, 'watcher'
+            )
         `;
 
         await tx.unsafe(up);
@@ -102,9 +112,11 @@ describe('Behavior outputs migration', () => {
           JOIN watchers w ON w.current_version_id = v.id
           WHERE w.id = ${watcherId}
         `;
-        const [identity] = await tx<{ identifier: string }>`
+        const identities = await tx<{ identifier: string }>`
           SELECT identifier FROM entity_identities
-          WHERE entity_id = ${entity.entity.id} AND namespace = 'watcher_key'
+          WHERE entity_id IN (${entity.entity.id}, ${prefixedEntity.entity.id})
+            AND namespace = 'watcher_key'
+          ORDER BY identifier
         `;
         const [column] = await tx<{ present: boolean }>`
           SELECT EXISTS (
@@ -116,7 +128,7 @@ describe('Behavior outputs migration', () => {
         `;
         captured = {
           outputs: version.outputs,
-          identity: identity.identifier,
+          identities: identities.map((row) => row.identifier),
           legacyColumnPresent: column.present,
         };
         throw new Rollback();
@@ -133,8 +145,71 @@ describe('Behavior outputs migration', () => {
           name: ['title'],
         },
       },
-      identity: `${watcherId}::items::issue-1`,
+      identities: [
+        `${watcherId}::items::issue-1`,
+        `${watcherId}::items::items::issue-2`,
+      ],
       legacyColumnPresent: false,
     });
+  });
+
+  it('does not rewrite current identities on a fresh baseline', async () => {
+    const workspace = await TestWorkspace.create({ name: 'Behavior Outputs Fresh Baseline Org' });
+    const ownerUserId = workspace.users.owner.id;
+    const agent = await createTestAgent({
+      organizationId: workspace.org.id,
+      ownerUserId,
+      agentId: 'behavior-output-fresh-agent',
+    });
+    const api = await TestApiClient.for({
+      organizationId: workspace.org.id,
+      userId: ownerUserId,
+      memberRole: 'owner',
+    });
+    await api.entity_schema.createType({ slug: 'fresh-issue', name: 'Fresh Issue' });
+    const entity = (await api.entities.create({
+      type: 'fresh-issue',
+      name: 'Fresh promoted issue',
+      metadata: { external_id: 'ISSUE-3' },
+    })) as { entity: { id: number } };
+    const created = (await api.behaviors.create({
+      slug: 'fresh-output-behavior',
+      prompt: 'Find fresh issues.',
+      agent_id: agent.agentId,
+      outputs: { items: { entity: 'fresh-issue', key: ['external_id'] } },
+    })) as { behavior_id: string };
+    const watcherId = Number(created.behavior_id);
+    const expected = `${watcherId}::items::issue-3`;
+    const sql = getDb();
+    const up = loadMigrationUpSection(resolveMigrationsDir(), MIGRATION);
+    let captured: string | undefined;
+
+    try {
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`
+          UPDATE entities
+          SET metadata = metadata || ${tx.json({ watcher_id: watcherId })}
+          WHERE id = ${entity.entity.id}
+        `;
+        await tx`
+          INSERT INTO entity_identities (
+            organization_id, entity_id, namespace, identifier, source_connector
+          ) VALUES (
+            ${workspace.org.id}, ${entity.entity.id}, 'watcher_key', ${expected}, 'watcher'
+          )
+        `;
+        await tx.unsafe(up);
+        const [identity] = await tx<{ identifier: string }>`
+          SELECT identifier FROM entity_identities
+          WHERE entity_id = ${entity.entity.id} AND namespace = 'watcher_key'
+        `;
+        captured = identity.identifier;
+        throw new Rollback();
+      });
+    } catch (error) {
+      if (!(error instanceof Rollback)) throw error;
+    }
+
+    expect(captured).toBe(expected);
   });
 });

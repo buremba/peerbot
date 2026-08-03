@@ -565,27 +565,47 @@ export async function handleCompleteWindow(
     if (entityChanges.length > 0 && watcherRunId && Number.isFinite(watcherRunId)) {
       const createdCount = entityChanges.filter((c) => c.kind === 'created').length;
       const updatedCount = entityChanges.length - createdCount;
-      await insertEvent(
-        {
-          entityIds: entityChanges.map((c) => c.entityId),
-          organizationId: watcherOrgId,
-          originId: `run_${watcherRunId}_changeset`,
-          title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
-          content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
-          semanticType: 'change_set',
-          runId: watcherRunId,
-          metadata: {
-            kind: 'watcher_change_set',
-            window_id: windowId,
-            watcher_id: Number(watcherId),
-            created_count: createdCount,
-            updated_count: updatedCount,
-            changes: entityChanges,
-          },
-          createdBy: watcherCreatedBy,
-        },
-        { sql: tx }
-      );
+      const changeSetIdempotencyKey = `behavior:${watcherId}:run:${watcherRunId}:change_set`;
+      const findChangeSet = () => tx<{ id: number }>`
+        SELECT id FROM events
+        WHERE organization_id = ${watcherOrgId}
+          AND metadata->>'_lobu_idempotency_key' = ${changeSetIdempotencyKey}
+        LIMIT 1
+      `;
+      if ((await findChangeSet()).length === 0) {
+        try {
+          await tx.savepoint((sp) =>
+            insertEvent(
+              {
+                entityIds: entityChanges.map((c) => c.entityId),
+                organizationId: watcherOrgId,
+                originId: `run_${watcherRunId}_changeset`,
+                title: `Behavior applied ${createdCount} new + ${updatedCount} updated`,
+                content: `This run created ${createdCount} and updated ${updatedCount} entities.`,
+                semanticType: 'change_set',
+                runId: watcherRunId,
+                metadata: {
+                  _lobu_idempotency_key: changeSetIdempotencyKey,
+                  kind: 'watcher_change_set',
+                  window_id: windowId,
+                  watcher_id: Number(watcherId),
+                  created_count: createdCount,
+                  updated_count: updatedCount,
+                  changes: entityChanges,
+                },
+                createdBy: watcherCreatedBy,
+              },
+              { sql: sp }
+            )
+          );
+        } catch (error) {
+          if (!isUniqueViolation(error, 'idx_events_org_idempotency_key')) throw error;
+          // The failed INSERT was savepoint-isolated, so the outer completion
+          // transaction is still usable. Confirm the concurrent winner before
+          // treating this replay as complete.
+          if ((await findChangeSet()).length === 0) throw error;
+        }
+      }
     }
 
     // ============================================

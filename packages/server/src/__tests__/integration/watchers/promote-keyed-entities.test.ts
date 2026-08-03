@@ -460,6 +460,18 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         AND metadata->>'source' = 'watcher_canvas'
     `;
     expect(Number(canvasCount[0].c)).toBe(1);
+
+    const changeSets = await sql`
+      SELECT id, metadata->>'_lobu_idempotency_key' AS idempotency_key
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND run_id = ${runId}
+        AND semantic_type = 'change_set'
+    `;
+    expect(changeSets).toHaveLength(1);
+    expect(changeSets[0].idempotency_key).toBe(
+      `behavior:${watcherId}:run:${runId}:change_set`
+    );
   });
 
   it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {

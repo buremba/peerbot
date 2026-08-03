@@ -134,8 +134,11 @@ export async function handleCreateVersion(
     'outputs'
   );
   assertOutputsShape(callerOutputs);
+  // Both accepted wire forms clear the declaration: literal null and the
+  // pre-serialized JSON string "null".
+  const clearsOutputs = args.outputs === null || callerOutputs === null;
   const outputs =
-    args.outputs === null
+    clearsOutputs
       ? null
       : (callerOutputs ??
         normalizeStoredJsonField(

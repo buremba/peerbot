@@ -551,6 +551,33 @@ describe("apply diff — watchers", () => {
     ).toContain("outputs");
   });
 
+  test("removing outputs from the declaration clears remote declarations", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
+          outputs: {
+            items: { entity: "social-signal", key: ["source_origin_id"] },
+          },
+        },
+      ],
+    };
+
+    const row = computeDiff(desired, remote).rows.find(
+      (candidate) => candidate.kind === "watcher"
+    );
+    expect(row?.verb).toBe("update");
+    expect(
+      (row as { versionBoundFields?: string[] }).versionBoundFields
+    ).toContain("outputs");
+  });
+
   test("reaction_script declared → always re-pushed (idempotent)", () => {
     const desired = buildState([], {
       watchers: [

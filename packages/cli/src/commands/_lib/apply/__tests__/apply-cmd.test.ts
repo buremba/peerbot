@@ -412,6 +412,69 @@ describe("executePlan — atomic Behavior triggers+prompt update", () => {
       triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
     });
   });
+
+  test("sends outputs null when the declaration was removed", async () => {
+    const desired = {
+      slug: "canvas-only",
+      agent: "triage",
+      prompt: "Keep the result on Canvas.",
+      triggers: [{ kind: "schedule" as const, cron: "0 9 * * *" }],
+    };
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [],
+    });
+    state.watchers = [desired];
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "watcher",
+          verb: "update",
+          id: desired.slug,
+          desired,
+          changedFields: ["outputs"],
+          versionBoundFields: ["outputs"],
+        },
+      ],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote: RemoteSnapshot = {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [
+        {
+          slug: desired.slug,
+          behavior_id: "44",
+          agent_id: "triage",
+          prompt: desired.prompt,
+          triggers: desired.triggers,
+          outputs: { items: { entity: "company", key: ["name"] } },
+        },
+      ],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+      inferenceProviders: [],
+    };
+    const createBehaviorVersion = mock(async () => ({ version: 2 }));
+    const client = {
+      updateBehavior: mock(async () => ({})),
+      createBehaviorVersion,
+    } as unknown as ApplyClient;
+
+    await executePlan({ client, state, plan, remote }, []);
+
+    expect(createBehaviorVersion).toHaveBeenCalledTimes(1);
+    expect(createBehaviorVersion.mock.calls[0]?.[0]).toMatchObject({
+      behavior_id: "44",
+      outputs: null,
+    });
+  });
 });
 
 describe("normalizeConnectionConfigScope — feed-scoped keys demote to feeds", () => {

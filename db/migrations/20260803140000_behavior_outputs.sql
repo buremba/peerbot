@@ -75,45 +75,116 @@ BEGIN
 END
 $migration$;
 
-WITH ranked_output AS (
-  SELECT
-    w.id AS watcher_id,
-    output.key AS output_name,
-    output.value->>'entity' AS entity_type,
-    row_number() OVER (
-      PARTITION BY w.id, output.value->>'entity'
-      ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
-    ) AS preference
-  FROM watchers w
-  JOIN watcher_versions v
-    ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
-  CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
-  WHERE output.value ? 'entity'
-), preferred_output AS (
-  SELECT watcher_id, output_name, entity_type
-  FROM ranked_output
-  WHERE preference = 1
-), identity_moves AS (
-  SELECT
-    ei.id,
-    preferred_output.watcher_id,
-    preferred_output.output_name,
-    substring(ei.identifier FROM length(preferred_output.watcher_id::text) + 3) AS stable_key
-  FROM entity_identities ei
-  JOIN entities e ON e.id = ei.entity_id
-  JOIN entity_types et ON et.id = e.entity_type_id
-  JOIN preferred_output
-    ON e.metadata->>'watcher_id' = preferred_output.watcher_id::text
-   AND preferred_output.entity_type = et.slug
-  WHERE ei.namespace = 'watcher_key'
-    AND ei.deleted_at IS NULL
-    AND ei.identifier LIKE preferred_output.watcher_id::text || '::%'
-    AND ei.identifier NOT LIKE preferred_output.watcher_id::text || '::' || preferred_output.output_name || '::%'
-)
-UPDATE entity_identities ei
-SET identifier = identity_moves.watcher_id::text || '::' || identity_moves.output_name || '::' || identity_moves.stable_key
-FROM identity_moves
-WHERE ei.id = identity_moves.id;
+-- Only an upgrading database has the retired column. A fresh database starts
+-- from the squashed baseline with new-format identities, so never infer legacy
+-- identity shape from a string prefix alone (a valid stable key may itself
+-- begin with an output name).
+DO $migration$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'watcher_versions'
+      AND column_name = 'keying_config'
+  ) THEN
+    -- Abort instead of dropping or stranding either claim if a manually
+    -- pre-migrated target is already live. Production is preflighted before
+    -- this cutover, but this guard keeps every installation lossless.
+    IF EXISTS (
+      WITH ranked_output AS (
+        SELECT
+          w.id AS watcher_id,
+          output.key AS output_name,
+          output.value->>'entity' AS entity_type,
+          row_number() OVER (
+            PARTITION BY w.id, output.value->>'entity'
+            ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
+          ) AS preference
+        FROM watchers w
+        JOIN watcher_versions v
+          ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
+        CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
+        WHERE output.value ? 'entity'
+      ), preferred_output AS (
+        SELECT watcher_id, output_name, entity_type
+        FROM ranked_output
+        WHERE preference = 1
+      ), identity_moves AS (
+        SELECT
+          ei.id,
+          ei.organization_id,
+          ei.namespace,
+          preferred_output.watcher_id::text || '::' ||
+            preferred_output.output_name || '::' ||
+            substring(ei.identifier FROM length(preferred_output.watcher_id::text) + 3)
+            AS target_identifier
+        FROM entity_identities ei
+        JOIN entities e ON e.id = ei.entity_id
+        JOIN entity_types et ON et.id = e.entity_type_id
+        JOIN preferred_output
+          ON e.metadata->>'watcher_id' = preferred_output.watcher_id::text
+         AND preferred_output.entity_type = et.slug
+        WHERE ei.namespace = 'watcher_key'
+          AND ei.deleted_at IS NULL
+          AND ei.identifier LIKE preferred_output.watcher_id::text || '::%'
+      )
+      SELECT 1
+      FROM identity_moves move
+      JOIN entity_identities existing
+        ON existing.organization_id = move.organization_id
+       AND existing.namespace = move.namespace
+       AND existing.identifier = move.target_identifier
+       AND existing.deleted_at IS NULL
+       AND existing.id <> move.id
+      LIMIT 1
+    ) THEN
+      RAISE EXCEPTION
+        'Behavior output identity migration would collide with an existing live watcher_key; resolve duplicate claims before retrying';
+    END IF;
+
+    WITH ranked_output AS (
+      SELECT
+        w.id AS watcher_id,
+        output.key AS output_name,
+        output.value->>'entity' AS entity_type,
+        row_number() OVER (
+          PARTITION BY w.id, output.value->>'entity'
+          ORDER BY (v.id = w.current_version_id) DESC, v.version DESC, output.key
+        ) AS preference
+      FROM watchers w
+      JOIN watcher_versions v
+        ON v.watcher_id = COALESCE(w.watcher_group_id, w.id)
+      CROSS JOIN LATERAL jsonb_each(COALESCE(v.outputs, '{}'::jsonb)) AS output
+      WHERE output.value ? 'entity'
+    ), preferred_output AS (
+      SELECT watcher_id, output_name, entity_type
+      FROM ranked_output
+      WHERE preference = 1
+    ), identity_moves AS (
+      SELECT
+        ei.id,
+        preferred_output.watcher_id,
+        preferred_output.output_name,
+        substring(ei.identifier FROM length(preferred_output.watcher_id::text) + 3) AS stable_key
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      JOIN entity_types et ON et.id = e.entity_type_id
+      JOIN preferred_output
+        ON e.metadata->>'watcher_id' = preferred_output.watcher_id::text
+       AND preferred_output.entity_type = et.slug
+      WHERE ei.namespace = 'watcher_key'
+        AND ei.deleted_at IS NULL
+        AND ei.identifier LIKE preferred_output.watcher_id::text || '::%'
+    )
+    UPDATE entity_identities ei
+    SET identifier = identity_moves.watcher_id::text || '::' ||
+      identity_moves.output_name || '::' || identity_moves.stable_key
+    FROM identity_moves
+    WHERE ei.id = identity_moves.id;
+  END IF;
+END
+$migration$;
 
 ALTER TABLE watcher_versions
   DROP COLUMN IF EXISTS keying_config;

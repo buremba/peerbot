@@ -14,7 +14,12 @@ import {
   SCOPE_CHECK_NOT_APPLICABLE,
 } from '../auth/tool-access';
 import type { Env } from '../index';
-import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
+import {
+  beginMcpConversationActivity,
+  completeMcpConversationActivity,
+  type McpConversationActivityLease,
+  renewMcpConversationActivity,
+} from '../lobu/stores/mcp-client-conversations';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
 import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
@@ -65,6 +70,41 @@ export interface AuthContext {
    * role × scope decide). Non-admin-tier actions are unaffected.
    */
   adminTools?: string[] | null;
+}
+
+const MCP_CONVERSATION_HEARTBEAT_MS = 30_000;
+
+interface McpConversationActivityTracker {
+  lease: McpConversationActivityLease;
+  stop: () => void;
+}
+
+async function startMcpConversationActivity(
+  ctx: ToolContext,
+  toolName: string
+): Promise<McpConversationActivityTracker | null> {
+  const lease = await beginMcpConversationActivity({ ctx, toolName });
+  if (!lease) return null;
+  const heartbeat = setInterval(() => {
+    void renewMcpConversationActivity(ctx, lease);
+  }, MCP_CONVERSATION_HEARTBEAT_MS);
+  heartbeat.unref();
+  return { lease, stop: () => clearInterval(heartbeat) };
+}
+
+async function finishMcpConversationActivity(args: {
+  ctx: ToolContext;
+  toolName: string;
+  failed: boolean;
+  tracker: McpConversationActivityTracker | null;
+}): Promise<void> {
+  args.tracker?.stop();
+  await completeMcpConversationActivity({
+    ctx: args.ctx,
+    toolName: args.toolName,
+    failed: args.failed,
+    lease: args.tracker?.lease ?? null,
+  });
 }
 
 /**
@@ -239,23 +279,27 @@ export async function executeTool(
       // bound org when there is one; a session with no bound org has no ledger
       // to write into, and toToolContext would throw on it anyway.
       const startTime = Date.now();
+      const activityCtx = authCtx.organizationId ? toToolContext(authCtx) : null;
+      const activityTracker = activityCtx
+        ? await startMcpConversationActivity(activityCtx, toolName)
+        : null;
       const auditIfOrgBound = async (outcome: {
         result?: unknown;
         error?: unknown;
       }) => {
-        if (!authCtx.organizationId) return;
-        const ctx = toToolContext(authCtx);
+        if (!activityCtx) return;
         await recordToolInvocationAudit({
           toolName,
           args,
           ...outcome,
           durationMs: Date.now() - startTime,
-          ctx,
+          ctx: activityCtx,
         });
-        await recordMcpConversationActivity({
-          ctx,
+        await finishMcpConversationActivity({
+          ctx: activityCtx,
           toolName,
           failed: outcome.error !== undefined || isSoftErrorResult(outcome.result),
+          tracker: activityTracker,
         });
       };
       try {
@@ -277,6 +321,7 @@ export async function executeTool(
   const tool = getTool(toolName)!;
   const toolContext = toToolContext(authCtx);
   const startTime = Date.now();
+  const activityTracker = await startMcpConversationActivity(toolContext, toolName);
 
   // Per-invocation correlation id (lobu#2051 Item 2). Distinct from the
   // background-run `run_id` (a bigint on the runs table) — this identifies a
@@ -308,10 +353,11 @@ export async function executeTool(
       durationMs: Date.now() - startTime,
       ctx: toolContext,
     });
-    await recordMcpConversationActivity({
+    await finishMcpConversationActivity({
       ctx: toolContext,
       toolName,
       failed: isSoftErrorResult(result),
+      tracker: activityTracker,
     });
     return result;
   } catch (error) {
@@ -327,10 +373,11 @@ export async function executeTool(
       durationMs: Date.now() - startTime,
       ctx: toolContext,
     });
-    await recordMcpConversationActivity({
+    await finishMcpConversationActivity({
       ctx: toolContext,
       toolName,
       failed: true,
+      tracker: activityTracker,
     });
     throw error;
   }

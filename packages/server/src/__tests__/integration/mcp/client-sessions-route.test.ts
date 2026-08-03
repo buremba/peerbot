@@ -3,6 +3,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import {
+  beginMcpConversationActivity,
+  completeMcpConversationActivity,
   recordMcpConversationActivity,
   setCurrentMcpConversationTitle,
 } from '../../../lobu/stores/mcp-client-conversations';
@@ -314,6 +316,125 @@ describe('client sessions activity route', () => {
     };
     const titled = afterBody.sessions.find((s) => s.sessionId === 'host-title-lifecycle');
     expect(titled).toMatchObject({ title: 'Launch planning', callCount: 1 });
+  });
+
+  it('shows an in-flight first call as running, then records it as completed', async () => {
+    const ctx = auditCtx({
+      mcpSessionId: 'running-first-call-transport',
+      mcpConversationId: 'running-first-call',
+    });
+    const lease = await beginMcpConversationActivity({
+      ctx,
+      toolName: 'run_sdk',
+    });
+
+    const during = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    expect(during.status).toBe(200);
+    const duringBody = (await during.json()) as {
+      sessions: Array<{ sessionId: string; callCount: number; isRunning: boolean }>;
+    };
+    expect(duringBody.sessions.find((s) => s.sessionId === 'running-first-call')).toMatchObject({
+      callCount: 1,
+      isRunning: true,
+    });
+
+    await completeMcpConversationActivity({
+      ctx,
+      toolName: 'run_sdk',
+      failed: false,
+      lease,
+    });
+    const after = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    const afterBody = (await after.json()) as {
+      sessions: Array<{ sessionId: string; callCount: number; isRunning: boolean }>;
+    };
+    expect(afterBody.sessions.find((s) => s.sessionId === 'running-first-call')).toMatchObject({
+      callCount: 1,
+      isRunning: false,
+    });
+  });
+
+  it('keeps concurrent calls running and ignores a late completion from an expired generation', async () => {
+    const concurrentCtx = auditCtx({
+      mcpSessionId: 'concurrent-running-transport',
+      mcpConversationId: 'concurrent-running',
+    });
+    const firstLease = await beginMcpConversationActivity({
+      ctx: concurrentCtx,
+      toolName: 'search_sdk',
+    });
+    const secondLease = await beginMcpConversationActivity({
+      ctx: concurrentCtx,
+      toolName: 'query_sdk',
+    });
+    expect(firstLease?.generation).toBe(secondLease?.generation);
+
+    await completeMcpConversationActivity({
+      ctx: concurrentCtx,
+      toolName: 'search_sdk',
+      failed: false,
+      lease: firstLease,
+    });
+    const oneLeft = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    const oneLeftBody = (await oneLeft.json()) as {
+      sessions: Array<{ sessionId: string; callCount: number; isRunning: boolean }>;
+    };
+    expect(oneLeftBody.sessions.find((s) => s.sessionId === 'concurrent-running')).toMatchObject({
+      callCount: 2,
+      isRunning: true,
+    });
+    await completeMcpConversationActivity({
+      ctx: concurrentCtx,
+      toolName: 'query_sdk',
+      failed: false,
+      lease: secondLease,
+    });
+
+    const expiringCtx = auditCtx({
+      mcpSessionId: 'expired-generation-transport',
+      mcpConversationId: 'expired-generation',
+    });
+    const expiredLease = await beginMcpConversationActivity({
+      ctx: expiringCtx,
+      toolName: 'search_memory',
+    });
+    await getDb()`
+      UPDATE mcp_client_conversations
+      SET running_until = now() - interval '1 second'
+      WHERE organization_id = ${orgId} AND conversation_id = 'expired-generation'
+    `;
+    const afterExpiry = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    const afterExpiryBody = (await afterExpiry.json()) as {
+      sessions: Array<{ sessionId: string }>;
+    };
+    expect(afterExpiryBody.sessions.some((s) => s.sessionId === 'expired-generation')).toBe(false);
+
+    const replacementLease = await beginMcpConversationActivity({
+      ctx: expiringCtx,
+      toolName: 'query_sql',
+    });
+    expect(replacementLease!.generation).toBeGreaterThan(expiredLease!.generation);
+
+    await completeMcpConversationActivity({
+      ctx: expiringCtx,
+      toolName: 'search_memory',
+      failed: false,
+      lease: expiredLease,
+    });
+    const afterLateCompletion = await get(`/api/${orgSlug}/clients/sessions`, { token });
+    const afterLateBody = (await afterLateCompletion.json()) as {
+      sessions: Array<{ sessionId: string; callCount: number; isRunning: boolean }>;
+    };
+    expect(afterLateBody.sessions.find((s) => s.sessionId === 'expired-generation')).toMatchObject({
+      callCount: 2,
+      isRunning: true,
+    });
+    await completeMcpConversationActivity({
+      ctx: expiringCtx,
+      toolName: 'query_sql',
+      failed: false,
+      lease: replacementLease,
+    });
   });
 
   it('rejects unauthenticated requests', async () => {

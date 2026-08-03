@@ -630,6 +630,71 @@ describe('tool invocation audit coverage', () => {
     ]);
   });
 
+  it('materializes running state before a tool completes and clears it afterward', async () => {
+    const conversationId = 'running-execute-tool-session';
+    const db = getDb();
+    let markLockAcquired = () => {};
+    let releaseLock = () => {};
+    const lockAcquired = new Promise<void>((resolve) => {
+      markLockAcquired = resolve;
+    });
+    const lockRelease = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockHolder = db.begin(async (tx) => {
+      await tx`LOCK TABLE public.entities IN ACCESS EXCLUSIVE MODE`;
+      markLockAcquired();
+      await lockRelease;
+    });
+    await lockAcquired;
+
+    const execution = executeTool(
+      'query_sql',
+      { sql: 'SELECT id FROM entities', limit: 1 },
+      {} as Env,
+      {
+        ...authCtxFor('oauth'),
+        mcpSessionId: 'running-execute-tool-transport',
+        mcpConversationId: conversationId,
+      }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    try {
+      const [during] = await db<
+        Array<{ active_call_count: number; call_count: number; is_running: boolean }>
+      >`
+        SELECT active_call_count::int AS active_call_count, call_count::int AS call_count,
+          (active_call_count > 0 AND running_until > now()) AS is_running
+        FROM mcp_client_conversations
+        WHERE organization_id = ${orgId} AND conversation_id = ${conversationId}
+      `;
+      expect(during).toMatchObject({
+        active_call_count: 1,
+        call_count: 0,
+        is_running: true,
+      });
+    } finally {
+      releaseLock();
+    }
+
+    await lockHolder;
+    await execution;
+    const [after] = await db<
+      Array<{ active_call_count: number; call_count: number; is_running: boolean }>
+    >`
+      SELECT active_call_count::int AS active_call_count, call_count::int AS call_count,
+        (active_call_count > 0 AND running_until > now()) AS is_running
+      FROM mcp_client_conversations
+      WHERE organization_id = ${orgId} AND conversation_id = ${conversationId}
+    `;
+    expect(after).toMatchObject({
+      active_call_count: 0,
+      call_count: 1,
+      is_running: false,
+    });
+  });
+
   it('records resolved tool failures as failed', async () => {
     const result = (await executeTool(
       'manage_classifiers',

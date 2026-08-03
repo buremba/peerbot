@@ -28,6 +28,7 @@ interface SessionRow {
 	failed_count: number | string;
 	tools: unknown;
 	pending_interaction_count: number;
+	is_running: boolean;
 }
 
 function stringArray(value: unknown): string[] {
@@ -83,7 +84,11 @@ routes.get("/", mcpAuth, async (c) => {
     )
     SELECT mc.conversation_id, mc.client_id, oc.client_name, mc.user_id, mc.agent_id,
       mc.title, mc.last_action, mc.first_activity_at, mc.last_activity_at,
-      mc.call_count, mc.failed_count,
+      (mc.call_count + CASE
+        WHEN mc.active_call_count > 0 AND mc.running_until > now()
+        THEN mc.active_call_count ELSE 0 END) AS call_count,
+      mc.failed_count,
+      (mc.active_call_count > 0 AND mc.running_until > now()) AS is_running,
       jsonb_path_query_array(mc.tools, '$[0 to 7]') AS tools,
       COALESCE(pi.pending_interaction_count, 0)::integer AS pending_interaction_count
     FROM public.mcp_client_conversations mc
@@ -94,7 +99,7 @@ routes.get("/", mcpAuth, async (c) => {
       -- Title-only rows are not activity: setTitle can create a row before the
       -- conversation has called any tool, and it would otherwise sort first on
       -- its default now() timestamps with a placeholder action.
-      AND mc.call_count > 0
+      AND (mc.call_count > 0 OR (mc.active_call_count > 0 AND mc.running_until > now()))
       AND mc.last_activity_at > now() - make_interval(days => ${ACTIVITY_WINDOW_DAYS})
       AND (
         NOT ${conversationOnly}
@@ -117,6 +122,7 @@ routes.get("/", mcpAuth, async (c) => {
 			failedCount: Number(row.failed_count),
 			tools: stringArray(row.tools),
 			pendingInteractionCount: Number(row.pending_interaction_count),
+			isRunning: row.is_running,
 		})),
 	});
 });

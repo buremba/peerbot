@@ -1,7 +1,18 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { RawDispatchTool } from "../../../tools/registry";
 import { getRawDispatchTools } from "../../../tools/registry";
-import { generateStrictToolPaths } from "../../../utils/openapi-generator";
+import {
+	generateOpenAPISpec,
+	generateStrictToolPaths,
+} from "../../../utils/openapi-generator";
+
+describe("generateOpenAPISpec", () => {
+	it("uses public Behavior terminology throughout ChatGPT metadata", () => {
+		const spec = generateOpenAPISpec("https://example.test");
+		expect(JSON.stringify(spec)).not.toMatch(/watcher/i);
+		expect(spec.servers[0]?.description).toContain("Behaviors");
+	});
+});
 
 /**
  * The strict projection is the single TypeBox source rendered for the typed
@@ -79,5 +90,6 @@ describe("generateStrictToolPaths", () => {
 		const json = JSON.stringify(paths);
 		expect(json).not.toContain('"$id"');
 		expect(json).not.toContain('"static"');
+		expect(json).not.toMatch(/watcher/i);
 	});
 });

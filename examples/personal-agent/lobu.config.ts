@@ -22,7 +22,7 @@ import type SocialInterestRadarReaction from "./social-interest-radar.reaction.t
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
   content:
-    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. Use concise imperative wording in action so equivalent requests deduplicate across runs. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source_event_id and source when available, and a short rationale. Produce at most 12 tasks, ordered by priority.",
+    "Review the current hourly window's content and the collaborative task list in the payload's task_list source. The task_list source includes recently closed tasks (metadata status done or dismissed) for reference so you know what is already finished. Return a JSON object with a tasks array matching the provided task schema. Extract only concrete actions Burak or his personal agent should take; ignore advertisements, newsletters, automated notices, passive information, and vague ideas. For every task, copy source_scope, source_origin_id, and source_event_id exactly from its recent_signals row. Set task_key to a short stable machine key for that distinct action within the source (for example send-deck or book-flight); keep the same task_key when only the wording or status changes. Preserve existing tasks instead of restating them. Never re-emit, reopen, or recreate any task whose status is done or dismissed in the task list, even if the originating message still appears in recent signals. Set status to backlog unless there is clear evidence work has started. Assign owner \"Burak\" unless the action can be safely completed by the personal agent. Use ISO-8601 due_date only when a real deadline is present. Include source and a short rationale. Produce at most 12 tasks, ordered by priority.",
 });
 
 const duplicateEntityResolutionRealV3FinalSkill = defineSkill({
@@ -282,16 +282,22 @@ const channel = defineEntityType({
     "A chat channel (Slack channel, etc.) — the unit of conversation access control",
 });
 
-// Collaborative actions for Burak + personal-agent (hourly-task-collaborator
-// keys + merges on `action`). Schema is owned here — the watcher does not
-// declare its own extraction schema.
+// Collaborative actions for Burak + personal-agent. Identity comes from the
+// stable source plus a per-source task key, never editable display wording.
+// Schema is owned here — the Behavior does not declare an extraction schema.
 const task = defineEntityType({
   key: "task",
   name: "Task",
   description:
     "An actionable item collaboratively managed by Burak and his personal agent.",
   metadata: { icon: "check-square", color: "#10B981" },
-  required: ["action", "status"],
+  required: [
+    "action",
+    "status",
+    "source_scope",
+    "source_origin_id",
+    "task_key",
+  ],
   properties: {
     action: {
       type: "string",
@@ -336,21 +342,25 @@ const task = defineEntityType({
       description: "Why this task is worth doing",
     },
     source_event_id: {
-      type: "string",
-      description: "Originating Lobu event id when applicable",
+      type: "integer",
+      description: "Originating Lobu event id (provenance, not identity)",
     },
-    // Written by the entity-typed watcher keying pipeline
-    stable_key: {
+    source_scope: {
       type: "string",
-      description: "Stable dedupe key from the task watcher",
+      minLength: 1,
+      description:
+        "Stable source namespace copied from the source row (connection, connector, or local event)",
     },
-    watcher_id: {
+    source_origin_id: {
       type: "string",
-      description: "Watcher that last wrote this task",
+      minLength: 1,
+      description: "Stable source event identity copied from the source row",
     },
-    window_id: {
+    task_key: {
       type: "string",
-      description: "Watcher window that produced this task",
+      minLength: 1,
+      description:
+        "Stable machine key for one distinct action within the source event",
     },
   },
 });
@@ -864,8 +874,8 @@ const instagramTakeoutConnection = defineConnection({
 // One consolidated LinkedIn connection spanning BOTH sources: the local Data
 // Export CSV feeds AND the live Chrome-extension feeds. Because it's a single
 // connection on connector "linkedin", people met live and people in the CSV
-// export dedup on the shared linkedin_slug/email identity. Keeps the existing
-// slug (buremba connection id 410, 2544 events).
+// export dedup on the shared linkedin_slug/email identity. The stable slug is
+// the config identity; runtime database ids are deliberately not hard-coded.
 //
 // The live home_feed reads linkedin.com/feed/ through the paired Owletto Chrome
 // extension and needs no company_url. The company_updates/jobs live feeds each
@@ -964,12 +974,11 @@ const voiceProfile = defineEntityType({
     evidence_from: { type: "string", format: "date" },
     evidence_to: { type: "string", format: "date" },
     sample_event_ids: { type: "array", items: { type: "number" } },
-    profile_key: { type: "string" },
   },
 });
 
 // Deprecated compatibility declaration. The radar now writes threaded events
-// with keyingConfig: null, but prune must retain this type while historical
+// with event persistence, but prune must retain this type while historical
 // social-signal entity rows still exist. Remove it only through an explicit
 // data migration; it is not part of the active output path.
 const socialSignal = defineEntityType({
@@ -1021,11 +1030,11 @@ const voiceProfileSynthesis = defineBehavior({
   ],
   notification: { channel: "canvas", priority: "low" },
   minCooldownSeconds: 3600,
-  keyingConfig: {
-    entityType: "voice-profile",
-    entityPath: "profiles",
-    keyFields: ["channel", "mode"],
-    keyOutputField: "profile_key",
+  outputs: {
+    profiles: {
+      entity: voiceProfile,
+      key: ["channel", "mode"],
+    },
   },
   sources: {
     authored_recent:
@@ -1039,9 +1048,9 @@ const voiceProfileSynthesis = defineBehavior({
     },
   },
   prompt:
-    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","profile_key","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
+    'Refine Burak\'s voice-profile entities.\nexisting_profiles is historical truth. authored_recent/engaged_recent refine last ~21d only.\nALWAYS re-emit all existing profiles. Return JSON:\n{ "profiles":[{ "name","channel","mode","summary","themes","prefers","avoids","confidence","evidence_count","evidence_from","evidence_to","sample_event_ids" }], "analysis_summary":"..." }\nNever invent channel=core.',
   reactionsGuidance:
-    "ALWAYS re-emit every existing_profiles row (same channel/mode/profile_key). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
+    "ALWAYS re-emit every existing_profiles row (same channel/mode). Refine if recent evidence; never return empty profiles[] when existing_profiles non-empty.",
 });
 
 const socialInterestRadar = defineBehavior({
@@ -1054,14 +1063,13 @@ const socialInterestRadar = defineBehavior({
   ],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 1800,
-  keyingConfig: null,
   sources: {
     recent_social:
-      "SELECT id, origin_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
+      "SELECT id, origin_id, connection_id, occurred_at, payload_text, source_url, metadata, connector_key, origin_type FROM events WHERE connector_key IN ('x','linkedin') AND ((connector_key='x' AND origin_type IN ('tweet','bookmark')) OR (connector_key='linkedin' AND origin_type='post')) AND payload_text IS NOT NULL AND origin_id IS NOT NULL AND connection_id IS NOT NULL ORDER BY occurred_at DESC LIMIT 80",
     already_emitted: {
       context: true,
       query:
-        "SELECT id, metadata->>'source_origin_id' AS source_origin_id FROM events WHERE semantic_type = 'social_signal' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
+        "SELECT id, metadata->>'source_origin_id' AS source_origin_id FROM events WHERE semantic_type = 'observation' AND metadata->>'kind' = 'social_signal' AND occurred_at > now() - interval '7 days' ORDER BY occurred_at DESC LIMIT 400",
     },
     voice_profiles: {
       context: true,
@@ -1074,10 +1082,14 @@ const socialInterestRadar = defineBehavior({
         "SELECT id, name, metadata FROM entities WHERE entity_type='person' AND deleted_at IS NULL AND (metadata ? 'x_handle' OR metadata ? 'linkedin_url' OR metadata ? 'company') ORDER BY updated_at DESC LIMIT 40",
     },
   },
+  outputs: {
+    signals: { event: "observation" },
+    drafts: { event: "draft_reply" },
+  },
   prompt:
-    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Read LinkedIn authors from metadata.author and X authors from metadata.author_handle. Never use "unknown" when an author field exists. For each item, copy the source row\'s id to source_event_id and origin_id to source_origin_id, explain a specific why, and give a concrete suggested_action. Prefer posts not present in already_emitted. Return only the extracted data required by the reaction schema; the deterministic reaction persists threaded replies and sends the notification.',
+    'Rank at most 8 new, high-signal X or LinkedIn posts for Burak. Use voice_profiles for taste and known_people for relationship context. Prefer AI, agents, infrastructure, developer tools, people he knows, launches, funding, and technical substance; ignore engagement bait, generic memes, and ads. Return each choice in `signals` as a standard observation event draft. Set `title` to the author/platform, `content` to the specific why plus a concrete suggested action, `source_url` to the source row source_url, `parent_event_id` to the source row id, and `idempotency_key` to its origin_id. Put `{ kind: "social_signal", platform, author, snippet, why, priority, source_origin_id, source_event_id, source_connection_id, suggested_action }` in metadata, copying the source id, origin_id, and connection_id exactly. Prefer posts not present in already_emitted. Also return `drafts`: either [] or exactly one standard draft_reply event for the single best item that genuinely deserves a response. Its content is only the proposed reply text; copy source_url and parent_event_id, use `draft:` plus origin_id as idempotency_key, and metadata `{ kind: "social_draft_reply", platform, author, why, priority, source_origin_id, source_event_id, source_connection_id }`. Never claim to publish: the reaction only stages the draft and the human submits it. Return empty arrays when nothing qualifies.',
   reactionsGuidance:
-    "Rank with voice profiles. The deterministic reaction owns reply-event persistence, retry deduplication, and notification delivery.",
+    "Declared outputs own event persistence and source-level deduplication. The reaction delivers a digest and stages at most one saved draft in the explicitly paired chrome-macbook browser; it never publishes.",
   reaction: reactionFromFile<typeof SocialInterestRadarReaction>(
     "./social-interest-radar.reaction.ts"
   ),
@@ -1090,15 +1102,16 @@ const hourlyTaskCollaborator = defineBehavior({
   triggers: [{ kind: "schedule", cron: "0 * * * *" }],
   notification: { channel: "both", priority: "normal" },
   minCooldownSeconds: 300,
-  keyingConfig: {
-    entityType: "task",
-    entityPath: "tasks",
-    keyFields: ["action"],
-    keyOutputField: "task_key",
+  outputs: {
+    tasks: {
+      entity: task,
+      key: ["source_scope", "source_origin_id", "task_key"],
+      name: ["action"],
+    },
   },
   sources: {
     recent_signals:
-      "SELECT id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
+      "SELECT id AS source_event_id, COALESCE('connection:' || connection_id::text, 'connector:' || connector_key, 'event') AS source_scope, COALESCE(origin_id, 'event:' || id::text) AS source_origin_id, occurred_at, title, payload_text, semantic_type, connector_key, metadata FROM events WHERE semantic_type IN ('message','thread','reminder','calendar_event','note') ORDER BY occurred_at DESC LIMIT 200",
     // context-only: existing tasks are dedup reference data, not window signal
     task_list: {
       context: true,

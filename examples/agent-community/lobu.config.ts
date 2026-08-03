@@ -6,16 +6,14 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineBehavior,
-  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
 import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
-import type opportunityMatcherReaction from "./opportunity-matcher.reaction.ts";
 
 const opportunityMatcherSkill = defineSkill({
   name: "opportunity-matcher",
   content:
-    "Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.\n",
+    'Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Return each strong match in `signals` as a standard observation event draft: `content` explains the match and `metadata` contains `{ kind: "community_match", member_a, member_b, confidence }`. Return an empty array when there is no specific match.\n',
 });
 
 const agentCommunity = defineAgent({
@@ -158,9 +156,7 @@ const opportunityMatcher = defineBehavior({
   notification: { priority: "normal" },
   tags: ["community", "matching"],
   minCooldownSeconds: 300,
-  reaction: reactionFromFile<typeof opportunityMatcherReaction>(
-    "./opportunity-matcher.reaction.ts"
-  ),
+  outputs: { signals: { event: "observation" } },
   skills: ["opportunity-matcher"],
 });
 

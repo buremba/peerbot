@@ -13,7 +13,7 @@
 #      prune:true fixture this also guards the system-type ($member) exemption —
 #      an un-exempted prune halts every apply.
 #   2. every declared definition is created (agent, entity/relationship types,
-#      Behavior).
+#      Behaviors), including a Behavior with entity + event outputs.
 #   3. `lobu chat` drives a real turn through the worker → the mock's reply.
 #   4. a stable re-apply is idempotent (0 deletes).
 #
@@ -154,9 +154,25 @@ const digest = defineBehavior({
   },
 });
 
+// A second Behavior exercises durable outputs without a reaction. One completed
+// window must upsert a typed entity and append a registered event, proving the
+// declarative config, API contract, extraction schema, and persistence path as
+// one installed-project flow.
+const publisher = defineBehavior({
+  slug: "publisher", agent, name: "Publisher", prompt: "Publish companies and observation events.",
+  outputs: {
+    companies: { entity: company, key: ["name"], name: ["name"] },
+    observations: { event: "observation" },
+  },
+  sources: {
+    content:
+      "SELECT id, title, payload_text, author_name, occurred_at, origin_type FROM events WHERE connector_key = 'sdke2e-pulse' ORDER BY occurred_at DESC LIMIT 100",
+  },
+});
+
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], behaviors: [digest] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], behaviors: [digest, publisher] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one
@@ -291,7 +307,7 @@ grep -qiE "Apply halted" "$RUN_LOG" && fail "apply halted on a failure"
 echo "✓ lobu run auto-applied the project (Apply complete)"
 
 # 2b) Every declared definition created.
-for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ behavior digest"; do
+for marker in "+ entity-type company" "+ entity-type contact" "+ relationship-type works-at" "+ behavior digest" "+ behavior publisher"; do
   grep -qF "$marker" "$RUN_LOG" || fail "expected created definition not in plan: '$marker'"
 done
 # System $member must be ignorable drift, never a delete row (the prune-halt bug).
@@ -673,6 +689,43 @@ for _ in $(seq 1 30); do
 done
 [ -n "$REACT_OK" ] || { cat "$CW" >&2; cat "$REACT" >&2; fail "watcher reaction did not produce its SDKE2E_REACTION_OK knowledge event"; }
 echo "✓ watcher reaction ran and saved its assertable side effect (SDKE2E_REACTION_OK)"
+
+# 7b) Durable Behavior outputs — exercise the installed config and public API,
+# not an internal helper. Complete one real connector-backed window containing
+# both output arrays, then read the typed entity and event through query_sql.
+PUBLISHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const arr=j.behaviors||j.items||(Array.isArray(j)?j:[]);const w=arr.find(x=>x.slug==="publisher");const id=w?(w.behavior_id??w.watcher_id??w.id):null;process.stdout.write(id!=null?String(id):"")})' < "$BEHAVIORS")"
+[ -n "$PUBLISHER_ID" ] || { cat "$BEHAVIORS" >&2; fail "no 'publisher' Behavior found after apply"; }
+
+PUB="$RUN_DIR/publisher.json"
+api manage_behaviors "{\"action\":\"list\",\"behavior_id\":\"$PUBLISHER_ID\",\"include_details\":true}" > "$PUB" 2>/dev/null \
+  || { cat "$PUB" >&2; fail "could not read the publisher Behavior"; }
+grep -q '"companies"' "$PUB" && grep -q '"observations"' "$PUB" \
+  || { cat "$PUB" >&2; fail "publisher API response omitted its named outputs"; }
+grep -q 'keying_config' "$PUB" && { cat "$PUB" >&2; fail "retired keying_config leaked through the public Behavior API"; }
+
+PUB_RK="$RUN_DIR/publisher-read-knowledge.json"
+api read_knowledge "{\"behavior_id\":$PUBLISHER_ID,\"since\":\"$SINCE\",\"until\":\"$UNTIL\"}" > "$PUB_RK" 2>/dev/null \
+  || { cat "$PUB_RK" >&2; fail "publisher read_knowledge failed"; }
+PUB_WINDOW_TOKEN="$(jget window_token < "$PUB_RK")"
+[ -n "$PUB_WINDOW_TOKEN" ] || { cat "$PUB_RK" >&2; fail "publisher read_knowledge returned no window_token"; }
+
+PUB_CW="$RUN_DIR/publisher-complete-window.json"
+api manage_behaviors "$(node -e 'const t=process.argv[1],w=process.argv[2];process.stdout.write(JSON.stringify({action:"complete_window",behavior_id:w,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID")" > "$PUB_CW" 2>/dev/null \
+  || { cat "$PUB_CW" >&2; fail "publisher complete_window failed"; }
+
+OUTPUT_ENTITY="$RUN_DIR/output-entity.json"
+api manage_entity '{"action":"list","entity_type":"company","search":"SDK E2E Output Co"}' > "$OUTPUT_ENTITY" 2>/dev/null \
+  || { cat "$OUTPUT_ENTITY" >&2; fail "querying the publisher entity output failed"; }
+grep -q 'SDK E2E Output Co' "$OUTPUT_ENTITY" \
+  || { cat "$OUTPUT_ENTITY" >&2; fail "publisher entity output was not persisted"; }
+
+OUTPUT_EVENT="$RUN_DIR/output-event.json"
+OUTPUT_EVENT_QUERY="$(node -e 'process.stdout.write(JSON.stringify({sql:"SELECT id, semantic_type, payload_text FROM events WHERE semantic_type = '\''observation'\'' AND payload_text = '\''SDKE2E_OUTPUT_EVENT'\''",sort_by:"id"}))')"
+api query_sql "$OUTPUT_EVENT_QUERY" > "$OUTPUT_EVENT" 2>/dev/null \
+  || { cat "$OUTPUT_EVENT" >&2; fail "querying the publisher event output failed"; }
+grep -q 'SDKE2E_OUTPUT_EVENT' "$OUTPUT_EVENT" \
+  || { cat "$OUTPUT_EVENT" >&2; fail "publisher event output was not persisted"; }
+echo "✓ Behavior outputs persisted a typed entity and a registered event through the public API"
 
 # 5) Idempotent re-apply (stable config → 0 deletes). Unlike `lobu run`, `lobu
 # apply` does not auto-load the project .env, so pass the secret it resolves for

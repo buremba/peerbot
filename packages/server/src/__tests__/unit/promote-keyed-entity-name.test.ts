@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { buildEntityName } from '../../utils/promote-keyed-entities';
-import type { KeyingConfig } from '../../types/watchers';
+import type { EntityOutput } from '../../types/watchers';
 
-const base: KeyingConfig = {
-  entity_path: 'items',
-  key_fields: ['source_origin_id'],
-  key_output_field: 'stable_key',
-  entity_type: 'social-signal',
+const base: EntityOutput = {
+  entity: 'social-signal',
+  key: ['source_origin_id'],
 };
 
 const row = {
@@ -17,32 +15,32 @@ const row = {
 };
 
 describe('buildEntityName', () => {
-  it('names from name_fields when set, leaving the opaque key as identity only', () => {
-    const name = buildEntityName(row, { ...base, name_fields: ['author'] }, 'stable-abc');
+  it('names from name fields when set, leaving the opaque key as identity only', () => {
+    const name = buildEntityName(row, { ...base, name: ['author'] }, 'stable-abc');
     expect(name).toBe('Adam Cohen');
   });
 
-  it('joins multiple name_fields in the given order', () => {
-    const name = buildEntityName(row, { ...base, name_fields: ['author', 'platform'] }, 'stable-abc');
+  it('joins multiple name fields in the given order', () => {
+    const name = buildEntityName(row, { ...base, name: ['author', 'platform'] }, 'stable-abc');
     expect(name).toBe('Adam Cohen · linkedin');
   });
 
-  it('falls back to key_fields when name_fields is absent', () => {
+  it('falls back to key fields when name is absent', () => {
     expect(buildEntityName(row, base, 'stable-abc')).toBe(row.source_origin_id);
   });
 
-  it('falls back to key_fields when name_fields is present but empty', () => {
-    const name = buildEntityName(row, { ...base, name_fields: [] }, 'stable-abc');
+  it('falls back to key fields when name is present but empty', () => {
+    const name = buildEntityName(row, { ...base, name: [] }, 'stable-abc');
     expect(name).toBe(row.source_origin_id);
   });
 
-  it('skips name_fields that carry no value rather than emitting a blank segment', () => {
-    const name = buildEntityName(row, { ...base, name_fields: ['missing', 'author'] }, 'stable-abc');
+  it('skips name fields that carry no value rather than emitting a blank segment', () => {
+    const name = buildEntityName(row, { ...base, name: ['missing', 'author'] }, 'stable-abc');
     expect(name).toBe('Adam Cohen');
   });
 
   it('falls back to the stable key when no name field resolves', () => {
-    const name = buildEntityName(row, { ...base, name_fields: ['nope'] }, 'stable-abc');
+    const name = buildEntityName(row, { ...base, name: ['nope'] }, 'stable-abc');
     expect(name).toBe('stable-abc');
   });
 });

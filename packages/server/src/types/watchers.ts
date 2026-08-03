@@ -13,8 +13,10 @@ import {
   type BehaviorTrigger,
   BehaviorSourceSchema,
   type BehaviorSource,
-  BehaviorKeyingConfigSchema,
-  type BehaviorKeyingConfig,
+  BehaviorOutputsSchema,
+  type BehaviorOutputs,
+  type BehaviorEntityOutput,
+  type BehaviorEventOutput,
 } from '@lobu/core/contracts/tools/manage-behaviors';
 
 type WatcherSource = BehaviorSource;
@@ -77,16 +79,13 @@ export const WatcherWindowSchema = Type.Object({
 export type WatcherWindow = Static<typeof WatcherWindowSchema>;
 
 // ============================================
-// Keying Config
+// Behavior Outputs
 // ============================================
 
-/**
- * Configuration for computing stable entity keys, and for promoting each keyed
- * row into an entity. Declared in `@lobu/core` so the MCP tool contract and the
- * server-side readers cannot drift.
- */
-export const KeyingConfigSchema = BehaviorKeyingConfigSchema;
-export type KeyingConfig = BehaviorKeyingConfig;
+export const OutputsSchema = BehaviorOutputsSchema;
+export type Outputs = BehaviorOutputs;
+export type EntityOutput = BehaviorEntityOutput;
+export type EventOutput = BehaviorEventOutput;
 
 // ============================================
 // Version Info (for listing available versions)
@@ -138,7 +137,7 @@ export const WatcherMetadataSchema = Type.Object({
   sources: Type.Array(WatcherSourceSchema),
   prompt: Type.Optional(Type.String()),
   description: Type.Optional(Type.String()),
-  keying_config: Type.Optional(Type.Union([KeyingConfigSchema, Type.Null()])),
+  outputs: Type.Optional(Type.Union([OutputsSchema, Type.Null()])),
   /** Version-owned config surfaced so the edit form can round-trip them
    *  (create_version preserves prev values on omit, but prefilling avoids
    *  the empty-form-state clobber). */

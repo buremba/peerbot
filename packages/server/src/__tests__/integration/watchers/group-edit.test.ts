@@ -20,6 +20,7 @@ import type { Env } from '../../../index';
 import { manageBehaviors } from '../../../tools/admin/manage_behaviors';
 import type { ToolContext } from '../../../tools/registry';
 import { createWatcherRun } from '../../../runs/queue-service';
+import { ensureMemberEntityType } from '../../../utils/member-entity-type';
 import { parseWatcherRunPayload } from '../../../watchers/automation';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
@@ -279,6 +280,89 @@ describe('watcher group edit contract', () => {
     `;
     expect(Number(versionRow.watcher_id)).toBe(rootId);
     expect(versionRow.prompt).toBe('Cascaded prompt v2.');
+  });
+
+  it('create_version rejects an event output invalid for any sibling assignment', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Group Output Registry Org' });
+    await ensureMemberEntityType(workspace.org.id);
+    const { watcherId: rootId } = await seedRootWatcher(workspace, 'output-registry');
+    const siblingEntity = await createTestEntity({
+      name: 'Restricted Sibling',
+      entity_type: 'restricted',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    const [root] = await sql`
+      SELECT current_version_id FROM watchers WHERE id = ${rootId}
+    `;
+    await assignToEntity(workspace, Number(root.current_version_id), siblingEntity.id);
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({ brand_signal: { description: 'Brand-only signal' } })}
+      WHERE organization_id = ${workspace.org.id} AND slug = 'brand'
+    `;
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({ restricted_signal: { description: 'Restricted signal' } })}
+      WHERE organization_id = ${workspace.org.id} AND slug = 'restricted'
+    `;
+
+    await expect(
+      manageBehaviors(
+        {
+          action: 'create_version',
+          behavior_id: String(rootId),
+          outputs: { alerts: { event: 'brand_signal' } },
+        } as never,
+        {} as Env,
+        ownerCtx(workspace)
+      )
+    ).rejects.toThrow(/Invalid event type 'brand_signal'/i);
+  });
+
+  it('create_from_version rejects an event output invalid for a clone target', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Clone Output Registry Org' });
+    await ensureMemberEntityType(workspace.org.id);
+    const { watcherId: rootId } = await seedRootWatcher(workspace, 'clone-output-registry');
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({ brand_signal: { description: 'Brand-only signal' } })}
+      WHERE organization_id = ${workspace.org.id} AND slug = 'brand'
+    `;
+    const version = (await manageBehaviors(
+      {
+        action: 'create_version',
+        behavior_id: String(rootId),
+        outputs: { alerts: { event: 'brand_signal' } },
+      } as never,
+      {} as Env,
+      ownerCtx(workspace)
+    )) as { version_id: string };
+    const target = await createTestEntity({
+      name: 'Restricted Clone Target',
+      entity_type: 'restricted',
+      organization_id: workspace.org.id,
+      created_by: workspace.users.owner.id,
+    });
+    await sql`
+      UPDATE entity_types
+      SET event_kinds = ${sql.json({ restricted_signal: { description: 'Restricted signal' } })}
+      WHERE organization_id = ${workspace.org.id} AND slug = 'restricted'
+    `;
+
+    await expect(
+      manageBehaviors(
+        {
+          action: 'create_from_version',
+          version_id: version.version_id,
+          entity_ids: [target.id],
+        } as never,
+        {} as Env,
+        ownerCtx(workspace)
+      )
+    ).rejects.toThrow(/Invalid event type 'brand_signal'/i);
   });
 
   it('set_reaction_script cascades to every watcher in the group', async () => {

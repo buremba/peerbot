@@ -113,8 +113,9 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
  * Extract a reaction's exported `input` schema (a TypeBox schema, i.e. plain
  * JSON Schema) by loading the compiled module in the isolate WITHOUT invoking
  * its handler. This is how the watcher's extraction contract is derived from
- * the reaction: the worker is told the exact shape the reaction will
- * `Value.Parse`, so "the reaction owns the schema" holds end to end.
+ * the reaction. The worker combines it with declared durable outputs; matching
+ * properties refine the output via JSON Schema `allOf`, while reaction-only
+ * properties remain part of the same extraction contract.
  *
  * Returns null when the reaction declares no `input` export (legacy/free-form
  * reactions) or the load fails — callers then fall back to `{ summary }`.

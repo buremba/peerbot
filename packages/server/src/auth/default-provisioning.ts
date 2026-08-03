@@ -505,7 +505,7 @@ export async function ensureDefaultWatcher(params: {
         INSERT INTO watcher_versions (
           id, watcher_id, version, name, description,
           prompt, version_sources,
-          keying_config, classifiers,
+          outputs, classifiers,
           reactions_guidance, change_notes, created_by, created_at
         ) VALUES (
           ${versionId}, ${watcherId}, 1, ${DEFAULT_WATCHER_NAME}, NULL,

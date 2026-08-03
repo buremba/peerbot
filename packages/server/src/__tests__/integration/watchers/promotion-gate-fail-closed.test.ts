@@ -4,7 +4,7 @@
  * it must never degrade into "create anyway" or "apply fields anyway", and a
  * denied create must not queue an approval card either.
  *
- * Drives `promoteKeyedEntities` directly (inside a transaction, like
+ * Drives `promoteBehaviorEntityOutput` directly (inside a transaction, like
  * complete_window does) with a test interceptor registered into the gate.
  */
 
@@ -14,7 +14,7 @@ import {
 	registerMutationInterceptor,
 } from "../../../authz/entity-mutation-gate";
 import type { DbClient } from "../../../db/client";
-import { promoteKeyedEntities } from "../../../utils/promote-keyed-entities";
+import { promoteBehaviorEntityOutput } from "../../../utils/promote-keyed-entities";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createTestAgent,
@@ -23,14 +23,11 @@ import {
 } from "../../setup/test-fixtures";
 import { initWorkspaceProvider } from "../../../workspace";
 
-const KEYING_CONFIG = {
-	entity_path: "problems",
-	key_fields: ["category", "name"],
-	key_output_field: "problem_key",
-	entity_type: "topic",
+const ENTITY_OUTPUT = {
+	entity: "topic",
+	key: ["category", "name"],
 };
 
-/** Keyed rows with the stable key already stamped (as computeStableKeys would). */
 function extracted(severity: string) {
 	return {
 		problems: [
@@ -38,7 +35,6 @@ function extracted(severity: string) {
 				category: "Stability",
 				name: "App Crashes",
 				severity,
-				problem_key: "stability::app-crashes",
 			},
 		],
 	};
@@ -85,10 +81,11 @@ async function promote(
 	severity: string,
 ) {
 	return ctx.sql.begin(async (tx) =>
-		promoteKeyedEntities({
+		promoteBehaviorEntityOutput({
 			tx: tx as unknown as DbClient,
 			extractedData: extracted(severity),
-			keyingConfig: KEYING_CONFIG,
+			outputName: "problems",
+			output: ENTITY_OUTPUT,
 			watcherId: ctx.watcherId,
 			organizationId: ctx.orgId,
 			windowId: 1,

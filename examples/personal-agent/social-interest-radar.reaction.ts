@@ -264,6 +264,7 @@ export default async (
     const result = await client.operations.execute({
       connection_id: connectionId,
       operation_key: platform === "x" ? "prepare_reply" : "prepare_comment",
+      idempotency_key: `social-radar:draft:${draft.id}`,
       input:
         platform === "x"
           ? {

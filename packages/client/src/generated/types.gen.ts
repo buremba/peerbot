@@ -3547,6 +3547,10 @@ export type ManageOperationsData = {
         input?: {
           [key: string]: unknown;
         };
+        /**
+         * Durable caller key. Replays return the original operation run; reusing the key for a different operation or input is rejected.
+         */
+        idempotency_key?: string;
         behavior_source?: {
           behavior_id: number;
           window_id: number;
@@ -3785,6 +3789,12 @@ export type ManageOperationsResponses = {
         metadata?: {
           [key: string]: unknown;
         };
+      }
+    | {
+        action: "execute";
+        run_id: number;
+        status: "in_progress";
+        message: string;
       }
     | {
         action: "execute";

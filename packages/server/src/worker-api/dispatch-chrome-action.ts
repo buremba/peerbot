@@ -687,7 +687,7 @@ export async function dispatchChromeActionToExtension(params: {
 
   let runId: number;
   try {
-    runId = await createConnectorOperationRun({
+    const claim = await createConnectorOperationRun({
       organizationId,
       connectionId: chromeConnection.connectionId,
       connectorKey: 'chrome',
@@ -697,6 +697,7 @@ export async function dispatchChromeActionToExtension(params: {
       requireCompiledCode: false,
       createdByUserId: requesterUserId,
     });
+    runId = claim.runId;
   } catch (err) {
     const msg = errorMessage(err);
     logger.error(

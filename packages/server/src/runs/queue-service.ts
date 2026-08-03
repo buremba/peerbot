@@ -20,6 +20,7 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
+import { ToolUserError } from '../utils/errors';
 import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -968,6 +969,8 @@ export async function createConnectorOperationRun(params: {
   connectorKey: string;
   operationKey: string;
   operationInput: Record<string, unknown>;
+  /** Durable caller key. A terminal action run remains authoritative forever. */
+  idempotencyKey?: string;
   /**
    * - 'inline'  → status='running', approval='auto'. Caller executes
    *               the connector inline on the gateway (server-side
@@ -1000,7 +1003,14 @@ export async function createConnectorOperationRun(params: {
    * rolls back, the run never exists.
    */
   db?: DbClient;
-}): Promise<number> {
+}): Promise<{
+  runId: number;
+  created: boolean;
+  status: string;
+  approvalStatus: string;
+  actionOutput: unknown;
+  errorMessage: string | null;
+}> {
   const sql = params.db ?? getDb();
 
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
@@ -1028,11 +1038,18 @@ export async function createConnectorOperationRun(params: {
   }
   const connectorVersion = resolved.version;
 
-  const inserted = await sql`
+  const inserted = await sql<{
+    id: number;
+    status: string;
+    approval_status: string;
+    action_output: unknown;
+    error_message: string | null;
+  }>`
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
-      policy_principal_kind, policy_principal_id, created_by_user_id, created_at
+      policy_principal_kind, policy_principal_id, created_by_user_id,
+      action_idempotency_key, created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
@@ -1040,14 +1057,81 @@ export async function createConnectorOperationRun(params: {
       ${approvalStatus}, ${status},
       ${params.policyPrincipalKind ?? null}, ${params.policyPrincipalId ?? null},
       ${params.createdByUserId ?? null},
+      ${params.idempotencyKey ?? null},
       current_timestamp
     )
-    RETURNING id
+    ON CONFLICT (organization_id, action_idempotency_key)
+      WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL
+    DO NOTHING
+    RETURNING id, status, approval_status, action_output, error_message
   `;
 
-  const runId = Number((inserted[0] as { id: unknown }).id);
+  if (inserted.length === 0) {
+    if (!params.idempotencyKey) {
+      throw new Error('Action run insert returned no row without an idempotency key.');
+    }
+    const existing = await sql<{
+      id: number;
+      connection_id: number;
+      connector_key: string;
+      action_key: string;
+      action_input: Record<string, unknown> | null;
+      policy_principal_kind: string | null;
+      policy_principal_id: string | null;
+      created_by_user_id: string | null;
+      status: string;
+      approval_status: string;
+      action_output: unknown;
+      error_message: string | null;
+    }>`
+      SELECT id, connection_id, connector_key, action_key, action_input,
+             policy_principal_kind, policy_principal_id, created_by_user_id,
+             status, approval_status, action_output, error_message
+      FROM runs
+      WHERE organization_id = ${params.organizationId}
+        AND run_type = 'action'
+        AND action_idempotency_key = ${params.idempotencyKey}
+      LIMIT 1
+    `;
+    const prior = existing[0];
+    if (!prior) {
+      throw new Error('Concurrent action idempotency winner was not readable.');
+    }
+    const sameRequest =
+      Number(prior.connection_id) === params.connectionId &&
+      prior.connector_key === params.connectorKey &&
+      prior.action_key === params.operationKey &&
+      stableJson(prior.action_input ?? {}) === stableJson(params.operationInput) &&
+      prior.policy_principal_kind === (params.policyPrincipalKind ?? null) &&
+      prior.policy_principal_id === (params.policyPrincipalId ?? null) &&
+      prior.created_by_user_id === (params.createdByUserId ?? null);
+    if (!sameRequest) {
+      throw new ToolUserError(
+        `Action idempotency key '${params.idempotencyKey}' is already bound to a different request.`,
+        409
+      );
+    }
+    return {
+      runId: Number(prior.id),
+      created: false,
+      status: prior.status,
+      approvalStatus: prior.approval_status,
+      actionOutput: prior.action_output,
+      errorMessage: prior.error_message,
+    };
+  }
+
+  const row = inserted[0];
+  const runId = Number(row.id);
   logger.info(
     `[queue] Created action run ${runId} (${params.connectorKey}/${params.operationKey}, approval=${approvalStatus})`
   );
-  return runId;
+  return {
+    runId,
+    created: true,
+    status: row.status,
+    approvalStatus: row.approval_status,
+    actionOutput: row.action_output,
+    errorMessage: row.error_message,
+  };
 }

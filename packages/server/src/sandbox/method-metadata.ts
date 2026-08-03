@@ -806,7 +806,7 @@ export default async (_ctx, client) => {
 	},
 	"operations.execute": {
 		summary:
-			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. Sends an external request.",
+			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, behavior_source?: { behavior_id: number, window_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
 		cost: "expensive",
 		example:

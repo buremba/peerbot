@@ -78,6 +78,14 @@ export const ExecuteAction = Type.Object({
   input: Type.Optional(
     Type.Record(Type.String(), Type.Any(), { description: "Operation input" })
   ),
+  idempotency_key: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 256,
+      description:
+        "Durable caller key. Replays return the original operation run; reusing the key for a different operation or input is rejected.",
+    })
+  ),
   behavior_source: Type.Optional(
     Type.Object({
       behavior_id: Type.Number(),
@@ -346,6 +354,12 @@ export const ManageOperationsResultSchema = Type.Union([
     // error. `Type.Unknown()` accepts any JSON shape the run actually produced.
     output: Type.Unknown(),
     metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  }),
+  Type.Object({
+    action: Type.Literal("execute"),
+    run_id: Type.Integer(),
+    status: Type.Literal("in_progress"),
+    message: Type.String(),
   }),
   Type.Object({
     action: Type.Literal("execute"),

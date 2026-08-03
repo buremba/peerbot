@@ -74,11 +74,15 @@ describe('Behavior outputs migration', () => {
           identities: string[];
           legacyColumnPresent: boolean;
           draftReplyRegistered: boolean;
+          actionKeyColumnPresent: boolean;
+          actionKeyIndexPresent: boolean;
         }
       | undefined;
 
     try {
       await sql.begin(async (tx: typeof sql) => {
+        await tx`DROP INDEX IF EXISTS idx_runs_org_action_idempotency_key`;
+        await tx`ALTER TABLE runs DROP COLUMN IF EXISTS action_idempotency_key`;
         await tx`ALTER TABLE watcher_versions ADD COLUMN IF NOT EXISTS keying_config jsonb`;
         await tx`
           UPDATE watcher_versions v
@@ -152,11 +156,27 @@ describe('Behavior outputs migration', () => {
           WHERE organization_id = ${workspace.org.id} AND slug = '$member'
           LIMIT 1
         `;
+        const [actionKeySchema] = await tx<{
+          column_present: boolean;
+          index_present: boolean;
+        }>`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'runs'
+                AND column_name = 'action_idempotency_key'
+            ) AS column_present,
+            to_regclass('public.idx_runs_org_action_idempotency_key') IS NOT NULL
+              AS index_present
+        `;
         captured = {
           outputs: version.outputs,
           identities: identities.map((row) => row.identifier).sort(),
           legacyColumnPresent: column.present,
           draftReplyRegistered: memberType.registered,
+          actionKeyColumnPresent: actionKeySchema.column_present,
+          actionKeyIndexPresent: actionKeySchema.index_present,
         };
         throw new Rollback();
       });
@@ -188,6 +208,8 @@ describe('Behavior outputs migration', () => {
       ].sort(),
       legacyColumnPresent: false,
       draftReplyRegistered: true,
+      actionKeyColumnPresent: true,
+      actionKeyIndexPresent: true,
     });
   });
 

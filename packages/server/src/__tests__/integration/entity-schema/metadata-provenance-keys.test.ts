@@ -2,7 +2,7 @@
  * Watcher-promotion provenance keys must survive metadata round-trips.
  *
  * `promote-keyed-entities.ts` stamps `watcher_id` / `stable_key` / `window_id`
- * (plus `source`) onto a promoted entity's metadata via raw SQL — outside
+ * / `behavior_output` (plus `source`) onto promoted entity metadata via raw SQL — outside
  * schema validation. Under an `additionalProperties: false` entity-type schema
  * that meant a promoted entity's metadata could never be written back through
  * `entities.update`: reading the metadata, editing one domain field, and
@@ -48,7 +48,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
     } as never);
   });
 
-  it('accepts watcher_id/stable_key/window_id on update under additionalProperties: false', async () => {
+  it('accepts promotion provenance on update under additionalProperties: false', async () => {
     const created = (await owner.entities.create({
       type: 'strict-task',
       name: 'Promoted task round-trip',
@@ -66,6 +66,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
         watcher_id: 5,
         stable_key: 'ship-the-fix',
         window_id: 4288453,
+        behavior_output: 'tasks',
       },
     });
 
@@ -74,6 +75,7 @@ describe('entity metadata validation > watcher provenance keys', () => {
     };
     expect(got.entity?.metadata?.status).toBe('done');
     expect(got.entity?.metadata?.window_id).toBe(4288453);
+    expect(got.entity?.metadata?.behavior_output).toBe('tasks');
   });
 
   it('still rejects genuinely unknown metadata keys', async () => {

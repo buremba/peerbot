@@ -88,6 +88,7 @@ function clientWithRows(options: {
   const queries: string[] = [];
   const notifications: Record<string, unknown>[] = [];
   const operations: Record<string, unknown>[] = [];
+  const operationResults = new Map<string, Record<string, unknown>>();
   const logs: string[] = [];
   const client = {
     query: async (sql: string) => {
@@ -107,8 +108,17 @@ function clientWithRows(options: {
     },
     operations: {
       execute: async (input: Record<string, unknown>) => {
+        const idempotencyKey = input.idempotency_key;
+        if (typeof idempotencyKey === "string") {
+          const prior = operationResults.get(idempotencyKey);
+          if (prior) return prior;
+        }
         operations.push(input);
-        return { status: "completed", output: { prepared: true } };
+        const result = { status: "completed", output: { prepared: true } };
+        if (typeof idempotencyKey === "string") {
+          operationResults.set(idempotencyKey, result);
+        }
+        return result;
       },
     },
     log: (message: string) => logs.push(message),
@@ -146,6 +156,7 @@ describe("social interest radar reaction", () => {
       {
         connection_id: 410,
         operation_key: "prepare_comment",
+        idempotency_key: "social-radar:draft:601",
         input: {
           post_url: "https://www.linkedin.com/feed/update/urn:li:activity:123",
           body: "Durable state is the difference between a demo and a dependable agent.",
@@ -219,6 +230,29 @@ describe("social interest radar reaction", () => {
         }),
       }),
     ]);
+  });
+
+  it("stages a persisted draft only once when the same reaction retries", async () => {
+    const fixture = clientWithRows({
+      drafts: [
+        {
+          id: 601,
+          payload_text: "Draft",
+          source_url:
+            "https://www.linkedin.com/feed/update/urn:li:activity:123",
+          metadata: draftMetadata,
+        },
+      ],
+      chrome: [{ id: 432 }],
+    });
+
+    await runReaction(context(), fixture.client);
+    await runReaction(context(), fixture.client);
+
+    expect(fixture.operations).toHaveLength(1);
+    expect(fixture.operations[0]?.idempotency_key).toBe(
+      "social-radar:draft:601"
+    );
   });
 
   it("fails closed instead of staging on a guessed browser", async () => {

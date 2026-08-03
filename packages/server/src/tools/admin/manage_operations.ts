@@ -986,18 +986,90 @@ async function handleListAvailable(
   };
 }
 
-// Poll `runs` until status flips to completed/failed/timeout or we hit
-// our deadline. Used by handleExecute when the connector is device-
-// bound — the gateway can't execute inline; it inserts a pending run
-// and waits for the device worker (chrome extension / mac bridge /
-// etc.) to claim, run, and POST /api/workers/complete-action.
-//
+/** Return the durable outcome of a run claimed by an earlier request. */
+async function replayExistingOperationRun(
+	claim: Awaited<ReturnType<typeof createConnectorOperationRun>>,
+	operationName: string,
+	ctx: ToolContext,
+): Promise<ManageOperationsResult> {
+	const sql = getDb();
+	if (claim.approvalStatus === "pending" && claim.status === "pending") {
+		const eventRows = await sql<{ id: number }>`
+			SELECT id
+			FROM events
+			WHERE organization_id = ${ctx.organizationId}
+			  AND run_id = ${claim.runId}
+			  AND interaction_type = 'approval'
+			ORDER BY id DESC
+			LIMIT 1
+		`;
+		const { ownerSlug: orgSlug, baseUrl } = await getOrgUrlContext(ctx);
+		const approvalUrl = buildResourcePermalink(
+			orgSlug,
+			{ kind: "run", runId: claim.runId },
+			baseUrl,
+		);
+		return {
+			action: "execute",
+			run_id: claim.runId,
+			...(eventRows[0] ? { event_id: Number(eventRows[0].id) } : {}),
+			approval_url: approvalUrl,
+			status: "pending_approval",
+			message: `Operation '${operationName}' requires approval. Share the approval_url with the user to confirm.`,
+		};
+	}
+
+	if (claim.status === "completed") {
+		return {
+			action: "execute",
+			run_id: claim.runId,
+			status: "completed",
+			output: claim.actionOutput ?? {},
+		};
+	}
+	if (claim.status === "timeout") {
+		return {
+			action: "execute",
+			run_id: claim.runId,
+			status: "timeout",
+			error_message: claim.errorMessage ?? `Run ${claim.runId} timed out.`,
+		};
+	}
+	if (["pending", "claimed", "running"].includes(claim.status)) {
+		return {
+			action: "execute",
+			run_id: claim.runId,
+			status: "in_progress",
+			message: `Idempotent operation run ${claim.runId} is already in progress.`,
+		};
+	}
+	return {
+		action: "execute",
+		run_id: claim.runId,
+		status: "failed",
+		error_message:
+			claim.errorMessage ??
+			`Run ${claim.runId} ended with status '${claim.status}'.`,
+	};
+}
+
+// Device-bound execution inserts a pending run and waits for the device worker
+// (Chrome extension / Mac bridge / etc.) to claim it and post completion.
 async function handleExecute(
 	args: Static<typeof ExecuteAction>,
 	ctx: ToolContext,
 	env: Env,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
+	if (
+		args.idempotency_key != null &&
+		args.idempotency_key !== args.idempotency_key.trim()
+	) {
+		throw new ToolUserError(
+			"idempotency_key must not have leading or trailing whitespace.",
+			422,
+		);
+	}
 	const visibility = compileConnectionRowVisibility(
 		{
 			...authzScopeFromToolContext(ctx),
@@ -1153,8 +1225,8 @@ async function handleExecute(
 		// run on `tx`; insertEvent threads it via options.sql, and
 		// createConnectorOperationRun via its db param (which also carries its
 		// connector-version read into the same tx — safe, it is a read).
-		const { runId, eventId } = await sql.begin(async (tx) => {
-			const createdRunId = await createConnectorOperationRun({
+		const { claim, eventId } = await sql.begin(async (tx) => {
+			const createdRun = await createConnectorOperationRun({
 				organizationId: ctx.organizationId,
 				connectionId: connection.id,
 				connectorKey: connection.connector_key,
@@ -1170,8 +1242,13 @@ async function handleExecute(
 				policyPrincipalKind: actor.kind,
 				policyPrincipalId: actor.id,
 				createdByUserId: ctx.userId,
+				idempotencyKey: args.idempotency_key,
 				db: tx,
 			});
+			if (!createdRun.created) {
+				return { claim: createdRun, eventId: null };
+			}
+			const createdRunId = createdRun.runId;
 			const event = await insertEvent(
 				{
 				entityIds,
@@ -1207,8 +1284,15 @@ async function handleExecute(
 			},
 				{ sql: tx },
 			);
-			return { runId: createdRunId, eventId: Number(event.id) };
+			return { claim: createdRun, eventId: Number(event.id) };
 		});
+		if (!claim.created) {
+			return replayExistingOperationRun(claim, operation.name, ctx);
+		}
+		if (eventId == null) {
+			throw new Error("Created approval action run has no approval event.");
+		}
+		const runId = claim.runId;
 
 		// Telemetry + notification run AFTER the run+event are durably committed,
 		// so they never reference a rolled-back run and stay off the hot path.
@@ -1262,7 +1346,7 @@ async function handleExecute(
 
 	// Non-queued (device / inline) runs carry no approval event, so there is no
 	// second write to bind atomically — create the run on the pool.
-	const runId = await createConnectorOperationRun({
+	const claim = await createConnectorOperationRun({
 		organizationId: ctx.organizationId,
 		connectionId: connection.id,
 		connectorKey: connection.connector_key,
@@ -1273,7 +1357,12 @@ async function handleExecute(
 		policyPrincipalKind: actor.kind,
 		policyPrincipalId: actor.id,
 		createdByUserId: ctx.userId,
+		idempotencyKey: args.idempotency_key,
 	});
+	if (!claim.created) {
+		return replayExistingOperationRun(claim, operation.name, ctx);
+	}
+	const runId = claim.runId;
 
 	if (args.behavior_source) {
 		await trackWatcherReaction({

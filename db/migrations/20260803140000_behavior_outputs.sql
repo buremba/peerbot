@@ -7,6 +7,16 @@
 ALTER TABLE watcher_versions
   ADD COLUMN IF NOT EXISTS outputs jsonb;
 
+-- Connector operations can outlive or be retried independently of a Behavior
+-- completion request. Keep their caller key on the durable run and retain the
+-- claim after terminal completion so a retry cannot repeat an external action.
+ALTER TABLE runs
+  ADD COLUMN IF NOT EXISTS action_idempotency_key text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_org_action_idempotency_key
+  ON runs (organization_id, action_idempotency_key)
+  WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL;
+
 -- A fresh install already has `outputs` in the squashed baseline. An upgrade
 -- still has the retired column long enough for this one-time conversion.
 DO $migration$

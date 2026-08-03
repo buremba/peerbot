@@ -67,7 +67,12 @@ async function getEntityTypeSchema(
  * schema. `source` is deliberately NOT here: it is a plausible domain field,
  * so it stays subject to the type's schema.
  */
-const WATCHER_PROVENANCE_KEYS = ['watcher_id', 'stable_key', 'window_id'];
+const WATCHER_PROVENANCE_KEYS = [
+  'watcher_id',
+  'stable_key',
+  'window_id',
+  'behavior_output',
+];
 
 function withoutWatcherProvenanceKeys(
   metadata: Record<string, unknown>

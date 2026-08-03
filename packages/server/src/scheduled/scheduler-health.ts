@@ -27,7 +27,7 @@ interface SchedulerHealthStatus {
       failed: number;
       timeout: number;
     };
-    /** Behavior (behavior-lane) scheduling health — item 3.2, #2033. */
+    /** Behavior-lane scheduling health — item 3.2, #2033. */
     activeBehaviors: number;
     overdueBehaviors: number;
     behaviorsOverdueByHours: number;

@@ -62,12 +62,15 @@ describe('Behavior vocabulary migration', () => {
       expect(await sql`SELECT to_regclass('public.watchers') AS name`).toEqual([
         { name: 'watchers' },
       ]);
-      expect(await sql`SELECT to_regclass('public.behaviors') AS name`).toEqual([
-        { name: null },
-      ]);
+      expect(await sql`SELECT to_regclass('public.behaviors') AS name`).toEqual([{ name: null }]);
 
       const definitions = await sql<
-        { canvas_view: string; canvas_index: string; policy_check: string; stamp: string }[]
+        {
+          canvas_view: string;
+          canvas_index: string;
+          policy_check: string;
+          stamp: string;
+        }[]
       >`
         SELECT
           pg_get_viewdef('public.canvas_windows'::regclass, true) AS canvas_view,
@@ -95,9 +98,7 @@ describe('Behavior vocabulary migration', () => {
     expect(await sql`SELECT to_regclass('public.behaviors') AS name`).toEqual([
       { name: 'behaviors' },
     ]);
-    expect(await sql`SELECT to_regclass('public.watchers') AS name`).toEqual([
-      { name: null },
-    ]);
+    expect(await sql`SELECT to_regclass('public.watchers') AS name`).toEqual([{ name: null }]);
   });
 
   it('carries the durable values across the cutover, not just the identifiers', async () => {
@@ -119,9 +120,33 @@ describe('Behavior vocabulary migration', () => {
       organizationId: org.id,
       ownerUserId: user.id,
     });
-    const behaviorSources = [
-      { name: 'engine', query: 'SELECT id FROM behaviors WHERE status = \'active\'' },
+    const canonicalSqlIdentifiers = [
+      'behaviors',
+      'behavior_versions',
+      'behavior_reactions',
+      'behavior_window_events',
+      'source_behavior_id',
+      'behavior_group_id',
+      'behavior_id',
     ];
+    const retiredSqlIdentifiers = [
+      'watchers',
+      'watcher_versions',
+      'watcher_reactions',
+      'watcher_window_events',
+      'source_watcher_id',
+      'watcher_group_id',
+      'watcher_id',
+    ];
+    const behaviorQuery = [
+      'SELECT w.id FROM behaviors w',
+      'JOIN behavior_versions bv ON bv.behavior_id = w.id',
+      'LEFT JOIN behavior_reactions br ON br.behavior_id = w.id',
+      'LEFT JOIN behavior_window_events bwe ON bwe.behavior_id = w.id',
+      'LEFT JOIN canvas_windows cw ON cw.behavior_id = w.id',
+      'WHERE w.source_behavior_id IS NULL AND w.behavior_group_id IS NOT NULL',
+    ].join(' ');
+    const behaviorSources = [{ name: 'engine', query: behaviorQuery }];
     const [behavior] = await sql<{ id: number }[]>`
       INSERT INTO behaviors (
         name, slug, created_by, organization_id, agent_id, behavior_group_id, sources
@@ -154,7 +179,7 @@ describe('Behavior vocabulary migration', () => {
         ${sql.json({
           type: 'div',
           data_sources: {
-            engine: { query: 'SELECT id FROM behaviors WHERE status = \'active\'' },
+            engine: { query: behaviorQuery },
           },
         })},
         ${user.id}
@@ -260,15 +285,36 @@ describe('Behavior vocabulary migration', () => {
         principal_id: 'watcher:4242',
       });
       expect(rolledBack.sentinels).toEqual(['default_watcher_provisioned']);
-      expect(JSON.stringify(rolledBack.template)).toContain('FROM watchers');
+      const rolledBackTemplate = JSON.stringify(rolledBack.template);
       const [rolledBackBehavior] = await sql<{ sources: typeof behaviorSources }[]>`
         SELECT sources FROM watchers WHERE id = ${behavior!.id}
       `;
       const [rolledBackVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
         SELECT version_sources FROM watcher_versions WHERE id = ${version!.id}
       `;
-      expect(rolledBackBehavior?.sources[0]?.query).toContain('FROM watchers');
-      expect(rolledBackVersion?.version_sources[0]?.query).toContain('FROM watchers');
+      for (const identifier of retiredSqlIdentifiers) {
+        expect(rolledBackTemplate).toContain(identifier);
+        expect(rolledBackBehavior?.sources[0]?.query).toContain(identifier);
+        expect(rolledBackVersion?.version_sources[0]?.query).toContain(identifier);
+      }
+      for (const identifier of canonicalSqlIdentifiers) {
+        expect(rolledBackTemplate).not.toContain(identifier);
+        expect(rolledBackBehavior?.sources[0]?.query).not.toContain(identifier);
+        expect(rolledBackVersion?.version_sources[0]?.query).not.toContain(identifier);
+      }
+      // `canvas_windows` is NOT reversed. The view already carried that name
+      // before this cutover (20260703100000 dropped the `watcher_windows` table
+      // it replaced), so the rolled-back application still reads
+      // `canvas_windows` — only the COLUMN reverts to `watcher_id`. Reversing
+      // the relation name would repoint live SQL at a dropped table.
+      for (const stored of [
+        rolledBackTemplate,
+        rolledBackBehavior?.sources[0]?.query,
+        rolledBackVersion?.version_sources[0]?.query,
+      ]) {
+        expect(stored).toContain('canvas_windows cw ON cw.watcher_id');
+        expect(stored).not.toContain('watcher_windows');
+      }
       await sql`
         INSERT INTO runs (organization_id, run_type, status, run_at, error_message)
         VALUES (
@@ -301,15 +347,31 @@ describe('Behavior vocabulary migration', () => {
       principal_id: 'behavior:4242',
     });
     expect(reapplied.sentinels).toEqual(['default_behavior_provisioned']);
-    expect(JSON.stringify(reapplied.template)).toContain('FROM behaviors');
+    const reappliedTemplate = JSON.stringify(reapplied.template);
     const [reappliedBehavior] = await sql<{ sources: typeof behaviorSources }[]>`
       SELECT sources FROM behaviors WHERE id = ${behavior!.id}
     `;
     const [reappliedVersion] = await sql<{ version_sources: typeof behaviorSources }[]>`
       SELECT version_sources FROM behavior_versions WHERE id = ${version!.id}
     `;
-    expect(reappliedBehavior?.sources[0]?.query).toContain('FROM behaviors');
-    expect(reappliedVersion?.version_sources[0]?.query).toContain('FROM behaviors');
+    for (const identifier of canonicalSqlIdentifiers) {
+      expect(reappliedTemplate).toContain(identifier);
+      expect(reappliedBehavior?.sources[0]?.query).toContain(identifier);
+      expect(reappliedVersion?.version_sources[0]?.query).toContain(identifier);
+    }
+    for (const identifier of retiredSqlIdentifiers) {
+      expect(reappliedTemplate).not.toContain(identifier);
+      expect(reappliedBehavior?.sources[0]?.query).not.toContain(identifier);
+      expect(reappliedVersion?.version_sources[0]?.query).not.toContain(identifier);
+    }
+    for (const stored of [
+      reappliedTemplate,
+      reappliedBehavior?.sources[0]?.query,
+      reappliedVersion?.version_sources[0]?.query,
+    ]) {
+      expect(stored).toContain('canvas_windows cw ON cw.behavior_id');
+      expect(stored).not.toContain('watcher_windows');
+    }
     expect(
       await sql<{ error_message: string }[]>`
         SELECT error_message

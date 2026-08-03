@@ -42,27 +42,42 @@ WHERE metadata->>'source' = 'watcher_promotion';
 
 -- Stored source SQL moves with the physical relation. This is a one-time data
 -- cutover, not a runtime alias: all readers see only the canonical relation.
+--
+-- Every identifier this migration renames is the same edit — the token
+-- `watcher` becomes `behavior` and the rest of the word is preserved — so one
+-- whole-word pass covers all seven (watchers, watcher_versions,
+-- watcher_reactions, watcher_window_events, watcher_id, watcher_group_id,
+-- source_watcher_id). The suffix alternation is what keeps the pass honest:
+-- identifiers this migration does NOT rename (the long-dropped
+-- `watcher_windows` table, `behavior_message_subscriptions`,
+-- `connector_definitions.behavior_events`) never match, so neither direction
+-- rewrites a reference to a relation that survives the cutover.
 UPDATE public.watchers
-SET sources = regexp_replace(sources::text, '\mwatchers\M', 'behaviors', 'g')::jsonb
-WHERE sources::text ~ '\mwatchers\M';
+SET sources = regexp_replace(
+  sources::text,
+  '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1behavior\2',
+  'g'
+)::jsonb
+WHERE sources::text ~ '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.watcher_versions
 SET version_sources = regexp_replace(
   version_sources::text,
-  '\mwatchers\M',
-  'behaviors',
+  '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1behavior\2',
   'g'
 )::jsonb
-WHERE version_sources::text ~ '\mwatchers\M';
+WHERE version_sources::text ~ '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.view_template_versions
 SET json_template = regexp_replace(
   json_template::text,
-  '\mwatchers\M',
-  'behaviors',
+  '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1behavior\2',
   'g'
 )::jsonb
-WHERE json_template::text ~ '\mwatchers\M';
+WHERE json_template::text ~ '\m(source_)?watcher(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 -- squawk-ignore renaming-table,prefer-robust-stmts -- intentional hard cutover; no mixed-schema clients
 ALTER TABLE public.watchers RENAME TO behaviors;
@@ -102,7 +117,7 @@ DECLARE
   renamed text;
 BEGIN
   FOR item IN
-    SELECT con.oid, con.conname, c.relname AS table_name
+    SELECT con.conname, c.relname AS table_name
     FROM pg_constraint con
     JOIN pg_class c ON c.oid = con.conrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -503,27 +518,37 @@ UPDATE public.entities
 SET metadata = jsonb_set(metadata, '{source}', '"watcher_promotion"'::jsonb)
 WHERE metadata->>'source' = 'behavior_promotion';
 
+-- Exact inverse of the forward pass: same whole-word suffix alternation, so
+-- `canvas_windows` (a relation that outlives the cutover in both directions,
+-- with only its column reverting to `watcher_id`) and the pre-existing
+-- `behavior_message_subscriptions` / `connector_definitions.behavior_events`
+-- names are left alone.
 UPDATE public.watchers
-SET sources = regexp_replace(sources::text, '\mbehaviors\M', 'watchers', 'g')::jsonb
-WHERE sources::text ~ '\mbehaviors\M';
+SET sources = regexp_replace(
+  sources::text,
+  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1watcher\2',
+  'g'
+)::jsonb
+WHERE sources::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.watcher_versions
 SET version_sources = regexp_replace(
   version_sources::text,
-  '\mbehaviors\M',
-  'watchers',
+  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1watcher\2',
   'g'
 )::jsonb
-WHERE version_sources::text ~ '\mbehaviors\M';
+WHERE version_sources::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.view_template_versions
 SET json_template = regexp_replace(
   json_template::text,
-  '\mbehaviors\M',
-  'watchers',
+  '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M',
+  '\1watcher\2',
   'g'
 )::jsonb
-WHERE json_template::text ~ '\mbehaviors\M';
+WHERE json_template::text ~ '\m(source_)?behavior(s|_versions|_reactions|_window_events|_id|_group_id)\M';
 
 UPDATE public.entity_identities SET namespace = 'watcher_canvas' WHERE namespace = 'behavior_canvas';
 UPDATE public.entity_identities SET namespace = 'watcher_key' WHERE namespace = 'behavior_key';

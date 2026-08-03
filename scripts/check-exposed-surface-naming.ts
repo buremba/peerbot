@@ -2,21 +2,15 @@
 /**
  * Guard: keep "Behavior" canonical across the live repository.
  *
- * The retired term may remain only in immutable migration history and the
- * negative fixtures for this guard. It must not appear in:
+ * The canonical scan rejects the retired term in every tracked text file in
+ * this repository and the checked-out Owletto submodule. The explicit
+ * exclusions beside `scanCanonicalVocabulary` are limited to immutable
+ * migration history, migration-replay tests, guard fixtures, changelog history,
+ * and agent instructions that define this rule.
  *
- *   - MCP tool schemas, names, descriptions, or titles
- *   - ClientSDK discovery metadata, aliases, or namespace method names
- *   - the connector-sdk public reaction contract
- *   - server and web-client response types for shared public tool payloads
- *   - query_sql's queryable-relation allowlist (QUERYABLE_SCHEMA table names),
- *     which the unknown-table error enumerates verbatim to the caller
- *
- * TypeBox schema initializers are scanned under the core tool contracts and the
- * server's tool/type sources. Other source scans are deliberately limited to
- * files whose literals are rendered into MCP or ClientSDK discovery output.
- * Comments are ignored except in the published connector-sdk declaration file,
- * where JSDoc is part of the public contract.
+ * The AST scans below additionally verify public property names reached through
+ * aliases, inheritance, and inline types, plus query_sql's relation allowlist.
+ * They make the contract checks structural instead of relying only on text.
  *
  * Run: bun scripts/check-exposed-surface-naming.ts
  */
@@ -494,6 +488,32 @@ function scanCanonicalVocabulary(violations: Violation[]): void {
   const repositories = [REPO_ROOT, join(REPO_ROOT, "packages/owletto")];
   for (const repository of repositories) {
     const prefix = repository === REPO_ROOT ? "" : "packages/owletto/";
+    // `git -C <dir> ls-files` walks UP to the nearest repository, so an
+    // uninitialized submodule (the stub `.github/actions/setup-submodule`
+    // writes when the deploy key is absent, i.e. fork PRs) resolves to THIS
+    // repo and lists nothing — the scan would cover zero owletto files and
+    // still report clean. Detect that instead of trusting the empty listing.
+    const toplevel = execFileSync(
+      "git",
+      ["-C", repository, "rev-parse", "--show-toplevel"],
+      { encoding: "utf8" }
+    ).trim();
+    if (resolve(toplevel) !== resolve(repository)) {
+      if (repository === REPO_ROOT) {
+        console.error(
+          "check-exposed-surface-naming: cannot resolve the repository root."
+        );
+        process.exit(1);
+      }
+      // A fork PR cannot change owletto's source (separate private repo), only
+      // the gitlink SHA — so skipping is sound, but say so rather than
+      // reporting a clean scan that never ran.
+      console.warn(
+        `check-exposed-surface-naming: SKIPPED ${rel(repository)} — submodule ` +
+          `not checked out. Its vocabulary is gated on runs that have it.`
+      );
+      continue;
+    }
     const output = execFileSync("git", ["-C", repository, "ls-files", "-z"], {
       encoding: "utf8",
     });
